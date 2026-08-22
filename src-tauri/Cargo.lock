@@ -966,6 +966,7 @@ dependencies = [
  "libc",
  "png 0.17.16",
  "pulldown-cmark",
+ "quick-xml",
  "roxmltree",
  "rusqlite",
  "serde",

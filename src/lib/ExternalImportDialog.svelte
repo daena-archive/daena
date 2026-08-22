@@ -105,6 +105,11 @@ function pageItemSubtitle(item: ExternalImportPageItem): string {
   return item.value.source_path ?? item.value.code;
 }
 
+function stagedDocumentFormat(object: StagedObject): string {
+  const sourceFormat = object.metadata?.document_format;
+  return typeof sourceFormat === "string" ? sourceFormat : (object.body?.format ?? object.source_kind);
+}
+
 function selectPageItem(index: number) {
   selectedItemIndex = index;
   const item = page?.items[index];
@@ -463,7 +468,7 @@ onMount(() => {
             <label class:active={sourceKind === "file" && importerSupports("file")}>
               <input type="radio" bind:group={sourceKind} value="file" disabled={!importerSupports("file")} />
               <FileText size={19} strokeWidth={1.7} /><span
-                ><strong>Single file</strong><small>Markdown, HTML, DOCX, plain text, or ZIP archive</small></span>
+                ><strong>Single file</strong><small>Documents, ZIP archives, or MediaWiki XML</small></span>
             </label>
           </div>
         </fieldset>
@@ -628,7 +633,7 @@ onMount(() => {
                   <h3>{object.title}</h3>
                   <small>{object.source_path}</small>
                 </div>
-                <span class="format-badge">{object.body?.format ?? object.source_kind}</span>
+                <span class="format-badge">{stagedDocumentFormat(object)}</span>
               </div>
               <div class="decision-card">
                 <label>

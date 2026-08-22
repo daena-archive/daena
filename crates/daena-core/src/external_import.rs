@@ -1,11 +1,15 @@
 use crate::CoreError;
 use dom_query::{Document, NodeRef};
 use pulldown_cmark::{Event, Options, Parser, Tag};
+use quick_xml::encoding::Decoder as XmlDecoder;
+use quick_xml::events::{BytesStart, Event as XmlEvent};
+use quick_xml::Reader as XmlReader;
+use quick_xml::XmlVersion;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use zip::ZipArchive;
 
@@ -16,6 +20,8 @@ pub const GENERIC_DOCUMENT_IMPORTER_ID: &str = "daena.generic-documents";
 pub const GENERIC_DOCUMENT_IMPORTER_VERSION: &str = "1";
 pub const OBSIDIAN_IMPORTER_ID: &str = "daena.obsidian-vault";
 pub const OBSIDIAN_IMPORTER_VERSION: &str = "1";
+pub const MEDIAWIKI_IMPORTER_ID: &str = "daena.mediawiki-xml";
+pub const MEDIAWIKI_IMPORTER_VERSION: &str = "1";
 pub const EXTERNAL_IMPORT_ANALYSIS_CANCELLED: &str = "external import analysis cancelled";
 const MAX_ARCHIVE_COMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
@@ -30,6 +36,10 @@ const MAX_DOCX_ENTRIES: usize = 4_096;
 const MAX_DOCX_DEPTH: usize = 32;
 const MAX_DOCX_XML_NODES: u32 = 200_000;
 const MAX_DOCX_MARKDOWN_BYTES: usize = 32 * 1024 * 1024;
+const MAX_MEDIAWIKI_SOURCE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_MEDIAWIKI_XML_DEPTH: usize = 128;
+const MAX_MEDIAWIKI_TEMPLATES_PER_PAGE: usize = 512;
+const MAX_MEDIAWIKI_TEMPLATE_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1265,6 +1275,1187 @@ pub fn analyze_obsidian_vault_with_progress(
     progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
 ) -> Result<StagedImport, CoreError> {
     analyze_documents_with_progress(source, limits, ImportProfile::Obsidian, progress)
+}
+
+pub fn analyze_mediawiki_xml(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+) -> Result<StagedImport, CoreError> {
+    analyze_mediawiki_xml_with_progress(source, limits, |_| Ok(()))
+}
+
+pub fn analyze_mediawiki_xml_with_progress(
+    source: impl AsRef<Path>,
+    limits: GenericDocumentImportLimits,
+    mut progress: impl FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
+) -> Result<StagedImport, CoreError> {
+    validate_limits(&limits)?;
+    let source = source.as_ref();
+    let metadata = fs::symlink_metadata(source).map_err(|source| CoreError::Io {
+        operation: "read MediaWiki import source metadata",
+        source,
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CoreError::Validation(
+            "MediaWiki import requires a regular XML file".into(),
+        ));
+    }
+    if metadata.len() > MAX_MEDIAWIKI_SOURCE_BYTES {
+        return Err(CoreError::Validation(format!(
+            "MediaWiki XML exceeds the maximum source size of {MAX_MEDIAWIKI_SOURCE_BYTES} bytes"
+        )));
+    }
+    let source_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| CoreError::Validation("MediaWiki XML filename is not valid UTF-8".into()))?
+        .to_owned();
+    let canonical_source = fs::canonicalize(source).map_err(|source| CoreError::Io {
+        operation: "resolve MediaWiki import source path",
+        source,
+    })?;
+    let source_id = hex_digest(canonical_source.to_string_lossy().as_bytes());
+    let file = fs::File::open(source).map_err(|source| CoreError::Io {
+        operation: "open MediaWiki import source",
+        source,
+    })?;
+    let mut analyzer = MediaWikiAnalyzer {
+        limits,
+        import: StagedImport {
+            schema_version: STAGED_IMPORT_SCHEMA_VERSION,
+            importer: ImporterIdentity {
+                id: MEDIAWIKI_IMPORTER_ID.into(),
+                version: MEDIAWIKI_IMPORTER_VERSION.into(),
+                name: "MediaWiki XML".into(),
+            },
+            source: ImportSource {
+                id: source_id,
+                kind: ImportSourceKind::WikiDump,
+                display_name: source_name.clone(),
+            },
+            objects: Vec::new(),
+            assets: Vec::new(),
+            unsupported: Vec::new(),
+            diagnostics: Vec::new(),
+            summary: ImportAnalysisSummary::default(),
+        },
+        source_name,
+        namespaces: BTreeMap::new(),
+        site_metadata: BTreeMap::new(),
+        folders: BTreeSet::new(),
+        processed_pages: 0,
+        total_wikitext_bytes: 0,
+        total_diagnostics: 0,
+        omitted_revisions: 0,
+        progress: &mut progress,
+    };
+    analyzer.report_progress(0, None)?;
+    analyzer.parse(file)?;
+    analyzer.resolve_links_and_redirects()?;
+    if analyzer.omitted_revisions > 0 {
+        analyzer.import.unsupported.push(UnsupportedSourceData {
+            source_path: analyzer.source_name.clone(),
+            source_kind: "mediawiki_revision_history".into(),
+            reason: "older page revisions were intentionally omitted".into(),
+            raw_metadata: BTreeMap::from([(
+                "omitted_revision_count".into(),
+                serde_json::Value::from(analyzer.omitted_revisions),
+            )]),
+        });
+        analyzer.record_diagnostic(ImportDiagnostic {
+            severity: ImportDiagnosticSeverity::Warning,
+            code: "mediawiki_revision_history_omitted".into(),
+            message: format!(
+                "{} older page revisions were omitted; only each latest revision was staged.",
+                analyzer.omitted_revisions
+            ),
+            source_path: Some(analyzer.source_name.clone()),
+            object_id: None,
+        })?;
+    }
+    analyzer
+        .import
+        .objects
+        .sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    analyzer
+        .import
+        .refresh_summary(analyzer.folders.len(), metadata.len());
+    analyzer.import.validate()?;
+    Ok(analyzer.import)
+}
+
+#[derive(Debug, Default)]
+struct MediaWikiRevision {
+    id: String,
+    parent_id: String,
+    timestamp: String,
+    model: String,
+    format: String,
+    sha1: String,
+    contributor: String,
+    text: String,
+}
+
+#[derive(Debug, Default)]
+struct MediaWikiPage {
+    title: String,
+    namespace_id: String,
+    id: String,
+    redirect_target: Option<String>,
+    revision: Option<MediaWikiRevision>,
+    current_revision: Option<MediaWikiRevision>,
+    revision_count: usize,
+}
+
+struct MediaWikiAnalyzer<'a> {
+    limits: GenericDocumentImportLimits,
+    import: StagedImport,
+    source_name: String,
+    namespaces: BTreeMap<String, String>,
+    site_metadata: BTreeMap<String, String>,
+    folders: BTreeSet<String>,
+    processed_pages: usize,
+    total_wikitext_bytes: u64,
+    total_diagnostics: usize,
+    omitted_revisions: usize,
+    progress: &'a mut dyn FnMut(ImportAnalysisProgress) -> Result<(), CoreError>,
+}
+
+impl MediaWikiAnalyzer<'_> {
+    fn parse(&mut self, file: fs::File) -> Result<(), CoreError> {
+        let mut reader = XmlReader::from_reader(BufReader::new(file));
+        reader.config_mut().trim_text(false);
+        reader.config_mut().check_end_names = true;
+        let mut buffer = Vec::with_capacity(64 * 1024);
+        let mut stack = Vec::<Vec<u8>>::new();
+        let mut page = None::<MediaWikiPage>;
+        let mut pending_namespace = None::<(String, String)>;
+        let mut root_seen = false;
+        let mut event_count = 0_u64;
+        loop {
+            let event = reader.read_event_into(&mut buffer).map_err(|error| {
+                CoreError::Validation(format!(
+                    "invalid MediaWiki XML near byte {}: {error}",
+                    reader.error_position()
+                ))
+            })?;
+            event_count = event_count.saturating_add(1);
+            if event_count.is_multiple_of(512) {
+                self.report_progress(reader.buffer_position(), None)?;
+            }
+            match event {
+                XmlEvent::Start(start) => {
+                    let name = xml_local_name(start.name().as_ref()).to_vec();
+                    if !root_seen {
+                        if name.as_slice() != b"mediawiki" {
+                            return Err(CoreError::Validation(
+                                "XML source root must be a MediaWiki export".into(),
+                            ));
+                        }
+                        root_seen = true;
+                    }
+                    if stack.len() >= MAX_MEDIAWIKI_XML_DEPTH {
+                        return Err(CoreError::Validation(format!(
+                            "MediaWiki XML exceeds the maximum nesting depth of {MAX_MEDIAWIKI_XML_DEPTH}"
+                        )));
+                    }
+                    if name.as_slice() == b"page" {
+                        if page.is_some() {
+                            return Err(CoreError::Validation(
+                                "MediaWiki XML contains nested page elements".into(),
+                            ));
+                        }
+                        page = Some(MediaWikiPage::default());
+                    } else if name.as_slice() == b"revision" {
+                        let current_page = page.as_mut().ok_or_else(|| {
+                            CoreError::Validation(
+                                "MediaWiki revision appeared outside a page".into(),
+                            )
+                        })?;
+                        if current_page.current_revision.is_some() {
+                            return Err(CoreError::Validation(
+                                "MediaWiki XML contains nested revision elements".into(),
+                            ));
+                        }
+                        current_page.current_revision = Some(MediaWikiRevision::default());
+                        current_page.revision_count = current_page.revision_count.saturating_add(1);
+                    } else if name.as_slice() == b"redirect" {
+                        if let Some(current_page) = page.as_mut() {
+                            current_page.redirect_target =
+                                mediawiki_xml_attribute(&start, b"title", reader.decoder())?;
+                        }
+                    } else if name.as_slice() == b"namespace" && page.is_none() {
+                        let key = mediawiki_xml_attribute(&start, b"key", reader.decoder())?
+                            .unwrap_or_default();
+                        pending_namespace = Some((key, String::new()));
+                    }
+                    stack.push(name);
+                }
+                XmlEvent::Empty(start) => {
+                    let name = xml_local_name(start.name().as_ref()).to_vec();
+                    if name.as_slice() == b"redirect" {
+                        if let Some(current_page) = page.as_mut() {
+                            current_page.redirect_target =
+                                mediawiki_xml_attribute(&start, b"title", reader.decoder())?;
+                        }
+                    }
+                }
+                XmlEvent::Text(text) => {
+                    let decoded = text.decode().map_err(|error| {
+                        CoreError::Validation(format!("invalid MediaWiki XML text: {error}"))
+                    })?;
+                    let value = quick_xml::escape::unescape(&decoded).map_err(|error| {
+                        CoreError::Validation(format!(
+                            "MediaWiki XML contains an unsupported entity reference: {error}"
+                        ))
+                    })?;
+                    append_mediawiki_xml_text(
+                        &stack,
+                        &value,
+                        &mut page,
+                        &mut pending_namespace,
+                        &mut self.site_metadata,
+                    );
+                    self.validate_current_revision_size(&page)?;
+                }
+                XmlEvent::CData(text) => {
+                    let value = text.decode().map_err(|error| {
+                        CoreError::Validation(format!("invalid MediaWiki XML CDATA: {error}"))
+                    })?;
+                    append_mediawiki_xml_text(
+                        &stack,
+                        &value,
+                        &mut page,
+                        &mut pending_namespace,
+                        &mut self.site_metadata,
+                    );
+                    self.validate_current_revision_size(&page)?;
+                }
+                XmlEvent::End(end) => {
+                    let name = xml_local_name(end.name().as_ref()).to_vec();
+                    if stack.last().map(Vec::as_slice) != Some(name.as_slice()) {
+                        return Err(CoreError::Validation(
+                            "MediaWiki XML element nesting is invalid".into(),
+                        ));
+                    }
+                    if name.as_slice() == b"revision" {
+                        let current_page = page.as_mut().expect("revision requires page");
+                        let revision = current_page
+                            .current_revision
+                            .take()
+                            .expect("revision state is present");
+                        if current_page
+                            .revision
+                            .as_ref()
+                            .is_none_or(|current| mediawiki_revision_is_newer(&revision, current))
+                        {
+                            current_page.revision = Some(revision);
+                        }
+                    } else if name.as_slice() == b"namespace" && page.is_none() {
+                        if let Some((key, value)) = pending_namespace.take() {
+                            self.namespaces.insert(key, value.trim().to_owned());
+                        }
+                    } else if name.as_slice() == b"page" {
+                        let current_page = page.take().expect("page state is present");
+                        self.finish_page(current_page, reader.buffer_position())?;
+                    }
+                    stack.pop();
+                }
+                XmlEvent::DocType(_) => {
+                    return Err(CoreError::Validation(
+                        "MediaWiki XML DTD and entity declarations are not allowed".into(),
+                    ));
+                }
+                XmlEvent::Decl(declaration) => {
+                    if declaration
+                        .encoding()
+                        .transpose()
+                        .map_err(|error| {
+                            CoreError::Validation(format!(
+                                "invalid MediaWiki XML encoding declaration: {error}"
+                            ))
+                        })?
+                        .is_some_and(|encoding| !encoding.eq_ignore_ascii_case(b"utf-8"))
+                    {
+                        return Err(CoreError::Validation(
+                            "MediaWiki XML must use UTF-8 encoding".into(),
+                        ));
+                    }
+                }
+                XmlEvent::GeneralRef(reference) => {
+                    let value = if let Some(character) = reference.resolve_char_ref().map_err(|error| {
+                        CoreError::Validation(format!("invalid MediaWiki XML character reference: {error}"))
+                    })? {
+                        character.to_string()
+                    } else {
+                        match reference.decode().map_err(|error| {
+                            CoreError::Validation(format!("invalid MediaWiki XML entity reference: {error}"))
+                        })?.as_ref() {
+                            "amp" => "&".into(),
+                            "lt" => "<".into(),
+                            "gt" => ">".into(),
+                            "apos" => "'".into(),
+                            "quot" => "\"".into(),
+                            entity => {
+                                return Err(CoreError::Validation(format!(
+                                    "MediaWiki XML entity reference '&{entity};' is not allowed"
+                                )))
+                            }
+                        }
+                    };
+                    append_mediawiki_xml_text(
+                        &stack,
+                        &value,
+                        &mut page,
+                        &mut pending_namespace,
+                        &mut self.site_metadata,
+                    );
+                    self.validate_current_revision_size(&page)?;
+                }
+                XmlEvent::Eof => break,
+                XmlEvent::Comment(_) | XmlEvent::PI(_) => {}
+            }
+            buffer.clear();
+        }
+        if !root_seen || !stack.is_empty() || page.is_some() {
+            return Err(CoreError::Validation(
+                "MediaWiki XML ended before all elements were closed".into(),
+            ));
+        }
+        self.report_progress(reader.buffer_position(), None)
+    }
+}
+
+impl MediaWikiAnalyzer<'_> {
+    fn finish_page(&mut self, mut page: MediaWikiPage, source_bytes: u64) -> Result<(), CoreError> {
+        self.processed_pages = self.processed_pages.saturating_add(1);
+        if self.processed_pages > self.limits.max_files
+            || self.processed_pages > self.limits.max_entries
+        {
+            return Err(CoreError::Validation(format!(
+                "MediaWiki XML exceeds the maximum page count of {}",
+                self.limits.max_files.min(self.limits.max_entries)
+            )));
+        }
+        page.title = page.title.trim().to_owned();
+        if page.title.is_empty() {
+            return Err(CoreError::Validation(
+                "MediaWiki page title cannot be empty".into(),
+            ));
+        }
+        let revision = page.revision.take().unwrap_or_default();
+        let wikitext_bytes = revision.text.len() as u64;
+        if wikitext_bytes > self.limits.max_file_bytes {
+            return Err(CoreError::Validation(format!(
+                "MediaWiki page '{}' exceeds the maximum page size of {} bytes",
+                page.title, self.limits.max_file_bytes
+            )));
+        }
+        self.total_wikitext_bytes = self
+            .total_wikitext_bytes
+            .checked_add(wikitext_bytes)
+            .ok_or_else(|| CoreError::Validation("MediaWiki content size overflowed".into()))?;
+        if self.total_wikitext_bytes > self.limits.max_total_bytes {
+            return Err(CoreError::Validation(format!(
+                "MediaWiki pages exceed the maximum staged content size of {} bytes",
+                self.limits.max_total_bytes
+            )));
+        }
+        self.omitted_revisions = self
+            .omitted_revisions
+            .saturating_add(page.revision_count.saturating_sub(1));
+        let markup = analyze_mediawiki_markup(&revision.text, page.redirect_target.as_deref());
+        let namespace_id = page.namespace_id.trim();
+        let namespace_id = if namespace_id.is_empty() {
+            0
+        } else {
+            namespace_id.parse::<i64>().map_err(|_| {
+                CoreError::Validation(format!(
+                    "MediaWiki page '{}' has an invalid namespace id",
+                    page.title
+                ))
+            })?
+        };
+        let namespace_id = namespace_id.to_string();
+        let namespace_name = self
+            .namespaces
+            .get(&namespace_id)
+            .cloned()
+            .unwrap_or_default();
+        let parent_source_path = format!("namespaces/{namespace_id}");
+        self.folders.insert(parent_source_path.clone());
+        let native_identity = if page.id.trim().is_empty() {
+            format!("title:{}", normalize_mediawiki_title(&page.title))
+        } else {
+            format!("page:{}", page.id.trim())
+        };
+        let object_id = hex_digest(
+            format!(
+                "{}\0{}\0{}",
+                self.import.importer.id, self.import.source.id, native_identity
+            )
+            .as_bytes(),
+        );
+        let source_path = format!(
+            "{parent_source_path}/pages/{}.wiki",
+            &hex_digest(native_identity.as_bytes())[..24]
+        );
+        let mut fields = BTreeMap::from([
+            (
+                "namespace_id".into(),
+                serde_json::Value::String(namespace_id.clone()),
+            ),
+            (
+                "page_id".into(),
+                serde_json::Value::String(page.id.trim().into()),
+            ),
+        ]);
+        if !namespace_name.is_empty() {
+            fields.insert(
+                "namespace".into(),
+                serde_json::Value::String(namespace_name.clone()),
+            );
+        }
+        for (key, value) in [
+            ("revision_id", revision.id.trim()),
+            ("revision_timestamp", revision.timestamp.trim()),
+            ("content_model", revision.model.trim()),
+            ("source_format", revision.format.trim()),
+            (
+                "redirect_target",
+                markup.redirect_target.as_deref().unwrap_or(""),
+            ),
+        ] {
+            if !value.is_empty() {
+                fields.insert(key.into(), serde_json::Value::String(value.into()));
+            }
+        }
+        if !markup.categories.is_empty() {
+            fields.insert(
+                "categories".into(),
+                serde_json::Value::Array(
+                    markup
+                        .categories
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        if !markup.template_names.is_empty() {
+            fields.insert(
+                "templates".into(),
+                serde_json::Value::Array(
+                    markup
+                        .template_names
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        for (key, value) in &markup.infobox_fields {
+            fields.insert(format!("infobox.{key}"), value.clone());
+        }
+        let mut mapping_hints = vec![StagedMappingHint {
+            kind: MappingHintKind::Hierarchy,
+            source_key: Some("namespace".into()),
+            suggested_value: serde_json::Value::String(namespace_id.clone()),
+            confidence: Some(1.0),
+            reason: Some("MediaWiki namespace".into()),
+        }];
+        for category in &markup.categories {
+            mapping_hints.push(StagedMappingHint {
+                kind: MappingHintKind::SourceCategory,
+                source_key: Some("categories".into()),
+                suggested_value: serde_json::Value::String(category.clone()),
+                confidence: Some(1.0),
+                reason: Some("MediaWiki category".into()),
+            });
+            mapping_hints.push(StagedMappingHint {
+                kind: MappingHintKind::Hierarchy,
+                source_key: Some("categories".into()),
+                suggested_value: serde_json::Value::String(category.clone()),
+                confidence: Some(0.7),
+                reason: Some("MediaWiki category hierarchy candidate".into()),
+            });
+        }
+        for key in markup.infobox_fields.keys() {
+            mapping_hints.push(StagedMappingHint {
+                kind: MappingHintKind::Field,
+                source_key: Some(format!("infobox.{key}")),
+                suggested_value: serde_json::Value::String(key.clone()),
+                confidence: Some(0.65),
+                reason: Some("MediaWiki infobox parameter".into()),
+            });
+        }
+        let mut metadata = BTreeMap::from([
+            (
+                "source_format".into(),
+                serde_json::Value::String("mediawiki".into()),
+            ),
+            (
+                "document_format".into(),
+                serde_json::Value::String("wikitext".into()),
+            ),
+            (
+                "namespace_id".into(),
+                serde_json::Value::String(namespace_id),
+            ),
+            (
+                "revision_count".into(),
+                serde_json::Value::from(page.revision_count),
+            ),
+        ]);
+        if !namespace_name.is_empty() {
+            metadata.insert(
+                "namespace".into(),
+                serde_json::Value::String(namespace_name),
+            );
+        }
+        for (key, value) in &self.site_metadata {
+            metadata.insert(
+                format!("wiki_{key}"),
+                serde_json::Value::String(value.clone()),
+            );
+        }
+        if let Some(target) = &markup.redirect_target {
+            metadata.insert(
+                "mediawiki_redirect".into(),
+                serde_json::Value::String(target.clone()),
+            );
+        }
+        let mut latest_revision = serde_json::Map::new();
+        for (key, value) in [
+            ("id", revision.id),
+            ("parent_id", revision.parent_id),
+            ("timestamp", revision.timestamp),
+            ("model", revision.model),
+            ("format", revision.format),
+            ("sha1", revision.sha1),
+            ("contributor", revision.contributor),
+        ] {
+            if !value.trim().is_empty() {
+                latest_revision.insert(key.into(), serde_json::Value::String(value));
+            }
+        }
+        let mut object_diagnostics = Vec::new();
+        for warning in markup.warnings {
+            self.reserve_diagnostic()?;
+            object_diagnostics.push(ImportDiagnostic {
+                severity: ImportDiagnosticSeverity::Warning,
+                code: "mediawiki_wikitext_partial".into(),
+                message: warning,
+                source_path: Some(source_path.clone()),
+                object_id: Some(object_id.clone()),
+            });
+        }
+        self.import.objects.push(StagedObject {
+            id: object_id.clone(),
+            source_id: object_id,
+            source_kind: "mediawiki_page".into(),
+            source_path: source_path.clone(),
+            content_hash: hex_digest(revision.text.as_bytes()),
+            title: page.title,
+            body: Some(StagedDocument {
+                format: "markdown".into(),
+                body: revision.text.clone(),
+            }),
+            parent_source_path: Some(parent_source_path),
+            tags: markup.categories,
+            aliases: Vec::new(),
+            fields,
+            metadata,
+            raw_source_data: BTreeMap::from([
+                ("wikitext".into(), serde_json::Value::String(revision.text)),
+                (
+                    "latest_revision".into(),
+                    serde_json::Value::Object(latest_revision),
+                ),
+                (
+                    "templates".into(),
+                    serde_json::Value::Array(markup.templates),
+                ),
+            ]),
+            links: markup.links,
+            mapping_hints,
+            diagnostics: object_diagnostics,
+        });
+        self.report_progress(source_bytes, Some(source_path))
+    }
+
+    fn resolve_links_and_redirects(&mut self) -> Result<(), CoreError> {
+        let mut objects_by_title = BTreeMap::<String, BTreeSet<String>>::new();
+        for object in &self.import.objects {
+            objects_by_title
+                .entry(normalize_mediawiki_title(&object.title))
+                .or_default()
+                .insert(object.id.clone());
+        }
+        struct PendingDiagnostic {
+            code: &'static str,
+            message: String,
+            source_path: String,
+            object_id: String,
+        }
+        let mut diagnostics = Vec::new();
+        let mut redirect_aliases = Vec::<(String, String)>::new();
+        for object in &mut self.import.objects {
+            let redirect_target = object
+                .metadata
+                .get("mediawiki_redirect")
+                .and_then(serde_json::Value::as_str)
+                .map(normalize_mediawiki_title);
+            for link in &mut object.links {
+                if link.resolution == StagedLinkResolution::NotApplicable {
+                    continue;
+                }
+                let target_key =
+                    normalize_mediawiki_title(mediawiki_link_page_target(&link.target));
+                if target_key.is_empty() {
+                    link.resolution = StagedLinkResolution::Resolved;
+                    link.resolved_object_id = Some(object.id.clone());
+                    continue;
+                }
+                let candidates = objects_by_title
+                    .get(&target_key)
+                    .cloned()
+                    .unwrap_or_default();
+                if candidates.len() == 1 {
+                    let target_id = candidates.into_iter().next().expect("one candidate");
+                    link.resolution = StagedLinkResolution::Resolved;
+                    link.resolved_object_id = Some(target_id.clone());
+                    if redirect_target.as_deref() == Some(target_key.as_str()) {
+                        redirect_aliases.push((target_id.clone(), object.title.clone()));
+                        object.mapping_hints.push(StagedMappingHint {
+                            kind: MappingHintKind::Relationship,
+                            source_key: Some("redirect_target".into()),
+                            suggested_value: serde_json::Value::String(target_id),
+                            confidence: Some(1.0),
+                            reason: Some("unique MediaWiki redirect target".into()),
+                        });
+                    }
+                } else if candidates.len() > 1 {
+                    link.resolution = StagedLinkResolution::Ambiguous;
+                    link.candidate_object_ids = candidates.into_iter().collect();
+                    diagnostics.push(PendingDiagnostic {
+                        code: "mediawiki_target_ambiguous",
+                        message: format!(
+                            "MediaWiki target '{}' matches multiple staged pages.",
+                            link.target
+                        ),
+                        source_path: object.source_path.clone(),
+                        object_id: object.id.clone(),
+                    });
+                } else {
+                    link.resolution = StagedLinkResolution::Missing;
+                    diagnostics.push(PendingDiagnostic {
+                        code: "mediawiki_target_missing",
+                        message: format!(
+                            "MediaWiki target '{}' was not found in the selected dump.",
+                            link.target
+                        ),
+                        source_path: object.source_path.clone(),
+                        object_id: object.id.clone(),
+                    });
+                }
+            }
+        }
+        let object_indexes = self
+            .import
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(index, object)| (object.id.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        for (target_id, alias) in redirect_aliases {
+            if let Some(index) = object_indexes.get(&target_id) {
+                let target = &mut self.import.objects[*index];
+                if alias != target.title && !target.aliases.contains(&alias) {
+                    target.aliases.push(alias);
+                    target.aliases.sort();
+                }
+            }
+        }
+        for diagnostic in diagnostics {
+            self.record_diagnostic(ImportDiagnostic {
+                severity: ImportDiagnosticSeverity::Warning,
+                code: diagnostic.code.into(),
+                message: diagnostic.message,
+                source_path: Some(diagnostic.source_path),
+                object_id: Some(diagnostic.object_id),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn reserve_diagnostic(&mut self) -> Result<(), CoreError> {
+        if self.total_diagnostics >= self.limits.max_diagnostics {
+            return Err(CoreError::Validation(format!(
+                "MediaWiki analysis exceeds the maximum diagnostic count of {}",
+                self.limits.max_diagnostics
+            )));
+        }
+        self.total_diagnostics += 1;
+        Ok(())
+    }
+
+    fn validate_current_revision_size(
+        &self,
+        page: &Option<MediaWikiPage>,
+    ) -> Result<(), CoreError> {
+        if page
+            .as_ref()
+            .and_then(|page| page.current_revision.as_ref())
+            .is_some_and(|revision| revision.text.len() as u64 > self.limits.max_file_bytes)
+        {
+            return Err(CoreError::Validation(format!(
+                "MediaWiki revision exceeds the maximum page size of {} bytes",
+                self.limits.max_file_bytes
+            )));
+        }
+        Ok(())
+    }
+
+    fn record_diagnostic(&mut self, diagnostic: ImportDiagnostic) -> Result<(), CoreError> {
+        self.reserve_diagnostic()?;
+        self.import.diagnostics.push(diagnostic);
+        Ok(())
+    }
+
+    fn report_progress(
+        &mut self,
+        source_bytes: u64,
+        source_path: Option<String>,
+    ) -> Result<(), CoreError> {
+        (self.progress)(ImportAnalysisProgress {
+            processed_entries: self.processed_pages,
+            staged_object_count: self.import.objects.len(),
+            unsupported_count: self.import.unsupported.len(),
+            source_bytes,
+            source_path,
+        })
+    }
+}
+
+fn xml_local_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+}
+
+fn mediawiki_xml_attribute(
+    start: &BytesStart<'_>,
+    key: &[u8],
+    decoder: XmlDecoder,
+) -> Result<Option<String>, CoreError> {
+    for attribute in start.attributes().with_checks(true) {
+        let attribute = attribute.map_err(|error| {
+            CoreError::Validation(format!("invalid MediaWiki XML attribute: {error}"))
+        })?;
+        if xml_local_name(attribute.key.as_ref()) == key {
+            return attribute
+                .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                .map(|value| Some(value.into_owned()))
+                .map_err(|error| {
+                    CoreError::Validation(format!("invalid MediaWiki XML attribute value: {error}"))
+                });
+        }
+    }
+    Ok(None)
+}
+
+fn append_mediawiki_xml_text(
+    stack: &[Vec<u8>],
+    value: &str,
+    page: &mut Option<MediaWikiPage>,
+    pending_namespace: &mut Option<(String, String)>,
+    site_metadata: &mut BTreeMap<String, String>,
+) {
+    let element = stack.last().map(Vec::as_slice).unwrap_or_default();
+    let parent = stack
+        .get(stack.len().saturating_sub(2))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if let Some(page) = page.as_mut() {
+        if let Some(revision) = page.current_revision.as_mut() {
+            match (parent, element) {
+                (b"revision", b"id") => revision.id.push_str(value),
+                (b"revision", b"parentid") => revision.parent_id.push_str(value),
+                (b"revision", b"timestamp") => revision.timestamp.push_str(value),
+                (b"revision", b"model") => revision.model.push_str(value),
+                (b"revision", b"format") => revision.format.push_str(value),
+                (b"revision", b"sha1") => revision.sha1.push_str(value),
+                (_, b"username" | b"ip") => revision.contributor.push_str(value),
+                (_, b"text") => revision.text.push_str(value),
+                _ => {}
+            }
+        } else {
+            match (parent, element) {
+                (b"page", b"title") => page.title.push_str(value),
+                (b"page", b"ns") => page.namespace_id.push_str(value),
+                (b"page", b"id") => page.id.push_str(value),
+                _ => {}
+            }
+        }
+    } else if element == b"namespace" {
+        if let Some((_, namespace)) = pending_namespace.as_mut() {
+            namespace.push_str(value);
+        }
+    } else if parent == b"siteinfo"
+        && matches!(
+            element,
+            b"sitename" | b"dbname" | b"base" | b"generator" | b"case"
+        )
+    {
+        site_metadata
+            .entry(String::from_utf8_lossy(element).into_owned())
+            .or_default()
+            .push_str(value);
+    }
+}
+
+fn mediawiki_revision_is_newer(candidate: &MediaWikiRevision, current: &MediaWikiRevision) -> bool {
+    let candidate_timestamp = candidate.timestamp.trim();
+    let current_timestamp = current.timestamp.trim();
+    if candidate_timestamp != current_timestamp {
+        return candidate_timestamp > current_timestamp;
+    }
+    let candidate_id = candidate.id.trim().parse::<u64>().unwrap_or_default();
+    let current_id = current.id.trim().parse::<u64>().unwrap_or_default();
+    candidate_id >= current_id
+}
+
+#[derive(Debug, Default)]
+struct MediaWikiMarkup {
+    categories: Vec<String>,
+    links: Vec<StagedLink>,
+    redirect_target: Option<String>,
+    template_names: Vec<String>,
+    templates: Vec<serde_json::Value>,
+    infobox_fields: BTreeMap<String, serde_json::Value>,
+    warnings: Vec<String>,
+}
+
+fn analyze_mediawiki_markup(wikitext: &str, xml_redirect: Option<&str>) -> MediaWikiMarkup {
+    let mut markup = MediaWikiMarkup::default();
+    let mut categories = BTreeSet::new();
+    let mut index = 0;
+    while let Some(relative_start) = wikitext[index..].find("[[") {
+        let start = index + relative_start;
+        let Some(relative_end) = wikitext[start + 2..].find("]]") else {
+            markup
+                .warnings
+                .push("Preserved an unclosed MediaWiki internal link.".into());
+            break;
+        };
+        let end = start + 2 + relative_end;
+        let raw = &wikitext[start..end + 2];
+        let content = wikitext[start + 2..end].trim();
+        let (target, label) = content
+            .split_once('|')
+            .map(|(target, label)| (target.trim(), Some(label.trim())))
+            .unwrap_or((content, None));
+        if !target.is_empty() {
+            let semantic_target = target.trim_start_matches(':');
+            let (prefix, suffix) = semantic_target
+                .split_once(':')
+                .map(|(prefix, suffix)| (prefix.trim(), suffix.trim()))
+                .unwrap_or(("", semantic_target));
+            let is_category = !target.starts_with(':') && prefix.eq_ignore_ascii_case("category");
+            let is_file = matches_ignore_ascii_case(prefix, &["file", "image"]);
+            if is_category {
+                let category = mediawiki_link_page_target(suffix).trim();
+                if !category.is_empty() {
+                    categories.insert(category.to_owned());
+                }
+            }
+            markup.links.push(StagedLink {
+                kind: if is_file {
+                    StagedLinkKind::Embed
+                } else {
+                    StagedLinkKind::Internal
+                },
+                target: semantic_target.into(),
+                label: label.filter(|label| !label.is_empty()).map(str::to_owned),
+                resolution: if is_category || is_file {
+                    StagedLinkResolution::NotApplicable
+                } else {
+                    StagedLinkResolution::Unresolved
+                },
+                resolved_object_id: None,
+                candidate_object_ids: Vec::new(),
+                raw: Some(raw.into()),
+            });
+        }
+        index = end + 2;
+    }
+    markup.categories = categories.into_iter().collect();
+
+    let (templates, template_warnings) = discover_mediawiki_templates(wikitext);
+    markup.warnings.extend(template_warnings);
+    let mut template_names = BTreeSet::new();
+    for template in templates {
+        template_names.insert(template.name.clone());
+        if template.name.to_ascii_lowercase().starts_with("infobox") {
+            for (key, value) in &template.parameters {
+                let key = normalize_mediawiki_field_key(key);
+                if key.is_empty() {
+                    continue;
+                }
+                insert_mediawiki_field_value(
+                    &mut markup.infobox_fields,
+                    key,
+                    serde_json::Value::String(value.clone()),
+                );
+            }
+        }
+        markup.templates.push(serde_json::json!({
+            "name": template.name,
+            "parameters": template.parameters,
+            "raw": template.raw,
+        }));
+    }
+    markup.template_names = template_names.into_iter().collect();
+    markup.redirect_target = xml_redirect
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let trimmed = wikitext.trim_start();
+            let prefix = trimmed.get(..9)?;
+            prefix.eq_ignore_ascii_case("#redirect").then(|| {
+                markup
+                    .links
+                    .iter()
+                    .find(|link| link.kind == StagedLinkKind::Internal)
+                    .map(|link| link.target.clone())
+            })?
+        });
+    if let Some(target) = &markup.redirect_target {
+        let normalized = normalize_mediawiki_title(mediawiki_link_page_target(target));
+        if !markup.links.iter().any(|link| {
+            link.kind == StagedLinkKind::Internal
+                && normalize_mediawiki_title(mediawiki_link_page_target(&link.target)) == normalized
+        }) {
+            markup.links.push(StagedLink {
+                kind: StagedLinkKind::Internal,
+                target: target.clone(),
+                label: None,
+                resolution: StagedLinkResolution::Unresolved,
+                resolved_object_id: None,
+                candidate_object_ids: Vec::new(),
+                raw: None,
+            });
+        }
+    }
+    markup.warnings.sort();
+    markup.warnings.dedup();
+    markup
+}
+
+#[derive(Debug)]
+struct MediaWikiTemplate {
+    name: String,
+    parameters: BTreeMap<String, String>,
+    raw: String,
+}
+
+fn discover_mediawiki_templates(wikitext: &str) -> (Vec<MediaWikiTemplate>, Vec<String>) {
+    let bytes = wikitext.as_bytes();
+    let mut templates = Vec::new();
+    let mut warnings = Vec::new();
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] != b'{' || bytes[index + 1] != b'{' || bytes.get(index + 2) == Some(&b'{') {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut depth = 1_usize;
+        index += 2;
+        while index + 1 < bytes.len() && depth > 0 {
+            if bytes[index] == b'{' && bytes[index + 1] == b'{' {
+                depth = depth.saturating_add(1);
+                if depth > MAX_MEDIAWIKI_TEMPLATE_DEPTH {
+                    warnings.push(format!(
+                        "Template nesting exceeded the maximum depth of {MAX_MEDIAWIKI_TEMPLATE_DEPTH}."
+                    ));
+                    return (templates, warnings);
+                }
+                index += 2;
+            } else if bytes[index] == b'}' && bytes[index + 1] == b'}' {
+                depth -= 1;
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        if depth != 0 {
+            warnings.push("Preserved an unclosed MediaWiki template invocation.".into());
+            break;
+        }
+        if templates.len() >= MAX_MEDIAWIKI_TEMPLATES_PER_PAGE {
+            warnings.push(format!(
+                "Only the first {MAX_MEDIAWIKI_TEMPLATES_PER_PAGE} template invocations were analyzed."
+            ));
+            break;
+        }
+        let raw = &wikitext[start..index];
+        let inner = &raw[2..raw.len() - 2];
+        let parts = split_mediawiki_template_parts(inner);
+        let Some(name) = parts
+            .first()
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if name.starts_with('{') {
+            continue;
+        }
+        let mut parameters = BTreeMap::new();
+        let mut positional = 0_usize;
+        for part in parts.into_iter().skip(1) {
+            let (key, value) = if let Some((key, value)) = split_mediawiki_parameter(&part) {
+                (key.trim().to_owned(), value.trim().to_owned())
+            } else {
+                positional += 1;
+                (positional.to_string(), part.trim().to_owned())
+            };
+            if !key.is_empty() {
+                parameters.insert(key, value);
+            }
+        }
+        templates.push(MediaWikiTemplate {
+            name: name.replace('_', " ").trim().to_owned(),
+            parameters,
+            raw: raw.to_owned(),
+        });
+    }
+    (templates, warnings)
+}
+
+fn split_mediawiki_template_parts(value: &str) -> Vec<String> {
+    let bytes = value.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    let mut template_depth = 0_usize;
+    let mut link_depth = 0_usize;
+    while index < bytes.len() {
+        if bytes.get(index..index + 2) == Some(b"{{") {
+            template_depth += 1;
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"}}") {
+            template_depth = template_depth.saturating_sub(1);
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"[[") {
+            link_depth += 1;
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"]]") {
+            link_depth = link_depth.saturating_sub(1);
+            index += 2;
+        } else if bytes[index] == b'|' && template_depth == 0 && link_depth == 0 {
+            parts.push(value[start..index].to_owned());
+            start = index + 1;
+            index += 1;
+        } else {
+            index += 1;
+        }
+    }
+    parts.push(value[start..].to_owned());
+    parts
+}
+
+fn split_mediawiki_parameter(value: &str) -> Option<(&str, &str)> {
+    let bytes = value.as_bytes();
+    let mut template_depth = 0_usize;
+    let mut link_depth = 0_usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes.get(index..index + 2) == Some(b"{{") {
+            template_depth += 1;
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"}}") {
+            template_depth = template_depth.saturating_sub(1);
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"[[") {
+            link_depth += 1;
+            index += 2;
+        } else if bytes.get(index..index + 2) == Some(b"]]") {
+            link_depth = link_depth.saturating_sub(1);
+            index += 2;
+        } else if bytes[index] == b'=' && template_depth == 0 && link_depth == 0 {
+            return Some((&value[..index], &value[index + 1..]));
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+fn insert_mediawiki_field_value(
+    fields: &mut BTreeMap<String, serde_json::Value>,
+    key: String,
+    value: serde_json::Value,
+) {
+    match fields.remove(&key) {
+        None => {
+            fields.insert(key, value);
+        }
+        Some(serde_json::Value::Array(mut values)) => {
+            values.push(value);
+            fields.insert(key, serde_json::Value::Array(values));
+        }
+        Some(previous) => {
+            fields.insert(key, serde_json::Value::Array(vec![previous, value]));
+        }
+    }
+}
+
+fn normalize_mediawiki_field_key(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut pending_separator = false;
+    for character in value.trim().chars().take(128) {
+        if character.is_alphanumeric() {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push('_');
+            }
+            normalized.extend(character.to_lowercase());
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+    normalized
+}
+
+fn normalize_mediawiki_title(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches(':')
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn mediawiki_link_page_target(value: &str) -> &str {
+    value
+        .split_once('#')
+        .map(|(page, _)| page)
+        .unwrap_or(value)
+        .trim()
+}
+
+fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| value.eq_ignore_ascii_case(candidate))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4123,7 +5314,7 @@ fn discover_markdown_links(body: &str) -> Vec<StagedLink> {
 
 fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
     let mut links = Vec::new();
-    let mut fence = None::<char>;
+    let mut fence = None::<(u8, usize)>;
     let mut frontmatter = markdown_frontmatter(body).is_some();
     let mut first_line = true;
     for line in body.lines() {
@@ -4136,30 +5327,45 @@ fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
             continue;
         }
         first_line = false;
-        if let Some(marker) = fence {
-            if trimmed.starts_with(&marker.to_string().repeat(3)) {
+        if let Some((marker, opening_run)) = fence {
+            let bytes = trimmed.as_bytes();
+            let run = bytes.iter().take_while(|byte| **byte == marker).count();
+            if run >= opening_run && bytes[run..].iter().all(u8::is_ascii_whitespace) {
                 fence = None;
             }
             continue;
         }
-        if trimmed.starts_with("```") {
-            fence = Some('`');
-            continue;
-        }
-        if trimmed.starts_with("~~~") {
-            fence = Some('~');
-            continue;
+        if let Some(marker @ (0x60 | b'~')) = trimmed.as_bytes().first().copied() {
+            let run = trimmed
+                .as_bytes()
+                .iter()
+                .take_while(|byte| **byte == marker)
+                .count();
+            if run >= 3 {
+                fence = Some((marker, run));
+                continue;
+            }
         }
         let bytes = line.as_bytes();
         let mut index = 0;
-        let mut inline_code = false;
+        let mut inline_code = None::<usize>;
         while index < bytes.len() {
-            if bytes[index] == b'`' {
-                inline_code = !inline_code;
-                index += 1;
+            if bytes[index] == 0x60 {
+                let run = bytes[index..]
+                    .iter()
+                    .take_while(|byte| **byte == 0x60)
+                    .count();
+                if !obsidian_syntax_is_escaped(bytes, index) {
+                    match inline_code {
+                        Some(opening_run) if opening_run == run => inline_code = None,
+                        None => inline_code = Some(run),
+                        _ => {}
+                    }
+                }
+                index += run;
                 continue;
             }
-            if inline_code {
+            if inline_code.is_some() {
                 index += 1;
                 continue;
             }
@@ -4174,7 +5380,8 @@ fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
                 index += 1;
                 continue;
             };
-            if open > 0 && bytes.get(open - 1) == Some(&b'\\') {
+            let raw_start = if embed { open - 1 } else { open };
+            if obsidian_syntax_is_escaped(bytes, raw_start) {
                 index = open + 2;
                 continue;
             }
@@ -4184,7 +5391,6 @@ fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
             };
             let content_end = content_start + relative_end;
             let content = line[content_start..content_end].trim();
-            let raw_start = if embed { open - 1 } else { open };
             let raw_end = content_end + 2;
             let raw = line[raw_start..raw_end].to_owned();
             let (target, label) = content
@@ -4210,6 +5416,15 @@ fn discover_obsidian_links(body: &str) -> Vec<StagedLink> {
         }
     }
     links
+}
+
+fn obsidian_syntax_is_escaped(bytes: &[u8], index: usize) -> bool {
+    let preceding_backslashes = bytes[..index]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count();
+    preceding_backslashes % 2 == 1
 }
 
 #[derive(Debug, Default)]
@@ -4377,7 +5592,7 @@ fn parse_obsidian_yaml_value(value: &str, warnings: &mut Vec<String>) -> serde_j
 
 fn parse_obsidian_yaml_scalar(value: &str) -> serde_json::Value {
     let value = value.trim();
-    if value.starts_with('"') && value.ends_with('"') {
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
         return serde_json::from_str(value)
             .unwrap_or_else(|_| serde_json::Value::String(value[1..value.len() - 1].into()));
     }
@@ -5745,10 +6960,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
         assert_eq!(gandalf.tags, vec!["fellowship", "wizard"]);
         assert_eq!(gandalf.fields["species"], "Maia");
         assert_eq!(gandalf.fields["rank"], 7);
-        assert!(!gandalf
-            .links
-            .iter()
-            .any(|link| link.target == "Missing.md"));
+        assert!(!gandalf.links.iter().any(|link| link.target == "Missing.md"));
         assert_eq!(gandalf.body.as_ref().unwrap().body, home_body);
         assert!(gandalf.raw_source_data["frontmatter"]
             .as_str()
@@ -5859,6 +7071,39 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
     }
 
     #[test]
+    fn obsidian_frontmatter_preserves_a_lone_double_quote_without_panicking() {
+        let parsed = parse_obsidian_frontmatter("malformed: \"");
+
+        assert_eq!(parsed.fields["malformed"], "\"");
+    }
+
+    #[test]
+    fn obsidian_link_scanner_ignores_code_spans_fences_and_escaped_embeds() {
+        let marker = char::from(0x60);
+        let inline_fence = marker.to_string().repeat(2);
+        let inner_fence = marker.to_string().repeat(3);
+        let block_fence = marker.to_string().repeat(4);
+        let body = format!(
+            "{inline_fence}[[Hidden inline]]{inline_fence} [[Visible]]\n\
+             {block_fence}text\n\
+             {inner_fence} [[Still fenced]]\n\
+             {block_fence}\n\
+             \\![[Escaped embed]] \\\\![[Visible embed]]"
+        );
+
+        let links = discover_obsidian_links(&body);
+
+        assert_eq!(
+            links
+                .iter()
+                .map(|link| link.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Visible", "Visible embed"]
+        );
+        assert_eq!(links[1].kind, StagedLinkKind::Embed);
+    }
+
+    #[test]
     fn obsidian_vault_commit_preserves_markdown_and_attachment_after_clean_rebuild() {
         let vault = TestDirectory::new();
         fs::create_dir_all(vault.path().join("assets")).unwrap();
@@ -5946,6 +7191,334 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
                 .to_string()
                 .contains("requires a vault folder")
         );
+    }
+
+    fn write_mediawiki_fixture(path: &Path) {
+        fs::write(
+            path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<mediawiki xmlns="http://www.mediawiki.org/xml/export-0.11/">
+  <siteinfo>
+    <sitename>Example Wiki</sitename><dbname>example</dbname>
+    <base>https://example.test/wiki/Main_Page</base>
+    <generator>MediaWiki 1.45</generator><case>first-letter</case>
+    <namespaces><namespace key="0" case="first-letter"></namespace><namespace key="10" case="first-letter">Template</namespace></namespaces>
+  </siteinfo>
+  <page>
+    <title>Gandalf</title><ns>0</ns><id>1</id>
+    <revision><id>11</id><timestamp>2025-02-01T00:00:00Z</timestamp>
+      <contributor><username>Archivist</username></contributor>
+      <model>wikitext</model><format>text/x-wiki</format>
+      <text xml:space="preserve"><![CDATA[{{Infobox person
+| born = Before the First Age
+| location = [[Middle Earth]]
+}}
+'''Gandalf''' travels through [[Middle_Earth|Middle Earth]].
+[[Category:Characters]]
+[[File:Gandalf.png|thumb]]
+]]></text><sha1>new-hash</sha1>
+    </revision>
+    <revision><id>10</id><timestamp>2025-01-01T00:00:00Z</timestamp>
+      <model>wikitext</model><format>text/x-wiki</format><text xml:space="preserve">Older revision</text>
+    </revision>
+  </page>
+  <page><title>Middle Earth</title><ns>0</ns><id>2</id>
+    <revision><id>20</id><timestamp>2025-02-02T00:00:00Z</timestamp>
+      <model>wikitext</model><format>text/x-wiki</format><text xml:space="preserve">A world &amp; realm.</text>
+    </revision>
+  </page>
+  <page><title>Mithrandir</title><ns>0</ns><id>3</id><redirect title="Gandalf" />
+    <revision><id>30</id><timestamp>2025-02-03T00:00:00Z</timestamp>
+      <model>wikitext</model><format>text/x-wiki</format><text xml:space="preserve">#REDIRECT [[Gandalf]]</text>
+    </revision>
+  </page>
+</mediawiki>"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mediawiki_analysis_streams_latest_pages_and_preserves_wikitext_metadata() {
+        let source = TestDirectory::new();
+        let source_path = source.path().join("wiki.xml");
+        write_mediawiki_fixture(&source_path);
+
+        let staged =
+            analyze_mediawiki_xml(&source_path, GenericDocumentImportLimits::default()).unwrap();
+        let gandalf = staged
+            .objects
+            .iter()
+            .find(|object| object.title == "Gandalf")
+            .unwrap();
+        let middle_earth = staged
+            .objects
+            .iter()
+            .find(|object| object.title == "Middle Earth")
+            .unwrap();
+
+        assert_eq!(staged.importer.id, MEDIAWIKI_IMPORTER_ID);
+        assert_eq!(staged.source.kind, ImportSourceKind::WikiDump);
+        assert_eq!(staged.objects.len(), 3);
+        assert_eq!(gandalf.source_kind, "mediawiki_page");
+        assert!(gandalf
+            .body
+            .as_ref()
+            .unwrap()
+            .body
+            .contains("Before the First Age"));
+        assert!(!gandalf
+            .body
+            .as_ref()
+            .unwrap()
+            .body
+            .contains("Older revision"));
+        assert_eq!(
+            gandalf.raw_source_data["wikitext"],
+            gandalf.body.as_ref().unwrap().body
+        );
+        assert_eq!(gandalf.raw_source_data["latest_revision"]["id"], "11");
+        assert_eq!(gandalf.metadata["wiki_generator"], "MediaWiki 1.45");
+        assert_eq!(gandalf.fields["source_format"], "text/x-wiki");
+        assert_eq!(gandalf.fields["infobox.born"], "Before the First Age");
+        assert_eq!(gandalf.tags, vec!["Characters"]);
+        assert_eq!(
+            middle_earth.body.as_ref().unwrap().body,
+            "A world & realm."
+        );
+        assert!(gandalf.mapping_hints.iter().any(|hint| {
+            hint.kind == MappingHintKind::Field
+                && hint.source_key.as_deref() == Some("infobox.born")
+        }));
+        assert!(gandalf.links.iter().any(|link| {
+            link.target == "Middle_Earth"
+                && link.resolution == StagedLinkResolution::Resolved
+                && link.resolved_object_id.as_deref() == Some(middle_earth.id.as_str())
+        }));
+        assert!(gandalf.links.iter().any(|link| {
+            link.target == "File:Gandalf.png"
+                && link.kind == StagedLinkKind::Embed
+                && link.resolution == StagedLinkResolution::NotApplicable
+        }));
+        assert!(gandalf.aliases.contains(&"Mithrandir".into()));
+        assert_eq!(staged.unsupported.len(), 1);
+        assert_eq!(
+            staged.unsupported[0].source_kind,
+            "mediawiki_revision_history"
+        );
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "mediawiki_revision_history_omitted"));
+    }
+
+    #[test]
+    fn mediawiki_analysis_rejects_dtd_malformed_xml_and_page_limits() {
+        let source = TestDirectory::new();
+        let dtd = source.path().join("dtd.xml");
+        fs::write(
+            &dtd,
+            r#"<?xml version="1.0"?><!DOCTYPE mediawiki [<!ENTITY x "expanded">]><mediawiki><page><title>&x;</title></page></mediawiki>"#,
+        )
+        .unwrap();
+        assert!(
+            analyze_mediawiki_xml(&dtd, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("DTD")
+        );
+
+        let malformed = source.path().join("malformed.xml");
+        fs::write(&malformed, "<mediawiki><page></mediawiki>").unwrap();
+        assert!(
+            analyze_mediawiki_xml(&malformed, GenericDocumentImportLimits::default())
+                .unwrap_err()
+                .to_string()
+                .contains("invalid MediaWiki XML")
+        );
+
+        let limited = source.path().join("limited.xml");
+        write_mediawiki_fixture(&limited);
+        let limits = GenericDocumentImportLimits {
+            max_files: 2,
+            ..Default::default()
+        };
+        assert!(analyze_mediawiki_xml(&limited, limits)
+            .unwrap_err()
+            .to_string()
+            .contains("maximum page count"));
+
+        let limits = GenericDocumentImportLimits {
+            max_file_bytes: 8,
+            ..Default::default()
+        };
+        assert!(analyze_mediawiki_xml(&limited, limits)
+            .unwrap_err()
+            .to_string()
+            .contains("maximum page size"));
+    }
+
+    #[test]
+    fn mediawiki_links_keep_ambiguous_and_missing_targets_reviewable() {
+        let source = TestDirectory::new();
+        let source_path = source.path().join("links.xml");
+        fs::write(
+            &source_path,
+            r#"<mediawiki>
+<page><title>Home</title><ns>0</ns><id>1</id><revision><id>1</id><text>[[Twin]] [[Missing]]</text></revision></page>
+<page><title>Twin</title><ns>0</ns><id>2</id><revision><id>2</id><text>First</text></revision></page>
+<page><title>Twin</title><ns>1</ns><id>3</id><revision><id>3</id><text>Second</text></revision></page>
+</mediawiki>"#,
+        )
+        .unwrap();
+
+        let staged =
+            analyze_mediawiki_xml(&source_path, GenericDocumentImportLimits::default()).unwrap();
+        let home = staged
+            .objects
+            .iter()
+            .find(|object| object.title == "Home")
+            .unwrap();
+        let twin = home.links.iter().find(|link| link.target == "Twin").unwrap();
+        let missing = home
+            .links
+            .iter()
+            .find(|link| link.target == "Missing")
+            .unwrap();
+
+        assert_eq!(twin.resolution, StagedLinkResolution::Ambiguous);
+        assert_eq!(twin.candidate_object_ids.len(), 2);
+        assert_eq!(missing.resolution, StagedLinkResolution::Missing);
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "mediawiki_target_ambiguous"));
+        assert!(staged
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "mediawiki_target_missing"));
+    }
+
+    #[test]
+    fn mediawiki_streaming_progress_can_cancel_before_the_dump_completes() {
+        let source = TestDirectory::new();
+        let source_path = source.path().join("large.xml");
+        let mut xml = String::from("<mediawiki>");
+        for page in 0..500 {
+            use std::fmt::Write as _;
+            write!(
+                xml,
+                "<page><title>Page {page}</title><ns>0</ns><id>{page}</id><revision><id>{page}</id><text>Body {page}</text></revision></page>"
+            )
+            .unwrap();
+        }
+        xml.push_str("</mediawiki>");
+        fs::write(&source_path, xml).unwrap();
+        let mut callbacks = 0;
+
+        let error = analyze_mediawiki_xml_with_progress(
+            &source_path,
+            GenericDocumentImportLimits::default(),
+            |progress| {
+                callbacks += 1;
+                if progress.processed_entries >= 25 {
+                    Err(CoreError::Conflict(
+                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), EXTERNAL_IMPORT_ANALYSIS_CANCELLED);
+        assert!(callbacks > 1);
+        assert!(callbacks < 500);
+    }
+
+    #[test]
+    fn mediawiki_commit_preserves_latest_wikitext_after_clean_rebuild() {
+        let source = TestDirectory::new();
+        let source_path = source.path().join("wiki.xml");
+        write_mediawiki_fixture(&source_path);
+        let staged =
+            analyze_mediawiki_xml(&source_path, GenericDocumentImportLimits::default()).unwrap();
+        let gandalf_staged_id = staged
+            .objects
+            .iter()
+            .find(|object| object.title == "Gandalf")
+            .unwrap()
+            .id
+            .clone();
+        let expected = staged
+            .objects
+            .iter()
+            .find(|object| object.id == gandalf_staged_id)
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap()
+            .body
+            .clone();
+        let project = TestDirectory::new();
+        let store = ProjectStore::open_directory(project.path()).unwrap();
+        let generation = store.content_generation().unwrap();
+        let mut mappings = ImportMappingOverrides::default();
+        mappings.global.entity_type = Some("note".into());
+        let candidate = build_import_candidate_plan(
+            ImportCandidatePlanBuild {
+                session_id: "mediawiki-session".into(),
+                importer: staged.importer.clone(),
+                source: staged.source.clone(),
+                captured_content_generation: generation,
+                current_content_generation: generation,
+                manifest_fingerprint: "manifest-v1".into(),
+                objects: staged.objects.clone(),
+                unsupported_count: staged.unsupported.len(),
+                diagnostics: staged.diagnostics.clone(),
+            },
+            &mappings,
+        )
+        .unwrap();
+        let validated = validate_import_candidate_plan(ImportValidationBuild {
+            candidate,
+            staged_objects: staged.objects,
+            staged_assets: staged.assets,
+            catalog: ImportMappingCatalog {
+                fingerprint: "manifest-v1".into(),
+                entity_types: BTreeSet::from(["note".into()]),
+                fields: BTreeMap::new(),
+                relationship_types: BTreeSet::new(),
+            },
+            decisions: BTreeMap::new(),
+            existing_targets: BTreeMap::new(),
+            duplicate_targets: BTreeMap::new(),
+        })
+        .unwrap()
+        .plan
+        .unwrap();
+        let report = store
+            .commit_external_import(
+                &validated,
+                Some(&source_path),
+                true,
+                "00000000-0000-4000-8000-000000000007",
+            )
+            .unwrap();
+
+        let gandalf_entity_id = report
+            .created
+            .iter()
+            .find(|created| created.staged_object_id == gandalf_staged_id)
+            .unwrap()
+            .entity_id
+            .clone();
+        store.flush_checkpoint("MediaWiki import test").unwrap();
+        drop(store);
+        fs::remove_dir_all(project.path().join(".daena")).unwrap();
+        let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
+        let documents = rebuilt.list_documents(gandalf_entity_id).unwrap();
+        assert_eq!(documents[0].body, expected);
     }
 
     #[test]

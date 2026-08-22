@@ -9,15 +9,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    analyze_generic_documents_with_progress, analyze_obsidian_vault_with_progress,
-    build_import_candidate_plan, validate_import_candidate_plan, CoreError,
-    ExternalImportCommitReport, GenericDocumentImportLimits, ImportAnalysisProgress,
-    ImportAnalysisSummary, ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic,
-    ImportFieldTarget, ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision,
-    ImportSource, ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity,
-    ImporterIdentity, StagedAsset, StagedImport, StagedObject, UnsupportedSourceData,
-    ValidatedImportPlan, EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
-    GENERIC_DOCUMENT_IMPORTER_VERSION, OBSIDIAN_IMPORTER_ID, OBSIDIAN_IMPORTER_VERSION,
+    analyze_generic_documents_with_progress, analyze_mediawiki_xml_with_progress,
+    analyze_obsidian_vault_with_progress, build_import_candidate_plan,
+    validate_import_candidate_plan, CoreError, ExternalImportCommitReport,
+    GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
+    ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportFieldTarget,
+    ImportMappingCatalog, ImportMappingOverrides, ImportObjectDecision, ImportSource,
+    ImportValidationBuild, ImportValidationIssue, ImportValidationSeverity, ImporterIdentity,
+    StagedAsset, StagedImport, StagedObject, UnsupportedSourceData, ValidatedImportPlan,
+    EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
+    GENERIC_DOCUMENT_IMPORTER_VERSION, MEDIAWIKI_IMPORTER_ID, MEDIAWIKI_IMPORTER_VERSION,
+    OBSIDIAN_IMPORTER_ID, OBSIDIAN_IMPORTER_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -407,6 +409,14 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
             source_kinds: vec!["folder".into()],
             extensions: vec!["md".into(), "markdown".into()],
         },
+        ExternalImporterDescriptor {
+            id: MEDIAWIKI_IMPORTER_ID.into(),
+            version: MEDIAWIKI_IMPORTER_VERSION.into(),
+            name: "MediaWiki XML".into(),
+            description: "Streaming MediaWiki-compatible XML dump analysis".into(),
+            source_kinds: vec!["file".into()],
+            extensions: vec!["xml".into()],
+        },
     ]
 }
 
@@ -424,7 +434,7 @@ pub async fn project_external_import_select_source(
             .file()
             .add_filter(
                 "Documents and archives",
-                &["md", "markdown", "html", "htm", "docx", "txt", "zip"],
+                &["md", "markdown", "html", "htm", "docx", "txt", "zip", "xml"],
             )
             .blocking_pick_file(),
         "folder" => app.dialog().file().blocking_pick_folder(),
@@ -460,7 +470,7 @@ pub async fn project_external_import_analyze_begin(
 ) -> Result<ExternalImportAnalysisStatus, String> {
     if !matches!(
         input.importer_id.as_str(),
-        GENERIC_DOCUMENT_IMPORTER_ID | OBSIDIAN_IMPORTER_ID
+        GENERIC_DOCUMENT_IMPORTER_ID | OBSIDIAN_IMPORTER_ID | MEDIAWIKI_IMPORTER_ID
     ) {
         return Err("external_import.importer_not_found: importer is not available".into());
     }
@@ -482,6 +492,11 @@ pub async fn project_external_import_analyze_begin(
         if input.importer_id == OBSIDIAN_IMPORTER_ID && source.source_kind != "folder" {
             return Err(
                 "external_import.invalid_source: Obsidian import requires a vault folder".into(),
+            );
+        }
+        if input.importer_id == MEDIAWIKI_IMPORTER_ID && source.source_kind != "file" {
+            return Err(
+                "external_import.invalid_source: MediaWiki import requires an XML file".into(),
             );
         }
         let session_id = Uuid::new_v4().to_string();
@@ -520,12 +535,14 @@ pub async fn project_external_import_analyze_begin(
     spawn_analysis(
         app,
         imports.inner().clone(),
-        session_id,
-        project_id,
-        source,
-        input.importer_id,
-        limits,
-        cancel,
+        AnalysisTask {
+            session_id,
+            project_id,
+            source,
+            importer_id: input.importer_id,
+            limits,
+            cancel,
+        },
     );
     Ok(status)
 }
@@ -921,16 +938,24 @@ fn project_job<'a>(
         .ok_or_else(|| "external_import.session_not_found: analysis session was not found".into())
 }
 
-fn spawn_analysis(
-    app: AppHandle,
-    imports: SharedExternalImports,
+struct AnalysisTask {
     session_id: String,
     project_id: String,
     source: SourceSelection,
     importer_id: String,
     limits: GenericDocumentImportLimits,
     cancel: Arc<AtomicBool>,
-) {
+}
+
+fn spawn_analysis(app: AppHandle, imports: SharedExternalImports, task: AnalysisTask) {
+    let AnalysisTask {
+        session_id,
+        project_id,
+        source,
+        importer_id,
+        limits,
+        cancel,
+    } = task;
     tauri::async_runtime::spawn_blocking(move || {
         update_progress(
             &app,
@@ -944,6 +969,25 @@ fn spawn_analysis(
             let progress_session_id = session_id.clone();
             let progress_cancel = cancel.clone();
             analyze_obsidian_vault_with_progress(&source.path, limits, move |progress| {
+                if progress_cancel.load(Ordering::Relaxed) {
+                    return Err(CoreError::Conflict(
+                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                    ));
+                }
+                update_progress(
+                    &progress_app,
+                    &progress_imports,
+                    &progress_session_id,
+                    progress,
+                );
+                Ok(())
+            })
+        } else if importer_id == MEDIAWIKI_IMPORTER_ID {
+            let progress_app = app.clone();
+            let progress_imports = imports.clone();
+            let progress_session_id = session_id.clone();
+            let progress_cancel = cancel.clone();
+            analyze_mediawiki_xml_with_progress(&source.path, limits, move |progress| {
                 if progress_cancel.load(Ordering::Relaxed) {
                     return Err(CoreError::Conflict(
                         EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
@@ -1350,7 +1394,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_importers_advertise_obsidian_as_folder_only() {
+    fn built_in_importers_advertise_specialized_source_kinds() {
         let importers = project_external_importers();
         let generic = importers
             .iter()
@@ -1360,11 +1404,17 @@ mod tests {
             .iter()
             .find(|importer| importer.id == OBSIDIAN_IMPORTER_ID)
             .unwrap();
+        let mediawiki = importers
+            .iter()
+            .find(|importer| importer.id == MEDIAWIKI_IMPORTER_ID)
+            .unwrap();
 
-        assert_eq!(importers.len(), 2);
+        assert_eq!(importers.len(), 3);
         assert_eq!(generic.source_kinds, vec!["file", "folder"]);
         assert_eq!(obsidian.source_kinds, vec!["folder"]);
         assert_eq!(obsidian.extensions, vec!["md", "markdown"]);
+        assert_eq!(mediawiki.source_kinds, vec!["file"]);
+        assert_eq!(mediawiki.extensions, vec!["xml"]);
     }
 
     #[test]

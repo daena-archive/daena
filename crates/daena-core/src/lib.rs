@@ -10,7 +10,8 @@ mod sync;
 pub use authority::{Authority, AuthorityContext};
 pub use error::CoreError;
 pub use external_import::{
-    analyze_generic_documents, analyze_generic_documents_with_progress, analyze_obsidian_vault,
+    analyze_generic_documents, analyze_generic_documents_with_progress, analyze_mediawiki_xml,
+    analyze_mediawiki_xml_with_progress, analyze_obsidian_vault,
     analyze_obsidian_vault_with_progress, build_import_candidate_plan,
     validate_import_candidate_plan, ExternalImportCommitReport, GenericDocumentImportLimits,
     ImportAnalysisProgress, ImportAnalysisSummary, ImportCandidateIssue, ImportCandidateMapping,
@@ -23,8 +24,9 @@ pub use external_import::{
     StagedLinkResolution, StagedMappingHint, StagedObject, UnsupportedSourceData,
     ValidatedImportAsset, ValidatedImportField, ValidatedImportObject, ValidatedImportPlan,
     EXTERNAL_IMPORT_ANALYSIS_CANCELLED, GENERIC_DOCUMENT_IMPORTER_ID,
-    GENERIC_DOCUMENT_IMPORTER_VERSION, IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION, OBSIDIAN_IMPORTER_ID,
-    OBSIDIAN_IMPORTER_VERSION, STAGED_IMPORT_SCHEMA_VERSION, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
+    GENERIC_DOCUMENT_IMPORTER_VERSION, IMPORT_CANDIDATE_PLAN_SCHEMA_VERSION, MEDIAWIKI_IMPORTER_ID,
+    MEDIAWIKI_IMPORTER_VERSION, OBSIDIAN_IMPORTER_ID, OBSIDIAN_IMPORTER_VERSION,
+    STAGED_IMPORT_SCHEMA_VERSION, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{

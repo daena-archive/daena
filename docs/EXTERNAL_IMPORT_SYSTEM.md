@@ -163,6 +163,35 @@ candidate note IDs, and absent targets remain missing; the importer never
 invents a target. Attachment bytes still pass signature, size, hash, source
 re-read, atomic commit, and clean-rebuild validation.
 
+### MediaWiki adapter policy
+
+MediaWiki is a separate, file-only built-in importer for UTF-8 MediaWiki-
+compatible XML exports. It uses an event stream rather than building an XML
+tree, rejects DTDs and non-predefined entity references, bounds XML depth,
+pages, per-page wikitext, total staged wikitext, diagnostics, and source bytes,
+and checks cancellation throughout the stream. The current defaults allow a
+source file up to 8 GiB while staging at most 10,000 pages, 16 MiB per latest
+page revision, and 512 MiB of latest-revision wikitext. Result paging and local
+spill remain owned by the shared import-session layer.
+
+Each page becomes one generic staged object. Stable identity uses the native
+page ID when present; source hierarchy groups pages by numeric namespace. Only
+the newest revision by timestamp and revision ID is retained. Omitted older
+revisions are reported once with their count and revision-history import
+remains a non-goal. Exact latest-revision wikitext is retained as the canonical
+document body and in transient raw review data; it is not presented as a
+lossless Markdown conversion. Site, namespace, page, and revision metadata are
+available to preview and field mapping.
+
+Categories become staged tags, mapping selectors, and hierarchy hints rather
+than automatic semantic relationships. Internal links are resolved after the
+stream as resolved, ambiguous, or missing. File/image links remain visible but
+not applicable because XML dumps do not contain their binary files. A unique
+redirect target adds a staged alias and relationship hint while retaining the
+redirect page for review. Template invocations are preserved as raw structured
+source data. Infobox named parameters become generic staged fields and
+low-confidence field hints; no template is treated as a Daena schema.
+
 ### Security and resource limits
 
 All imported bytes and plugin output are untrusted. The implementation must:
@@ -460,4 +489,15 @@ bundled and plugin output pass identical core validation.
   and reports ambiguous, missing, partially parsed, and unsupported data for
   review. Representative, ambiguity, missing-target, generic-compatibility,
   folder-only, attachment commit, and clean-rebuild fixtures cover the profile.
-- Iterations 7-8: planned, not yet implemented.
+- Iteration 7: implemented. A file-only MediaWiki importer streams UTF-8 XML
+  without constructing a complete XML tree, rejects DTD/entity expansion,
+  enforces explicit source/page/content/depth/diagnostic limits, reports
+  progress, and supports cancellation. It stages the latest revision per page,
+  namespaces, source metadata, redirects, categories, internal links, raw
+  wikitext, templates, and infobox field hints through the existing preview,
+  mapping, validation, atomic commit, and report pipeline. Fixtures cover
+  multi-revision selection, metadata and structure preservation, link and
+  redirect resolution, malformed XML and DTD rejection, page limits,
+  cancellation, commit, checkpoint, and clean rebuild. Full revision history,
+  wikitext-to-Markdown conversion, and media-file retrieval remain out of scope.
+- Iteration 8: planned, not yet implemented.

@@ -174,6 +174,7 @@ pub struct ExternalImportValidationSummary {
     pub skip_count: usize,
     pub map_count: usize,
     pub asset_count: usize,
+    pub relationship_count: usize,
     pub warning_count: usize,
     pub error_count: usize,
     pub issues: Vec<ImportValidationIssue>,
@@ -777,6 +778,7 @@ pub async fn project_external_import_validate(
             })
     });
     let asset_count = plan.as_ref().map_or(0, |plan| plan.assets.len());
+    let relationship_count = plan.as_ref().map_or(0, |plan| plan.relationships.len());
     let warning_count = outcome
         .issues
         .iter()
@@ -804,6 +806,7 @@ pub async fn project_external_import_validate(
         skip_count,
         map_count,
         asset_count,
+        relationship_count,
         warning_count,
         error_count,
         issues: outcome.issues,
@@ -885,7 +888,16 @@ fn import_mapping_catalog(
             entity_types.extend(schema.entity_types);
             for field in schema.fields {
                 let id = format!("{}:{}", schema.namespace, field.key);
-                if let Some(relationship_type) = &field.relationship_type {
+                let requires_metadata = field.metadata_fields.as_ref().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|metadata| metadata.required.unwrap_or(false))
+                });
+                if let Some(relationship_type) = field
+                    .relationship_type
+                    .as_ref()
+                    .filter(|_| !requires_metadata)
+                {
                     relationship_types.insert(relationship_type.clone());
                 }
                 fields.insert(

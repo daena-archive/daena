@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     ImportSource, ImportSourceKind, ImportValidationIssue, ImportValidationSeverity,
     ImporterIdentity, StagedDocument, ValidatedImportAsset, ValidatedImportObject,
+    ValidatedImportRelationship, ValidatedImportSourceContext,
 };
 use daena_plugin_api::MetadataFieldDefinition;
 use std::collections::BTreeMap;
@@ -510,6 +511,12 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
                     body: "# Created note".into(),
                 }),
                 fields: Vec::new(),
+                source_context: ValidatedImportSourceContext {
+                    source_kind: "obsidian_markdown".into(),
+                    tags: vec!["lore".into()],
+                    aliases: vec!["Created alias".into()],
+                    ..ValidatedImportSourceContext::default()
+                },
                 decision: ImportObjectDecision::Create,
             },
             ValidatedImportObject {
@@ -521,6 +528,7 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
                 entity_type: existing.entity_type.clone(),
                 document: None,
                 fields: Vec::new(),
+                source_context: ValidatedImportSourceContext::default(),
                 decision: ImportObjectDecision::MapToExisting {
                     entity_id: existing.id.clone(),
                     expected_revision: existing.revision.clone(),
@@ -535,9 +543,17 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
                 entity_type: Some("note".into()),
                 document: None,
                 fields: Vec::new(),
+                source_context: ValidatedImportSourceContext::default(),
                 decision: ImportObjectDecision::Skip,
             },
         ],
+        relationships: vec![ValidatedImportRelationship {
+            source_staged_object_id: "create-object".into(),
+            target_staged_object_id: "mapped-object".into(),
+            relationship_type: "references".into(),
+            source_kind: "internal".into(),
+            source_target: "Mapped".into(),
+        }],
         assets: vec![ValidatedImportAsset {
             staged_asset_id: "asset-object".into(),
             owner_staged_object_id: "create-object".into(),
@@ -577,6 +593,12 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
     assert_eq!(first.created.len(), 1);
     assert_eq!(first.mapped.len(), 1);
     assert_eq!(first.assets.len(), 1);
+    assert_eq!(first.relationships.len(), 1);
+    assert_eq!(
+        first.relationships[0].source_entity_id,
+        first.created[0].entity_id
+    );
+    assert_eq!(first.relationships[0].target_entity_id, existing.id);
     assert_eq!(
         store.asset_bytes(first.assets[0].asset_id.clone()).unwrap(),
         asset_bytes
@@ -605,6 +627,13 @@ fn external_import_commit_is_idempotent_and_survives_clean_rebuild() {
     std::fs::remove_dir_all(root.join(".daena")).unwrap();
     let rebuilt = ProjectStore::open_directory(&root).unwrap();
     assert_eq!(rebuilt.list_entities().unwrap().len(), 2);
+    assert_eq!(
+        rebuilt
+            .list_relationships(first.created[0].entity_id.clone())
+            .unwrap()
+            .len(),
+        1
+    );
     let rebuilt_duplicates = rebuilt
         .external_import_duplicate_targets(
             "test.importer",

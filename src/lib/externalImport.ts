@@ -29,6 +29,7 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
   const enabled = modules.filter((module) => module.enabled);
   const entityTypes = new Map<string, ImportEntityTypeChoice>();
   const fields = new Map<string, ImportFieldChoice>();
+  const relationships = new Map<string, ImportFieldChoice>();
 
   for (const module of enabled) {
     const templateNames = new Map(module.templates.map((template) => [template.entityType, template.name] as const));
@@ -48,6 +49,21 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
         if (!fields.has(id)) {
           fields.set(id, {
             id,
+            namespace: schema.namespace,
+            key: field.key,
+            label: field.label,
+            moduleId: module.id,
+            moduleName: module.name,
+            definition: field,
+          });
+        }
+        if (
+          field.type === "relationship" &&
+          field.relationshipType &&
+          !field.metadataFields?.some((metadataField) => metadataField.required)
+        ) {
+          relationships.set(field.relationshipType, {
+            id: field.relationshipType,
             namespace: schema.namespace,
             key: field.key,
             label: field.label,
@@ -80,13 +96,20 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
       fields: module.schemas
         .flatMap((schema) => schema.fields.map((field) => `${schema.namespace}:${field.key}`))
         .sort(),
+      relationships: module.schemas
+        .flatMap((schema) =>
+          schema.fields
+            .filter((field) => field.type === "relationship" && field.relationshipType)
+            .map((field) => field.relationshipType!),
+        )
+        .sort(),
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
 
   return {
     entityTypes: entityTypeList,
     fields: fieldList,
-    relationships: fieldList.filter((field) => field.definition.type === "relationship"),
+    relationships: [...relationships.values()].sort(compareChoice),
     fingerprint: `enabled-manifests:${JSON.stringify(fingerprintSource)}`,
   };
 }

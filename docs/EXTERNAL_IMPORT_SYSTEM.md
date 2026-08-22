@@ -106,7 +106,7 @@ project files. Import does not introduce a second writer or direct portable
 file mutation path.
 
 The result report includes source/importer identity, created and mapped
-objects, skipped items, converted fields, link resolutions, conflict
+objects, skipped items, converted fields, created relationships, conflict
 decisions, assets, unsupported data, missing data, and all diagnostics. The
 report returned by commit is authoritative for the operation. Persisting a
 report is optional and, if added, uses an explicit Daena-owned project-metadata
@@ -115,10 +115,33 @@ contract rather than importer-controlled files.
 ### Source identity and re-import
 
 Staged objects carry importer ID, importer contract version, source-relative
-path, optional source-native ID, and a content fingerprint. Committed source
-identity may be retained as Daena-owned metadata for duplicate detection and a
-future explicit re-import workflow. It never enables background watching or
-implicit synchronization.
+path, optional source-native ID, and a content fingerprint. Commit retains a
+Daena-owned, source-specific provenance record containing that identity plus
+the source kind, hierarchy, aliases, tags/categories, adapter metadata,
+unmapped source fields, and discovered-link resolutions. This makes accepted
+imports inspectable and rebuildable without exposing importer-controlled
+namespaces or silently dropping sparse frontmatter/infobox data. Document-sized
+raw content is not duplicated into provenance. The record supports duplicate
+detection and a future explicit re-import workflow; it never enables background
+watching or implicit synchronization.
+
+### Explicit relationship mapping
+
+The mapping UI offers only resolved internal links and embeds as relationship
+sources. A user may map each source kind to a relationship type contributed by
+an enabled manifest. Types with required relationship metadata are withheld
+because the source adapters cannot satisfy that contract without an additional
+mapping step. Validation rejects disabled or stale types, deduplicates repeated
+source links to the same target, omits ambiguous/missing links and links to
+skipped items with an aggregated warning, and carries only validated endpoints
+into the immutable plan. Commit creates the relationships in the same atomic,
+receipt-backed transaction as their entities and attachments. No category,
+tag, redirect, or link becomes a semantic relationship unless the user maps it.
+
+Global and folder field mappings are conditional: a mapped key is applied when
+present and is not an error on sparse notes/pages. Unmapped fields are retained
+in source provenance and summarized in one warning instead of generating a
+warning per field per object.
 
 ### Initial formats
 
@@ -161,7 +184,9 @@ filename, title, and alias. Heading and block fragments resolve to their owning
 note. A unique match is resolved, multiple matches are staged as ambiguous with
 candidate note IDs, and absent targets remain missing; the importer never
 invents a target. Attachment bytes still pass signature, size, hash, source
-re-read, atomic commit, and clean-rebuild validation.
+re-read, atomic commit, and clean-rebuild validation. Preview shows source-field
+values, aliases, tags, metadata, link resolution, and the enabled relationship
+types that can accept resolved links.
 
 ### MediaWiki adapter policy
 
@@ -190,7 +215,9 @@ not applicable because XML dumps do not contain their binary files. A unique
 redirect target adds a staged alias and relationship hint while retaining the
 redirect page for review. Template invocations are preserved as raw structured
 source data. Infobox named parameters become generic staged fields and
-low-confidence field hints; no template is treated as a Daena schema.
+low-confidence field hints; no template is treated as a Daena schema. Accepted
+categories, redirect aliases, namespace/revision/site metadata, template names,
+and unmapped infobox values survive commit in Daena-owned source provenance.
 
 ### Security and resource limits
 
@@ -487,15 +514,23 @@ bundled and plugin output pass identical core validation.
   preserves note bodies and plugin syntax; excludes configuration/trash folders;
   resolves path, filename, title, and alias wikilinks plus note/attachment embeds;
   and reports ambiguous, missing, partially parsed, and unsupported data for
-  review. Representative, ambiguity, missing-target, generic-compatibility,
-  folder-only, attachment commit, and clean-rebuild fixtures cover the profile.
+  review. Preview exposes field values and source context; commit retains
+  aliases, tags, metadata, unmapped fields, and link resolutions in source
+  provenance. Resolved links can be explicitly mapped to enabled relationship
+  types and commit atomically with notes and attachments. Representative,
+  ambiguity, missing-target, generic-compatibility, folder-only, relationship,
+  attachment commit, and clean-rebuild fixtures cover the profile.
 - Iteration 7: implemented. A file-only MediaWiki importer streams UTF-8 XML
   without constructing a complete XML tree, rejects DTD/entity expansion,
   enforces explicit source/page/content/depth/diagnostic limits, reports
   progress, and supports cancellation. It stages the latest revision per page,
   namespaces, source metadata, redirects, categories, internal links, raw
   wikitext, templates, and infobox field hints through the existing preview,
-  mapping, validation, atomic commit, and report pipeline. Fixtures cover
+  mapping, validation, atomic commit, and report pipeline. Sparse global field
+  mappings apply only when a key exists; accepted categories, redirect aliases,
+  namespace/revision/site metadata, template names, infobox values, and link
+  resolution remain in source provenance. Explicit resolved-link mappings
+  create deduplicated relationships in the same transaction. Fixtures cover
   multi-revision selection, metadata and structure preservation, link and
   redirect resolution, malformed XML and DTD rejection, page limits,
   cancellation, commit, checkpoint, and clean rebuild. Full revision history,

@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use crate::external_import::{
     is_docx_import_asset_source_path, read_archive_asset_bytes, read_docx_import_asset_bytes,
     ExternalImportCommitReport, ImportExistingTarget, ImportObjectDecision, ImportSourceKind,
-    ImportedAssetReport, ImportedObjectReport, ValidatedImportPlan,
+    ImportedAssetReport, ImportedObjectReport, ImportedRelationshipReport, ValidatedImportPlan,
     VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
 use daena_plugin_api::MetadataFieldDefinition;
@@ -4478,6 +4478,12 @@ impl ProjectStore {
             mime_type: String,
             path: String,
         }
+        struct PreparedRelationship {
+            id: String,
+            source_entity_id: String,
+            target_entity_id: String,
+            relationship_type: String,
+        }
         let mut creates = Vec::new();
         let mut mapped_sources = Vec::new();
         let mut created_report = Vec::new();
@@ -4492,6 +4498,7 @@ impl ProjectStore {
                 "sourceId": object.source_id,
                 "sourcePath": object.source_path,
                 "contentHash": object.content_hash,
+                "sourceContext": object.source_context,
             }))?;
             match &object.decision {
                 ImportObjectDecision::Skip => {
@@ -4561,13 +4568,53 @@ impl ProjectStore {
         let entity_by_staged_object = created_report
             .iter()
             .chain(mapped_report.iter())
-            .map(|object| (object.staged_object_id.as_str(), object.entity_id.as_str()))
+            .map(|object| (object.staged_object_id.clone(), object.entity_id.clone()))
             .collect::<BTreeMap<_, _>>();
+        let mut prepared_relationships = Vec::with_capacity(plan.relationships.len());
+        let mut relationship_report = Vec::with_capacity(plan.relationships.len());
+        for relationship in &plan.relationships {
+            let source_entity_id = entity_by_staged_object
+                .get(&relationship.source_staged_object_id)
+                .ok_or_else(|| {
+                    CoreError::Validation(
+                        "validated import relationship source was not created or mapped".into(),
+                    )
+                })?
+                .clone();
+            let target_entity_id = entity_by_staged_object
+                .get(&relationship.target_staged_object_id)
+                .ok_or_else(|| {
+                    CoreError::Validation(
+                        "validated import relationship target was not created or mapped".into(),
+                    )
+                })?
+                .clone();
+            validate_relationship_metadata(
+                &relationship.relationship_type,
+                &serde_json::json!({}),
+                self.metadata_fields_for_relationship_type(&relationship.relationship_type),
+            )?;
+            let id = Uuid::new_v4().to_string();
+            affected_prefixes.push(format!("entities/{source_entity_id}/"));
+            affected_prefixes.push(format!("entities/{target_entity_id}/"));
+            relationship_report.push(ImportedRelationshipReport {
+                relationship_id: id.clone(),
+                source_entity_id: source_entity_id.clone(),
+                target_entity_id: target_entity_id.clone(),
+                relationship_type: relationship.relationship_type.clone(),
+            });
+            prepared_relationships.push(PreparedRelationship {
+                id,
+                source_entity_id,
+                target_entity_id,
+                relationship_type: relationship.relationship_type.clone(),
+            });
+        }
         let mut prepared_assets = Vec::new();
         let mut asset_report = Vec::new();
         for asset in &plan.assets {
             let entity_id = entity_by_staged_object
-                .get(asset.owner_staged_object_id.as_str())
+                .get(&asset.owner_staged_object_id)
                 .ok_or_else(|| {
                     CoreError::Validation(
                         "validated import asset owner was not created or mapped".into(),
@@ -4660,6 +4707,7 @@ impl ProjectStore {
             created: created_report,
             mapped: mapped_report,
             assets: asset_report,
+            relationships: relationship_report,
             skipped_source_paths,
             warnings: plan.warnings.clone(),
         };
@@ -4729,6 +4777,17 @@ impl ProjectStore {
                     asset.mime_type,
                     asset.path,
                     now
+                ],
+            )?;
+        }
+        for relationship in &prepared_relationships {
+            transaction.execute(
+                "INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,'{}')",
+                params![
+                    relationship.id,
+                    relationship.source_entity_id,
+                    relationship.target_entity_id,
+                    relationship.relationship_type
                 ],
             )?;
         }

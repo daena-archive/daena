@@ -209,7 +209,19 @@ function fieldsForEntity(entityType: string): ImportFieldChoice[] {
 }
 
 function relationshipSources(object: StagedObject): string[] {
-  return [...new Set((object.links ?? []).map((link) => link.kind))].sort();
+  return [
+    ...new Set(
+      (object.links ?? [])
+        .filter((link) => link.resolution === "resolved" && (link.kind === "internal" || link.kind === "embed"))
+        .map((link) => link.kind),
+    ),
+  ].sort();
+}
+
+function previewValue(value: unknown): string {
+  const rendered = typeof value === "string" ? value : JSON.stringify(value);
+  if (!rendered) return "";
+  return rendered.length > 90 ? `${rendered.slice(0, 87)}…` : rendered;
 }
 
 function schedulePlanRefresh() {
@@ -513,7 +525,8 @@ onMount(() => {
             Created {report.created.length}, mapped {report.mapped.length}, and skipped
             {report.skippedSourcePaths.length} source {report.skippedSourcePaths.length === 1 ? "item" : "items"}.
             Imported {report.assets.length}
-            {report.assets.length === 1 ? "attachment" : "attachments"}.
+            {report.assets.length === 1 ? "attachment" : "attachments"} and {report.relationships.length}
+            {report.relationships.length === 1 ? "relationship" : "relationships"}.
           </p>
         </div>
         {#if report.created.length || report.mapped.length}
@@ -525,6 +538,13 @@ onMount(() => {
             {/each}
             {#each report.assets as asset}
               <div><strong>{asset.sourcePath}</strong><span>Attachment · {asset.filename}</span></div>
+            {/each}
+            {#each report.relationships as relationship}
+              <div>
+                <strong>{relationship.relationshipType}</strong><span
+                  >Relationship · {relationship.sourceEntityId} → {relationship.targetEntityId}</span
+                >
+              </div>
             {/each}
           </div>
         {/if}
@@ -569,7 +589,7 @@ onMount(() => {
               <strong>{validation.errorCount > 0 ? "Resolve validation errors" : "Plan validated"}</strong>
               <span>
                 {validation.createCount} create · {validation.mapCount} map · {validation.skipCount} skip ·
-                {validation.assetCount} assets ·
+                {validation.assetCount} assets · {validation.relationshipCount} relationships ·
                 {validation.warningCount} warnings
               </span>
             </div>
@@ -700,7 +720,9 @@ onMount(() => {
                   {#if Object.keys(object.fields ?? {}).length > 0}
                     <div class="mapping-fields">
                       <span>Source fields</span>{#each Object.keys(object.fields ?? {}).sort() as sourceKey}<label
-                          ><code>{sourceKey}</code><select
+                          ><span class="source-field"><code>{sourceKey}</code><small
+                              >{previewValue(object.fields?.[sourceKey])}</small
+                            ></span><select
                             value={currentDecision().fieldMappings?.[sourceKey] ?? ""}
                             onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value)}
                             ><option value=""
@@ -716,7 +738,7 @@ onMount(() => {
                   {/if}
                   {#if relationshipSources(object).length > 0}
                     <div class="mapping-fields">
-                      <span>Source relationships</span>{#each relationshipSources(object) as sourceKey}<label
+                      <span>Resolved source links</span>{#each relationshipSources(object) as sourceKey}<label
                           ><code>{sourceKey}</code><select
                             value={currentDecision().relationshipMappings?.[sourceKey] ?? ""}
                             onchange={(event) => setFieldMapping(sourceKey, event.currentTarget.value, true)}
@@ -729,9 +751,22 @@ onMount(() => {
                         >{/each}
                     </div>
                   {/if}
+                  {#if catalog().relationships.length === 0 && relationshipSources(object).length > 0}
+                    <small>No enabled relationship type without required metadata can accept resolved source links.</small>
+                  {/if}
                   {#if mappingScope === "folder" && selectedFolder()}<small
                       >Overrides items under <code>{selectedFolder()}</code>.</small
                     >{/if}
+                </div>
+              {/if}
+              {#if (object.aliases?.length ?? 0) > 0 || (object.tags?.length ?? 0) > 0 || Object.keys(object.metadata ?? {}).length > 0}
+                <div class="source-context">
+                  <span class="kicker">SOURCE CONTEXT</span>
+                  {#if object.aliases?.length}<p><strong>Aliases</strong>{object.aliases.join(", ")}</p>{/if}
+                  {#if object.tags?.length}<p><strong>Tags / categories</strong>{object.tags.join(", ")}</p>{/if}
+                  {#each Object.entries(object.metadata ?? {}).sort(([left], [right]) => left.localeCompare(right)) as [key, value]}
+                    <p><strong>{key}</strong>{previewValue(value)}</p>
+                  {/each}
                 </div>
               {/if}
               <div class="document-preview">
@@ -744,6 +779,7 @@ onMount(() => {
                   {#each object.links ?? [] as link}
                     <p class={link.resolution === "missing" ? "error" : ""}>
                       <strong>{link.kind}</strong>{link.target} · {link.resolution}
+                      {#if link.resolved_object_id}<small>target {link.resolved_object_id.slice(0, 12)}</small>{/if}
                     </p>
                   {/each}
                 </div>
@@ -1330,11 +1366,41 @@ button:disabled {
 .mapping-card small code {
   font-size: 10px;
 }
+.source-field {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.source-field small {
+  overflow: hidden;
+  color: var(--ink-faint, #99978e);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .document-preview,
-.diagnostics {
+.diagnostics,
+.source-context {
   display: grid;
   gap: 7px;
   margin-top: 14px;
+}
+.source-context {
+  padding: 11px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 9px;
+  background: var(--canvas, #f7f6f2);
+}
+.source-context p {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) 2fr;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink-soft, #77766d);
+  font-size: 10px;
+}
+.source-context strong {
+  color: var(--ink, #25251f);
 }
 .document-preview pre,
 .unsupported-detail pre,
@@ -1364,6 +1430,11 @@ details pre {
   background: #fff4e4;
   color: #775421;
   font-size: 11px;
+}
+.diagnostics p small {
+  grid-column: 2;
+  color: inherit;
+  opacity: 0.75;
 }
 .diagnostics p.error,
 .diagnostics p.fatal {

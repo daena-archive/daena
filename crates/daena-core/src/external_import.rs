@@ -480,6 +480,25 @@ pub struct ValidatedImportField {
     pub value: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportSourceContext {
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default)]
+    pub parent_source_path: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub unmapped_fields: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub links: Vec<StagedLink>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidatedImportObject {
@@ -491,7 +510,19 @@ pub struct ValidatedImportObject {
     pub entity_type: Option<String>,
     pub document: Option<StagedDocument>,
     pub fields: Vec<ValidatedImportField>,
+    #[serde(default)]
+    pub source_context: ValidatedImportSourceContext,
     pub decision: ImportObjectDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedImportRelationship {
+    pub source_staged_object_id: String,
+    pub target_staged_object_id: String,
+    pub relationship_type: String,
+    pub source_kind: String,
+    pub source_target: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -519,6 +550,8 @@ pub struct ValidatedImportPlan {
     pub manifest_fingerprint: String,
     pub objects: Vec<ValidatedImportObject>,
     #[serde(default)]
+    pub relationships: Vec<ValidatedImportRelationship>,
+    #[serde(default)]
     pub assets: Vec<ValidatedImportAsset>,
     pub warnings: Vec<ImportValidationIssue>,
 }
@@ -545,6 +578,15 @@ pub struct ImportedAssetReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportedRelationshipReport {
+    pub relationship_id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub relationship_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ExternalImportCommitReport {
     pub request_id: String,
     pub plan_id: String,
@@ -554,6 +596,8 @@ pub struct ExternalImportCommitReport {
     pub mapped: Vec<ImportedObjectReport>,
     #[serde(default)]
     pub assets: Vec<ImportedAssetReport>,
+    #[serde(default)]
+    pub relationships: Vec<ImportedRelationshipReport>,
     pub skipped_source_paths: Vec<String>,
     pub warnings: Vec<ImportValidationIssue>,
 }
@@ -655,6 +699,9 @@ pub fn validate_import_candidate_plan(
         }
     }
     let mut validated = Vec::with_capacity(candidate.objects.len());
+    let mut unmapped_field_count = 0_usize;
+    let mut unmapped_field_objects = 0_usize;
+    let mut unmapped_source_link_count = 0_usize;
     for candidate_object in &candidate.objects {
         let Some(object) = staged.get(&candidate_object.staged_object_id) else {
             return Err(CoreError::Validation(format!(
@@ -728,14 +775,8 @@ pub fn validate_import_candidate_plan(
                 }
                 for (source_key, target_id) in &candidate_object.mapping.field_mappings {
                     let Some(value) = object.fields.get(source_key) else {
-                        issues.push(validation_issue(
-                            ImportValidationSeverity::Error,
-                            "source_field_missing",
-                            &format!("The source field {source_key} is not present."),
-                            Some(object.source_path.clone()),
-                            Some(object.id.clone()),
-                            None,
-                        ));
+                        // Folder/global mappings mean "map this key when present". Wiki
+                        // infoboxes and Obsidian frontmatter are intentionally sparse.
                         continue;
                     };
                     let Some(target) = catalog.fields.get(target_id) else {
@@ -770,43 +811,44 @@ pub fn validate_import_candidate_plan(
                         value: value.clone(),
                     });
                 }
-                for source_key in object.fields.keys() {
-                    if !candidate_object
-                        .mapping
-                        .field_mappings
-                        .contains_key(source_key)
-                    {
-                        issues.push(validation_issue(
-                            ImportValidationSeverity::Warning,
-                            "unmapped_source_field",
-                            &format!("The source field {source_key} will not be imported."),
-                            Some(object.source_path.clone()),
-                            Some(object.id.clone()),
-                            None,
-                        ));
-                    }
+                let object_unmapped = object
+                    .fields
+                    .keys()
+                    .filter(|source_key| {
+                        !candidate_object
+                            .mapping
+                            .field_mappings
+                            .contains_key(*source_key)
+                    })
+                    .count();
+                if object_unmapped > 0 {
+                    unmapped_field_count += object_unmapped;
+                    unmapped_field_objects += 1;
                 }
-                if !candidate_object.mapping.relationship_mappings.is_empty() {
-                    issues.push(validation_issue(
-                        ImportValidationSeverity::Error,
-                        "relationship_mapping_not_supported",
-                        "Relationship commit is not enabled in this import iteration.",
-                        Some(object.source_path.clone()),
-                        Some(object.id.clone()),
-                        None,
-                    ));
-                } else if !object.links.is_empty() {
-                    issues.push(validation_issue(
-                        ImportValidationSeverity::Warning,
-                        "source_links_preserved",
-                        "Markdown links remain in the imported document; entity relationships are not created automatically.",
-                        Some(object.source_path.clone()),
-                        Some(object.id.clone()),
-                        None,
-                    ));
-                }
+                unmapped_source_link_count += object
+                    .links
+                    .iter()
+                    .filter(|link| {
+                        !candidate_object
+                            .mapping
+                            .relationship_mappings
+                            .contains_key(staged_link_kind_key(&link.kind))
+                    })
+                    .count();
             }
         }
+        let unmapped_fields = object
+            .fields
+            .iter()
+            .filter(|(source_key, _)| {
+                !matches!(&decision, ImportObjectDecision::Create)
+                    || !candidate_object
+                        .mapping
+                        .field_mappings
+                        .contains_key(*source_key)
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         validated.push(ValidatedImportObject {
             staged_object_id: object.id.clone(),
             source_id: object.source_id.clone(),
@@ -816,8 +858,138 @@ pub fn validate_import_candidate_plan(
             entity_type,
             document: object.body.clone(),
             fields,
+            source_context: ValidatedImportSourceContext {
+                source_kind: object.source_kind.clone(),
+                parent_source_path: object.parent_source_path.clone(),
+                tags: object.tags.clone(),
+                aliases: object.aliases.clone(),
+                metadata: object.metadata.clone(),
+                unmapped_fields,
+                links: object.links.clone(),
+            },
             decision,
         });
+    }
+    if unmapped_field_count > 0 {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Warning,
+            "unmapped_source_fields_preserved",
+            &format!(
+                "{unmapped_field_count} unmapped source field(s) across {unmapped_field_objects} item(s) will remain in import source metadata."
+            ),
+            None,
+            None,
+            None,
+        ));
+    }
+    if unmapped_source_link_count > 0 {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Warning,
+            "source_links_preserved",
+            &format!(
+                "{unmapped_source_link_count} unmapped source link(s) will remain in the document and import source metadata; only explicitly mapped, resolved links become relationships."
+            ),
+            None,
+            None,
+            None,
+        ));
+    }
+
+    let decisions_by_object = validated
+        .iter()
+        .map(|object| (object.staged_object_id.as_str(), &object.decision))
+        .collect::<BTreeMap<_, _>>();
+    let mut relationship_keys = BTreeSet::new();
+    let mut validated_relationships = Vec::new();
+    let mut unresolved_mapped_link_count = 0_usize;
+    let mut skipped_target_link_count = 0_usize;
+    for candidate_object in &candidate.objects {
+        let object = staged
+            .get(&candidate_object.staged_object_id)
+            .expect("candidate staged object was checked above");
+        if matches!(
+            decisions_by_object.get(object.id.as_str()),
+            Some(ImportObjectDecision::Skip)
+        ) {
+            continue;
+        }
+        for (source_kind, relationship_type) in &candidate_object.mapping.relationship_mappings {
+            if !catalog.relationship_types.contains(relationship_type) {
+                issues.push(validation_issue(
+                    ImportValidationSeverity::Error,
+                    "target_relationship_unavailable",
+                    &format!("The mapped relationship type {relationship_type} is not available."),
+                    Some(object.source_path.clone()),
+                    Some(object.id.clone()),
+                    None,
+                ));
+                continue;
+            }
+            for link in object
+                .links
+                .iter()
+                .filter(|link| staged_link_kind_key(&link.kind) == source_kind)
+            {
+                if link.resolution != StagedLinkResolution::Resolved {
+                    unresolved_mapped_link_count += 1;
+                    continue;
+                }
+                let target_id = link
+                    .resolved_object_id
+                    .as_deref()
+                    .expect("resolved links were checked by staged import validation");
+                if matches!(
+                    decisions_by_object.get(target_id),
+                    Some(ImportObjectDecision::Skip)
+                ) {
+                    skipped_target_link_count += 1;
+                    continue;
+                }
+                if !decisions_by_object.contains_key(target_id) {
+                    return Err(CoreError::Validation(format!(
+                        "resolved import relationship target is missing: {target_id}"
+                    )));
+                }
+                let key = (
+                    object.id.clone(),
+                    target_id.to_owned(),
+                    relationship_type.clone(),
+                );
+                if relationship_keys.insert(key.clone()) {
+                    validated_relationships.push(ValidatedImportRelationship {
+                        source_staged_object_id: key.0,
+                        target_staged_object_id: key.1,
+                        relationship_type: key.2,
+                        source_kind: source_kind.clone(),
+                        source_target: link.target.clone(),
+                    });
+                }
+            }
+        }
+    }
+    if unresolved_mapped_link_count > 0 {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Warning,
+            "mapped_links_unresolved",
+            &format!(
+                "{unresolved_mapped_link_count} mapped link(s) were ambiguous, missing, or external and will not become relationships."
+            ),
+            None,
+            None,
+            None,
+        ));
+    }
+    if skipped_target_link_count > 0 {
+        issues.push(validation_issue(
+            ImportValidationSeverity::Warning,
+            "mapped_link_targets_skipped",
+            &format!(
+                "{skipped_target_link_count} mapped link(s) target skipped items and will not become relationships."
+            ),
+            None,
+            None,
+            None,
+        ));
     }
     let has_errors = issues
         .iter()
@@ -825,10 +997,6 @@ pub fn validate_import_candidate_plan(
     if has_errors {
         return Ok(ImportValidationOutcome { plan: None, issues });
     }
-    let decisions_by_object = validated
-        .iter()
-        .map(|object| (object.staged_object_id.as_str(), &object.decision))
-        .collect::<BTreeMap<_, _>>();
     let mut validated_assets = Vec::new();
     for asset in staged_assets {
         let Some(owner_id) = asset.owner_object_id.as_deref() else {
@@ -908,6 +1076,7 @@ pub fn validate_import_candidate_plan(
         content_generation: candidate.current_content_generation,
         manifest_fingerprint: catalog.fingerprint,
         objects: validated,
+        relationships: validated_relationships,
         assets: validated_assets,
         warnings,
     };
@@ -918,6 +1087,14 @@ pub fn validate_import_candidate_plan(
         plan: Some(plan),
         issues,
     })
+}
+
+fn staged_link_kind_key(kind: &StagedLinkKind) -> &'static str {
+    match kind {
+        StagedLinkKind::Internal => "internal",
+        StagedLinkKind::External => "external",
+        StagedLinkKind::Embed => "embed",
+    }
 }
 
 fn validation_issue(
@@ -1584,14 +1761,23 @@ impl MediaWikiAnalyzer<'_> {
                     }
                 }
                 XmlEvent::GeneralRef(reference) => {
-                    let value = if let Some(character) = reference.resolve_char_ref().map_err(|error| {
-                        CoreError::Validation(format!("invalid MediaWiki XML character reference: {error}"))
-                    })? {
+                    let value = if let Some(character) =
+                        reference.resolve_char_ref().map_err(|error| {
+                            CoreError::Validation(format!(
+                                "invalid MediaWiki XML character reference: {error}"
+                            ))
+                        })? {
                         character.to_string()
                     } else {
-                        match reference.decode().map_err(|error| {
-                            CoreError::Validation(format!("invalid MediaWiki XML entity reference: {error}"))
-                        })?.as_ref() {
+                        match reference
+                            .decode()
+                            .map_err(|error| {
+                                CoreError::Validation(format!(
+                                    "invalid MediaWiki XML entity reference: {error}"
+                                ))
+                            })?
+                            .as_ref()
+                        {
                             "amp" => "&".into(),
                             "lt" => "<".into(),
                             "gt" => ">".into(),
@@ -7107,8 +7293,9 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
     fn obsidian_vault_commit_preserves_markdown_and_attachment_after_clean_rebuild() {
         let vault = TestDirectory::new();
         fs::create_dir_all(vault.path().join("assets")).unwrap();
-        let body = "# Home\n\n![[assets/map.png]]\n";
+        let body = "---\naliases: [Start]\ntags: [lore]\n---\n# Home\n\n[[Target]]\n\n![[assets/map.png]]\n";
         fs::write(vault.path().join("Home.md"), body).unwrap();
+        fs::write(vault.path().join("Target.md"), "# Target\n").unwrap();
         fs::write(
             vault.path().join("assets/map.png"),
             b"\x89PNG\r\n\x1a\nfixture",
@@ -7121,6 +7308,10 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
         let generation = store.content_generation().unwrap();
         let mut mappings = ImportMappingOverrides::default();
         mappings.global.entity_type = Some("note".into());
+        mappings
+            .global
+            .relationship_mappings
+            .insert("internal".into(), "references".into());
         let candidate = build_import_candidate_plan(
             ImportCandidatePlanBuild {
                 session_id: "obsidian-session".into(),
@@ -7144,7 +7335,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
                 fields: BTreeMap::new(),
-                relationship_types: BTreeSet::new(),
+                relationship_types: BTreeSet::from(["references".into()]),
             },
             decisions: BTreeMap::new(),
             existing_targets: BTreeMap::new(),
@@ -7162,15 +7353,34 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             )
             .unwrap();
 
-        assert_eq!(report.created.len(), 1);
+        assert_eq!(report.created.len(), 2);
         assert_eq!(report.assets.len(), 1);
+        assert_eq!(report.relationships.len(), 1);
         store.flush_checkpoint("Obsidian import test").unwrap();
         drop(store);
         fs::remove_dir_all(project.path().join(".daena")).unwrap();
         let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
-        let entity_id = report.created[0].entity_id.clone();
+        let entity_id = report
+            .created
+            .iter()
+            .find(|item| item.source_path == "Home.md")
+            .unwrap()
+            .entity_id
+            .clone();
         let documents = rebuilt.list_documents(entity_id.clone()).unwrap();
         assert_eq!(documents[0].body, body);
+        assert_eq!(
+            rebuilt.list_relationships(entity_id.clone()).unwrap().len(),
+            1
+        );
+        let source_fields = rebuilt.list_fields(entity_id.clone()).unwrap();
+        let source_context = source_fields
+            .iter()
+            .find(|field| field.key.starts_with("externalImportSource."))
+            .and_then(|field| field.value.get("sourceContext"))
+            .unwrap();
+        assert_eq!(source_context["aliases"], serde_json::json!(["Start"]));
+        assert_eq!(source_context["tags"], serde_json::json!(["lore"]));
         let assets = rebuilt.list_assets(entity_id).unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(
@@ -7281,10 +7491,7 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
         assert_eq!(gandalf.fields["source_format"], "text/x-wiki");
         assert_eq!(gandalf.fields["infobox.born"], "Before the First Age");
         assert_eq!(gandalf.tags, vec!["Characters"]);
-        assert_eq!(
-            middle_earth.body.as_ref().unwrap().body,
-            "A world & realm."
-        );
+        assert_eq!(middle_earth.body.as_ref().unwrap().body, "A world & realm.");
         assert!(gandalf.mapping_hints.iter().any(|hint| {
             hint.kind == MappingHintKind::Field
                 && hint.source_key.as_deref() == Some("infobox.born")
@@ -7378,7 +7585,11 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             .iter()
             .find(|object| object.title == "Home")
             .unwrap();
-        let twin = home.links.iter().find(|link| link.target == "Twin").unwrap();
+        let twin = home
+            .links
+            .iter()
+            .find(|link| link.target == "Twin")
+            .unwrap();
         let missing = home
             .links
             .iter()
@@ -7465,6 +7676,14 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
         let generation = store.content_generation().unwrap();
         let mut mappings = ImportMappingOverrides::default();
         mappings.global.entity_type = Some("note".into());
+        mappings
+            .global
+            .relationship_mappings
+            .insert("internal".into(), "references".into());
+        mappings
+            .global
+            .field_mappings
+            .insert("infobox.born".into(), "wiki:born".into());
         let candidate = build_import_candidate_plan(
             ImportCandidatePlanBuild {
                 session_id: "mediawiki-session".into(),
@@ -7487,8 +7706,15 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             catalog: ImportMappingCatalog {
                 fingerprint: "manifest-v1".into(),
                 entity_types: BTreeSet::from(["note".into()]),
-                fields: BTreeMap::new(),
-                relationship_types: BTreeSet::new(),
+                fields: BTreeMap::from([(
+                    "wiki:born".into(),
+                    ImportFieldTarget {
+                        namespace: "wiki".into(),
+                        key: "born".into(),
+                        entity_types: BTreeSet::from(["note".into()]),
+                    },
+                )]),
+                relationship_types: BTreeSet::from(["references".into()]),
             },
             decisions: BTreeMap::new(),
             existing_targets: BTreeMap::new(),
@@ -7513,12 +7739,41 @@ Travel to [[Places/Middle Earth|Middle Earth]] or [[Middle Earth]].
             .unwrap()
             .entity_id
             .clone();
+        assert_eq!(report.relationships.len(), 2);
         store.flush_checkpoint("MediaWiki import test").unwrap();
         drop(store);
         fs::remove_dir_all(project.path().join(".daena")).unwrap();
         let rebuilt = ProjectStore::open_directory(project.path()).unwrap();
-        let documents = rebuilt.list_documents(gandalf_entity_id).unwrap();
+        let documents = rebuilt.list_documents(gandalf_entity_id.clone()).unwrap();
         assert_eq!(documents[0].body, expected);
+        assert_eq!(
+            rebuilt
+                .list_relationships(gandalf_entity_id.clone())
+                .unwrap()
+                .into_iter()
+                .filter(|relationship| relationship.source_id == gandalf_entity_id)
+                .count(),
+            1
+        );
+        let source_fields = rebuilt.list_fields(gandalf_entity_id).unwrap();
+        let source_context = source_fields
+            .iter()
+            .find(|field| field.key.starts_with("externalImportSource."))
+            .and_then(|field| field.value.get("sourceContext"))
+            .unwrap();
+        assert_eq!(source_context["tags"], serde_json::json!(["Characters"]));
+        assert_eq!(
+            source_context["unmappedFields"]["templates"][0],
+            "Infobox person"
+        );
+        assert_eq!(
+            source_fields
+                .iter()
+                .find(|field| field.namespace == "wiki" && field.key == "born")
+                .unwrap()
+                .value,
+            "Before the First Age"
+        );
     }
 
     #[test]

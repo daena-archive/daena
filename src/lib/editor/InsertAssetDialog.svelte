@@ -536,11 +536,12 @@ function confirmInsert() {
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     onCancel();
   } else if (event.key === "Enter" && canConfirm()) {
     // avoid submitting when typing search or image fields
     const target = event.target as HTMLElement | null;
-    if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+    if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.closest("button")) return;
     event.preventDefault();
     confirmInsert();
   }

@@ -16,8 +16,20 @@ let wasOpen = false;
 let lastFocused: Element | null = null;
 let textInput: HTMLInputElement | null = null;
 let urlInput: HTMLInputElement | null = null;
+let urlError = "";
 
 $: displayText = initialText.length > 120 ? initialText.slice(0, 120) + "…" : initialText;
+$: urlError = validateUrl(url);
+
+function validateUrl(value: string) {
+  const candidate = value.trim();
+  if (!candidate) return "";
+  if (/[\u0000-\u001f\u007f]/.test(candidate)) return "Links cannot contain control characters.";
+  const scheme = candidate.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+  if (scheme && !["http", "https", "ftp", "ftps", "mailto", "tel", "callto", "sms", "cid", "xmpp"].includes(scheme))
+    return "Use a web, email, phone, asset, or relative link.";
+  return "";
+}
 
 $: {
   if (!open) {
@@ -45,7 +57,7 @@ $: if (!open && lastFocused) {
 function submit() {
   const trimmedUrl = url.trim();
   const trimmedText = text.trim();
-  if (!trimmedUrl) return;
+  if (!trimmedUrl || urlError) return;
   // when hasSelection, text is fixed to initialText (display), but allow trimmedText fallback?
   // if hasSelection we ignore text input and use initialText
   const finalText = hasSelection ? initialText : trimmedText;
@@ -56,10 +68,38 @@ function submit() {
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     onCancel();
+    return;
+  } else if (event.key === "Tab") {
+    trapFocus(event);
+    return;
   } else if (event.key === "Enter") {
+    if ((event.target as HTMLElement | null)?.closest("button")) return;
     event.preventDefault();
     submit();
+  }
+}
+
+function trapFocus(event: KeyboardEvent) {
+  const dialog = event.currentTarget as HTMLElement;
+  const focusable = [
+    ...dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((element) => !element.hasAttribute("hidden"));
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!dialog.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 }
 </script>
@@ -90,7 +130,14 @@ function handleKeydown(event: KeyboardEvent) {
         </div>
         <label class="link-field">
           <span>Link URL</span>
-          <input bind:this={urlInput} bind:value={url} placeholder="https://…" autocomplete="off" spellcheck="false" />
+          <input
+            bind:this={urlInput}
+            bind:value={url}
+            placeholder="https://…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-invalid={Boolean(urlError)}
+            aria-describedby={urlError ? "link-url-error" : undefined} />
         </label>
       {:else}
         <label class="link-field">
@@ -99,9 +146,17 @@ function handleKeydown(event: KeyboardEvent) {
         </label>
         <label class="link-field">
           <span>Link URL</span>
-          <input bind:this={urlInput} bind:value={url} placeholder="https://…" autocomplete="off" spellcheck="false" />
+          <input
+            bind:this={urlInput}
+            bind:value={url}
+            placeholder="https://…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-invalid={Boolean(urlError)}
+            aria-describedby={urlError ? "link-url-error" : undefined} />
         </label>
       {/if}
+      {#if urlError}<p id="link-url-error" class="link-error" role="alert">{urlError}</p>{/if}
 
       <footer>
         {#if initialUrl && onRemove}
@@ -112,7 +167,7 @@ function handleKeydown(event: KeyboardEvent) {
         <button
           type="button"
           class="primary"
-          disabled={hasSelection ? !url.trim() : !text.trim() || !url.trim()}
+          disabled={Boolean(urlError) || (hasSelection ? !url.trim() : !text.trim() || !url.trim())}
           onclick={submit}>
           {initialUrl ? "Update link" : "Insert link"}
         </button>
@@ -222,6 +277,14 @@ header button:focus-visible {
 .link-field input:focus {
   border-color: #c99965;
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+}
+.link-field input[aria-invalid="true"] {
+  border-color: #b65b4b;
+}
+.link-error {
+  margin: -6px 0 0;
+  color: #9b4538;
+  font: 500 11px/1.4 var(--font-body, system-ui, sans-serif);
 }
 footer {
   display: flex;

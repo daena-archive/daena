@@ -30,16 +30,12 @@ $: filteredEntities = entities
   );
 
 function selectedEntity(): Entity | null {
-  return (
-    filteredEntities.find((entity) => entity.id === selectedId) ??
-    entities.find((entity) => entity.id === selectedId) ??
-    null
-  );
+  return filteredEntities.find((entity) => entity.id === selectedId) ?? null;
 }
 
 function select(entity: Entity) {
   selectedId = entity.id;
-  if (!isCustom) label = entity.name;
+  label = entity.name;
 }
 
 function submit() {
@@ -56,13 +52,57 @@ function submit() {
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
+    event.stopPropagation();
     onCancel();
+    return;
   }
+  if (event.key === "Tab") {
+    trapFocus(event);
+    return;
+  }
+  if (event.target === searchInput && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    event.preventDefault();
+    const current = filteredEntities.findIndex((entity) => entity.id === selectedId);
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    const next = current < 0 ? (offset > 0 ? 0 : filteredEntities.length - 1) : current + offset;
+    const entity = filteredEntities[Math.max(0, Math.min(filteredEntities.length - 1, next))];
+    if (entity) {
+      select(entity);
+      void tick().then(() =>
+        document.querySelector(`[data-entity-result="${CSS.escape(entity.id)}"]`)?.scrollIntoView({ block: "nearest" }),
+      );
+    }
+    return;
+  }
+  if (event.key === "Enter" && (event.target as HTMLElement | null)?.closest("button")) return;
+  if (event.key === "Enter" && !selectedEntity() && filteredEntities[0]) select(filteredEntities[0]);
   const entity = selectedEntity();
   const canSubmit = entity && (isCustom ? label.trim() : true);
   if (event.key === "Enter" && !event.shiftKey && canSubmit) {
     event.preventDefault();
     submit();
+  }
+}
+
+function trapFocus(event: KeyboardEvent) {
+  const dialog = event.currentTarget as HTMLElement;
+  const focusable = [
+    ...dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((element) => !element.hasAttribute("hidden"));
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!dialog.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
   }
 }
 
@@ -128,6 +168,7 @@ $: if (!open && lastFocused) {
           <button
             type="button"
             role="option"
+            data-entity-result={entity.id}
             aria-selected={selectedId === entity.id}
             class:selected={selectedId === entity.id}
             onclick={() => select(entity)}>
@@ -139,7 +180,14 @@ $: if (!open && lastFocused) {
       </div>
       <div class="entity-reference-custom-toggle">
         <label class="custom-checkbox">
-          <input type="checkbox" bind:checked={isCustom} />
+          <input
+            type="checkbox"
+            bind:checked={isCustom}
+            onchange={() => {
+              const entity = selectedEntity();
+              if (!isCustom && entity) label = entity.name;
+              if (isCustom) void tick().then(() => labelInput?.focus());
+            }} />
           <span>Use custom display text</span>
         </label>
         <div class="hint-wrapper">

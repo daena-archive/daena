@@ -16,6 +16,7 @@
     "npm:@tiptap/extension-code@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-document@*": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-document@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
+    "npm:@tiptap/extension-hard-break@3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-heading@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-horizontal-rule@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-image@*": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2",
@@ -27,6 +28,9 @@
     "npm:@tiptap/extension-paragraph@*": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-paragraph@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-strike@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2",
+    "npm:@tiptap/extension-table@3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
+    "npm:@tiptap/extension-task-item@3.29.2": "3.29.2_@tiptap+extension-list@3.29.2__@tiptap+core@3.29.2___@tiptap+pm@3.29.2__@tiptap+pm@3.29.2",
+    "npm:@tiptap/extension-task-list@3.29.2": "3.29.2_@tiptap+extension-list@3.29.2__@tiptap+core@3.29.2___@tiptap+pm@3.29.2__@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-text-align@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-text@*": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
     "npm:@tiptap/extension-text@^3.29.2": "3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2",
@@ -612,6 +616,12 @@
         "@tiptap/core"
       ]
     },
+    "@tiptap/extension-hard-break@3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2": {
+      "integrity": "sha512-eUW3LN3fq8rXnjEUeI3D2QONYdLsU3yYQm4jxlErs2h4cfwrFjgf19VSUFVmm6LrFbbQ0OnDVPeVLL6iOwDw2w==",
+      "dependencies": [
+        "@tiptap/core"
+      ]
+    },
     "@tiptap/extension-heading@3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2": {
       "integrity": "sha512-6W4aIy70Mh7BNlbG9zZ5FBLhJhU2UUEzgZJ/jwYSCcB30o8McLxJSEjhtoHiX8R78Ah2/JzBGvIe5olZlbeE4A==",
       "dependencies": [
@@ -662,6 +672,25 @@
       "integrity": "sha512-aEvLAbddUQZ+FukCreV3q4G2HfNI+odE7E9U+wbq6XsSWKyo8/pDu1muz+TFKNre4blSMOQ3JQmw5UeHDKy+fg==",
       "dependencies": [
         "@tiptap/core"
+      ]
+    },
+    "@tiptap/extension-table@3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2_@tiptap+pm@3.29.2": {
+      "integrity": "sha512-HY3JWD8i/F8W1oWw56DMqEMqxScIAZFRrhL3rUwiuowHG8LLDqDdQjBV3w1DY8lUZOtNY9grpuMtGlPUFrOVAA==",
+      "dependencies": [
+        "@tiptap/core",
+        "@tiptap/pm"
+      ]
+    },
+    "@tiptap/extension-task-item@3.29.2_@tiptap+extension-list@3.29.2__@tiptap+core@3.29.2___@tiptap+pm@3.29.2__@tiptap+pm@3.29.2": {
+      "integrity": "sha512-mi5p2/FbUO9LFl7qPmRBThME+bFpd0vyeOD6IiWnD32hYZ720/N5VDkDypPmz+IaxTFaiLeGVmGC1SxGtxksKA==",
+      "dependencies": [
+        "@tiptap/extension-list"
+      ]
+    },
+    "@tiptap/extension-task-list@3.29.2_@tiptap+extension-list@3.29.2__@tiptap+core@3.29.2___@tiptap+pm@3.29.2__@tiptap+pm@3.29.2": {
+      "integrity": "sha512-7ZkVoMcM3FAuvilZs3XliRRowPVMrVoKhfklfbNkTj9nVOvVToM+xcXKCcsZnf1mjMAyjw65m8doXJQKGCH7DA==",
+      "dependencies": [
+        "@tiptap/extension-list"
       ]
     },
     "@tiptap/extension-text-align@3.29.2_@tiptap+core@3.29.2__@tiptap+pm@3.29.2": {
@@ -2181,6 +2210,7 @@
         "npm:@tiptap/extension-code-block@^3.29.2",
         "npm:@tiptap/extension-code@^3.29.2",
         "npm:@tiptap/extension-document@^3.29.2",
+        "npm:@tiptap/extension-hard-break@3.29.2",
         "npm:@tiptap/extension-heading@^3.29.2",
         "npm:@tiptap/extension-horizontal-rule@^3.29.2",
         "npm:@tiptap/extension-image@3.29.2",
@@ -2189,6 +2219,9 @@
         "npm:@tiptap/extension-list@^3.29.2",
         "npm:@tiptap/extension-paragraph@^3.29.2",
         "npm:@tiptap/extension-strike@^3.29.2",
+        "npm:@tiptap/extension-table@3.29.2",
+        "npm:@tiptap/extension-task-item@3.29.2",
+        "npm:@tiptap/extension-task-list@3.29.2",
         "npm:@tiptap/extension-text-align@^3.29.2",
         "npm:@tiptap/extension-text@^3.29.2",
         "npm:@tiptap/extension-underline@^3.29.2",

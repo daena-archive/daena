@@ -4,17 +4,20 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import Code from "@tiptap/extension-code";
-import CodeBlock from "@tiptap/extension-code-block";
 import Blockquote from "@tiptap/extension-blockquote";
 import Bold from "@tiptap/extension-bold";
 import Document from "@tiptap/extension-document";
 import Heading from "@tiptap/extension-heading";
 import HorizontalRule from "@tiptap/extension-horizontal-rule";
+import HardBreak from "@tiptap/extension-hard-break";
 import Italic from "@tiptap/extension-italic";
 import Link from "@tiptap/extension-link";
 import { BulletList, ListItem, OrderedList } from "@tiptap/extension-list";
 import Paragraph from "@tiptap/extension-paragraph";
 import Strike from "@tiptap/extension-strike";
+import { Table, TableRow } from "@tiptap/extension-table";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import TextAlign from "@tiptap/extension-text-align";
 import Text from "@tiptap/extension-text";
 import Underline from "@tiptap/extension-underline";
@@ -62,6 +65,9 @@ import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
 import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";
 import { AssetImage } from "$lib/editor/AssetImageExtension";
+import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
+import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
+import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -299,6 +305,7 @@ export let fullscreen = false;
 /** Project-level AI opt-in; hides the Ask-AI toolbar entry when false. */
 export let aiEnabled = false;
 export let onFullscreenChange: (value: boolean) => void = () => {};
+export let onSaveRequest: () => void = () => {};
 export let entities: Entity[] = [];
 export let entityId: string | null = null;
 export let defaultNamespace: string | null = null;
@@ -381,6 +388,7 @@ let searchMatchCount = 0;
 let searchActiveIndex = -1;
 let searchInputEl: HTMLInputElement | null = null;
 let replaceInputEl: HTMLInputElement | null = null;
+let pendingChangeTimer: number | null = null;
 $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
 $: characterCountValue = editorText.length;
 $: if (fullscreen !== isFullscreen) isFullscreen = fullscreen;
@@ -450,13 +458,43 @@ function sanitizeHtml(value: string): string {
   return template.innerHTML;
 }
 
+function editorHtmlFromMarkdown(markdown: string) {
+  return hydrateEntityReferences(taskListsForEditor(sanitizeHtml(markdownToHtml(markdown))));
+}
+
+function markdownFromEditorHtml(html: string) {
+  return htmlToMarkdown(taskListsForMarkdown(denormalizeAssetHtml(html)));
+}
+
+function editorPlainText(currentEditor: Editor) {
+  return currentEditor.state.doc.textBetween(0, currentEditor.state.doc.content.size, "\n");
+}
+
 function emitChange() {
   if (!editor) return;
-  editorText = editor.view.dom.textContent ?? "";
-  const rawHtml = editor.getHTML();
-  const denorm = denormalizeAssetHtml(rawHtml);
-  currentMarkdown = htmlToMarkdown(denorm);
+  editorText = editorPlainText(editor);
+  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
   onChange(currentMarkdown);
+}
+
+function cancelPendingChange() {
+  if (pendingChangeTimer === null) return;
+  window.clearTimeout(pendingChangeTimer);
+  pendingChangeTimer = null;
+}
+
+function scheduleChange() {
+  cancelPendingChange();
+  pendingChangeTimer = window.setTimeout(() => {
+    pendingChangeTimer = null;
+    emitChange();
+  }, 120);
+}
+
+export function flushPendingChanges() {
+  if (pendingChangeTimer === null) return;
+  cancelPendingChange();
+  emitChange();
 }
 
 function emitSelection() {
@@ -501,13 +539,26 @@ function toggleFullscreen() {
 }
 
 function handleFullscreenKeydown(event: KeyboardEvent) {
+  const activeElement = document.activeElement as HTMLElement | null;
+  if (!activeElement?.closest(".editor-shell")) return;
+  const blockingDialogOpen = entityReferenceDialogOpen || linkDialogOpen || insertAssetOpen;
+  if (blockingDialogOpen && event.key !== "Escape") return;
   const isMod = event.metaKey || event.ctrlKey;
+  if (isMod && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    flushPendingChanges();
+    onSaveRequest();
+    return;
+  }
   if (isMod && event.key.toLowerCase() === "f") {
     event.preventDefault();
     openSearch(false);
     return;
   }
-  if (isMod && event.key.toLowerCase() === "h") {
+  if (
+    (event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "h") ||
+    (event.metaKey && event.altKey && event.key.toLowerCase() === "f")
+  ) {
     event.preventDefault();
     openSearch(true);
     return;
@@ -549,7 +600,7 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
   }
   if (event.key === "Escape" && insertAssetOpen) {
     event.preventDefault();
-    insertAssetOpen = false;
+    cancelInsertAsset();
     return;
   }
   if (event.key === "Escape" && moreMenuOpen) {
@@ -665,8 +716,8 @@ export function replaceAiTextWithMarkdown(value: string): string | null {
   const ok = editor.chain().focus().insertContentAt({ from, to }, html).run();
   if (!ok) return null;
   aiRequestRange = null;
-  currentMarkdown = htmlToMarkdown(editor.getHTML());
-  editorText = editor.view.dom.textContent ?? "";
+  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  editorText = editorPlainText(editor);
   return currentMarkdown;
 }
 
@@ -1957,11 +2008,18 @@ onMount(() => {
       Code,
       Heading,
       Blockquote,
-      CodeBlock,
+      LanguageCodeBlock,
       HorizontalRule,
+      HardBreak,
       BulletList,
       OrderedList,
       ListItem,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      Table.configure({ resizable: false, allowTableNodeSelection: true }),
+      TableRow,
+      AlignedTableHeader,
+      AlignedTableCell,
       Spoiler,
       SearchAndReplace,
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
@@ -1971,7 +2029,7 @@ onMount(() => {
       TextDirection.configure({ types: ["heading", "paragraph"] }),
       UndoRedo,
     ],
-    content: hydrateEntityReferences(sanitizeHtml(markdownToHtml(value))),
+    content: editorHtmlFromMarkdown(value),
     editable,
     editorProps: {
       attributes: {
@@ -2114,7 +2172,8 @@ onMount(() => {
         return false;
       },
     },
-    onUpdate: () => emitChange(),
+    onUpdate: () => scheduleChange(),
+    onBlur: () => flushPendingChanges(),
     onTransaction: ({ editor: nextEditor, transaction }) => {
       if (entityReferenceSuppressedRange && transaction) {
         const newFrom = transaction.mapping.map(entityReferenceSuppressedRange.from, -1);
@@ -2133,7 +2192,6 @@ onMount(() => {
         }
       }
       editorState = nextEditor;
-      editorText = nextEditor.view.dom.textContent ?? "";
       emitSelection();
       updateEntityReferenceTrigger(nextEditor);
       syncEntityReferenceEditor(nextEditor);
@@ -2143,8 +2201,8 @@ onMount(() => {
     },
   });
   editorState = editor;
-  currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
-  editorText = editor.view.dom.textContent ?? "";
+  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  editorText = editorPlainText(editor);
   const preventLinkNavigationCapture = (event: MouseEvent) => {
     const anchor = getExternalLinkAnchor(event.target);
     if (anchor) event.preventDefault();
@@ -2158,10 +2216,12 @@ onMount(() => {
   window.addEventListener("click", preventWindowLinkClickCapture, true);
   window.addEventListener("auxclick", preventWindowLinkClickCapture, true);
   const initialTextFrame = requestAnimationFrame(() => {
-    editorText = editor?.view.dom.textContent ?? "";
+    editorText = editor ? editorPlainText(editor) : "";
   });
 
   return () => {
+    cancelPendingChange();
+    stopMoreMenuDrag();
     window.removeEventListener("keydown", handleFullscreenKeydown);
     window.removeEventListener("resize", handleResize);
     window.removeEventListener("mousedown", handleLinkPopoverOutside);
@@ -2179,10 +2239,11 @@ onMount(() => {
 });
 
 $: if (editor && !editor.isFocused && value !== currentMarkdown) {
-  const nextHtml = hydrateEntityReferences(sanitizeHtml(markdownToHtml(value)));
+  cancelPendingChange();
+  const nextHtml = editorHtmlFromMarkdown(value);
   if (nextHtml !== editor.getHTML()) editor.commands.setContent(nextHtml, { emitUpdate: false });
-  currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
-  editorText = editor.view.dom.textContent ?? "";
+  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  editorText = editorPlainText(editor);
 }
 $: if (editor && entities) {
   // live update auto references when entity names change
@@ -2190,11 +2251,11 @@ $: if (editor && entities) {
     if (!editor) return;
     if (editor.isFocused) updateAutoEntityReferences();
     else {
-      const hydrated = hydrateEntityReferences(sanitizeHtml(markdownToHtml(value)));
+      const hydrated = editorHtmlFromMarkdown(value);
       if (hydrated !== editor.getHTML()) {
         editor.commands.setContent(hydrated, { emitUpdate: false });
-        currentMarkdown = htmlToMarkdown(denormalizeAssetHtml(editor.getHTML()));
-        editorText = editor.view.dom.textContent ?? "";
+        currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+        editorText = editorPlainText(editor);
       } else updateAutoEntityReferences();
     }
   });
@@ -2802,7 +2863,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
         <button
           type="button"
           class="search-icon-btn"
-          title={searchReplaceOpen ? "Hide replace" : "Show replace (⌘/Ctrl + H)"}
+          title={searchReplaceOpen ? "Hide replace" : "Show replace (Ctrl+H or ⌘⌥F)"}
           aria-label="Toggle replace"
           aria-pressed={searchReplaceOpen}
           class:active={searchReplaceOpen}
@@ -2980,7 +3041,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     </div>
   {/if}
 
-  <div class="editor-statusbar" aria-live="polite">
+  <div class="editor-statusbar">
     <span>{wordCountValue} {wordCountValue === 1 ? "word" : "words"}</span>
     <span class="status-separator">·</span>
     <span>{characterCountValue} {characterCountValue === 1 ? "character" : "characters"}</span>

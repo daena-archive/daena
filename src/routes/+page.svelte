@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
 import {
@@ -154,6 +155,8 @@ let timelineView = $state<TimelineView>("events");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
+let selectedLoading = $state(false);
+let selectedLoadError = $state("");
 let documentBody = $state("");
 let documentMode = $state<"read" | "edit">("edit");
 let fields = $state<Record<string, unknown>>({});
@@ -209,11 +212,16 @@ let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
 let isSaving = $state(false);
 let savedAt = $state("");
+let saveError = $state("");
 let editorFullscreen = $state(false);
 let hasUnsavedChanges = $state(false);
 let autoSaveTimer: number | null = null;
+let saveInFlight: Promise<boolean> | null = null;
+let saveQueued = false;
+let autoSaveFailureCount = 0;
 let documentRevision = 0;
 let loadedDocumentRevision = "";
+let loadedFieldRevisions: Record<string, string> = {};
 let selectedLoadToken = 0;
 let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
 let conflictDiskBody = $state("");
@@ -323,6 +331,7 @@ let aiUnlisten: (() => void) | null = null;
 let editorRef = $state<{
   insertAiTextAtRequest: (value: string) => boolean;
   replaceAiTextWithMarkdown: (value: string) => string | null;
+  flushPendingChanges: () => void;
 } | null>(null);
 let aiFieldFillBusy = $state(false);
 let aiFieldFillOpen = $state(false);
@@ -645,6 +654,18 @@ const definitions = () => {
       .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? []
   );
 };
+function namespaceForField(definition: FieldDefinition): string {
+  const manifest = activeManifest();
+  const schema = manifest?.schemas.find(
+    (candidate) =>
+      (!selected?.entity_type || candidate.entityTypes.includes(selected.entity_type)) &&
+      candidate.fields.some((field) => field.key === definition.key),
+  );
+  return schema?.namespace ?? manifest?.schemas[0]?.namespace ?? activeModuleId();
+}
+function fieldRevisionKey(namespace: string, key: string) {
+  return `${namespace}\u0000${key}`;
+}
 function isEmptyFieldValue(value: unknown) {
   return (
     value === undefined ||
@@ -1193,6 +1214,7 @@ async function openNavigationItem(item: NavigationItem) {
 }
 
 async function openPluginView(item: PluginNavigationItem) {
+  if (!(await flushAutoSave())) return;
   if (item.renderer === "maps") {
     if (!(await dismissSettings())) return;
     const mapId = currentMapId();
@@ -1237,6 +1259,7 @@ const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === 
 async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
+    if (!(await flushAutoSave())) return;
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
@@ -1350,7 +1373,7 @@ $effect(() => {
     .catch(() => {
       // Keep the current list on transient failures; retry on next visit.
     });
-  if (!selected && collectionResult().entities.length > 0) selected = collectionResult().entities[0];
+  if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0]);
 });
 
 function savedMaps() {
@@ -1494,6 +1517,7 @@ async function switchSection(next: WorkspaceSection) {
 
 async function reconcileWorkspaceSection() {
   if (enabledWorkspaceSections().includes(section)) return;
+  if (!(await flushAutoSave())) return;
   if (!(await leavePluginView())) return;
   section = enabledWorkspaceSections()[0] ?? "lore";
   clearSelection();
@@ -1774,27 +1798,32 @@ function cancelAutoSave() {
     autoSaveTimer = null;
   }
 }
-function scheduleAutoSave() {
+function scheduleAutoSave(delay = 900) {
   cancelAutoSave();
-  if (!selected || !sectionEnabled()) return;
+  if (!selected || !sectionEnabled() || documentConflict || projectDiagnostics.length > 0) return;
   autoSaveTimer = window.setTimeout(() => {
     autoSaveTimer = null;
     void saveDocument();
-  }, 900);
+  }, delay);
 }
 function markEntryDirty() {
   documentRevision += 1;
   hasUnsavedChanges = true;
   savedAt = "";
+  autoSaveFailureCount = 0;
   scheduleAutoSave();
 }
 function updateDocumentBody(value: string) {
-  if (projectDiagnostics.length > 0) return;
+  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
   documentBody = value;
   markEntryDirty();
 }
 function setEditorFullscreen(value: boolean) {
   editorFullscreen = value;
+}
+async function toggleDocumentMode() {
+  if (documentMode === "edit" && !(await flushAutoSave())) return;
+  documentMode = documentMode === "read" ? "edit" : "read";
 }
 function friendlyError(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -2577,6 +2606,7 @@ async function closeProject() {
 }
 
 async function flushAutoSave() {
+  editorRef?.flushPendingChanges();
   cancelAutoSave();
   if (!hasUnsavedChanges) return true;
   return saveDocument();
@@ -2586,76 +2616,96 @@ async function loadSelectedState(entity: Entity) {
   const token = ++selectedLoadToken;
   const entityId = entity.id;
   const isCurrent = () => token === selectedLoadToken && selected?.id === entityId;
-  closeAiFieldFill();
-  closeAiRewrite();
-  documentBody = "";
-  fields = {};
-  relationships = [];
-  metadataDialog = null;
-  assets = [];
-  mapLocations = [];
-  loadedDocumentRevision = "";
-  const context = contextFor();
-  const record = await context.entities.get(entityId as UUID);
-  if (!isCurrent()) return;
-  const document = record?.documents[0];
-  documentBody = normalizeDocument(document?.body ?? "", document?.format);
-  const documents = await project.listDocuments(entityId);
-  if (!isCurrent()) return;
-  loadedDocumentRevision = documents[0]?.revision ?? "";
-  const values = await context.fields.list(entityId as UUID);
-  if (!isCurrent()) return;
-  dateEditorOpen = {};
-  const nextDateCalendars: Record<string, string> = {};
-  fields = Object.fromEntries(
-    Object.entries(values).map(([key, value]) => {
-      const definition = definitions().find((candidate) => candidate.key === key);
-      if (definition?.type === "date") {
-        const date = parseCalendarDate(value);
-        if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
-        const serialized = date ? serializeCalendarDate(date) : "";
-        const iso = typeof serialized === "string" ? serialized : formatCalendarDate(date);
-        if (iso === "1" || iso === "1-1" || iso === "1-1-1") return [key, ""];
-        return [key, serialized === "" ? String(value ?? "") : serialized];
-      }
-      if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
-        return [key, value];
-      return [key, fieldDisplayValue(value)];
-    }),
-  );
-  dateCalendarByField = nextDateCalendars;
-  relationships = context.module.capabilities.includes("relationship.read")
-    ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
-        id: relationship.id,
-        source_id: relationship.sourceId,
-        target_id: relationship.targetId,
-        relationship_type: relationship.type,
-        metadata: JSON.stringify(relationship.metadata),
-        revision: relationship.revision,
-      }))
-    : [];
-  if (!isCurrent()) return;
-  assets = context.module.capabilities.includes("asset.read:self")
-    ? (await context.assets.list(entityId as UUID)).map((asset) => ({
-        id: asset.id,
-        entity_id: asset.entityId,
-        namespace: asset.namespace,
-        filename: asset.filename,
-        content_hash: asset.contentHash,
-        size: asset.size,
-        mime_type: asset.mimeType,
-        path: asset.path,
-        created_at: asset.createdAt,
-        role: asset.role,
-        reference_scope: asset.referenceScope,
-        revision: asset.revision,
-      }))
-    : [];
-  if (!isCurrent()) return;
-  const nextMapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
-  if (!isCurrent()) return;
-  mapLocations = nextMapLocations;
-  savedAt = "";
+  selectedLoading = true;
+  selectedLoadError = "";
+  try {
+    closeAiFieldFill();
+    closeAiRewrite();
+    documentBody = "";
+    fields = {};
+    relationships = [];
+    metadataDialog = null;
+    assets = [];
+    mapLocations = [];
+    loadedDocumentRevision = "";
+    loadedFieldRevisions = {};
+    const context = contextFor();
+    const documents = await project.listDocuments(entityId);
+    if (!isCurrent()) return;
+    const document = documents[0];
+    documentBody = normalizeDocument(document?.body ?? "", document?.format);
+    loadedDocumentRevision = document?.revision ?? "";
+    const storedFields = await project.listFields(entityId);
+    if (!isCurrent()) return;
+    const activeNamespaces = new Set(
+      activeManifest()
+        ?.schemas.filter((schema) => !entity.entity_type || schema.entityTypes.includes(entity.entity_type))
+        .map((schema) => schema.namespace) ?? [],
+    );
+    const relevantFields = storedFields.filter(
+      (field) => activeNamespaces.size === 0 || activeNamespaces.has(field.namespace),
+    );
+    const values = Object.fromEntries(relevantFields.map((field) => [field.key, field.value]));
+    loadedFieldRevisions = Object.fromEntries(
+      relevantFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
+    );
+    dateEditorOpen = {};
+    const nextDateCalendars: Record<string, string> = {};
+    fields = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => {
+        const definition = definitions().find((candidate) => candidate.key === key);
+        if (definition?.type === "date") {
+          const date = parseCalendarDate(value);
+          if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
+          const serialized = date ? serializeCalendarDate(date) : "";
+          const iso = typeof serialized === "string" ? serialized : formatCalendarDate(date);
+          if (iso === "1" || iso === "1-1" || iso === "1-1-1") return [key, ""];
+          return [key, serialized === "" ? String(value ?? "") : serialized];
+        }
+        if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
+          return [key, value];
+        return [key, fieldDisplayValue(value)];
+      }),
+    );
+    dateCalendarByField = nextDateCalendars;
+    relationships = context.module.capabilities.includes("relationship.read")
+      ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
+          id: relationship.id,
+          source_id: relationship.sourceId,
+          target_id: relationship.targetId,
+          relationship_type: relationship.type,
+          metadata: JSON.stringify(relationship.metadata),
+          revision: relationship.revision,
+        }))
+      : [];
+    if (!isCurrent()) return;
+    assets = context.module.capabilities.includes("asset.read:self")
+      ? (await context.assets.list(entityId as UUID)).map((asset) => ({
+          id: asset.id,
+          entity_id: asset.entityId,
+          namespace: asset.namespace,
+          filename: asset.filename,
+          content_hash: asset.contentHash,
+          size: asset.size,
+          mime_type: asset.mimeType,
+          path: asset.path,
+          created_at: asset.createdAt,
+          role: asset.role,
+          reference_scope: asset.referenceScope,
+          revision: asset.revision,
+        }))
+      : [];
+    if (!isCurrent()) return;
+    const nextMapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
+    if (!isCurrent()) return;
+    mapLocations = nextMapLocations;
+    savedAt = "";
+  } catch (cause) {
+    if (isCurrent()) selectedLoadError = friendlyError(cause);
+    throw cause;
+  } finally {
+    if (isCurrent()) selectedLoading = false;
+  }
 }
 
 async function refreshSelectedMapLocations(entityId = selected?.id) {
@@ -2682,6 +2732,7 @@ async function ensureMapEditorOpen(mapEntityId: string) {
     entities.find((entity) => entity.id === mapEntityId) ??
     (await project.listEntities()).find((entity) => entity.id === mapEntityId);
   if (!map) throw new Error("map-unavailable: choose a saved map first");
+  if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
   const mapsView = mapsNavigationItem();
   selected = map;
   mapsEditorKey = map.id;
@@ -2850,6 +2901,7 @@ async function selectEntity(entity: Entity) {
   hasUnsavedChanges = false;
   documentConflict = null;
   documentRevision = 0;
+  saveError = "";
   error = "";
   try {
     await loadSelectedState(entity);
@@ -2884,6 +2936,7 @@ async function reloadSelectedFromDisk() {
   documentConflict = null;
   conflictDiskBody = "";
   savedAt = "";
+  saveError = "";
 }
 
 function handlePortableFilesChanged(paths: string[]) {
@@ -2904,11 +2957,17 @@ async function reloadConflict() {
 async function overwriteConflict() {
   if (!selected) return;
   try {
-    const documents = await project.listDocuments(selected.id);
+    const [documents, storedFields] = await Promise.all([
+      project.listDocuments(selected.id),
+      project.listFields(selected.id),
+    ]);
     loadedDocumentRevision = documents[0]?.revision ?? "";
+    loadedFieldRevisions = Object.fromEntries(
+      storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
+    );
     documentConflict = null;
     conflictDiskBody = "";
-    if (!(await saveDocument()))
+    if (!(await saveDocument()) && !documentConflict && !saveError)
       documentConflict = { paths: [], diagnostics: ["The draft could not be written as a new revision."] };
   } catch (cause) {
     documentConflict = { paths: [], diagnostics: [friendlyError(cause)] };
@@ -3029,7 +3088,7 @@ function toggleCreateForm() {
 }
 
 function updateField(definition: FieldDefinition, event: Event) {
-  if (projectDiagnostics.length > 0) return;
+  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
   const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
   let value: unknown;
   if (definition.type === "boolean") {
@@ -3045,45 +3104,100 @@ function updateField(definition: FieldDefinition, event: Event) {
   fields = { ...fields, [definition.key]: value };
   markEntryDirty();
 }
-async function saveDocument(): Promise<boolean> {
-  if (!selected || !sectionEnabled() || documentConflict || projectDiagnostics.length > 0) return false;
-  cancelAutoSave();
+function isRevisionConflict(cause: unknown) {
+  return friendlyError(cause).toLowerCase().includes("revision conflict");
+}
+
+async function persistDocumentSnapshot(): Promise<boolean> {
+  if (
+    !selected ||
+    selectedLoading ||
+    selectedLoadError ||
+    !sectionEnabled() ||
+    documentConflict ||
+    projectDiagnostics.length > 0
+  )
+    return false;
   const entityId = selected.id;
   const body = documentBody;
   const revision = documentRevision;
   const definitionsForSave = definitions().filter((definition) => definition.type !== "relationship");
   const fieldsSnapshot = { ...fields };
-  isSaving = true;
   try {
     await project.saveEntry(
       {
         document: { entity_id: entityId, body, format: "markdown" },
         fields: definitionsForSave.map((definition) => {
+          const namespace = namespaceForField(definition);
           const value = fieldValueForSave(definition, fieldsSnapshot[definition.key] ?? "");
           return {
             entity_id: entityId,
-            namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(),
+            namespace,
             key: definition.key,
             value: definition.type === "date" && value ? (parseCalendarDate(value) ?? value) : value,
-            revision: "",
+            revision: loadedFieldRevisions[fieldRevisionKey(namespace, definition.key)] ?? "",
           };
         }),
       },
       { expectedRevision: loadedDocumentRevision || undefined },
     );
-    const documents = await project.listDocuments(entityId);
-    loadedDocumentRevision = documents[0]?.revision ?? "";
+    const [documents, storedFields] = await Promise.all([
+      project.listDocuments(entityId),
+      project.listFields(entityId),
+    ]);
+    if (selected?.id === entityId) {
+      loadedDocumentRevision = documents[0]?.revision ?? "";
+      loadedFieldRevisions = Object.fromEntries(
+        storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
+      );
+    }
     if (selected?.id === entityId && documentRevision === revision) {
       hasUnsavedChanges = false;
+      autoSaveFailureCount = 0;
+      saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
     return true;
   } catch (cause) {
-    error = friendlyError(cause);
+    if (isRevisionConflict(cause) && selected?.id === entityId) {
+      try {
+        const documents = await project.listDocuments(entityId);
+        conflictDiskBody = normalizeDocument(documents[0]?.body ?? "", documents[0]?.format);
+      } catch {
+        conflictDiskBody = "";
+      }
+      documentConflict = { paths: [], diagnostics: [] };
+      savedAt = "";
+      saveError = "";
+    } else {
+      saveError = friendlyError(cause);
+      autoSaveFailureCount += 1;
+      const retryDelay = Math.min(30_000, 2_000 * 2 ** Math.min(autoSaveFailureCount - 1, 4));
+      scheduleAutoSave(retryDelay);
+    }
     return false;
-  } finally {
-    isSaving = false;
   }
+}
+
+async function saveDocument(): Promise<boolean> {
+  cancelAutoSave();
+  if (saveInFlight) {
+    saveQueued = true;
+    const currentResult = await saveInFlight;
+    if (!currentResult || !hasUnsavedChanges) return currentResult;
+    return saveDocument();
+  }
+  if (!hasUnsavedChanges) return true;
+  isSaving = true;
+  saveQueued = false;
+  const operation = persistDocumentSnapshot();
+  saveInFlight = operation;
+  const result = await operation;
+  if (saveInFlight === operation) saveInFlight = null;
+  isSaving = false;
+  const shouldSaveQueuedChanges = result && saveQueued && hasUnsavedChanges;
+  saveQueued = false;
+  return shouldSaveQueuedChanges ? saveDocument() : result;
 }
 async function openEntityEditDialog() {
   if (projectDiagnostics.length > 0) return;
@@ -3485,6 +3599,7 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
   );
 }
 async function openSettings(section: SettingsSection = "general") {
+  if (!(await flushAutoSave())) return;
   const wasEditingSchema = showSettings && settingsSection === "schema" && !!schemaPluginId;
   if (showSettings) {
     if (!(await beforeSettingsNavigate(section))) return;
@@ -3852,13 +3967,17 @@ function clearSelection() {
   editorFullscreen = false;
   hasUnsavedChanges = false;
   selected = null;
+  selectedLoading = false;
+  selectedLoadError = "";
   documentBody = "";
   fields = {};
   relationships = [];
   metadataDialog = null;
   assets = [];
   savedAt = "";
+  saveError = "";
   loadedDocumentRevision = "";
+  loadedFieldRevisions = {};
   documentConflict = null;
   conflictDiskBody = "";
   projectDiagnostics = [];
@@ -3903,12 +4022,14 @@ function resetProjectSessionState() {
   schemaOverlayLoadToken += 1;
   ready = false;
 }
-function openExternalImport() {
+async function openExternalImport() {
   showProjectMenu = false;
+  if (!(await flushAutoSave())) return;
   showExternalImport = true;
 }
 async function seedExample() {
   try {
+    if (!(await flushAutoSave())) return;
     await project.seedExample();
     clearSelection();
     await loadEntities();
@@ -3932,6 +4053,8 @@ async function rebuildSearchIndex() {
 }
 async function importPortableCheckpoint() {
   await runProjectTransition("Importing checkpoint…", async () => {
+    if (!(await flushAutoSave())) return;
+    if (!(await leavePluginView())) return;
     await project.importCheckpoint();
     resetProjectSessionState();
     await finishOpening();
@@ -3939,6 +4062,7 @@ async function importPortableCheckpoint() {
   });
 }
 async function createPortableBackup() {
+  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
   return project.backup();
 }
 async function exportMarkdownProject() {
@@ -3959,10 +4083,13 @@ async function exportMarkdownProject() {
   }
 }
 async function createRecoveryBackup() {
+  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
   await runProjectTransition("Restoring recovery backup…", async () => {
+    if (!(await flushAutoSave())) return;
+    if (!(await leavePluginView())) return;
     await project.restoreRecoveryBackup(path);
     resetProjectSessionState();
     await finishOpening();
@@ -3987,6 +4114,31 @@ $effect(() => {
 onMount(() => {
   void loadRecentProjects();
   void closeNativePluginWebviews();
+  const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+    editorRef?.flushPendingChanges();
+    if (!hasUnsavedChanges) return;
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", handleBeforeUnload);
+  let closeListenerDisposed = false;
+  let unlistenWindowClose: (() => void) | undefined;
+  void getCurrentWindow()
+    .onCloseRequested(async (event) => {
+      if (!ready) return;
+      event.preventDefault();
+      if (!(await flushAutoSave())) {
+        error = "The window stayed open because the current draft could not be saved.";
+        return;
+      }
+      if (!(await leavePluginView())) return;
+      await getCurrentWindow().destroy();
+    })
+    .then((cleanup) => {
+      if (closeListenerDisposed) cleanup();
+      else unlistenWindowClose = cleanup;
+    })
+    .catch(() => {});
   let unlisten: (() => void) | undefined;
   void listen<string[]>("project-portable-files-changed", (event) => handlePortableFilesChanged(event.payload))
     .then((cleanup) => {
@@ -4000,6 +4152,7 @@ onMount(() => {
       const map = entities.find((entity) => entity.id === event.payload.mapEntityId);
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
+      if (!(await flushAutoSave())) return;
       if (!(await leavePluginView())) return;
       selected = map;
       mapsEditorKey = map.id;
@@ -4103,6 +4256,10 @@ onMount(() => {
     })
     .catch(() => {});
   return () => {
+    closeListenerDisposed = true;
+    unlistenWindowClose?.();
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+    cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
     if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
@@ -5497,8 +5654,20 @@ onMount(() => {
                 </div>
                 {#if selected}
                   <div class="editor-status">
-                    {#if isSaving}<span class="saving-dot"></span> Saving…{:else if hasUnsavedChanges}<span
-                        class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span class="saved-dot">✓</span>
+                    {#if selectedLoading}<span class="saving-dot"></span> Loading…{:else if selectedLoadError}<span
+                        class="unsaved-dot"></span
+                      ><span title={selectedLoadError}>Could not load entry</span><button
+                        class="quiet-button"
+                        type="button"
+                        onclick={() => void reloadSelectedFromDisk()}>Retry</button
+                      >{:else if isSaving}<span class="saving-dot"></span> Saving…{:else if saveError}<span
+                        class="unsaved-dot"></span
+                      ><span title={saveError}>Save paused — retrying</span><button
+                        class="quiet-button"
+                        type="button"
+                        onclick={() => void flushAutoSave()}>Retry now</button
+                      >{:else if hasUnsavedChanges}<span class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span
+                        class="saved-dot">✓</span>
                       Saved {savedAt}{/if}
                     {#if section === "maps"}<button
                         class="quiet-button"
@@ -5514,14 +5683,14 @@ onMount(() => {
                     <strong
                       >{documentConflict.diagnostics.length
                         ? "Canonical source needs attention"
-                        : "This draft changed on disk"}</strong>
+                        : "This entry changed elsewhere"}</strong>
                     <p>
                       {documentConflict.diagnostics.length
                         ? documentConflict.diagnostics[0]
-                        : "Your unsaved draft is preserved. Choose how to reconcile it before saving."}
+                        : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
                     </p>
                     {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
-                        <summary>Compare with disk</summary>
+                        <summary>Compare with the currently saved document</summary>
                         <pre>{conflictDiskBody}</pre>
                       </details>{/if}
                     <div class="conflict-actions">
@@ -5622,12 +5791,17 @@ onMount(() => {
                       {entities}
                       entityId={selected?.id ?? null}
                       defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
-                      editable={projectDiagnostics.length === 0 && !aiBusy && !aiRewriteOpen}
+                      editable={!selectedLoading &&
+                        !selectedLoadError &&
+                        projectDiagnostics.length === 0 &&
+                        !aiBusy &&
+                        !aiRewriteOpen}
                       fullscreen={editorFullscreen}
                       aiEnabled={projectInfo?.aiEnabled ?? false}
                       onChange={updateDocumentBody}
                       onSelectionChange={setAiSelection}
                       onAiRequest={openAiAction}
+                      onSaveRequest={() => void flushAutoSave()}
                       onFullscreenChange={setEditorFullscreen}
                       placeholder={section === "writing"
                         ? writingView === "manuscripts"
@@ -5644,10 +5818,15 @@ onMount(() => {
                     <button
                       class="quiet-button"
                       type="button"
-                      onclick={() => (documentMode = documentMode === "read" ? "edit" : "read")}
+                      disabled={selectedLoading}
+                      onclick={() => void toggleDocumentMode()}
                       >{documentMode === "read" ? "Edit" : "View article"}</button>
-                    <button class="quiet-button" type="button" onclick={() => void openEntityEditDialog()}>Edit</button>
-                    <button class="quiet-button" onclick={archiveSelected}>Archive</button>
+                    <button
+                      class="quiet-button"
+                      type="button"
+                      disabled={selectedLoading}
+                      onclick={() => void openEntityEditDialog()}>Edit</button>
+                    <button class="quiet-button" disabled={selectedLoading} onclick={archiveSelected}>Archive</button>
                   </div>
                 </div>
               {:else}
@@ -5674,7 +5853,9 @@ onMount(() => {
         {/if}
 
         {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}<aside
-            class="inspector-panel panel-surface">
+            class="inspector-panel panel-surface"
+            aria-busy={selectedLoading}
+            inert={selectedLoading || Boolean(selectedLoadError)}>
             <div class="inspector-heading">
               <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
               <div class="inspector-heading-actions">

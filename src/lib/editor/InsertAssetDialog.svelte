@@ -13,6 +13,9 @@ import {
   Trash2 as Trash2Icon,
   RefreshCw as RefreshCwIcon,
   TriangleAlert as TriangleAlertIcon,
+  TextAlignStart as AlignLeftIcon,
+  TextAlignCenter as AlignCenterIcon,
+  TextAlignEnd as AlignRightIcon,
 } from "@lucide/svelte";
 import type { Asset, Entity } from "$lib/project/client";
 import { project } from "$lib/project/client";
@@ -30,12 +33,16 @@ let {
   initialWidth = "",
   initialHeight = "",
   initialSrc = "",
+  initialAlign = "" as "" | "left" | "center" | "right",
 }: {
   open: boolean;
   entityId?: string | null;
   entities?: Entity[];
   defaultNamespace?: string | null;
-  onInsert: (asset: Asset | null, meta?: { alt: string; title: string; width: string; height: string }) => void;
+  onInsert: (
+    asset: Asset | null,
+    meta?: { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" },
+  ) => void;
   onCancel: () => void;
   mode?: "insert" | "replace";
   initialAlt?: string;
@@ -43,6 +50,7 @@ let {
   initialWidth?: string;
   initialHeight?: string;
   initialSrc?: string;
+  initialAlign?: "" | "left" | "center" | "right";
 } = $props();
 
 type Tab = "mine" | "shared" | "upload";
@@ -78,6 +86,7 @@ let draftAlt = $state("");
 let draftTitle = $state("");
 let draftWidth = $state("");
 let draftHeight = $state("");
+let draftAlign = $state<"" | "left" | "center" | "right">("");
 let draftTitleCustom = $state(false);
 let draftPreserveAspect = $state(true);
 let draftNaturalW = $state(0);
@@ -322,6 +331,8 @@ $effect(() => {
     draftTitle = initialTitle;
     draftWidth = /^\d+$/.test(initialWidth) ? initialWidth : "";
     draftHeight = /^\d+$/.test(initialHeight) ? initialHeight : "";
+    draftAlign =
+      initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
     draftTitleCustom = !!(initialTitle && initialTitle !== initialAlt);
     draftNaturalW = 0;
     draftNaturalH = 0;
@@ -458,12 +469,12 @@ $effect(() => {
   };
 });
 
-function imageMeta(): { alt: string; title: string; width: string; height: string } {
+function imageMeta(): { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" } {
   const alt = draftAlt.trim();
   const title = draftTitleCustom ? draftTitle.trim() : alt;
   const w = /^\d+$/.test(draftWidth.trim()) ? draftWidth.trim() : "";
   const h = /^\d+$/.test(draftHeight.trim()) ? draftHeight.trim() : "";
-  return { alt, title, width: w, height: h };
+  return { alt, title, width: w, height: h, align: draftAlign };
 }
 function isImageContext(): boolean {
   if (activeTab === "upload" && uploadedAsset) return isImage(uploadedAsset.mime_type);
@@ -486,7 +497,8 @@ async function confirmUploadInsert() {
   const asset = uploadedAsset;
   if (!asset) return;
   const mime = asset.mime_type;
-  let meta: { alt: string; title: string; width: string; height: string } | undefined = undefined;
+  let meta: { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" } | undefined =
+    undefined;
   if (isImage(mime)) {
     meta = imageMeta();
     if (!meta.alt) meta.alt = asset.filename;
@@ -606,6 +618,8 @@ function clearStagedUpload() {
   draftTitleCustom = !!(initialTitle && initialTitle !== initialAlt);
   draftWidth = /^\d+$/.test(initialWidth) ? initialWidth : "";
   draftHeight = /^\d+$/.test(initialHeight) ? initialHeight : "";
+  draftAlign =
+    initialAlign === "center" || initialAlign === "right" || initialAlign === "left" ? initialAlign : "";
   draftNaturalW = 0;
   draftNaturalH = 0;
   if (initialSrc) probeNaturalForDialog(initialSrc, "");
@@ -892,6 +906,40 @@ onMount(() => {
               >Shown on hover. Leave empty and the alt text will be used as the <code>title</code>.</span
             >
           </label>
+
+          <div class="image-align-group">
+            <span class="field-label">Alignment</span>
+            <div class="image-align-row" role="group" aria-label="Image alignment">
+              <button
+                type="button"
+                class="align-btn"
+                class:active={draftAlign === "" || draftAlign === "left"}
+                aria-pressed={draftAlign === "" || draftAlign === "left"}
+                title="Align left (default)"
+                onclick={() => (draftAlign = "left")}>
+                <AlignLeftIcon size={14} strokeWidth={1.8} /> Left
+              </button>
+              <button
+                type="button"
+                class="align-btn"
+                class:active={draftAlign === "center"}
+                aria-pressed={draftAlign === "center"}
+                title="Center image"
+                onclick={() => (draftAlign = "center")}>
+                <AlignCenterIcon size={14} strokeWidth={1.8} /> Center
+              </button>
+              <button
+                type="button"
+                class="align-btn"
+                class:active={draftAlign === "right"}
+                aria-pressed={draftAlign === "right"}
+                title="Align right"
+                onclick={() => (draftAlign = "right")}>
+                <AlignRightIcon size={14} strokeWidth={1.8} /> Right
+              </button>
+            </div>
+            <span class="field-hint">Paragraph alignment — center is most common for standalone images.</span>
+          </div>
 
           <div class="image-edit-dim-group">
             <span class="field-label">Size <span class="field-optional">pixels · empty = auto</span></span>
@@ -1758,6 +1806,53 @@ footer .primary:disabled {
 .image-oversize-warning strong {
   color: #5e3800;
   font-weight: 700;
+}
+.image-align-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--canvas, #f7f6f2);
+}
+.image-align-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.align-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  flex: 1 1 0;
+  padding: 0 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+  font: 700 11px/1 var(--font-body, system-ui, sans-serif);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.align-btn:hover,
+.align-btn:focus-visible {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--ink, #25251f);
+  outline: 0;
+}
+.align-btn.active,
+.align-btn[aria-pressed="true"] {
+  border-color: #d3c0a9;
+  background: #f2e4d2;
+  color: var(--accent-dark, #365342);
+  box-shadow: inset 0 0 0 1px rgba(211, 192, 169, 0.35);
 }
 .image-lock-btn,
 .image-auto-btn {

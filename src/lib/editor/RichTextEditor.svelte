@@ -345,6 +345,7 @@ let linkPopover: { href: string; text: string; from: number; to: number; top: nu
 let linkPopoverEl: HTMLDivElement | null = null;
 let insertAssetOpen = false;
 let insertAssetRange: { from: number; to: number } | null = null;
+let insertAssetInitialAlign: "" | "left" | "center" | "right" = "";
 let imagePopover: {
   from: number;
   to: number;
@@ -1360,6 +1361,7 @@ function replaceImage() {
   // use from/to of image node (nodeSize 1)
   const node = editorState.state.doc.nodeAt(from);
   if (node) insertAssetRange = { from, to: from + node.nodeSize };
+  insertAssetInitialAlign = getCurrentAlign();
   insertAssetOpen = true;
 }
 
@@ -1600,6 +1602,13 @@ function isAligned(alignment: string): boolean {
   );
 }
 
+function getCurrentAlign(): "" | "left" | "center" | "right" {
+  if (isAligned("center")) return "center";
+  if (isAligned("right")) return "right";
+  if (isAligned("left")) return "left";
+  return "";
+}
+
 function isDirection(direction: string): boolean {
   if (!editorState) return false;
   return (
@@ -1717,9 +1726,13 @@ function openInsertAsset() {
   imageReplaceMode = false;
   const { from, to } = editor.state.selection;
   insertAssetRange = { from, to };
+  insertAssetInitialAlign = getCurrentAlign();
   insertAssetOpen = true;
 }
-function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: string; width: string; height: string }) {
+function handleInsertAsset(
+  asset: Asset | null,
+  meta?: { alt: string; title: string; width: string; height: string; align: "" | "left" | "center" | "right" },
+) {
   if (!editor || !editorState) return;
   const range = insertAssetRange ?? editor.state.selection;
   // close first to avoid focus issues
@@ -1756,6 +1769,11 @@ function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: str
           imageDraftHeight = height ? String(height) : "";
           imageTitleCustom = !!(title && title !== alt);
           probeNatural(src);
+          if (meta?.align === "left" || meta?.align === "center" || meta?.align === "right") {
+            try {
+              editorState.chain().focus().setTextAlign(meta.align).run();
+            } catch {}
+          }
         } catch {
           const md = `![${alt}](${src})`;
           const html = markdownToHtml(md);
@@ -1788,6 +1806,11 @@ function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: str
           imageDraftWidth = width ? String(width) : "";
           imageDraftHeight = height ? String(height) : "";
           imageTitleCustom = !!(title && title !== alt);
+          if (meta?.align === "left" || meta?.align === "center" || meta?.align === "right") {
+            try {
+              editorState.chain().focus().setTextAlign(meta.align).run();
+            } catch {}
+          }
         } catch {}
       } else if (asset) {
         // non-image replace? fallback to file link insertion at same position
@@ -1837,6 +1860,11 @@ function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: str
       if (width != null) attrs.width = width;
       if (height != null) attrs.height = height;
       chain.setImage(attrs).run();
+      if (meta?.align === "left" || meta?.align === "center" || meta?.align === "right") {
+        try {
+          editor.chain().focus().setTextAlign(meta.align).run();
+        } catch {}
+      }
     } else {
       editor
         .chain()
@@ -1854,6 +1882,11 @@ function handleInsertAsset(asset: Asset | null, meta?: { alt: string; title: str
     const html = markdownToHtml(md);
     try {
       editor.chain().focus().insertContentAt(range.from, html).run();
+      if (isImg && (meta?.align === "left" || meta?.align === "center" || meta?.align === "right")) {
+        try {
+          editor.chain().focus().setTextAlign(meta.align).run();
+        } catch {}
+      }
     } catch {}
   }
   insertAssetRange = null;
@@ -2982,6 +3015,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     initialWidth={imageReplaceMode && imagePopover ? imageDraftWidth : ""}
     initialHeight={imageReplaceMode && imagePopover ? imageDraftHeight : ""}
     initialSrc={imageReplaceMode && imagePopover ? imagePopover.src : ""}
+    initialAlign={insertAssetInitialAlign}
     onInsert={handleInsertAsset}
     onCancel={cancelInsertAsset} />
 </div>

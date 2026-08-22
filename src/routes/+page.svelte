@@ -98,6 +98,9 @@ import {
   ChevronDown,
   ChevronRight,
   ArrowUpRight,
+  UsersRound,
+  Sword,
+  TreePine,
 } from "@lucide/svelte";
 import { projectionModule } from "$lib/modules/projections";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
@@ -4489,7 +4492,7 @@ onMount(() => {
   </aside>
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
-    <header class="topbar">
+    <header class:startup-topbar={!ready} class="topbar">
       <div class="breadcrumbs" aria-label="Breadcrumb">
         <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span
             >{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span
@@ -5217,13 +5220,15 @@ onMount(() => {
           <h1>Build the world<br /><em>behind the story.</em></h1>
           <p>Shape characters, places, factions, and history in one calm, local-first studio.</p>
         </div>
-        <div class="welcome-art">
-          <div class="orb orb-one"></div>
-          <div class="orb orb-two"></div>
-          <div class="art-card">
-            <span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small
-              >Fragments · 12</small>
-          </div>
+        <div class="welcome-map" aria-hidden="true">
+          <span class="map-marker marker-atlas"><MapIcon size={21} strokeWidth={1.65} /></span>
+          <span class="map-marker marker-people"><UsersRound size={21} strokeWidth={1.65} /></span>
+          <span class="map-marker marker-sword"><Sword size={21} strokeWidth={1.65} /></span>
+          <span class="map-marker marker-tree"><TreePine size={21} strokeWidth={1.65} /></span>
+        </div>
+        <div class="art-card">
+          <span>ELDERMERE</span><strong>The sea remembers<br />what kingdoms forget.</strong><small
+            >Fragments · 12</small>
         </div>
       </section>
     {:else if projectionView}
@@ -6811,7 +6816,6 @@ onMount(() => {
   border-radius: 50%;
   background: #72a97a;
 }
-.welcome,
 .disabled-state {
   max-width: 1080px;
   min-height: calc(100vh - 58px);
@@ -6821,8 +6825,31 @@ onMount(() => {
   align-items: center;
   gap: 8vw;
 }
+.startup-topbar {
+  display: none;
+}
+.welcome {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  padding: clamp(60px, 8vh, 100px) clamp(38px, 6vw, 96px);
+  background: #f6f2ea url("/hero.png") center / cover no-repeat;
+}
+.welcome::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(250, 247, 240, 0.58) 0%, rgba(250, 247, 240, 0.18) 36%, transparent 58%);
+}
 .welcome-copy {
-  flex: 1;
+  position: relative;
+  z-index: 2;
+  width: min(44%, 500px);
 }
 .overline,
 .panel-kicker {
@@ -6848,41 +6875,58 @@ onMount(() => {
   font-size: 16px;
   line-height: 1.7;
 }
-.welcome-art {
-  position: relative;
-  width: 360px;
-  height: 390px;
-}
-.orb {
+.welcome-map {
   position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.map-marker {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 1px solid rgba(93, 83, 65, 0.14);
   border-radius: 50%;
+  background: rgba(255, 253, 247, 0.96);
+  color: var(--accent);
+  box-shadow: 0 9px 24px rgba(52, 50, 40, 0.16);
 }
-.orb-one {
-  top: 16px;
-  right: 15px;
-  width: 275px;
-  height: 275px;
-  background: radial-gradient(circle at 33% 30%, #eed5a5, #c2794d 64%, #7b4d3f);
-  box-shadow: 30px 35px 60px rgba(115, 74, 56, 0.22);
+.marker-atlas {
+  top: 10%;
+  left: 67%;
+  background: #294a39;
+  color: #f4efe5;
 }
-.orb-two {
-  left: 10px;
-  bottom: 36px;
-  width: 140px;
-  height: 140px;
+.marker-people {
+  top: 25%;
+  left: 56%;
+  background: #b87a3d;
+  color: #fff9ee;
+}
+.marker-sword {
+  top: 54%;
+  left: 49%;
+}
+.marker-tree {
+  top: 74%;
+  left: 56%;
   background: #365342;
-  box-shadow: 14px 16px 30px rgba(45, 71, 54, 0.2);
+  color: #f4efe5;
 }
 .art-card {
   position: absolute;
-  right: -10px;
-  bottom: 0;
-  width: 235px;
-  padding: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  border-radius: 12px;
-  background: rgba(255, 254, 250, 0.86);
-  box-shadow: var(--shadow-lg);
+  top: 41%;
+  right: 11%;
+  z-index: 2;
+  width: 260px;
+  padding: 25px 25px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 13px;
+  background: rgba(255, 254, 250, 0.93);
+  box-shadow: 0 18px 42px rgba(40, 48, 38, 0.18);
+  backdrop-filter: blur(4px);
 }
 .art-card span,
 .art-card small {
@@ -6894,8 +6938,8 @@ onMount(() => {
 }
 .art-card strong {
   display: block;
-  margin: 17px 0 27px;
-  font: 500 20px/1.18 var(--font-display);
+  margin: 16px 0 28px;
+  font: 500 21px/1.2 var(--font-display);
 }
 .art-card small {
   color: var(--ink-faint);
@@ -8097,7 +8141,7 @@ onMount(() => {
     padding: 12px 14px;
   }
   .startup-rail {
-    min-height: 100vh;
+    min-height: 0;
     padding: 24px 14px;
   }
   .brand {
@@ -8157,19 +8201,46 @@ onMount(() => {
     width: 150px;
   }
   .welcome {
-    min-height: calc(100vh - 58px);
-    display: block;
+    min-height: 720px;
+    align-items: flex-start;
     padding: 55px 24px;
+    background-position: 61% center;
+  }
+  .welcome::after {
+    background: linear-gradient(180deg, rgba(250, 247, 240, 0.96) 0%, rgba(250, 247, 240, 0.78) 36%, transparent 68%);
+  }
+  .welcome-copy {
+    width: 100%;
+    max-width: 460px;
   }
   .welcome h1 {
     font-size: 52px;
   }
-  .welcome-art {
-    width: 100%;
-    height: 270px;
-    margin-top: 35px;
+  .map-marker {
     transform: scale(0.84);
-    transform-origin: left top;
+  }
+  .marker-atlas {
+    top: 46%;
+    left: 72%;
+  }
+  .marker-people {
+    top: 57%;
+    left: 48%;
+  }
+  .marker-sword {
+    top: 72%;
+    left: 18%;
+  }
+  .marker-tree {
+    top: 84%;
+    left: 37%;
+  }
+  .art-card {
+    top: auto;
+    right: 24px;
+    bottom: 48px;
+    width: 235px;
+    padding: 21px;
   }
   .workspace-heading {
     display: block;
@@ -9074,7 +9145,7 @@ onMount(() => {
     width: auto;
   }
   .welcome {
-    min-height: calc(100vh - 130px);
+    min-height: 680px;
     padding-top: 42px;
   }
   .welcome h1 {
@@ -9082,11 +9153,6 @@ onMount(() => {
   }
   .welcome p {
     font-size: 14px;
-  }
-  .welcome-art {
-    margin-top: 22px;
-    transform: scale(0.72);
-    transform-origin: left top;
   }
   .workspace-heading {
     padding: 28px 17px 18px;
@@ -9192,8 +9258,31 @@ onMount(() => {
   .startup-primary {
     min-height: 43px;
   }
-  .welcome-art {
-    height: 225px;
+  .welcome {
+    min-height: 650px;
+    padding: 38px 18px;
+  }
+  .welcome h1 {
+    font-size: clamp(40px, 12vw, 50px);
+  }
+  .welcome p {
+    max-width: 34ch;
+  }
+  .marker-sword {
+    left: 8%;
+  }
+  .marker-tree {
+    left: 31%;
+  }
+  .art-card {
+    right: 18px;
+    bottom: 34px;
+    width: 218px;
+    padding: 18px;
+  }
+  .art-card strong {
+    margin: 13px 0 20px;
+    font-size: 18px;
   }
   .editor-footer > div {
     flex-direction: column-reverse;

@@ -3679,6 +3679,11 @@ fn dispatch_host_rpc(
         drop(host);
         let request_id_value = payload.get("requestId").and_then(serde_json::Value::as_str);
         if method == "ai.request.start" {
+            if let Some(core) = context.core.as_ref() {
+                if current_info(core)?.is_some() {
+                    ai::ensure_active_project(core, &context.caller.project_id)?;
+                }
+            }
             crate::ensure_project_ai_enabled(&context.caller.project_id)?;
             let operation = payload
                 .get("operation")

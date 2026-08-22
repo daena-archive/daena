@@ -23,6 +23,8 @@ use crate::settings::{AppSettings, SettingsStore};
 pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
 const MAX_BUFFERED_REQUESTS: usize = 32;
 const MAX_BUFFERED_EVENTS: usize = 64;
+const AI_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_PROVIDER_FRAME_BYTES: usize = 64 * 1024;
 const AI_CHUNKER_VERSION: &str = "chunker.v1";
 #[derive(Debug, Clone)]
 struct RetrievalSource {
@@ -627,6 +629,14 @@ impl Drop for RequestCleanup {
     }
 }
 
+struct ProviderFinished(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ProviderFinished {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderStatus {
@@ -735,12 +745,16 @@ struct OpenAiStreamChunk {
     choices: Vec<OpenAiChoice>,
     #[serde(default)]
     error: Option<serde_json::Value>,
+    #[serde(default)]
+    usage: Option<RemoteUsage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct OpenAiChoice {
     #[serde(default)]
     delta: OpenAiDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1361,6 +1375,17 @@ fn append_retrieved_context(selection: String, retrieved_context: String) -> Str
     }
 }
 
+pub(crate) fn ensure_active_project(
+    core: &crate::SharedCore,
+    project_id: &str,
+) -> Result<(), String> {
+    let active = crate::current_info(core)?.ok_or_else(|| "No project is open".to_string())?;
+    if active.root != project_id {
+        return Err("AI request project does not match the open project".to_string());
+    }
+    Ok(())
+}
+
 struct LocalEndpoint {
     host: String,
     port: u16,
@@ -1802,66 +1827,179 @@ struct RemoteMessage {
     content: Option<String>,
 }
 
-fn request_remote_completion(
-    client: &reqwest::blocking::Client,
-    url: reqwest::Url,
-    api_key: &str,
-    body: &serde_json::Value,
-) -> Result<RemoteCompletionResponse, AiError> {
-    let response = match client.post(url).bearer_auth(api_key).json(body).send() {
-        Ok(response) => response,
-        Err(error) => {
-            let _redacted_diagnostic = redact_diagnostic(&error.to_string(), api_key);
-            return Err(AiError::ProviderUnavailable);
-        }
-    };
-    let status = response.status().as_u16();
-    if let Some(error) = remote_status_error(status) {
-        return Err(error);
+fn ai_event(request_id: &str, phase: &str, error: Option<AiError>) -> AiStreamEvent {
+    AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: phase.to_string(),
+        delta: None,
+        output: None,
+        error: error.map(|error| error.to_string()),
     }
-    response
-        .json::<RemoteCompletionResponse>()
-        .map_err(|_| AiError::InvalidProviderResponse)
+}
+
+fn usage_event(request_id: &str, usage: RemoteUsage) -> AiStreamEvent {
+    AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: "usage".into(),
+        delta: None,
+        output: Some(
+            serde_json::json!({
+                "inputTokens": usage.prompt_tokens,
+                "outputTokens": usage.completion_tokens,
+                "totalTokens": usage.total_tokens,
+            })
+            .to_string(),
+        ),
+        error: None,
+    }
+}
+
+fn completed_event(request_id: &str, output: String) -> AiStreamEvent {
+    AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: "completed".into(),
+        delta: None,
+        output: Some(output),
+        error: None,
+    }
+}
+
+fn remote_json_events(bytes: &[u8], request_id: &str) -> Result<Vec<AiStreamEvent>, AiError> {
+    let parsed = serde_json::from_slice::<RemoteCompletionResponse>(bytes)
+        .map_err(|_| AiError::InvalidProviderResponse)?;
+    let usage = parsed.usage;
+    let output = parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .ok_or(AiError::InvalidProviderResponse)?;
+    if output.len() > DEFAULT_LIMITS.max_output_bytes {
+        return Err(AiError::OutputValidationFailed);
+    }
+    let mut events = vec![AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: "delta".into(),
+        delta: Some(output.clone()),
+        output: None,
+        error: None,
+    }];
+    if let Some(usage) = usage {
+        events.push(usage_event(request_id, usage));
+    }
+    events.push(completed_event(request_id, output));
+    Ok(events)
+}
+
+fn drain_remote_sse_lines(
+    bytes: &mut Vec<u8>,
+    request_id: &str,
+    output: &mut String,
+    finish_reason_seen: &mut bool,
+) -> Result<(Vec<AiStreamEvent>, bool), AiError> {
+    let mut events = Vec::new();
+    let mut done = false;
+    while let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+        let line = bytes.drain(..=newline).collect::<Vec<_>>();
+        let line = String::from_utf8_lossy(&line);
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if data == "[DONE]" {
+            done = true;
+            break;
+        }
+        let parsed = serde_json::from_str::<OpenAiStreamChunk>(data)
+            .map_err(|_| AiError::InvalidProviderResponse)?;
+        if parsed.error.is_some() {
+            return Err(AiError::InvalidProviderResponse);
+        }
+        if let Some(usage) = parsed.usage {
+            events.push(usage_event(request_id, usage));
+        }
+        for choice in parsed.choices {
+            if choice.finish_reason.is_some() {
+                *finish_reason_seen = true;
+            }
+            let Some(delta) = choice.delta.content else {
+                continue;
+            };
+            output.push_str(&delta);
+            if output.len() > DEFAULT_LIMITS.max_output_bytes {
+                return Err(AiError::OutputValidationFailed);
+            }
+            events.push(AiStreamEvent {
+                sequence: 0,
+                request_id: request_id.to_string(),
+                phase: "delta".into(),
+                delta: Some(delta),
+                output: None,
+                error: None,
+            });
+        }
+    }
+    if bytes.len() > MAX_PROVIDER_FRAME_BYTES {
+        return Err(AiError::InvalidProviderResponse);
+    }
+    Ok((events, done))
+}
+
+async fn cancellation_requested(cancelled: &std::sync::atomic::AtomicBool) {
+    while !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::time::sleep(AI_CANCEL_POLL_INTERVAL).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn generate_remote_events(
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-    instruction: &str,
-    selection: &str,
-    output_contract: Option<&serde_json::Value>,
+async fn generate_remote_stream(
+    app: Option<&AppHandle>,
+    runtime: &SharedAiRuntime,
+    event_name: &str,
+    endpoint: String,
+    api_key: String,
+    model: String,
+    instruction: String,
+    selection: String,
+    output_contract: Option<serde_json::Value>,
     request_id: &str,
     cancelled: &std::sync::atomic::AtomicBool,
     deadline: Duration,
-) -> Vec<AiStreamEvent> {
-    let fail = |error: AiError| {
-        vec![AiStreamEvent {
-            sequence: 0,
-            request_id: request_id.to_string(),
-            phase: "failed".into(),
-            delta: None,
-            output: None,
-            error: Some(error.to_string()),
-        }]
-    };
-    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        return vec![AiStreamEvent {
-            sequence: 0,
-            request_id: request_id.to_string(),
-            phase: "cancelled".into(),
-            delta: None,
-            output: None,
-            error: Some(AiError::Cancelled.to_string()),
-        }];
-    }
-    let Ok(mut url) = validate_remote_endpoint(endpoint) else {
-        return fail(AiError::InvalidProviderResponse);
-    };
-    let (resolved_host, resolved_address) = match resolve_remote_destination(&url) {
-        Ok(destination) => destination,
-        Err(error) => return fail(error),
+) {
+    let emit = |event| emit_ai_event(app, event_name, runtime, event);
+    let fail = |error| emit(ai_event(request_id, "failed", Some(error)));
+    let deadline_at = tokio::time::Instant::now() + deadline;
+    let endpoint_for_resolution = endpoint.clone();
+    let resolved = tauri::async_runtime::spawn_blocking(move || {
+        let url = validate_remote_endpoint(&endpoint_for_resolution)
+            .map_err(|_| AiError::InvalidProviderResponse)?;
+        let destination = resolve_remote_destination(&url)?;
+        Ok::<_, AiError>((url, destination))
+    });
+    let (mut url, (resolved_host, resolved_address)) = tokio::select! {
+        _ = cancellation_requested(cancelled) => {
+            emit(remote_terminal_event(request_id, false));
+            return;
+        }
+        _ = tokio::time::sleep_until(deadline_at) => {
+            emit(remote_terminal_event(request_id, true));
+            return;
+        }
+        resolved = resolved => match resolved {
+            Ok(Ok(resolved)) => resolved,
+            Ok(Err(error)) => {
+                fail(error);
+                return;
+            }
+            Err(_) => {
+                fail(AiError::ProviderUnavailable);
+                return;
+            }
+        }
     };
     url.path_segments_mut()
         .map(|mut segments| {
@@ -1869,79 +2007,167 @@ fn generate_remote_events(
         })
         .ok();
     let (system_prompt, user_prompt) =
-        build_generation_prompt(instruction, selection, output_contract);
+        build_generation_prompt(&instruction, &selection, output_contract.as_ref());
     let body = serde_json::json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
         ],
-        "stream": false
+        "stream": true
     });
-    let client = match reqwest::blocking::Client::builder()
+    let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .resolve(&resolved_host, resolved_address)
         .timeout(deadline)
         .build()
     {
         Ok(client) => client,
-        Err(_) => return fail(AiError::ProviderUnavailable),
+        Err(_) => {
+            fail(AiError::ProviderUnavailable);
+            return;
+        }
     };
-    let parsed = match request_remote_completion(&client, url, api_key, &body) {
-        Ok(parsed) => parsed,
-        Err(error) => return fail(error),
+    let request = client.post(url).bearer_auth(&api_key).json(&body).send();
+    let mut response = tokio::select! {
+        _ = cancellation_requested(cancelled) => {
+            emit(remote_terminal_event(request_id, false));
+            return;
+        }
+        _ = tokio::time::sleep_until(deadline_at) => {
+            emit(remote_terminal_event(request_id, true));
+            return;
+        }
+        response = request => match response {
+            Ok(response) => response,
+            Err(error) => {
+                let _redacted_diagnostic = redact_diagnostic(&error.to_string(), &api_key);
+                if error.is_timeout() || tokio::time::Instant::now() >= deadline_at {
+                    emit(remote_terminal_event(request_id, true));
+                } else {
+                    fail(AiError::ProviderUnavailable);
+                }
+                return;
+            }
+        }
     };
-    let usage = parsed.usage;
-    let Some(output) = parsed
-        .choices
-        .into_iter()
-        .next()
-        .and_then(|choice| choice.message.content)
-    else {
-        return fail(AiError::InvalidProviderResponse);
-    };
-    if output.len() > DEFAULT_LIMITS.max_output_bytes {
-        return fail(AiError::OutputValidationFailed);
+    let status = response.status().as_u16();
+    if let Some(error) = remote_status_error(status) {
+        if error == AiError::DeadlineExceeded {
+            emit(remote_terminal_event(request_id, true));
+        } else {
+            fail(error);
+        }
+        return;
     }
-    let mut events = vec![
-        AiStreamEvent {
-            sequence: 0,
-            request_id: request_id.to_string(),
-            phase: "delta".into(),
-            delta: Some(output.clone()),
-            output: None,
-            error: None,
-        },
-        AiStreamEvent {
-            sequence: 0,
-            request_id: request_id.to_string(),
-            phase: "completed".into(),
-            delta: None,
-            output: Some(output),
-            error: None,
-        },
-    ];
-    if let Some(usage) = usage {
-        events.insert(
-            1,
-            AiStreamEvent {
-                sequence: 0,
-                request_id: request_id.to_string(),
-                phase: "usage".into(),
-                delta: None,
-                output: Some(
-                    serde_json::json!({
-                        "inputTokens": usage.prompt_tokens,
-                        "outputTokens": usage.completion_tokens,
-                        "totalTokens": usage.total_tokens,
-                    })
-                    .to_string(),
-                ),
-                error: None,
-            },
-        );
+    let mut sse = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+    let max_json_bytes = DEFAULT_LIMITS
+        .max_output_bytes
+        .saturating_mul(4)
+        .saturating_add(MAX_PROVIDER_FRAME_BYTES);
+    let mut bytes = Vec::new();
+    let mut output = String::new();
+    let mut finish_reason_seen = false;
+    loop {
+        let chunk = tokio::select! {
+            _ = cancellation_requested(cancelled) => {
+                emit(remote_terminal_event(request_id, false));
+                return;
+            }
+            _ = tokio::time::sleep_until(deadline_at) => {
+                emit(remote_terminal_event(request_id, true));
+                return;
+            }
+            chunk = response.chunk() => match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    let _redacted_diagnostic = redact_diagnostic(&error.to_string(), &api_key);
+                    if error.is_timeout() || tokio::time::Instant::now() >= deadline_at {
+                        emit(remote_terminal_event(request_id, true));
+                    } else {
+                        fail(AiError::ProviderUnavailable);
+                    }
+                    return;
+                }
+            }
+        };
+        let Some(chunk) = chunk else {
+            if sse {
+                if !bytes.is_empty() {
+                    bytes.push(b'\n');
+                    match drain_remote_sse_lines(
+                        &mut bytes,
+                        request_id,
+                        &mut output,
+                        &mut finish_reason_seen,
+                    ) {
+                        Ok((events, done)) => {
+                            for event in events {
+                                emit(event);
+                            }
+                            if done {
+                                emit(completed_event(request_id, output));
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            fail(error);
+                            return;
+                        }
+                    }
+                }
+                if finish_reason_seen {
+                    emit(completed_event(request_id, output));
+                } else {
+                    fail(AiError::InvalidProviderResponse);
+                }
+                return;
+            }
+            match remote_json_events(&bytes, request_id) {
+                Ok(events) => {
+                    for event in events {
+                        emit(event);
+                    }
+                }
+                Err(error) => fail(error),
+            }
+            return;
+        };
+        bytes.extend_from_slice(&chunk);
+        if !sse {
+            let prefix = String::from_utf8_lossy(&bytes);
+            sse = prefix.trim_start().starts_with("data:");
+        }
+        if sse {
+            match drain_remote_sse_lines(
+                &mut bytes,
+                request_id,
+                &mut output,
+                &mut finish_reason_seen,
+            ) {
+                Ok((events, done)) => {
+                    for event in events {
+                        emit(event);
+                    }
+                    if done {
+                        emit(completed_event(request_id, output));
+                        return;
+                    }
+                }
+                Err(error) => {
+                    fail(error);
+                    return;
+                }
+            }
+        } else if bytes.len() > max_json_bytes {
+            fail(AiError::OutputValidationFailed);
+            return;
+        }
     }
-    events
 }
 
 fn remote_http_request(
@@ -2039,22 +2265,45 @@ fn read_response(mut stream: TcpStream) -> Result<(u16, Vec<u8>), String> {
     parse_http_response(&bytes)
 }
 
-fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
+fn read_http_headers(
+    stream: &mut TcpStream,
+    cancelled: &std::sync::atomic::AtomicBool,
+    deadline_exceeded: &std::sync::atomic::AtomicBool,
+    request_started: Instant,
+    deadline: Duration,
+) -> Result<(u16, Vec<u8>), AiError> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 1024];
     loop {
-        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if request_started.elapsed() >= deadline
+            || deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(AiError::DeadlineExceeded);
+        }
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(AiError::Cancelled);
+        }
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(_) => return Err(AiError::ProviderUnavailable),
+        };
         if read == 0 {
-            return Err(
-                "Local AI provider closed the connection before sending HTTP headers".to_string(),
-            );
+            return Err(AiError::InvalidProviderResponse);
         }
         bytes.extend_from_slice(&chunk[..read]);
         if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            return parse_http_response(&bytes);
+            return parse_http_response(&bytes).map_err(|_| AiError::InvalidProviderResponse);
         }
-        if bytes.len() > 64 * 1024 {
-            return Err("Local AI provider returned oversized HTTP headers".to_string());
+        if bytes.len() > MAX_PROVIDER_FRAME_BYTES {
+            return Err(AiError::InvalidProviderResponse);
         }
     }
 }
@@ -2063,7 +2312,8 @@ fn normalized_http_error(status: u16) -> AiError {
     match status {
         401 | 403 => AiError::AuthenticationFailed,
         404 => AiError::ModelNotFound,
-        408 | 429 => AiError::RateLimited,
+        408 => AiError::DeadlineExceeded,
+        429 => AiError::RateLimited,
         500..=599 => AiError::ProviderUnavailable,
         _ => AiError::InvalidProviderResponse,
     }
@@ -2126,18 +2376,44 @@ fn build_generation_prompt(
     (system, user)
 }
 
-fn record_event(runtime: &SharedAiRuntime, mut event: AiStreamEvent) -> u64 {
+fn is_terminal_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "completed" | "cancelled" | "deadline_exceeded" | "failed"
+    )
+}
+
+fn record_event(runtime: &SharedAiRuntime, event: &mut AiStreamEvent) -> bool {
     if let Ok(mut runtime) = runtime.lock() {
         let queue = runtime.events.entry(event.request_id.clone()).or_default();
+        if queue
+            .iter()
+            .any(|recorded| is_terminal_phase(&recorded.phase))
+        {
+            return false;
+        }
         event.sequence = queue.back().map_or(0, |last| last.sequence + 1);
-        let sequence = event.sequence;
         if queue.len() >= MAX_BUFFERED_EVENTS {
             queue.pop_front();
         }
-        queue.push_back(event);
-        return sequence;
+        queue.push_back(event.clone());
+        return true;
     }
-    0
+    false
+}
+
+fn emit_ai_event(
+    app: Option<&AppHandle>,
+    event_name: &str,
+    runtime: &SharedAiRuntime,
+    mut event: AiStreamEvent,
+) {
+    if !record_event(runtime, &mut event) {
+        return;
+    }
+    if let Some(app) = app {
+        let _ = app.emit(event_name, event);
+    }
 }
 
 fn register_request(
@@ -2300,6 +2576,7 @@ pub async fn ai_generate_text(
     retrieval_depth: Option<u8>,
     include_retrieval: bool,
 ) -> Result<String, String> {
+    ensure_active_project(core.inner(), &project_id)?;
     let configured = settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
@@ -2351,6 +2628,7 @@ pub async fn ai_generate_structured(
     retrieval_depth: Option<u8>,
     include_retrieval: bool,
 ) -> Result<String, String> {
+    ensure_active_project(core.inner(), &project_id)?;
     let configured = settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
@@ -2441,19 +2719,47 @@ pub fn start_ai_request_mode(
         .insert(request_id.clone(), citations);
     let event_name = format!("ai-stream:{request_id}");
     let request_id_for_task = request_id.clone();
+    if remote {
+        let runtime_for_task = runtime.clone();
+        let cancelled_for_task = cancelled.clone();
+        let api_key = api_key.unwrap_or_default();
+        tauri::async_runtime::spawn(async move {
+            let _cleanup = RequestCleanup {
+                runtime: runtime_for_task,
+                request_id: request_id_for_task.clone(),
+            };
+            emit_ai_event(
+                app.as_ref(),
+                &event_name,
+                &_cleanup.runtime,
+                ai_event(&request_id_for_task, "started", None),
+            );
+            generate_remote_stream(
+                app.as_ref(),
+                &_cleanup.runtime,
+                &event_name,
+                endpoint,
+                api_key,
+                model,
+                instruction,
+                selection,
+                output_contract,
+                &request_id_for_task,
+                &cancelled_for_task,
+                deadline,
+            )
+            .await;
+        });
+        return Ok(request_id);
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let _cleanup = RequestCleanup {
             runtime,
             request_id: request_id_for_task.clone(),
         };
         let event_runtime = _cleanup.runtime.clone();
-        let emit = |event: AiStreamEvent| {
-            let mut event = event;
-            event.sequence = record_event(&event_runtime, event.clone());
-            if let Some(app) = app.as_ref() {
-                let _ = app.emit(&event_name, event);
-            }
-        };
+        let emit =
+            |event: AiStreamEvent| emit_ai_event(app.as_ref(), &event_name, &event_runtime, event);
         emit(AiStreamEvent {
             sequence: 0,
             request_id: request_id_for_task.clone(),
@@ -2465,6 +2771,7 @@ pub fn start_ai_request_mode(
         let request_started = Instant::now();
         let deadline_exceeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let provider_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _provider_finished = ProviderFinished(provider_finished.clone());
         let deadline_flag = deadline_exceeded.clone();
         let finished_flag = provider_finished.clone();
         let deadline_cancel = cancelled.clone();
@@ -2475,33 +2782,6 @@ pub fn start_ai_request_mode(
                 deadline_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         });
-        if remote {
-            let events = generate_remote_events(
-                &endpoint,
-                api_key.as_deref().unwrap_or_default(),
-                &model,
-                &instruction,
-                &selection,
-                output_contract.as_ref(),
-                &request_id_for_task,
-                &cancelled,
-                deadline,
-            );
-            provider_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            let deadline_hit = deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
-                || request_started.elapsed() >= deadline;
-            let cancelled_hit = cancelled.load(std::sync::atomic::Ordering::Relaxed);
-            if deadline_hit {
-                emit(remote_terminal_event(&request_id_for_task, true));
-            } else if cancelled_hit {
-                emit(remote_terminal_event(&request_id_for_task, false));
-            } else {
-                for event in events {
-                    emit(event);
-                }
-            }
-            return;
-        }
         if let Some(provider) = provider {
             let events = provider.generate(
                 ProviderRequest {
@@ -2513,40 +2793,51 @@ pub fn start_ai_request_mode(
                     output_contract,
                     deadline,
                 },
-                cancelled,
+                cancelled.clone(),
             );
             provider_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-            if deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed) {
-                emit(AiStreamEvent {
-                    sequence: 0,
-                    request_id: request_id_for_task,
-                    phase: "deadline_exceeded".into(),
-                    delta: None,
-                    output: None,
-                    error: Some(AiError::DeadlineExceeded.to_string()),
-                });
-            } else {
-                let mut streamed_bytes = 0usize;
-                for event in events {
-                    if let Some(delta) = event.delta.as_deref() {
-                        streamed_bytes = streamed_bytes.saturating_add(delta.len());
-                    }
-                    if let Some(output) = event.output.as_deref() {
-                        streamed_bytes = streamed_bytes.max(output.len());
-                    }
-                    if streamed_bytes > DEFAULT_LIMITS.max_output_bytes {
-                        emit(AiStreamEvent {
-                            sequence: 0,
-                            request_id: request_id_for_task.clone(),
-                            phase: "failed".into(),
-                            delta: None,
-                            output: None,
-                            error: Some(AiError::OutputValidationFailed.to_string()),
-                        });
-                        return;
-                    }
-                    emit(event);
+            if deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
+                || request_started.elapsed() >= deadline
+            {
+                emit(remote_terminal_event(&request_id_for_task, true));
+                return;
+            }
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                emit(remote_terminal_event(&request_id_for_task, false));
+                return;
+            }
+            let mut streamed_bytes = 0usize;
+            let mut terminal_seen = false;
+            for event in events {
+                if event.phase == "started" {
+                    continue;
                 }
+                if let Some(delta) = event.delta.as_deref() {
+                    streamed_bytes = streamed_bytes.saturating_add(delta.len());
+                }
+                if let Some(output) = event.output.as_deref() {
+                    streamed_bytes = streamed_bytes.max(output.len());
+                }
+                if streamed_bytes > DEFAULT_LIMITS.max_output_bytes {
+                    emit(ai_event(
+                        &request_id_for_task,
+                        "failed",
+                        Some(AiError::OutputValidationFailed),
+                    ));
+                    return;
+                }
+                terminal_seen = is_terminal_phase(&event.phase);
+                emit(event);
+                if terminal_seen {
+                    break;
+                }
+            }
+            if !terminal_seen {
+                emit(ai_event(
+                    &request_id_for_task,
+                    "failed",
+                    Some(AiError::InvalidProviderResponse),
+                ));
             }
             return;
         }
@@ -2580,57 +2871,114 @@ pub fn start_ai_request_mode(
                     return;
                 }
             };
-        let (status, mut bytes) = if let Ok(response) = read_http_headers(&mut stream) {
-            response
-        } else {
-            emit(AiStreamEvent {
-                sequence: 0,
-                request_id: request_id_for_task.clone(),
-                phase: "failed".into(),
-                delta: None,
-                output: None,
-                error: Some(AiError::InvalidProviderResponse.to_string()),
-            });
+        if stream
+            .set_read_timeout(Some(AI_CANCEL_POLL_INTERVAL.min(deadline)))
+            .is_err()
+        {
+            emit(ai_event(
+                &request_id_for_task,
+                "failed",
+                Some(AiError::ProviderUnavailable),
+            ));
             return;
+        }
+        let (status, mut bytes) = match read_http_headers(
+            &mut stream,
+            &cancelled,
+            &deadline_exceeded,
+            request_started,
+            deadline,
+        ) {
+            Ok(response) => response,
+            Err(AiError::DeadlineExceeded) => {
+                emit(remote_terminal_event(&request_id_for_task, true));
+                return;
+            }
+            Err(AiError::Cancelled) => {
+                emit(remote_terminal_event(&request_id_for_task, false));
+                return;
+            }
+            Err(error) => {
+                emit(ai_event(&request_id_for_task, "failed", Some(error)));
+                return;
+            }
         };
         if status / 100 != 2 {
-            emit(AiStreamEvent {
-                sequence: 0,
-                request_id: request_id_for_task.clone(),
-                phase: "failed".into(),
-                delta: None,
-                output: None,
-                error: Some(normalized_http_error(status).to_string()),
-            });
+            let error = normalized_http_error(status);
+            if error == AiError::DeadlineExceeded {
+                emit(remote_terminal_event(&request_id_for_task, true));
+            } else {
+                emit(ai_event(&request_id_for_task, "failed", Some(error)));
+            }
             return;
         }
         let mut output = String::new();
         let mut terminal_emitted = false;
+        let mut finish_reason_seen = false;
         loop {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            let deadline_hit = deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
+                || request_started.elapsed() >= deadline;
+            if deadline_hit || cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 emit(AiStreamEvent {
                     sequence: 0,
                     request_id: request_id_for_task.clone(),
-                    phase: if deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed) {
+                    phase: if deadline_hit {
                         "deadline_exceeded".into()
                     } else {
                         "cancelled".into()
                     },
                     delta: None,
                     output: None,
-                    error: deadline_exceeded
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        .then(|| AiError::DeadlineExceeded.to_string()),
+                    error: Some(
+                        if deadline_hit {
+                            AiError::DeadlineExceeded
+                        } else {
+                            AiError::Cancelled
+                        }
+                        .to_string(),
+                    ),
                 });
                 terminal_emitted = true;
                 break;
             }
             let mut chunk = [0; 8192];
             let read = match stream.read(&mut chunk) {
-                Ok(0) => break,
+                Ok(0) => {
+                    if !bytes.is_empty() {
+                        bytes.push(b'\n');
+                        match drain_remote_sse_lines(
+                            &mut bytes,
+                            &request_id_for_task,
+                            &mut output,
+                            &mut finish_reason_seen,
+                        ) {
+                            Ok((events, done)) => {
+                                for event in events {
+                                    emit(event);
+                                }
+                                if done {
+                                    emit(completed_event(&request_id_for_task, output));
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                emit(ai_event(&request_id_for_task, "failed", Some(error)));
+                                return;
+                            }
+                        }
+                    }
+                    break;
+                }
                 Ok(read) => read,
-                Err(error) => {
-                    let _ = error;
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => {
                     emit(AiStreamEvent {
                         sequence: 0,
                         request_id: request_id_for_task.clone(),
@@ -2644,6 +2992,14 @@ pub fn start_ai_request_mode(
                 }
             };
             bytes.extend_from_slice(&chunk[..read]);
+            if bytes.len() > MAX_PROVIDER_FRAME_BYTES {
+                emit(ai_event(
+                    &request_id_for_task,
+                    "failed",
+                    Some(AiError::InvalidProviderResponse),
+                ));
+                return;
+            }
             while let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
                 let line = bytes.drain(..=newline).collect::<Vec<_>>();
                 let line = String::from_utf8_lossy(&line);
@@ -2691,7 +3047,13 @@ pub fn start_ai_request_mode(
                     });
                     return;
                 }
+                if let Some(usage) = parsed.usage {
+                    emit(usage_event(&request_id_for_task, usage));
+                }
                 for choice in parsed.choices {
+                    if choice.finish_reason.is_some() {
+                        finish_reason_seen = true;
+                    }
                     let Some(delta) = choice.delta.content else {
                         continue;
                     };
@@ -2719,14 +3081,15 @@ pub fn start_ai_request_mode(
             }
         }
         if !terminal_emitted {
-            emit(AiStreamEvent {
-                sequence: 0,
-                request_id: request_id_for_task.clone(),
-                phase: "failed".into(),
-                delta: None,
-                output: None,
-                error: Some(AiError::InvalidProviderResponse.to_string()),
-            });
+            if finish_reason_seen {
+                emit(completed_event(&request_id_for_task, output));
+            } else {
+                emit(ai_event(
+                    &request_id_for_task,
+                    "failed",
+                    Some(AiError::InvalidProviderResponse),
+                ));
+            }
         }
     });
     Ok(request_id)
@@ -3128,6 +3491,122 @@ mod tests {
     }
 
     #[test]
+    fn buffered_stream_ignores_events_after_its_first_terminal_state() {
+        let runtime = Arc::new(Mutex::new(AiRuntime::default()));
+        register_request(
+            &runtime,
+            "request",
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        let mut started = ai_event("request", "started", None);
+        let mut completed = completed_event("request", "draft".into());
+        let mut late_delta = AiStreamEvent {
+            sequence: 0,
+            request_id: "request".into(),
+            phase: "delta".into(),
+            delta: Some("late".into()),
+            output: None,
+            error: None,
+        };
+        let mut duplicate_terminal =
+            ai_event("request", "failed", Some(AiError::ProviderUnavailable));
+
+        assert!(record_event(&runtime, &mut started));
+        assert!(record_event(&runtime, &mut completed));
+        assert!(!record_event(&runtime, &mut late_delta));
+        assert!(!record_event(&runtime, &mut duplicate_terminal));
+        let events = runtime.lock().unwrap().events["request"].clone();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].sequence, 0);
+        assert_eq!(events[1].sequence, 1);
+        assert_eq!(events[1].phase, "completed");
+    }
+
+    #[test]
+    fn remote_sse_parser_preserves_fragmented_deltas_usage_and_completion() {
+        let mut bytes = br#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#.to_vec();
+        let mut output = String::new();
+        let mut finish_reason_seen = false;
+        let (events, done) =
+            drain_remote_sse_lines(&mut bytes, "request", &mut output, &mut finish_reason_seen)
+                .unwrap();
+        assert!(events.is_empty());
+        assert!(!done);
+
+        bytes.extend_from_slice(b"\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\ndata: [DONE]\n");
+        let (events, done) =
+            drain_remote_sse_lines(&mut bytes, "request", &mut output, &mut finish_reason_seen)
+                .unwrap();
+        assert!(done);
+        assert!(finish_reason_seen);
+        assert_eq!(output, "Hello");
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| event.delta.as_deref())
+                .collect::<String>(),
+            "Hello"
+        );
+        assert!(events.iter().any(|event| event.phase == "usage"));
+    }
+
+    #[test]
+    fn local_stream_cancellation_interrupts_a_stalled_socket_read() {
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind local test server: {error}"),
+        };
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((_stream, _address)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+        let runtime = Arc::new(Mutex::new(AiRuntime::default()));
+        let started = Instant::now();
+        let request_id = start_ai_request_mode(
+            None,
+            runtime.clone(),
+            AiCaller::trusted_shell("trusted-shell", "/project"),
+            format!("http://127.0.0.1:{port}/v1"),
+            "model".into(),
+            "rewrite".into(),
+            "selection".into(),
+            None,
+            Duration::from_secs(5),
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+        runtime.lock().unwrap().cancellations[&request_id]
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let terminal = loop {
+            if let Some(event) =
+                runtime
+                    .lock()
+                    .unwrap()
+                    .events
+                    .get(&request_id)
+                    .and_then(|events| {
+                        events
+                            .iter()
+                            .find(|event| is_terminal_phase(&event.phase))
+                            .cloned()
+                    })
+            {
+                break event;
+            }
+            assert!(started.elapsed() < Duration::from_secs(1));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(terminal.phase, "cancelled");
+        assert_eq!(terminal.error.as_deref(), Some("Cancelled"));
+    }
+
+    #[test]
     fn remote_dispatch_precedes_injected_local_provider() {
         let runtime = Arc::new(Mutex::new(AiRuntime::with_provider(Arc::new(
             FakeLoopbackProvider,
@@ -3154,6 +3633,8 @@ mod tests {
     fn http_statuses_normalize_without_provider_text() {
         assert_eq!(normalized_http_error(401), AiError::AuthenticationFailed);
         assert_eq!(normalized_http_error(404), AiError::ModelNotFound);
+        assert_eq!(normalized_http_error(408), AiError::DeadlineExceeded);
+        assert_eq!(normalized_http_error(429), AiError::RateLimited);
         assert_eq!(normalized_http_error(500), AiError::ProviderUnavailable);
         assert_eq!(normalized_http_error(422), AiError::InvalidProviderResponse);
     }

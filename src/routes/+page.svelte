@@ -316,6 +316,7 @@ let remoteCredential = $state<{ provider: string; configured: boolean } | null>(
 let aiUsage = $state<{ inputTokens: number; outputTokens: number; totalTokens: number } | null>(null);
 let aiRewriteOpen = $state(false);
 let aiBusy = $state(false);
+let aiCancelPending = $state(false);
 let aiMode = $state<"rewrite" | "generate">("rewrite");
 let aiRequestId = $state<string | null>(null);
 let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
@@ -2249,6 +2250,7 @@ async function fillAiFields() {
       0,
       4000,
     );
+  let startedRequestId: string | null = null;
   try {
     const requestId = await project.aiGenerateStructured(
       projectInfo!.root,
@@ -2259,6 +2261,7 @@ async function fillAiFields() {
       retrievalQuery,
       2,
     );
+    startedRequestId = requestId;
     if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
@@ -2270,6 +2273,7 @@ async function fillAiFields() {
     const buffered = await project.aiPollText(requestId);
     for (const event of buffered) handleAiFieldFillEvent(event);
   } catch (cause) {
+    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
@@ -2314,6 +2318,7 @@ function closeAiRewrite() {
   clearAiStreamListener();
   aiRewriteOpen = false;
   aiBusy = false;
+  aiCancelPending = false;
   aiRequestId = null;
   aiSourceEntityId = null;
   aiStreamText = "";
@@ -2325,8 +2330,22 @@ function closeAiRewrite() {
   aiLastSequence = -1;
   aiMode = "rewrite";
 }
+async function cancelAiRewrite() {
+  if (!aiBusy || aiCancelPending) return;
+  if (!aiRequestId) {
+    closeAiRewrite();
+    return;
+  }
+  aiCancelPending = true;
+  try {
+    await project.aiCancelText(aiRequestId);
+  } catch (cause) {
+    aiCancelPending = false;
+    error = friendlyError(cause);
+  }
+}
 function validateAiProposal(value: string): string | null {
-  if (!value.trim()) return "LM Studio returned an empty proposal.";
+  if (!value.trim()) return "The AI provider returned an empty proposal.";
   if (/(^|\n)\s*(#{1,6}\s|>\s|[-*+]\s|\d+\.\s|```|~~~)/.test(value)) {
     return "The proposal contains block-level Markdown. Edit it to plain text before accepting.";
   }
@@ -2349,18 +2368,21 @@ function handleAiEvent(payload: AiStreamEvent) {
   if (payload.phase === "completed") {
     aiPreviewOutput = payload.output ?? aiStreamText;
     aiBusy = false;
+    aiCancelPending = false;
     aiRequestId = null;
     clearAiStreamListener();
   } else if (payload.phase === "cancelled" || payload.phase === "deadline_exceeded") {
     aiBusy = false;
+    aiCancelPending = false;
     aiRequestId = null;
     clearAiStreamListener();
     if (payload.phase === "deadline_exceeded") error = payload.error ?? "AI request exceeded its deadline";
   } else if (payload.phase === "failed") {
     aiBusy = false;
+    aiCancelPending = false;
     aiRequestId = null;
     clearAiStreamListener();
-    error = payload.error ?? "LM Studio rewrite failed";
+    error = payload.error ?? "The AI provider could not generate a proposal";
   }
 }
 async function startAiRewrite() {
@@ -2374,6 +2396,8 @@ async function startAiRewrite() {
   aiLastSequence = -1;
   aiStartCancelled = false;
   aiBusy = true;
+  aiCancelPending = false;
+  let startedRequestId: string | null = null;
   try {
     const sourceText =
       aiMode === "generate" ? aiGenerationContext.trim() || documentBody.trim() || "[CURSOR]" : aiSourceSelection;
@@ -2389,6 +2413,7 @@ async function startAiRewrite() {
       retrievalQuery,
       2,
     );
+    startedRequestId = requestId;
     if (aiStartCancelled || selected?.id !== aiSourceEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
@@ -2400,8 +2425,10 @@ async function startAiRewrite() {
     const buffered = await project.aiPollText(requestId);
     for (const event of buffered) handleAiEvent(event);
   } catch (cause) {
+    if (startedRequestId) void project.aiCancelText(startedRequestId).catch(() => {});
     clearAiStreamListener();
     aiBusy = false;
+    aiCancelPending = false;
     aiRequestId = null;
     if (aiStartCancelled || selected?.id !== aiSourceEntityId) return;
     error = friendlyError(cause);
@@ -5720,17 +5747,19 @@ onMount(() => {
                         <div>
                           <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
                             id="ai-rewrite-title"
-                            >{aiBusy
-                              ? aiMode === "generate"
-                                ? "Generating text…"
-                                : "Rewriting selection…"
-                              : aiPreviewOutput
+                            >{aiCancelPending
+                              ? "Cancelling request…"
+                              : aiBusy
                                 ? aiMode === "generate"
-                                  ? "Review generated text"
-                                  : "Review rewrite"
-                                : aiMode === "generate"
-                                  ? "Generate text"
-                                  : "Rewrite selection"}</strong>
+                                  ? "Generating text…"
+                                  : "Rewriting selection…"
+                                : aiPreviewOutput
+                                  ? aiMode === "generate"
+                                    ? "Review generated text"
+                                    : "Review rewrite"
+                                  : aiMode === "generate"
+                                    ? "Generate text"
+                                    : "Rewrite selection"}</strong>
                         </div>
                       </div>
                       {#if !aiBusy}<label class="ai-instruction"
@@ -5747,8 +5776,8 @@ onMount(() => {
                         bind:proposal={aiPreviewOutput}
                         streamText={aiStreamText}
                         busy={aiBusy}
-                        onCancel={() =>
-                          aiBusy && aiRequestId ? void project.aiCancelText(aiRequestId) : closeAiRewrite()}
+                        cancelling={aiCancelPending}
+                        onCancel={() => void cancelAiRewrite()}
                         onDiscard={closeAiRewrite}
                         onAccept={() => void acceptAiRewrite()} />
                       {#if aiUsage}<p class="muted-note">

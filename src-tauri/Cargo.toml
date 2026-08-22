@@ -30,7 +30,8 @@ notify = "8"
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls", "stream"] }
+tokio = { version = "1", features = ["macros", "time"] }
 keyring = { version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 daena-core = { path = "../crates/daena-core" }
 daena-atlas = { path = "../crates/daena-atlas" }

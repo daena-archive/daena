@@ -4,6 +4,7 @@ let {
   proposal = $bindable(""),
   streamText = "",
   busy = false,
+  cancelling = false,
   onCancel,
   onDiscard,
   onAccept,
@@ -12,6 +13,7 @@ let {
   proposal?: string;
   streamText?: string;
   busy?: boolean;
+  cancelling?: boolean;
   onCancel: () => void;
   onDiscard: () => void;
   onAccept: () => void;
@@ -29,11 +31,17 @@ let {
     </section>
     <section class="ai-diff-card ai-diff-proposal">
       <header class="ai-diff-card-header">
-        <div><strong>Proposal</strong><small>{busy ? "Generating live" : "Edit before accepting"}</small></div>
-        <span class="ai-diff-badge">{busy ? "Streaming" : "Editable"}</span>
+        <div>
+          <strong>Proposal</strong><small
+            >{cancelling ? "Stopping generation" : busy ? "Generating live" : "Edit before accepting"}</small>
+        </div>
+        <span class="ai-diff-badge">{cancelling ? "Stopping" : busy ? "Streaming" : "Editable"}</span>
       </header>
       {#if busy}
-        <pre class="ai-proposal-output" aria-live="polite">{streamText || "Generating proposal…"}</pre>
+        <span class="sr-only" role="status" aria-live="polite"
+          >{cancelling ? "Cancellation requested" : "Generating proposal"}</span>
+        <pre class="ai-proposal-output">{streamText ||
+            (cancelling ? "Stopping generation…" : "Generating proposal…")}</pre>
       {:else}
         <textarea class="ai-proposal-editor" rows="9" bind:value={proposal} aria-label="Editable AI proposal"
         ></textarea>
@@ -44,7 +52,8 @@ let {
 
 <div class="ai-rewrite-actions" class:ai-streaming-actions={busy}>
   {#if busy}
-    <button class="quiet-button" type="button" onclick={onCancel}>Cancel</button>
+    <button class="quiet-button" type="button" onclick={onCancel} disabled={cancelling}
+      >{cancelling ? "Cancelling…" : "Cancel"}</button>
   {/if}
 </div>
 
@@ -86,6 +95,18 @@ let {
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .ai-streaming-actions {

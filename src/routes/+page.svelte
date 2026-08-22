@@ -162,6 +162,7 @@ let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefin
 let assets = $state<Asset[]>([]);
 let assetBusyId = $state<string | null>(null);
 let assetDialog = $state<Asset | null>(null);
+let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
@@ -395,7 +396,8 @@ $effect(() => {
     deleteBackupPath !== "" ||
     metadataDialog !== null ||
     assetDialog !== null ||
-    showExternalImport;
+    showExternalImport ||
+    entityEditDialog !== null;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -403,6 +405,9 @@ $effect(() => {
     if (showCreateForm) {
       event.preventDefault();
       closeCreateForm();
+    } else if (entityEditDialog) {
+      event.preventDefault();
+      if (!entityEditDialog.busy) closeEntityEditDialog();
     } else if (deleteBackupPath) {
       event.preventDefault();
       deleteBackupPath = "";
@@ -552,6 +557,71 @@ function enabledEntityTypes() {
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null) {
   return fieldAppliesToEnabledTypes(field, entityType, modules.length === 0 ? null : enabledEntityTypes());
+}
+function availableEditTypes(): string[] {
+  const types = new Set<string>();
+  for (const mod of modules) {
+    if (!mod.enabled) continue;
+    for (const schema of mod.schemas) for (const t of schema.entityTypes) types.add(t);
+  }
+  // Keep current selection visible even if its type is disabled/custom or from maps
+  if (selected?.entity_type) types.add(selected.entity_type);
+  if (entityEditDialog?.entity.entity_type) types.add(entityEditDialog.entity.entity_type);
+  // Ensure map type is selectable if maps module exists in any state
+  const hasMapDecl = modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map")));
+  if (hasMapDecl) types.add("daena.maps:map");
+  return [...types].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
+}
+function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
+  const enabled = new Set<string>();
+  for (const mod of modules) {
+    if (!mod.enabled) continue;
+    for (const schema of mod.schemas) for (const t of schema.entityTypes) enabled.add(t);
+  }
+  if (selected?.entity_type) enabled.add(selected.entity_type);
+  if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
+  if (modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map")))) enabled.add("daena.maps:map");
+  const groups: Array<{ heading: string; types: string[] }> = [];
+  for (const sec of workspaceSectionOrder) {
+    const manifest = manifestForWorkspaceSection(sec);
+    if (!manifest) continue;
+    const secTypes = manifest.schemas.flatMap((s) => s.entityTypes).filter((t) => enabled.has(t));
+    if (secTypes.length === 0) continue;
+    secTypes.sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
+    groups.push({ heading: workspaceSectionLabel(sec), types: secTypes });
+    for (const t of secTypes) enabled.delete(t);
+  }
+  if (enabled.size > 0) {
+    const remaining = [...enabled].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
+    groups.push({ heading: "Other", types: remaining });
+  }
+  return groups;
+}
+function sectionForEntityType(entityType: string | null): WorkspaceSection | null {
+  if (!entityType) return null;
+  for (const target of workspaceSectionOrder) {
+    const types = manifestForWorkspaceSection(target)?.schemas.flatMap((s) => s.entityTypes) ?? [];
+    if (types.includes(entityType)) return target;
+  }
+  // Custom type not mapped to a known section - keep current section
+  return null;
+}
+function editTypeWarning(): string | null {
+  if (!entityEditDialog) return null;
+  const from = entityEditDialog.entity.entity_type;
+  const to = entityEditDialog.entityType;
+  if (from === to) return null;
+  // Maps and physical events have locked provider fields
+  if (from === "daena.maps:map" || to === "daena.maps:map") {
+    return "Maps store provider fields that only apply to maps. Changing away will hide map layers and source, changing into a map cannot restore them.";
+  }
+  if (from === "language" || to === "language") {
+    return "Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.";
+  }
+  // Generic field/relationship hiding
+  const hasPopulated = Object.entries(fields).some(([, v]) => !isEmptyFieldValue(v)) || relationships.length > 0;
+  if (hasPopulated) return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
+  return "The entry will move to the collection for the new type.";
 }
 const definitions = () => {
   const entityType =
@@ -3013,6 +3083,88 @@ async function saveDocument(): Promise<boolean> {
     isSaving = false;
   }
 }
+async function openEntityEditDialog() {
+  if (projectDiagnostics.length > 0) return;
+  if (!selected) return;
+  if (!(await flushAutoSave())) return;
+  try {
+    await loadEntities();
+  } catch {}
+  const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
+  entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
+  // Focus name field after mount
+  setTimeout(() => document.getElementById('entity-edit-name')?.focus(), 0);
+}
+function closeEntityEditDialog() {
+  entityEditDialog = null;
+}
+async function saveEntityEditDialog() {
+  if (!entityEditDialog) return;
+  const trimmed = entityEditDialog.name.trim();
+  if (!trimmed) {
+    error = "Name cannot be empty.";
+    return;
+  }
+  const current = entityEditDialog.entity;
+  const fresh = entities.find((e) => e.id === current.id) ?? current;
+  const nameChanged = trimmed !== fresh.name;
+  const typeChanged = (entityEditDialog.entityType ?? null) !== (fresh.entity_type ?? null);
+  if (!nameChanged && !typeChanged) {
+    closeEntityEditDialog();
+    return;
+  }
+  if (!fresh.revision) {
+    try {
+      await loadEntities();
+    } catch {}
+    const refreshed = entities.find((e) => e.id === current.id);
+    if (!refreshed?.revision) {
+      error = "The entity revision is unavailable. Reload the project and try again.";
+      return;
+    }
+    // use refreshed for save
+    entityEditDialog.entity = refreshed;
+  }
+  const target = entities.find((e) => e.id === current.id) ?? fresh;
+  entityEditDialog.busy = true;
+  try {
+    const updated = await project.updateEntity(
+      target.id,
+      nameChanged ? trimmed : null,
+      typeChanged ? (entityEditDialog.entityType ?? null) : null,
+      { expectedRevision: target.revision },
+    );
+    entities = entities.map((entity) => (entity.id === updated.id ? updated : entity));
+    selected = updated;
+    // Move section if type changed to a different workspace
+    if (typeChanged) {
+      const newSection = sectionForEntityType(updated.entity_type);
+      if (newSection && newSection !== section) {
+        section = newSection;
+        // Reconcile writing/timeline sub-views
+        if (updated.entity_type === "manuscript") writingView = "manuscripts";
+        else if (updated.entity_type === "reference-page") writingView = "reference";
+        else if (updated.entity_type === "era") timelineView = "eras";
+        else if (updated.entity_type === "calendar") timelineView = "calendars";
+        else if (updated.entity_type === "event" || updated.entity_type === "encounter") timelineView = "events";
+      }
+      // Reload inspector state for new type's definitions
+      await loadSelectedState(updated);
+    } else {
+      // Name-only change keeps inspector but refreshes collection
+      await loadSelectedState(updated).catch(() => {});
+    }
+    closeEntityEditDialog();
+  } catch (cause) {
+    error = friendlyError(cause);
+  } finally {
+    if (entityEditDialog) entityEditDialog.busy = false;
+  }
+}
+async function renameSelected() {
+  return openEntityEditDialog();
+}
+
 async function archiveSelected() {
   if (projectDiagnostics.length > 0) return;
   if (!(await flushAutoSave())) return;
@@ -5305,7 +5457,7 @@ onMount(() => {
               </div>
             {:else}
               <div class="editor-header">
-                <div>
+                <div class="editor-title">
                   <span class="panel-kicker"
                     >{selected
                       ? entityTypeLabel(selected.entity_type).toUpperCase()
@@ -5322,7 +5474,23 @@ onMount(() => {
                             : writingView === "manuscripts"
                               ? "MANUSCRIPT"
                               : "REFERENCE PAGE"}</span>
-                  <h2>{selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}</h2>
+                  <div class="editor-title-row">
+                    <h2
+                      ondblclick={() => {
+                        if (selected) void openEntityEditDialog();
+                      }}
+                      title={selected ? "Double-click to edit" : undefined}
+                      style={selected ? "cursor:text" : undefined}>
+                      {selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
+                    </h2>
+                    {#if selected}<button
+                        class="quiet-button editor-rename-button"
+                        type="button"
+                        aria-label={`Edit ${selected.name}`}
+                        title="Edit name and type"
+                        onclick={() => void openEntityEditDialog()}><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button
+                      >{/if}
+                  </div>
                 </div>
                 {#if selected}
                   <div class="editor-status">
@@ -5475,6 +5643,7 @@ onMount(() => {
                       type="button"
                       onclick={() => (documentMode = documentMode === "read" ? "edit" : "read")}
                       >{documentMode === "read" ? "Edit" : "View article"}</button>
+                    <button class="quiet-button" type="button" onclick={() => void openEntityEditDialog()}>Edit</button>
                     <button class="quiet-button" onclick={archiveSelected}>Archive</button>
                   </div>
                 </div>
@@ -5876,6 +6045,71 @@ onMount(() => {
       await loadEntities();
     }}
     onClose={() => (showExternalImport = false)} />
+{/if}
+{#if entityEditDialog}
+  {@const edit = entityEditDialog}
+  {@const warning = editTypeWarning()}
+  <div
+    class="modal-backdrop"
+    role="presentation"
+    onclick={() => { if (!edit.busy) closeEntityEditDialog(); }}
+    onkeydown={(e) => { if (e.key === 'Escape' && !edit.busy) closeEntityEditDialog(); }}
+    tabindex="-1">
+    <div
+      class="dialog entity-edit-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="entity-edit-title"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}>
+      <div class="new-form-heading">
+        <div><span class="panel-kicker">EDIT ENTRY</span><strong id="entity-edit-title">Edit {edit.entity.name}</strong></div>
+        <button type="button" class="new-form-close" aria-label="Close edit dialog" onclick={closeEntityEditDialog} disabled={edit.busy}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+      </div>
+      <p class="dialog-body-copy">Change the name and type. The stable ID stays the same, so links and assets follow.</p>
+      <label class="create-input-field" for="entity-edit-name"
+        ><span>Name</span><input
+          id="entity-edit-name"
+          type="text"
+          bind:value={edit.name}
+          placeholder="Entity name"
+          disabled={edit.busy}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' && !edit.busy && edit.name.trim()) void saveEntityEditDialog();
+            if (e.key === 'Escape' && !edit.busy) closeEntityEditDialog();
+          }} /></label
+      >
+      <label class="create-input-field" for="entity-edit-type"
+        ><span>Type</span><select
+          id="entity-edit-type"
+          class="entity-edit-select"
+          bind:value={edit.entityType}
+          disabled={edit.busy}
+          aria-label="Entity type">
+          {#if edit.entity.entity_type == null}<option value={null}>Uncategorized — no template</option>{/if}
+          {#each groupedEditTypes() as group}
+            <optgroup label={group.heading.toUpperCase()}>
+              {#each group.types as t}<option value={t}>{entityTypeLabel(t)}{t !== entityTypeLabel(t) ? ` · ${t}` : ''}</option>{/each}
+            </optgroup>
+          {/each}
+        </select>
+        <small class="field-hint">Workspace: {sectionForEntityType(edit.entityType) ? workspaceSectionLabel(sectionForEntityType(edit.entityType)!) : (edit.entityType ? 'Other' : 'Uncategorized')} {#if edit.entityType}· {edit.entityType}{/if}</small></label
+      >
+      {#if warning}<p class="plugin-warning entity-edit-warning" role="note">{warning}</p>{/if}
+      <div class="new-form-actions">
+        <button type="button" class="quiet-button" onclick={closeEntityEditDialog} disabled={edit.busy}>Cancel</button>
+        <button
+          type="button"
+          class="primary-button"
+          onclick={() => void saveEntityEditDialog()}
+          disabled={edit.busy || !edit.name.trim() || (edit.name.trim()===edit.entity.name && (edit.entityType ?? null)===(edit.entity.entity_type ?? null))}>
+          {edit.busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  </div>
 {/if}
 <DialogHost />
 
@@ -6666,6 +6900,66 @@ onMount(() => {
 .editor-header h2 {
   margin: 8px 0 0;
   font: 500 28px/1.1 var(--font-display);
+}
+.editor-title {
+  min-width: 0;
+  flex: 1;
+}
+.editor-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.editor-rename-button {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  margin-top: 8px;
+}
+.entity-edit-dialog {
+  width: min(460px, 92vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+.entity-edit-warning {
+  margin: 12px 0 0;
+  padding: 10px 11px;
+  border-left: 3px solid #d9a46a;
+  background: #fff8ee;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  border-radius: 0 8px 8px 0;
+}
+.entity-edit-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--canvas);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-right: 32px !important;
+  cursor: pointer;
+}
+.entity-edit-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.create-input-field .field-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.entity-edit-dialog .create-input-field + .create-input-field {
+  margin-top: 14px;
+}
+.dialog .new-form-heading + .dialog-body-copy {
+  margin-top: 4px;
 }
 .editor-status {
   color: var(--ink-faint);

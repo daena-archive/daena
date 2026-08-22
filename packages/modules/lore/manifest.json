@@ -64,8 +64,22 @@
             { "key": "end", "label": "Ends", "type": "date" }
           ]
         },
-        { "key": "birth", "label": "Birth", "type": "date", "entityTypes": ["person"] },
-        { "key": "death", "label": "Death", "type": "date", "entityTypes": ["person"] },
+        {
+          "key": "birth",
+          "label": "Birth",
+          "type": "date",
+          "entityTypes": ["person"],
+          "shared": true,
+          "timeline": { "role": "start", "group": "life", "label": "Born", "layer": "lifelines" }
+        },
+        {
+          "key": "death",
+          "label": "Death",
+          "type": "date",
+          "entityTypes": ["person"],
+          "shared": true,
+          "timeline": { "role": "end", "group": "life", "label": "Died", "layer": "lifelines" }
+        },
         {
           "key": "bornIn",
           "label": "Born in",
@@ -110,13 +124,17 @@
           "key": "createdAt",
           "label": "Created at",
           "type": "date",
-          "entityTypes": ["artifact", "place", "faction", "culture", "concept"]
+          "entityTypes": ["artifact", "place", "faction", "culture", "concept"],
+          "shared": true,
+          "timeline": { "role": "start", "group": "existence", "label": "Created", "layer": "dates" }
         },
         {
           "key": "endedAt",
-          "label": "Endsed at",
+          "label": "Ended at",
           "type": "date",
-          "entityTypes": ["artifact", "place", "faction", "culture"]
+          "entityTypes": ["artifact", "place", "faction", "culture"],
+          "shared": true,
+          "timeline": { "role": "end", "group": "existence", "label": "Ended", "layer": "dates" }
         },
         { "key": "goal", "label": "Goal", "type": "text", "entityTypes": ["faction"] },
         {

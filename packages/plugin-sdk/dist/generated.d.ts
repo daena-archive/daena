@@ -27,6 +27,14 @@ export interface MetadataFieldDefinition {
     required?: boolean | null;
     type: "text" | "number" | "boolean" | "date" | "enum" | "oneof";
 }
+export type TimelineFieldRole = "point" | "start" | "end";
+export type TimelineFieldLayer = "dates" | "lifelines";
+export interface TimelineFieldContribution {
+    group?: string | null;
+    label?: string | null;
+    layer?: TimelineFieldLayer | null;
+    role: TimelineFieldRole;
+}
 export interface FieldDefinition {
     cardinality?: "one" | "many";
     entityTypes?: string[];
@@ -40,6 +48,7 @@ export interface FieldDefinition {
     required?: boolean | null;
     shared?: boolean;
     targetEntityTypes?: string[];
+    timeline?: TimelineFieldContribution;
     type: FieldType;
 }
 export interface SchemaContribution {
@@ -394,6 +403,7 @@ export interface EventPublishPayload {
 export interface FieldListPayload {
     entityId: string;
     namespace: string;
+    sharedOnly?: boolean | null;
 }
 export interface FieldReadPayload {
     entityId: string;

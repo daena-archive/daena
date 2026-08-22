@@ -1575,6 +1575,7 @@ fn broker_dispatch_uses_plugin_project_authority() {
         &mut core,
         None,
         None,
+        None,
         "entity.create",
         serde_json::json!({"name": "Broker Entity", "type": "person"}),
         None,
@@ -1583,6 +1584,7 @@ fn broker_dispatch_uses_plugin_project_authority() {
     assert_eq!(created["name"], "Broker Entity");
     let entities = dispatch_module_rpc(
         &mut core,
+        None,
         None,
         None,
         "entity.list",
@@ -1595,12 +1597,74 @@ fn broker_dispatch_uses_plugin_project_authority() {
         &mut core,
         None,
         None,
+        None,
         "entity.update",
         serde_json::json!({"id": created["id"]}),
         None,
     )
     .unwrap_err();
     assert!(missing_revision.to_string().contains("expectedRevision"));
+}
+
+#[test]
+fn timeline_shared_field_list_returns_lore_birth_and_death() {
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!("../../packages/modules/lore/manifest.json"))
+        .unwrap();
+    let payload = serde_json::json!({
+        "entityId": "person-id",
+        "namespace": "lore",
+        "sharedOnly": true,
+    });
+    let shared_keys =
+        shared_field_keys_for_request(&host, "daena.timeline", "field.list", &payload)
+            .unwrap()
+            .unwrap();
+    assert!(shared_keys.contains("birth"));
+    assert!(shared_keys.contains("death"));
+    assert!(!shared_keys.contains("occupation"));
+
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let person = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({
+            "name": "Aven",
+            "type": "person",
+            "fields": [
+                {"namespace": "lore", "key": "birth", "value": "42"},
+                {"namespace": "lore", "key": "death", "value": "81"},
+                {"namespace": "lore", "key": "occupation", "value": "Archivist"}
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    let fields = dispatch_module_rpc(
+        &mut core,
+        Some("daena.timeline"),
+        Some(shared_keys),
+        None,
+        "field.list",
+        serde_json::json!({
+            "entityId": person["id"],
+            "namespace": "lore",
+            "sharedOnly": true,
+        }),
+        None,
+    )
+    .unwrap();
+    let listed = fields
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["key"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(listed, ["birth", "death"].into_iter().collect());
 }
 
 #[test]
@@ -1611,6 +1675,7 @@ fn broker_asset_metadata_update_matches_the_owned_namespace() {
         &mut core,
         None,
         None,
+        None,
         "entity.create",
         serde_json::json!({"name": "Asset owner", "type": "person"}),
         None,
@@ -1618,6 +1683,7 @@ fn broker_asset_metadata_update_matches_the_owned_namespace() {
     .unwrap();
     let asset = dispatch_module_rpc(
         &mut core,
+        None,
         None,
         None,
         "asset.register",
@@ -1639,6 +1705,7 @@ fn broker_asset_metadata_update_matches_the_owned_namespace() {
         &mut core,
         None,
         None,
+        None,
         "asset.update",
         serde_json::json!({
             "assetId": asset["id"],
@@ -1653,6 +1720,7 @@ fn broker_asset_metadata_update_matches_the_owned_namespace() {
 
     let updated = dispatch_module_rpc(
         &mut core,
+        None,
         None,
         None,
         "asset.update",
@@ -1676,6 +1744,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
         &mut core,
         None,
         None,
+        None,
         "entity.create",
         serde_json::json!({"name": "Person", "type": "person"}),
         None,
@@ -1684,6 +1753,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
     let denied = dispatch_module_rpc(
         &mut core,
         Some("daena.language"),
+        None,
         Some(vec!["language".into()]),
         "record.create",
         serde_json::json!({
@@ -1699,6 +1769,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
         &mut core,
         None,
         None,
+        None,
         "entity.create",
         serde_json::json!({"name": "Asteri", "type": "language"}),
         None,
@@ -1707,6 +1778,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
     let created = dispatch_module_rpc(
         &mut core,
         Some("daena.language"),
+        None,
         Some(vec!["language".into()]),
         "record.create",
         serde_json::json!({
@@ -2664,6 +2736,7 @@ fn maps_vector_create_rpc_round_trips_and_cancel_leaves_no_entity() {
         dispatch_module_rpc(
             &mut core,
             Some("daena.maps"),
+            None,
             None,
             "maps.layer.create",
             serde_json::json!({

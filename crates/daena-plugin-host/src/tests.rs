@@ -46,6 +46,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
         }],
         templates: vec![],

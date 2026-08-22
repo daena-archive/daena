@@ -2,6 +2,9 @@ export type {
   PluginManifest,
   FieldDefinition,
   MetadataFieldDefinition,
+  TimelineFieldContribution,
+  TimelineFieldLayer,
+  TimelineFieldRole,
   SchemaContribution,
   EntityTemplate,
   Migration,
@@ -259,6 +262,10 @@ export interface ModuleContext {
   readonly embedded?: boolean;
   readonly services: {
     isAvailable(name: string, major: number): boolean;
+  };
+  modules: {
+    /** Effective enabled manifests, including project schema overlays. */
+    list(): Promise<ModuleManifest[]>;
   };
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;

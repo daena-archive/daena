@@ -1888,6 +1888,17 @@ fn plugin_protocol_response(
                     )?
                 } else {
                     let plugin_id = session.plugin_id.clone();
+                    let shared_field_keys = {
+                        let host = plugins
+                            .lock()
+                            .map_err(|_| "plugin host lock poisoned".to_string())?;
+                        shared_field_keys_for_request(
+                            &host,
+                            &plugin_id,
+                            &request.method,
+                            &request.payload,
+                        )?
+                    };
                     let core_session = current_session(core)?;
                     let mut core = core_session
                         .core
@@ -1896,6 +1907,7 @@ fn plugin_protocol_response(
                     dispatch_module_rpc(
                         &mut core,
                         Some(&plugin_id),
+                        shared_field_keys,
                         record_owner_entity_types,
                         &request.method,
                         request.payload,
@@ -3494,35 +3506,12 @@ async fn plugin_rpc(
             .ok_or_else(|| "relationship mutation payload must be an object".to_string())?
             .remove("__stored_relationship_type");
     }
-    if method == "field.list" {
-        let namespace = payload
-            .get("namespace")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "field list payload requires namespace".to_string())?;
-        let shared_only = payload
-            .get("__shared_only")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let shared_keys = {
-            let host = state
-                .lock()
-                .map_err(|_| "plugin host lock poisoned".to_string())?;
-            if !shared_only && host.namespaces.owner(namespace) == Some(plugin_id.as_str()) {
-                None
-            } else {
-                Some(host.namespaces.shared_field_keys(namespace))
-            }
-        };
-        if let Some(keys) = shared_keys {
-            payload
-                .as_object_mut()
-                .ok_or_else(|| "field list payload must be an object".to_string())?
-                .insert(
-                    "__shared_keys".into(),
-                    serde_json::to_value(keys).map_err(|error| error.to_string())?,
-                );
-        }
-    }
+    let shared_field_keys = {
+        let host = state
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        shared_field_keys_for_request(&host, &plugin_id, &method, &payload)?
+    };
     let current_project = current_info(&core)?.map(|info| info.root);
     let event_project_id = session.project_id.clone();
     let result = if current_project.as_deref() != Some(session.project_id.as_str()) {
@@ -3590,6 +3579,7 @@ async fn plugin_rpc(
             dispatch_module_rpc(
                 core,
                 Some(&session.plugin_id),
+                shared_field_keys,
                 record_owner_entity_types,
                 &method,
                 payload,
@@ -5259,7 +5249,7 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
         "document.list" => (&["entityId"], &[]),
         "document.save" => (&["entityId", "body", "expectedRevision"], &["format"]),
         "field.read" => (&["entityId", "namespace", "key"], &[]),
-        "field.list" => (&["entityId", "namespace"], &[]),
+        "field.list" => (&["entityId", "namespace"], &["sharedOnly"]),
         "field.set" => (
             &["entityId", "namespace", "key", "value", "expectedRevision"],
             &[],
@@ -5401,6 +5391,15 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             )));
         }
     }
+    if method == "field.list"
+        && object
+            .get("sharedOnly")
+            .is_some_and(|value| !value.is_null() && !value.is_boolean())
+    {
+        return Err(CoreError::Validation(
+            "plugin RPC payload for field.list requires sharedOnly to be boolean".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -5429,9 +5428,34 @@ fn validate_record_owner_entity_type(
     Ok(())
 }
 
+fn shared_field_keys_for_request(
+    host: &PluginHost,
+    plugin_id: &str,
+    method: &str,
+    payload: &serde_json::Value,
+) -> Result<Option<std::collections::BTreeSet<String>>, String> {
+    if method != "field.list" {
+        return Ok(None);
+    }
+    let namespace = payload
+        .get("namespace")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "field list payload requires namespace".to_string())?;
+    let shared_only = payload
+        .get("sharedOnly")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !shared_only && host.namespaces.owner(namespace) == Some(plugin_id) {
+        Ok(None)
+    } else {
+        Ok(Some(host.namespaces.shared_field_keys(namespace)))
+    }
+}
+
 fn dispatch_module_rpc(
     core: &mut CoreService,
     plugin_id: Option<&str>,
+    shared_field_keys: Option<std::collections::BTreeSet<String>>,
     record_owner_entity_types: Option<Vec<String>>,
     method: &str,
     payload: serde_json::Value,
@@ -5566,20 +5590,12 @@ fn dispatch_module_rpc(
         "field.read" | "field.list" => {
             let entity_id = payload_string(&payload, "entityId")?;
             let namespace = payload_string(&payload, "namespace")?;
-            let shared_keys = payload
-                .get("__shared_keys")
-                .and_then(serde_json::Value::as_array)
-                .map(|keys| {
-                    keys.iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<std::collections::BTreeSet<_>>()
-                });
             let mut fields = project
                 .list_fields(entity_id)?
                 .into_iter()
                 .filter(|field| field.namespace == namespace)
                 .filter(|field| {
-                    shared_keys
+                    shared_field_keys
                         .as_ref()
                         .is_none_or(|keys| keys.contains(field.key.as_str()))
                 })
@@ -6102,10 +6118,19 @@ async fn trusted_module_rpc(
     } else {
         None
     };
+    let shared_field_keys = if let Some(module_id) = plugin_id.as_deref() {
+        let host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        shared_field_keys_for_request(&host, module_id, &method, &payload)?
+    } else {
+        None
+    };
     let result = with_core(state, move |core| {
         dispatch_module_rpc(
             core,
             plugin_id.as_deref(),
+            shared_field_keys,
             record_owner_entity_types,
             &method,
             payload,

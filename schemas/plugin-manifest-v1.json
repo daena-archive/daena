@@ -342,6 +342,9 @@
           "type": "array",
           "uniqueItems": true
         },
+        "timeline": {
+          "$ref": "#/$defs/TimelineFieldContribution"
+        },
         "type": {
           "enum": [
             "text",
@@ -813,6 +816,57 @@
         "provides"
       ],
       "type": "object"
+    },
+    "TimelineFieldContribution": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "layer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimelineFieldLayer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/TimelineFieldRole"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "type": "object"
+    },
+    "TimelineFieldLayer": {
+      "enum": [
+        "dates",
+        "lifelines"
+      ],
+      "type": "string"
+    },
+    "TimelineFieldRole": {
+      "enum": [
+        "point",
+        "start",
+        "end"
+      ],
+      "type": "string"
     },
     "View": {
       "additionalProperties": false,

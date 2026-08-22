@@ -17,8 +17,13 @@ const withTimeline = new Set([...loreTypes, ...timelineTypes]);
 
 assert.equal(byKey.birth.type, "date");
 assert.deepEqual(byKey.birth.entityTypes, ["person"]);
+assert.equal(byKey.birth.shared, true);
+assert.deepEqual(byKey.birth.timeline, { role: "start", group: "life", label: "Born", layer: "lifelines" });
 assert.equal(byKey.death.type, "date");
+assert.equal(byKey.death.shared, true);
+assert.deepEqual(byKey.death.timeline, { role: "end", group: "life", label: "Died", layer: "lifelines" });
 assert.equal(byKey.createdAt.type, "date");
+assert.equal(byKey.createdAt.timeline.layer, "dates");
 assert.equal(byKey.endedAt.type, "date");
 assert.equal(byKey.birth.relationshipType, undefined);
 assert.equal(

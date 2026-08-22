@@ -257,6 +257,12 @@ fn manifest_schema() -> Value {
     set_prop(
         &mut root,
         "FieldDefinition",
+        "timeline",
+        ref_to("TimelineFieldContribution"),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
         "cardinality",
         json!({"type": "string", "enum": ["one", "many"]}),
     );
@@ -266,6 +272,13 @@ fn manifest_schema() -> Value {
         "oneOf",
         json!({"type": "array", "items": ref_to("OneOfVariant")}),
     );
+    {
+        let defs = defs_entry(&mut root, "TimelineFieldContribution");
+        let group = defs["properties"]["group"].as_object_mut().expect("group");
+        group.insert("minLength".to_owned(), json!(1));
+        let label = defs["properties"]["label"].as_object_mut().expect("label");
+        label.insert("minLength".to_owned(), json!(1));
+    }
     set_prop(
         &mut root,
         "OneOfVariant",

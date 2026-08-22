@@ -197,6 +197,12 @@ pub struct FieldListPayload {
     #[serde(rename = "entityId")]
     pub entity_id: String,
     pub namespace: String,
+    #[serde(
+        rename = "sharedOnly",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shared_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

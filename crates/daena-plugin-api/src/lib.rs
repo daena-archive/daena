@@ -285,6 +285,33 @@ pub struct OneOfVariant {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineFieldRole {
+    Point,
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineFieldLayer {
+    Dates,
+    Lifelines,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TimelineFieldContribution {
+    pub role: TimelineFieldRole,
+    pub group: Option<String>,
+    pub label: Option<String>,
+    pub layer: Option<TimelineFieldLayer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct FieldDefinition {
     pub key: String,
@@ -312,6 +339,9 @@ pub struct FieldDefinition {
     pub one_of: Option<Vec<OneOfVariant>>,
     #[serde(rename = "metadataFields", default)]
     pub metadata_fields: Option<Vec<MetadataFieldDefinition>>,
+    /// Optional renderer-neutral chronology semantics for shared date fields.
+    #[serde(default)]
+    pub timeline: Option<TimelineFieldContribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -839,6 +869,43 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     "field {}: oneOf is only allowed for oneof fields",
                     field.key
                 )));
+            }
+            if let Some(timeline) = &field.timeline {
+                if field.field_type != "date" {
+                    return Err(ContractError(format!(
+                        "field {}: timeline contribution is only allowed for date fields",
+                        field.key
+                    )));
+                }
+                if !field.shared {
+                    return Err(ContractError(format!(
+                        "field {}: timeline contribution must be shared",
+                        field.key
+                    )));
+                }
+                if matches!(
+                    timeline.role,
+                    TimelineFieldRole::Start | TimelineFieldRole::End
+                ) && timeline
+                    .group
+                    .as_deref()
+                    .is_none_or(|group| group.trim().is_empty())
+                {
+                    return Err(ContractError(format!(
+                        "field {}: timeline start/end contribution must declare a group",
+                        field.key
+                    )));
+                }
+                if timeline
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.trim().is_empty())
+                {
+                    return Err(ContractError(format!(
+                        "field {}: timeline contribution label cannot be empty",
+                        field.key
+                    )));
+                }
             }
             validate_metadata_fields(
                 &field.field_type,

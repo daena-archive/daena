@@ -1,12 +1,23 @@
-import type { Timeline, DataItem, TimelineOptions } from "vis-timeline";
-import type { FieldRecord, ModuleContext, DaenaModule } from "../../../module-api/src/index";
+import type { Timeline, DataGroup, DataItem, TimelineOptions } from "vis-timeline";
+import type { FieldRecord, ModuleContext, DaenaModule, EntitySummary } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
+import { parseCalendarDate, type CalendarDate } from "../../../../src/lib/date";
 import {
-  compareCalendarDates,
-  formatCalendarDate,
-  parseCalendarDate,
-  type CalendarDate,
-} from "../../../../src/lib/date";
+  CALENDAR_DEFINITION_COLLECTION,
+  calendarDateToParts,
+  formatCalendarParts,
+  formatWithCalendar,
+  normalizeCalendarDefinition,
+  type CalendarDefinition,
+} from "./calendar";
+import {
+  buildFieldContributions,
+  discoverTimelineFieldSpecs,
+  timelineDateAnchor,
+  type TimelineContribution,
+  type TimelineFieldRole,
+  type TimelineLayer,
+} from "./projection";
 import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
@@ -14,13 +25,41 @@ const manifest = manifestJson as unknown as ModuleManifest;
 type EventColors = { fill: string; border: string; text: string };
 
 type TimelineEvent = {
-  entity: { id: string; name: string };
-  fields: Record<string, unknown>;
+  id: string;
+  entity: { id: string; name: string; type?: string | null };
+  startValue: unknown;
+  endValue?: unknown;
+  startLabel?: string;
+  endLabel?: string;
+  pointRole?: TimelineFieldRole;
+  layer: "timeline" | TimelineLayer;
   locationName?: string;
   participantNames: string[];
   start: Date;
   end: Date | null;
   colors: EventColors;
+};
+
+type TimelineGroupId = "events" | "lifelines" | "dates";
+
+type LoadedTimelineEntry = {
+  entity: EntitySummary;
+  fields: Record<string, unknown>;
+  locationName?: string;
+  participantNames: string[];
+  relativeYear: number | null;
+  contributions: TimelineContribution[];
+};
+
+type TimelineSourceSnapshot = {
+  calendarOptions: CalendarOption[];
+  loaded: LoadedTimelineEntry[];
+};
+
+type CalendarOption = {
+  id: string;
+  name: string;
+  definition: CalendarDefinition | null;
 };
 
 type UndatedEvent = {
@@ -96,6 +135,29 @@ function colorsForHue(hue: number): EventColors {
   };
 }
 
+function colorsForLayer(layer: TimelineEvent["layer"], entityId: string): EventColors {
+  if (layer === "lifelines") return { fill: "#dfeae2", border: "#4f705a", text: "#284234" };
+  if (layer === "dates") return { fill: "#f3e4cf", border: "#a56d32", text: "#5f3d20" };
+  return colorsForHue(hueForId(entityId));
+}
+
+function groupForEvent(event: TimelineEvent): TimelineGroupId {
+  if (event.layer === "lifelines") return "lifelines";
+  if (event.layer === "dates") return "dates";
+  return "events";
+}
+
+function layerLabel(event: TimelineEvent): string {
+  if (event.layer === "lifelines") return "Lifeline";
+  if (event.layer === "dates") return "Project date";
+  return "Timeline event";
+}
+
+function entityTypeLabel(type: string | null | undefined): string {
+  if (!type) return "Unknown type";
+  return type.charAt(0).toUpperCase() + type.slice(1).replace(/[-_]+/g, " ");
+}
+
 function hueForId(id: string) {
   let hash = 2166136261;
   for (let index = 0; index < id.length; index += 1) {
@@ -103,19 +165,6 @@ function hueForId(id: string) {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) % 360;
-}
-
-function toJsDate(value: unknown): Date | null {
-  const date = parseCalendarDate(value);
-  if (!date) return null;
-  const month = (date.month ?? 1) - 1;
-  const day = date.day ?? 1;
-  // Date.UTC treats years 0–99 as 1900–1999. Set the full UTC year after
-  // construction so authored fictional years retain their literal value.
-  const result = new Date(0);
-  result.setUTCFullYear(date.year, month, day);
-  result.setUTCHours(date.hour ?? 0, date.minute ?? 0, date.second ?? 0, 0);
-  return Number.isFinite(result.getTime()) ? result : null;
 }
 
 function asJsDate(value: unknown): Date | null {
@@ -138,30 +187,94 @@ function asJsDate(value: unknown): Date | null {
   return null;
 }
 
-function calendarFromJsDate(value: Date): CalendarDate {
+function precisionForScale(scale?: string): CalendarDate["precision"] {
+  if (scale === "year") return "year";
+  if (scale === "month") return "month";
+  if (scale === "day" || scale === "weekday" || scale === "week") return "day";
+  if (scale === "hour") return "hour";
+  if (scale === "minute") return "minute";
+  return "second";
+}
+
+function calendarFromJsDate(value: Date, precision: CalendarDate["precision"] = "day"): CalendarDate {
   return {
     calendar: "gregorian",
     era: "CE",
     year: value.getUTCFullYear(),
-    month: value.getUTCMonth() + 1,
-    day: value.getUTCDate(),
-    hour: value.getUTCHours(),
-    minute: value.getUTCMinutes(),
-    second: value.getUTCSeconds(),
-    precision: "second",
+    ...(precision !== "year" ? { month: value.getUTCMonth() + 1 } : {}),
+    ...(!["year", "month"].includes(precision ?? "day") ? { day: value.getUTCDate() } : {}),
+    ...(["hour", "minute", "second"].includes(precision ?? "day") ? { hour: value.getUTCHours() } : {}),
+    ...(["minute", "second"].includes(precision ?? "day") ? { minute: value.getUTCMinutes() } : {}),
+    ...(precision === "second" ? { second: value.getUTCSeconds() } : {}),
+    precision,
   };
 }
 
-function formatAxisDate(value: unknown, _scale?: string, _step?: number) {
+function formatAxisDate(value: unknown, definition: CalendarDefinition | null, scale?: string) {
   const date = asJsDate(value);
-  return date ? formatCalendarDate(calendarFromJsDate(date)) : "";
+  if (!date) return "";
+  const precision = precisionForScale(scale);
+  if (!definition) return formatWithCalendar(calendarFromJsDate(date, precision), null);
+  const parts = calendarDateToParts(calendarFromJsDate(date, "day"), definition);
+  if (!parts) return "";
+  return formatCalendarParts(
+    {
+      year: parts.year,
+      ...(precision !== "year" ? { month: parts.month } : {}),
+      ...(!["year", "month"].includes(precision ?? "day") ? { day: parts.day } : {}),
+      ...(precision !== "year" ? { weekday: parts.weekday, season: parts.season } : {}),
+      precision,
+    },
+    definition,
+  );
 }
 
-function rangeLabel(startsAt: unknown, endsAt: unknown) {
-  const start = formatCalendarDate(startsAt);
-  const end = endsAt ? formatCalendarDate(endsAt) : "";
-  if (!endsAt || end === "Undated" || end === start) return start;
-  return `${start} – ${end}`;
+function definitionForValue(value: unknown, definitions: ReadonlyMap<string, CalendarDefinition>) {
+  const calendarId = parseCalendarDate(value)?.calendar;
+  return calendarId ? (definitions.get(calendarId) ?? null) : null;
+}
+
+function formatStoredDate(value: unknown, definitions: ReadonlyMap<string, CalendarDefinition>) {
+  return formatWithCalendar(value, definitionForValue(value, definitions));
+}
+
+function rangeLabel(event: TimelineEvent, definitions: ReadonlyMap<string, CalendarDefinition>) {
+  const start = formatStoredDate(event.startValue, definitions);
+  const end = event.endValue ? formatStoredDate(event.endValue, definitions) : "";
+  if (!event.endValue || end === "Undated" || end === start)
+    return event.startLabel ? `${event.startLabel}: ${start}` : start;
+  const startText = event.startLabel ? `${event.startLabel}: ${start}` : start;
+  const endText = event.endLabel ? `${event.endLabel}: ${end}` : end;
+  return `${startText} – ${endText}`;
+}
+
+function eventYear(event: TimelineEvent, definition: CalendarDefinition | null): number {
+  return calendarDateToParts(calendarFromJsDate(event.start, "day"), definition)?.year ?? event.start.getUTCFullYear();
+}
+
+async function loadCalendarOptions(
+  context: ModuleContext,
+  entities: readonly EntitySummary[],
+): Promise<CalendarOption[]> {
+  const calendars = entities.filter((entity) => entity.type === "calendar");
+  const custom: Array<CalendarOption | null> = await Promise.all(
+    calendars.map(async (entity): Promise<CalendarOption | null> => {
+      try {
+        const records = await context.records.list(CALENDAR_DEFINITION_COLLECTION, entity.id, { limit: 1 });
+        return {
+          id: entity.id,
+          name: entity.name,
+          definition: normalizeCalendarDefinition(records[0]?.value ?? {}),
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return [
+    { id: "gregorian", name: "Gregorian", definition: null },
+    ...custom.filter((option): option is CalendarOption => option !== null),
+  ];
 }
 
 function contextLabel(event: TimelineEvent | UndatedEvent): string {
@@ -175,11 +288,13 @@ function createTimelineStyles(): HTMLStyleElement {
   const style = document.createElement("style");
   style.textContent = `
     .timeline-shell { display: grid; gap: 0; }
-    .timeline-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e9e1d4; background: #fffefa; }
-    .timeline-toolbar-actions { display: flex; gap: 7px; }
+    .timeline-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-toolbar-controls, .timeline-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
     .timeline-toolbar button { border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-toolbar button:hover, .timeline-toolbar button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
-    .timeline-scope { min-width: 130px; border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-scope, .timeline-calendar { min-width: 130px; border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-layer-toggle { display: inline-flex; align-items: center; gap: 5px; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+    .timeline-layer-toggle input { accent-color: #8b5c2e; }
     .timeline-workspace { display: grid; grid-template-columns: var(--timeline-outline-width, 300px) 8px minmax(0, 1fr); min-height: 380px; }
     .timeline-outline { overflow: auto; max-height: min(58vh, 560px); padding: 10px; border-right: 1px solid #e9e1d4; background: #fffefa; }
     .timeline-outline-resize { cursor: col-resize; background: #f4eee3; touch-action: none; }
@@ -199,6 +314,8 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-canvas .vis-item { border-width: 1px; border-radius: 7px; font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif; box-shadow: 0 0 0 1px rgba(48, 44, 38, 0.06); }
     .timeline-canvas .vis-item.vis-selected { box-shadow: 0 0 0 2px rgba(139, 92, 46, 0.28); }
     .timeline-canvas .vis-item.vis-background { background: rgba(180, 119, 63, 0.12); color: #8f897e; border: 0; box-shadow: none; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-canvas .vis-item.timeline-lifeline { border-radius: 999px; }
+    .timeline-canvas .vis-item.timeline-imprecise { border-style: dashed; }
     .timeline-canvas .vis-item.vis-point .vis-dot { border-width: 2px; }
     .timeline-canvas .vis-item .vis-item-content { padding: 3px 8px; }
     .timeline-canvas .vis-labelset .vis-label, .timeline-canvas .vis-foreground .vis-group { border-color: #e9e1d4; }
@@ -214,8 +331,7 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-undated-list button:hover, .timeline-undated-list button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .timeline-error { color: #9a4d3f; }
     @media (max-width: 760px) {
-      .timeline-toolbar { justify-content: stretch; }
-      .timeline-toolbar-actions { flex-wrap: wrap; }
+      .timeline-toolbar { align-items: stretch; flex-direction: column; }
       .timeline-workspace { grid-template-columns: 1fr !important; }
       .timeline-outline { max-height: 260px; border-right: 0; border-bottom: 1px solid #e9e1d4; }
       .timeline-outline-resize { display: none; }
@@ -253,12 +369,17 @@ async function showOnMap(context: ModuleContext, entityId: string) {
   }
 }
 
-function renderSelection(details: HTMLElement, event: TimelineEvent, context: ModuleContext) {
+function renderSelection(
+  details: HTMLElement,
+  event: TimelineEvent,
+  context: ModuleContext,
+  definitions: ReadonlyMap<string, CalendarDefinition>,
+) {
   details.replaceChildren();
   const name = document.createElement("strong");
   name.textContent = event.entity.name;
   const range = document.createElement("small");
-  range.textContent = rangeLabel(event.fields.startsAt, event.fields.endsAt);
+  range.textContent = rangeLabel(event, definitions);
   const contextText = contextLabel(event);
   if (contextText) {
     const contextLine = document.createElement("small");
@@ -304,18 +425,20 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
   }
 }
 
-function eventYear(event: TimelineEvent): number {
-  return event.start.getUTCFullYear();
-}
-
-function renderOutline(outline: HTMLElement, events: TimelineEvent[], onSelect: (event: TimelineEvent) => void): void {
+function renderOutline(
+  outline: HTMLElement,
+  events: TimelineEvent[],
+  definition: CalendarDefinition | null,
+  definitions: ReadonlyMap<string, CalendarDefinition>,
+  onSelect: (event: TimelineEvent) => void,
+): void {
   const heading = document.createElement("span");
   heading.className = "timeline-outline-heading";
   heading.textContent = "Chronological outline";
   outline.append(heading);
   let currentYear: number | null = null;
   for (const event of events) {
-    const year = eventYear(event);
+    const year = eventYear(event, definition);
     if (year !== currentYear) {
       currentYear = year;
       const yearHeading = document.createElement("div");
@@ -329,24 +452,35 @@ function renderOutline(outline: HTMLElement, events: TimelineEvent[], onSelect: 
     const name = document.createElement("strong");
     name.textContent = event.entity.name;
     const range = document.createElement("small");
-    range.textContent = rangeLabel(event.fields.startsAt, event.fields.endsAt);
+    range.textContent = rangeLabel(event, definitions);
     card.append(name, range);
     card.onclick = () => onSelect(event);
     outline.append(card);
   }
 }
 
-function toDataItem(event: TimelineEvent): DataItem {
+function toDataItem(event: TimelineEvent, definitions: ReadonlyMap<string, CalendarDefinition>): DataItem {
+  const partial = [event.startValue, event.endValue]
+    .filter((value) => value !== undefined)
+    .some((value) => ["year", "month"].includes(parseCalendarDate(value)?.precision ?? "day"));
   const item: DataItem = {
-    id: event.entity.id,
-    content: event.entity.name,
+    id: event.id,
+    content:
+      event.pointRole && event.pointRole !== "point" && event.startLabel
+        ? `${event.entity.name} · ${event.startLabel}`
+        : event.entity.name,
     start: event.start,
-    title: `${event.entity.name}\n${rangeLabel(event.fields.startsAt, event.fields.endsAt)}`,
+    title: `${event.entity.name}\n${rangeLabel(event, definitions)}`,
+    className: [event.layer === "lifelines" ? "timeline-lifeline" : "", partial ? "timeline-imprecise" : ""]
+      .filter(Boolean)
+      .join(" "),
     style: `background-color:${event.colors.fill};border-color:${event.colors.border};color:${event.colors.text};`,
   };
   if (event.end && event.end.getTime() !== event.start.getTime()) {
     item.end = event.end;
     item.type = "range";
+  } else if (event.pointRole) {
+    item.type = "point";
   } else {
     item.type = "box";
   }
@@ -373,6 +507,9 @@ export const timeline: DaenaModule = {
         let activeYear: number | null = null;
         let outlineWidth = 300;
         let outlineCollapsed = false;
+        let showProjectDates = false;
+        let showLifelines = true;
+        let selectedCalendarId = "gregorian";
         let removeOutlineResize: (() => void) | null = null;
         const style = createTimelineStyles();
         const render = async () => {
@@ -383,16 +520,41 @@ export const timeline: DaenaModule = {
             removeOutlineResize = null;
             chart?.destroy();
             chart = null;
+            const [entities, enabledManifests] = await Promise.all([context.entities.list(), context.modules.list()]);
+            const calendarOptions = await loadCalendarOptions(context, entities);
+            if (!calendarOptions.some((option) => option.id === selectedCalendarId)) selectedCalendarId = "gregorian";
+            const selectedCalendar =
+              calendarOptions.find((option) => option.id === selectedCalendarId)?.definition ?? null;
+            const calendarDefinitions = new Map(
+              calendarOptions
+                .filter(
+                  (option): option is CalendarOption & { definition: CalendarDefinition } => option.definition !== null,
+                )
+                .map((option) => [option.id, option.definition]),
+            );
             const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
-            const entities = await context.entities.list();
+            const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, context.module.id);
+            const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
             const loaded = await Promise.all(
               entities.map(async (entity) => {
-                const fields = await context.fields.list(entity.id);
+                const isTimelineEntity = entityTypes.has(entity.type ?? "");
+                const fields = isTimelineEntity ? await context.fields.list(entity.id) : {};
+                const contributedRecords = (
+                  await Promise.all(
+                    contributionNamespaces.map(async (namespace) => {
+                      try {
+                        return await context.fields.listShared(entity.id, namespace);
+                      } catch {
+                        return [] as FieldRecord[];
+                      }
+                    }),
+                  )
+                ).flat();
                 let sharedMapsFields: FieldRecord[] = [];
                 try {
                   // Shared chronology remains readable when Maps is disabled;
                   // only the navigation service should disappear with it.
-                  sharedMapsFields = await context.fields.listShared(entity.id, "maps");
+                  if (isTimelineEntity) sharedMapsFields = await context.fields.listShared(entity.id, "maps");
                 } catch {
                   // A project without the optional Maps contract still renders
                   // ordinary Timeline items instead of failing the projection.
@@ -400,9 +562,11 @@ export const timeline: DaenaModule = {
                 const relativeYear = physicalOffset(
                   sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
                 );
-                const relationships = (await context.relationships.list(entity.id)).filter(
-                  (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
-                );
+                const relationships = isTimelineEntity
+                  ? (await context.relationships.list(entity.id)).filter(
+                      (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
+                    )
+                  : [];
                 const targets = await Promise.all(
                   relationships.map((relationship) => context.entities.get(relationship.targetId)),
                 );
@@ -418,38 +582,76 @@ export const timeline: DaenaModule = {
                     .map((relationship, index) => (relationship.type === "involves" ? targets[index]?.name : undefined))
                     .filter((name): name is string => Boolean(name)),
                   relativeYear,
+                  contributions: buildFieldContributions(entity, contributedRecords, contributionSpecs),
                 };
               }),
             );
             const dated: TimelineEvent[] = [];
+            const contributed: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];
             const eras: TimelineEvent[] = [];
             for (const entry of loaded) {
-              if (entry.entity.type === "calendar") continue;
-              if (!entityTypes.has(entry.entity.type ?? "") && entry.relativeYear === null) continue;
-              const start = toJsDate(entry.fields.startsAt) ?? toJsDate(entry.fields.endsAt);
-              if (!start) {
-                if (entry.entity.type !== "era")
-                  undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
-                continue;
+              if (
+                entry.entity.type !== "calendar" &&
+                (entityTypes.has(entry.entity.type ?? "") || entry.relativeYear !== null)
+              ) {
+                const startValue = entry.fields.startsAt ?? entry.fields.endsAt;
+                const startAnchor = timelineDateAnchor(startValue);
+                if (!startAnchor) {
+                  if (entry.entity.type !== "era")
+                    undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
+                } else {
+                  const endValue = entry.fields.endsAt;
+                  const endAnchor = endValue ? timelineDateAnchor(endValue) : null;
+                  const item: TimelineEvent = {
+                    id: entry.entity.id,
+                    entity: entry.entity,
+                    startValue,
+                    endValue,
+                    layer: "timeline",
+                    locationName: entry.locationName,
+                    participantNames: entry.participantNames,
+                    start: startAnchor.date,
+                    end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
+                    colors: colorsForHue(hueForId(entry.entity.id)),
+                  };
+                  if (entry.entity.type === "era") eras.push(item);
+                  else dated.push(item);
+                }
               }
-              const end = entry.fields.endsAt ? toJsDate(entry.fields.endsAt) : null;
-              const item: TimelineEvent = {
-                entity: entry.entity,
-                fields: entry.fields,
-                locationName: entry.locationName,
-                participantNames: entry.participantNames,
-                start,
-                end: end && end.getTime() >= start.getTime() ? end : null,
-                colors: colorsForHue(hueForId(entry.entity.id)),
-              };
-              if (entry.entity.type === "era") eras.push(item);
-              else dated.push(item);
+              for (const contribution of entry.contributions) {
+                const startAnchor = timelineDateAnchor(contribution.startValue);
+                if (!startAnchor) continue;
+                const endAnchor = contribution.endValue ? timelineDateAnchor(contribution.endValue) : null;
+                contributed.push({
+                  id: `contribution:${contribution.id}`,
+                  entity: contribution.entity,
+                  startValue: contribution.startValue,
+                  endValue: contribution.endValue,
+                  startLabel: contribution.startLabel,
+                  endLabel: contribution.endLabel,
+                  pointRole: contribution.pointRole,
+                  layer: contribution.layer,
+                  participantNames: [],
+                  start: startAnchor.date,
+                  end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
+                  colors: colorsForHue(hueForId(contribution.entity.id)),
+                });
+              }
             }
-            dated.sort((left, right) => compareCalendarDates(left.fields.startsAt, right.fields.startsAt));
-            const years = [...new Set(dated.map(eventYear))];
+            const plotted = [
+              ...dated,
+              ...contributed.filter(
+                (event) =>
+                  (event.layer === "dates" && showProjectDates) || (event.layer === "lifelines" && showLifelines),
+              ),
+            ].sort((left, right) => left.start.getTime() - right.start.getTime() || left.id.localeCompare(right.id));
+            const years = [...new Set(plotted.map((event) => eventYear(event, selectedCalendar)))];
             if (activeYear !== null && !years.includes(activeYear)) activeYear = null;
-            const visible = activeYear === null ? dated : dated.filter((event) => eventYear(event) === activeYear);
+            const visible =
+              activeYear === null
+                ? plotted
+                : plotted.filter((event) => eventYear(event, selectedCalendar) === activeYear);
             if (cancelled) return;
 
             element.replaceChildren();
@@ -463,13 +665,13 @@ export const timeline: DaenaModule = {
             const summary = document.createElement("small");
             summary.textContent =
               undated.length > 0
-                ? `${dated.length} placed · ${undated.length} unplaced or relative`
-                : `${dated.length} items`;
+                ? `${plotted.length} placed · ${undated.length} unplaced or relative`
+                : `${plotted.length} items`;
             header.append(heading, summary);
             shell.append(style, header);
             let details: HTMLElement | null = null;
 
-            if (dated.length === 0 && undated.length === 0) {
+            if (plotted.length === 0 && undated.length === 0 && contributed.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent = "No timeline items yet.";
@@ -478,10 +680,13 @@ export const timeline: DaenaModule = {
               return;
             }
 
-            if (dated.length === 0) {
+            if (plotted.length === 0 && contributed.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
-              empty.textContent = "No dated timeline items to plot yet.";
+              empty.textContent =
+                contributed.length > 0
+                  ? "No items are visible with the current date layers."
+                  : "No dated timeline items to plot yet.";
               const detailPanel = document.createElement("div");
               details = detailPanel;
               detailPanel.className = "timeline-details";
@@ -492,6 +697,8 @@ export const timeline: DaenaModule = {
             } else {
               const toolbar = document.createElement("div");
               toolbar.className = "timeline-toolbar";
+              const controls = document.createElement("div");
+              controls.className = "timeline-toolbar-controls";
               const scope = document.createElement("select");
               scope.className = "timeline-scope";
               scope.setAttribute("aria-label", "Chronology scope");
@@ -510,6 +717,44 @@ export const timeline: DaenaModule = {
                 activeYear = scope.value ? Number(scope.value) : null;
                 void render();
               };
+              const calendar = document.createElement("select");
+              calendar.className = "timeline-calendar";
+              calendar.setAttribute("aria-label", "Displayed calendar");
+              for (const optionValue of calendarOptions) {
+                const option = document.createElement("option");
+                option.value = optionValue.id;
+                option.textContent = optionValue.name;
+                option.selected = optionValue.id === selectedCalendarId;
+                calendar.append(option);
+              }
+              calendar.onchange = () => {
+                selectedCalendarId = calendar.value;
+                activeYear = null;
+                void render();
+              };
+              const dateLayer = document.createElement("label");
+              dateLayer.className = "timeline-layer-toggle";
+              const dateLayerCheckbox = document.createElement("input");
+              dateLayerCheckbox.type = "checkbox";
+              dateLayerCheckbox.checked = showProjectDates;
+              dateLayerCheckbox.onchange = () => {
+                showProjectDates = dateLayerCheckbox.checked;
+                activeYear = null;
+                void render();
+              };
+              dateLayer.append(dateLayerCheckbox, document.createTextNode("Project dates"));
+              const lifelineLayer = document.createElement("label");
+              lifelineLayer.className = "timeline-layer-toggle";
+              const lifelineLayerCheckbox = document.createElement("input");
+              lifelineLayerCheckbox.type = "checkbox";
+              lifelineLayerCheckbox.checked = showLifelines;
+              lifelineLayerCheckbox.onchange = () => {
+                showLifelines = lifelineLayerCheckbox.checked;
+                activeYear = null;
+                void render();
+              };
+              lifelineLayer.append(lifelineLayerCheckbox, document.createTextNode("Lifelines"));
+              controls.append(scope, calendar, dateLayer, lifelineLayer);
               const actions = document.createElement("div");
               actions.className = "timeline-toolbar-actions";
               const zoomInButton = createToolbarButton("Zoom in");
@@ -521,7 +766,7 @@ export const timeline: DaenaModule = {
                 void render();
               };
               actions.append(zoomOutButton, zoomInButton, fitButton, outlineButton);
-              toolbar.append(scope, actions);
+              toolbar.append(controls, actions);
 
               const workspace = document.createElement("div");
               workspace.className = "timeline-workspace";
@@ -538,14 +783,15 @@ export const timeline: DaenaModule = {
               hint.textContent = "Choose an item from the outline or timeline to inspect it.";
               detailPanel.append(hint);
               const selectEvent = (event: TimelineEvent) => {
-                chart?.setSelection([event.entity.id], {
+                chart?.setSelection([event.id], {
                   focus: true,
                   animation: {},
                 });
-                chart?.focus(event.entity.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
-                renderSelection(detailPanel, event, context);
+                chart?.focus(event.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+                renderSelection(detailPanel, event, context, calendarDefinitions);
               };
-              if (visible.length > 0) renderOutline(outline, visible, selectEvent);
+              if (visible.length > 0)
+                renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectEvent);
               else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
@@ -587,7 +833,7 @@ export const timeline: DaenaModule = {
               const { Timeline: TimelineCtor } = await import("vis-timeline/standalone");
               if (cancelled) return;
 
-              const eventsById = new Map(visible.map((event) => [event.entity.id, event]));
+              const eventsById = new Map(visible.map((event) => [event.id, event]));
               const options: TimelineOptions = {
                 stack: true,
                 stackSubgroups: true,
@@ -600,8 +846,8 @@ export const timeline: DaenaModule = {
                 margin: { item: { horizontal: 8, vertical: 6 }, axis: 12 },
                 tooltip: { followMouse: true },
                 format: {
-                  minorLabels: formatAxisDate,
-                  majorLabels: formatAxisDate,
+                  minorLabels: (value, scale) => formatAxisDate(value, selectedCalendar, scale),
+                  majorLabels: (value, scale) => formatAxisDate(value, selectedCalendar, scale),
                 },
               };
               if (visible.length >= 40) {
@@ -628,7 +874,7 @@ export const timeline: DaenaModule = {
                     };
                     return item;
                   }),
-                  ...visible.map(toDataItem),
+                  ...visible.map((event) => toDataItem(event, calendarDefinitions)),
                 ],
                 options,
               );

@@ -12,7 +12,10 @@ export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { required: boolean; version: string }
 export interface OneOfVariant { label: string; options?: string[] | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship" }
 export interface MetadataFieldDefinition { key: string; label: string; oneOf?: OneOfVariant[]; options?: string[] | null; required?: boolean | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" }
-export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; type: FieldType }
+export type TimelineFieldRole = "point" | "start" | "end";
+export type TimelineFieldLayer = "dates" | "lifelines";
+export interface TimelineFieldContribution { group?: string | null; label?: string | null; layer?: TimelineFieldLayer | null; role: TimelineFieldRole }
+export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; timeline?: TimelineFieldContribution; type: FieldType }
 export interface SchemaContribution { entityTypes: string[]; fields: FieldDefinition[]; namespace: string }
 export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: string | null; id: string; name: string; requiredFields?: string[] | null }
 export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
@@ -71,7 +74,7 @@ export interface EntityListPayload { entityType?: string | null }
 export interface EntityUpdatePayload { expectedRevision: string; id: string; name?: string | null; type?: string | null }
 export interface EventTypePayload { type: string }
 export interface EventPublishPayload { payload: unknown; type: string }
-export interface FieldListPayload { entityId: string; namespace: string }
+export interface FieldListPayload { entityId: string; namespace: string; sharedOnly?: boolean | null }
 export interface FieldReadPayload { entityId: string; key: string; namespace: string }
 export interface FieldSetPayload { entityId: string; expectedRevision: string; key: string; namespace: string; value: unknown }
 export interface MapsAssetCreateBeginPayload { mapEntityId: string; mimeType?: string | null; size: number }

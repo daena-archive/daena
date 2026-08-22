@@ -577,6 +577,12 @@
         },
         "namespace": {
           "type": "string"
+        },
+        "sharedOnly": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

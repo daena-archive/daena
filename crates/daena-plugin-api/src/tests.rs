@@ -72,6 +72,39 @@ fn field_entity_types_must_match_declared_types() {
 }
 
 #[test]
+fn timeline_contributions_require_shared_date_fields_and_grouped_boundaries() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    assert!(validate_manifest(&manifest).is_ok());
+
+    let birth = manifest.schemas[0]
+        .fields
+        .iter_mut()
+        .find(|field| field.key == "birth")
+        .unwrap();
+    birth.shared = false;
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    let birth = manifest.schemas[0]
+        .fields
+        .iter_mut()
+        .find(|field| field.key == "birth")
+        .unwrap();
+    birth.timeline.as_mut().unwrap().group = Some(String::new());
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    let birth = manifest.schemas[0]
+        .fields
+        .iter_mut()
+        .find(|field| field.key == "birth")
+        .unwrap();
+    birth.field_type = "text".into();
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
 fn template_required_fields_must_match_template_schema() {
     let json = include_str!("../../../packages/modules/lore/manifest.json");
     let mut manifest = parse_manifest(json).unwrap();

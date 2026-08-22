@@ -580,11 +580,36 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
               "targetEntityTypes",
               "shared",
               "metadataFields",
+              "timeline",
             ],
             errors,
           );
           if (field.shared !== undefined && typeof field.shared !== "boolean")
             errors.push(`field ${String(field.key)} shared must be boolean`);
+          if (field.timeline !== undefined) {
+            if (!isRecord(field.timeline)) {
+              errors.push(`field ${String(field.key)} timeline must be an object`);
+            } else {
+              checkKeys(field.timeline, "timeline contribution", ["role", "group", "label", "layer"], errors);
+              if (field.type !== "date")
+                errors.push(`field ${String(field.key)} timeline contribution requires a date field`);
+              if (field.shared !== true) errors.push(`field ${String(field.key)} timeline contribution must be shared`);
+              if (!["point", "start", "end"].includes(String(field.timeline.role)))
+                errors.push(`field ${String(field.key)} timeline contribution role is invalid`);
+              if (
+                (field.timeline.role === "start" || field.timeline.role === "end") &&
+                (typeof field.timeline.group !== "string" || !field.timeline.group.trim())
+              )
+                errors.push(`field ${String(field.key)} timeline start/end contribution requires a group`);
+              if (
+                field.timeline.label !== undefined &&
+                (typeof field.timeline.label !== "string" || !field.timeline.label.trim())
+              )
+                errors.push(`field ${String(field.key)} timeline contribution label is invalid`);
+              if (field.timeline.layer !== undefined && !["dates", "lifelines"].includes(String(field.timeline.layer)))
+                errors.push(`field ${String(field.key)} timeline contribution layer is invalid`);
+            }
+          }
           if (field.metadataFields !== undefined) {
             if (field.type !== "relationship") {
               errors.push(`non-relationship field ${String(field.key)} cannot declare metadataFields`);

@@ -256,6 +256,12 @@ export function buildModuleContext(
     services: {
       isAvailable: (name, major) => options?.availableServices?.has(`${name}@${major}`) ?? false,
     },
+    modules: {
+      list: async () => {
+        const manifests = await invoke<Array<ModuleManifest & { enabled?: boolean }>>("module_list_manifests");
+        return manifests.filter((candidate) => candidate.enabled !== false);
+      },
+    },
     entities: {
       get: async (id: UUID) => {
         checkCapability(manifest, "entity.read");
@@ -368,7 +374,7 @@ export function buildModuleContext(
         const fields = await rpc.call<RawField[]>("field.list", {
           entityId,
           namespace,
-          __shared_only: true,
+          sharedOnly: true,
         });
         return fields.map((field) => ({
           entityId: toUUID(field.entity_id),

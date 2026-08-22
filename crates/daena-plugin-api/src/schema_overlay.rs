@@ -824,6 +824,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -851,6 +852,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -876,6 +878,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -926,6 +929,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "species".into(),
@@ -977,6 +981,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1074,6 +1079,7 @@ mod tests {
                 cardinality: None,
                 one_of: None,
                 metadata_fields: None,
+                timeline: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "chapter".into(),

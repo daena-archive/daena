@@ -194,5 +194,13 @@ export function setSystemStatus(
     const config = normalizeSystemConfig(draft.systemId, draft.config as Record<string, unknown>, draft.examples);
     return { ...draft, status, config };
   }
+  if (status === "unconfigured") {
+    return { ...draft, status, config: {}, notes: "", examples: [], links: [] };
+  }
   return { ...draft, status, config: {} };
+}
+
+export function applySystemMutation(target: GrammarSystemRecord, next: GrammarSystemRecord): void {
+  target.status = next.status;
+  target.config = next.config;
 }

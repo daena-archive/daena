@@ -32,6 +32,7 @@ import type {
   ParadigmAxis,
   ParadigmCell,
 } from "../../grammar/types";
+import { applySystemMutation } from "../../grammar/session";
 import ChoiceCards from "../parts/ChoiceCards.svelte";
 import Field from "../parts/Field.svelte";
 import Group from "../parts/Group.svelte";
@@ -71,14 +72,14 @@ async function applyMutation(result: ParadigmMutation) {
     ) {
       return;
     }
-    if (result.retry) draft.config = result.retry().config;
+    if (result.retry) applySystemMutation(draft, result.retry());
     return;
   }
-  draft.config = result.draft.config;
+  applySystemMutation(draft, result.draft);
 }
 
 function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "coordinates">>) {
-  draft.config = updateParadigmCell(draft, cellId, patch).config;
+  applySystemMutation(draft, updateParadigmCell(draft, cellId, patch));
 }
 </script>
 
@@ -120,7 +121,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
       value={config.participants}
       {locked}
       onselect={(value) => {
-        draft.config = setArgumentParticipants(draft, value as ArgumentParticipants, pronounAxes).config;
+        applySystemMutation(draft, setArgumentParticipants(draft, value as ArgumentParticipants, pronounAxes));
       }} />
     {#if config.participants && config.participants !== "none"}
       <ChoiceCards
@@ -130,7 +131,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
         value={config.representation}
         {locked}
         onselect={(value) => {
-          draft.config = setArgumentRepresentation(draft, value as ArgumentRepresentation).config;
+          applySystemMutation(draft, setArgumentRepresentation(draft, value as ArgumentRepresentation));
         }} />
       {#if agreements.length}
         <Field label="Analyze as Agreement (optional)">
@@ -139,7 +140,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
             value={config.agreementRecordId ?? ""}
             disabled={locked}
             onchange={(event) => {
-              draft.config = setArgumentAgreement(draft, event.currentTarget.value || undefined).config;
+              applySystemMutation(draft, setArgumentAgreement(draft, event.currentTarget.value || undefined));
             }}>
             <option value="">Do not link an Agreement system</option>
             {#each agreements as agreement (agreement.id)}
@@ -201,13 +202,15 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
       onchange={(event) => {
         const id = event.currentTarget.value;
         if (!id) return;
-        draft.config =
+        applySystemMutation(
+          draft,
           id === "custom"
-            ? addCustomAxis(draft).config
+            ? addCustomAxis(draft)
             : addParadigmAxis(
                 draft,
                 extras.find((item) => item.id === id)!,
-              ).config;
+              ),
+        );
       }}>
       <option value="">Add distinction…</option>
       {#each extras.filter((extra) => !axes.some((axis) => axis.id === extra.id)) as extra (extra.id)}
@@ -228,7 +231,7 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
         type="button"
         class="language-button secondary"
         onclick={() => {
-          draft.config = addCustomAxisValue(draft, axis.id).config;
+          applySystemMutation(draft, addCustomAxisValue(draft, axis.id));
         }}>
         Add value
       </button>

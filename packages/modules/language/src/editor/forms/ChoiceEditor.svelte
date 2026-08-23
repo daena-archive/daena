@@ -28,6 +28,7 @@ import type {
   WordOrderPattern,
   WordOrderStrength,
 } from "../../grammar/types";
+import { applySystemMutation } from "../../grammar/session";
 import CheckRow from "../parts/CheckRow.svelte";
 import ChoiceCards from "../parts/ChoiceCards.svelte";
 import Field from "../parts/Field.svelte";
@@ -48,7 +49,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       value={config.order}
       {locked}
       onselect={(order) => {
-        draft.config = applyBasicWordOrder(draft, { order: order as WordOrderPattern }).config;
+        applySystemMutation(draft, applyBasicWordOrder(draft, { order: order as WordOrderPattern }));
       }} />
     {#if config.order === "custom"}
       <Field label="Custom order">
@@ -68,7 +69,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         value={config.strength}
         {locked}
         onselect={(strength) => {
-          draft.config = applyBasicWordOrder(draft, { strength: strength as WordOrderStrength }).config;
+          applySystemMutation(draft, applyBasicWordOrder(draft, { strength: strength as WordOrderStrength }));
         }} />
       <Field label="What can cause the order to change?">
         <textarea rows="3" name="changeNotes" bind:value={config.changeNotes} disabled={locked}></textarea>
@@ -82,7 +83,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         selected={influences}
         {locked}
         ontoggle={(influence) => {
-          draft.config = applyBasicWordOrder(draft, { toggleInfluence: influence as WordOrderInfluence }).config;
+          applySystemMutation(draft, applyBasicWordOrder(draft, { toggleInfluence: influence as WordOrderInfluence }));
         }} />
       {#if influences.includes("custom")}
         <Field label="Custom influence">
@@ -99,7 +100,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       value={config.position}
       {locked}
       onselect={(position) => {
-        draft.config = applyAdjectivePosition(draft, { position: position as PositionChoice }).config;
+        applySystemMutation(draft, applyAdjectivePosition(draft, { position: position as PositionChoice }));
       }} />
     {#if config.position === "custom"}
       <Field label="Custom position">
@@ -115,7 +116,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         selected={config.alternatePositions ?? []}
         {locked}
         ontoggle={(value) => {
-          draft.config = applyAdjectivePosition(draft, { toggleAlternate: value as PositionChoice }).config;
+          applySystemMutation(draft, applyAdjectivePosition(draft, { toggleAlternate: value as PositionChoice }));
         }} />
       <Field label="Does adjective position change in special situations?">
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
@@ -130,7 +131,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       value={config.position}
       {locked}
       onselect={(position) => {
-        draft.config = applyPossessivePosition(draft, { position: position as PossessivePositionChoice }).config;
+        applySystemMutation(draft, applyPossessivePosition(draft, { position: position as PossessivePositionChoice }));
       }} />
     {#if config.position === "custom"}
       <Field label="Custom position">
@@ -146,7 +147,10 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         selected={config.alternatePositions ?? []}
         {locked}
         ontoggle={(value) => {
-          draft.config = applyPossessivePosition(draft, { toggleAlternate: value as PossessivePositionChoice }).config;
+          applySystemMutation(
+            draft,
+            applyPossessivePosition(draft, { toggleAlternate: value as PossessivePositionChoice }),
+          );
         }} />
       <Field label="When does this change?">
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
@@ -161,9 +165,12 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       value={config.position}
       {locked}
       onselect={(position) => {
-        draft.config = applyRelativeClausePosition(draft, {
-          position: position as RelativeClausePositionChoice,
-        }).config;
+        applySystemMutation(
+          draft,
+          applyRelativeClausePosition(draft, {
+            position: position as RelativeClausePositionChoice,
+          }),
+        );
       }} />
     <p class="language-empty" role="status">Detailed relative-clause behavior belongs under Clause Types.</p>
     {#if config.position === "custom"}
@@ -180,9 +187,12 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
         selected={config.alternatePositions ?? []}
         {locked}
         ontoggle={(value) => {
-          draft.config = applyRelativeClausePosition(draft, {
-            toggleAlternate: value as RelativeClausePositionChoice,
-          }).config;
+          applySystemMutation(
+            draft,
+            applyRelativeClausePosition(draft, {
+              toggleAlternate: value as RelativeClausePositionChoice,
+            }),
+          );
         }} />
       <Field label="When does this change?">
         <textarea rows="3" name="conditions" bind:value={config.conditions} disabled={locked}></textarea>
@@ -197,7 +207,7 @@ let { draft, locked = false }: { draft: GrammarSystemRecord; locked?: boolean } 
       value={config.strategy}
       {locked}
       onselect={(strategy) => {
-        draft.config = applyAdpositions(draft, { strategy: strategy as AdpositionStrategy }).config;
+        applySystemMutation(draft, applyAdpositions(draft, { strategy: strategy as AdpositionStrategy }));
       }} />
     <p class="language-empty" role="status">
       If this language does not use adpositions, mark the system as not used. Case is configured under Nouns.

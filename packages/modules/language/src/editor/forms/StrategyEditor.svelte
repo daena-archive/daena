@@ -43,6 +43,7 @@ import type {
   VerbMarkingConfig,
   VerbMarkingStrategy,
 } from "../../grammar/types";
+import { applySystemMutation } from "../../grammar/session";
 import Field from "../parts/Field.svelte";
 import Group from "../parts/Group.svelte";
 import InventoryItem from "../parts/InventoryItem.svelte";
@@ -82,7 +83,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleDefinitenessStrategy(draft, value as DefinitenessStrategy).config;
+        applySystemMutation(draft, toggleDefinitenessStrategy(draft, value as DefinitenessStrategy));
       }} />
     <p class="language-empty" role="status">
       Article agreement belongs under Agreement. Record article forms here only.
@@ -93,7 +94,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           type="button"
           class="language-button secondary"
           onclick={() => {
-            draft.config = addArticle(draft).config;
+            applySystemMutation(draft, addArticle(draft));
           }}>
           Add article form
         </button>
@@ -105,10 +106,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           total={config.articles.length}
           {locked}
           onmove={(delta) => {
-            draft.config = moveArticle(draft, item.id, delta).config;
+            applySystemMutation(draft, moveArticle(draft, item.id, delta));
           }}
           onremove={() => {
-            draft.config = removeArticle(draft, item.id).config;
+            applySystemMutation(draft, removeArticle(draft, item.id));
           }}>
           <Field label="Form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
           <Field label="Position"
@@ -130,7 +131,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = togglePossessionStrategy(draft, value as PossessionStrategy).config;
+        applySystemMutation(draft, togglePossessionStrategy(draft, value as PossessionStrategy));
       }} />
     <details class="grammar-learn" open={Boolean(config.alienability)}>
       <summary>Advanced</summary>
@@ -144,7 +145,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         value={config.alienability === undefined ? undefined : config.alienability ? "yes" : "no"}
         {locked}
         onselect={(value) => {
-          draft.config = setAlienability(draft, value === "yes").config;
+          applySystemMutation(draft, setAlienability(draft, value === "yes"));
         }} />
       {#if config.alienability}
         <Field label="How does the distinction work?">
@@ -162,7 +163,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleVerbMarking(draft, value as VerbMarkingStrategy).config;
+        applySystemMutation(draft, toggleVerbMarking(draft, value as VerbMarkingStrategy));
       }} />
     {#if config.strategies.includes("custom")}
       <Field label="Custom strategy">
@@ -181,14 +182,14 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleNegativeStrategy(draft, value as NegativeVerbStrategy).config;
+        applySystemMutation(draft, toggleNegativeStrategy(draft, value as NegativeVerbStrategy));
       }} />
     {#if !locked}
       <button
         type="button"
         class="language-button secondary"
         onclick={() => {
-          draft.config = addNegativeForm(draft).config;
+          applySystemMutation(draft, addNegativeForm(draft));
         }}>
         Add negative form
       </button>
@@ -200,10 +201,10 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
         total={config.forms.length}
         {locked}
         onmove={(delta) => {
-          draft.config = moveNegativeForm(draft, item.id, delta).config;
+          applySystemMutation(draft, moveNegativeForm(draft, item.id, delta));
         }}
         onremove={() => {
-          draft.config = removeNegativeForm(draft, item.id).config;
+          applySystemMutation(draft, removeNegativeForm(draft, item.id));
         }}>
         <Field label="Marker or form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
         <Field label="Changes by tense or mood">
@@ -223,7 +224,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.behaviors}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleAdjectiveBehavior(draft, value as AdjectiveBehaviorKind).config;
+        applySystemMutation(draft, toggleAdjectiveBehavior(draft, value as AdjectiveBehaviorKind));
       }} />
     {#if config.behaviors.includes("custom")}
       <Field label="Custom behavior">
@@ -243,7 +244,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
           selected={config.agreementRecordIds}
           {locked}
           ontoggle={(value) => {
-            draft.config = toggleAgreementRecord(draft, value).config;
+            applySystemMutation(draft, toggleAgreementRecord(draft, value));
           }} />
       {/if}
     {/if}
@@ -258,7 +259,7 @@ function toChecks(options: { value: string; label: string; expansion?: string; e
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleDegreeStrategy(draft, value).config;
+        applySystemMutation(draft, toggleDegreeStrategy(draft, value));
       }} />
     <Field label="Marker"><input name="marker" type="text" bind:value={config.marker} disabled={locked} /></Field>
     <Field label="Construction">

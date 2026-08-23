@@ -457,26 +457,49 @@ function soundLabel(phoneme: PhonemeOption) {
           </div>
         {:else}
           <div class="character-table-wrap">
-            <table class="character-table">
-              <thead>
-                <tr>
-                  <th scope="col">Written form</th>
-                  <th scope="col">Sound(s)</th>
-                  <th scope="col">Romanization</th>
-                  <th scope="col">Notes</th>
-                  <th scope="col"><span class="visually-hidden">Row actions</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each orthographyDraft.mappings as mapping, index (mapping.id)}
-                  <tr>
-                    <td class="written-cell">
-                      <label class="visually-hidden" for={`written-form-${mapping.id}`}>Written form</label>
-                      <input
-                        id={`written-form-${mapping.id}`}
-                        bind:value={mapping.writtenForm}
-                        required
-                        placeholder="e.g. sh" />
+            <div class="character-table" role="list" aria-label="Character-to-sound mappings">
+              {#each orthographyDraft.mappings as mapping, index (mapping.id)}
+                <article class="character-card" role="listitem">
+                  <header class="character-card-head">
+                    <div class="character-card-title">
+                      <span class="character-index" aria-hidden="true">{index + 1}</span>
+                      <div>
+                        <strong>{mapping.writtenForm || `Character ${index + 1}`}</strong>
+                        <span>{mapping.group === "ungrouped" ? "Ungrouped" : mapping.group}</span>
+                      </div>
+                    </div>
+                    <div
+                      class="row-action-buttons"
+                      aria-label={`Actions for ${mapping.writtenForm || `character ${index + 1}`}`}>
+                      <button
+                        type="button"
+                        title="Move earlier"
+                        onclick={() => moveMapping(index, -1)}
+                        disabled={index === 0}
+                        aria-label={`Move ${mapping.writtenForm || "mapping"} earlier`}>↑</button>
+                      <button
+                        type="button"
+                        title="Move later"
+                        onclick={() => moveMapping(index, 1)}
+                        disabled={index === orthographyDraft.mappings.length - 1}
+                        aria-label={`Move ${mapping.writtenForm || "mapping"} later`}>↓</button>
+                      <button
+                        type="button"
+                        class="remove"
+                        onclick={() => removeMapping(index)}
+                        aria-label={`Remove ${mapping.writtenForm || "mapping"}`}>Remove</button>
+                    </div>
+                  </header>
+                  <div class="character-card-grid">
+                    <section class="character-identity" aria-label="Character identity">
+                      <label class="language-field">
+                        <span>Written form</span>
+                        <input
+                          id={`written-form-${mapping.id}`}
+                          bind:value={mapping.writtenForm}
+                          required
+                          placeholder="e.g. sh" />
+                      </label>
                       <label class="mapping-group">
                         <span>Group</span>
                         <select bind:value={mapping.group}>
@@ -486,49 +509,34 @@ function soundLabel(phoneme: PhonemeOption) {
                           <option value="other">Other</option>
                         </select>
                       </label>
-                    </td>
-                    <td class="sounds-cell">
+                    </section>
+                    <section class="character-sounds" aria-label="Mapped sounds">
                       <SoundSequenceEditor
                         bind:sounds={mapping.sounds}
                         phonemes={phonemeOptions}
                         label="Mapped sound sequence" />
-                    </td>
-                    <td>
-                      <label class="visually-hidden" for={`romanization-${mapping.id}`}>Romanization</label>
-                      <input
-                        id={`romanization-${mapping.id}`}
-                        bind:value={mapping.romanization}
-                        placeholder="Optional" />
-                    </td>
-                    <td>
-                      <label class="visually-hidden" for={`mapping-notes-${mapping.id}`}>Notes</label>
-                      <textarea
-                        id={`mapping-notes-${mapping.id}`}
-                        rows={3}
-                        bind:value={mapping.notes}
-                        placeholder="Optional usage notes"></textarea>
-                    </td>
-                    <td class="row-actions">
-                      <button
-                        type="button"
-                        onclick={() => moveMapping(index, -1)}
-                        disabled={index === 0}
-                        aria-label={`Move ${mapping.writtenForm || "mapping"} earlier`}>↑</button>
-                      <button
-                        type="button"
-                        onclick={() => moveMapping(index, 1)}
-                        disabled={index === orthographyDraft.mappings.length - 1}
-                        aria-label={`Move ${mapping.writtenForm || "mapping"} later`}>↓</button>
-                      <button
-                        type="button"
-                        class="remove"
-                        onclick={() => removeMapping(index)}
-                        aria-label={`Remove ${mapping.writtenForm || "mapping"}`}>Remove</button>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
+                    </section>
+                    <section class="character-details" aria-label="Character details">
+                      <label class="language-field">
+                        <span>Romanization (optional)</span>
+                        <input
+                          id={`romanization-${mapping.id}`}
+                          bind:value={mapping.romanization}
+                          placeholder="e.g. sh" />
+                      </label>
+                      <label class="language-field">
+                        <span>Notes (optional)</span>
+                        <textarea
+                          id={`mapping-notes-${mapping.id}`}
+                          rows={3}
+                          bind:value={mapping.notes}
+                          placeholder="Usage, variants, or contextual notes"></textarea>
+                      </label>
+                    </section>
+                  </div>
+                </article>
+              {/each}
+            </div>
           </div>
         {/if}
       </section>
@@ -999,71 +1007,146 @@ function soundLabel(phoneme: PhonemeOption) {
   color: var(--accent-dark);
 }
 .character-table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
+  min-width: 0;
 }
 .character-table {
-  width: 100%;
-  min-width: 1050px;
-  border-collapse: collapse;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
 }
-.character-table th {
-  padding: 8px 9px;
+.character-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgba(38, 42, 33, 0.045);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.character-card:hover,
+.character-card:focus-within {
+  border-color: #d8c3a5;
+  box-shadow: 0 8px 24px rgba(38, 42, 33, 0.075);
+}
+.character-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface-muted);
-  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface));
+}
+.character-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.character-card-title > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.character-card-title strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.character-card-title div > span {
+  color: var(--ink-faint);
   font-size: 10px;
-  text-align: left;
+  letter-spacing: 0.05em;
+  text-transform: capitalize;
 }
-.character-table td {
-  min-width: 130px;
-  padding: 9px;
-  border-bottom: 1px solid var(--line);
-  vertical-align: top;
+.character-index {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent-dark);
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--line);
 }
-.character-table tr:last-child td {
-  border-bottom: 0;
+.character-card-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.58fr) minmax(340px, 1.5fr) minmax(220px, 0.85fr);
+  min-width: 0;
 }
-.character-table .written-cell {
-  width: 150px;
+.character-card-grid > section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
 }
-.character-table .sounds-cell {
-  min-width: 390px;
+.character-card-grid > section + section {
+  border-left: 1px solid var(--line);
+}
+.character-identity > .language-field input {
+  font-size: 15px;
+  font-weight: 600;
+}
+.character-details textarea {
+  min-height: 88px;
 }
 .mapping-group {
   display: grid;
-  gap: 3px;
-  margin-top: 7px;
+  gap: 5px;
+  margin-top: 9px;
 }
 .mapping-group span {
   color: var(--ink-faint);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .mapping-group select {
-  padding: 6px 7px;
-  font-size: 10px;
+  padding: 9px 34px 9px 10px;
+  font-size: 11px;
 }
-.row-actions {
-  width: 78px;
-  min-width: 78px !important;
+.row-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
 }
-.row-actions button,
+.row-action-buttons button,
 .sample-head button {
-  margin: 0 2px 4px 0;
-  padding: 5px 7px;
+  margin: 0;
+  min-height: 30px;
+  padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
+  border-radius: 7px;
+  background: var(--surface);
   color: var(--ink-soft);
   cursor: pointer;
 }
-.row-actions button.remove,
+.row-action-buttons button:hover,
+.sample-head button:hover {
+  border-color: #d8c3a5;
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.row-action-buttons button.remove,
 .sample-head button.remove {
+  border-color: #e2b7af;
   color: #a14f42;
 }
-.row-actions button:disabled,
+.row-action-buttons button.remove:hover,
+.sample-head button.remove:hover {
+  background: #fff5f2;
+}
+.row-action-buttons button:disabled,
 .sample-head button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
@@ -1184,23 +1267,23 @@ function soundLabel(phoneme: PhonemeOption) {
   color: var(--ink-soft);
   font-size: 10px;
 }
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.24);
   outline-offset: 2px;
+}
+@media (max-width: 1180px) {
+  .character-card-grid {
+    grid-template-columns: minmax(180px, 0.62fr) minmax(360px, 1.38fr);
+  }
+  .character-details {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-top: 1px solid var(--line);
+    border-left: 0 !important;
+  }
 }
 @media (max-width: 720px) {
   .writing-basics-grid,
@@ -1213,6 +1296,20 @@ select:focus-visible {
   }
   .writing-tabs button {
     min-width: 110px;
+  }
+  .character-card-head {
+    align-items: flex-start;
+  }
+  .character-card-grid,
+  .character-details {
+    grid-template-columns: 1fr;
+  }
+  .character-card-grid > section + section {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+  .character-details {
+    grid-column: auto;
   }
   .bulk-backdrop {
     padding: 0;

@@ -33,6 +33,7 @@ import type {
   NumberConfig,
   TamConfig,
 } from "../../grammar/types";
+import { applySystemMutation } from "../../grammar/session";
 import ChoiceCards from "../parts/ChoiceCards.svelte";
 import EditorButton from "../parts/EditorButton.svelte";
 import Field from "../parts/Field.svelte";
@@ -60,10 +61,10 @@ async function applyRemoval(result: InventoryMutation) {
     ) {
       return;
     }
-    draft.config = removeById(result.draft, result.blocked.id, { force: true }).draft.config;
+    applySystemMutation(draft, removeById(result.draft, result.blocked.id, { force: true }).draft);
     return;
   }
-  draft.config = result.draft.config;
+  applySystemMutation(draft, result.draft);
 }
 </script>
 
@@ -89,7 +90,7 @@ async function applyRemoval(result: InventoryMutation) {
         selected={new Set(config.markingStrategies)}
         {locked}
         ontoggle={(id) => {
-          draft.config = toggleNumberMarking(draft, id as MarkingStrategy).config;
+          applySystemMutation(draft, toggleNumberMarking(draft, id as MarkingStrategy));
         }} />
       {#each config.categories as item, index (item.id)}
         <InventoryItem
@@ -99,7 +100,7 @@ async function applyRemoval(result: InventoryMutation) {
           referenced={referencedIds.has(item.id)}
           {locked}
           onmove={(delta) => {
-            draft.config = moveNumberCategory(draft, item.id, delta).config;
+            applySystemMutation(draft, moveNumberCategory(draft, item.id, delta));
           }}
           onremove={() => applyRemoval(removeNumberCategory(draft, item.id, { referenced: referencedIds }))}>
           <Field label="Label"><input name="label" type="text" bind:value={item.label} disabled={locked} /></Field>
@@ -121,7 +122,7 @@ async function applyRemoval(result: InventoryMutation) {
           onchange={(event) => {
             const value = event.currentTarget.value;
             if (!value) return;
-            draft.config = addCase(draft, value as CaseTemplateId).config;
+            applySystemMutation(draft, addCase(draft, value as CaseTemplateId));
           }}>
           <option value="">Add a case…</option>
           {#each CASE_TEMPLATES as template (template.id)}
@@ -137,7 +138,7 @@ async function applyRemoval(result: InventoryMutation) {
           referenced={referencedIds.has(item.id)}
           {locked}
           onmove={(delta) => {
-            draft.config = moveCase(draft, item.id, delta).config;
+            applySystemMutation(draft, moveCase(draft, item.id, delta));
           }}
           onremove={() => applyRemoval(removeCase(draft, item.id, { referenced: referencedIds }))}>
           <Field label="Name"><input name="name" type="text" bind:value={item.name} disabled={locked} /></Field>
@@ -175,13 +176,13 @@ async function applyRemoval(result: InventoryMutation) {
         value={config.kind}
         {locked}
         onselect={(kind) => {
-          draft.config = setNounClassKind(draft, kind as NounClassKind).config;
+          applySystemMutation(draft, setNounClassKind(draft, kind as NounClassKind));
         }} />
       {#if !locked}
         <EditorButton
           secondary
           onclick={() => {
-            draft.config = addNounClass(draft).config;
+            applySystemMutation(draft, addNounClass(draft));
           }}>
           Add class
         </EditorButton>
@@ -194,7 +195,7 @@ async function applyRemoval(result: InventoryMutation) {
           referenced={referencedIds.has(item.id)}
           {locked}
           onmove={(delta) => {
-            draft.config = moveNounClass(draft, item.id, delta).config;
+            applySystemMutation(draft, moveNounClass(draft, item.id, delta));
           }}
           onremove={() => applyRemoval(removeNounClass(draft, item.id, { referenced: referencedIds }))}>
           <Field label="Name"><input name="name" type="text" bind:value={item.name} disabled={locked} /></Field>
@@ -245,7 +246,7 @@ async function applyRemoval(result: InventoryMutation) {
           referenced={referencedIds.has(item.id)}
           {locked}
           onmove={(delta) => {
-            draft.config = moveTamCategory(draft, item.id, delta).config;
+            applySystemMutation(draft, moveTamCategory(draft, item.id, delta));
           }}
           onremove={() => applyRemoval(removeTamCategory(draft, item.id, { referenced: referencedIds }))}>
           <Field label="Label"><input name="label" type="text" bind:value={item.label} disabled={locked} /></Field>

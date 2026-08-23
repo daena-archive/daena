@@ -1,5 +1,6 @@
 import type { ModuleContext, ModuleRecord, ModuleRecordQuery, UUID } from "../../../../module-api/src/index";
 import {
+  configuredMinimum,
   indexGrammarRecords,
   serializeGrammarRecord,
   validateGrammarDraft,
@@ -57,13 +58,17 @@ export async function persistGrammarRecord(
   ownerEntityId: UUID,
   session: { recordId?: string; revision?: string; draft: GrammarRecord },
 ): Promise<PersistResult> {
-  const issues = validateGrammarDraft(session.draft);
+  const draft =
+    session.draft.recordKind === "system" &&
+    session.draft.status === "unconfigured" &&
+    configuredMinimum(session.draft.systemId, session.draft.config)
+      ? { ...session.draft, status: "configured" as const }
+      : session.draft;
+  const issues = validateGrammarDraft(draft);
   if (issues.length) return { ok: false, error: issues[0].message, issues };
 
-  const shouldDelete =
-    session.draft.recordKind === "system" && session.draft.status === "unconfigured" && session.recordId;
-  const shouldSkip =
-    session.draft.recordKind === "system" && session.draft.status === "unconfigured" && !session.recordId;
+  const shouldDelete = draft.recordKind === "system" && draft.status === "unconfigured" && session.recordId;
+  const shouldSkip = draft.recordKind === "system" && draft.status === "unconfigured" && !session.recordId;
 
   try {
     if (shouldSkip) {
@@ -78,7 +83,7 @@ export async function persistGrammarRecord(
       const loaded = await reload(api, ownerEntityId);
       return { ok: true, record: null, index: loaded.index };
     }
-    const payload = serializeGrammarRecord(session.draft) as GrammarRecord;
+    const payload = serializeGrammarRecord(draft) as GrammarRecord;
     let saved: ModuleRecord<GrammarRecord>;
     if (session.recordId) {
       saved = await api.update("grammar", session.recordId as UUID, ownerEntityId, payload, {
@@ -88,7 +93,7 @@ export async function persistGrammarRecord(
     } else {
       saved = await api.create("grammar", ownerEntityId, payload, { requestId: crypto.randomUUID() });
     }
-    if (session.draft.recordKind === "agreement") {
+    if (draft.recordKind === "agreement") {
       const afterSave = await reload(api, ownerEntityId);
       const unused = afterSave.index.sectionStates.get("agreement");
       if (unused) {

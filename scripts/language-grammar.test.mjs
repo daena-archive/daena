@@ -5,6 +5,7 @@ import {
   GRAMMAR_SYSTEM_IDS,
   GRAMMAR_VALUE_SCHEMA,
   WORD_ORDER_OPTIONS,
+  applySystemMutation,
   applyAdjectivePosition,
   applyAdpositions,
   applyBasicWordOrder,
@@ -539,6 +540,10 @@ const emptyUi = emptyGrammarUiState();
 const opened = openSystemEditor(emptyUi.index, "nouns.case");
 assert.equal(opened.draft.status, "unconfigured");
 assert.equal(isGrammarDirty(opened), false);
+const editedFromControl = emptySystemRecord("syntax.basic-word-order");
+applySystemMutation(editedFromControl, applyBasicWordOrder(editedFromControl, { order: "svo" }));
+assert.equal(editedFromControl.status, "configured");
+assert.equal(editedFromControl.config.order, "svo");
 const dupIndex = indexGrammarRecords([
   { id: "d1", value: emptySystemRecord("nouns.case", "not-used") },
   { id: "d2", value: emptySystemRecord("nouns.case", "not-used") },
@@ -606,6 +611,56 @@ for (let index = 0; index < 120; index += 1) {
 const loaded = await loadGrammarIndex(paged, owner);
 assert.equal(loaded.records.length, 120);
 assert.equal(loaded.index.customRules.length, 120);
+
+const guardedApi = fakeGrammarApi();
+const untouchedSave = await persistGrammarRecord(guardedApi, owner, {
+  draft: emptySystemRecord("syntax.basic-word-order"),
+});
+assert.equal(untouchedSave.ok, true);
+assert.equal(untouchedSave.record, null);
+assert.equal(guardedApi.store.size, 0);
+
+const editedWithoutStatus = {
+  ...applyBasicWordOrder(emptySystemRecord("syntax.basic-word-order"), { order: "svo" }),
+  status: "unconfigured",
+};
+const guardedCreate = await persistGrammarRecord(guardedApi, owner, { draft: editedWithoutStatus });
+assert.equal(guardedCreate.ok, true);
+assert.equal(guardedCreate.record.value.status, "configured");
+assert.equal(guardedCreate.record.value.config.order, "svo");
+
+const changedWithoutStatus = {
+  ...applyBasicWordOrder(guardedCreate.record.value, { order: "vso" }),
+  status: "unconfigured",
+};
+const guardedUpdate = await persistGrammarRecord(guardedApi, owner, {
+  recordId: guardedCreate.record.id,
+  revision: guardedCreate.record.revision,
+  draft: changedWithoutStatus,
+});
+assert.equal(guardedUpdate.ok, true);
+assert.equal(guardedUpdate.record.value.status, "configured");
+assert.equal(guardedUpdate.record.value.config.order, "vso");
+
+const configuredWithContent = {
+  ...guardedUpdate.record.value,
+  notes: "A note",
+  examples: [{ id: "example-1", text: "A sentence" }],
+  links: [{ id: "link-1", kind: "lexeme", targetId: "lexeme-1" }],
+};
+const resetDraft = setSystemStatus(configuredWithContent, "unconfigured");
+assert.deepEqual(resetDraft.config, {});
+assert.equal(resetDraft.notes, "");
+assert.deepEqual(resetDraft.examples, []);
+assert.deepEqual(resetDraft.links, []);
+const guardedDelete = await persistGrammarRecord(guardedApi, owner, {
+  recordId: guardedUpdate.record.id,
+  revision: guardedUpdate.record.revision,
+  draft: resetDraft,
+});
+assert.equal(guardedDelete.ok, true);
+assert.equal(guardedDelete.record, null);
+assert.equal(guardedApi.store.size, 0);
 
 assert.deepEqual(
   WORD_ORDER_OPTIONS.map((item) => item.value),

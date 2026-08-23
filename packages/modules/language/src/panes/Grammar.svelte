@@ -15,6 +15,7 @@ import {
   grammarGlance,
   grammarStatusLabel,
   grammarSystemDescriptor,
+  isGrammarDirty,
   keepDraftAfterConflict,
   openAgreementEditor,
   openAgreementNotUsedEditor,
@@ -308,9 +309,15 @@ async function handleStatusChange(status: GrammarStatus) {
   const current = session;
   const value = current?.draft;
   if (!current || !value || value.recordKind !== "system" || current.locked) return;
-  if (value.status === "configured" && status !== "configured") {
-    if (!(await windowConfirm("Reset this system's configuration? Unsaved settings in this editor will be cleared.")))
+  if (status === "unconfigured" && (current.recordId || isGrammarDirty(current))) {
+    if (
+      !(await windowConfirm(
+        "Set this section to not configured? Its settings, notes, examples, and links will be removed when you save.",
+      ))
+    )
       return;
+  } else if (value.status === "configured" && status === "not-used") {
+    if (!(await windowConfirm("Mark this section as not used? Its grammatical settings will be cleared."))) return;
   }
   current.draft = setSystemStatus(value, status);
 }
@@ -613,23 +620,32 @@ function removeLink(index: number) {
               oninput={(event) => (systemDraft.notes = event.currentTarget.value)}></textarea>
           </label>
         {/if}
-        {#if systemDraft.status === "not-used"}
+        <div class="grammar-status-actions">
+          <div class="grammar-status-current">
+            <span>Section status</span>
+            <strong>{grammarStatusLabel(systemDraft.status)}</strong>
+          </div>
           <div class="language-inline">
             <button
               type="button"
-              class="language-button"
-              disabled={session.locked}
-              onclick={() => handleStatusChange("configured")}>Configure this section</button>
+              class="language-button secondary"
+              disabled={session.locked || systemDraft.status === "unconfigured"}
+              onclick={() => handleStatusChange("unconfigured")}>Set to not configured</button>
+            {#if systemDraft.status === "not-used"}
+              <button
+                type="button"
+                class="language-button"
+                disabled={session.locked}
+                onclick={() => handleStatusChange("configured")}>Configure this section</button>
+            {:else}
+              <button
+                type="button"
+                class="language-button secondary language-danger"
+                disabled={session.locked}
+                onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
+            {/if}
           </div>
-        {:else}
-          <div class="language-inline">
-            <button
-              type="button"
-              class="language-button secondary language-danger"
-              disabled={session.locked}
-              onclick={() => handleStatusChange("not-used")}>Mark as not used</button>
-          </div>
-        {/if}
+        </div>
       {:else if session.draft.recordKind === "agreement"}
         {@const agreementDraft = session.draft}
         <AgreementEditor draft={agreementDraft} locked={session.locked} index={grammarUi.index} />
@@ -1169,6 +1185,32 @@ function removeLink(index: number) {
   align-items: end;
   gap: 8px;
   min-width: 0;
+}
+.grammar-status-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.grammar-status-current {
+  display: grid;
+  gap: 2px;
+}
+.grammar-status-current span {
+  color: var(--ink-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.grammar-status-current strong {
+  color: var(--ink);
+  font-size: 14px;
 }
 .grammar-home {
   display: grid;

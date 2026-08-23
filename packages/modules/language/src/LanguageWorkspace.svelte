@@ -369,6 +369,7 @@ function dismissWelcomeTour() {
   color: var(--ink);
 }
 .language-panel {
+  --language-control-height: 38px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -663,7 +664,8 @@ function dismissWelcomeTour() {
   letter-spacing: 0.01em;
 }
 :global(.language-field input),
-:global(.language-field textarea) {
+:global(.language-field textarea),
+:global(.language-field select) {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -673,6 +675,42 @@ function dismissWelcomeTour() {
   background: var(--surface);
   color: var(--ink);
   font: inherit;
+}
+:global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"])),
+:global(.language-panel select) {
+  box-sizing: border-box;
+  height: var(--language-control-height);
+  min-height: var(--language-control-height);
+  line-height: 1.2;
+}
+:global(.language-panel select) {
+  appearance: none;
+  padding-right: 34px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23676d63' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 11px center !important;
+  background-size: 14px !important;
+  cursor: pointer;
+}
+:global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover),
+:global(.language-panel textarea:hover),
+:global(.language-panel select:hover) {
+  border-color: #d8c3a5;
+}
+:global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus-visible),
+:global(.language-panel textarea:focus-visible),
+:global(.language-panel select:focus-visible) {
+  border-color: var(--accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.16) !important;
+}
+:global(.language-panel input::placeholder),
+:global(.language-panel textarea::placeholder) {
+  color: var(--ink-faint);
+  opacity: 0.78;
+}
+:global(.language-panel select:disabled) {
+  cursor: not-allowed;
 }
 :global(.language-field textarea) {
   min-height: 4.5em;

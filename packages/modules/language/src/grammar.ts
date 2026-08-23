@@ -139,6 +139,7 @@ export { GRAMMAR_STARTER_STEPS, nextStarterSystem, remainingStarterSystems } fro
 export { GRAMMAR_VALUE_SCHEMA } from "./grammar/schema.ts";
 export {
   applyStoredVersion,
+  applySystemMutation,
   confirmGrammarLeave,
   emptyGrammarUiState,
   isGrammarDirty,

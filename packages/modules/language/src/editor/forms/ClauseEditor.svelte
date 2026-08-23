@@ -41,6 +41,7 @@ import type {
   YesNoQuestionStrategy,
   YesNoQuestionsConfig,
 } from "../../grammar/types";
+import { applySystemMutation } from "../../grammar/session";
 import ChoiceCards from "../parts/ChoiceCards.svelte";
 import Field from "../parts/Field.svelte";
 import Group from "../parts/Group.svelte";
@@ -76,7 +77,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleYesNoStrategy(draft, value as YesNoQuestionStrategy).config;
+        applySystemMutation(draft, toggleYesNoStrategy(draft, value as YesNoQuestionStrategy));
       }} />
     {#if config.strategies.includes("particle")}
       <Field label="Particle"
@@ -88,7 +89,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         value={config.placement}
         {locked}
         onselect={(value) => {
-          draft.config = setYesNoPlacement(draft, value as ParticlePlacement).config;
+          applySystemMutation(draft, setYesNoPlacement(draft, value as ParticlePlacement));
         }} />
     {/if}
   {:else if draft.systemId === "clauses.content-questions"}
@@ -101,7 +102,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       value={config.behavior}
       {locked}
       onselect={(value) => {
-        draft.config = setContentBehavior(draft, value as ContentQuestionBehavior).config;
+        applySystemMutation(draft, setContentBehavior(draft, value as ContentQuestionBehavior));
       }} />
     {#if config.behavior === "custom"}
       <Field label="Custom behavior">
@@ -114,14 +115,14 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       selected={interrogativeSelected}
       {locked}
       ontoggle={(meaning) => {
-        draft.config = toggleInterrogative(draft, meaning).config;
+        applySystemMutation(draft, toggleInterrogative(draft, meaning));
       }} />
     {#if !locked}
       <button
         type="button"
         class="language-button secondary"
         onclick={() => {
-          draft.config = addInterrogative(draft).config;
+          applySystemMutation(draft, addInterrogative(draft));
         }}>
         Add interrogative
       </button>
@@ -133,10 +134,10 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         total={config.interrogatives.length}
         {locked}
         onmove={(delta) => {
-          draft.config = moveInterrogative(draft, item.id, delta).config;
+          applySystemMutation(draft, moveInterrogative(draft, item.id, delta));
         }}
         onremove={() => {
-          draft.config = removeInterrogative(draft, item.id).config;
+          applySystemMutation(draft, removeInterrogative(draft, item.id));
         }}>
         <Field label="Meaning"><input name="meaning" type="text" bind:value={item.meaning} disabled={locked} /></Field>
         <Field label="Form"><input name="form" type="text" bind:value={item.form} disabled={locked} /></Field>
@@ -146,9 +147,12 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
             value={item.lexemeId ?? ""}
             disabled={locked}
             onchange={(event) => {
-              draft.config = updateInterrogative(draft, item.id, {
-                lexemeId: event.currentTarget.value || undefined,
-              }).config;
+              applySystemMutation(
+                draft,
+                updateInterrogative(draft, item.id, {
+                  lexemeId: event.currentTarget.value || undefined,
+                }),
+              );
             }}>
             <option value="">Not linked to a word</option>
             {#each lexemes as lexeme (lexeme.id)}
@@ -172,7 +176,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleImperativeStrategy(draft, value as ImperativeStrategy).config;
+        applySystemMutation(draft, toggleImperativeStrategy(draft, value as ImperativeStrategy));
       }} />
     <details
       class="grammar-learn"
@@ -196,7 +200,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleNegationStrategy(draft, value as ClauseNegationStrategy).config;
+        applySystemMutation(draft, toggleNegationStrategy(draft, value as ClauseNegationStrategy));
       }} />
     {#if negativeVerbSummary}
       <p class="language-empty" role="status">Negative verb forms: {negativeVerbSummary}</p>
@@ -211,7 +215,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
         value={config.placement}
         {locked}
         onselect={(value) => {
-          draft.config = setNegationPlacement(draft, value as ParticlePlacement).config;
+          applySystemMutation(draft, setNegationPlacement(draft, value as ParticlePlacement));
         }} />
     {/if}
     <Field label="Negative questions">
@@ -232,7 +236,7 @@ function toChecks(options: { value: string; label: string; expansion?: string }[
       selected={config.strategies}
       {locked}
       ontoggle={(value) => {
-        draft.config = toggleRelativization(draft, value as RelativizationStrategy).config;
+        applySystemMutation(draft, toggleRelativization(draft, value as RelativizationStrategy));
       }} />
     {#if relativePositionSummary}
       <p class="language-empty" role="status">Relative clause position: {relativePositionSummary}</p>

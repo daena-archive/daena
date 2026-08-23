@@ -61,6 +61,7 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private requireAi;
     private requireDynamic;
     private list;
+    private query;
     private create;
     private update;
     private remove;

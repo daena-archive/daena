@@ -476,6 +476,112 @@
       },
       "type": "object"
     },
+    "EntityPageRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/EntityRecord"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "typeCounts": {
+          "items": {
+            "$ref": "#/$defs/EntityTypeCountRecord"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "hasMore",
+        "items",
+        "limit",
+        "offset",
+        "total",
+        "typeCounts"
+      ],
+      "type": "object"
+    },
+    "EntityQueryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entityTypes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "excludedEntityTypes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 256,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "limit": {
+          "maximum": 200,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortDirection": {
+          "enum": [
+            "asc",
+            "desc",
+            null
+          ]
+        },
+        "sortField": {
+          "enum": [
+            "name",
+            "createdAt",
+            "updatedAt",
+            "relevance",
+            null
+          ]
+        }
+      },
+      "type": "object"
+    },
     "EntityRecord": {
       "additionalProperties": false,
       "description": "Entity record as returned to callers.",
@@ -512,6 +618,26 @@
         "name",
         "revision",
         "updatedAt"
+      ],
+      "type": "object"
+    },
+    "EntityTypeCountRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "entityType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "count"
       ],
       "type": "object"
     },
@@ -1423,6 +1549,22 @@
             "properties": {
               "payload": {
                 "$ref": "#/$defs/EntityListPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "entity.query"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/EntityQueryPayload"
               }
             }
           }
@@ -2344,6 +2486,7 @@
         "method": {
           "enum": [
             "entity.list",
+            "entity.query",
             "entity.get",
             "entity.create",
             "entity.update",
@@ -2617,6 +2760,10 @@
     },
     "entity.list": {
       "payload": "EntityListPayload",
+      "requestId": "envelope"
+    },
+    "entity.query": {
+      "payload": "EntityQueryPayload",
       "requestId": "envelope"
     },
     "entity.update": {

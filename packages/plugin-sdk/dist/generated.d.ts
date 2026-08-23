@@ -246,6 +246,18 @@ export interface EntityRecord {
     revision: string;
     updatedAt: string;
 }
+export interface EntityTypeCountRecord {
+    count: number;
+    entityType?: string | null;
+}
+export interface EntityPageRecord {
+    hasMore: boolean;
+    items: EntityRecord[];
+    limit: number;
+    offset: number;
+    total: number;
+    typeCounts: EntityTypeCountRecord[];
+}
 export interface MutationOptions {
     expectedRevision?: string;
     requestId?: string;
@@ -386,6 +398,15 @@ export interface EntityGetPayload {
 }
 export interface EntityListPayload {
     entityType?: string | null;
+}
+export interface EntityQueryPayload {
+    entityTypes?: string[];
+    excludedEntityTypes?: string[];
+    limit?: number | null;
+    offset?: number | null;
+    query?: string | null;
+    sortDirection?: "asc" | "desc" | null;
+    sortField?: "name" | "createdAt" | "updatedAt" | "relevance" | null;
 }
 export interface EntityUpdatePayload {
     expectedRevision: string;
@@ -600,6 +621,7 @@ export interface BrokerMethodPayloads {
     "entity.delete": EntityDeletePayload;
     "entity.get": EntityGetPayload;
     "entity.list": EntityListPayload;
+    "entity.query": EntityQueryPayload;
     "entity.update": EntityUpdatePayload;
     "event.poll": EventTypePayload;
     "event.publish": EventPublishPayload;

@@ -8,7 +8,9 @@ use crate::external_import::{
 };
 use daena_plugin_api::{MetadataFieldDefinition, PluginManifest};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{
+    named_params, params, types::Value as SqlValue, Connection, OpenFlags, OptionalExtension,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
@@ -70,6 +72,56 @@ pub struct Entity {
     pub updated_at: String,
     #[serde(default)]
     pub revision: String,
+}
+
+pub const DEFAULT_ENTITY_QUERY_LIMIT: u32 = 50;
+pub const MAX_ENTITY_QUERY_LIMIT: u32 = 200;
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntitySortField {
+    #[default]
+    Name,
+    CreatedAt,
+    UpdatedAt,
+    Relevance,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntitySortDirection {
+    #[default]
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityListQuery {
+    pub query: Option<String>,
+    #[serde(default)]
+    pub entity_types: Vec<String>,
+    #[serde(default)]
+    pub excluded_entity_types: Vec<String>,
+    pub sort_field: Option<EntitySortField>,
+    pub sort_direction: Option<EntitySortDirection>,
+    pub offset: Option<u64>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityTypeCount {
+    pub entity_type: Option<String>,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityPage {
+    pub items: Vec<Entity>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+    pub has_more: bool,
+    pub type_counts: Vec<EntityTypeCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4188,6 +4240,9 @@ impl ProjectStore {
                metadata TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
+             CREATE INDEX IF NOT EXISTS entities_type_name_idx ON entities(entity_type,name,id) WHERE deleted=0;
+             CREATE INDEX IF NOT EXISTS entities_created_idx ON entities(created_at,id) WHERE deleted=0;
+             CREATE INDEX IF NOT EXISTS entities_updated_idx ON entities(updated_at,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
              CREATE INDEX IF NOT EXISTS relationships_source_idx ON relationships(source_id);
              CREATE INDEX IF NOT EXISTS relationships_target_idx ON relationships(target_id);"
@@ -4704,6 +4759,181 @@ impl ProjectStore {
 
     pub fn list_entities(&self) -> Result<Vec<Entity>, CoreError> {
         self.list_entities_where("WHERE deleted=0")
+    }
+
+    pub fn get_entity(&self, id: &str) -> Result<Option<Entity>, CoreError> {
+        let mut entity = self
+            .connection
+            .query_row(
+                "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id=?1 AND deleted=0",
+                params![id],
+                |row| {
+                    Ok(Entity {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        entity_type: row.get(2)?,
+                        deleted: row.get::<_, i64>(3)? != 0,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                        revision: String::new(),
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(entity) = entity.as_mut() {
+            entity.revision = self.revision_for_entity(&entity.id)?;
+        }
+        Ok(entity)
+    }
+
+    pub fn query_entities(&self, query: EntityListQuery) -> Result<EntityPage, CoreError> {
+        if query
+            .query
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > 512)
+        {
+            return Err(CoreError::Validation(
+                "entity query text cannot exceed 512 characters".into(),
+            ));
+        }
+        if query.entity_types.len() > 256 || query.excluded_entity_types.len() > 256 {
+            return Err(CoreError::Validation(
+                "entity query cannot contain more than 256 entity types".into(),
+            ));
+        }
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_ENTITY_QUERY_LIMIT)
+            .clamp(1, MAX_ENTITY_QUERY_LIMIT);
+        let offset = query.offset.unwrap_or_default();
+        let offset_i64 = i64::try_from(offset)
+            .map_err(|_| CoreError::Validation("entity query offset is too large".into()))?;
+
+        let search_terms = query
+            .query
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|term| {
+                let escaped = term.replace('"', "");
+                (!escaped.is_empty()).then(|| format!("\"{escaped}\"*"))
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
+        let mut params = Vec::<SqlValue>::new();
+        let mut from = "FROM entities e".to_owned();
+        if !search_terms.is_empty() {
+            from.push_str(" JOIN (SELECT entity_id, MIN(rank) AS rank FROM world_search WHERE world_search MATCH ? GROUP BY entity_id) search ON search.entity_id=e.id");
+            params.push(SqlValue::Text(search_terms.clone()));
+        }
+
+        let mut conditions = vec!["e.deleted=0".to_owned()];
+        let entity_types = query
+            .entity_types
+            .into_iter()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+        if !entity_types.is_empty() {
+            conditions.push(format!(
+                "e.entity_type IN ({})",
+                std::iter::repeat_n("?", entity_types.len())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            params.extend(entity_types.into_iter().map(SqlValue::Text));
+        }
+        let excluded_entity_types = query
+            .excluded_entity_types
+            .into_iter()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+        if !excluded_entity_types.is_empty() {
+            conditions.push(format!(
+                "COALESCE(e.entity_type,'__uncategorized') NOT IN ({})",
+                std::iter::repeat_n("?", excluded_entity_types.len())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            params.extend(excluded_entity_types.into_iter().map(SqlValue::Text));
+        }
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
+        let total_i64 = self.connection.query_row(
+            &format!("SELECT COUNT(*) {from} {where_clause}"),
+            rusqlite::params_from_iter(params.iter()),
+            |row| row.get::<_, i64>(0),
+        )?;
+        let total = u64::try_from(total_i64).unwrap_or_default();
+
+        let mut type_count_statement = self.connection.prepare(&format!(
+            "SELECT e.entity_type,COUNT(*) {from} {where_clause} GROUP BY e.entity_type ORDER BY COALESCE(e.entity_type,'')"
+        ))?;
+        let type_counts = type_count_statement
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                let count = row.get::<_, i64>(1)?;
+                Ok(EntityTypeCount {
+                    entity_type: row.get(0)?,
+                    count: u64::try_from(count).unwrap_or_default(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let sort_field = query.sort_field.unwrap_or_else(|| {
+            if search_terms.is_empty() {
+                EntitySortField::Name
+            } else {
+                EntitySortField::Relevance
+            }
+        });
+        let direction = match query.sort_direction.unwrap_or_default() {
+            EntitySortDirection::Asc => "ASC",
+            EntitySortDirection::Desc => "DESC",
+        };
+        let order = match sort_field {
+            EntitySortField::Name => format!("e.name COLLATE NOCASE {direction}, e.id {direction}"),
+            EntitySortField::CreatedAt => {
+                format!("e.created_at {direction}, e.id {direction}")
+            }
+            EntitySortField::UpdatedAt => {
+                format!("e.updated_at {direction}, e.id {direction}")
+            }
+            EntitySortField::Relevance if !search_terms.is_empty() => {
+                format!("search.rank {direction}, e.name COLLATE NOCASE ASC, e.id ASC")
+            }
+            EntitySortField::Relevance => "e.name COLLATE NOCASE ASC, e.id ASC".into(),
+        };
+
+        let mut page_params = params;
+        page_params.push(SqlValue::Integer(i64::from(limit)));
+        page_params.push(SqlValue::Integer(offset_i64));
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT e.id,e.name,e.entity_type,e.deleted,e.created_at,e.updated_at {from} {where_clause} ORDER BY {order} LIMIT ? OFFSET ?"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(page_params.iter()), |row| {
+            Ok(Entity {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                entity_type: row.get(2)?,
+                deleted: row.get::<_, i64>(3)? != 0,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                revision: String::new(),
+            })
+        })?;
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        self.populate_entity_revisions(&mut items)?;
+        let returned = u64::try_from(items.len()).unwrap_or_default();
+        Ok(EntityPage {
+            items,
+            total,
+            offset,
+            limit,
+            has_more: offset.saturating_add(returned) < total,
+            type_counts,
+        })
     }
 
     fn list_entities_where(&self, predicate: &str) -> Result<Vec<Entity>, CoreError> {
@@ -7720,26 +7950,14 @@ impl ProjectStore {
         if query.trim().is_empty() {
             return self.list_entities();
         }
-        let terms = query
-            .split_whitespace()
-            .map(|term| format!("\"{}\"*", term.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let mut statement = self.connection.prepare("SELECT e.id,e.name,e.entity_type,e.deleted,e.created_at,e.updated_at FROM entities e JOIN (SELECT entity_id, MIN(rowid) AS rank FROM world_search WHERE world_search MATCH ?1 GROUP BY entity_id) s ON s.entity_id=e.id WHERE e.deleted=0 ORDER BY s.rank LIMIT 100")?;
-        let rows = statement.query_map(params![terms], |row| {
-            Ok(Entity {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                entity_type: row.get(2)?,
-                deleted: row.get::<_, i64>(3)? != 0,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                revision: String::new(),
-            })
-        })?;
-        let mut entities = rows.collect::<Result<Vec<_>, _>>()?;
-        self.populate_entity_revisions(&mut entities)?;
-        Ok(entities)
+        Ok(self
+            .query_entities(EntityListQuery {
+                query: Some(query),
+                sort_field: Some(EntitySortField::Relevance),
+                limit: Some(100),
+                ..EntityListQuery::default()
+            })?
+            .items)
     }
 
     /// Return ranked FTS rows rather than collapsing matches to entities. The

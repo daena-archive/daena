@@ -2635,6 +2635,94 @@ fn search_matches_prefixes() {
 }
 
 #[test]
+fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
+    let store = ProjectStore::in_memory().unwrap();
+    let alpha = store
+        .create_entity(CreateEntity {
+            name: "Alpha".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: alpha.id.clone(),
+            body: "Keeper of the hidden valley".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Beta".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Gamma".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+
+    let first = store
+        .query_entities(EntityListQuery {
+            entity_types: vec!["person".into()],
+            sort_field: Some(EntitySortField::Name),
+            limit: Some(1),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(first.total, 2);
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(first.items[0].name, "Alpha");
+    assert!(first.has_more);
+    assert_eq!(first.type_counts[0].entity_type.as_deref(), Some("person"));
+    assert_eq!(first.type_counts[0].count, 2);
+
+    let second = store
+        .query_entities(EntityListQuery {
+            entity_types: vec!["person".into()],
+            sort_field: Some(EntitySortField::Name),
+            offset: Some(1),
+            limit: Some(1),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(second.items[0].name, "Gamma");
+    assert!(!second.has_more);
+
+    let searched = store
+        .query_entities(EntityListQuery {
+            query: Some("hidden val".into()),
+            entity_types: vec!["person".into()],
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.items[0].id, alpha.id);
+
+    let excluded = store
+        .query_entities(EntityListQuery {
+            excluded_entity_types: vec!["person".into()],
+            limit: Some(u32::MAX),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(excluded.limit, MAX_ENTITY_QUERY_LIMIT);
+    assert_eq!(excluded.items.len(), 1);
+    assert_eq!(excluded.items[0].name, "Beta");
+
+    assert_eq!(store.get_entity(&alpha.id).unwrap().unwrap().id, alpha.id);
+    assert!(store.get_entity("missing").unwrap().is_none());
+    assert!(matches!(
+        store.query_entities(EntityListQuery {
+            query: Some("x".repeat(513)),
+            ..EntityListQuery::default()
+        }),
+        Err(CoreError::Validation(message)) if message.contains("512")
+    ));
+}
+
+#[test]
 fn create_entry_writes_template_content_atomically() {
     let store = ProjectStore::in_memory().unwrap();
     let entity = store

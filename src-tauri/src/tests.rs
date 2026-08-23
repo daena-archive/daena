@@ -1603,6 +1603,20 @@ fn broker_dispatch_uses_plugin_project_authority() {
     )
     .unwrap();
     assert_eq!(entities.as_array().unwrap().len(), 1);
+    let page = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.query",
+        serde_json::json!({"query": "Broker", "entityTypes": ["person"], "limit": 25}),
+        None,
+    )
+    .unwrap();
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["typeCounts"][0]["entityType"], "person");
+    assert_eq!(page["hasMore"], false);
     let missing_revision = dispatch_module_rpc(
         &mut core,
         None,

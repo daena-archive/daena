@@ -93,6 +93,9 @@ export class FakePluginHost {
                     case "entity.list":
                         this.require("entity.read");
                         return this.list(payload);
+                    case "entity.query":
+                        this.require("entity.read");
+                        return this.query(payload);
                     case "entity.create":
                         this.require("entity.write");
                         return this.create(payload);
@@ -254,6 +257,33 @@ export class FakePluginHost {
         return [...this.entities.values()]
             .filter((entity) => typeof type !== "string" || entity.entityType === type)
             .map((entity) => structuredClone(entity));
+    }
+    query(payload) {
+        const value = payload;
+        const term = typeof value.query === "string" ? value.query.trim().toLowerCase() : "";
+        const included = new Set(Array.isArray(value.entityTypes) ? value.entityTypes.filter((item) => typeof item === "string") : []);
+        const excluded = new Set(Array.isArray(value.excludedEntityTypes)
+            ? value.excludedEntityTypes.filter((item) => typeof item === "string")
+            : []);
+        const filtered = [...this.entities.values()].filter((entity) => (included.size === 0 || included.has(entity.entityType ?? "")) &&
+            !excluded.has(entity.entityType ?? "__uncategorized") &&
+            (!term || `${entity.name} ${entity.entityType ?? ""}`.toLowerCase().includes(term)));
+        const direction = value.sortDirection === "desc" ? -1 : 1;
+        const field = value.sortField === "createdAt" || value.sortField === "updatedAt" ? value.sortField : "name";
+        filtered.sort((left, right) => String(left[field]).localeCompare(String(right[field])) * direction || left.id.localeCompare(right.id));
+        const offset = typeof value.offset === "number" && value.offset >= 0 ? Math.floor(value.offset) : 0;
+        const limit = typeof value.limit === "number" && value.limit > 0 ? Math.min(200, Math.floor(value.limit)) : 50;
+        const counts = new Map();
+        for (const entity of filtered)
+            counts.set(entity.entityType ?? null, (counts.get(entity.entityType ?? null) ?? 0) + 1);
+        return {
+            items: filtered.slice(offset, offset + limit).map((entity) => structuredClone(entity)),
+            total: filtered.length,
+            offset,
+            limit,
+            hasMore: offset + limit < filtered.length,
+            typeCounts: [...counts].map(([entityType, count]) => ({ entityType, count })),
+        };
     }
     create(payload) {
         const value = payload;

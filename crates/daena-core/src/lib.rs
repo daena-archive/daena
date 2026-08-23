@@ -35,12 +35,14 @@ pub use project::{
     AcceptedPhysicalMap, AcceptedVectorMap, Asset, AssetFileInput, AssetFileReplaceInput,
     AssetInput, AssetMetadataUpdate, AssetReplaceInput, CheckpointHandle, CreateEntity,
     CreateEntry, CreateEntryDocument, CreateEntryField, CreateEntryRelationship, Document, Entity,
+    EntityListQuery, EntityPage, EntitySortDirection, EntitySortField, EntityTypeCount,
     ExternalChangeReport, FieldValue, Generation, GitChange, GitLogEntry, GitPreflight, GitRemote,
     GitResetResult, GitStatus, GitToolInfo, GitUpstream, ImportedImageMap, MigrationHistoryEntry,
     ModuleField, ModuleNamespace, ModuleRecordListParams, ModuleState, PluginBackup, ProjectInfo,
     ProjectSnapshot, ProjectStore, RasterLayerChange, RasterLayerUpdate, Relationship,
     RelationshipInput, RelationshipUpdate, SaveDocument, SaveEntry, SearchPassage, SyncSummary,
-    VectorLayerDelete, VectorSourceReplace, WikiPageExportFormat,
+    VectorLayerDelete, VectorSourceReplace, WikiPageExportFormat, DEFAULT_ENTITY_QUERY_LIMIT,
+    MAX_ENTITY_QUERY_LIMIT,
 };
 pub use storage::{
     build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,

@@ -48,6 +48,31 @@ function fakeFetch() {
         ],
       });
     }
+    if (body.request.method === "entity.query") {
+      return response(200, {
+        rpcVersion: 1,
+        requestId: body.request.requestId,
+        ok: true,
+        result: {
+          items: [
+            {
+              id: "entity-1",
+              name: "Entity 1",
+              entityType: "place",
+              deleted: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              revision: "revision-1",
+            },
+          ],
+          total: 1,
+          offset: 0,
+          limit: 25,
+          hasMore: false,
+          typeCounts: [{ entityType: "place", count: 1 }],
+        },
+      });
+    }
     return response(200, {
       rpcVersion: 1,
       requestId: body.request.requestId,
@@ -85,6 +110,24 @@ assert.deepEqual(await client.listEntities(), [
     revision: "revision-1",
   },
 ]);
+assert.deepEqual(await client.queryEntities({ query: "Entity", limit: 25 }), {
+  items: [
+    {
+      id: "entity-1",
+      name: "Entity 1",
+      entityType: "place",
+      deleted: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      revision: "revision-1",
+    },
+  ],
+  total: 1,
+  offset: 0,
+  limit: 25,
+  hasMore: false,
+  typeCounts: [{ entityType: "place", count: 1 }],
+});
 assert.equal(first.bootstrapCount, 1);
 assert.equal(first.calls[1].request.sessionId, "session-1");
 const requestId = first.calls[1].request.requestId;

@@ -212,6 +212,12 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&["entity.read"]),
     },
     RpcMethodDef {
+        name: "entity.query",
+        payload_schema: "EntityQueryPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["entity.read"]),
+    },
+    RpcMethodDef {
         name: "entity.get",
         payload_schema: "EntityGetPayload",
         requires_revision: false,
@@ -595,7 +601,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 58);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 59);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

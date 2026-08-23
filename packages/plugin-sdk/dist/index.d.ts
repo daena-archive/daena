@@ -1,4 +1,4 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload, EntityPageRecord, EntityQueryPayload } from "./generated.js";
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
@@ -23,6 +23,7 @@ export interface PluginRpcClient {
     call<T>(method: string, payload: unknown, requestId?: string): Promise<T>;
     bootstrap(): Promise<PluginBootstrap>;
     listEntities(entityType?: string): Promise<EntityRecord[]>;
+    queryEntities(query?: EntityQueryPayload): Promise<EntityPageRecord>;
     createEntity(name: string, entityType?: string, options?: MutationOptions): Promise<EntityRecord>;
     updateEntity(id: string, name?: string, entityType?: string | null, options?: MutationOptions): Promise<EntityRecord>;
     deleteEntity(id: string, options?: MutationOptions): Promise<void>;

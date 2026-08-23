@@ -5,6 +5,7 @@ import type {
   EntityRecord,
   EntitySummary,
   EntityQuery,
+  EntityPage,
   EntityCreateInput,
   DocumentRecord,
   AssetRecord,
@@ -100,6 +101,22 @@ function toEntitySummary(e: RawEntity): EntitySummary {
     id: toUUID(e.id),
     name: e.name,
     type: e.entity_type,
+    deleted: e.deleted,
+    revision: e.revision,
+  };
+}
+
+function toPluginEntitySummary(e: {
+  id: string;
+  name: string;
+  entityType?: string | null;
+  deleted: boolean;
+  revision: string;
+}): EntitySummary {
+  return {
+    id: toUUID(e.id),
+    name: e.name,
+    type: e.entityType ?? null,
     deleted: e.deleted,
     revision: e.revision,
   };
@@ -249,6 +266,27 @@ export function buildModuleContext(
         pluginId: manifest.id,
       }),
   });
+  const queryEntities = async (query: EntityQuery = {}): Promise<EntityPage> => {
+    checkCapability(manifest, "entity.read");
+    const entityTypes = query.types ?? (query.type ? [query.type] : []);
+    const page = await rpc.queryEntities({
+      query: query.text,
+      entityTypes,
+      excludedEntityTypes: query.excludedTypes ?? [],
+      sortField: query.sortField,
+      sortDirection: query.sortDirection,
+      offset: query.offset,
+      limit: query.limit,
+    });
+    return {
+      items: page.items.map(toPluginEntitySummary),
+      total: page.total,
+      offset: page.offset,
+      limit: page.limit,
+      hasMore: page.hasMore,
+      typeCounts: page.typeCounts.map((count) => ({ type: count.entityType ?? null, count: count.count })),
+    };
+  };
   return {
     module: manifest,
     focusEntityId: options?.focusEntityId,
@@ -265,8 +303,7 @@ export function buildModuleContext(
     entities: {
       get: async (id: UUID) => {
         checkCapability(manifest, "entity.read");
-        const entities = await rpc.call<RawEntity[]>("entity.list", {});
-        const found = entities.find((e) => e.id === id);
+        const found = await rpc.call<RawEntity | null>("entity.get", { id });
         if (!found) return null;
         const record = toEntityRecord(found);
         const docs = await rpc.call<RawDocument[]>("document.list", { entityId: id });
@@ -277,16 +314,19 @@ export function buildModuleContext(
           record.fields[f.key] = f.value;
         return record;
       },
+      query: queryEntities,
       list: async (query?: EntityQuery) => {
         checkCapability(manifest, "entity.read");
-        const entities = await rpc.call<RawEntity[]>("entity.list", {});
-        const filtered = entities.filter(
-          (entity) =>
-            (!query?.type || entity.entity_type === query.type) &&
-            (!query?.text ||
-              `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(query.text.toLowerCase())),
-        );
-        return filtered.slice(0, query?.limit ?? filtered.length).map(toEntitySummary);
+        const requested = query ?? {};
+        if (requested.limit !== undefined) return (await queryEntities(requested)).items;
+        const entities: EntitySummary[] = [];
+        let offset = requested.offset ?? 0;
+        while (true) {
+          const page = await queryEntities({ ...requested, offset, limit: 200 });
+          entities.push(...page.items);
+          if (!page.hasMore) return entities;
+          offset += page.items.length;
+        }
       },
       create: async (input: EntityCreateInput, options?: MutationOptions) => {
         checkCapability(manifest, "entity.write");

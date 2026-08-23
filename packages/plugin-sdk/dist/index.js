@@ -185,6 +185,33 @@ function normalizeEntity(value) {
         revision: value.revision,
     };
 }
+function normalizeEntityPage(value) {
+    if (!isRecord(value) ||
+        !Array.isArray(value.items) ||
+        !Array.isArray(value.typeCounts) ||
+        typeof value.total !== "number" ||
+        typeof value.offset !== "number" ||
+        typeof value.limit !== "number" ||
+        typeof value.hasMore !== "boolean") {
+        throw rpcFailure("transport.protocol", "broker returned an invalid entity page");
+    }
+    const typeCounts = value.typeCounts.map((entry) => {
+        if (!isRecord(entry) || typeof entry.count !== "number")
+            throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+        const entityType = entry.entityType;
+        if (entityType !== null && entityType !== undefined && typeof entityType !== "string")
+            throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+        return { entityType: entityType, count: entry.count };
+    });
+    return {
+        items: value.items.map(normalizeEntity),
+        total: value.total,
+        offset: value.offset,
+        limit: value.limit,
+        hasMore: value.hasMore,
+        typeCounts,
+    };
+}
 function checkKeys(value, label, allowed, errors) {
     const known = new Set(allowed);
     for (const key of Object.keys(value))
@@ -197,6 +224,7 @@ export function createPluginRpcClient(transport) {
         call: (method, payload, requestId) => callTransport(transport, method, payload, requestId),
         bootstrap: () => callTransport(transport, "plugin.bootstrap", {}),
         listEntities: async (entityType) => (await callTransport(transport, "entity.list", entityType ? { entityType } : {})).map(normalizeEntity),
+        queryEntities: async (query = {}) => normalizeEntityPage(await callTransport(transport, "entity.query", query)),
         createEntity: async (name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.create", { name, type: entityType ?? null }, options?.requestId)),
         updateEntity: async (id, name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.update", { id, name: name ?? null, type: entityType ?? null, expectedRevision: options?.expectedRevision }, options?.requestId)),
         deleteEntity: (id, options) => callTransport(transport, "entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId),

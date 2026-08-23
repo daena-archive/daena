@@ -1856,6 +1856,7 @@ fn capability_mappings_are_stable_for_static_methods() {
     let empty = serde_json::json!({});
     let cases: &[(&str, &serde_json::Value, &[&str])] = &[
         ("entity.list", &empty, &["entity.read"]),
+        ("entity.query", &empty, &["entity.read"]),
         ("entity.get", &empty, &["entity.read"]),
         ("entity.update", &empty, &["entity.write"]),
         ("entity.delete", &empty, &["entity.delete"]),

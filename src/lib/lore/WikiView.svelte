@@ -38,6 +38,8 @@ let history = $state<string[]>(initialEntityId ? [initialEntityId] : []);
 // svelte-ignore state_referenced_locally
 let historyIndex = $state(initialEntityId ? 0 : -1);
 let entities = $state<Entity[]>([]);
+let recentEntities = $state<Entity[]>([]);
+let referenceEntities = $state<Entity[]>([]);
 let entity = $state<Entity | null>(null);
 let documentBody = $state("");
 let fields = $state<Record<string, unknown>>({});
@@ -47,10 +49,16 @@ let profileMediaUrl = $state("");
 let mapLocations = $state<any[]>([]);
 let loading = $state(true);
 let tocSearch = $state("");
-let searchMatches = $state<Entity[] | null>(null);
 let searching = $state(false);
 let searchError = $state("");
 let searchRequest = 0;
+let wikiPage = $state(0);
+const wikiPageSize = 50;
+let wikiTotal = $state(0);
+let wikiOffset = $state(0);
+let wikiHasMore = $state(false);
+let wikiTypeCounts = $state<Array<{ entity_type: string | null; count: number }>>([]);
+let wikiSearchKey = "";
 let entityLoadRequest = 0;
 
 const schemas = $derived(manifest.schemas ?? []);
@@ -99,11 +107,21 @@ function fieldDisplay(value: unknown) {
 }
 
 function entityName(id: string) {
-  return entities.find((candidate) => candidate.id === id)?.name ?? id.slice(0, 8);
+  return (
+    (entity?.id === id
+      ? entity.name
+      : [...entities, ...recentEntities, ...referenceEntities].find((candidate) => candidate.id === id)?.name) ??
+    id.slice(0, 8)
+  );
 }
 
 function entityTypeOf(id: string) {
-  return entities.find((candidate) => candidate.id === id)?.entity_type ?? null;
+  return (
+    (entity?.id === id
+      ? entity.entity_type
+      : [...entities, ...recentEntities, ...referenceEntities].find((candidate) => candidate.id === id)?.entity_type) ??
+    null
+  );
 }
 
 function humanizeType(value: string) {
@@ -119,11 +137,11 @@ function formatSystemTimestamp(value: unknown): string {
   return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-const displayedEntities = $derived(searchMatches ?? entities);
 const grouped = $derived(
   (() => {
+    const counts = new Map(wikiTypeCounts.map((entry) => [entry.entity_type ?? "__unknown", entry.count]));
     const groups = new Map<string, Entity[]>();
-    for (const candidate of displayedEntities) {
+    for (const candidate of entities) {
       const key = candidate.entity_type ?? "__unknown";
       const list = groups.get(key) ?? [];
       list.push(candidate);
@@ -133,27 +151,22 @@ const grouped = $derived(
       .map(([type, list]) => ({
         type,
         label: labelForType(type),
-        count: list.length,
-        list: list
-          .sort((left, right) => left.name.localeCompare(right.name))
-          .map((candidate) => ({
-            id: candidate.id,
-            name: candidate.name,
-            typeLabel: labelForType(candidate.entity_type),
-          })),
+        count: counts.get(type) ?? list.length,
+        list: list.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          typeLabel: labelForType(candidate.entity_type),
+        })),
       }))
       .sort((left, right) => left.label.localeCompare(right.label));
   })(),
 );
 const recent = $derived(
-  [...entities]
-    .sort((left, right) => Number(right.updated_at) - Number(left.updated_at))
-    .slice(0, 6)
-    .map((candidate) => ({
-      id: candidate.id,
-      name: candidate.name,
-      typeLabel: labelForType(candidate.entity_type),
-    })),
+  recentEntities.map((candidate) => ({
+    id: candidate.id,
+    name: candidate.name,
+    typeLabel: labelForType(candidate.entity_type),
+  })),
 );
 const outbound = $derived(relationships.filter((relationship: any) => relationship.source_id === currentId));
 const inbound = $derived(relationships.filter((relationship: any) => relationship.target_id === currentId));
@@ -220,26 +233,46 @@ $effect(() => {
 
 $effect(() => {
   const query = tocSearch.trim();
+  if (wikiSearchKey && wikiSearchKey !== query && wikiPage !== 0) wikiPage = 0;
+  wikiSearchKey = query;
+});
+
+$effect(() => {
+  const query = tocSearch.trim();
+  const entityTypes = [...allEntityTypes];
+  const page = wikiPage;
   const request = ++searchRequest;
   searchError = "";
-  if (!query) {
-    searchMatches = null;
-    searching = false;
-    return;
-  }
   searching = true;
   const timer = window.setTimeout(() => {
     void project
-      .search(query)
-      .then((matches) => {
+      .queryEntities({
+        query: query || undefined,
+        entityTypes,
+        sortField: "name",
+        sortDirection: "asc",
+        offset: page * wikiPageSize,
+        limit: wikiPageSize,
+      })
+      .then((result) => {
         if (request !== searchRequest) return;
-        searchMatches = matches.filter(
-          (candidate) => !candidate.deleted && candidate.entity_type && allEntityTypes.includes(candidate.entity_type),
-        );
+        if (page > 0 && result.items.length === 0 && result.total > 0) {
+          wikiPage = Math.max(0, Math.ceil(result.total / wikiPageSize) - 1);
+          return;
+        }
+        entities = result.items;
+        wikiTotal = result.total;
+        wikiOffset = result.offset;
+        wikiHasMore = result.has_more;
+        wikiTypeCounts = result.type_counts;
       })
       .catch((cause) => {
         if (request !== searchRequest) return;
-        searchMatches = [];
+        entities = [];
+        wikiTotal = 0;
+        wikiOffset = 0;
+        wikiHasMore = false;
+        wikiTypeCounts = [];
         searchError = cause instanceof Error ? cause.message : String(cause);
       })
       .finally(() => {
@@ -257,11 +290,13 @@ $effect(() => {
 async function loadAll() {
   loading = true;
   try {
-    entities = (await project.listEntities())
-      .filter(
-        (candidate) => !candidate.deleted && candidate.entity_type && allEntityTypes.includes(candidate.entity_type),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name));
+    const recent = await project.queryEntities({
+      entityTypes: [...allEntityTypes],
+      sortField: "updated_at",
+      sortDirection: "desc",
+      limit: 6,
+    });
+    recentEntities = recent.items;
   } finally {
     loading = false;
   }
@@ -274,15 +309,24 @@ async function loadEntity(id: string) {
     const knownEntity = entities.find((candidate) => candidate.id === id) ?? null;
     const [loadedEntity, documents, storedFields, storedRelationships, storedAssets, storedMapLocations] =
       await Promise.all([
-        knownEntity
-          ? Promise.resolve(knownEntity)
-          : project.listEntities().then((list) => list.find((candidate) => candidate.id === id) ?? null),
+        knownEntity ? Promise.resolve(knownEntity) : project.getEntity(id),
         project.listDocuments(id),
         project.listFields(id).catch(() => []),
         project.listRelationships(id).catch(() => []),
         project.listAssets(id).catch(() => []),
         project.listMapLocations(id).catch(() => []),
       ]);
+    if (request !== entityLoadRequest || currentId !== id) return;
+    const relatedIds = [
+      ...new Set(
+        (storedRelationships as any[])
+          .flatMap((relationship) => [relationship.source_id, relationship.target_id])
+          .filter((candidate) => typeof candidate === "string" && candidate !== id),
+      ),
+    ] as string[];
+    referenceEntities = (
+      await Promise.all(relatedIds.map((relatedId) => project.getEntity(relatedId).catch(() => null)))
+    ).filter((candidate): candidate is Entity => candidate !== null);
     if (request !== entityLoadRequest || currentId !== id) return;
     entity = loadedEntity;
     documentBody = documents[0]?.body ?? "";
@@ -370,7 +414,7 @@ function handleEdit() {
 <section class="kb-shell" aria-label="Lore knowledge base">
   <WorkspaceTopbar
     title={`${manifest.name} knowledge base`}
-    subtitle={`${entities.length} published pages`}
+    subtitle={`${wikiTotal} published pages`}
     icon={BookOpen}
     onBack={onClose}
     actions={entity && currentId ? topbarActions : undefined}
@@ -383,6 +427,12 @@ function handleEdit() {
       {recent}
       {currentId}
       {searching}
+      total={wikiTotal}
+      offset={wikiOffset}
+      pageSize={wikiPageSize}
+      hasMore={wikiHasMore}
+      onPrevious={() => (wikiPage = Math.max(0, wikiPage - 1))}
+      onNext={() => (wikiPage += 1)}
       onHome={goToMain}
       onOpen={openEntity} />
 
@@ -397,7 +447,7 @@ function handleEdit() {
             <h1>A living reference for everything in your world.</h1>
             <p>Search across names, article text, and structured details—or browse the collection by category.</p>
             <div class="home-stats">
-              <span><strong>{entities.length}</strong> pages</span>
+              <span><strong>{wikiTotal}</strong> pages</span>
               <span><strong>{grouped.length}</strong> categories</span>
               <span><strong>{recent.length}</strong> recently updated</span>
             </div>
@@ -413,7 +463,7 @@ function handleEdit() {
               </div>
               <div class="recent-grid">
                 {#each recent.slice(0, 4) as item}
-                  {@const recentEntity = entities.find((candidate) => candidate.id === item.id)}
+                  {@const recentEntity = recentEntities.find((candidate) => candidate.id === item.id)}
                   <button type="button" onclick={() => openEntity(item.id)}>
                     <span class="recent-icon">{item.name.slice(0, 1).toUpperCase()}</span>
                     <span

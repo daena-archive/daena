@@ -17,18 +17,19 @@ use daena_plugin_api::rpc::{
     AssetReplaceBeginPayload, AssetReplaceCommitPayload, AssetTransferCancelPayload,
     DocumentListPayload, DocumentSavePayload, EntityCreateDocument, EntityCreateField,
     EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload, EntityGetPayload,
-    EntityListPayload, EntityRecord, EntityUpdatePayload, EventPublishPayload, EventTypePayload,
-    FieldListPayload, FieldReadPayload, FieldSetPayload, MapsAssetCreateBeginPayload,
-    MapsAssetCreateCommitPayload, MapsImageImportBeginPayload, MapsImageImportCommitPayload,
-    MapsLayerCreatePayload, MapsLayerDeletePayload, MapsLayerUpdatePayload,
-    MapsLocationsCreateAndLinkPayload, MapsLocationsListPayload, MapsLocationsUnlinkPayload,
-    MapsLocationsUpsertPayload, MapsPhysicalCreateBeginPayload, MapsPhysicalCreateCommitPayload,
-    MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload, MapsRecoveryExportCommitPayload,
-    MapsRecoveryListPayload, MapsRecoveryRestorePayload, MapsVectorCreateBeginPayload,
-    MapsVectorCreateCommitPayload, MapsVectorReplaceBeginPayload, MapsVectorReplaceCommitPayload,
-    PluginBootstrap, RecordCreatePayload, RecordDeletePayload, RecordListPayload,
-    RecordUpdatePayload, RelationshipCreatePayload, RelationshipDeletePayload,
-    RelationshipListPayload, RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
+    EntityListPayload, EntityPageRecord, EntityQueryPayload, EntityRecord, EntityTypeCountRecord,
+    EntityUpdatePayload, EventPublishPayload, EventTypePayload, FieldListPayload, FieldReadPayload,
+    FieldSetPayload, MapsAssetCreateBeginPayload, MapsAssetCreateCommitPayload,
+    MapsImageImportBeginPayload, MapsImageImportCommitPayload, MapsLayerCreatePayload,
+    MapsLayerDeletePayload, MapsLayerUpdatePayload, MapsLocationsCreateAndLinkPayload,
+    MapsLocationsListPayload, MapsLocationsUnlinkPayload, MapsLocationsUpsertPayload,
+    MapsPhysicalCreateBeginPayload, MapsPhysicalCreateCommitPayload, MapsReconcileLinksPayload,
+    MapsRecoveryExportBeginPayload, MapsRecoveryExportCommitPayload, MapsRecoveryListPayload,
+    MapsRecoveryRestorePayload, MapsVectorCreateBeginPayload, MapsVectorCreateCommitPayload,
+    MapsVectorReplaceBeginPayload, MapsVectorReplaceCommitPayload, PluginBootstrap,
+    RecordCreatePayload, RecordDeletePayload, RecordListPayload, RecordUpdatePayload,
+    RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
+    RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
     PluginManifest, RpcError, CAPABILITY_REGISTRY, DENIED_BY_DEFAULT_CAPABILITIES,
@@ -427,6 +428,7 @@ fn manifest_schema() -> Value {
 fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
     let _ = match payload_schema {
         "EntityListPayload" => gen.subschema_for::<EntityListPayload>(),
+        "EntityQueryPayload" => gen.subschema_for::<EntityQueryPayload>(),
         "EntityGetPayload" => gen.subschema_for::<EntityGetPayload>(),
         "EntityCreatePayload" => gen.subschema_for::<EntityCreatePayload>(),
         "EntityUpdatePayload" => gen.subschema_for::<EntityUpdatePayload>(),
@@ -508,6 +510,8 @@ fn rpc_schema() -> Value {
     let _ = gen.subschema_for::<EntityCreateDocument>();
     let _ = gen.subschema_for::<PluginBootstrap>();
     let _ = gen.subschema_for::<EntityRecord>();
+    let _ = gen.subschema_for::<EntityPageRecord>();
+    let _ = gen.subschema_for::<EntityTypeCountRecord>();
     let _ = gen.subschema_for::<RpcError>();
 
     let defs = gen.take_definitions();
@@ -547,6 +551,44 @@ fn rpc_schema() -> Value {
             .expect("message");
         message.insert("minLength".to_owned(), json!(1));
         message.insert("maxLength".to_owned(), json!(512));
+    }
+
+    // Entity queries are bounded and use a closed sort vocabulary so plugins
+    // cannot inject SQL fragments or request unbounded result sets.
+    {
+        let props = defs_value
+            .get_mut("EntityQueryPayload")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("EntityQueryPayload")
+            .get_mut("properties")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("EntityQueryPayload properties");
+        props.insert(
+            "query".to_owned(),
+            json!({"type": ["string", "null"], "maxLength": 512}),
+        );
+        for key in ["entityTypes", "excludedEntityTypes"] {
+            props.insert(
+                key.to_owned(),
+                json!({"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 256, "uniqueItems": true}),
+            );
+        }
+        props.insert(
+            "sortField".to_owned(),
+            json!({"enum": ["name", "createdAt", "updatedAt", "relevance", null]}),
+        );
+        props.insert(
+            "sortDirection".to_owned(),
+            json!({"enum": ["asc", "desc", null]}),
+        );
+        props.insert(
+            "offset".to_owned(),
+            json!({"type": ["integer", "null"], "minimum": 0}),
+        );
+        props.insert(
+            "limit".to_owned(),
+            json!({"type": ["integer", "null"], "minimum": 1, "maximum": 200}),
+        );
     }
 
     let method_names: Vec<String> = methods.iter().map(|(name, _)| name.to_string()).collect();

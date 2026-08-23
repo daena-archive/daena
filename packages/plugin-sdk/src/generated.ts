@@ -44,6 +44,8 @@ export interface RpcFailure { rpcVersion: 1; requestId: string; ok: false; error
 export type RpcResponse = RpcSuccess | RpcFailure;
 export interface PluginBootstrap { grantedCapabilities: string[]; hostApi: string; optionalFeatures: string[]; pluginId: string; projectId: string; rpcVersion: number; sessionId: string; version: string }
 export interface EntityRecord { createdAt: string; deleted: boolean; entityType?: string | null; id: string; name: string; revision: string; updatedAt: string }
+export interface EntityTypeCountRecord { count: number; entityType?: string | null }
+export interface EntityPageRecord { hasMore: boolean; items: EntityRecord[]; limit: number; offset: number; total: number; typeCounts: EntityTypeCountRecord[] }
 export interface MutationOptions { expectedRevision?: string; requestId?: string }
 export interface RevisionedEntityPayload { id: string; expectedRevision: string }
 export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }
@@ -71,6 +73,7 @@ export interface EntityCreatePayload { document?: EntityCreateDocument | null; f
 export interface EntityDeletePayload { expectedRevision: string; id: string }
 export interface EntityGetPayload { id: string }
 export interface EntityListPayload { entityType?: string | null }
+export interface EntityQueryPayload { entityTypes?: string[]; excludedEntityTypes?: string[]; limit?: number | null; offset?: number | null; query?: string | null; sortDirection?: "asc" | "desc" | null; sortField?: "name" | "createdAt" | "updatedAt" | "relevance" | null }
 export interface EntityUpdatePayload { expectedRevision: string; id: string; name?: string | null; type?: string | null }
 export interface EventTypePayload { type: string }
 export interface EventPublishPayload { payload: unknown; type: string }
@@ -129,6 +132,7 @@ export interface BrokerMethodPayloads {
   "entity.delete": EntityDeletePayload;
   "entity.get": EntityGetPayload;
   "entity.list": EntityListPayload;
+  "entity.query": EntityQueryPayload;
   "entity.update": EntityUpdatePayload;
   "event.poll": EventTypePayload;
   "event.publish": EventPublishPayload;

@@ -20,6 +20,12 @@ let {
   recent,
   currentId,
   searching,
+  total,
+  offset,
+  pageSize,
+  hasMore,
+  onPrevious,
+  onNext,
   onHome,
   onOpen,
 }: {
@@ -28,6 +34,12 @@ let {
   recent: WikiSidebarItem[];
   currentId: string | null;
   searching: boolean;
+  total: number;
+  offset: number;
+  pageSize: number;
+  hasMore: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
   onHome: () => void;
   onOpen: (id: string) => void;
 } = $props();
@@ -83,6 +95,13 @@ let {
         {/each}
       {/if}
     </section>
+    {#if total > pageSize}
+      <nav class="sidebar-pagination" aria-label="Wiki pages">
+        <button type="button" disabled={offset === 0 || searching} onclick={onPrevious}>Previous</button>
+        <span>{offset + 1}–{Math.min(offset + pageSize, total)} of {total}</span>
+        <button type="button" disabled={!hasMore || searching} onclick={onNext}>Next</button>
+      </nav>
+    {/if}
   </nav>
 </aside>
 
@@ -224,6 +243,30 @@ let {
   color: #8a918a;
   font-size: 10px;
   line-height: 1.45;
+}
+.sidebar-pagination {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  margin: 16px 5px 0;
+  padding-top: 11px;
+  border-top: 1px solid #e1e4de;
+  color: #8a918a;
+  font-size: 9px;
+  text-align: center;
+}
+.sidebar-pagination button {
+  width: auto;
+  padding: 5px 7px;
+  border: 1px solid #dce0da;
+  background: #fff;
+  font-size: 9px;
+  font-weight: 650;
+}
+.sidebar-pagination button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 @keyframes pulse {
   to {

@@ -13,7 +13,8 @@ use daena_core::{
     read_json, validate_checkpoint, Asset, AssetFileInput, AssetFileReplaceInput, AssetInput,
     AssetMetadataUpdate, AssetReplaceInput, AuthorityContext, CheckpointHandle, CheckpointManifest,
     CoreError, CoreService, CreateEntity, CreateEntry, CreateEntryField, CreateEntryRelationship,
-    Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
+    Entity, EntityListQuery, EntityPage, EntitySortDirection, EntitySortField,
+    ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
     GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
     RelationshipInput, SaveDocument, SaveEntry, WikiPageExportFormat,
 };
@@ -5242,6 +5243,18 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
     })?;
     let (required, optional): (&[&str], &[&str]) = match method {
         "entity.list" => (&[], &["entityType"]),
+        "entity.query" => (
+            &[],
+            &[
+                "query",
+                "entityTypes",
+                "excludedEntityTypes",
+                "sortField",
+                "sortDirection",
+                "offset",
+                "limit",
+            ],
+        ),
         "entity.get" => (&["id"], &[]),
         "entity.create" => (&["name"], &["type", "fields", "relationships", "document"]),
         "entity.update" => (&["id", "expectedRevision"], &["name", "type"]),
@@ -5468,21 +5481,96 @@ fn dispatch_module_rpc(
             let entity_type = payload
                 .get("entityType")
                 .and_then(serde_json::Value::as_str);
-            let entities = project
-                .list_entities()?
-                .into_iter()
-                .filter(|entity| {
-                    entity_type.is_none_or(|kind| entity.entity_type.as_deref() == Some(kind))
-                })
-                .collect::<Vec<_>>();
+            let entities = if let Some(entity_type) = entity_type {
+                let mut entities = Vec::new();
+                let mut offset = 0_u64;
+                loop {
+                    let page = project.query_entities(EntityListQuery {
+                        entity_types: vec![entity_type.to_owned()],
+                        offset: Some(offset),
+                        limit: Some(daena_core::MAX_ENTITY_QUERY_LIMIT),
+                        ..EntityListQuery::default()
+                    })?;
+                    entities.extend(page.items);
+                    if !page.has_more {
+                        break;
+                    }
+                    offset = offset.saturating_add(u64::from(page.limit));
+                }
+                entities
+            } else {
+                project.list_entities()?
+            };
             serde_json::to_value(entities).map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "entity.query" => {
+            let payload: daena_plugin_api::EntityQueryPayload = serde_json::from_value(payload)
+                .map_err(|error| {
+                    CoreError::Validation(format!("invalid entity.query payload: {error}"))
+                })?;
+            let sort_field = match payload.sort_field.as_deref() {
+                None => None,
+                Some("name") => Some(EntitySortField::Name),
+                Some("createdAt") | Some("created_at") => Some(EntitySortField::CreatedAt),
+                Some("updatedAt") | Some("updated_at") => Some(EntitySortField::UpdatedAt),
+                Some("relevance") => Some(EntitySortField::Relevance),
+                Some(other) => {
+                    return Err(CoreError::Validation(format!(
+                        "unsupported entity sort field: {other}"
+                    )))
+                }
+            };
+            let sort_direction = match payload.sort_direction.as_deref() {
+                None => None,
+                Some("asc") => Some(EntitySortDirection::Asc),
+                Some("desc") => Some(EntitySortDirection::Desc),
+                Some(other) => {
+                    return Err(CoreError::Validation(format!(
+                        "unsupported entity sort direction: {other}"
+                    )))
+                }
+            };
+            let page = project.query_entities(EntityListQuery {
+                query: payload.query,
+                entity_types: payload.entity_types,
+                excluded_entity_types: payload.excluded_entity_types,
+                sort_field,
+                sort_direction,
+                offset: payload.offset,
+                limit: payload.limit,
+            })?;
+            let record = daena_plugin_api::EntityPageRecord {
+                items: page
+                    .items
+                    .into_iter()
+                    .map(|entity| daena_plugin_api::EntityRecord {
+                        id: entity.id,
+                        name: entity.name,
+                        entity_type: entity.entity_type,
+                        deleted: entity.deleted,
+                        created_at: entity.created_at,
+                        updated_at: entity.updated_at,
+                        revision: entity.revision,
+                    })
+                    .collect(),
+                total: page.total,
+                offset: page.offset,
+                limit: page.limit,
+                has_more: page.has_more,
+                type_counts: page
+                    .type_counts
+                    .into_iter()
+                    .map(|count| daena_plugin_api::EntityTypeCountRecord {
+                        entity_type: count.entity_type,
+                        count: count.count,
+                    })
+                    .collect(),
+            };
+            serde_json::to_value(record).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.get" => {
             let id = payload_string(&payload, "id")?;
-            let entity = project
-                .list_entities()?
-                .into_iter()
-                .find(|entity| entity.id == id);
+            let entity = project.get_entity(&id)?;
             serde_json::to_value(entity).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "entity.create" => {
@@ -6720,6 +6808,22 @@ async fn project_create_map(
 #[tauri::command]
 async fn project_list_entities(state: tauri::State<'_, SharedCore>) -> Result<Vec<Entity>, String> {
     with_read_project(state, daena_core::ProjectStore::list_entities).await
+}
+
+#[tauri::command]
+async fn project_get_entity(
+    state: tauri::State<'_, SharedCore>,
+    id: String,
+) -> Result<Option<Entity>, String> {
+    with_read_project(state, move |project| project.get_entity(&id)).await
+}
+
+#[tauri::command]
+async fn project_query_entities(
+    state: tauri::State<'_, SharedCore>,
+    query: EntityListQuery,
+) -> Result<EntityPage, String> {
+    with_read_project(state, move |project| project.query_entities(query)).await
 }
 
 #[tauri::command]
@@ -9540,6 +9644,8 @@ pub fn run() {
             project_create_entity,
             project_create_map,
             project_list_entities,
+            project_get_entity,
+            project_query_entities,
             project_search,
             project_update_entity,
             project_delete_entity,

@@ -120,6 +120,46 @@ pub struct EntityListPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct EntityQueryPayload {
+    pub query: Option<String>,
+    #[serde(rename = "entityTypes", default)]
+    pub entity_types: Vec<String>,
+    #[serde(rename = "excludedEntityTypes", default)]
+    pub excluded_entity_types: Vec<String>,
+    #[serde(rename = "sortField")]
+    pub sort_field: Option<String>,
+    #[serde(rename = "sortDirection")]
+    pub sort_direction: Option<String>,
+    pub offset: Option<u64>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityTypeCountRecord {
+    #[serde(rename = "entityType")]
+    pub entity_type: Option<String>,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityPageRecord {
+    pub items: Vec<EntityRecord>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+    #[serde(rename = "typeCounts")]
+    pub type_counts: Vec<EntityTypeCountRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct EntityGetPayload {
     pub id: String,
 }

@@ -14,6 +14,8 @@ import type {
   AiRequestIdPayload,
   AssetMetadataUpdatePayload,
   AssetDeletePayload,
+  EntityPageRecord,
+  EntityQueryPayload,
 } from "./generated.js";
 
 export * from "./generated.js";
@@ -43,6 +45,7 @@ export interface PluginRpcClient {
   call<T>(method: string, payload: unknown, requestId?: string): Promise<T>;
   bootstrap(): Promise<PluginBootstrap>;
   listEntities(entityType?: string): Promise<EntityRecord[]>;
+  queryEntities(query?: EntityQueryPayload): Promise<EntityPageRecord>;
   createEntity(name: string, entityType?: string, options?: MutationOptions): Promise<EntityRecord>;
   updateEntity(id: string, name?: string, entityType?: string | null, options?: MutationOptions): Promise<EntityRecord>;
   deleteEntity(id: string, options?: MutationOptions): Promise<void>;
@@ -289,6 +292,36 @@ function normalizeEntity(value: unknown): EntityRecord {
   };
 }
 
+function normalizeEntityPage(value: unknown): EntityPageRecord {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.items) ||
+    !Array.isArray(value.typeCounts) ||
+    typeof value.total !== "number" ||
+    typeof value.offset !== "number" ||
+    typeof value.limit !== "number" ||
+    typeof value.hasMore !== "boolean"
+  ) {
+    throw rpcFailure("transport.protocol", "broker returned an invalid entity page");
+  }
+  const typeCounts = value.typeCounts.map((entry) => {
+    if (!isRecord(entry) || typeof entry.count !== "number")
+      throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+    const entityType = entry.entityType;
+    if (entityType !== null && entityType !== undefined && typeof entityType !== "string")
+      throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+    return { entityType: entityType as string | null | undefined, count: entry.count };
+  });
+  return {
+    items: value.items.map(normalizeEntity),
+    total: value.total,
+    offset: value.offset,
+    limit: value.limit,
+    hasMore: value.hasMore,
+    typeCounts,
+  };
+}
+
 function checkKeys(value: Record<string, unknown>, label: string, allowed: string[], errors: string[]): void {
   const known = new Set(allowed);
   for (const key of Object.keys(value)) if (!known.has(key)) errors.push(`unknown ${label} key: ${key}`);
@@ -302,6 +335,8 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     bootstrap: () => callTransport<PluginBootstrap>(transport, "plugin.bootstrap", {}),
     listEntities: async (entityType?: string) =>
       (await callTransport<unknown[]>(transport, "entity.list", entityType ? { entityType } : {})).map(normalizeEntity),
+    queryEntities: async (query: EntityQueryPayload = {}) =>
+      normalizeEntityPage(await callTransport<unknown>(transport, "entity.query", query)),
     createEntity: async (name, entityType, options) =>
       normalizeEntity(
         await callTransport<unknown>(

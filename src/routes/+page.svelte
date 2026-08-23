@@ -8,6 +8,7 @@ import {
   project,
   type Asset,
   type Entity,
+  type EntityPage,
   type Relationship,
   type MapLocation,
   type ProjectModuleManifest,
@@ -33,7 +34,8 @@ import type {
 import { buildModuleContext } from "$lib/modules/context";
 import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
 import {
-  queryCollection,
+  collectionEntityTypes,
+  presentCollectionPage,
   DEFAULT_COLLECTION_QUERY,
   type TimelineView,
   type WorkspaceSection,
@@ -181,7 +183,13 @@ function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
     const raw = localStorage.getItem(`daena:collection-query:${sec}`);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_COLLECTION_QUERY, ...parsed, section: sec, excludedTypes: parsed.excludedTypes ?? [] };
+      return {
+        ...DEFAULT_COLLECTION_QUERY,
+        ...parsed,
+        pageSize: [25, 50, 100].includes(parsed.pageSize) ? parsed.pageSize : DEFAULT_COLLECTION_QUERY.pageSize,
+        section: sec,
+        excludedTypes: parsed.excludedTypes ?? [],
+      };
     }
   } catch {}
   return {
@@ -192,6 +200,19 @@ function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
 }
 
 let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
+const emptyEntityPage = (): EntityPage => ({
+  items: [],
+  total: 0,
+  offset: 0,
+  limit: DEFAULT_COLLECTION_QUERY.pageSize,
+  has_more: false,
+  type_counts: [],
+});
+let collectionPage = $state<EntityPage>(emptyEntityPage());
+let collectionLoading = $state(false);
+let collectionError = $state("");
+let collectionRequest = 0;
+let collectionScopeKey = "";
 
 $effect(() => {
   const q = collectionQuery;
@@ -1313,8 +1334,20 @@ $effect(() => {
   const request = ++savedMapsRequest;
   void (async () => {
     try {
-      const all = await project.listEntities();
-      const maps = all.filter((entity) => entity.entity_type === "daena.maps:map");
+      const maps: Entity[] = [];
+      let offset = 0;
+      while (true) {
+        const page = await project.queryEntities({
+          entityTypes: ["daena.maps:map"],
+          sortField: "updated_at",
+          sortDirection: "desc",
+          offset,
+          limit: 200,
+        });
+        maps.push(...page.items);
+        if (!page.has_more) break;
+        offset += page.items.length;
+      }
       const entries: SavedMapEntry[] = [];
       for (const map of maps) {
         const fields = await project.listFields(map.id);
@@ -1444,6 +1477,84 @@ function sectionEntityTypes(): string[] {
   return manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [];
 }
 
+$effect(() => {
+  const entityTypes = collectionEntityTypes({
+    entityTypes: new Set(sectionEntityTypes()),
+    writingView: section === "writing" ? writingView : undefined,
+    timelineView: section === "timeline" ? timelineView : undefined,
+  });
+  const scopeKey = JSON.stringify([
+    section,
+    entityTypes,
+    collectionQuery.textSearch.trim(),
+    collectionQuery.sortField,
+    collectionQuery.sortDir,
+    collectionQuery.pageSize,
+    collectionQuery.excludedTypes,
+  ]);
+  if (collectionScopeKey && collectionScopeKey !== scopeKey) {
+    collectionPage = emptyEntityPage();
+    if (collectionQuery.page !== 0) collectionQuery.page = 0;
+  }
+  collectionScopeKey = scopeKey;
+});
+
+$effect(() => {
+  void entities;
+  const active = ready && Boolean(projectInfo);
+  const page = collectionQuery.page;
+  const limit = collectionQuery.pageSize;
+  const entityTypes = collectionEntityTypes({
+    entityTypes: new Set(sectionEntityTypes()),
+    writingView: section === "writing" ? writingView : undefined,
+    timelineView: section === "timeline" ? timelineView : undefined,
+  });
+  const query = collectionQuery.textSearch.trim();
+  const excludedEntityTypes = [...collectionQuery.excludedTypes];
+  const sortField = collectionQuery.sortField;
+  const sortDirection = collectionQuery.sortDir;
+  const request = ++collectionRequest;
+  collectionError = "";
+  if (!active) {
+    collectionPage = emptyEntityPage();
+    collectionLoading = false;
+    return;
+  }
+  collectionLoading = true;
+  const timer = window.setTimeout(
+    () => {
+      void project
+        .queryEntities({
+          query: query || undefined,
+          entityTypes,
+          excludedEntityTypes,
+          sortField,
+          sortDirection,
+          offset: page * limit,
+          limit,
+        })
+        .then((result) => {
+          if (request !== collectionRequest) return;
+          if (page > 0 && result.items.length === 0 && result.total > 0) {
+            collectionQuery.page = Math.max(0, Math.ceil(result.total / limit) - 1);
+            return;
+          }
+          collectionPage = result;
+        })
+        .catch((cause) => {
+          if (request !== collectionRequest) return;
+          collectionPage = emptyEntityPage();
+          collectionError = friendlyError(cause);
+        })
+        .finally(() => {
+          if (request === collectionRequest) collectionLoading = false;
+        });
+    },
+    query ? 180 : 0,
+  );
+  return () => window.clearTimeout(timer);
+});
+
 function toggleTypeFilter(type: string) {
   const idx = collectionQuery.excludedTypes.indexOf(type);
   if (idx >= 0) {
@@ -1469,20 +1580,7 @@ function glyphForType(type: string) {
 }
 
 function collectionResult(): CollectionResult {
-  if (section === "maps") {
-    const term = collectionQuery.textSearch.trim().toLowerCase();
-    const filtered = savedMaps().filter((map) => !term || map.name.toLowerCase().includes(term));
-    return { entities: filtered, total: filtered.length };
-  }
-  const entityTypes = new Set(sectionEntityTypes());
-  return queryCollection(
-    entities,
-    collectionQuery,
-    entityTypes,
-    entityTypeLabel,
-    section === "writing" ? writingView : undefined,
-    section === "timeline" ? timelineView : undefined,
-  );
+  return presentCollectionPage(collectionPage, collectionQuery.viewMode, entityTypeLabel);
 }
 
 function entityGlyph(entity: Pick<Entity, "entity_type">) {
@@ -2771,9 +2869,7 @@ async function openMapLocation(location: MapLocation) {
 }
 
 async function ensureMapEditorOpen(mapEntityId: string) {
-  const map =
-    entities.find((entity) => entity.id === mapEntityId) ??
-    (await project.listEntities()).find((entity) => entity.id === mapEntityId);
+  const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
   if (!map) throw new Error("map-unavailable: choose a saved map first");
   if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
   const mapsView = mapsNavigationItem();
@@ -2807,8 +2903,7 @@ async function applyMapPick(anchor: unknown) {
   try {
     if (pending.kind === "link") {
       const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ??
-        (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
+        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (!entity) throw new Error("Choose an entity to link.");
       const location: MapLocation = {
         id: crypto.randomUUID(),
@@ -2836,8 +2931,7 @@ async function applyMapPick(anchor: unknown) {
       if (mapsEditorMode === "fmg")
         await project.mapsEditorFocusLink(pending.location.id, activeMapsPluginId()).catch(() => {});
       const entity =
-        entities.find((candidate) => candidate.id === pending.entityId) ??
-        (await project.listEntities()).find((candidate) => candidate.id === pending.entityId);
+        entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (entity) {
         if (!(await leavePluginView())) return;
         section =
@@ -2858,10 +2952,9 @@ async function applyMapPick(anchor: unknown) {
 
 async function openMapEntityFromLink(entityId: string) {
   try {
-    const all = await project.listEntities();
-    entities = all;
-    const entity = all.find((candidate) => candidate.id === entityId);
+    const entity = await project.getEntity(entityId);
     if (!entity) throw new Error("Linked entity was not found.");
+    if (!entities.some((candidate) => candidate.id === entity.id)) entities = [...entities, entity];
     const target =
       entity.entity_type === "person" ||
       entity.entity_type === "place" ||
@@ -5437,15 +5530,12 @@ onMount(() => {
                           name="pageSize"
                           value={size}
                           checked={collectionQuery.pageSize === size}
-                          onchange={() => (collectionQuery.pageSize = size)} />
+                          onchange={() => {
+                            collectionQuery.pageSize = size;
+                            collectionQuery.page = 0;
+                          }} />
                         {size}</label
-                      >{/each}<label
-                      ><input
-                        type="radio"
-                        name="pageSize"
-                        value={0}
-                        checked={collectionQuery.pageSize === 0}
-                        onchange={() => (collectionQuery.pageSize = 0)} /> All</label>
+                      >{/each}
                   </div>
                 </fieldset>
                 <fieldset class="filter-section">
@@ -5463,7 +5553,10 @@ onMount(() => {
               </div>{/if}
           </div>
           <div class="collection-list">
-            {#if collectionResult().total === 0}<div class="list-empty" role="status">
+            {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
+            {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
+                Loading {collectionLabel()}…
+              </div>{:else if collectionResult().total === 0}<div class="list-empty" role="status">
                 <span class="empty-mark" aria-hidden="true">✦</span><strong
                   >{collectionQuery.textSearch
                     ? `No ${collectionLabel()} match that search.`
@@ -5548,6 +5641,21 @@ onMount(() => {
                   ></button
                 >{/each}{/if}
           </div>
+          {#if collectionResult().total > 0}<nav class="collection-pagination" aria-label="Collection pages">
+              <button
+                type="button"
+                disabled={collectionQuery.page === 0 || collectionLoading}
+                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+              ><span
+                >{collectionPage.offset + 1}–{Math.min(
+                  collectionPage.offset + collectionPage.items.length,
+                  collectionPage.total,
+                )} of {collectionPage.total}</span
+              ><button
+                type="button"
+                disabled={!collectionPage.has_more || collectionLoading}
+                onclick={() => (collectionQuery.page += 1)}>Next</button>
+            </nav>{/if}
         </aside>
 
         {#if section === "language"}
@@ -5605,7 +5713,7 @@ onMount(() => {
                           mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
-                          entities = await project.listEntities();
+                          entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           selected = map;
                           mapsEditorKey = map.id;
@@ -5642,7 +5750,7 @@ onMount(() => {
                           mapSaveStates[mapId] = { status, detail };
                         }}
                         oncreated={async (map) => {
-                          entities = await project.listEntities();
+                          entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
                           selected = map;
                           mapsEditorKey = map.id;
@@ -8624,6 +8732,48 @@ onMount(() => {
   align-content: start;
   gap: 5px;
   padding: 0 10px 10px;
+}
+.collection-loading,
+.collection-error {
+  margin: 10px 4px;
+  padding: 10px 12px;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+.collection-error {
+  border: 1px solid #ecd7d0;
+  border-radius: 8px;
+  background: #fbefeb;
+  color: #9d4938;
+}
+.collection-pagination {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-align: center;
+}
+.collection-pagination button {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.collection-pagination button:hover:not(:disabled) {
+  border-color: #d8c3a5;
+  color: var(--ink);
+}
+.collection-pagination button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .collection-item {
   display: flex;

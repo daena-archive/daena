@@ -623,20 +623,14 @@ window.DAENA_HOST = true;
       .trim()
       .toLowerCase();
     const list = linkChrome.querySelector("[data-daena-link-entity]");
-    const entities = await rpc("entity.list", {}).catch(() => []);
-    const options = (Array.isArray(entities) ? entities : [])
-      .filter((entity) => entity?.entity_type !== "daena.maps:map" && entity?.type !== "daena.maps:map")
-      .filter(
-        (entity) =>
-          !query ||
-          String(entity.name || "")
-            .toLowerCase()
-            .includes(query) ||
-          String(entity.entity_type || entity.type || "")
-            .toLowerCase()
-            .includes(query),
-      )
-      .slice(0, 120);
+    const page = await rpc("entity.query", {
+      query: query || null,
+      excludedEntityTypes: ["daena.maps:map"],
+      sortField: "name",
+      sortDirection: "asc",
+      limit: 120,
+    }).catch(() => ({ items: [] }));
+    const options = Array.isArray(page?.items) ? page.items : [];
     list.replaceChildren();
     if (options.length === 0) {
       const empty = document.createElement("div");
@@ -655,7 +649,7 @@ window.DAENA_HOST = true;
       option.ariaSelected = entity.id === selectedEntityId ? "true" : "false";
       const selected = entity.id === selectedEntityId;
       option.style.cssText = `display:block;width:100%;text-align:left;padding:8px 9px;margin:0 0 3px;border:0;border-radius:6px;background:${selected ? "rgba(213,171,108,.28)" : "transparent"};color:#f4f1ea;font:12px system-ui,sans-serif;cursor:pointer`;
-      option.innerHTML = `<strong style="display:block;font-size:12px">${entity.name}</strong><small style="opacity:.7">${entity.entity_type || entity.type || "entry"}</small>`;
+      option.innerHTML = `<strong style="display:block;font-size:12px">${entity.name}</strong><small style="opacity:.7">${entity.entityType || entity.entity_type || entity.type || "entry"}</small>`;
       option.addEventListener("click", () => {
         selectedEntityId = entity.id;
         void refreshEntityOptions();

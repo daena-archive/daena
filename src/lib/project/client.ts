@@ -48,6 +48,29 @@ export interface Entity {
   updated_at: string;
   revision: string;
 }
+export type EntitySortField = "name" | "created_at" | "updated_at" | "relevance";
+export type EntitySortDirection = "asc" | "desc";
+export interface EntityListQuery {
+  query?: string;
+  entityTypes?: string[];
+  excludedEntityTypes?: string[];
+  sortField?: EntitySortField;
+  sortDirection?: EntitySortDirection;
+  offset?: number;
+  limit?: number;
+}
+export interface EntityTypeCount {
+  entity_type: string | null;
+  count: number;
+}
+export interface EntityPage {
+  items: Entity[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+  type_counts: EntityTypeCount[];
+}
 export interface Document {
   id: string;
   entity_id: string;
@@ -1070,6 +1093,19 @@ export const project = {
   gitRestoreFromUpstream: () => invoke<GitResetResult>("project_git_restore_from_upstream"),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   listEntities: () => invoke<Entity[]>("project_list_entities"),
+  getEntity: (id: string) => invoke<Entity | null>("project_get_entity", { id }),
+  queryEntities: (query: EntityListQuery = {}) =>
+    invoke<EntityPage>("project_query_entities", {
+      query: {
+        query: query.query ?? null,
+        entity_types: query.entityTypes ?? [],
+        excluded_entity_types: query.excludedEntityTypes ?? [],
+        sort_field: query.sortField ?? null,
+        sort_direction: query.sortDirection ?? null,
+        offset: query.offset ?? null,
+        limit: query.limit ?? null,
+      },
+    }),
   search: (query: string) => invoke<Entity[]>("project_search", { query }),
   deleteEntity: (id: string, options?: MutationOptions) =>
     invoke<void>("project_delete_entity", {

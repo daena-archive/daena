@@ -249,6 +249,8 @@ rpcLines.push(`export type RpcResponse = RpcSuccess | RpcFailure;`);
 
 rpcLines.push(defToDeclaration("PluginBootstrap", rpcDefs.PluginBootstrap));
 rpcLines.push(defToDeclaration("EntityRecord", rpcDefs.EntityRecord));
+rpcLines.push(defToDeclaration("EntityTypeCountRecord", rpcDefs.EntityTypeCountRecord));
+rpcLines.push(defToDeclaration("EntityPageRecord", rpcDefs.EntityPageRecord));
 
 // SDK-only helpers not derivable from the schemas.
 rpcLines.push(`export interface MutationOptions { expectedRevision?: string; requestId?: string }`);

@@ -221,9 +221,28 @@ export interface ModuleRecordQuery {
 
 export interface EntityQuery {
   type?: string;
+  types?: string[];
+  excludedTypes?: string[];
   text?: string;
   includeDeleted?: boolean;
+  sortField?: "name" | "createdAt" | "updatedAt" | "relevance";
+  sortDirection?: "asc" | "desc";
+  offset?: number;
   limit?: number;
+}
+
+export interface EntityTypeCount {
+  type: string | null;
+  count: number;
+}
+
+export interface EntityPage {
+  items: EntitySummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  typeCounts: EntityTypeCount[];
 }
 
 export interface EntityCreateInput {
@@ -269,6 +288,7 @@ export interface ModuleContext {
   };
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
+    query(query?: EntityQuery): Promise<EntityPage>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;
     create(input: EntityCreateInput, options?: MutationOptions): Promise<EntityRecord>;
     update(id: UUID, patch: { name?: string; type?: string | null }, options?: MutationOptions): Promise<EntityRecord>;

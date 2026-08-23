@@ -48,7 +48,7 @@ function render(entities, relationships) {
     type.classList.add("type");
     type.setAttribute("x", position.x);
     type.setAttribute("y", position.y + 57);
-    type.textContent = entity.entity_type ?? "entry";
+    type.textContent = entity.entityType ?? entity.entity_type ?? "entry";
     svg.append(type);
   }
   projection.append(svg);
@@ -104,27 +104,30 @@ function renderTimeline(events) {
 async function start() {
   if (!projectId) throw new Error("Plugin project is missing");
   const bootstrap = await client.bootstrap();
-  const entities = await client.call("entity.list", {});
+  const entityQuery = pluginId === "daena.timeline" ? { entityTypes: ["event"] } : { excludedEntityTypes: ["event"] };
+  const entities = [];
+  let offset = 0;
+  while (true) {
+    const page = await client.call("entity.query", { ...entityQuery, offset, limit: 200 });
+    entities.push(...page.items);
+    if (!page.hasMore) break;
+    offset += page.items.length;
+  }
   const relationships = (
     await Promise.all(entities.map((entity) => client.call("relationship.list", { entityId: entity.id })))
   ).flat();
   status.textContent = "Ready to explore.";
   if (pluginId === "daena.timeline") {
     const events = await Promise.all(
-      entities
-        .filter((entity) => entity.entity_type === "event")
-        .map(async (entity) => {
-          const fields = await client.call("field.list", { entityId: entity.id, namespace: "timeline" });
-          const values = Object.fromEntries(fields.map((field) => [field.key, field.value]));
-          return { ...entity, startsAt: values.startsAt, endsAt: values.endsAt };
-        }),
+      entities.map(async (entity) => {
+        const fields = await client.call("field.list", { entityId: entity.id, namespace: "timeline" });
+        const values = Object.fromEntries(fields.map((field) => [field.key, field.value]));
+        return { ...entity, startsAt: values.startsAt, endsAt: values.endsAt };
+      }),
     );
     renderTimeline(events);
   } else {
-    render(
-      entities.filter((entity) => entity.entity_type !== "event"),
-      relationships,
-    );
+    render(entities, relationships);
   }
 }
 

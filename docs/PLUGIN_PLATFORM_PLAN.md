@@ -680,7 +680,7 @@ from one source:
 | -------------- | -------- | ---- |
 | Rust contract types + `validate_manifest` | `crates/daena-plugin-api/src/lib.rs` | Single source of truth |
 | RPC payload/envelope types | `crates/daena-plugin-api/src/rpc.rs` | Pins exact wire names |
-| RPC method catalog | `crates/daena-plugin-api/src/catalog.rs` | 32 methods, payload, revision, capability |
+| RPC method catalog | `crates/daena-plugin-api/src/catalog.rs` | Methods, payload, revision, capability |
 | JSON schemas | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json` | Generated build artifacts |
 | TypeScript contract types | `packages/plugin-sdk/src/generated.ts` | Generated build artifact |
 | TS rule validator | `packages/plugin-sdk/src/index.ts` (`validatePluginManifest`) | Mirror of Rust rules, conformance-tested |
@@ -691,10 +691,11 @@ and are mirrored in TypeScript. Shapes are generated; parity is enforced.
 
 ### Canonical RPC method catalog
 
-32 executable methods in `RPC_METHOD_CATALOG`:
+The generated RPC schema is authoritative for the complete executable method
+catalog. Its core entity and content methods include:
 
 ```
-entity.list  entity.get  entity.create  entity.update  entity.delete
+entity.list  entity.query  entity.get  entity.create  entity.update  entity.delete
 document.list  document.save
 field.read  field.list  field.set
 relationship.list  relationship.create  relationship.delete

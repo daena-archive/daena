@@ -178,6 +178,13 @@ Search, map projections, relationship indexes, and other views are derived
 from durable runtime rows. They may be rebuilt, discarded, or temporarily
 reported as stale without changing project content.
 
+Interactive entity collections use the core `EntityListQuery` boundary. The
+core applies FTS queries, manifest-derived type scopes, exclusions, sorting,
+counts, and bounded offset pagination in SQLite and returns an `EntityPage`.
+Shell and module UIs render that page; they do not re-filter, re-sort, or slice
+the full project entity set. Exact entity reads use `get_entity` rather than a
+list-and-scan fallback.
+
 The database-first writer is the current hard-cut storage boundary. There is
 no dual-authority writer, fallback writer, persistent source catalog, or
 automatic reconciliation path. See [`STORAGE.md`](./STORAGE.md) for the

@@ -828,9 +828,7 @@ export const timeline: DaenaModule = {
             const shell = document.createElement("div");
             shell.className = "timeline-shell";
             const header = document.createElement("div");
-            header.className = "projection-header";
-            const heading = document.createElement("h3");
-            heading.textContent = "Chronology";
+            header.className = "projection-contextbar";
             const headerMeta = document.createElement("div");
             headerMeta.className = "timeline-header-meta";
             const summary = document.createElement("small");
@@ -842,7 +840,7 @@ export const timeline: DaenaModule = {
             calendarBadge.className = "timeline-calendar-badge";
             calendarBadge.textContent = selectedCalendarOption?.name ?? "Gregorian";
             headerMeta.append(summary, calendarBadge);
-            header.append(heading, headerMeta);
+            header.append(headerMeta);
             shell.append(style, header);
             let details: HTMLElement | null = null;
 
@@ -1186,12 +1184,7 @@ export const timeline: DaenaModule = {
             element.className = "timeline-projection";
             const shell = document.createElement("div");
             shell.className = "timeline-shell";
-            const header = document.createElement("div");
-            header.className = "projection-header";
-            const heading = document.createElement("h3");
-            heading.textContent = "Chronology";
-            header.append(heading);
-            shell.append(style, header);
+            shell.append(style);
             showError(shell, cause);
             element.append(shell);
           }

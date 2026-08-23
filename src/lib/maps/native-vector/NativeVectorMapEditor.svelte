@@ -1,6 +1,8 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
+import { Map as MapIcon } from "@lucide/svelte";
+import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   project,
   PHYSICAL_HISTORICAL_PROGRESS_EVENT,
@@ -1053,16 +1055,19 @@ onMount(() => {
     {fullscreen} />
 {:else}
   <section class="native-vector-editor" aria-label="Native vector map editor">
-    <header>
-      <div>
-        <span>{studioOpen ? "ATLAS STUDIO" : physicalMap ? "PHYSICAL WORLD" : "VECTOR MAP"}</span>
-        {#if studioOpen && studioStage}<strong>{studioStage}</strong>
-        {:else if !physicalMap && dirty}<strong>Unsaved changes</strong>{/if}
-      </div>
-      <div
-        class="header-actions"
-        role="toolbar"
-        aria-label={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
+    <WorkspaceTopbar
+      title={studioOpen ? "Atlas Studio" : physicalMap ? "Physical world" : "Vector map"}
+      subtitle={studioOpen && studioStage
+        ? studioStage
+        : !physicalMap && dirty
+          ? "Unsaved changes"
+          : physicalMap
+            ? "Generated world map"
+            : "Map editor"}
+      icon={MapIcon}
+      onBack={() => void requestBack()}
+      actionsLabel={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
+      <div class="header-actions" data-workspace-topbar-actions>
         {#if !physicalMap}
           <button
             type="button"
@@ -1166,10 +1171,8 @@ onMount(() => {
           aria-pressed={fullscreen}
           title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
           onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
-        <button type="button" class="text-button" aria-label="Close" title="Close" onclick={() => void requestBack()}
-          >Close</button>
       </div>
-    </header>
+    </WorkspaceTopbar>
     {#if conflict}
       <p class="error" role="alert">
         This map changed elsewhere. Reload the canonical source, export this draft, or keep editing without saving over
@@ -1530,24 +1533,6 @@ onMount(() => {
   flex-direction: column;
   background: #17211d;
   color: #edf2ec;
-}
-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #405047;
-  background: #202c27;
-}
-header div:first-child {
-  display: grid;
-  gap: 2px;
-}
-header span {
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: #b8c8bc;
 }
 .header-actions,
 .layer-row,

@@ -15,6 +15,7 @@ import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import { headingOutline } from "$lib/markdown";
 import { project, type Asset, type Entity, type ModuleManifest } from "$lib/project/client";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
+import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
 import WikiSidebar from "./WikiSidebar.svelte";
 
@@ -344,37 +345,36 @@ function handleEdit() {
 }
 </script>
 
+{#snippet topbarActions()}
+  <button
+    type="button"
+    class="workspace-topbar-action icon"
+    onclick={goBack}
+    disabled={historyIndex <= 0}
+    aria-label="Back">
+    <ArrowLeft size={14} strokeWidth={1.8} />
+  </button>
+  <button
+    type="button"
+    class="workspace-topbar-action icon"
+    onclick={goForward}
+    disabled={historyIndex >= history.length - 1}
+    aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
+  <button type="button" class="workspace-topbar-action" onclick={handleEdit}
+    ><Pencil size={14} strokeWidth={1.8} /> Edit</button>
+  {#if entity && currentId}
+    <WikiExportMenu entityId={currentId} manifestId={manifest.id} articleName={entity.name} />
+  {/if}
+{/snippet}
+
 <section class="kb-shell" aria-label="Lore knowledge base">
-  <header class="kb-topbar">
-    <div class="kb-brand">
-      <button class="back-workspace" type="button" onclick={onClose} aria-label="Back to workspace">
-        <ArrowLeft size={15} strokeWidth={1.8} />
-      </button>
-      <span class="brand-mark"><BookOpen size={16} strokeWidth={1.8} /></span>
-      <div><strong>{manifest.name} knowledge base</strong><small>{entities.length} published pages</small></div>
-    </div>
-    {#if entity && currentId}
-      <div class="topbar-actions">
-        <button
-          type="button"
-          class="toolbar-button icon"
-          onclick={goBack}
-          disabled={historyIndex <= 0}
-          aria-label="Back">
-          <ArrowLeft size={14} strokeWidth={1.8} />
-        </button>
-        <button
-          type="button"
-          class="toolbar-button icon"
-          onclick={goForward}
-          disabled={historyIndex >= history.length - 1}
-          aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
-        <button type="button" class="toolbar-button" onclick={handleEdit}
-          ><Pencil size={14} strokeWidth={1.8} /> Edit</button>
-        <WikiExportMenu entityId={currentId} manifestId={manifest.id} articleName={entity.name} />
-      </div>
-    {/if}
-  </header>
+  <WorkspaceTopbar
+    title={`${manifest.name} knowledge base`}
+    subtitle={`${entities.length} published pages`}
+    icon={BookOpen}
+    onBack={onClose}
+    actions={entity && currentId ? topbarActions : undefined}
+    actionsLabel="Article actions" />
 
   <div class="kb-workspace">
     <WikiSidebar
@@ -612,79 +612,6 @@ function handleEdit() {
   background: #f4f5f2;
   color: #252b26;
   font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-}
-.kb-topbar {
-  z-index: 20;
-  display: flex;
-  min-height: 58px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #dde1da;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 1px 8px rgba(30, 37, 31, 0.03);
-}
-.kb-brand,
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-.kb-brand {
-  min-width: 0;
-}
-.kb-brand > div {
-  display: grid;
-  gap: 2px;
-}
-.kb-brand strong {
-  font-size: 12px;
-}
-.kb-brand small {
-  color: #899088;
-  font-size: 9px;
-}
-.brand-mark {
-  display: grid;
-  width: 31px;
-  height: 31px;
-  place-items: center;
-  border-radius: 8px;
-  background: #e4ece4;
-  color: #416047;
-}
-.back-workspace,
-.toolbar-button {
-  display: inline-flex;
-  min-height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 1px solid #d9ddd6;
-  border-radius: 8px;
-  background: #fff;
-  color: #4d584f;
-  cursor: pointer;
-}
-.back-workspace {
-  width: 34px;
-}
-.toolbar-button {
-  padding: 0 10px;
-  font: 650 11px var(--font-body, Inter, sans-serif);
-}
-.toolbar-button.icon {
-  width: 34px;
-  padding: 0;
-}
-.toolbar-button:hover {
-  background: #f2f6f2;
-  color: #2f4e35;
-}
-.toolbar-button:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
 }
 .kb-workspace {
   display: grid;
@@ -1223,25 +1150,8 @@ function handleEdit() {
   .kb-rail {
     position: static;
   }
-  .kb-topbar {
-    align-items: flex-start;
-  }
-  .topbar-actions {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
 }
 @media (max-width: 650px) {
-  .kb-topbar {
-    padding: 9px 12px;
-  }
-  .kb-brand small,
-  .toolbar-button.icon {
-    display: none;
-  }
-  .toolbar-button {
-    min-height: 32px;
-  }
   .kb-home {
     padding: 24px 15px 45px;
   }
@@ -1260,16 +1170,12 @@ function handleEdit() {
   .article-heading h1 {
     font-size: 34px;
   }
-  .topbar-actions {
-    gap: 5px;
-  }
 }
 @media print {
   .kb-shell {
     height: auto;
     background: #fff;
   }
-  .kb-topbar,
   .kb-alert {
     display: none !important;
   }

@@ -310,12 +310,10 @@ export const lore: DaenaModule = {
           const shell = document.createElement("div");
           shell.className = "lore-graph-shell";
           const header = document.createElement("div");
-          header.className = "projection-header";
-          const heading = document.createElement("h3");
-          heading.textContent = "World graph";
+          header.className = "projection-contextbar";
           const summary = document.createElement("small");
           summary.textContent = `${entities.length} entities · ${relationships.length} links`;
-          header.append(heading, summary);
+          header.append(summary);
           shell.append(style, header);
 
           if (entities.length === 0) {

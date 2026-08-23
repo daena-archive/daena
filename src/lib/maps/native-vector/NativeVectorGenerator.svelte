@@ -1,7 +1,9 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
+import { Map as MapIcon } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
 import { project } from "$lib/project/client";
+import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   DEFAULT_GENERATOR_SETTINGS,
   generationProvenance,
@@ -256,29 +258,14 @@ onDestroy(() => {
 </script>
 
 <section class:resizing={resizingControls} class="generator" aria-label="Generate a native vector map">
-  <header>
-    <div>
-      <span>NATIVE VECTOR MAP</span>
-      <strong>Generate landmass</strong>
-    </div>
-    <div class="header-actions">
-      <button
-        type="button"
-        class="icon-button"
-        aria-label="Back to map details"
-        title="Back to map details"
-        onclick={cancel}>
-        <svg
-          aria-hidden="true"
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
-      </button>
+  <WorkspaceTopbar
+    title="Generate landmass"
+    subtitle="Native vector map"
+    icon={MapIcon}
+    backLabel="Back to map details"
+    onBack={cancel}
+    actionsLabel="Map generation actions">
+    <div class="header-actions" data-workspace-topbar-actions>
       <button type="button" class="quiet" disabled={busy || accepting} onclick={() => void importImage()}
         >{accepting && autostartImport ? "Importing…" : "Import image"}</button>
       <button
@@ -295,7 +282,7 @@ onDestroy(() => {
         title={fullscreen ? "Exit full screen" : "Full screen"}
         onclick={toggleFullscreen}>⛶</button>
     </div>
-  </header>
+  </WorkspaceTopbar>
   <div class="body" style={`--controls-width: ${controlsWidth}px`}>
     <form
       class="controls"
@@ -394,20 +381,6 @@ onDestroy(() => {
   flex-direction: column;
   background: #17211d;
   color: #edf2ec;
-}
-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid #405047;
-  background: #202c27;
-}
-header span {
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: #b8c8bc;
 }
 .header-actions,
 .seed-row {

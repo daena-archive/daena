@@ -102,7 +102,7 @@ import {
   Sword,
   TreePine,
 } from "@lucide/svelte";
-import { projectionModule } from "$lib/modules/projections";
+import { projectionModule, type ProjectionKind } from "$lib/modules/projections";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
@@ -355,7 +355,13 @@ let sandboxView = $state<{
   view: PluginAdminEntry["views"][number] | null;
   renderer: "maps" | "webview";
 } | null>(null);
-let projectionView = $state<{ title: string; module: DaenaModule; manifest: ModuleManifest } | null>(null);
+let projectionView = $state<{
+  title: string;
+  subtitle: string;
+  kind: ProjectionKind;
+  module: DaenaModule;
+  manifest: ModuleManifest;
+} | null>(null);
 let loreWikiOpen = $state(false);
 let loreWikiEntityId = $state<string | null>(null);
 let adminBusy = $state(false);
@@ -1634,6 +1640,8 @@ async function openProjection() {
   const projection = projectionModule(section === "lore" ? "lore" : "timeline");
   projectionView = {
     title: projection.title,
+    subtitle: projection.subtitle,
+    kind: projection.kind,
     module: projection.module,
     manifest: (manifestForWorkspaceSection(section) ?? projection.module.manifest) as ModuleManifest,
   };
@@ -5235,6 +5243,8 @@ onMount(() => {
       {#key projectionView.title}
         <ProjectionView
           title={projectionView.title}
+          subtitle={projectionView.subtitle}
+          kind={projectionView.kind}
           view={projectionView.module.views[0]}
           context={buildModuleContext(projectionView.manifest, projectInfo?.root ?? "", {
             focusEntityId: selected?.id as UUID | undefined,
@@ -8313,18 +8323,16 @@ onMount(() => {
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
-:global(.projection-header) {
+:global(.projection-contextbar) {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 14px 17px 10px;
+  min-height: 38px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 7px 14px;
   border-bottom: 1px solid var(--line);
+  background: #fbfcfa;
 }
-:global(.projection-header h3) {
-  margin: 0;
-  font: 500 18px var(--font-display);
-}
-:global(.projection-header small) {
+:global(.projection-contextbar small) {
   color: var(--ink-faint);
   font-size: 10px;
 }

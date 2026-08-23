@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { X } from "@lucide/svelte";
+import { Mountain } from "@lucide/svelte";
+import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   project,
   type Entity,
@@ -289,14 +290,12 @@ onMount(() => {
   <NativeVectorMapEditor {mapId} {oncancel} {onstate} />
 {:else}
   <section class="native-vector-editor physical-map-editor" aria-label="Generate physical map">
-    <header>
-      <div>
-        <span>PHYSICAL WORLD</span>
-        <strong>{headline()}</strong>
-      </div>
-      <button class="icon-button" type="button" aria-label="Close" onclick={() => void cancel()}
-        ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
-    </header>
+    <WorkspaceTopbar
+      title="Physical world"
+      subtitle={headline()}
+      icon={Mountain}
+      backLabel="Back to map details"
+      onBack={() => void cancel()} />
     <div class="physical-map-controls">
       <label>Map name<input bind:value={name} disabled={busy} /></label>
       <label>Seed<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
@@ -374,29 +373,12 @@ onMount(() => {
   color: #f7f0e5;
 }
 
-.physical-map-editor header,
 .physical-map-actions,
 .physical-map-controls {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   padding: 0.9rem 1rem;
-}
-
-.physical-map-editor header {
-  justify-content: space-between;
-  border-bottom: 1px solid rgb(255 255 255 / 12%);
-}
-
-.physical-map-editor header div {
-  display: grid;
-  gap: 0.25rem;
-}
-
-.physical-map-editor header span {
-  color: #c9a96e;
-  font-size: 0.68rem;
-  letter-spacing: 0.12em;
 }
 
 .physical-map-controls {
@@ -428,7 +410,6 @@ onMount(() => {
   font: inherit;
 }
 
-.physical-map-editor .icon-button,
 .physical-map-editor .quiet-button,
 .physical-map-editor .primary-button,
 .physical-map-editor .layer-toggle {
@@ -436,25 +417,6 @@ onMount(() => {
   font: inherit;
 }
 
-.physical-map-editor .icon-button {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 0.35rem;
-  background: transparent;
-  color: #f7f0e5;
-  font-size: 1.2rem;
-  line-height: 1;
-}
-
-.physical-map-editor .icon-button:hover {
-  background: rgb(255 255 255 / 10%);
-}
-
-.physical-map-editor .icon-button:focus-visible,
 .physical-map-editor .quiet-button:focus-visible,
 .physical-map-editor .primary-button:focus-visible,
 .physical-map-editor .layer-toggle:focus-visible,
@@ -489,7 +451,6 @@ onMount(() => {
   background: #d8ba82;
 }
 
-.physical-map-editor .icon-button:disabled,
 .physical-map-editor .quiet-button:disabled,
 .physical-map-editor .primary-button:disabled {
   cursor: not-allowed;

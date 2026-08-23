@@ -287,25 +287,42 @@ function contextLabel(event: TimelineEvent | UndatedEvent): string {
 function createTimelineStyles(): HTMLStyleElement {
   const style = document.createElement("style");
   style.textContent = `
-    .timeline-shell { display: grid; gap: 0; }
-    .timeline-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e9e1d4; background: #fffefa; }
-    .timeline-toolbar-controls, .timeline-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-    .timeline-toolbar button { border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .timeline-shell { display: grid; gap: 0; background: #fffefa; }
+    .timeline-header-meta { display: inline-flex; align-items: center; gap: 7px; }
+    .timeline-calendar-badge { border: 1px solid #e2d7c7; border-radius: 999px; padding: 3px 7px; background: #f7f1e7; color: #6f5841; font: 600 9px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em; }
+    .timeline-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-toolbar-controls { display: flex; align-items: flex-end; flex: 1; flex-wrap: wrap; gap: 8px; }
+    .timeline-toolbar-actions { display: flex; align-items: center; gap: 5px; }
+    .timeline-toolbar button { border: 1px solid #d9cdbd; border-radius: 7px; padding: 7px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-toolbar button:hover, .timeline-toolbar button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
-    .timeline-scope, .timeline-calendar { min-width: 130px; border: 1px solid #d9cdbd; border-radius: 7px; padding: 6px 9px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
-    .timeline-layer-toggle { display: inline-flex; align-items: center; gap: 5px; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
-    .timeline-layer-toggle input { accent-color: #8b5c2e; }
-    .timeline-workspace { display: grid; grid-template-columns: var(--timeline-outline-width, 300px) 8px minmax(0, 1fr); min-height: 380px; }
-    .timeline-outline { overflow: auto; max-height: min(58vh, 560px); padding: 10px; border-right: 1px solid #e9e1d4; background: #fffefa; }
+    .timeline-filter-field { display: grid; gap: 3px; color: #8f897e; font: 600 8px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .045em; text-transform: uppercase; }
+    .timeline-filter-field input, .timeline-filter-field select { height: 30px; border: 1px solid #d9cdbd; border-radius: 7px; padding: 0 9px; background: #fffefa; color: #51483e; font: 500 10px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 0; text-transform: none; }
+    .timeline-filter-field input:focus-visible, .timeline-filter-field select:focus-visible { border-color: #b4773f; box-shadow: 0 0 0 2px rgba(180, 119, 63, .12); outline: none; }
+    .timeline-search { width: min(230px, 28vw); }
+    .timeline-scope, .timeline-calendar, .timeline-type-filter { min-width: 120px; }
+    .timeline-layerbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #e9e1d4; background: #fbf8f0; }
+    .timeline-layer-chips, .timeline-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+    .timeline-layer-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #d9cdbd; border-radius: 999px; padding: 5px 9px; background: #fffefa; color: #766c60; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .timeline-layer-chip[aria-pressed="true"] { border-color: #9c6c3d; background: #f1e4d3; color: #51351f; }
+    .timeline-layer-count { min-width: 17px; border-radius: 999px; padding: 1px 5px; background: rgba(48, 44, 38, .08); text-align: center; font-size: 9px; }
+    .timeline-legend { color: #8f897e; font: 9px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .timeline-legend-dot { width: 7px; height: 7px; border: 2px solid #a56d32; border-radius: 50%; background: #fffefa; }
+    .timeline-legend-range { width: 18px; height: 6px; border: 1px solid #4f705a; border-radius: 999px; background: #dfeae2; }
+    .timeline-legend-approx { width: 18px; height: 6px; border: 1px dashed #8f897e; border-radius: 2px; }
+    .timeline-workspace { display: grid; grid-template-columns: var(--timeline-outline-width, 300px) 8px minmax(360px, 1fr) minmax(220px, 270px); min-height: 420px; }
+    .timeline-outline { overflow: auto; max-height: min(62vh, 620px); padding: 10px; border-right: 1px solid #e9e1d4; background: #fffefa; }
     .timeline-outline-resize { cursor: col-resize; background: #f4eee3; touch-action: none; }
     .timeline-outline-resize:hover, .timeline-outline-resize:focus-visible { background: #dfcfb8; outline: none; }
     .timeline-outline-heading { display: block; margin: 4px 5px 8px; color: #8f897e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
     .timeline-outline-year { margin: 12px 5px 5px; color: #62594e; font: 600 12px var(--font-display, Georgia, serif); }
-    .timeline-event-card { display: grid; width: 100%; gap: 3px; margin: 2px 0; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+    .timeline-event-card { display: grid; width: 100%; gap: 4px; margin: 2px 0; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
     .timeline-event-card:hover, .timeline-event-card:focus-visible, .timeline-event-card.is-selected { border-color: #d9cdbd; background: #f7f1e7; outline: none; }
     .timeline-event-card strong { color: #302c26; font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif; }
     .timeline-event-card small { color: #8f897e; font: 10px/1.35 Inter, ui-sans-serif, system-ui, sans-serif; }
-    .timeline-canvas { position: relative; height: min(58vh, 560px); min-height: 380px; background: radial-gradient(circle at 50% 42%, #fffdf7 0, #fbf8f0 52%, #f4eee3 100%); }
+    .timeline-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .timeline-card-kind { border-radius: 999px; padding: 2px 5px; background: #eee6da; color: #786b5d; font: 600 8px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .025em; text-transform: uppercase; }
+    .timeline-canvas { position: relative; height: min(62vh, 620px); min-height: 420px; background: radial-gradient(circle at 50% 42%, #fffdf7 0, #fbf8f0 52%, #f4eee3 100%); }
     .timeline-canvas .vis-timeline { border: 0; background: transparent; }
     .timeline-canvas .vis-panel.vis-background, .timeline-canvas .vis-panel.vis-center, .timeline-canvas .vis-panel.vis-left, .timeline-canvas .vis-panel.vis-right, .timeline-canvas .vis-panel.vis-top, .timeline-canvas .vis-panel.vis-bottom { border-color: #e9e1d4; }
     .timeline-canvas .vis-time-axis .vis-text { color: #8f897e; font: 10px Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -319,9 +336,17 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-canvas .vis-item.vis-point .vis-dot { border-width: 2px; }
     .timeline-canvas .vis-item .vis-item-content { padding: 3px 8px; }
     .timeline-canvas .vis-labelset .vis-label, .timeline-canvas .vis-foreground .vis-group { border-color: #e9e1d4; }
-    .timeline-details { display: grid; gap: 7px; min-height: 55px; padding: 12px 15px; border-top: 1px solid #e9e1d4; background: #fffefa; color: #62594e; font: 11px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
-    .timeline-details strong { color: #302c26; font: 500 16px/1.1 var(--font-display, Georgia, serif); }
+    .timeline-canvas .vis-labelset .vis-label { background: rgba(255, 254, 250, .82); color: #6f6559; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-canvas .vis-labelset .vis-label .vis-inner { padding: 8px 10px; }
+    .timeline-canvas .vis-item.timeline-lifeline .vis-item-content { display: inline-flex; align-items: center; gap: 6px; }
+    .timeline-canvas .vis-item.timeline-lifeline .vis-item-content::before, .timeline-canvas .vis-item.timeline-lifeline .vis-item-content::after { content: ""; width: 6px; height: 6px; flex: 0 0 auto; border: 1px solid currentColor; border-radius: 50%; background: #fffefa; }
+    .timeline-details { display: grid; align-content: start; gap: 9px; min-height: 55px; padding: 16px; background: #fffefa; color: #62594e; font: 11px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .timeline-inspector { overflow: auto; max-height: min(62vh, 620px); border-left: 1px solid #e9e1d4; }
+    .timeline-details strong { color: #302c26; font: 500 18px/1.15 var(--font-display, Georgia, serif); }
     .timeline-details small { color: #8f897e; }
+    .timeline-inspector-kicker { color: #9a6a3b !important; font: 700 8px Inter, ui-sans-serif, system-ui, sans-serif !important; letter-spacing: .08em; text-transform: uppercase; }
+    .timeline-inspector-chip { width: fit-content; border-radius: 999px; padding: 3px 7px; background: #f1ebe1; color: #6f6559 !important; font-size: 9px !important; }
+    .timeline-inspector-divider { width: 32px; height: 1px; margin: 2px 0; border: 0; background: #d9cdbd; }
     .timeline-map-button { width: fit-content; padding: 5px 9px; border: 1px solid #d9cdbd; border-radius: 7px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-map-button:hover, .timeline-map-button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .timeline-empty, .timeline-undated, .timeline-error { margin: 0; padding: 28px 18px; color: #8f897e; font: 12px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -330,22 +355,76 @@ function createTimelineStyles(): HTMLStyleElement {
     .timeline-undated-list button { border: 1px solid #d9cdbd; border-radius: 999px; padding: 5px 8px; background: #fffefa; color: #62594e; font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .timeline-undated-list button:hover, .timeline-undated-list button:focus-visible { border-color: #b4773f; color: #55351f; outline: none; }
     .timeline-error { color: #9a4d3f; }
+    @media (max-width: 1100px) {
+      .timeline-workspace { grid-template-columns: var(--timeline-outline-width, 270px) 8px minmax(340px, 1fr); }
+      .timeline-inspector { grid-column: 1 / -1; max-height: none; border-top: 1px solid #e9e1d4; border-left: 0; }
+      .timeline-details { grid-template-columns: minmax(160px, .7fr) minmax(220px, 1.3fr); }
+    }
     @media (max-width: 760px) {
       .timeline-toolbar { align-items: stretch; flex-direction: column; }
+      .timeline-search { width: min(100%, 320px); }
+      .timeline-layerbar { align-items: flex-start; flex-direction: column; }
       .timeline-workspace { grid-template-columns: 1fr !important; }
       .timeline-outline { max-height: 260px; border-right: 0; border-bottom: 1px solid #e9e1d4; }
       .timeline-outline-resize { display: none; }
       .timeline-canvas { height: 420px; min-height: 320px; }
+      .timeline-inspector { grid-column: auto; }
+      .timeline-details { grid-template-columns: 1fr; }
     }
   `;
   return style;
 }
 
-function createToolbarButton(label: string) {
+function createToolbarButton(label: string, ariaLabel = label) {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
+  button.setAttribute("aria-label", ariaLabel);
+  button.title = ariaLabel;
   return button;
+}
+
+function createFilterField(label: string, control: HTMLInputElement | HTMLSelectElement) {
+  const field = document.createElement("label");
+  field.className = "timeline-filter-field";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  field.append(caption, control);
+  return field;
+}
+
+function createLayerChip(label: string, count: number, active: boolean, onToggle: () => void) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "timeline-layer-chip";
+  button.setAttribute("aria-pressed", String(active));
+  const text = document.createElement("span");
+  text.textContent = label;
+  const badge = document.createElement("span");
+  badge.className = "timeline-layer-count";
+  badge.textContent = String(count);
+  button.append(text, badge);
+  button.onclick = onToggle;
+  return button;
+}
+
+function createLegend() {
+  const legend = document.createElement("div");
+  legend.className = "timeline-legend";
+  legend.setAttribute("aria-label", "Timeline legend");
+  for (const [className, label] of [
+    ["timeline-legend-dot", "Known date"],
+    ["timeline-legend-range", "Date span"],
+    ["timeline-legend-approx", "Year or month precision"],
+  ]) {
+    const item = document.createElement("span");
+    item.className = "timeline-legend-item";
+    const mark = document.createElement("span");
+    mark.className = className;
+    item.append(mark, document.createTextNode(label));
+    legend.append(item);
+  }
+  return legend;
 }
 
 async function showOnMap(context: ModuleContext, entityId: string) {
@@ -374,19 +453,29 @@ function renderSelection(
   event: TimelineEvent,
   context: ModuleContext,
   definitions: ReadonlyMap<string, CalendarDefinition>,
+  displayCalendarName: string,
 ) {
   details.replaceChildren();
+  const kicker = document.createElement("small");
+  kicker.className = "timeline-inspector-kicker";
+  kicker.textContent = layerLabel(event);
   const name = document.createElement("strong");
   name.textContent = event.entity.name;
+  const type = document.createElement("small");
+  type.className = "timeline-inspector-chip";
+  type.textContent = entityTypeLabel(event.entity.type);
+  const divider = document.createElement("hr");
+  divider.className = "timeline-inspector-divider";
   const range = document.createElement("small");
   range.textContent = rangeLabel(event, definitions);
+  const calendar = document.createElement("small");
+  calendar.textContent = `Displayed on the ${displayCalendarName} calendar`;
+  details.append(kicker, name, type, divider, range, calendar);
   const contextText = contextLabel(event);
   if (contextText) {
     const contextLine = document.createElement("small");
     contextLine.textContent = contextText;
-    details.append(name, range, contextLine);
-  } else {
-    details.append(name, range);
+    details.append(contextLine);
   }
   if (context.services.isAvailable("daena.maps/navigation", 1)) {
     const mapButton = document.createElement("button");
@@ -400,6 +489,9 @@ function renderSelection(
 
 function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
   details.replaceChildren();
+  const kicker = document.createElement("small");
+  kicker.className = "timeline-inspector-kicker";
+  kicker.textContent = event.relativeYear === undefined ? "Unplaced item" : "Relative chronology";
   const name = document.createElement("strong");
   name.textContent = event.entity.name;
   const status = document.createElement("small");
@@ -407,13 +499,12 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
     event.relativeYear === undefined
       ? "No date yet — add a start or end date to place this event in the chronology."
       : `Relative chronology: ${relativeOffsetLabel(event.relativeYear)}. It is kept relative rather than converted to a Gregorian date.`;
+  details.append(kicker, name, status);
   const contextText = contextLabel(event);
   if (contextText) {
     const contextLine = document.createElement("small");
     contextLine.textContent = contextText;
-    details.append(name, status, contextLine);
-  } else {
-    details.append(name, status);
+    details.append(contextLine);
   }
   if (context.services.isAvailable("daena.maps/navigation", 1)) {
     const mapButton = document.createElement("button");
@@ -430,6 +521,7 @@ function renderOutline(
   events: TimelineEvent[],
   definition: CalendarDefinition | null,
   definitions: ReadonlyMap<string, CalendarDefinition>,
+  selectedId: string | null,
   onSelect: (event: TimelineEvent) => void,
 ): void {
   const heading = document.createElement("span");
@@ -448,12 +540,21 @@ function renderOutline(
     }
     const card = document.createElement("button");
     card.type = "button";
-    card.className = "timeline-event-card";
+    card.className = `timeline-event-card${event.id === selectedId ? " is-selected" : ""}`;
+    card.dataset.eventId = event.id;
     const name = document.createElement("strong");
     name.textContent = event.entity.name;
     const range = document.createElement("small");
     range.textContent = rangeLabel(event, definitions);
-    card.append(name, range);
+    const meta = document.createElement("span");
+    meta.className = "timeline-card-meta";
+    const kind = document.createElement("span");
+    kind.className = "timeline-card-kind";
+    kind.textContent = layerLabel(event);
+    const type = document.createElement("small");
+    type.textContent = entityTypeLabel(event.entity.type);
+    meta.append(kind, type);
+    card.append(name, range, meta);
     card.onclick = () => onSelect(event);
     outline.append(card);
   }
@@ -463,15 +564,21 @@ function toDataItem(event: TimelineEvent, definitions: ReadonlyMap<string, Calen
   const partial = [event.startValue, event.endValue]
     .filter((value) => value !== undefined)
     .some((value) => ["year", "month"].includes(parseCalendarDate(value)?.precision ?? "day"));
+  const itemLabel =
+    event.pointRole && event.pointRole !== "point" && event.startLabel
+      ? `${event.entity.name} · ${event.startLabel}`
+      : event.entity.name;
   const item: DataItem = {
     id: event.id,
-    content:
-      event.pointRole && event.pointRole !== "point" && event.startLabel
-        ? `${event.entity.name} · ${event.startLabel}`
-        : event.entity.name,
+    content: itemLabel,
+    group: groupForEvent(event),
     start: event.start,
     title: `${event.entity.name}\n${rangeLabel(event, definitions)}`,
-    className: [event.layer === "lifelines" ? "timeline-lifeline" : "", partial ? "timeline-imprecise" : ""]
+    className: [
+      `timeline-${groupForEvent(event)}`,
+      event.layer === "lifelines" ? "timeline-lifeline" : "",
+      partial ? "timeline-imprecise" : "",
+    ]
       .filter(Boolean)
       .join(" "),
     style: `background-color:${event.colors.fill};border-color:${event.colors.border};color:${event.colors.text};`,
@@ -485,6 +592,25 @@ function toDataItem(event: TimelineEvent, definitions: ReadonlyMap<string, Calen
     item.type = "box";
   }
   return item;
+}
+
+function timelineGroups(events: readonly TimelineEvent[]): DataGroup[] {
+  const counts = new Map<TimelineGroupId, number>();
+  for (const event of events) {
+    const group = groupForEvent(event);
+    counts.set(group, (counts.get(group) ?? 0) + 1);
+  }
+  return [
+    { id: "events", label: "Events" },
+    { id: "lifelines", label: "Lifelines" },
+    { id: "dates", label: "Project dates" },
+  ]
+    .filter(({ id }) => counts.has(id as TimelineGroupId))
+    .map(({ id, label }) => ({
+      id,
+      content: `${label} (${counts.get(id as TimelineGroupId) ?? 0})`,
+      className: `timeline-group-${id}`,
+    }));
 }
 
 function showError(shell: HTMLElement, cause: unknown) {
@@ -507,9 +633,15 @@ export const timeline: DaenaModule = {
         let activeYear: number | null = null;
         let outlineWidth = 300;
         let outlineCollapsed = false;
+        let showTimelineEvents = true;
         let showProjectDates = false;
         let showLifelines = true;
+        let searchQuery = "";
+        let selectedEntityType = "";
+        let selectedEventId: string | null = null;
         let selectedCalendarId = "gregorian";
+        let sourceSnapshot: TimelineSourceSnapshot | null = null;
+        let searchTimer: number | null = null;
         let removeOutlineResize: (() => void) | null = null;
         const style = createTimelineStyles();
         const render = async () => {
@@ -520,11 +652,74 @@ export const timeline: DaenaModule = {
             removeOutlineResize = null;
             chart?.destroy();
             chart = null;
-            const [entities, enabledManifests] = await Promise.all([context.entities.list(), context.modules.list()]);
-            const calendarOptions = await loadCalendarOptions(context, entities);
+            let snapshot = sourceSnapshot;
+            if (!snapshot) {
+              const [entities, enabledManifests] = await Promise.all([context.entities.list(), context.modules.list()]);
+              const calendarOptions = await loadCalendarOptions(context, entities);
+              const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
+              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, context.module.id);
+              const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
+              const loaded: LoadedTimelineEntry[] = await Promise.all(
+                entities.map(async (entity) => {
+                  const isTimelineEntity = entityTypes.has(entity.type ?? "");
+                  const fields = isTimelineEntity ? await context.fields.list(entity.id) : {};
+                  const contributedRecords = (
+                    await Promise.all(
+                      contributionNamespaces.map(async (namespace) => {
+                        try {
+                          return await context.fields.listShared(entity.id, namespace);
+                        } catch {
+                          return [] as FieldRecord[];
+                        }
+                      }),
+                    )
+                  ).flat();
+                  let sharedMapsFields: FieldRecord[] = [];
+                  try {
+                    // Shared chronology remains readable when Maps is disabled;
+                    // only the navigation service should disappear with it.
+                    if (isTimelineEntity) sharedMapsFields = await context.fields.listShared(entity.id, "maps");
+                  } catch {
+                    // A project without the optional Maps contract still renders
+                    // ordinary Timeline items instead of failing the projection.
+                  }
+                  const relativeYear = physicalOffset(
+                    sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
+                  );
+                  const relationships = isTimelineEntity
+                    ? (await context.relationships.list(entity.id)).filter(
+                        (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
+                      )
+                    : [];
+                  const targets = await Promise.all(
+                    relationships.map((relationship) => context.entities.get(relationship.targetId)),
+                  );
+                  return {
+                    entity,
+                    fields,
+                    locationName: relationships
+                      .map((relationship, index) =>
+                        relationship.type === "occurred_at" ? targets[index]?.name : undefined,
+                      )
+                      .find((name): name is string => Boolean(name)),
+                    participantNames: relationships
+                      .map((relationship, index) =>
+                        relationship.type === "involves" ? targets[index]?.name : undefined,
+                      )
+                      .filter((name): name is string => Boolean(name)),
+                    relativeYear,
+                    contributions: buildFieldContributions(entity, contributedRecords, contributionSpecs),
+                  };
+                }),
+              );
+              snapshot = { calendarOptions, loaded };
+              sourceSnapshot = snapshot;
+            }
+            const { calendarOptions, loaded } = snapshot;
             if (!calendarOptions.some((option) => option.id === selectedCalendarId)) selectedCalendarId = "gregorian";
-            const selectedCalendar =
-              calendarOptions.find((option) => option.id === selectedCalendarId)?.definition ?? null;
+            const selectedCalendarOption =
+              calendarOptions.find((option) => option.id === selectedCalendarId) ?? calendarOptions[0];
+            const selectedCalendar = selectedCalendarOption?.definition ?? null;
             const calendarDefinitions = new Map(
               calendarOptions
                 .filter(
@@ -533,59 +728,6 @@ export const timeline: DaenaModule = {
                 .map((option) => [option.id, option.definition]),
             );
             const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
-            const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, context.module.id);
-            const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
-            const loaded = await Promise.all(
-              entities.map(async (entity) => {
-                const isTimelineEntity = entityTypes.has(entity.type ?? "");
-                const fields = isTimelineEntity ? await context.fields.list(entity.id) : {};
-                const contributedRecords = (
-                  await Promise.all(
-                    contributionNamespaces.map(async (namespace) => {
-                      try {
-                        return await context.fields.listShared(entity.id, namespace);
-                      } catch {
-                        return [] as FieldRecord[];
-                      }
-                    }),
-                  )
-                ).flat();
-                let sharedMapsFields: FieldRecord[] = [];
-                try {
-                  // Shared chronology remains readable when Maps is disabled;
-                  // only the navigation service should disappear with it.
-                  if (isTimelineEntity) sharedMapsFields = await context.fields.listShared(entity.id, "maps");
-                } catch {
-                  // A project without the optional Maps contract still renders
-                  // ordinary Timeline items instead of failing the projection.
-                }
-                const relativeYear = physicalOffset(
-                  sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
-                );
-                const relationships = isTimelineEntity
-                  ? (await context.relationships.list(entity.id)).filter(
-                      (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
-                    )
-                  : [];
-                const targets = await Promise.all(
-                  relationships.map((relationship) => context.entities.get(relationship.targetId)),
-                );
-                return {
-                  entity,
-                  fields,
-                  locationName: relationships
-                    .map((relationship, index) =>
-                      relationship.type === "occurred_at" ? targets[index]?.name : undefined,
-                    )
-                    .find((name): name is string => Boolean(name)),
-                  participantNames: relationships
-                    .map((relationship, index) => (relationship.type === "involves" ? targets[index]?.name : undefined))
-                    .filter((name): name is string => Boolean(name)),
-                  relativeYear,
-                  contributions: buildFieldContributions(entity, contributedRecords, contributionSpecs),
-                };
-              }),
-            );
             const dated: TimelineEvent[] = [];
             const contributed: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];
@@ -613,7 +755,7 @@ export const timeline: DaenaModule = {
                     participantNames: entry.participantNames,
                     start: startAnchor.date,
                     end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
-                    colors: colorsForHue(hueForId(entry.entity.id)),
+                    colors: colorsForLayer("timeline", entry.entity.id),
                   };
                   if (entry.entity.type === "era") eras.push(item);
                   else dated.push(item);
@@ -635,23 +777,50 @@ export const timeline: DaenaModule = {
                   participantNames: [],
                   start: startAnchor.date,
                   end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
-                  colors: colorsForHue(hueForId(contribution.entity.id)),
+                  colors: colorsForLayer(contribution.layer, contribution.entity.id),
                 });
               }
             }
+            const allEvents = [...dated, ...contributed];
+            const layerCounts = {
+              events: dated.length,
+              lifelines: contributed.filter((event) => event.layer === "lifelines").length,
+              dates: contributed.filter((event) => event.layer === "dates").length,
+            };
+            const availableEntityTypes = [
+              ...new Set(allEvents.map((event) => event.entity.type).filter((type): type is string => Boolean(type))),
+            ].sort((left, right) => left.localeCompare(right));
+            if (selectedEntityType && !availableEntityTypes.includes(selectedEntityType)) selectedEntityType = "";
+            const query = searchQuery.trim().toLocaleLowerCase();
             const plotted = [
-              ...dated,
+              ...(showTimelineEvents ? dated : []),
               ...contributed.filter(
                 (event) =>
                   (event.layer === "dates" && showProjectDates) || (event.layer === "lifelines" && showLifelines),
               ),
-            ].sort((left, right) => left.start.getTime() - right.start.getTime() || left.id.localeCompare(right.id));
+            ]
+              .filter((event) => !selectedEntityType || event.entity.type === selectedEntityType)
+              .filter((event) => {
+                if (!query) return true;
+                return [
+                  event.entity.name,
+                  event.entity.type,
+                  event.startLabel,
+                  event.endLabel,
+                  event.locationName,
+                  ...event.participantNames,
+                ]
+                  .filter(Boolean)
+                  .some((value) => String(value).toLocaleLowerCase().includes(query));
+              })
+              .sort((left, right) => left.start.getTime() - right.start.getTime() || left.id.localeCompare(right.id));
             const years = [...new Set(plotted.map((event) => eventYear(event, selectedCalendar)))];
             if (activeYear !== null && !years.includes(activeYear)) activeYear = null;
             const visible =
               activeYear === null
                 ? plotted
                 : plotted.filter((event) => eventYear(event, selectedCalendar) === activeYear);
+            if (selectedEventId && !visible.some((event) => event.id === selectedEventId)) selectedEventId = null;
             if (cancelled) return;
 
             element.replaceChildren();
@@ -662,16 +831,22 @@ export const timeline: DaenaModule = {
             header.className = "projection-header";
             const heading = document.createElement("h3");
             heading.textContent = "Chronology";
+            const headerMeta = document.createElement("div");
+            headerMeta.className = "timeline-header-meta";
             const summary = document.createElement("small");
             summary.textContent =
               undated.length > 0
                 ? `${plotted.length} placed · ${undated.length} unplaced or relative`
                 : `${plotted.length} items`;
-            header.append(heading, summary);
+            const calendarBadge = document.createElement("span");
+            calendarBadge.className = "timeline-calendar-badge";
+            calendarBadge.textContent = selectedCalendarOption?.name ?? "Gregorian";
+            headerMeta.append(summary, calendarBadge);
+            header.append(heading, headerMeta);
             shell.append(style, header);
             let details: HTMLElement | null = null;
 
-            if (plotted.length === 0 && undated.length === 0 && contributed.length === 0) {
+            if (allEvents.length === 0 && undated.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent = "No timeline items yet.";
@@ -680,7 +855,7 @@ export const timeline: DaenaModule = {
               return;
             }
 
-            if (plotted.length === 0 && contributed.length === 0) {
+            if (allEvents.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent =
@@ -699,6 +874,25 @@ export const timeline: DaenaModule = {
               toolbar.className = "timeline-toolbar";
               const controls = document.createElement("div");
               controls.className = "timeline-toolbar-controls";
+              const search = document.createElement("input");
+              search.type = "search";
+              search.className = "timeline-search";
+              search.value = searchQuery;
+              search.placeholder = "Name, type, place…";
+              search.setAttribute("aria-label", "Search timeline");
+              search.oninput = () => {
+                searchQuery = search.value;
+                const cursor = search.selectionStart ?? search.value.length;
+                if (searchTimer !== null) window.clearTimeout(searchTimer);
+                searchTimer = window.setTimeout(() => {
+                  searchTimer = null;
+                  void render().then(() => {
+                    const next = element.querySelector<HTMLInputElement>(".timeline-search");
+                    next?.focus();
+                    next?.setSelectionRange(cursor, cursor);
+                  });
+                }, 160);
+              };
               const scope = document.createElement("select");
               scope.className = "timeline-scope";
               scope.setAttribute("aria-label", "Chronology scope");
@@ -715,6 +909,7 @@ export const timeline: DaenaModule = {
               }
               scope.onchange = () => {
                 activeYear = scope.value ? Number(scope.value) : null;
+                selectedEventId = null;
                 void render();
               };
               const calendar = document.createElement("select");
@@ -730,36 +925,39 @@ export const timeline: DaenaModule = {
               calendar.onchange = () => {
                 selectedCalendarId = calendar.value;
                 activeYear = null;
+                selectedEventId = null;
                 void render();
               };
-              const dateLayer = document.createElement("label");
-              dateLayer.className = "timeline-layer-toggle";
-              const dateLayerCheckbox = document.createElement("input");
-              dateLayerCheckbox.type = "checkbox";
-              dateLayerCheckbox.checked = showProjectDates;
-              dateLayerCheckbox.onchange = () => {
-                showProjectDates = dateLayerCheckbox.checked;
+              const typeFilter = document.createElement("select");
+              typeFilter.className = "timeline-type-filter";
+              const allTypes = document.createElement("option");
+              allTypes.value = "";
+              allTypes.textContent = "All entity types";
+              typeFilter.append(allTypes);
+              for (const entityType of availableEntityTypes) {
+                const option = document.createElement("option");
+                option.value = entityType;
+                option.textContent = entityTypeLabel(entityType);
+                option.selected = entityType === selectedEntityType;
+                typeFilter.append(option);
+              }
+              typeFilter.onchange = () => {
+                selectedEntityType = typeFilter.value;
                 activeYear = null;
+                selectedEventId = null;
                 void render();
               };
-              dateLayer.append(dateLayerCheckbox, document.createTextNode("Project dates"));
-              const lifelineLayer = document.createElement("label");
-              lifelineLayer.className = "timeline-layer-toggle";
-              const lifelineLayerCheckbox = document.createElement("input");
-              lifelineLayerCheckbox.type = "checkbox";
-              lifelineLayerCheckbox.checked = showLifelines;
-              lifelineLayerCheckbox.onchange = () => {
-                showLifelines = lifelineLayerCheckbox.checked;
-                activeYear = null;
-                void render();
-              };
-              lifelineLayer.append(lifelineLayerCheckbox, document.createTextNode("Lifelines"));
-              controls.append(scope, calendar, dateLayer, lifelineLayer);
+              controls.append(
+                createFilterField("Search", search),
+                createFilterField("Calendar", calendar),
+                createFilterField("Entity type", typeFilter),
+                createFilterField("Year", scope),
+              );
               const actions = document.createElement("div");
               actions.className = "timeline-toolbar-actions";
-              const zoomInButton = createToolbarButton("Zoom in");
-              const zoomOutButton = createToolbarButton("Zoom out");
-              const fitButton = createToolbarButton("Fit view");
+              const zoomInButton = createToolbarButton("+", "Zoom in");
+              const zoomOutButton = createToolbarButton("−", "Zoom out");
+              const fitButton = createToolbarButton("Fit", "Fit timeline to visible items");
               const outlineButton = createToolbarButton(outlineCollapsed ? "Show outline" : "Hide outline");
               outlineButton.onclick = () => {
                 outlineCollapsed = !outlineCollapsed;
@@ -768,9 +966,35 @@ export const timeline: DaenaModule = {
               actions.append(zoomOutButton, zoomInButton, fitButton, outlineButton);
               toolbar.append(controls, actions);
 
+              const layerbar = document.createElement("div");
+              layerbar.className = "timeline-layerbar";
+              const chips = document.createElement("div");
+              chips.className = "timeline-layer-chips";
+              chips.append(
+                createLayerChip("Events", layerCounts.events, showTimelineEvents, () => {
+                  showTimelineEvents = !showTimelineEvents;
+                  activeYear = null;
+                  selectedEventId = null;
+                  void render();
+                }),
+                createLayerChip("Lifelines", layerCounts.lifelines, showLifelines, () => {
+                  showLifelines = !showLifelines;
+                  activeYear = null;
+                  selectedEventId = null;
+                  void render();
+                }),
+                createLayerChip("Project dates", layerCounts.dates, showProjectDates, () => {
+                  showProjectDates = !showProjectDates;
+                  activeYear = null;
+                  selectedEventId = null;
+                  void render();
+                }),
+              );
+              layerbar.append(chips, createLegend());
+
               const workspace = document.createElement("div");
               workspace.className = "timeline-workspace";
-              if (outlineCollapsed) workspace.style.gridTemplateColumns = "minmax(0, 1fr)";
+              if (outlineCollapsed) workspace.style.gridTemplateColumns = "minmax(360px, 1fr) minmax(220px, 270px)";
               else workspace.style.setProperty("--timeline-outline-width", `${outlineWidth}px`);
               const outline = document.createElement("aside");
               outline.className = "timeline-outline";
@@ -778,24 +1002,33 @@ export const timeline: DaenaModule = {
               canvas.className = "timeline-canvas";
               const detailPanel = document.createElement("div");
               details = detailPanel;
-              detailPanel.className = "timeline-details";
+              detailPanel.className = "timeline-details timeline-inspector";
               const hint = document.createElement("small");
-              hint.textContent = "Choose an item from the outline or timeline to inspect it.";
+              hint.textContent = "Select an item to inspect its dates, type, and related context.";
               detailPanel.append(hint);
               const selectEvent = (event: TimelineEvent) => {
+                selectedEventId = event.id;
+                for (const card of outline.querySelectorAll<HTMLButtonElement>(".timeline-event-card"))
+                  card.classList.toggle("is-selected", card.dataset.eventId === event.id);
                 chart?.setSelection([event.id], {
                   focus: true,
                   animation: {},
                 });
                 chart?.focus(event.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
-                renderSelection(detailPanel, event, context, calendarDefinitions);
+                renderSelection(
+                  detailPanel,
+                  event,
+                  context,
+                  calendarDefinitions,
+                  selectedCalendarOption?.name ?? "Gregorian",
+                );
               };
               if (visible.length > 0)
-                renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectEvent);
+                renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectedEventId, selectEvent);
               else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
-                empty.textContent = "No items in this year.";
+                empty.textContent = "No items match the current filters.";
                 outline.append(empty);
               }
               if (!outlineCollapsed) {
@@ -822,11 +1055,20 @@ export const timeline: DaenaModule = {
                   window.addEventListener("pointermove", onMove);
                   window.addEventListener("pointerup", onUp, { once: true });
                 };
-                workspace.append(outline, resizeHandle, canvas);
+                workspace.append(outline, resizeHandle, canvas, detailPanel);
               } else {
-                workspace.append(canvas);
+                workspace.append(canvas, detailPanel);
               }
-              shell.append(toolbar, workspace, detailPanel);
+              const selectedEvent = selectedEventId ? visible.find((event) => event.id === selectedEventId) : undefined;
+              if (selectedEvent)
+                renderSelection(
+                  detailPanel,
+                  selectedEvent,
+                  context,
+                  calendarDefinitions,
+                  selectedCalendarOption?.name ?? "Gregorian",
+                );
+              shell.append(toolbar, layerbar, workspace);
               element.append(shell);
 
               await import("vis-timeline/styles/vis-timeline-graph2d.min.css");
@@ -853,6 +1095,7 @@ export const timeline: DaenaModule = {
               if (visible.length >= 40) {
                 options.cluster = { titleTemplate: "{count} events", showStipes: true, maxItems: 8 };
               }
+              const groups = timelineGroups(visible);
               chart = new TimelineCtor(
                 canvas,
                 [
@@ -876,9 +1119,11 @@ export const timeline: DaenaModule = {
                   }),
                   ...visible.map((event) => toDataItem(event, calendarDefinitions)),
                 ],
+                groups,
                 options,
               );
               chart.fit({ animation: false });
+              if (selectedEventId) chart.setSelection([selectedEventId]);
 
               zoomInButton.onclick = () => chart?.zoomIn(0.4);
               zoomOutButton.onclick = () => chart?.zoomOut(0.4);
@@ -888,6 +1133,9 @@ export const timeline: DaenaModule = {
                 const selectedId = properties.items[0];
                 const event = selectedId != null ? eventsById.get(String(selectedId)) : undefined;
                 if (!event) {
+                  selectedEventId = null;
+                  for (const card of outline.querySelectorAll<HTMLButtonElement>(".timeline-event-card"))
+                    card.classList.remove("is-selected");
                   detailPanel.replaceChildren(hint);
                   return;
                 }
@@ -895,7 +1143,10 @@ export const timeline: DaenaModule = {
               });
               chart.on("click", (properties) => {
                 if (properties.item != null) return;
+                selectedEventId = null;
                 chart?.setSelection([]);
+                for (const card of outline.querySelectorAll<HTMLButtonElement>(".timeline-event-card"))
+                  card.classList.remove("is-selected");
                 detailPanel.replaceChildren(hint);
               });
 
@@ -948,6 +1199,8 @@ export const timeline: DaenaModule = {
         void render();
         return () => {
           cancelled = true;
+          if (searchTimer !== null) window.clearTimeout(searchTimer);
+          searchTimer = null;
           resizeObserver?.disconnect();
           resizeObserver = null;
           removeOutlineResize?.();

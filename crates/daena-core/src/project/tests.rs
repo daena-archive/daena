@@ -2023,7 +2023,7 @@ fn language_phonology_and_orthography_records_round_trip() {
             entity_type: Some("language".into()),
         })
         .unwrap();
-    store
+    let fricative = store
         .create_module_record(
             "daena.language",
             "phonemes",
@@ -2067,7 +2067,21 @@ fn language_phonology_and_orthography_records_round_trip() {
             &language.id,
             serde_json::json!({
                 "name": "High script",
-                "mappings": [{ "id": "m1", "grapheme": "zh", "sounds": ["ʒ"] }]
+                "direction": "ltr",
+                "description": "The everyday writing system.",
+                "mappings": [{
+                    "id": "m1",
+                    "writtenForm": "zh",
+                    "sounds": [{ "kind": "phoneme", "phonemeId": fricative.id, "symbol": "ʒ" }],
+                    "romanization": "zh",
+                    "group": "consonants"
+                }],
+                "samples": [{
+                    "id": "sample-1",
+                    "writtenText": "Zhara.",
+                    "pronunciation": "ʒara",
+                    "translation": "River."
+                }]
             }),
             Some(&Uuid::new_v4().to_string()),
         )
@@ -2121,12 +2135,14 @@ fn language_phonology_and_orthography_records_round_trip() {
             .len(),
         2
     );
+    let orthographies = rebuilt
+        .list_module_records("daena.language", "orthographies", &language.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(orthographies.len(), 1);
+    assert_eq!(orthographies[0].value["mappings"][0]["writtenForm"], "zh");
     assert_eq!(
-        rebuilt
-            .list_module_records("daena.language", "orthographies", &language.id, None, 50, 0)
-            .unwrap()
-            .len(),
-        1
+        orthographies[0].value["samples"][0]["pronunciation"],
+        "ʒara"
     );
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();

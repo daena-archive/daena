@@ -1,6 +1,7 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord, ModuleRecordQuery } from "../../../../module-api/src/index";
+import IpaInput from "../IpaInput.svelte";
 import type { LexemeValue } from "../lexeme";
 import { confirm } from "../confirm.svelte";
 import {
@@ -550,10 +551,7 @@ async function handleSubmit(event: SubmitEvent) {
       {#each draft.pronunciations as pronunciation, index (pronunciation.id)}
         <div class="language-inline">
           <div class="language-inline-fields">
-            <label class="language-field">
-              <span>Pronunciation</span>
-              <input name={`pronunciation-${index}`} bind:value={pronunciation.value} />
-            </label>
+            <IpaInput label="Pronunciation" name={`pronunciation-${index}`} bind:value={pronunciation.value} />
             <label class="language-field">
               <span>Note (optional)</span>
               <input name={`pronunciation-note-${index}`} bind:value={pronunciation.note} />
@@ -582,10 +580,10 @@ async function handleSubmit(event: SubmitEvent) {
               <span>Kind (optional)</span>
               <input name={`form-kind-${index}`} bind:value={form.kind} />
             </label>
-            <label class="language-field">
-              <span>Pronunciation (optional)</span>
-              <input name={`form-pronunciation-${index}`} bind:value={form.pronunciation} />
-            </label>
+            <IpaInput
+              label="Pronunciation (optional)"
+              name={`form-pronunciation-${index}`}
+              bind:value={form.pronunciation} />
           </div>
           <button type="button" class="language-button secondary language-danger" onclick={() => removeForm(index)}
             >Remove</button>

@@ -1,7 +1,9 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
+import IpaInput from "../IpaInput.svelte";
 import { confirm } from "../confirm.svelte";
+import { countPhonemeReferences, normalizeOrthography, type OrthographyValue } from "../orthography";
 import {
   BACKNESS_SUGGESTIONS,
   consonantChart,
@@ -221,13 +223,24 @@ async function savePhoneme(): Promise<"ok" | "symbol" | "error" | "none"> {
 
 async function deletePhoneme() {
   if (!selectedLanguage || !phonemeEditing) return;
-  if (!(await confirm("Delete", `Delete “${phonemeEditing.value.symbol}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
+  const editing = phonemeEditing;
   error = "";
   try {
+    const systems = await context.records.list<OrthographyValue>("orthographies", ownerLanguageId, { limit: 100 });
+    if (ownerLanguageId !== selectedLanguage?.id || editing.id !== phonemeEditing?.id) return;
+    const references = systems.reduce(
+      (count, system) => count + countPhonemeReferences(normalizeOrthography(system.value), editing.id),
+      0,
+    );
+    if (references > 0) {
+      error = `This Sound is used by ${references} Writing ${references === 1 ? "mapping" : "mappings"}. Remove those references before deleting it.`;
+      return;
+    }
+    if (!(await confirm("Delete sound", `Delete “${editing.value.symbol}”?`))) return;
     setMutationActive(true);
-    await context.records.delete("phonemes", phonemeEditing.id, ownerLanguageId, {
-      expectedRevision: phonemeEditing.revision,
+    await context.records.delete("phonemes", editing.id, ownerLanguageId, {
+      expectedRevision: editing.revision,
       requestId: crypto.randomUUID(),
     });
     phonemeEditing = null;
@@ -355,10 +368,11 @@ function handleNotesSubmit(event: SubmitEvent) {
           <span>Symbol</span>
           <input name="symbol" bind:this={symbolInput} bind:value={phonemeDraft.symbol} placeholder="e.g. p, t, k" />
         </label>
-        <label class="language-field">
-          <span>IPA (optional)</span>
-          <input name="ipa" bind:value={phonemeDraft.ipa} placeholder="International Phonetic Alphabet" />
-        </label>
+        <IpaInput
+          name="ipa"
+          label="IPA (optional)"
+          bind:value={phonemeDraft.ipa}
+          placeholder="International Phonetic Alphabet" />
         <label class="language-field">
           <span>Kind</span>
           <select name="kind" aria-label="Sound kind" bind:value={phonemeDraft.kind}>

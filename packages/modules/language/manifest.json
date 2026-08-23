@@ -115,11 +115,12 @@
         "type": "object",
         "properties": {
           "name": { "type": "string" },
-          "status": { "type": "string" },
-          "notes": { "type": "string" },
-          "mappings": { "type": "array" }
+          "direction": { "type": "string" },
+          "description": { "type": "string" },
+          "mappings": { "type": "array" },
+          "samples": { "type": "array" }
         },
-        "required": ["name", "mappings"],
+        "required": ["name", "direction", "mappings", "samples"],
         "additionalProperties": false
       }
     },

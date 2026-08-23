@@ -1,12 +1,27 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../module-api/src/index";
+import IpaInput from "../IpaInput.svelte";
+import SoundSequenceEditor from "../SoundSequenceEditor.svelte";
 import { confirm } from "../confirm.svelte";
-import { STATUS_SUGGESTIONS } from "../lexeme";
-import type { OrthographyValue } from "../orthography";
-import { emptyOrthography, normalizeOrthography, serializeOrthography } from "../orthography";
+import {
+  emptyOrthography,
+  emptyOrthographyMapping,
+  emptyOrthographySample,
+  mappingFromPhoneme,
+  normalizeOrthography,
+  orthographyCoverage,
+  representedPhonemeIds,
+  serializeOrthography,
+  validateOrthography,
+  type CharacterGroup,
+  type OrthographyValue,
+  type PhonemeOption,
+} from "../orthography";
 import type { PhonemeValue } from "../phonology";
 import { normalizePhoneme } from "../phonology";
+
+type EditorSection = "basics" | "characters" | "samples";
 
 let {
   context,
@@ -28,15 +43,30 @@ let orthographies: ModuleRecord<OrthographyValue>[] = $state([]);
 let orthographyEditing = $state<ModuleRecord<OrthographyValue> | null>(null);
 let orthographyEditorOpen = $state(false);
 let orthographyDraft: OrthographyValue = $state(emptyOrthography());
+let editorSection = $state<EditorSection>("basics");
 let orthographySaving = $state(false);
 let paneLoading = $state(false);
+let addFromSoundsOpen = $state(false);
+let selectedBulkIds = $state<string[]>([]);
 let error = $state("");
 let request = $state(0);
 
 let nameInput: HTMLInputElement | undefined = $state();
-let soundsText = $state<string[]>([]);
-
 let lastLoadedLanguage: string | null = null;
+
+const phonemeOptions: PhonemeOption[] = $derived(phonemes.map((record) => ({ id: record.id, ...record.value })));
+const coverage = $derived(
+  orthographyCoverage(
+    orthographyDraft,
+    phonemeOptions.map((phoneme) => phoneme.id),
+  ),
+);
+const representedIds = $derived(representedPhonemeIds(orthographyDraft));
+const unmappedPhonemes = $derived(
+  coverage.unmapped
+    .map((phonemeId) => phonemeOptions.find((phoneme) => phoneme.id === phonemeId))
+    .filter((item): item is PhonemeOption => !!item),
+);
 
 $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
@@ -50,6 +80,7 @@ $effect(() => {
   orthographyEditing = null;
   orthographyEditorOpen = false;
   orthographyDraft = emptyOrthography();
+  addFromSoundsOpen = false;
   untrack(() => void loadWriting());
 });
 
@@ -80,24 +111,19 @@ $effect(() => {
   registerLeaveGuard(() => tryLeaveWriting((message) => confirm("Unsaved changes", message)));
 });
 
-$effect(() => {
-  if (orthographyEditorOpen) soundsText = orthographyDraft.mappings.map((mapping) => mapping.sounds.join(" "));
-});
-
 async function loadWriting() {
   if (!selectedLanguage) {
     orthographies = [];
+    phonemes = [];
     paneLoading = false;
     return;
   }
   const token = ++request;
   paneLoading = true;
+  error = "";
   try {
     const [systems, inventory] = await Promise.all([
-      context.records.list<OrthographyValue>("orthographies", selectedLanguage.id, {
-        limit: 100,
-        sort: "name",
-      }),
+      context.records.list<OrthographyValue>("orthographies", selectedLanguage.id, { limit: 100, sort: "name" }),
       context.records.list<PhonemeValue>("phonemes", selectedLanguage.id, { limit: 100, sort: "symbol" }),
     ]);
     if (!cancelled && token === request) {
@@ -121,18 +147,24 @@ function addOrthography() {
   orthographyEditing = null;
   orthographyEditorOpen = true;
   orthographyDraft = emptyOrthography();
+  editorSection = "basics";
+  error = "";
 }
 
 function openOrthographyEditor(record: ModuleRecord<OrthographyValue>) {
   orthographyEditing = record;
   orthographyEditorOpen = true;
   orthographyDraft = normalizeOrthography(record.value);
+  editorSection = "characters";
+  error = "";
 }
 
 function closeOrthographyEditor() {
   orthographyEditing = null;
   orthographyEditorOpen = false;
   orthographyDraft = emptyOrthography();
+  addFromSoundsOpen = false;
+  selectedBulkIds = [];
   error = "";
 }
 
@@ -140,9 +172,13 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
   if (!selectedLanguage) return "none";
   const ownerLanguageId = selectedLanguage.id;
   orthographyDraft = normalizeOrthography(orthographyDraft);
-  if (!orthographyDraft.name) {
-    error = "Writing system name is required.";
-    return "name";
+  const validationError = validateOrthography(orthographyDraft);
+  if (validationError) {
+    error = validationError;
+    if (validationError.includes("name")) editorSection = "basics";
+    if (validationError.includes("character")) editorSection = "characters";
+    if (validationError.includes("sample")) editorSection = "samples";
+    return validationError.includes("name") ? "name" : "error";
   }
   error = "";
   orthographySaving = true;
@@ -161,8 +197,7 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
       });
       orthographyEditing = { ...created, value: normalizeOrthography(created.value) };
     }
-    orthographyEditorOpen = true;
-    orthographyDraft = orthographyEditing.value;
+    orthographyDraft = normalizeOrthography(orthographyEditing.value);
     orthographySaving = false;
     setMutationActive(false);
     if (ownerLanguageId === selectedLanguage?.id) await loadWriting();
@@ -177,7 +212,10 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
 
 async function deleteOrthography() {
   if (!selectedLanguage || !orthographyEditing) return;
-  if (!(await confirm("Delete", `Delete “${orthographyEditing.value.name}”?`))) return;
+  if (
+    !(await confirm("Delete writing system", `Delete “${orthographyEditing.value.name}” and its mappings and samples?`))
+  )
+    return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -186,10 +224,8 @@ async function deleteOrthography() {
       expectedRevision: orthographyEditing.revision,
       requestId: crypto.randomUUID(),
     });
-    orthographyEditing = null;
-    orthographyEditorOpen = false;
-    orthographyDraft = emptyOrthography();
     setMutationActive(false);
+    closeOrthographyEditor();
     if (ownerLanguageId === selectedLanguage?.id) await loadWriting();
   } catch (cause) {
     setMutationActive(false);
@@ -197,24 +233,85 @@ async function deleteOrthography() {
   }
 }
 
-function addMapping() {
-  orthographyDraft.mappings.push({ id: crypto.randomUUID(), grapheme: "", sounds: [] });
+function addMapping(group: CharacterGroup = "ungrouped") {
+  orthographyDraft.mappings = [...orthographyDraft.mappings, emptyOrthographyMapping(group)];
+}
+
+function addMappingForPhoneme(phoneme: PhonemeOption) {
+  orthographyDraft.mappings = [...orthographyDraft.mappings, mappingFromPhoneme(phoneme)];
+  editorSection = "characters";
 }
 
 function removeMapping(index: number) {
-  orthographyDraft.mappings.splice(index, 1);
+  orthographyDraft.mappings = orthographyDraft.mappings.filter((_, itemIndex) => itemIndex !== index);
+}
+
+function moveMapping(index: number, offset: -1 | 1) {
+  const destination = index + offset;
+  if (destination < 0 || destination >= orthographyDraft.mappings.length) return;
+  const next = [...orthographyDraft.mappings];
+  [next[index], next[destination]] = [next[destination], next[index]];
+  orthographyDraft.mappings = next;
+}
+
+function addSample() {
+  orthographyDraft.samples = [...orthographyDraft.samples, emptyOrthographySample()];
+}
+
+function removeSample(index: number) {
+  orthographyDraft.samples = orthographyDraft.samples.filter((_, itemIndex) => itemIndex !== index);
+}
+
+function moveSample(index: number, offset: -1 | 1) {
+  const destination = index + offset;
+  if (destination < 0 || destination >= orthographyDraft.samples.length) return;
+  const next = [...orthographyDraft.samples];
+  [next[index], next[destination]] = [next[destination], next[index]];
+  orthographyDraft.samples = next;
+}
+
+function openAddFromSounds() {
+  selectedBulkIds = unmappedPhonemes.map((phoneme) => phoneme.id);
+  addFromSoundsOpen = true;
+}
+
+function toggleBulkSound(phonemeId: string, checked: boolean) {
+  selectedBulkIds = checked
+    ? [...selectedBulkIds.filter((id) => id !== phonemeId), phonemeId]
+    : selectedBulkIds.filter((id) => id !== phonemeId);
+}
+
+function addSelectedSounds() {
+  const selected = new Set(selectedBulkIds);
+  orthographyDraft.mappings = [
+    ...orthographyDraft.mappings,
+    ...phonemeOptions.filter((phoneme) => selected.has(phoneme.id)).map(mappingFromPhoneme),
+  ];
+  addFromSoundsOpen = false;
+  selectedBulkIds = [];
+  editorSection = "characters";
 }
 
 function handleSubmit(event: SubmitEvent) {
   event.preventDefault();
-  orthographyDraft.mappings.forEach((mapping, index) => {
-    mapping.sounds = (soundsText[index] ?? "").split(/[\s,]+/);
-  });
   void saveOrthography().then((outcome) => {
     if (outcome === "name") nameInput?.focus();
   });
 }
+
+function handleWindowKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && addFromSoundsOpen) {
+    event.preventDefault();
+    addFromSoundsOpen = false;
+  }
+}
+
+function soundLabel(phoneme: PhonemeOption) {
+  return phoneme.ipa || phoneme.symbol;
+}
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
@@ -222,71 +319,282 @@ function handleSubmit(event: SubmitEvent) {
     <h2>Writing</h2>
     <p class="language-toolbar-subtitle">
       {selectedLanguage
-        ? `${selectedLanguage.name} · scripts, graphemes, and sound mappings`
-        : "Select a language to document its writing systems."}
+        ? `${selectedLanguage.name} · writing systems, sound mappings, and samples`
+        : "Select a language to document how it is written."}
     </p>
   </div>
   <div class="language-toolbar-actions">
-    <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addOrthography}
-      >Add writing system</button>
+    {#if !orthographyEditorOpen}
+      <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addOrthography}
+        >Add writing system</button>
+    {/if}
   </div>
 </div>
+
 {#if paneLoading}
   <p class="language-empty language-loading" role="status">Loading writing systems…</p>
 {:else if orthographyEditorOpen}
   <form class="language-editor" onsubmit={handleSubmit}>
-    <datalist id="language-status">
-      {#each STATUS_SUGGESTIONS as suggestion}
-        <option value={suggestion}>{suggestion}</option>
-      {/each}
-    </datalist>
-    <datalist id="language-sounds">
-      {#each phonemes as record (record.id)}
-        <option value={record.value.symbol}>{record.value.symbol}</option>
-      {/each}
-    </datalist>
-    <label class="language-field">
-      <span>Name</span>
-      <input name="name" bind:this={nameInput} bind:value={orthographyDraft.name} />
-    </label>
-    <label class="language-field">
-      <span>Status (optional)</span>
-      <input name="status" list="language-status" bind:value={orthographyDraft.status} />
-    </label>
-    <label class="language-field">
-      <span>Notes (optional)</span>
-      <textarea name="notes" bind:value={orthographyDraft.notes}></textarea>
-    </label>
-    <section class="language-group">
-      <div class="language-group-head">
-        <h3>Grapheme to sound</h3>
-        <button type="button" class="language-button secondary" onclick={addMapping}>Add</button>
-      </div>
-      {#each orthographyDraft.mappings as mapping, index (mapping.id)}
-        <div class="language-inline">
-          <div class="language-inline-fields">
-            <label class="language-field">
-              <span>Grapheme</span>
-              <input name={`grapheme-${index}`} bind:value={mapping.grapheme} />
-            </label>
-            <label class="language-field">
-              <span>Sounds</span>
-              <input name={`sounds-${index}`} list="language-sounds" bind:value={soundsText[index]} />
-            </label>
-            <label class="language-field">
-              <span>Environment (optional)</span>
-              <input name={`environment-${index}`} bind:value={mapping.environment} />
-            </label>
-            <label class="language-field">
-              <span>Notes (optional)</span>
-              <input name={`mapping-notes-${index}`} bind:value={mapping.notes} />
-            </label>
+    <nav class="writing-tabs" aria-label="Writing system sections">
+      <button type="button" class:active={editorSection === "basics"} onclick={() => (editorSection = "basics")}
+        >Basics</button>
+      <button
+        type="button"
+        class:active={editorSection === "characters"}
+        onclick={() => (editorSection = "characters")}>
+        Characters <span>{orthographyDraft.mappings.length}</span>
+      </button>
+      <button type="button" class:active={editorSection === "samples"} onclick={() => (editorSection = "samples")}>
+        Samples <span>{orthographyDraft.samples.length}</span>
+      </button>
+    </nav>
+
+    {#if editorSection === "basics"}
+      <section class="writing-section">
+        <div class="writing-section-head">
+          <div>
+            <h3>Basics</h3>
+            <p>Name the writing system and record its direction and purpose.</p>
           </div>
-          <button type="button" class="language-button secondary language-danger" onclick={() => removeMapping(index)}
-            >Remove</button>
         </div>
-      {/each}
-    </section>
+        <div class="writing-basics-grid">
+          <label class="language-field">
+            <span>Name</span>
+            <input
+              name="name"
+              bind:this={nameInput}
+              bind:value={orthographyDraft.name}
+              required
+              placeholder="e.g. Common Script" />
+          </label>
+          <label class="language-field">
+            <span>Writing direction (optional)</span>
+            <select name="direction" bind:value={orthographyDraft.direction}>
+              <option value="ltr">Left to right</option>
+              <option value="rtl">Right to left</option>
+              <option value="vertical">Vertical</option>
+              <option value="unspecified">Other / unspecified</option>
+            </select>
+          </label>
+        </div>
+        <label class="language-field">
+          <span>Description / notes (optional)</span>
+          <textarea
+            name="description"
+            rows={5}
+            bind:value={orthographyDraft.description}
+            placeholder="How and where is this writing system used?"></textarea>
+        </label>
+      </section>
+    {:else if editorSection === "characters"}
+      <section class="writing-section">
+        <div class="writing-section-head">
+          <div>
+            <h3>Characters</h3>
+            <p>Map Unicode written forms to existing Sounds or explicit ad-hoc IPA values.</p>
+          </div>
+          <div class="writing-section-actions">
+            <button type="button" class="language-button secondary" onclick={() => addMapping()}>Add character</button>
+            <button
+              type="button"
+              class="language-button"
+              onclick={openAddFromSounds}
+              disabled={phonemeOptions.length === 0}
+              title={phonemeOptions.length === 0
+                ? "Define Sounds first, or add characters manually."
+                : "Create blank mappings from the sound inventory"}>
+              Add from Sounds
+            </button>
+          </div>
+        </div>
+
+        {#if phonemeOptions.length === 0}
+          <div class="writing-notice">
+            <strong>No sounds have been defined for this language yet.</strong>
+            <span>You can still add characters manually and use ad-hoc IPA values.</span>
+          </div>
+        {:else}
+          <div class="coverage" aria-label={`${coverage.represented} of ${coverage.total} sounds represented`}>
+            <div>
+              <strong>{coverage.represented} of {coverage.total} sounds represented</strong>
+              <span
+                >{coverage.unmapped.length === 0
+                  ? "All defined sounds are represented."
+                  : `${coverage.unmapped.length} sounds are not represented yet.`}</span>
+            </div>
+            <div class="coverage-bar" aria-hidden="true">
+              <span style={`width: ${coverage.total ? (coverage.represented / coverage.total) * 100 : 0}%`}></span>
+            </div>
+          </div>
+          {#if unmappedPhonemes.length > 0}
+            <div class="unmapped">
+              <span>Unmapped sounds</span>
+              <div>
+                {#each unmappedPhonemes as phoneme (phoneme.id)}
+                  <button
+                    type="button"
+                    title={`Create a mapping for ${soundLabel(phoneme)}`}
+                    onclick={() => addMappingForPhoneme(phoneme)}>
+                    /{soundLabel(phoneme)}/ <small>+</small>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        {/if}
+
+        {#if orthographyDraft.mappings.length === 0}
+          <div class="writing-empty-card">
+            <p>No characters yet.</p>
+            <span>Add them manually or start from the sounds already defined for this language.</span>
+            <div>
+              <button type="button" class="language-button secondary" onclick={() => addMapping()}
+                >Add character</button>
+              {#if phonemeOptions.length > 0}
+                <button type="button" class="language-button" onclick={openAddFromSounds}>Add from Sounds</button>
+              {/if}
+            </div>
+          </div>
+        {:else}
+          <div class="character-table-wrap">
+            <table class="character-table">
+              <thead>
+                <tr>
+                  <th scope="col">Written form</th>
+                  <th scope="col">Sound(s)</th>
+                  <th scope="col">Romanization</th>
+                  <th scope="col">Notes</th>
+                  <th scope="col"><span class="visually-hidden">Row actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each orthographyDraft.mappings as mapping, index (mapping.id)}
+                  <tr>
+                    <td class="written-cell">
+                      <label class="visually-hidden" for={`written-form-${mapping.id}`}>Written form</label>
+                      <input
+                        id={`written-form-${mapping.id}`}
+                        bind:value={mapping.writtenForm}
+                        required
+                        placeholder="e.g. sh" />
+                      <label class="mapping-group">
+                        <span>Group</span>
+                        <select bind:value={mapping.group}>
+                          <option value="ungrouped">Ungrouped</option>
+                          <option value="vowels">Vowels</option>
+                          <option value="consonants">Consonants</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </label>
+                    </td>
+                    <td class="sounds-cell">
+                      <SoundSequenceEditor
+                        bind:sounds={mapping.sounds}
+                        phonemes={phonemeOptions}
+                        label="Mapped sound sequence" />
+                    </td>
+                    <td>
+                      <label class="visually-hidden" for={`romanization-${mapping.id}`}>Romanization</label>
+                      <input
+                        id={`romanization-${mapping.id}`}
+                        bind:value={mapping.romanization}
+                        placeholder="Optional" />
+                    </td>
+                    <td>
+                      <label class="visually-hidden" for={`mapping-notes-${mapping.id}`}>Notes</label>
+                      <textarea
+                        id={`mapping-notes-${mapping.id}`}
+                        rows={3}
+                        bind:value={mapping.notes}
+                        placeholder="Optional usage notes"></textarea>
+                    </td>
+                    <td class="row-actions">
+                      <button
+                        type="button"
+                        onclick={() => moveMapping(index, -1)}
+                        disabled={index === 0}
+                        aria-label={`Move ${mapping.writtenForm || "mapping"} earlier`}>↑</button>
+                      <button
+                        type="button"
+                        onclick={() => moveMapping(index, 1)}
+                        disabled={index === orthographyDraft.mappings.length - 1}
+                        aria-label={`Move ${mapping.writtenForm || "mapping"} later`}>↓</button>
+                      <button
+                        type="button"
+                        class="remove"
+                        onclick={() => removeMapping(index)}
+                        aria-label={`Remove ${mapping.writtenForm || "mapping"}`}>Remove</button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </section>
+    {:else}
+      <section class="writing-section">
+        <div class="writing-section-head">
+          <div>
+            <h3>Samples</h3>
+            <p>Save examples that belong specifically to this writing system.</p>
+          </div>
+          <button type="button" class="language-button" onclick={addSample}>Add sample</button>
+        </div>
+        {#if orthographyDraft.samples.length === 0}
+          <div class="writing-empty-card">
+            <p>No samples yet.</p>
+            <span>Add a word, phrase, or sentence to show the writing system in use.</span>
+            <button type="button" class="language-button secondary" onclick={addSample}>Add sample</button>
+          </div>
+        {:else}
+          <div class="sample-list">
+            {#each orthographyDraft.samples as sample, index (sample.id)}
+              <article class="sample-card">
+                <div class="sample-head">
+                  <strong>Sample {index + 1}</strong>
+                  <div>
+                    <button
+                      type="button"
+                      onclick={() => moveSample(index, -1)}
+                      disabled={index === 0}
+                      aria-label={`Move sample ${index + 1} earlier`}>↑</button>
+                    <button
+                      type="button"
+                      onclick={() => moveSample(index, 1)}
+                      disabled={index === orthographyDraft.samples.length - 1}
+                      aria-label={`Move sample ${index + 1} later`}>↓</button>
+                    <button type="button" class="remove" onclick={() => removeSample(index)}>Remove</button>
+                  </div>
+                </div>
+                <label class="language-field">
+                  <span>Written text</span>
+                  <textarea rows={3} bind:value={sample.writtenText} required placeholder="Text in this writing system"
+                  ></textarea>
+                </label>
+                <IpaInput
+                  label="Pronunciation (optional)"
+                  bind:value={sample.pronunciation}
+                  multiline
+                  rows={2}
+                  placeholder="e.g. ʃara ven tal" />
+                <div class="sample-grid">
+                  <label class="language-field">
+                    <span>Translation (optional)</span>
+                    <textarea rows={2} bind:value={sample.translation}></textarea>
+                  </label>
+                  <label class="language-field">
+                    <span>Notes (optional)</span>
+                    <textarea rows={2} bind:value={sample.notes}></textarea>
+                  </label>
+                </div>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
     {#if error}
       <p class="language-status error" role="alert">{error}</p>
     {/if}
@@ -297,7 +605,7 @@ function handleSubmit(event: SubmitEvent) {
             type="button"
             class="language-button secondary language-danger"
             onclick={deleteOrthography}
-            disabled={orthographySaving}>Delete</button>
+            disabled={orthographySaving}>Delete writing system</button>
         {/if}
       </span>
       <span>
@@ -319,17 +627,22 @@ function handleSubmit(event: SubmitEvent) {
   </div>
 {:else if orthographies.length === 0}
   <div class="language-empty-card">
-    <p class="language-empty" role="status">No writing systems yet. Add one and map graphemes to sounds.</p>
-    <div class="language-inline">
-      <button type="button" class="language-button secondary" onclick={addOrthography}>Add first writing system</button>
-    </div>
+    <p class="language-empty" role="status">No writing systems yet.</p>
+    <span>Create a writing system to describe how this language is written.</span>
+    <button type="button" class="language-button" onclick={addOrthography}>Create writing system</button>
   </div>
 {:else}
   <section class="language-pane-section">
     <h3>Writing systems</h3>
-    <p>{orthographies.length} system{orthographies.length === 1 ? "" : "s"} · select one to edit its mappings.</p>
-    <ul class="lexeme-list">
+    <p>
+      {orthographies.length} system{orthographies.length === 1 ? "" : "s"} · each has its own character mappings and samples.
+    </p>
+    <ul class="writing-system-list">
       {#each orthographies as record (record.id)}
+        {@const systemCoverage = orthographyCoverage(
+          record.value,
+          phonemeOptions.map((phoneme) => phoneme.id),
+        )}
         <li>
           <button
             type="button"
@@ -337,13 +650,70 @@ function handleSubmit(event: SubmitEvent) {
             aria-label={`Edit writing system ${record.value.name}`}
             onclick={() => openOrthographyEditor(record)}>
             <strong>{record.value.name}</strong>
-            <small>{record.value.status || "—"}</small>
-            <span>{record.value.mappings.length} mapping{record.value.mappings.length === 1 ? "" : "s"}</span>
+            <small
+              >{record.value.direction === "ltr"
+                ? "Left to right"
+                : record.value.direction === "rtl"
+                  ? "Right to left"
+                  : record.value.direction === "vertical"
+                    ? "Vertical"
+                    : "Direction unspecified"}</small>
+            <span
+              >{record.value.mappings.length} character{record.value.mappings.length === 1 ? "" : "s"} · {systemCoverage.represented}
+              of {systemCoverage.total} sounds · {record.value.samples.length} sample{record.value.samples.length === 1
+                ? ""
+                : "s"}</span>
           </button>
         </li>
       {/each}
     </ul>
   </section>
+{/if}
+
+{#if addFromSoundsOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="bulk-backdrop" role="presentation" onclick={() => (addFromSoundsOpen = false)}>
+    <div
+      class="bulk-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="bulk-title"
+      tabindex="-1"
+      onclick={(event) => event.stopPropagation()}>
+      <header>
+        <div>
+          <h3 id="bulk-title">Add from Sounds</h3>
+          <p>
+            Unmapped sounds are selected by default. Selecting an already represented sound intentionally creates
+            another blank spelling.
+          </p>
+        </div>
+        <button type="button" class="language-button secondary" onclick={() => (addFromSoundsOpen = false)}
+          >Close</button>
+      </header>
+      <div class="bulk-list">
+        {#each phonemeOptions as phoneme (phoneme.id)}
+          <label class:represented={representedIds.has(phoneme.id)}>
+            <input
+              type="checkbox"
+              checked={selectedBulkIds.includes(phoneme.id)}
+              onchange={(event) => toggleBulkSound(phoneme.id, event.currentTarget.checked)} />
+            <strong>/{soundLabel(phoneme)}/</strong>
+            <span>{phoneme.kind}</span>
+            <small>{representedIds.has(phoneme.id) ? "Already represented" : "Unmapped"}</small>
+          </label>
+        {/each}
+      </div>
+      <footer>
+        <span>{selectedBulkIds.length} selected</span>
+        <button
+          type="button"
+          class="language-button"
+          onclick={addSelectedSounds}
+          disabled={selectedBulkIds.length === 0}>Add selected</button>
+      </footer>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -375,31 +745,91 @@ function handleSubmit(event: SubmitEvent) {
 .language-toolbar-title h2 {
   margin: 0;
 }
-.language-toolbar-actions {
+.language-toolbar-actions,
+.writing-section-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
+.language-editor {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  min-width: 0;
+}
+.writing-tabs {
+  display: flex;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.writing-tabs button {
+  flex: 1;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.writing-tabs button.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(30, 34, 27, 0.08);
+}
+.writing-tabs span {
+  margin-left: 5px;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.writing-section,
 .language-pane-section {
   display: grid;
-  gap: 10px;
-  margin-top: 16px;
+  gap: 14px;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface-muted);
 }
-.language-pane-section > p {
+.writing-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.writing-section-head h3,
+.language-pane-section h3 {
   margin: 0;
+}
+.writing-section-head p,
+.language-pane-section > p {
+  margin: 3px 0 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.55;
 }
-.language-pane-section .lexeme-list {
-  margin-top: 2px;
+.writing-basics-grid,
+.sample-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.language-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 .language-field input,
-.language-field textarea {
+.language-field textarea,
+.language-field select,
+.character-table input,
+.character-table textarea,
+.mapping-group select {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -410,59 +840,9 @@ function handleSubmit(event: SubmitEvent) {
   color: var(--ink);
   font: inherit;
 }
-.language-field textarea {
-  min-height: 4.5em;
+.language-field textarea,
+.character-table textarea {
   resize: vertical;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-}
-.lexeme-list {
-  display: grid;
-  gap: 8px;
-  margin: 4px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.language-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.4fr);
-  gap: 8px 12px;
-  align-items: baseline;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #ebe7de;
-  border-radius: 10px;
-  background: var(--surface);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
-}
-.language-item:hover {
-  border-color: #e5d8c6;
-  background: var(--surface-muted);
-}
-.language-item strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.language-item small {
-  color: var(--ink-faint);
-}
-.language-item span {
-  min-width: 0;
-  color: var(--ink-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .language-button {
   padding: 8px 12px;
@@ -480,69 +860,16 @@ function handleSubmit(event: SubmitEvent) {
   color: var(--accent-dark);
 }
 .language-button.secondary:hover {
-  background: var(--surface-muted);
+  background: var(--surface);
 }
 .language-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   filter: none;
 }
-.language-button:focus-visible,
-.language-item:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
-}
-.language-empty,
-.language-status {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.language-status.error {
-  color: #a14f42;
-}
-.language-loading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--ink-soft);
-}
-.language-loading::before {
-  content: "";
-  width: 11px;
-  height: 11px;
-  flex: 0 0 11px;
-  border: 2px solid var(--line);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: language-spin 0.75s linear infinite;
-}
-@keyframes language-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .language-loading::before {
-    animation: none;
-  }
-}
-.language-empty-card {
-  display: grid;
-  gap: 12px;
-  justify-items: start;
-  margin: 18px 0;
-  padding: 20px;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-  background: var(--surface-muted);
-}
-.language-editor {
-  display: grid;
-  gap: 16px;
-  margin-top: 16px;
-  min-width: 0;
+.language-danger {
+  border-color: #a14f42 !important;
+  color: #a14f42 !important;
 }
 .language-actions {
   display: flex;
@@ -561,50 +888,346 @@ function handleSubmit(event: SubmitEvent) {
   gap: 8px;
   flex-wrap: wrap;
 }
-.language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
-  background: transparent;
+.language-empty,
+.language-status {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
 }
-.language-group {
+.language-status.error {
+  color: #a14f42;
+}
+.language-loading {
+  margin-top: 16px;
+}
+.language-empty-card,
+.writing-empty-card {
   display: grid;
   gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  justify-items: start;
+  margin: 18px 0;
+  padding: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
   background: var(--surface-muted);
 }
-.language-group-head {
+.language-empty-card span,
+.writing-empty-card span {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.writing-empty-card {
+  margin: 0;
+}
+.writing-empty-card p {
+  margin: 0;
+  font-weight: 650;
+}
+.writing-empty-card div {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-.language-inline {
-  display: flex;
-  align-items: end;
-  gap: 8px;
-  min-width: 0;
-}
-.language-inline-fields {
+.writing-notice {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 3px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.writing-notice span {
+  color: var(--ink-soft);
+}
+.coverage {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) minmax(160px, 1fr);
+  gap: 18px;
+  align-items: center;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.coverage > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.coverage strong {
+  font-size: 12px;
+}
+.coverage span {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.coverage-bar {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+.coverage-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.unmapped {
+  display: grid;
+  gap: 6px;
+}
+.unmapped > span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.unmapped > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.unmapped button {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.unmapped small {
+  color: var(--accent-dark);
+}
+.character-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.character-table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+}
+.character-table th {
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 10px;
+  text-align: left;
+}
+.character-table td {
+  min-width: 130px;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.character-table tr:last-child td {
+  border-bottom: 0;
+}
+.character-table .written-cell {
+  width: 150px;
+}
+.character-table .sounds-cell {
+  min-width: 390px;
+}
+.mapping-group {
+  display: grid;
+  gap: 3px;
+  margin-top: 7px;
+}
+.mapping-group span {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+.mapping-group select {
+  padding: 6px 7px;
+  font-size: 10px;
+}
+.row-actions {
+  width: 78px;
+  min-width: 78px !important;
+}
+.row-actions button,
+.sample-head button {
+  margin: 0 2px 4px 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.row-actions button.remove,
+.sample-head button.remove {
+  color: #a14f42;
+}
+.row-actions button:disabled,
+.sample-head button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.sample-list {
+  display: grid;
+  gap: 10px;
+}
+.sample-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.sample-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+.writing-system-list {
+  display: grid;
   gap: 8px;
-  flex: 1;
-  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.language-inline > .language-button {
-  flex: 0 0 auto;
+.language-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-@media (max-width: 760px) {
-  .language-item span {
-    white-space: normal;
+.language-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.language-item small {
+  color: var(--ink-faint);
+}
+.language-item span {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.bulk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(24, 28, 22, 0.54);
+  backdrop-filter: blur(3px);
+}
+.bulk-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  width: min(680px, 100%);
+  max-height: min(720px, calc(100vh - 40px));
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(20, 22, 18, 0.3);
+}
+.bulk-dialog header,
+.bulk-dialog footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.bulk-dialog h3,
+.bulk-dialog p {
+  margin: 0;
+}
+.bulk-dialog p {
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.bulk-list {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  overflow: auto;
+}
+.bulk-list label {
+  display: grid;
+  grid-template-columns: auto minmax(70px, 0.5fr) minmax(70px, 0.5fr) minmax(110px, 1fr);
+  gap: 9px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+.bulk-list label.represented {
+  opacity: 0.68;
+}
+.bulk-list span,
+.bulk-list small,
+.bulk-dialog footer span {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .writing-basics-grid,
+  .sample-grid,
+  .coverage {
+    grid-template-columns: 1fr;
   }
-  .language-inline {
-    flex-direction: column;
-    align-items: stretch;
+  .writing-tabs {
+    overflow-x: auto;
+  }
+  .writing-tabs button {
+    min-width: 110px;
+  }
+  .bulk-backdrop {
+    padding: 0;
+  }
+  .bulk-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+  .bulk-list label {
+    grid-template-columns: auto 1fr auto;
+  }
+  .bulk-list label span {
+    display: none;
   }
 }
 </style>

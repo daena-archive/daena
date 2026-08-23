@@ -49,6 +49,7 @@ let { context }: { context: ModuleContext } = $props();
 
 let cancelled = false;
 let selectedLanguage: EntitySummary | null = $state(null);
+let incompatibleFocus = $state(false);
 let pane: Pane = $state("overview");
 let pendingLexemeId: string | null = $state(null);
 let languageLoading = $state(false);
@@ -128,13 +129,18 @@ async function loadLanguage(entityId: string) {
   try {
     const entity = await context.entities.get(entityId as UUID);
     if (cancelled || token !== languageRequest) return;
-    if (entity) {
+    if (entity?.type === "language") {
       selectedLanguage = entity;
+      incompatibleFocus = false;
+    } else {
+      selectedLanguage = null;
+      incompatibleFocus = entity !== null;
     }
     languageLoading = false;
   } catch (cause) {
     if (cancelled || token !== languageRequest) return;
     languageLoading = false;
+    incompatibleFocus = false;
   }
 }
 
@@ -249,11 +255,16 @@ function dismissWelcomeTour() {
     {:else if !selectedLanguage}
       <div class="language-empty-screen" role="status">
         <div class="language-empty-mark" aria-hidden="true">✦</div>
-        <h3>Your language workshop is waiting.</h3>
-        <p>
-          Select a language from the list, or create your first language to begin building words, sounds, writing and
-          grammar.
-        </p>
+        {#if incompatibleFocus}
+          <h3>The selected item is not a language.</h3>
+          <p>Select a Language entity to work with its words, sounds, writing, and grammar.</p>
+        {:else}
+          <h3>Your language workshop is waiting.</h3>
+          <p>
+            Select a language from the list, or create your first language to begin building words, sounds, writing and
+            grammar.
+          </p>
+        {/if}
       </div>
     {:else}
       <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">

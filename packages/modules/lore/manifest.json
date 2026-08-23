@@ -42,7 +42,16 @@
           "relationshipType": "speaks",
           "targetEntityTypes": ["language"],
           "entityTypes": ["person"],
-          "metadataFields": [{ "key": "fluency", "label": "Fluency", "type": "text" }]
+          "metadataFields": [
+            {
+              "key": "fluency",
+              "label": "Fluency",
+              "type": "enum",
+              "options": ["native", "fluent", "conversational", "basic", "learning"]
+            },
+            { "key": "dialect", "label": "Dialect", "type": "text" },
+            { "key": "since", "label": "Since", "type": "date" }
+          ]
         },
         {
           "key": "origin",
@@ -50,7 +59,10 @@
           "type": "relationship",
           "relationshipType": "originates_from",
           "targetEntityTypes": ["place"],
-          "entityTypes": ["person"]
+          "entityTypes": ["person"],
+          "metadataFields": [
+            { "key": "note", "label": "Note", "type": "text" }
+          ]
         },
         {
           "key": "affiliation",
@@ -61,7 +73,10 @@
           "entityTypes": ["person"],
           "metadataFields": [
             { "key": "start", "label": "Starts", "type": "date" },
-            { "key": "end", "label": "Ends", "type": "date" }
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "role", "label": "Role", "type": "text" },
+            { "key": "rank", "label": "Rank", "type": "enum", "options": ["leader", "officer", "member", "affiliate"] },
+            { "key": "status", "label": "Status", "type": "enum", "options": ["active", "former", "honorary"] }
           ]
         },
         {
@@ -86,7 +101,8 @@
           "type": "relationship",
           "relationshipType": "born_in",
           "targetEntityTypes": ["place"],
-          "entityTypes": ["person"]
+          "entityTypes": ["person"],
+          "metadataFields": [{ "key": "circumstance", "label": "Circumstance", "type": "text" }]
         },
         {
           "key": "diedIn",
@@ -94,7 +110,8 @@
           "type": "relationship",
           "relationshipType": "died_in",
           "targetEntityTypes": ["place"],
-          "entityTypes": ["person"]
+          "entityTypes": ["person"],
+          "metadataFields": [{ "key": "circumstance", "label": "Circumstance", "type": "text" }]
         },
         { "key": "region", "label": "Region", "type": "text", "entityTypes": ["place"] },
         { "key": "climate", "label": "Climate", "type": "text", "entityTypes": ["place"] },
@@ -106,7 +123,12 @@
           "type": "relationship",
           "relationshipType": "created_by",
           "targetEntityTypes": ["person"],
-          "entityTypes": ["artifact"]
+          "entityTypes": ["artifact"],
+          "metadataFields": [
+            { "key": "role", "label": "Role", "type": "enum", "options": ["creator", "forger", "commissioner"] },
+            { "key": "commissioned", "label": "Commissioned", "type": "boolean" },
+            { "key": "date", "label": "Date", "type": "date" }
+          ]
         },
         {
           "key": "currentOwner",
@@ -117,7 +139,14 @@
           "entityTypes": ["artifact"],
           "metadataFields": [
             { "key": "start", "label": "Starts", "type": "date" },
-            { "key": "end", "label": "Ends", "type": "date" }
+            { "key": "end", "label": "Ends", "type": "date" },
+            {
+              "key": "manner",
+              "label": "Manner",
+              "type": "enum",
+              "options": ["created", "gifted", "purchased", "inherited", "stolen", "seized"]
+            },
+            { "key": "condition", "label": "Condition", "type": "enum", "options": ["pristine", "worn", "damaged"] }
           ]
         },
         {
@@ -146,7 +175,14 @@
           "entityTypes": ["faction"],
           "metadataFields": [
             { "key": "start", "label": "Starts", "type": "date" },
-            { "key": "end", "label": "Ends", "type": "date" }
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "title", "label": "Title", "type": "text" },
+            {
+              "key": "manner",
+              "label": "Manner",
+              "type": "enum",
+              "options": ["elected", "inherited", "appointed", "seized"]
+            }
           ]
         },
         {
@@ -158,7 +194,13 @@
           "entityTypes": ["faction"],
           "metadataFields": [
             { "key": "start", "label": "Starts", "type": "date" },
-            { "key": "end", "label": "Ends", "type": "date" }
+            { "key": "end", "label": "Ends", "type": "date" },
+            {
+              "key": "function",
+              "label": "Function",
+              "type": "enum",
+              "options": ["capital", "seat", "outpost", "hidden"]
+            }
           ]
         },
         { "key": "values", "label": "Values", "type": "text", "entityTypes": ["culture"] },
@@ -172,7 +214,13 @@
           "entityTypes": ["culture"],
           "metadataFields": [
             { "key": "start", "label": "Starts", "type": "date" },
-            { "key": "end", "label": "Ends", "type": "date" }
+            { "key": "end", "label": "Ends", "type": "date" },
+            {
+              "key": "significance",
+              "label": "Significance",
+              "type": "enum",
+              "options": ["ancestral", "sacred", "contested"]
+            }
           ]
         }
       ]

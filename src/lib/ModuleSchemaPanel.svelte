@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
+import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay, FieldMetadataOverride, MetadataFieldDefinition } from "$lib/project/client";
 import FieldPicker from "$lib/FieldPicker.svelte";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
@@ -38,6 +38,17 @@ type PackageManifest = {
 type FieldType = FieldDefinition["type"];
 
 const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "date", "enum", "oneof", "relationship"];
+
+const METADATA_FIELD_TYPES = ["text", "number", "boolean", "date", "enum", "oneof"] as const;
+type MetadataFieldType = (typeof METADATA_FIELD_TYPES)[number];
+type MetadataFieldDraft = {
+  key: string;
+  label: string;
+  type: MetadataFieldType;
+  required: boolean;
+  options: string;
+  oneOf: Array<{ label: string; type: Exclude<MetadataFieldType, "oneof" | "relationship">; options: string }>;
+};
 
 let {
   projectOpen,
@@ -141,15 +152,143 @@ function ensureFieldKey(value: string, fallback = "field"): string {
   return key;
 }
 
+function metadataDraftToDefinition(draft: MetadataFieldDraft): Record<string, unknown> | null {
+  const label = draft.label.trim();
+  if (!label) return null;
+  const key = ensureFieldKey(draft.key.trim() || label, "field");
+  if (!key) return null;
+  const base: Record<string, unknown> = { key, label, type: draft.type };
+  if (draft.required) base.required = true;
+  if (draft.type === "enum") {
+    const opts = parseOptions(draft.options);
+    if (opts.length === 0) return null;
+    base.options = opts;
+  } else if (draft.type === "oneof") {
+    if (draft.oneOf.length === 0) return null;
+    const oneOf = draft.oneOf
+      .filter((v) => v.label.trim())
+      .map((v) => {
+        const variant: Record<string, unknown> = { label: v.label.trim(), type: v.type };
+        if (v.type === "enum") {
+          const opts = parseOptions(v.options);
+          if (opts.length === 0) return null;
+          variant.options = opts;
+        }
+        return variant;
+      })
+      .filter(Boolean) as Array<Record<string, unknown>>;
+    if (oneOf.length === 0) return null;
+    base.oneOf = oneOf;
+  }
+  return base;
+}
+
+function validateMetadataDrafts(drafts: MetadataFieldDraft[]): boolean {
+  if (drafts.length === 0) return true;
+  const keys = new Set<string>();
+  for (const d of drafts) {
+    const def = metadataDraftToDefinition(d);
+    if (!def) return false;
+    const k = def.key as string;
+    if (keys.has(k)) return false;
+    keys.add(k);
+    if (def.type === "enum" && !(def.options as string[]).length) return false;
+    if (def.type === "oneof") {
+      const variants = def.oneOf as unknown[];
+      if (!variants.length) return false;
+      // metadataDraftToDefinition silently drops oneof variants without a label or
+      // (for enum) without options, so reject them here to surface the error instead
+      // of losing the variant on commit.
+      for (const v of d.oneOf) {
+        if (!v.label.trim()) return false;
+        if (v.type === "enum" && !parseOptions(v.options).length) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function draftsFromMetadataFields(fields: unknown): MetadataFieldDraft[] {
+  if (!Array.isArray(fields)) return [];
+  return (fields as Array<Record<string, unknown>>).map((f) => ({
+    key: String(f.key ?? ""),
+    label: String(f.label ?? ""),
+    type: (METADATA_FIELD_TYPES as readonly string[]).includes(String(f.type)) ? (f.type as MetadataFieldType) : "text",
+    required: Boolean(f.required),
+    options: formatOptions(f.options as string[] | undefined),
+    oneOf: Array.isArray(f.oneOf)
+      ? (f.oneOf as Array<Record<string, unknown>>).map((v) => {
+          const vt = String(v.type ?? "");
+          const allowed = (["text", "number", "boolean", "date", "enum"] as const) as readonly string[];
+          return {
+            label: String(v.label ?? ""),
+            type: (allowed.includes(vt) ? vt : "text") as Exclude<MetadataFieldType, "oneof" | "relationship">,
+            options: formatOptions(v.options as string[] | undefined),
+          };
+        })
+      : [],
+  }));
+}
+
 function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
   const customEntityTypes = [
     ...new Set((value.customEntityTypes ?? []).map((name) => ensureTypeId(name, "type")).filter(Boolean)),
   ].sort();
-  const customFields = cloneJson(value.customFields ?? []).map((field) => ({
-    ...field,
-    key: ensureFieldKey(field.key),
-    entityTypes: field.entityTypes?.map((name) => ensureTypeId(name, "type")).filter(Boolean),
-  }));
+  const customFields = cloneJson(value.customFields ?? []).map((field) => {
+    const f = field as unknown as Record<string, unknown>;
+    const next: Record<string, unknown> = {
+      ...f,
+      key: ensureFieldKey(String(f.key ?? "")),
+      entityTypes: (f.entityTypes as string[] | undefined)?.map((name) => ensureTypeId(name, "type")).filter(Boolean),
+    };
+    if (f.type === "relationship" && Array.isArray(f.metadataFields)) {
+      const raw = f.metadataFields as unknown[];
+      const normalized = raw
+        .map((entry) => {
+          const e = entry as Record<string, unknown>;
+          const label = String(e.label ?? "").trim();
+          const rawKey = String(e.key ?? "").trim() || label;
+          const key = ensureFieldKey(rawKey, "field");
+          const t = String(e.type ?? "text");
+          const allowed = METADATA_FIELD_TYPES as readonly string[];
+          const type = allowed.includes(t) ? t : "text";
+          const out: Record<string, unknown> = { key, label, type };
+          if (e.required) out.required = true;
+          if (type === "enum" && Array.isArray(e.options)) out.options = (e.options as string[]).filter(Boolean);
+          if (type === "oneof" && Array.isArray(e.oneOf)) {
+            out.oneOf = (e.oneOf as Array<Record<string, unknown>>)
+              .filter((v) => String(v.label ?? "").trim())
+              .map((v) => {
+                const vl = String(v.label ?? "").trim();
+                const vt = String(v.type ?? "text");
+                const ok = ["text", "number", "boolean", "date", "enum"].includes(vt) ? vt : "text";
+                const ov: Record<string, unknown> = { label: vl, type: ok };
+                if (ok === "enum" && Array.isArray(v.options)) ov.options = (v.options as string[]).filter(Boolean);
+                return ov;
+              });
+          }
+          if (type === "enum" && Array.isArray(out.options)) {
+            out.options = [...new Set(out.options as string[])];
+          }
+          return out;
+        })
+        .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
+        .sort((a, b) => String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)));
+      const seen = new Set<string>();
+      const deduped: unknown[] = [];
+      for (const e of normalized) {
+        const k = String((e as Record<string, unknown>).key);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        deduped.push(e);
+      }
+      (next as Record<string, unknown>).metadataFields = deduped;
+      if ((deduped as unknown[]).length === 0) delete (next as Record<string, unknown>).metadataFields;
+    } else {
+      delete (next as Record<string, unknown>).metadataFields;
+    }
+    return next as unknown as FieldDefinition;
+  });
   const customTemplates = cloneJson(value.customTemplates ?? []).map((template) => ({
     ...template,
     id: ensureTypeId(template.id || template.name, "template"),
@@ -165,6 +304,53 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
   const templateOverrides = cloneJson(value.templateOverrides ?? []).sort((left, right) =>
     left.templateId.localeCompare(right.templateId),
   );
+  const fieldMetadataOverrides = cloneJson(value.fieldMetadataOverrides ?? [])
+    .map((ov) => {
+      const rawFields = (ov as unknown as Record<string, unknown>).metadataFields as unknown[] | undefined;
+      const normalized = ((rawFields ?? []) as unknown[])
+        .map((entry) => {
+          const e = entry as Record<string, unknown>;
+          const label = String(e.label ?? "").trim();
+          const rawKey = String(e.key ?? "").trim() || label;
+          const key = ensureFieldKey(rawKey, "field");
+          const t = String(e.type ?? "text");
+          const allowed = METADATA_FIELD_TYPES as readonly string[];
+          const type = allowed.includes(t) ? t : "text";
+          const out: Record<string, unknown> = { key, label, type };
+          if (e.required) out.required = true;
+          if (type === "enum" && Array.isArray(e.options)) out.options = (e.options as string[]).filter(Boolean);
+          if (type === "oneof" && Array.isArray(e.oneOf)) {
+            out.oneOf = (e.oneOf as Array<Record<string, unknown>>)
+              .filter((v) => String(v.label ?? "").trim())
+              .map((v) => {
+                const vl = String(v.label ?? "").trim();
+                const vt = String(v.type ?? "text");
+                const ok = ["text", "number", "boolean", "date", "enum"].includes(vt) ? vt : "text";
+                const ov2: Record<string, unknown> = { label: vl, type: ok };
+                if (ok === "enum" && Array.isArray(v.options)) ov2.options = (v.options as string[]).filter(Boolean);
+                return ov2;
+              });
+          }
+          if (type === "enum" && Array.isArray(out.options)) out.options = [...new Set(out.options as string[])];
+          return out;
+        })
+        .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
+        .sort((a, b) => String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)));
+      const seen = new Set<string>();
+      const deduped: unknown[] = [];
+      for (const e of normalized) {
+        const k = String((e as Record<string, unknown>).key);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        deduped.push(e);
+      }
+      return {
+        fieldKey: String((ov as unknown as Record<string, unknown>).fieldKey ?? ""),
+        metadataFields: deduped as unknown as FieldMetadataOverride["metadataFields"],
+      };
+    })
+    .filter((ov) => ov.fieldKey && ov.metadataFields && ov.metadataFields.length > 0)
+    .sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
   return {
     version: value.version || 1,
     disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].sort(),
@@ -175,6 +361,7 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     customTemplates,
     fieldScopeOverrides,
     templateOverrides,
+    fieldMetadataOverrides,
   };
 }
 
@@ -215,6 +402,8 @@ let newFieldTargetEntityTypes = $state<string[]>([]);
 let newFieldRelationshipType = $state("");
 let newFieldCardinality = $state<"one" | "many">("many");
 let newFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
+let editingBuiltinMetadataFieldKey = $state<string | null>(null);
+let editBuiltinMetadataDrafts = $state<MetadataFieldDraft[]>([]);
 let editingFieldKey = $state<string | null>(null);
 let editFieldLabel = $state("");
 let editFieldType = $state<FieldType>("text");
@@ -225,6 +414,8 @@ let editFieldTargetEntityTypes = $state<string[]>([]);
 let editFieldRelationshipType = $state("");
 let editFieldCardinality = $state<"one" | "many">("many");
 let editFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
+let newFieldMetadata = $state<MetadataFieldDraft[]>([]);
+let editFieldMetadata = $state<MetadataFieldDraft[]>([]);
 let editingBuiltinFieldKey = $state<string | null>(null);
 
 let newTemplateName = $state("");
@@ -321,7 +512,18 @@ function toggleDisabled(listKey: "disabledEntityTypes" | "disabledFields" | "dis
   const current = new Set(draft[listKey] ?? []);
   if (current.has(id)) current.delete(id);
   else current.add(id);
-  setDraft({ ...draft, [listKey]: [...current].sort() });
+  const next = { ...draft, [listKey]: [...current].sort() } as ModuleSchemaOverlay;
+  if (listKey === "disabledFields" && current.has(id)) {
+    // Remove scope and metadata overrides for disabled field
+    next.fieldScopeOverrides = (next.fieldScopeOverrides ?? []).filter((ov) => ov.fieldKey !== id);
+    next.fieldMetadataOverrides = (next.fieldMetadataOverrides ?? []).filter((ov) => ov.fieldKey !== id);
+    if (editingBuiltinFieldKey === id) editingBuiltinFieldKey = null;
+    if (editingBuiltinMetadataFieldKey === id) cancelBuiltinMetadataEdit();
+  }
+  if (listKey === "disabledEntityTypes") {
+    // Prune metadata overrides that reference removed entity types? No, metadata overrides are per field, not per type, so no pruning needed.
+  }
+  setDraft(next);
 }
 
 function effectiveTypes() {
@@ -542,6 +744,7 @@ function beginTemplateFieldEdit(template: EntityTemplate, builtin: boolean) {
   editingTypeId = null;
   editingFieldKey = null;
   editingBuiltinFieldKey = null;
+  editingBuiltinMetadataFieldKey = null;
   editingTemplateId = builtin ? null : template.id;
   editingBuiltinTemplateId = builtin ? template.id : null;
   editTemplateName = template.name;
@@ -601,6 +804,7 @@ async function discardChanges() {
   newFieldRelationshipType = "";
   newFieldCardinality = "many";
   newFieldOneOfVariants = [];
+  newFieldMetadata = [];
   editingFieldKey = null;
   editFieldLabel = "";
   editFieldType = "text";
@@ -611,7 +815,10 @@ async function discardChanges() {
   editFieldRelationshipType = "";
   editFieldCardinality = "many";
   editFieldOneOfVariants = [];
+  editFieldMetadata = [];
   editingBuiltinFieldKey = null;
+  editingBuiltinMetadataFieldKey = null;
+  editBuiltinMetadataDrafts = [];
   newTemplateName = "";
   newTemplateEntityType = "";
   newTemplateDescription = "";
@@ -792,11 +999,14 @@ function cancelFieldEdit() {
   editFieldRelationshipType = "";
   editFieldCardinality = "many";
   editFieldOneOfVariants = [];
+  editFieldMetadata = [];
 }
 
 function startFieldEdit(field: FieldDefinition) {
   editingTypeId = null;
   editingTemplateId = null;
+  editingBuiltinFieldKey = null;
+  editingBuiltinMetadataFieldKey = null;
   editingFieldKey = field.key;
   editFieldLabel = field.label;
   editFieldType = FIELD_TYPES.includes(field.type) ? field.type : "text";
@@ -812,6 +1022,7 @@ function startFieldEdit(field: FieldDefinition) {
     type: (FIELD_TYPES.includes(v.type as FieldType) ? v.type : "text") as FieldType,
     options: formatOptions(v.options as string[] | undefined),
   }));
+  editFieldMetadata = draftsFromMetadataFields((field as unknown as Record<string, unknown>).metadataFields);
 }
 
 function addCustomField() {
@@ -858,6 +1069,12 @@ function addCustomField() {
     base.relationshipType = relType;
     base.targetEntityTypes = [...newFieldTargetEntityTypes].sort();
     base.cardinality = newFieldCardinality;
+    if (newFieldMetadata.length > 0) {
+      if (!validateMetadataDrafts(newFieldMetadata)) return;
+      const defs = newFieldMetadata.map(metadataDraftToDefinition).filter(Boolean) as Record<string, unknown>[];
+      if (defs.length !== newFieldMetadata.length) return;
+      base.metadataFields = defs;
+    }
   }
 
   const field: FieldDefinition = base as FieldDefinition;
@@ -871,6 +1088,7 @@ function addCustomField() {
   newFieldRelationshipType = "";
   newFieldCardinality = "many";
   newFieldOneOfVariants = [];
+  newFieldMetadata = [];
 }
 
 function commitFieldEdit() {
@@ -915,9 +1133,13 @@ function commitFieldEdit() {
   } else if (editFieldType === "relationship") {
     const relType = ensureFieldKey(editFieldRelationshipType.trim() || label);
     if (!relType || editFieldTargetEntityTypes.length === 0) return;
+    if (!validateMetadataDrafts(editFieldMetadata)) return;
+    const defs = editFieldMetadata.map(metadataDraftToDefinition).filter(Boolean) as Record<string, unknown>[];
+    if (defs.length !== editFieldMetadata.length) return;
     extra.relationshipType = relType;
     extra.targetEntityTypes = [...editFieldTargetEntityTypes].sort();
     extra.cardinality = editFieldCardinality;
+    extra.metadataFields = defs.length ? defs : undefined;
     extra.options = undefined;
     extra.multiple = undefined;
     extra.oneOf = undefined;
@@ -928,6 +1150,7 @@ function commitFieldEdit() {
     extra.relationshipType = undefined;
     extra.cardinality = undefined;
     extra.oneOf = undefined;
+    extra.metadataFields = undefined;
   }
 
   setDraft({
@@ -947,6 +1170,7 @@ function commitFieldEdit() {
       delete next.relationshipType;
       delete next.cardinality;
       delete next.oneOf;
+      delete next.metadataFields;
       Object.assign(next, extra);
       // Remove undefined
       for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
@@ -986,6 +1210,157 @@ function removeEditFieldOneOfVariant(index: number) {
   editFieldOneOfVariants = editFieldOneOfVariants.filter((_, i) => i !== index);
 }
 
+function addNewFieldMetadata() {
+  newFieldMetadata = [...newFieldMetadata, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+}
+function removeNewFieldMetadata(index: number) {
+  newFieldMetadata = newFieldMetadata.filter((_, i) => i !== index);
+}
+function addNewFieldMetadataOneOfVariant(metaIndex: number) {
+  const copy = newFieldMetadata.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  newFieldMetadata = copy;
+}
+function removeNewFieldMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
+  const copy = newFieldMetadata.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: m.oneOf.filter((_, j) => j !== variantIndex) } : m,
+  );
+  newFieldMetadata = copy;
+}
+function addEditFieldMetadata() {
+  editFieldMetadata = [...editFieldMetadata, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+}
+function removeEditFieldMetadata(index: number) {
+  editFieldMetadata = editFieldMetadata.filter((_, i) => i !== index);
+}
+function addEditFieldMetadataOneOfVariant(metaIndex: number) {
+  const copy = editFieldMetadata.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  editFieldMetadata = copy;
+}
+function removeEditFieldMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
+  const copy = editFieldMetadata.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: m.oneOf.filter((_, j) => j !== variantIndex) } : m,
+  );
+  editFieldMetadata = copy;
+}
+
+function builtinOriginalMetadata(field: FieldDefinition): MetadataFieldDefinition[] {
+  const builtin = packageFields.find((f) => f.key === field.key);
+  return ((builtin as unknown as Record<string, unknown>)?.metadataFields as MetadataFieldDefinition[] | undefined) ?? [];
+}
+
+function effectiveBuiltinMetadata(field: FieldDefinition): MetadataFieldDefinition[] {
+  const original = builtinOriginalMetadata(field);
+  const override = (draft.fieldMetadataOverrides ?? []).find((ov) => ov.fieldKey === field.key);
+  if (!override) return original as unknown as MetadataFieldDefinition[];
+  const map = new Map<string, MetadataFieldDefinition>();
+  for (const mf of original as unknown as MetadataFieldDefinition[]) map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
+  for (const mf of (override.metadataFields as unknown as MetadataFieldDefinition[])) map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
+  return [...map.values()].sort((a, b) => String((a as unknown as Record<string, unknown>).key).localeCompare(String((b as unknown as Record<string, unknown>).key)));
+}
+
+function builtinMetadataFieldExtras(field: FieldDefinition): string {
+  const eff = effectiveBuiltinMetadata(field);
+  if (eff.length === 0) return "";
+  return `${eff.length} attribute${eff.length === 1 ? "" : "s"}`;
+}
+
+function startBuiltinMetadataEdit(field: FieldDefinition) {
+  if (field.type !== "relationship") return;
+  editingBuiltinFieldKey = null;
+  editingFieldKey = null;
+  editingBuiltinMetadataFieldKey = field.key;
+  const eff = effectiveBuiltinMetadata(field);
+  editBuiltinMetadataDrafts = eff.map((mf) => {
+    const r = mf as unknown as Record<string, unknown>;
+    return {
+      key: String(r.key ?? ""),
+      label: String(r.label ?? ""),
+      type: (METADATA_FIELD_TYPES as readonly string[]).includes(String(r.type)) ? (r.type as MetadataFieldType) : "text",
+      required: Boolean(r.required),
+      options: formatOptions(r.options as string[] | undefined),
+      oneOf: Array.isArray(r.oneOf)
+        ? (r.oneOf as Array<Record<string, unknown>>).map((v) => {
+            const vt = String(v.type ?? "");
+            const allowed = (["text", "number", "boolean", "date", "enum"] as const) as readonly string[];
+            return {
+              label: String(v.label ?? ""),
+              type: (allowed.includes(vt) ? vt : "text") as Exclude<MetadataFieldType, "oneof" | "relationship">,
+              options: formatOptions(v.options as string[] | undefined),
+            };
+          })
+        : [],
+    };
+  });
+}
+
+function cancelBuiltinMetadataEdit() {
+  editingBuiltinMetadataFieldKey = null;
+  editBuiltinMetadataDrafts = [];
+}
+
+function commitBuiltinMetadataEdit() {
+  const fieldKey = editingBuiltinMetadataFieldKey;
+  if (!fieldKey) return;
+  const field = packageFields.find((f) => f.key === fieldKey);
+  if (!field || field.type !== "relationship") return;
+  if (editBuiltinMetadataDrafts.some((d) => !d.label.trim())) return;
+  if (editBuiltinMetadataDrafts.length > 0 && !validateMetadataDrafts(editBuiltinMetadataDrafts)) return;
+  // Reject duplicate keys (including a new draft colliding with an existing builtin
+  // metadata key), which would otherwise fail server-side as a conflicting field type.
+  const seenKeys = new Set<string>();
+  for (const d of editBuiltinMetadataDrafts) {
+    const k = ensureFieldKey(d.key.trim() || d.label.trim(), "field");
+    if (!k || seenKeys.has(k)) return;
+    seenKeys.add(k);
+  }
+  const effDefs = editBuiltinMetadataDrafts.map(metadataDraftToDefinition).filter(Boolean) as unknown as MetadataFieldDefinition[];
+  const original = builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[];
+  const originalMap = new Map<string, string>();
+  for (const mf of original) originalMap.set(String((mf as unknown as Record<string, unknown>).key), JSON.stringify(mf));
+  const effMap = new Map<string, string>();
+  for (const mf of effDefs) effMap.set(String((mf as unknown as Record<string, unknown>).key), JSON.stringify(mf));
+  // delta = effDefs that are new or changed vs original
+  const delta: MetadataFieldDefinition[] = [];
+  for (const mf of effDefs) {
+    const k = String((mf as unknown as Record<string, unknown>).key);
+    const origJson = originalMap.get(k);
+    const effJson = effMap.get(k)!;
+    if (origJson !== effJson) delta.push(mf);
+  }
+  // If delta empty and effective equals original (no change), remove override
+  let nextOverrides = [...(draft.fieldMetadataOverrides ?? [])].filter((ov) => ov.fieldKey !== fieldKey);
+  if (delta.length > 0) {
+    // store delta sorted; validation will ensure conflicting type not present (we already check), but we must keep delta sorted
+    delta.sort((a, b) => String((a as unknown as Record<string, unknown>).key).localeCompare(String((b as unknown as Record<string, unknown>).key)));
+    nextOverrides.push({ fieldKey, metadataFields: delta as unknown as FieldMetadataOverride["metadataFields"] });
+    nextOverrides.sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
+  }
+  setDraft({ ...draft, fieldMetadataOverrides: nextOverrides });
+  cancelBuiltinMetadataEdit();
+}
+
+function addEditBuiltinMetadata() {
+  editBuiltinMetadataDrafts = [...editBuiltinMetadataDrafts, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+}
+function removeEditBuiltinMetadata(index: number) {
+  const fieldKey = editingBuiltinMetadataFieldKey;
+  const field = fieldKey ? packageFields.find((f) => f.key === fieldKey) : null;
+  const originalKeys = new Set((builtinOriginalMetadata(field as FieldDefinition) as unknown as MetadataFieldDefinition[]).map((mf) => String((mf as unknown as Record<string, unknown>).key)));
+  const draftKey = editBuiltinMetadataDrafts[index]?.key;
+  if (draftKey && originalKeys.has(draftKey)) return; // prevent removing builtin keys (additive)
+  editBuiltinMetadataDrafts = editBuiltinMetadataDrafts.filter((_, i) => i !== index);
+}
+function addEditBuiltinMetadataOneOfVariant(metaIndex: number) {
+  const copy = editBuiltinMetadataDrafts.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  editBuiltinMetadataDrafts = copy;
+}
+function removeEditBuiltinMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
+  const copy = editBuiltinMetadataDrafts.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: m.oneOf.filter((_, j) => j !== variantIndex) } : m,
+  );
+  editBuiltinMetadataDrafts = copy;
+}
+
 function canAddField(): boolean {
   if (!newFieldLabel.trim()) return false;
   if (newFieldType === "enum") return parseOptions(newFieldOptions).length > 0;
@@ -993,11 +1368,14 @@ function canAddField(): boolean {
     return newFieldOneOfVariants.some(
       (v) => v.label.trim() && (v.type !== "enum" || parseOptions(v.options).length > 0),
     );
-  if (newFieldType === "relationship")
-    return (
-      Boolean(ensureTypeId(newFieldRelationshipType.trim() || newFieldLabel.trim(), "relationship")) &&
-      newFieldTargetEntityTypes.length > 0
-    );
+  if (newFieldType === "relationship") {
+    if (!Boolean(ensureTypeId(newFieldRelationshipType.trim() || newFieldLabel.trim(), "relationship"))) return false;
+    if (newFieldTargetEntityTypes.length === 0) return false;
+    if (newFieldMetadata.length > 0 && !validateMetadataDrafts(newFieldMetadata)) return false;
+    // enforce metadata keys validity even when empty options etc. Already validated; if any draft invalid block
+    if (newFieldMetadata.some((d) => !d.label.trim())) return false;
+    return true;
+  }
   return true;
 }
 
@@ -1008,11 +1386,13 @@ function canSaveFieldEdit(): boolean {
     return editFieldOneOfVariants.some(
       (v) => v.label.trim() && (v.type !== "enum" || parseOptions(v.options).length > 0),
     );
-  if (editFieldType === "relationship")
-    return (
-      Boolean(ensureTypeId(editFieldRelationshipType.trim() || editFieldLabel.trim(), "relationship")) &&
-      editFieldTargetEntityTypes.length > 0
-    );
+  if (editFieldType === "relationship") {
+    if (!Boolean(ensureTypeId(editFieldRelationshipType.trim() || editFieldLabel.trim(), "relationship"))) return false;
+    if (editFieldTargetEntityTypes.length === 0) return false;
+    if (editFieldMetadata.length > 0 && !validateMetadataDrafts(editFieldMetadata)) return false;
+    if (editFieldMetadata.some((d) => !d.label.trim())) return false;
+    return true;
+  }
   return true;
 }
 
@@ -1031,7 +1411,9 @@ function fieldExtrasLabel(field: FieldDefinition): string {
     const rel = f.relationshipType ? humanizeId(f.relationshipType) : "Relationship";
     const targets = (f.targetEntityTypes as string[] | undefined) ?? [];
     const card = f.cardinality ?? "many";
-    return `${rel} → ${targets.map(humanizeId).join(", ") || "any"} · ${card}`;
+    const meta = (f.metadataFields as unknown[] | undefined)?.length ?? 0;
+    const metaSuffix = meta ? ` · ${meta} attribute${meta === 1 ? "" : "s"}` : "";
+    return `${rel} → ${targets.map(humanizeId).join(", ") || "any"} · ${card}${metaSuffix}`;
   }
   return "";
 }
@@ -1416,6 +1798,74 @@ function removeCustomTemplate(id: string) {
                         ><Check size={14} strokeWidth={2} aria-hidden="true" /> Done</button>
                     </div>
                   </div>
+                {:else if editingBuiltinMetadataFieldKey === field.key}
+                  <div class="edit-form wide">
+                    <div class="type-select" role="group" aria-label={`Attributes for ${field.label}`}>
+                      <span class="type-select-label">Attributes <em>(additive to builtin)</em></span>
+                      {#if editBuiltinMetadataDrafts.length === 0}
+                        <span class="meta-hint">No attributes — builtins: {(builtinOriginalMetadata(field) as unknown as unknown[]).length}, effective: {effectiveBuiltinMetadata(field).length}. Add a new one.</span>
+                      {/if}
+                      {#each editBuiltinMetadataDrafts as meta, metaIdx}
+                        {@const isBuiltinKey = (builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[]).some((m) => String((m as unknown as Record<string, unknown>).key) === meta.key)}
+                        <div class="metadata-row">
+                          <div class="metadata-main">
+                            <input
+                              bind:value={meta.label}
+                              placeholder="Attribute label"
+                              oninput={() => {
+                                if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
+                                  meta.key = slugifyFieldKey(meta.label);
+                                }
+                              }} />
+                            <input bind:value={meta.key} placeholder="key" disabled={isBuiltinKey} title={isBuiltinKey ? "Builtin key cannot be renamed" : "Metadata key"} />
+                            <select bind:value={meta.type}>
+                              {#each METADATA_FIELD_TYPES as mt}
+                                <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
+                              {/each}
+                            </select>
+                            <label class="inline-check small">
+                              <input type="checkbox" bind:checked={meta.required} />
+                              <span>Required</span>
+                            </label>
+                            <button type="button" class="quiet icon" disabled={isBuiltinKey} title={isBuiltinKey ? "Builtin attributes cannot be removed (additive)" : "Remove"} onclick={() => removeEditBuiltinMetadata(metaIdx)}
+                              ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                          </div>
+                          {#if meta.type === "enum"}
+                            <input bind:value={meta.options} placeholder="Options, comma separated" />
+                          {:else if meta.type === "oneof"}
+                            <div class="oneof-variants nested">
+                              {#each meta.oneOf as variant, vIdx}
+                                <div class="variant-row small">
+                                  <input bind:value={variant.label} placeholder="Variant label" />
+                                  <select bind:value={variant.type}>
+                                    {#each ["text", "number", "boolean", "date", "enum"] as vt}
+                                      <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
+                                    {/each}
+                                  </select>
+                                  {#if variant.type === "enum"}
+                                    <input bind:value={variant.options} placeholder="Options, comma separated" />
+                                  {/if}
+                                  <button type="button" class="quiet icon" onclick={() => removeEditBuiltinMetadataOneOfVariant(metaIdx, vIdx)}
+                                    ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                                </div>
+                              {/each}
+                              <button type="button" class="quiet small" onclick={() => addEditBuiltinMetadataOneOfVariant(metaIdx)}
+                                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                            </div>
+                          {/if}
+                          {#if isBuiltinKey}<span class="meta-hint">Builtin attribute — editing overrides the packaged definition.</span>{/if}
+                        </div>
+                      {/each}
+                      <button type="button" class="quiet" onclick={addEditBuiltinMetadata}
+                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
+                      <span class="meta-hint">Builtin { (builtinOriginalMetadata(field) as unknown as unknown[]).length } + override {(draft.fieldMetadataOverrides ?? []).find((ov) => ov.fieldKey===field.key)?.metadataFields?.length ?? 0} = effective {effectiveBuiltinMetadata(field).length}. Stored as delta.</span>
+                    </div>
+                    <div class="edit-actions">
+                      <button type="button" class="action" onclick={commitBuiltinMetadataEdit}
+                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save attributes</button>
+                      <button type="button" class="quiet" onclick={cancelBuiltinMetadataEdit}>Cancel</button>
+                    </div>
+                  </div>
                 {:else}
                   <div class="item-main">
                     <div class="item-title-row">
@@ -1424,13 +1874,26 @@ function removeCustomTemplate(id: string) {
                       {#if isDisabled(draft.disabledFields, field.key)}<span class="disabled-pill"
                           ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span
                         >{/if}
+                      {#if field.type === "relationship" && effectiveBuiltinMetadata(field).length > 0}
+                        <span class="meta">{builtinMetadataFieldExtras(field)}</span>
+                      {/if}
                     </div>
                     <span class="meta"
-                      >{scopeLabel(builtinFieldScope(field))} <span class="dot">·</span> <code>{field.key}</code></span>
+                      >{scopeLabel(builtinFieldScope(field))} <span class="dot">·</span> <code>{field.key}</code>
+                      {#if field.type === "relationship" && (field as unknown as Record<string, unknown>).metadataFields}
+                        <span class="dot">·</span> {((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length} builtin attr{( ((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length ===1 ? "" : "s")}
+                      {/if}
+                      {#if field.type === "relationship" && (draft.fieldMetadataOverrides ?? []).some((ov) => ov.fieldKey===field.key)}
+                        <span class="dot">·</span> +{(draft.fieldMetadataOverrides ?? []).find((ov)=>ov.fieldKey===field.key)?.metadataFields?.length ?? 0} override
+                      {/if}
+                    </span>
                   </div>
                   <div class="item-actions">
-                    <button type="button" class="quiet" onclick={() => (editingBuiltinFieldKey = field.key)}
+                    <button type="button" class="quiet" onclick={() => { editingBuiltinMetadataFieldKey = null; editBuiltinMetadataDrafts = []; editingBuiltinFieldKey = field.key; }}
                       >Edit scope</button>
+                    {#if field.type === "relationship"}
+                      <button type="button" class="quiet" disabled={isDisabled(draft.disabledFields, field.key)} onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
+                    {/if}
                   </div>
                 {/if}
               </li>
@@ -1532,6 +1995,72 @@ function removeCustomTemplate(id: string) {
                           <option value="one">One</option>
                         </select>
                       </label>
+                      <div class="type-select" role="group" aria-label="Relationship attributes">
+                        <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
+                        {#if editFieldMetadata.length === 0}
+                          <span class="meta-hint">No attributes yet — e.g., “Since”, “Strength”, “Role”.</span>
+                        {/if}
+                        {#each editFieldMetadata as meta, metaIdx}
+                          <div class="metadata-row">
+                            <div class="metadata-main">
+                              <input
+                                bind:value={meta.label}
+                                placeholder="Attribute label"
+                                oninput={() => {
+                                  if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
+                                    meta.key = slugifyFieldKey(meta.label);
+                                  }
+                                }} />
+                              <input bind:value={meta.key} placeholder="key" title="Metadata key (snake_case)" />
+                              <select bind:value={meta.type}>
+                                {#each METADATA_FIELD_TYPES as mt}
+                                  <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
+                                {/each}
+                              </select>
+                              <label class="inline-check small">
+                                <input type="checkbox" bind:checked={meta.required} />
+                                <span>Required</span>
+                              </label>
+                              <button type="button" class="quiet icon" onclick={() => removeEditFieldMetadata(metaIdx)}
+                                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                            </div>
+                            {#if meta.type === "enum"}
+                              <input
+                                bind:value={meta.options}
+                                placeholder="Options, comma separated e.g. weak, strong" />
+                            {:else if meta.type === "oneof"}
+                              <div class="oneof-variants nested">
+                                {#each meta.oneOf as variant, vIdx}
+                                  <div class="variant-row small">
+                                    <input bind:value={variant.label} placeholder="Variant label" />
+                                    <select bind:value={variant.type}>
+                                      {#each ["text", "number", "boolean", "date", "enum"] as vt}
+                                        <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
+                                      {/each}
+                                    </select>
+                                    {#if variant.type === "enum"}
+                                      <input bind:value={variant.options} placeholder="Options, comma separated" />
+                                    {/if}
+                                    <button
+                                      type="button"
+                                      class="quiet icon"
+                                      onclick={() => removeEditFieldMetadataOneOfVariant(metaIdx, vIdx)}
+                                      ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                                  </div>
+                                {/each}
+                                <button type="button" class="quiet small" onclick={() => addEditFieldMetadataOneOfVariant(metaIdx)}
+                                  ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                              </div>
+                            {/if}
+                            {#if meta.label.trim() && !ensureFieldKey(meta.key)}
+                              <span class="field-error">Key must start with a letter.</span>
+                            {/if}
+                          </div>
+                        {/each}
+                        <button type="button" class="quiet" onclick={addEditFieldMetadata}
+                          ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
+                        <span class="meta-hint">Stored as <code>metadataFields</code> on the relationship field; validated on every link and shown in the relationship details dialog.</span>
+                      </div>
                     {/if}
                     <div class="type-select" role="group" aria-label="Applies to entity types">
                       <span class="type-select-label">Applies to <em>(optional)</em></span>
@@ -1662,6 +2191,64 @@ function removeCustomTemplate(id: string) {
                 <option value="one">One</option>
               </select>
             </label>
+            <div class="type-select" role="group" aria-label="Relationship attributes">
+              <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
+              {#if newFieldMetadata.length === 0}
+                <span class="meta-hint">No attributes yet — add “Since”, “Role”, “Strength” …</span>
+              {/if}
+              {#each newFieldMetadata as meta, metaIdx}
+                <div class="metadata-row">
+                  <div class="metadata-main">
+                    <input
+                      bind:value={meta.label}
+                      placeholder="Attribute label"
+                      oninput={() => {
+                        if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
+                          meta.key = slugifyFieldKey(meta.label);
+                        }
+                      }} />
+                    <input bind:value={meta.key} placeholder="key" />
+                    <select bind:value={meta.type}>
+                      {#each METADATA_FIELD_TYPES as mt}
+                        <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
+                      {/each}
+                    </select>
+                    <label class="inline-check small">
+                      <input type="checkbox" bind:checked={meta.required} />
+                      <span>Required</span>
+                    </label>
+                    <button type="button" class="quiet icon" onclick={() => removeNewFieldMetadata(metaIdx)}
+                      ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                  </div>
+                  {#if meta.type === "enum"}
+                    <input bind:value={meta.options} placeholder="Options, comma separated" />
+                  {:else if meta.type === "oneof"}
+                    <div class="oneof-variants nested">
+                      {#each meta.oneOf as variant, vIdx}
+                        <div class="variant-row small">
+                          <input bind:value={variant.label} placeholder="Variant label" />
+                          <select bind:value={variant.type}>
+                            {#each ["text", "number", "boolean", "date", "enum"] as vt}
+                              <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
+                            {/each}
+                          </select>
+                          {#if variant.type === "enum"}
+                            <input bind:value={variant.options} placeholder="Options, comma separated" />
+                          {/if}
+                          <button type="button" class="quiet icon" onclick={() => removeNewFieldMetadataOneOfVariant(metaIdx, vIdx)}
+                            ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+                        </div>
+                      {/each}
+                      <button type="button" class="quiet small" onclick={() => addNewFieldMetadataOneOfVariant(metaIdx)}
+                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+              <button type="button" class="quiet" onclick={addNewFieldMetadata}
+                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
+              <span class="meta-hint">Each attribute becomes a field in the relationship details dialog.</span>
+            </div>
           {/if}
           <div class="type-select" role="group" aria-label="Applies to entity types">
             <span class="type-select-label">Applies to <em>(optional)</em></span>
@@ -2995,12 +3582,67 @@ input::placeholder {
   gap: 8px;
   align-items: center;
 }
+.variant-row.small {
+  grid-template-columns: 1fr 120px 1fr auto;
+}
 .variant-row input,
 .variant-row select {
   min-width: 0;
 }
 @media (max-width: 720px) {
   .variant-row {
+    grid-template-columns: 1fr;
+  }
+}
+.metadata-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #f0e8d9;
+  border-radius: 9px;
+  background: #fffcf7;
+}
+.metadata-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr 140px auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.metadata-main input,
+.metadata-main select {
+  min-width: 0;
+}
+.inline-check.small {
+  padding: 0;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.oneof-variants.nested {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px dashed #d9cdbd;
+  border-radius: 8px;
+  background: #fffefa;
+}
+.meta-hint {
+  color: #8f897e;
+  font:
+    400 11px/1.45 Inter,
+    sans-serif;
+}
+.meta-hint code {
+  font-size: 10px;
+}
+.field-error {
+  color: #9a4d3f;
+  font:
+    500 11px Inter,
+    sans-serif;
+}
+@media (max-width: 720px) {
+  .metadata-main {
     grid-template-columns: 1fr;
   }
 }

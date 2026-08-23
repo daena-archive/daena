@@ -115,6 +115,18 @@ pub struct ModuleSchemaOverlay {
     pub field_scope_overrides: Vec<FieldScopeOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub template_overrides: Vec<TemplateOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_metadata_overrides: Vec<FieldMetadataOverride>,
+}
+
+/// Project-specific metadata extension for a packaged relationship field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldMetadataOverride {
+    pub field_key: String,
+    #[serde(rename = "metadataFields")]
+    pub metadata_fields: Vec<MetadataFieldDefinition>,
 }
 
 /// Project-specific applicability for a packaged field. Package field metadata
@@ -165,6 +177,7 @@ impl Default for ModuleSchemaOverlay {
             custom_templates: Vec::new(),
             field_scope_overrides: Vec::new(),
             template_overrides: Vec::new(),
+            field_metadata_overrides: Vec::new(),
         }
     }
 }
@@ -179,6 +192,7 @@ impl ModuleSchemaOverlay {
             && self.custom_templates.is_empty()
             && self.field_scope_overrides.is_empty()
             && self.template_overrides.is_empty()
+            && self.field_metadata_overrides.is_empty()
     }
 }
 
@@ -508,6 +522,64 @@ pub fn validate_module_overlay(
         )?;
     }
 
+    // Validate fieldMetadataOverrides (builtin relationship metadata extensions)
+    let mut metadata_override_keys = BTreeSet::new();
+    for ov in &overlay.field_metadata_overrides {
+        if !package_fields.contains(ov.field_key.as_str()) {
+            return Err(format!(
+                "field metadata override references unknown builtin field: {}",
+                ov.field_key
+            ));
+        }
+        if overlay
+            .disabled_fields
+            .iter()
+            .any(|disabled| disabled == &ov.field_key)
+        {
+            return Err(format!(
+                "field metadata override references disabled field: {}",
+                ov.field_key
+            ));
+        }
+        if !metadata_override_keys.insert(ov.field_key.as_str()) {
+            return Err(format!(
+                "duplicate field metadata override: {}",
+                ov.field_key
+            ));
+        }
+        let builtin_field = package_schema
+            .fields
+            .iter()
+            .find(|f| f.key == ov.field_key)
+            .expect("package field was checked above");
+        if builtin_field.field_type != "relationship" {
+            return Err(format!(
+                "field metadata override is only allowed for relationship fields: {}",
+                ov.field_key
+            ));
+        }
+        if ov.metadata_fields.is_empty() {
+            return Err(format!(
+                "field metadata override requires at least one metadata field: {}",
+                ov.field_key
+            ));
+        }
+        validate_metadata_fields("relationship", &ov.field_key, Some(&ov.metadata_fields))?;
+        // Check for conflicting type with builtin metadata for same key (additive merge)
+        if let Some(existing) = builtin_field.metadata_fields.as_deref() {
+            for new_field in &ov.metadata_fields {
+                if let Some(prev) = existing.iter().find(|f| f.key == new_field.key) {
+                    if prev.field_type != new_field.field_type {
+                        return Err(format!(
+                            "conflicting relationship metadata field type for {} in override of {}: expected {}, got {}",
+                            new_field.key, ov.field_key, prev.field_type, new_field.field_type
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     let effective_fields: BTreeSet<&str> = package_fields
         .iter()
         .copied()
@@ -717,6 +789,26 @@ pub fn merge_module_manifest(
             .find(|scope| scope.field_key == field.key)
         {
             field.entity_types = Some(scope.entity_types.clone());
+        }
+        if let Some(ov) = overlay
+            .field_metadata_overrides
+            .iter()
+            .find(|ov| ov.field_key == field.key)
+        {
+            // Additive merge: builtin + override (override wins for duplicate key)
+            let mut merged: std::collections::BTreeMap<String, MetadataFieldDefinition> =
+                std::collections::BTreeMap::new();
+            if let Some(existing) = field.metadata_fields.clone() {
+                for mf in existing {
+                    merged.insert(mf.key.clone(), mf);
+                }
+            }
+            for mf in &ov.metadata_fields {
+                merged.insert(mf.key.clone(), mf.clone());
+            }
+            let mut vals: Vec<MetadataFieldDefinition> = merged.into_values().collect();
+            vals.sort_by(|a, b| a.key.cmp(&b.key));
+            field.metadata_fields = Some(vals);
         }
     }
 
@@ -1104,5 +1196,92 @@ mod tests {
             .templates
             .iter()
             .any(|template| template.id == "chapter"));
+    }
+
+    #[test]
+    fn merges_builtin_relationship_metadata_override() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_metadata_overrides: vec![FieldMetadataOverride {
+                field_key: "affiliation".into(),
+                metadata_fields: vec![MetadataFieldDefinition {
+                    key: "role".into(),
+                    label: "Role".into(),
+                    field_type: "text".into(),
+                    required: None,
+                    options: None,
+                    one_of: None,
+                }],
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
+        let merged = merge_module_manifest(&package, &overlay).expect("merge");
+        let schema = merged.schemas.iter().find(|s| s.namespace == "lore").unwrap();
+        let affiliation = schema.fields.iter().find(|f| f.key == "affiliation").unwrap();
+        let meta = affiliation.metadata_fields.as_ref().unwrap();
+        assert!(meta.iter().any(|m| m.key == "role"));
+        assert!(meta.iter().any(|m| m.key == "start"));
+        assert!(meta.iter().any(|m| m.key == "end"));
+    }
+
+    #[test]
+    fn rejects_metadata_override_on_non_relationship() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_metadata_overrides: vec![FieldMetadataOverride {
+                field_key: "summary".into(),
+                metadata_fields: vec![MetadataFieldDefinition {
+                    key: "note".into(),
+                    label: "Note".into(),
+                    field_type: "text".into(),
+                    required: None,
+                    options: None,
+                    one_of: None,
+                }],
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("relationship"));
+    }
+
+    #[test]
+    fn rejects_duplicate_metadata_override() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_metadata_overrides: vec![
+                FieldMetadataOverride {
+                    field_key: "affiliation".into(),
+                    metadata_fields: vec![MetadataFieldDefinition {
+                        key: "role".into(),
+                        label: "Role".into(),
+                        field_type: "text".into(),
+                        required: None,
+                        options: None,
+                        one_of: None,
+                    }],
+                },
+                FieldMetadataOverride {
+                    field_key: "affiliation".into(),
+                    metadata_fields: vec![MetadataFieldDefinition {
+                        key: "other".into(),
+                        label: "Other".into(),
+                        field_type: "text".into(),
+                        required: None,
+                        options: None,
+                        one_of: None,
+                    }],
+                },
+            ],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("duplicate field metadata override"));
     }
 }

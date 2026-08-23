@@ -45,11 +45,7 @@ import {
   Sparkles as SparklesIcon,
   Maximize2,
   Minimize2,
-  Ellipsis,
   X as XIcon,
-  GripVertical,
-  RectangleVertical,
-  RectangleHorizontal,
   Link as LinkIcon,
   Search as SearchIcon,
   ChevronUp,
@@ -318,14 +314,6 @@ let editorText = "";
 let selectionText = "";
 let selectionMarkdown = "";
 let aiMenuOpen = false;
-let moreMenuOpen = false;
-let moreMenuControl: HTMLDivElement | null = null;
-let moreMenuPosition = { top: 0, left: 0 };
-let moreMenuEl: HTMLDivElement | null = null;
-let isDraggingMoreMenu = false;
-let moreMenuDragOffset = { x: 0, y: 0 };
-let moreMenuHydrated = false;
-let moreMenuVertical = false;
 let entityReferenceMenuOpen = false;
 let entityReferenceQuery = "";
 let entityReferenceRange: { from: number; to: number } | null = null;
@@ -392,52 +380,10 @@ let pendingChangeTimer: number | null = null;
 $: wordCountValue = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
 $: characterCountValue = editorText.length;
 $: if (fullscreen !== isFullscreen) isFullscreen = fullscreen;
-// Do not clear moreMenuOpen on fullscreen — {#if !isFullscreen} already hides the More button/menu,
-// and clearing would persist "closed" and lose the user's open-state when they exit fullscreen.
-$: if (moreMenuOpen) {
-  tick().then(() => {
-    if (!moreMenuControl) return;
-    const menu = document.querySelector(".more-toolbar-menu") as HTMLElement | null;
-    if (!menu) return;
-    const menuRect = menu.getBoundingClientRect();
-    if (moreMenuPosition.top !== 0 || moreMenuPosition.left !== 0) {
-      let { top, left } = moreMenuPosition;
-      left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
-      top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
-      if (top !== moreMenuPosition.top || left !== moreMenuPosition.left) moreMenuPosition = { top, left };
-      return;
-    }
-    const rect = moreMenuControl.getBoundingClientRect();
-    let top = rect.top - menuRect.height - 8;
-    let left = rect.right - menuRect.width;
-    if (top < 8) top = rect.bottom + 8;
-    if (left < 8) left = 8;
-    if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
-    moreMenuPosition = { top, left };
-  });
-}
-$: if (moreMenuHydrated && typeof window !== "undefined") {
-  try {
-    localStorage.setItem("daena:moreMenuOpen", String(moreMenuOpen));
-  } catch {}
-}
-$: if (moreMenuHydrated && typeof window !== "undefined") {
-  try {
-    localStorage.setItem("daena:moreMenuPosition", JSON.stringify(moreMenuPosition));
-  } catch {}
-}
-$: if (moreMenuHydrated && typeof window !== "undefined") {
-  try {
-    localStorage.setItem("daena:moreMenuVertical", String(moreMenuVertical));
-  } catch {}
-}
-$: if (moreMenuHydrated && typeof window !== "undefined") {
+$: if (typeof window !== "undefined") {
   try {
     localStorage.setItem("daena:imagePreserveAspect", String(imagePreserveAspect));
   } catch {}
-}
-$: if (moreMenuOpen && moreMenuVertical !== undefined) {
-  tick().then(() => handleResize());
 }
 
 function sanitizeHtml(value: string): string {
@@ -603,70 +549,10 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
     cancelInsertAsset();
     return;
   }
-  if (event.key === "Escape" && moreMenuOpen) {
-    event.preventDefault();
-    moreMenuOpen = false;
-    return;
-  }
   if (event.key === "Escape" && isFullscreen) {
     event.preventDefault();
     setFullscreen(false);
   }
-}
-
-function startMoreMenuDrag(event: MouseEvent | TouchEvent) {
-  if (!moreMenuEl) return;
-  const target = event.target as HTMLElement | null;
-  if (target?.closest(".more-menu-close")) return;
-  isDraggingMoreMenu = true;
-  const clientX = (event as TouchEvent).touches
-    ? (event as TouchEvent).touches[0].clientX
-    : (event as MouseEvent).clientX;
-  const clientY = (event as TouchEvent).touches
-    ? (event as TouchEvent).touches[0].clientY
-    : (event as MouseEvent).clientY;
-  const rect = moreMenuEl.getBoundingClientRect();
-  moreMenuDragOffset = { x: clientX - rect.left, y: clientY - rect.top };
-  window.addEventListener("mousemove", onMoreMenuDrag);
-  window.addEventListener("mouseup", stopMoreMenuDrag);
-  window.addEventListener("touchmove", onMoreMenuDrag, { passive: false });
-  window.addEventListener("touchend", stopMoreMenuDrag);
-  event.preventDefault();
-}
-
-function onMoreMenuDrag(event: MouseEvent | TouchEvent) {
-  if (!isDraggingMoreMenu || !moreMenuEl) return;
-  const clientX = (event as TouchEvent).touches
-    ? (event as TouchEvent).touches[0].clientX
-    : (event as MouseEvent).clientX;
-  const clientY = (event as TouchEvent).touches
-    ? (event as TouchEvent).touches[0].clientY
-    : (event as MouseEvent).clientY;
-  const menuRect = moreMenuEl.getBoundingClientRect();
-  let left = clientX - moreMenuDragOffset.x;
-  let top = clientY - moreMenuDragOffset.y;
-  left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
-  top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
-  moreMenuPosition = { top, left };
-  if (event.cancelable) event.preventDefault();
-}
-
-function stopMoreMenuDrag() {
-  if (!isDraggingMoreMenu) return;
-  isDraggingMoreMenu = false;
-  window.removeEventListener("mousemove", onMoreMenuDrag);
-  window.removeEventListener("mouseup", stopMoreMenuDrag);
-  window.removeEventListener("touchmove", onMoreMenuDrag);
-  window.removeEventListener("touchend", stopMoreMenuDrag);
-}
-
-function handleResize() {
-  if (!moreMenuOpen || !moreMenuEl) return;
-  const menuRect = moreMenuEl.getBoundingClientRect();
-  let { top, left } = moreMenuPosition;
-  left = Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8));
-  top = Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8));
-  if (top !== moreMenuPosition.top || left !== moreMenuPosition.left) moreMenuPosition = { top, left };
 }
 
 function portal(node: HTMLElement) {
@@ -1952,21 +1838,10 @@ function cancelInsertAsset() {
 
 onMount(() => {
   try {
-    const savedOpen = localStorage.getItem("daena:moreMenuOpen");
-    if (savedOpen !== null) moreMenuOpen = savedOpen === "true";
-    const savedPos = localStorage.getItem("daena:moreMenuPosition");
-    if (savedPos) {
-      const parsed = JSON.parse(savedPos);
-      if (typeof parsed.top === "number" && typeof parsed.left === "number") moreMenuPosition = parsed;
-    }
-    const savedVertical = localStorage.getItem("daena:moreMenuVertical");
-    if (savedVertical !== null) moreMenuVertical = savedVertical === "true";
     const savedAspect = localStorage.getItem("daena:imagePreserveAspect");
     if (savedAspect !== null) imagePreserveAspect = savedAspect === "true";
   } catch {}
-  moreMenuHydrated = true;
   window.addEventListener("keydown", handleFullscreenKeydown);
-  window.addEventListener("resize", handleResize);
   const handleLinkPopoverOutside = (event: MouseEvent) => {
     if (!linkPopover) return;
     const target = event.target as HTMLElement | null;
@@ -2221,9 +2096,7 @@ onMount(() => {
 
   return () => {
     cancelPendingChange();
-    stopMoreMenuDrag();
     window.removeEventListener("keydown", handleFullscreenKeydown);
-    window.removeEventListener("resize", handleResize);
     window.removeEventListener("mousedown", handleLinkPopoverOutside);
     window.removeEventListener("mousedown", handleEntityReferenceMenuOutside);
     window.removeEventListener("mousedown", handleImagePopoverOutside);
@@ -2265,7 +2138,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 
 <div class="editor-shell">
   <div class="editor-toolbar" role="toolbar" aria-label="Formatting tools">
-    <div class="editor-toolbar-scroll">
+    <div class="editor-toolbar-tools">
       <div class="toolbar-group" aria-label="History">
         <button
           class="history-button"
@@ -2284,7 +2157,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           onclick={() => run((currentEditor) => currentEditor.chain().focus().redo().run())}
           ><Redo2 size={14} strokeWidth={1.8} /></button>
       </div>
-      <span class="toolbar-divider"></span>
 
       <div class="toolbar-group">
         <label class="sr-only" for="block-style">Text style</label>
@@ -2302,7 +2174,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           <option value="codeBlock">Code block</option>
         </select>
       </div>
-      <span class="toolbar-divider"></span>
 
       <div class="toolbar-group" aria-label="Text formatting">
         <button
@@ -2321,32 +2192,39 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           class:active={editorState?.isActive("italic")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleItalic().run())}
           ><ItalicIcon size={14} strokeWidth={1.8} /></button>
-        {#if isFullscreen}
-          <button
-            type="button"
-            title="Underline (⌘/Ctrl + U)"
-            aria-label="Underline"
-            aria-pressed={editorState?.isActive("underline") ?? false}
-            class:active={editorState?.isActive("underline")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
-            ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Strikethrough"
-            aria-label="Strikethrough"
-            aria-pressed={editorState?.isActive("strike") ?? false}
-            class:active={editorState?.isActive("strike")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
-            ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Spoiler (hidden text)"
-            aria-label="Spoiler"
-            aria-pressed={editorState?.isActive("spoiler") ?? false}
-            class:active={editorState?.isActive("spoiler")}
-            onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
-            ><EyeOff size={14} strokeWidth={1.8} /></button>
-        {/if}
+        <button
+          type="button"
+          title="Underline (⌘/Ctrl + U)"
+          aria-label="Underline"
+          aria-pressed={editorState?.isActive("underline") ?? false}
+          class:active={editorState?.isActive("underline")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
+          ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Strikethrough"
+          aria-label="Strikethrough"
+          aria-pressed={editorState?.isActive("strike") ?? false}
+          class:active={editorState?.isActive("strike")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
+          ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Spoiler (hidden text)"
+          aria-label="Spoiler"
+          aria-pressed={editorState?.isActive("spoiler") ?? false}
+          class:active={editorState?.isActive("spoiler")}
+          onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
+          ><EyeOff size={14} strokeWidth={1.8} /></button>
+      </div>
+      <div class="toolbar-group" aria-label="Links and references">
+        <button
+          type="button"
+          title="Link (⌘/Ctrl + K)"
+          aria-label="Link"
+          aria-pressed={editorState?.isActive("link") ?? false}
+          class:active={editorState?.isActive("link")}
+          onclick={setLink}><LinkIcon size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
           title="Link to lore entry (@)"
@@ -2356,65 +2234,58 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
             editorState.chain().focus().insertContent("@").run();
           }}><AtSign size={14} strokeWidth={1.8} /></button>
       </div>
-      <span class="toolbar-divider"></span>
-      {#if isFullscreen}
-        <div class="toolbar-group" aria-label="Text alignment">
-          <button
-            type="button"
-            title="Align left"
-            aria-label="Align left"
-            aria-pressed={isAligned("left")}
-            class:active={isAligned("left")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
-            ><TextAlignStart size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Align center"
-            aria-label="Align center"
-            aria-pressed={isAligned("center")}
-            class:active={isAligned("center")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
-            ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Align right"
-            aria-label="Align right"
-            aria-pressed={isAligned("right")}
-            class:active={isAligned("right")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
-            ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
-        </div>
-        <span class="toolbar-divider"></span>
-      {/if}
-      {#if isFullscreen}
-        <div class="toolbar-group" aria-label="Text direction">
-          <button
-            type="button"
-            title="Left to right (⌘/Ctrl + Alt + L) — click again to auto"
-            aria-label="Left to right"
-            aria-pressed={isDirection("ltr")}
-            class:active={isDirection("ltr")}
-            onclick={() =>
-              run((currentEditor) =>
-                isDirection("ltr")
-                  ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
-                  : (currentEditor.chain().focus() as any).setTextDirection("ltr").run(),
-              )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Right to left (⌘/Ctrl + Alt + R) — click again to auto"
-            aria-label="Right to left"
-            aria-pressed={isDirection("rtl")}
-            class:active={isDirection("rtl")}
-            onclick={() =>
-              run((currentEditor) =>
-                isDirection("rtl")
-                  ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
-                  : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
-              )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
-        </div>
-        <span class="toolbar-divider"></span>
-      {/if}
+      <div class="toolbar-group" aria-label="Text alignment">
+        <button
+          type="button"
+          title="Align left"
+          aria-label="Align left"
+          aria-pressed={isAligned("left")}
+          class:active={isAligned("left")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
+          ><TextAlignStart size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align center"
+          aria-label="Align center"
+          aria-pressed={isAligned("center")}
+          class:active={isAligned("center")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
+          ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align right"
+          aria-label="Align right"
+          aria-pressed={isAligned("right")}
+          class:active={isAligned("right")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
+          ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+      </div>
+      <div class="toolbar-group" aria-label="Text direction">
+        <button
+          type="button"
+          title="Left to right (⌘/Ctrl + Alt + L) — click again to auto"
+          aria-label="Left to right"
+          aria-pressed={isDirection("ltr")}
+          class:active={isDirection("ltr")}
+          onclick={() =>
+            run((currentEditor) =>
+              isDirection("ltr")
+                ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                : (currentEditor.chain().focus() as any).setTextDirection("ltr").run(),
+            )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Right to left (⌘/Ctrl + Alt + R) — click again to auto"
+          aria-label="Right to left"
+          aria-pressed={isDirection("rtl")}
+          class:active={isDirection("rtl")}
+          onclick={() =>
+            run((currentEditor) =>
+              isDirection("rtl")
+                ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
+                : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
+            )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
+      </div>
 
       <div class="toolbar-group" aria-label="Lists and blocks">
         <button
@@ -2433,40 +2304,35 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           class:active={editorState?.isActive("orderedList")}
           onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleOrderedList().run())}
           ><ListOrdered size={14} strokeWidth={1.8} /></button>
-        {#if isFullscreen}
-          <button
-            type="button"
-            title="Quote"
-            aria-label="Quote"
-            aria-pressed={editorState?.isActive("blockquote") ?? false}
-            class:active={editorState?.isActive("blockquote")}
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
-            ><QuoteIcon size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Horizontal rule"
-            aria-label="Horizontal rule"
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
-            ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
-          <button
-            type="button"
-            title="Clear formatting"
-            aria-label="Clear formatting"
-            onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
-            ><Eraser size={14} strokeWidth={1.8} /></button>
-        {/if}
+        <button
+          type="button"
+          title="Quote"
+          aria-label="Quote"
+          aria-pressed={editorState?.isActive("blockquote") ?? false}
+          class:active={editorState?.isActive("blockquote")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
+          ><QuoteIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Horizontal rule"
+          aria-label="Horizontal rule"
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
+          ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Clear formatting"
+          aria-label="Clear formatting"
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
+          ><Eraser size={14} strokeWidth={1.8} /></button>
       </div>
-      {#if isFullscreen}
-        <span class="toolbar-divider"></span>
-        <div class="toolbar-group" aria-label="Insert">
-          <button
-            type="button"
-            title="Insert image or file"
-            aria-label="Insert image or file"
-            disabled={!editable}
-            onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
-        </div>
-      {/if}
+      <div class="toolbar-group" aria-label="Insert">
+        <button
+          type="button"
+          title="Insert image or file"
+          aria-label="Insert image or file"
+          disabled={!editable}
+          onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
+      </div>
     </div>
     <div class="editor-toolbar-actions">
       {#if aiEnabled}
@@ -2523,268 +2389,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                 role="menuitem"
                 onmousedown={(event) => event.preventDefault()}
                 onclick={() => requestAi("custom")}>Custom instruction</button>
-            </div>
-          {/if}
-        </div>
-      {/if}
-      <span class="toolbar-divider"></span>
-      {#if !isFullscreen}
-        <div class="more-toolbar-menu-control" bind:this={moreMenuControl}>
-          <button
-            class="more-toolbar-button"
-            type="button"
-            title="More formatting"
-            aria-label="More formatting"
-            aria-haspopup="menu"
-            aria-expanded={moreMenuOpen}
-            class:active={moreMenuOpen}
-            onclick={() => (moreMenuOpen = !moreMenuOpen)}
-            onmousedown={(event) => event.preventDefault()}><Ellipsis size={16} strokeWidth={1.8} /></button>
-          {#if moreMenuOpen}
-            <div
-              use:portal
-              class="more-toolbar-menu {moreMenuVertical ? 'more-toolbar-menu--vertical' : ''}"
-              role="menu"
-              aria-label="More formatting"
-              bind:this={moreMenuEl}
-              style="top: {moreMenuPosition.top}px; left: {moreMenuPosition.left}px; {isDraggingMoreMenu
-                ? 'cursor: grabbing;'
-                : ''}">
-              <div
-                class="more-menu-header"
-                role="button"
-                tabindex="0"
-                aria-label="Drag to move More tools"
-                onmousedown={startMoreMenuDrag}
-                ontouchstart={startMoreMenuDrag}
-                style="cursor: {isDraggingMoreMenu ? 'grabbing' : 'grab'}; touch-action: none;">
-                <span style="display: inline-flex; align-items: center; gap: 6px;"
-                  ><GripVertical size={12} strokeWidth={1.8} />{#if !moreMenuVertical}
-                    More tools{/if}</span>
-                <span style="display: inline-flex; align-items: center; gap: 4px;">
-                  <button
-                    class="more-menu-layout-toggle"
-                    type="button"
-                    title={moreMenuVertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
-                    aria-label="Toggle layout"
-                    aria-pressed={moreMenuVertical}
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      moreMenuVertical = !moreMenuVertical;
-                    }}
-                    onmousedown={(e) => e.preventDefault()}
-                    >{#if moreMenuVertical}<RectangleHorizontal size={14} strokeWidth={1.8} />{:else}<RectangleVertical
-                        size={14}
-                        strokeWidth={1.8} />{/if}</button>
-                  <button
-                    class="more-menu-close"
-                    type="button"
-                    title="Close"
-                    aria-label="Close more menu"
-                    onclick={() => (moreMenuOpen = false)}
-                    onmousedown={(event) => event.preventDefault()}><XIcon size={14} strokeWidth={1.8} /></button>
-                </span>
-              </div>
-              <button
-                type="button"
-                title="Underline (⌘/Ctrl + U)"
-                aria-label="Underline"
-                aria-pressed={editorState?.isActive("underline") ?? false}
-                class:active={editorState?.isActive("underline")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleUnderline().run())}
-                ><UnderlineIcon size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Strikethrough"
-                aria-label="Strikethrough"
-                aria-pressed={editorState?.isActive("strike") ?? false}
-                class:active={editorState?.isActive("strike")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleStrike().run())}
-                ><StrikethroughIcon size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Spoiler (hidden text)"
-                aria-label="Spoiler"
-                aria-pressed={editorState?.isActive("spoiler") ?? false}
-                class:active={editorState?.isActive("spoiler")}
-                onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
-                ><EyeOff size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Link (⌘/Ctrl + K)"
-                aria-label="Link"
-                aria-pressed={editorState?.isActive("link") ?? false}
-                class:active={editorState?.isActive("link")}
-                onclick={setLink}><LinkIcon size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Insert image or file"
-                aria-label="Insert image or file"
-                disabled={!editable}
-                onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
-              <span class="toolbar-divider"></span>
-              <button
-                type="button"
-                title="Align left"
-                aria-label="Align left"
-                aria-pressed={isAligned("left")}
-                class:active={isAligned("left")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
-                ><TextAlignStart size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Align center"
-                aria-label="Align center"
-                aria-pressed={isAligned("center")}
-                class:active={isAligned("center")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
-                ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Align right"
-                aria-label="Align right"
-                aria-pressed={isAligned("right")}
-                class:active={isAligned("right")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
-                ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
-              <span class="toolbar-divider"></span>
-              <button
-                type="button"
-                title="Left to right"
-                aria-label="Left to right"
-                aria-pressed={isDirection("ltr")}
-                class:active={isDirection("ltr")}
-                onclick={() =>
-                  run((currentEditor) =>
-                    isDirection("ltr")
-                      ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
-                      : (currentEditor.chain().focus() as any).setTextDirection("ltr").run(),
-                  )}><ArrowRightToLine size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Right to left"
-                aria-label="Right to left"
-                aria-pressed={isDirection("rtl")}
-                class:active={isDirection("rtl")}
-                onclick={() =>
-                  run((currentEditor) =>
-                    isDirection("rtl")
-                      ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
-                      : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
-                  )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
-              <span class="toolbar-divider"></span>
-              <button
-                type="button"
-                title="Quote"
-                aria-label="Quote"
-                aria-pressed={editorState?.isActive("blockquote") ?? false}
-                class:active={editorState?.isActive("blockquote")}
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().toggleBlockquote().run())}
-                ><QuoteIcon size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Horizontal rule"
-                aria-label="Horizontal rule"
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().setHorizontalRule().run())}
-                ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
-              <button
-                type="button"
-                title="Clear formatting"
-                aria-label="Clear formatting"
-                onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
-                ><Eraser size={14} strokeWidth={1.8} /></button>
-              {#if isImageActive()}
-                <span class="toolbar-divider"></span>
-                <button
-                  type="button"
-                  title="Align left"
-                  aria-label="Align image left"
-                  onclick={() => alignImage("left")}
-                  onmousedown={(event) => event.preventDefault()}
-                  ><TextAlignStart size={14} strokeWidth={1.8} /></button>
-                <button
-                  type="button"
-                  title="Align center"
-                  aria-label="Align image center"
-                  onclick={() => alignImage("center")}
-                  onmousedown={(event) => event.preventDefault()}
-                  ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
-                <button
-                  type="button"
-                  title="Align right"
-                  aria-label="Align image right"
-                  onclick={() => alignImage("right")}
-                  onmousedown={(event) => event.preventDefault()}><TextAlignEnd size={14} strokeWidth={1.8} /></button>
-                <button
-                  type="button"
-                  title="Remove image"
-                  aria-label="Remove image"
-                  onclick={removeImage}
-                  onmousedown={(event) => event.preventDefault()}>Remove</button>
-                <button
-                  type="button"
-                  title="Replace image"
-                  aria-label="Replace image"
-                  onclick={replaceImage}
-                  onmousedown={(event) => event.preventDefault()}>Replace</button>
-                <button
-                  type="button"
-                  title="Edit image"
-                  aria-label="Edit image"
-                  onclick={() => {
-                    if (imagePopover) {
-                      // compact popover has no alt input; focus is handled by dialog
-                      return;
-                    }
-                    // Prefer current NodeSelection or nearest image via DOM
-                    const sel: any = editorState?.state.selection;
-                    let img = editorElement.querySelector("img.ProseMirror-selectednode") as HTMLElement | null;
-                    let pos = -1;
-                    if (img) {
-                      try {
-                        const wrapper = img.closest(".daena-asset-image-wrapper") as HTMLElement | null;
-                        const maybe = editorState?.view.posAtDOM(wrapper ?? img, 0);
-                        if (typeof maybe === "number" && Number.isFinite(maybe)) pos = maybe;
-                      } catch {}
-                    }
-                    if (pos < 0 && sel?.node?.type?.name === "image") {
-                      pos = sel.from;
-                      // find img element for bounds from doc position
-                      try {
-                        const dom = editorState?.view.domAtPos(pos).node as HTMLElement | null;
-                        const found =
-                          dom?.closest?.("img") ??
-                          (editorElement.querySelector("img.ProseMirror-selectednode") as HTMLElement | null);
-                        if (found) img = found;
-                      } catch {}
-                    }
-                    if (pos < 0) pos = sel?.from ?? 0;
-                    const info = getImageNodeAtPos(pos);
-                    if (info) {
-                      try {
-                        const dom = editorState?.view.domAtPos(info.pos).node as HTMLElement | null;
-                        const candidate =
-                          (dom?.querySelector?.("img") as HTMLElement | null) ??
-                          (dom?.closest?.("img") as HTMLElement | null);
-                        const boundsEl = candidate ?? img ?? (editorElement.querySelector("img") as HTMLElement | null);
-                        if (boundsEl) {
-                          showImagePopover(info.pos, boundsEl.getBoundingClientRect());
-                          return;
-                        }
-                      } catch {}
-                      const fallbackImg = editorElement.querySelector("img") as HTMLElement | null;
-                      if (fallbackImg) showImagePopover(info.pos, fallbackImg.getBoundingClientRect());
-                      else if (img) showImagePopover(info.pos, img.getBoundingClientRect());
-                    } else if (img) {
-                      // last resort use posAtDOM fallback
-                      try {
-                        const p = editorState?.view.posAtDOM(img, 0) ?? pos;
-                        showImagePopover(p, img.getBoundingClientRect());
-                      } catch {}
-                    }
-                  }}
-                  onmousedown={(event) => event.preventDefault()}>Edit</button>
-              {/if}
             </div>
           {/if}
         </div>
@@ -3095,52 +2699,46 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .editor-toolbar {
   grid-row: 1;
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
   min-height: 48px;
-  padding: 6px 10px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--line, #e4e1d8);
   background: var(--surface-muted, #f4f2ec);
   overflow: visible;
 }
-.editor-toolbar-scroll {
+.editor-toolbar-tools {
   display: flex;
   align-items: center;
-  gap: 2px;
-  flex: 1 1 auto;
+  align-content: flex-start;
+  gap: 5px;
   min-width: 0;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
-  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
-}
-.editor-toolbar-scroll::-webkit-scrollbar {
-  display: none;
+  flex-wrap: wrap;
 }
 .editor-toolbar-actions {
-  position: sticky;
-  right: 0;
-  z-index: 2;
-  background: var(--surface-muted, #f4f2ec);
-  box-shadow: -6px 0 8px var(--surface-muted, #f4f2ec);
+  position: relative;
+  z-index: 3;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  margin-left: 6px;
-  padding-left: 6px;
+  justify-content: flex-end;
+  gap: 1px;
+  min-height: 36px;
+  padding: 1px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
 }
 .toolbar-group {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
+  min-height: 36px;
+  padding: 1px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
   flex: 0 0 auto;
 }
 .editor-toolbar button {
@@ -3173,181 +2771,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .editor-toolbar button:disabled:hover {
   border-color: transparent;
   background: transparent;
-}
-.more-toolbar-menu button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-soft, #77766d);
-  font: 500 13px/1 var(--font-body, system-ui, sans-serif);
-  cursor: pointer;
-}
-.more-toolbar-menu button:hover,
-.more-toolbar-menu button:focus-visible,
-.more-toolbar-menu button.active {
-  border-color: #d3c0a9;
-  background: #f2e4d2;
-  color: var(--accent-dark, #365342);
-  outline: 0;
-}
-.more-toolbar-menu button:disabled {
-  color: var(--ink-faint, #aaa79d);
-  cursor: not-allowed;
-  opacity: 0.65;
-}
-.more-toolbar-menu button:disabled:hover {
-  border-color: transparent;
-  background: transparent;
-}
-.ai-toolbar-menu-control {
-  position: relative;
-  flex: 0 0 auto;
-}
-.more-toolbar-menu-control {
-  position: relative;
-  flex: 0 0 auto;
-}
-.more-toolbar-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-soft, #77766d);
-  cursor: pointer;
-}
-.more-toolbar-button:hover,
-.more-toolbar-button:focus-visible,
-.more-toolbar-button.active {
-  border-color: #d3c0a9;
-  background: #f2e4d2;
-  color: var(--accent-dark, #365342);
-  outline: 0;
-}
-.more-toolbar-menu {
-  position: fixed;
-  z-index: 75;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: min(500px, 92vw);
-  max-width: min(540px, 92vw);
-  padding: 10px;
-  border: 1px solid #d8cdbd;
-  border-radius: 10px;
-  background: var(--surface, #fffefa);
-  box-shadow: 0 12px 28px rgba(48, 45, 38, 0.18);
-}
-.more-toolbar-menu .toolbar-divider {
-  align-self: center;
-}
-.more-menu-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  margin-bottom: 6px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--line, #e4e1d8);
-  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
-  color: var(--ink-soft, #77766d);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.more-menu-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-faint, #aaa79d);
-  cursor: pointer;
-}
-.more-menu-close:hover,
-.more-menu-close:focus-visible {
-  border-color: #d3c0a9;
-  background: #f2e4d2;
-  color: var(--ink, #25251f);
-  outline: 0;
-}
-.more-menu-layout-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-faint, #aaa79d);
-  cursor: pointer;
-}
-.more-menu-layout-toggle:hover,
-.more-menu-layout-toggle:focus-visible {
-  border-color: #d3c0a9;
-  background: #f2e4d2;
-  color: var(--ink, #25251f);
-  outline: 0;
-}
-.more-menu-layout-toggle[aria-pressed="true"] {
-  border-color: #d3c0a9;
-  background: #f2e4d2;
-  color: var(--accent-dark, #365342);
-}
-.more-toolbar-menu--vertical {
-  flex-direction: column;
-  align-items: center;
-  min-width: 0;
-  width: 48px;
-  max-width: 48px;
-  padding: 8px 6px;
-  gap: 4px;
-}
-.more-toolbar-menu--vertical .toolbar-divider {
-  width: 28px;
-  height: 1px;
-  margin: 4px 0;
-  align-self: center;
-}
-.more-toolbar-menu--vertical > button {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  padding: 0;
-  justify-content: center;
-}
-.more-toolbar-menu--vertical .more-menu-header {
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  width: 100%;
-  margin-bottom: 2px;
-  padding-bottom: 6px;
-}
-.more-toolbar-menu--vertical .more-menu-header > span:first-child {
-  justify-content: center;
-}
-.more-toolbar-menu--vertical .more-menu-header > span:last-child {
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
 }
 .entity-reference-menu {
   position: fixed;
@@ -3676,13 +3099,6 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 .fullscreen-toggle {
   flex: 0 0 32px;
   font-size: 16px !important;
-}
-.toolbar-divider {
-  width: 1px;
-  height: 22px;
-  margin: 0 6px;
-  background: var(--line, #e4e1d8);
-  flex: 0 0 1px;
 }
 .style-select {
   height: 32px;
@@ -4130,10 +3546,11 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
 }
 @media (max-width: 760px) {
   .editor-toolbar {
-    padding: 7px;
+    gap: 5px;
+    padding: 5px;
   }
-  .toolbar-divider {
-    margin-inline: 3px;
+  .editor-toolbar-tools {
+    gap: 4px;
   }
   .editor-mode {
     display: none;
@@ -4143,16 +3560,17 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   .editor-shell {
     grid-template-rows: auto auto minmax(300px, 1fr) auto;
   }
-  .editor-toolbar {
-    overflow-x: auto;
-    flex-wrap: nowrap;
+  .editor-toolbar button {
+    min-width: 30px;
+    height: 30px;
+    padding-inline: 7px;
+  }
+  .toolbar-group,
+  .editor-toolbar-actions {
+    min-height: 34px;
   }
   .fullscreen-toggle {
-    position: sticky;
-    right: 0;
-    flex: 0 0 32px;
-    background: var(--surface-muted, #f4f2ec) !important;
-    box-shadow: -6px 0 8px var(--surface-muted, #f4f2ec);
+    flex-basis: 30px;
   }
   .editor-content {
     min-height: 300px;

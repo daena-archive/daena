@@ -135,10 +135,12 @@ async function loadGrammar() {
     samples = [];
     paradigms = [];
     paneLoading = false;
+    error = "";
     return;
   }
   const token = ++request;
   paneLoading = true;
+  error = "";
   try {
     const loaded = await loadGrammarIndex(context.records, selectedLanguage.id);
     const [lexemes, sampleRecords, paradigmRecords] = await Promise.all([
@@ -148,6 +150,7 @@ async function loadGrammar() {
     ]);
     if (!cancelled && token === request) {
       paneLoading = false;
+      error = "";
       grammarUi.index = loaded.index;
       records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
       samples = sampleRecords.map((record) => ({ ...record, value: normalizeSample(record.value) }));
@@ -513,9 +516,16 @@ function handleAddLink(event: Event & { currentTarget: HTMLSelectElement }) {
   const select = event.currentTarget;
   if (!select.value) return;
   const draft = recordWithExtras(session);
-  if (!draft) return;
+  if (!draft) {
+    select.value = "";
+    return;
+  }
   const parsed = JSON.parse(select.value) as GrammarLink;
-  draft.links = [...draft.links, { ...parsed, id: crypto.randomUUID() }];
+  const duplicate = draft.links.some(
+    (link) => link.kind === parsed.kind && link.targetId === parsed.targetId && link.secondaryId === parsed.secondaryId,
+  );
+  if (!duplicate) draft.links = [...draft.links, { ...parsed, id: crypto.randomUUID() }];
+  select.value = "";
 }
 
 function removeLink(index: number) {
@@ -528,7 +538,7 @@ function removeLink(index: number) {
 <div bind:this={root}>
   <div class="language-toolbar">
     <div class="language-toolbar-title">
-      <p class="language-toolbar-eyebrow">Focused projection</p>
+      <p class="language-toolbar-eyebrow">Language crafting studio</p>
       <h2>Grammar</h2>
       <p class="language-toolbar-subtitle">
         {selectedLanguage
@@ -543,9 +553,13 @@ function removeLink(index: number) {
     {/if}
   </div>
   {#if error}
-    <p class="language-status error" role="alert">{error}</p>
-  {/if}
-  {#if !selectedLanguage}
+    <div class="language-empty-card language-error-card">
+      <p class="language-status error" role="alert">{error}</p>
+      {#if selectedLanguage}
+        <button type="button" class="language-button secondary" onclick={() => void loadGrammar()}>Try again</button>
+      {/if}
+    </div>
+  {:else if !selectedLanguage}
     <div class="language-empty-card">
       <p class="language-empty" role="status">Select a language to document its grammar.</p>
     </div>
@@ -1096,6 +1110,10 @@ function removeLink(index: number) {
 }
 .language-status.error {
   color: #a14f42;
+}
+.language-error-card {
+  border-color: #e2b7af;
+  background: #fff5f2;
 }
 .language-loading {
   display: flex;

@@ -4,10 +4,10 @@ import type { EntitySummary, ModuleContext, ModuleRecord } from "../../../../mod
 import type { LexemeValue } from "../lexeme";
 import { normalizeLexeme } from "../lexeme";
 import { confirm } from "../confirm.svelte";
-import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
 import {
   emptySample,
   emptyToken,
+  filterSamples,
   groupSamples,
   normalizeSample,
   samplePreviewHtml,
@@ -45,8 +45,10 @@ let sampleSaving = $state(false);
 let paneLoading = $state(false);
 let error = $state("");
 let request = $state(0);
+let sampleSearch = $state("");
 
 let titleInput: HTMLInputElement | undefined = $state();
+let textInput: HTMLTextAreaElement | undefined = $state();
 let previewBox: HTMLDivElement | undefined = $state();
 
 let lastLoadedLanguage: string | null = null;
@@ -63,6 +65,7 @@ $effect(() => {
   sampleEditing = null;
   sampleEditorOpen = false;
   sampleDraft = emptySample();
+  sampleSearch = "";
   untrack(() => void loadSamples());
 });
 
@@ -90,7 +93,8 @@ $effect(() => {
   registerLeaveGuard(() => tryLeaveSamples((message) => confirm("Unsaved changes", message)));
 });
 
-const groups = $derived(groupSamples(samples));
+const visibleSamples = $derived(filterSamples(samples, sampleSearch));
+const groups = $derived(groupSamples(visibleSamples));
 const previewHtml = $derived(samplePreviewHtml(normalizeSample(sampleDraft)));
 
 async function loadSamples() {
@@ -98,10 +102,12 @@ async function loadSamples() {
     samples = [];
     records = [];
     paneLoading = false;
+    error = "";
     return;
   }
   const token = ++request;
   paneLoading = true;
+  error = "";
   try {
     const [items, lexemes] = await Promise.all([
       context.records.list<Sample>("samples", selectedLanguage.id, { limit: 100, sort: "title" }),
@@ -109,6 +115,7 @@ async function loadSamples() {
     ]);
     if (!cancelled && token === request) {
       paneLoading = false;
+      error = "";
       samples = items.map((record) => ({ ...record, value: normalizeSample(record.value) }));
       records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
       if (sampleEditing) {
@@ -143,12 +150,14 @@ function addSample(kind: SampleKind = "sentence") {
   sampleEditing = null;
   sampleEditorOpen = true;
   sampleDraft = emptySample(kind);
+  error = "";
 }
 
 function openSampleEditor(record: ModuleRecord<Sample>) {
   sampleEditing = record;
   sampleEditorOpen = true;
   sampleDraft = normalizeSample(record.value);
+  error = "";
 }
 
 function closeSampleEditor() {
@@ -200,7 +209,7 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
 
 async function deleteSample() {
   if (!selectedLanguage || !sampleEditing) return;
-  if (!(await confirm("Delete", `Delete “${sampleTitle(sampleEditing.value)}”?`))) return;
+  if (!(await confirm("Delete sample", `Delete “${sampleTitle(sampleEditing.value)}”?`))) return;
   const ownerLanguageId = selectedLanguage.id;
   error = "";
   try {
@@ -221,6 +230,12 @@ async function deleteSample() {
 }
 
 function tokenize() {
+  if (!sampleDraft.text.trim()) {
+    error = "Add sample text before tokenizing it.";
+    textInput?.focus();
+    return;
+  }
+  error = "";
   sampleDraft.tokens = tokenizeSample(sampleDraft.text, sampleDraft.tokens);
 }
 
@@ -234,17 +249,18 @@ function removeToken(index: number) {
 
 async function handleSubmit(event: SubmitEvent) {
   event.preventDefault();
-  await saveSample();
+  const outcome = await saveSample();
+  if (outcome === "text") textInput?.focus();
 }
 </script>
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Focused projection</p>
+    <p class="language-toolbar-eyebrow">Language crafting studio</p>
     <h2>Samples</h2>
     <p class="language-toolbar-subtitle">
       {selectedLanguage
-        ? `${selectedLanguage.name} · examples, translations, and interlinear notes`
+        ? `${selectedLanguage.name} · analyzed usage, translations, and interlinear notes`
         : "Select a language to collect examples and usage."}
     </p>
   </div>
@@ -272,7 +288,12 @@ async function handleSubmit(event: SubmitEvent) {
     </label>
     <label class="language-field">
       <span>Text</span>
-      <RichTextEditor value={sampleDraft.text} onChange={(v) => (sampleDraft.text = v)} />
+      <textarea
+        name="text"
+        rows={4}
+        bind:this={textInput}
+        bind:value={sampleDraft.text}
+        placeholder="Write the sample exactly as it appears in the language."></textarea>
     </label>
     <label class="language-field">
       <span>Transliteration (optional)</span>
@@ -394,45 +415,74 @@ async function handleSubmit(event: SubmitEvent) {
     </div>
   </form>
 {:else if error}
-  <p class="language-status error" role="alert">{error}</p>
+  <div class="language-empty-card language-error-card">
+    <p class="language-status error" role="alert">{error}</p>
+    {#if selectedLanguage}
+      <button type="button" class="language-button secondary" onclick={() => void loadSamples()}>Try again</button>
+    {/if}
+  </div>
 {:else if !selectedLanguage}
   <div class="language-empty-card">
     <p class="language-empty" role="status">Select a language to collect sample sentences and paragraphs.</p>
   </div>
-{:else}
-  <p class="language-pane-summary">
-    {samples.length} sample{samples.length === 1 ? "" : "s"} · grouped by kind for quick browsing.
-  </p>
-  <div class="language-panes">
-    {#each groups as group (group.id)}
-      <section class="language-group">
-        <div class="language-group-head">
-          <h3>{group.label}</h3>
-          <button type="button" class="language-button secondary" onclick={() => addSample(group.id)}
-            >Add {group.label.toLowerCase()}</button>
-        </div>
-        {#if group.samples.length === 0}
-          <p class="language-empty" role="status">No {group.label.toLowerCase()} yet.</p>
-        {:else}
-          <ul class="lexeme-list">
-            {#each group.samples as record (record.id)}
-              <li>
-                <button
-                  type="button"
-                  class="language-item"
-                  aria-label={`Edit sample ${sampleTitle(record.value)}`}
-                  onclick={() => openSampleEditor(record)}>
-                  <strong>{sampleTitle(record.value)}</strong>
-                  <span>{record.value.translation || record.value.text.trim().split("\n")[0] || "No text yet"}</span>
-                  <small>{record.value.tokens.length} token{record.value.tokens.length === 1 ? "" : "s"}</small>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
-    {/each}
+{:else if samples.length === 0}
+  <div class="language-empty-card">
+    <p class="language-empty" role="status">
+      No analyzed samples yet. Add a sentence or paragraph to test vocabulary and grammar in context. Writing-system
+      display examples live in Writing.
+    </p>
+    <button type="button" class="language-button" onclick={() => addSample()}>Add first sample</button>
   </div>
+{:else}
+  <div class="samples-search-row">
+    <label class="language-field">
+      <span>Search samples</span>
+      <input type="search" bind:value={sampleSearch} placeholder="Search text, translation, gloss, or grammar…" />
+    </label>
+    {#if sampleSearch}
+      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>Clear</button>
+    {/if}
+  </div>
+  <p class="language-pane-summary">
+    {visibleSamples.length}{sampleSearch ? ` of ${samples.length}` : ""} sample{visibleSamples.length === 1 ? "" : "s"} ·
+    grouped by kind for quick browsing.
+  </p>
+  {#if visibleSamples.length === 0}
+    <div class="language-empty-card">
+      <p class="language-empty" role="status">No samples match “{sampleSearch.trim()}”.</p>
+      <button type="button" class="language-button secondary" onclick={() => (sampleSearch = "")}>Clear search</button>
+    </div>
+  {:else}<div class="language-panes">
+      {#each groups as group (group.id)}
+        {#if !sampleSearch.trim() || group.samples.length > 0}<section class="language-group">
+            <div class="language-group-head">
+              <h3>{group.label}</h3>
+              <button type="button" class="language-button secondary" onclick={() => addSample(group.id)}
+                >Add {group.label.toLowerCase()}</button>
+            </div>
+            {#if group.samples.length === 0}
+              <p class="language-empty" role="status">No {group.label.toLowerCase()} yet.</p>
+            {:else}
+              <ul class="lexeme-list">
+                {#each group.samples as record (record.id)}
+                  <li>
+                    <button
+                      type="button"
+                      class="language-item"
+                      aria-label={`Edit sample ${sampleTitle(record.value)}`}
+                      onclick={() => openSampleEditor(record)}>
+                      <strong>{sampleTitle(record.value)}</strong>
+                      <span
+                        >{record.value.translation || record.value.text.trim().split("\n")[0] || "No text yet"}</span>
+                      <small>{record.value.tokens.length} token{record.value.tokens.length === 1 ? "" : "s"}</small>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>{/if}
+      {/each}
+    </div>{/if}
 {/if}
 
 <style>
@@ -554,6 +604,10 @@ async function handleSubmit(event: SubmitEvent) {
 .language-status.error {
   color: #a14f42;
 }
+.language-error-card {
+  border-color: #e2b7af;
+  background: #fff5f2;
+}
 .language-actions {
   display: flex;
   align-items: center;
@@ -616,6 +670,13 @@ async function handleSubmit(event: SubmitEvent) {
   margin: 16px 0 4px;
   color: var(--ink-faint);
   font-size: 11px;
+}
+.samples-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 16px;
 }
 .language-panes {
   display: grid;
@@ -880,6 +941,9 @@ async function handleSubmit(event: SubmitEvent) {
   border: 0;
 }
 @media (max-width: 760px) {
+  .samples-search-row {
+    grid-template-columns: 1fr;
+  }
   .samples-tokens-header {
     display: none;
   }

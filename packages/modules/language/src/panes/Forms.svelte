@@ -117,10 +117,12 @@ async function loadForms() {
     paradigms = [];
     records = [];
     paneLoading = false;
+    error = "";
     return;
   }
   const token = ++request;
   paneLoading = true;
+  error = "";
   try {
     const [tables, lexemes] = await Promise.all([
       context.records.list<Paradigm>("paradigms", selectedLanguage.id, { limit: 100, sort: "name" }),
@@ -128,6 +130,7 @@ async function loadForms() {
     ]);
     if (!cancelled && token === request) {
       paneLoading = false;
+      error = "";
       paradigms = tables.map((record) => ({ ...record, value: normalizeParadigm(record.value) }));
       records = lexemes.map((record) => ({ ...record, value: normalizeLexeme(record.value) }));
       if (paradigmEditing) {
@@ -169,6 +172,19 @@ function closeParadigmEditor() {
 async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
   if (!selectedLanguage) return "none";
   const ownerLanguageId = selectedLanguage.id;
+  const blankSlot = paradigmDraft.slots.findIndex((slot) => !slot.label.trim());
+  if (blankSlot >= 0) {
+    error = `Slot ${blankSlot + 1} needs a label before this paradigm can be saved.`;
+    return "error";
+  }
+  const slotIds = new Set(paradigmDraft.slots.map((slot) => slot.id));
+  const incompleteOperation = paradigmDraft.rules.some((rule) =>
+    rule.operations.some((operation) => !operation.slotId || !slotIds.has(operation.slotId)),
+  );
+  if (incompleteOperation) {
+    error = "Every operation must target an existing slot.";
+    return "error";
+  }
   const value = normalizeParadigm(paradigmDraft);
   if (!value.name) {
     error = "Name is required.";
@@ -250,6 +266,7 @@ async function persistLexemeForms(record: ModuleRecord<LexemeValue>, forms: Lexe
 async function pinPreviewOverride(record: ModuleRecord<LexemeValue>, slot: ParadigmSlot, form: string) {
   const paradigmId = paradigmEditing?.id;
   if (!paradigmId) return;
+  error = "";
   try {
     await persistLexemeForms(record, pinOverride(record.value.forms, paradigmId, slot, form));
   } catch (cause) {
@@ -271,6 +288,7 @@ async function clearPreviewOverride(record: ModuleRecord<LexemeValue>, slot: Par
       return;
     }
   }
+  error = "";
   try {
     await persistLexemeForms(record, clearOverride(record.value.forms, paradigmId, slot));
   } catch (cause) {
@@ -286,8 +304,23 @@ function addSlot() {
   paradigmDraft.slots.push(emptySlot());
 }
 
-function removeSlot(index: number) {
-  const removed = paradigmDraft.slots[index]?.id;
+async function removeSlot(index: number) {
+  const slot = paradigmDraft.slots[index];
+  if (!slot) return;
+  const operationCount = paradigmDraft.rules.reduce(
+    (count, rule) => count + rule.operations.filter((item) => item.slotId === slot.id).length,
+    0,
+  );
+  if (
+    operationCount > 0 &&
+    !(await confirm(
+      "Remove slot",
+      `Remove “${slot.label || `Slot ${index + 1}`}” and ${operationCount} linked ${operationCount === 1 ? "operation" : "operations"}?`,
+    ))
+  ) {
+    return;
+  }
+  const removed = slot.id;
   paradigmDraft.slots.splice(index, 1);
   for (const rule of paradigmDraft.rules) {
     rule.operations = rule.operations.filter((item) => item.slotId !== removed);
@@ -298,12 +331,21 @@ function addRule() {
   paradigmDraft.rules.push(emptyRule(paradigmDraft.kind));
 }
 
-function removeRule(index: number) {
+async function removeRule(index: number) {
+  const rule = paradigmDraft.rules[index];
+  if (!rule) return;
+  if (!(await confirm("Remove rule", `Remove “${rule.name || `Rule ${index + 1}`}” from this paradigm?`))) return;
   paradigmDraft.rules.splice(index, 1);
 }
 
 function addOperation(ruleIndex: number) {
-  paradigmDraft.rules[ruleIndex].operations.push(emptyOperation(paradigmDraft.slots[0]?.id ?? ""));
+  const firstSlot = slotOptions[0];
+  if (!firstSlot) {
+    error = "Add and label a slot before adding rule operations.";
+    return;
+  }
+  error = "";
+  paradigmDraft.rules[ruleIndex].operations.push(emptyOperation(firstSlot.id));
 }
 
 function removeOperation(ruleIndex: number, operationIndex: number) {
@@ -312,7 +354,7 @@ function removeOperation(ruleIndex: number, operationIndex: number) {
 
 function handleLexemeChange() {
   const chosen = records.find((record) => record.id === previewLexemeId);
-  previewStem = chosen?.value.lemma ?? previewStem;
+  previewStem = chosen?.value.lemma ?? "";
 }
 
 async function handleSubmit(event: SubmitEvent) {
@@ -324,8 +366,8 @@ async function handleSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Focused projection</p>
-    <h2>Forms</h2>
+    <p class="language-toolbar-eyebrow">Language crafting studio</p>
+    <h2>Morphology</h2>
     <p class="language-toolbar-subtitle">
       {selectedLanguage
         ? `${selectedLanguage.name} · paradigms, rules, and generated forms`
@@ -389,7 +431,7 @@ async function handleSubmit(event: SubmitEvent) {
                 <button
                   type="button"
                   class="forms-slot-remove"
-                  onclick={() => removeSlot(index)}
+                  onclick={() => void removeSlot(index)}
                   aria-label="Remove slot">&times;</button>
               </div>
               <label class="language-field">
@@ -433,7 +475,7 @@ async function handleSubmit(event: SubmitEvent) {
                   class="forms-rule-remove"
                   onclick={(e) => {
                     e.preventDefault();
-                    removeRule(index);
+                    void removeRule(index);
                   }}
                   aria-label="Remove rule">&times;</button>
               </summary>
@@ -470,8 +512,12 @@ async function handleSubmit(event: SubmitEvent) {
                 <div class="forms-operations">
                   <div class="forms-operations-header">
                     <h4>Operations</h4>
-                    <button type="button" class="language-button secondary" onclick={() => addOperation(index)}
-                      >Add operation</button>
+                    <button
+                      type="button"
+                      class="language-button secondary"
+                      disabled={slotOptions.length === 0}
+                      title={slotOptions.length === 0 ? "Add and label a slot first" : undefined}
+                      onclick={() => addOperation(index)}>Add operation</button>
                   </div>
                   {#if rule.operations.length === 0}
                     <p class="language-empty" role="status">
@@ -565,58 +611,63 @@ async function handleSubmit(event: SubmitEvent) {
         <input
           name="previewStem"
           value={previewStemValue}
-          onchange={(event) => (previewStem = event.currentTarget.value)} />
+          oninput={(event) => (previewStem = event.currentTarget.value)} />
       </label>
-      <div class="language-chart-wrap">
-        <table class="paradigm-preview">
-          <thead>
-            <tr>
-              <th>Slot</th>
-              <th>Form</th>
-              <th>Source</th>
-              <th>Rule</th>
-              <th>Override</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each previewCells as cell (cell.slot.id)}
+      {#if paradigmDraft.slots.length === 0}
+        <div class="language-empty-card">
+          <p class="language-empty" role="status">Add a slot to preview generated forms.</p>
+        </div>
+      {:else}<div class="language-chart-wrap">
+          <table class="paradigm-preview">
+            <thead>
               <tr>
-                <th scope="row"
-                  >{cell.slot.features ? `${cell.slot.label} (${cell.slot.features})` : cell.slot.label}</th>
-                <td
-                  >{cell.form ||
-                    "—"}{#if cell.provenance === "authored" && cell.generated && cell.generated !== cell.form}
-                    <small> rule: {cell.generated}</small>
-                  {/if}</td>
-                <td
-                  ><span
-                    class="form-provenance"
-                    class:is-authored={cell.provenance === "authored"}
-                    class:is-missing={cell.provenance === "missing"}
-                    >{cell.provenance === "authored"
-                      ? "authored"
-                      : cell.provenance === "generated"
-                        ? "generated"
-                        : "no rule"}</span
-                  ></td>
-                <td>{cell.ruleName || "—"}</td>
-                <td
-                  >{#if previewLexeme && previewParadigmId && cell.form && cell.provenance === "generated"}
-                    <button
-                      type="button"
-                      class="language-button secondary"
-                      onclick={() => void pinPreviewOverride(previewLexeme, cell.slot, cell.form)}>Pin override</button>
-                  {:else if previewLexeme && previewParadigmId && cell.provenance === "authored"}
-                    <button
-                      type="button"
-                      class="language-button secondary"
-                      onclick={() => void clearPreviewOverride(previewLexeme, cell.slot)}>Clear override</button>
-                  {/if}</td>
+                <th>Slot</th>
+                <th>Form</th>
+                <th>Source</th>
+                <th>Rule</th>
+                <th>Override</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {#each previewCells as cell (cell.slot.id)}
+                <tr>
+                  <th scope="row"
+                    >{cell.slot.features ? `${cell.slot.label} (${cell.slot.features})` : cell.slot.label}</th>
+                  <td
+                    >{cell.form ||
+                      "—"}{#if cell.provenance === "authored" && cell.generated && cell.generated !== cell.form}
+                      <small> rule: {cell.generated}</small>
+                    {/if}</td>
+                  <td
+                    ><span
+                      class="form-provenance"
+                      class:is-authored={cell.provenance === "authored"}
+                      class:is-missing={cell.provenance === "missing"}
+                      >{cell.provenance === "authored"
+                        ? "authored"
+                        : cell.provenance === "generated"
+                          ? "generated"
+                          : "no rule"}</span
+                    ></td>
+                  <td>{cell.ruleName || "—"}</td>
+                  <td
+                    >{#if previewLexeme && previewParadigmId && cell.form && cell.provenance === "generated"}
+                      <button
+                        type="button"
+                        class="language-button secondary"
+                        onclick={() => void pinPreviewOverride(previewLexeme, cell.slot, cell.form)}
+                        >Pin override</button>
+                    {:else if previewLexeme && previewParadigmId && cell.provenance === "authored"}
+                      <button
+                        type="button"
+                        class="language-button secondary"
+                        onclick={() => void clearPreviewOverride(previewLexeme, cell.slot)}>Clear override</button>
+                    {/if}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>{/if}
     </section>
     {#if error}
       <p class="language-status error" role="alert">{error}</p>
@@ -640,7 +691,12 @@ async function handleSubmit(event: SubmitEvent) {
     </div>
   </form>
 {:else if error}
-  <p class="language-status error" role="alert">{error}</p>
+  <div class="language-empty-card language-error-card">
+    <p class="language-status error" role="alert">{error}</p>
+    {#if selectedLanguage}
+      <button type="button" class="language-button secondary" onclick={() => void loadForms()}>Try again</button>
+    {/if}
+  </div>
 {:else if !selectedLanguage}
   <div class="language-empty-card">
     <p class="language-empty" role="status">Select a language to document its paradigms.</p>
@@ -880,6 +936,10 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .language-status.error {
   color: #a14f42;
+}
+.language-error-card {
+  border-color: #e2b7af;
+  background: #fff5f2;
 }
 .language-loading {
   display: flex;

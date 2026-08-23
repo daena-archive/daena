@@ -52,12 +52,14 @@ let page = $state(0);
 let hasNextPage = $state(false);
 let homonymCount = $state(0);
 let request = $state(0);
+let homonymRequest = $state(0);
 let searchTimer = $state<number | null>(null);
 let lexiconLoading = $state(false);
 let lexiconSaving = $state(false);
 let lexiconImporting = $state(false);
 let lexiconExporting = $state(false);
 let error = $state("");
+let notice = $state("");
 
 let tagsText = $state("");
 let fileInput: HTMLInputElement | undefined = $state();
@@ -140,7 +142,8 @@ $effect(() => {
 function lexiconHasDraft() {
   if (!editorOpen) return false;
   const baseline = editing ? normalizeLexeme(editing.value) : emptyLexeme();
-  return JSON.stringify(serializeLexeme(normalizeLexeme(draft))) !== JSON.stringify(serializeLexeme(baseline));
+  const candidate = normalizeLexeme({ ...draft, tags: tagsText.split(/[\n,]/) });
+  return JSON.stringify(serializeLexeme(candidate)) !== JSON.stringify(serializeLexeme(baseline));
 }
 
 async function tryLeaveLexicon(confirmLeave: (message: string) => Promise<boolean> | boolean) {
@@ -168,10 +171,13 @@ async function loadRecords() {
     records = [];
     paradigms = [];
     lexiconLoading = false;
+    error = "";
+    notice = "";
     return;
   }
   const token = ++request;
   lexiconLoading = true;
+  error = "";
   try {
     const [result, paradigmList] = await Promise.all([
       context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
@@ -187,6 +193,7 @@ async function loadRecords() {
     ]);
     if (!cancelled && token === request) {
       lexiconLoading = false;
+      error = "";
       hasNextPage = result.length > 50;
       records = result.slice(0, 50).map((record) => ({
         ...record,
@@ -201,6 +208,7 @@ async function loadRecords() {
   } catch (cause) {
     if (!cancelled && token === request) {
       lexiconLoading = false;
+      error = cause instanceof Error ? cause.message : String(cause);
     }
   }
 }
@@ -223,29 +231,47 @@ async function findLexeme(id: string, token: number) {
 
 async function openPendingLexeme(id: string) {
   const token = request;
-  const target = records.find((record) => record.id === id) ?? (await findLexeme(id, token));
-  if (cancelled || token !== request) return;
-  if (target) {
-    editing = target;
-    editorOpen = true;
-    draft = normalizeLexeme(target.value);
-    void refreshHomonyms(draft.lemma);
+  try {
+    const target = records.find((record) => record.id === id) ?? (await findLexeme(id, token));
+    if (cancelled || token !== request) return;
+    if (target) {
+      editing = target;
+      editorOpen = true;
+      draft = normalizeLexeme(target.value);
+      tagsText = draft.tags.join("\n");
+      error = "";
+      void refreshHomonyms(draft.lemma);
+    } else {
+      error = "The linked word could not be found in this language.";
+    }
+  } catch (cause) {
+    if (!cancelled && token === request) error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (!cancelled && token === request) onPendingLexemeHandled();
   }
-  onPendingLexemeHandled();
 }
 
 async function refreshHomonyms(lemma: string) {
   if (!selectedLanguage || !lemma) {
+    homonymRequest += 1;
     homonymCount = 0;
     return;
   }
-  const matches = await context.records.list<LexemeValue>("lexemes", selectedLanguage.id, {
-    query: lemma,
-    limit: 100,
-  });
-  homonymCount = matches.filter(
-    (record) => record.value.lemma.toLocaleLowerCase() === lemma.toLocaleLowerCase() && record.id !== editing?.id,
-  ).length;
+  const token = ++homonymRequest;
+  const ownerLanguageId = selectedLanguage.id;
+  const editingId = editing?.id;
+  try {
+    const matches = await context.records.list<LexemeValue>("lexemes", ownerLanguageId, {
+      query: lemma,
+      limit: 100,
+    });
+    if (cancelled || token !== homonymRequest || selectedLanguage?.id !== ownerLanguageId) return;
+    homonymCount = matches.filter(
+      (record) => record.value.lemma.toLocaleLowerCase() === lemma.toLocaleLowerCase() && record.id !== editingId,
+    ).length;
+  } catch {
+    if (!cancelled && token === homonymRequest) homonymCount = 0;
+  }
 }
 
 function scheduleLoad() {
@@ -258,21 +284,40 @@ function addWord() {
   editing = null;
   editorOpen = true;
   draft = emptyLexeme();
+  tagsText = "";
   homonymCount = 0;
+  error = "";
+  notice = "";
 }
 
 function openLexiconEditor(record: ModuleRecord<LexemeValue>) {
   editing = record;
   editorOpen = true;
   draft = normalizeLexeme(record.value);
+  tagsText = draft.tags.join("\n");
+  error = "";
+  notice = "";
   void refreshHomonyms(draft.lemma);
 }
 
-function addHomonym() {
+async function addHomonym() {
+  if (lexiconSaving) return;
+  if (
+    lexiconHasDraft() &&
+    !(await confirm(
+      "Start a homonym",
+      "Unsaved changes to this word will be discarded. Start a separate entry with the same lemma?",
+    ))
+  ) {
+    return;
+  }
   const lemma = draft.lemma;
   editing = null;
   editorOpen = true;
   draft = { ...emptyLexeme(), lemma };
+  tagsText = "";
+  error = "";
+  notice = "";
   void refreshHomonyms(lemma);
 }
 
@@ -280,7 +325,11 @@ function closeLexiconEditor() {
   editing = null;
   editorOpen = false;
   draft = emptyLexeme();
+  tagsText = "";
+  homonymRequest += 1;
+  homonymCount = 0;
   error = "";
+  notice = "";
 }
 
 async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
@@ -311,6 +360,7 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
     }
     editorOpen = true;
     draft = editing.value;
+    tagsText = draft.tags.join("\n");
     lexiconSaving = false;
     setMutationActive(false);
     if (ownerLanguageId === selectedLanguage?.id) {
@@ -363,6 +413,8 @@ async function exportLexicon() {
   const ownerLanguageId = selectedLanguage.id;
   const languageName = selectedLanguage.name;
   lexiconExporting = true;
+  error = "";
+  notice = "";
   setMutationActive(true);
   const values: LexemeValue[] = [];
   try {
@@ -393,24 +445,47 @@ async function exportLexicon() {
 async function importLexicon(file: File) {
   if (!selectedLanguage || lexiconImporting) return;
   const ownerLanguageId = selectedLanguage.id;
-  lexiconImporting = true;
-  setMutationActive(true);
+  let imported = 0;
+  let mutationStarted = false;
   try {
     const lexemes = parseLexiconImport(await file.text());
+    if (lexemes.length === 0) {
+      error = "This file does not contain any lexicon entries.";
+      return;
+    }
+    if (
+      !(await confirm(
+        "Import lexicon",
+        `Add ${lexemes.length} ${lexemes.length === 1 ? "word" : "words"} to ${selectedLanguage.name}? Existing entries will not be changed.`,
+      ))
+    ) {
+      return;
+    }
+    lexiconImporting = true;
+    error = "";
+    notice = "";
+    setMutationActive(true);
+    mutationStarted = true;
     for (const value of lexemes) {
       await context.records.create("lexemes", ownerLanguageId, serializeLexeme(value), {
         requestId: crypto.randomUUID(),
       });
+      imported += 1;
     }
     if (ownerLanguageId === selectedLanguage?.id) {
       page = 0;
       await loadRecords();
+      notice = `Imported ${imported} ${imported === 1 ? "word" : "words"}.`;
     }
   } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
+    const message = cause instanceof Error ? cause.message : String(cause);
+    error =
+      imported > 0
+        ? `${message} ${imported} ${imported === 1 ? "word was" : "words were"} imported before the import stopped.`
+        : message;
   } finally {
     lexiconImporting = false;
-    setMutationActive(false);
+    if (mutationStarted) setMutationActive(false);
   }
 }
 
@@ -720,7 +795,7 @@ async function handleSubmit(event: SubmitEvent) {
     <div class="language-actions">
       <span>
         {#if editing}
-          <button type="button" class="language-button secondary" onclick={addHomonym}>Add homonym</button>
+          <button type="button" class="language-button secondary" onclick={() => void addHomonym()}>Add homonym</button>
           <button type="button" class="language-button secondary language-danger" onclick={deleteLexeme}>Delete</button>
         {/if}
       </span>
@@ -734,7 +809,7 @@ async function handleSubmit(event: SubmitEvent) {
 {:else}
   <div class="language-toolbar">
     <div class="language-toolbar-title">
-      <p class="language-toolbar-eyebrow">Focused projection</p>
+      <p class="language-toolbar-eyebrow">Language crafting studio</p>
       <h2>Lexicon</h2>
       <p class="language-toolbar-subtitle">
         {selectedLanguage
@@ -829,8 +904,16 @@ async function handleSubmit(event: SubmitEvent) {
       </div>
     </details>
   {/if}
+  {#if notice}
+    <p class="language-status success" role="status" aria-live="polite">{notice}</p>
+  {/if}
   {#if error}
-    <p class="language-status error" role="alert">{error}</p>
+    <div class="language-empty-card language-error-card">
+      <p class="language-status error" role="alert">{error}</p>
+      {#if selectedLanguage}
+        <button type="button" class="language-button secondary" onclick={() => void loadRecords()}>Try again</button>
+      {/if}
+    </div>
   {:else if !selectedLanguage}
     <p class="language-empty" role="status">Select a language to view its lexicon.</p>
   {:else if lexiconLoading}
@@ -1287,6 +1370,14 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .language-status.error {
   color: #a14f42;
+}
+.language-status.success {
+  margin-top: 14px;
+  color: var(--accent-dark);
+}
+.language-error-card {
+  border-color: #e2b7af;
+  background: #fff5f2;
 }
 .language-loading {
   display: flex;

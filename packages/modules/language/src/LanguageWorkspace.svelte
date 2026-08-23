@@ -296,7 +296,8 @@ function dismissWelcomeTour() {
           active={pane === "overview"}
           registerLeaveGuard={registerOverviewGuard}
           {onLanguageChanged}
-          {onLanguageArchived} />
+          {onLanguageArchived}
+          openPane={(target) => void switchPane(target)} />
       </div>
       <div class="language-pane" hidden={pane !== "sounds"}>
         <Sounds

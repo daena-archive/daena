@@ -127,6 +127,23 @@ export function groupSamples<T extends { value: Sample }>(samples: T[]) {
   return SAMPLE_KINDS.map((item) => ({ ...item, samples: grouped.get(item.id) ?? [] }));
 }
 
+export function filterSamples<T extends { value: Sample }>(samples: T[], query: string): T[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return samples;
+  return samples.filter(({ value }) =>
+    [
+      value.title,
+      value.text,
+      value.translation,
+      value.transliteration,
+      value.notes,
+      ...value.tokens.flatMap((token) => [token.text, token.gloss, token.grammar]),
+    ]
+      .filter((item): item is string => Boolean(item))
+      .some((item) => item.toLocaleLowerCase().includes(needle)),
+  );
+}
+
 function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }

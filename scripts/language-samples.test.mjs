@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  filterSamples,
   groupSamples,
   normalizeSample,
   samplePreviewHtml,
@@ -55,5 +56,27 @@ const grouped = groupSamples([
 assert.equal(grouped[0].id, "sentence");
 assert.equal(grouped[0].samples.length, 1);
 assert.equal(grouped[1].samples[0].value.title, "Story");
+
+assert.equal(
+  filterSamples(
+    grouped.flatMap((group) => group.samples),
+    "sun rises",
+  ).length,
+  1,
+);
+assert.equal(
+  filterSamples(
+    grouped.flatMap((group) => group.samples),
+    "nom",
+  ).length,
+  1,
+);
+assert.equal(
+  filterSamples(
+    grouped.flatMap((group) => group.samples),
+    "missing",
+  ).length,
+  0,
+);
 
 console.log("language sample helpers ok");

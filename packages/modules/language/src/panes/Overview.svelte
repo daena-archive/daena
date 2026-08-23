@@ -14,6 +14,7 @@ let {
   registerLeaveGuard,
   onLanguageChanged,
   onLanguageArchived,
+  openPane,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
@@ -21,11 +22,29 @@ let {
   registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
   onLanguageChanged: (language: EntitySummary) => void;
   onLanguageArchived: (languageId: string) => void;
+  openPane: (pane: "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples") => void;
 } = $props();
 
 const overviewFieldDefinitions = manifest.schemas
   .flatMap((schema) => schema.fields)
   .filter((field) => !field.relationshipType);
+
+const FIELD_HINTS: Record<string, string> = {
+  nativeName: "Name used by its speakers",
+  aliases: "Alternative names, separated by commas",
+  status: "e.g. living, ceremonial, extinct",
+  family: "Parent family or related language group",
+  writingSystem: "Primary script or orthography",
+};
+
+const STUDIO_AREAS = [
+  { pane: "sounds", title: "Shape the sounds", detail: "Build the phoneme inventory and phonotactics." },
+  { pane: "writing", title: "Design the writing", detail: "Map sounds to graphemes and test orthographies." },
+  { pane: "lexicon", title: "Coin the words", detail: "Grow vocabulary, senses, pronunciations, and usage." },
+  { pane: "grammar", title: "Define the grammar", detail: "Document systems, strategies, and examples." },
+  { pane: "forms", title: "Model morphology", detail: "Create paradigms, rules, and generated forms." },
+  { pane: "samples", title: "Test it in context", detail: "Analyze sentences and paragraphs interlinearly." },
+] as const;
 
 let cancelled = $state(false);
 let overviewEntity = $state<EntityRecord | null>(null);
@@ -84,7 +103,10 @@ async function tryLeaveOverview(confirmLeave: (message: string) => Promise<boole
     clearOverviewAutosave();
     return true;
   }
-  const allowed = await confirmLeave("You have unsaved language details. Leave without saving?");
+  if (overviewSaving) return false;
+  const saved = await saveOverview(false);
+  if (saved) return true;
+  const allowed = await confirmLeave("Language details could not be saved. Leave and discard these changes?");
   if (allowed) {
     clearOverviewAutosave();
     overviewDirty = false;
@@ -185,13 +207,13 @@ async function loadOverview() {
   }
 }
 
-async function saveOverview(automatic = false) {
-  if (!selectedLanguage || !overviewEntity || overviewSaving || overviewDeleting) return;
+async function saveOverview(automatic = false): Promise<boolean> {
+  if (!selectedLanguage || !overviewEntity || overviewSaving || overviewDeleting) return false;
   clearOverviewAutosave();
   const name = overviewName.trim();
   if (!name) {
     overviewError = "Language name is required.";
-    return;
+    return false;
   }
   const entityId = overviewEntity.id;
   const draftFields = { ...overviewFields };
@@ -235,24 +257,36 @@ async function saveOverview(automatic = false) {
     overviewSaving = false;
     overviewSavingAutomatically = false;
     await loadOverview();
-    if (selectedLanguage?.id !== entityId) return;
+    if (selectedLanguage?.id !== entityId) return false;
     if (needsFollowUpSave) {
       overviewName = currentDraftName;
       overviewFields = currentDraftFields;
       overviewDocument = currentDraftDocument;
       overviewDirty = true;
       scheduleOverviewAutosave();
-      return;
+      return false;
     }
     if (overviewEntity) {
       onLanguageChanged({ ...selectedLanguage, name, revision: overviewEntity.revision });
     }
+    return true;
   } catch (cause) {
+    const currentDraftName = overviewName;
+    const currentDraftFields = { ...overviewFields };
+    const currentDraftDocument = overviewDocument;
+    const saveError = cause instanceof Error ? cause.message : String(cause);
     overviewSaving = false;
     overviewSavingAutomatically = false;
-    overviewDirty = true;
-    overviewError = cause instanceof Error ? cause.message : String(cause);
+    await loadOverview();
+    if (selectedLanguage?.id === entityId && overviewEntity?.id === entityId) {
+      overviewName = currentDraftName;
+      overviewFields = currentDraftFields;
+      overviewDocument = currentDraftDocument;
+      syncOverviewDirty();
+    }
+    overviewError = saveError;
     if (overviewAutosaveQueued) scheduleOverviewAutosave();
+    return false;
   }
 }
 
@@ -319,6 +353,13 @@ let status = $derived.by(() => {
     </p>
   </div>
   <div class="language-toolbar-actions">
+    {#if selectedLanguage && (overviewDirty || overviewError)}
+      <button
+        type="button"
+        class="language-button secondary"
+        disabled={overviewSaving || overviewDeleting}
+        onclick={() => void saveOverview(false)}>{overviewError ? "Try saving again" : "Save now"}</button>
+    {/if}
     <span class="language-overview-status" role="status" aria-live="polite" data-state={status.state}
       >{status.text}</span>
   </div>
@@ -368,15 +409,34 @@ let status = $derived.by(() => {
               <textarea
                 name={`overview-${definition.key}`}
                 rows={2}
+                placeholder={FIELD_HINTS[definition.key] ?? ""}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)}></textarea>
             {:else}
               <input
                 name={`overview-${definition.key}`}
+                placeholder={FIELD_HINTS[definition.key] ?? ""}
                 value={fieldValue(definition)}
                 oninput={(event) => onOverviewFieldInput(definition, event.currentTarget.value)} />
             {/if}
           </label>
+        {/each}
+      </div>
+    </section>
+
+    <section class="language-overview-section">
+      <div class="language-overview-section-header">
+        <div>
+          <h3>Crafting workbench</h3>
+          <p>Move between the parts of the language in any order. Each area stays scoped to this language.</p>
+        </div>
+      </div>
+      <div class="language-studio-areas">
+        {#each STUDIO_AREAS as area (area.pane)}
+          <button type="button" class="language-studio-area" onclick={() => openPane(area.pane)}>
+            <strong>{area.title}</strong>
+            <span>{area.detail}</span>
+          </button>
         {/each}
       </div>
     </section>
@@ -534,6 +594,40 @@ let status = $derived.by(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
+.language-studio-areas {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.language-studio-area {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.language-studio-area:hover {
+  border-color: #d8c3a5;
+  background: var(--surface);
+}
+.language-studio-area:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline-offset: 2px;
+}
+.language-studio-area strong {
+  color: var(--accent-dark);
+  font-size: 13px;
+}
+.language-studio-area span {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
 .language-overview-editor {
   min-height: 16rem;
 }
@@ -653,6 +747,9 @@ let status = $derived.by(() => {
     width: 100%;
   }
   .language-overview-fields {
+    grid-template-columns: 1fr;
+  }
+  .language-studio-areas {
     grid-template-columns: 1fr;
   }
 }

@@ -40,7 +40,7 @@ pub use project::{
     ModuleField, ModuleNamespace, ModuleRecordListParams, ModuleState, PluginBackup, ProjectInfo,
     ProjectSnapshot, ProjectStore, RasterLayerChange, RasterLayerUpdate, Relationship,
     RelationshipInput, RelationshipUpdate, SaveDocument, SaveEntry, SearchPassage, SyncSummary,
-    VectorLayerDelete, VectorSourceReplace,
+    VectorLayerDelete, VectorSourceReplace, WikiPageExportFormat,
 };
 pub use storage::{
     build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,

@@ -1,16 +1,30 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import { House, ArrowLeft, ArrowRight, Pencil, Search, Diamond } from "@lucide/svelte";
+import {
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  Diamond,
+  Link2,
+  MapPinned,
+  Paperclip,
+  Pencil,
+  Sparkles,
+} from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
-import { project, type Asset, type Entity } from "$lib/project/client";
-import loreManifestJson from "../../../packages/modules/lore/manifest.json";
+import { headingOutline } from "$lib/markdown";
+import { project, type Asset, type Entity, type ModuleManifest } from "$lib/project/client";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
+import WikiExportMenu from "./WikiExportMenu.svelte";
+import WikiSidebar from "./WikiSidebar.svelte";
 
 let {
+  manifest,
   initialEntityId = null as string | null,
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
 }: {
+  manifest: ModuleManifest;
   initialEntityId?: string | null;
   onClose?: () => void;
   onSelectEntity?: (id: string) => void;
@@ -18,10 +32,10 @@ let {
 
 // svelte-ignore state_referenced_locally
 let currentId = $state<string | null>(initialEntityId ?? null);
-
-// navigation history for browsing between entities (browser-like back/forward)
-let history = $state<string[]>([]);
-let historyIndex = $state(-1);
+// svelte-ignore state_referenced_locally
+let history = $state<string[]>(initialEntityId ? [initialEntityId] : []);
+// svelte-ignore state_referenced_locally
+let historyIndex = $state(initialEntityId ? 0 : -1);
 let entities = $state<Entity[]>([]);
 let entity = $state<Entity | null>(null);
 let documentBody = $state("");
@@ -32,33 +46,36 @@ let profileMediaUrl = $state("");
 let mapLocations = $state<any[]>([]);
 let loading = $state(true);
 let tocSearch = $state("");
+let searchMatches = $state<Entity[] | null>(null);
+let searching = $state(false);
+let searchError = $state("");
+let searchRequest = 0;
+let entityLoadRequest = 0;
 
-const manifest = loreManifestJson as any;
-const allEntityTypes = manifest.schemas.flatMap((s: any) => s.entityTypes);
-const allFields = manifest.schemas.flatMap((s: any) => s.fields);
+const schemas = $derived(manifest.schemas ?? []);
+const allEntityTypes = $derived(schemas.flatMap((schema: any) => schema.entityTypes));
+const allFields = $derived(schemas.flatMap((schema: any) => schema.fields));
+const articleOutline = $derived(documentBody ? headingOutline(documentBody) : []);
 
 function labelForType(type: string | null) {
   if (!type) return "Uncategorized";
-  const t = manifest.templates.find((tpl: any) => tpl.entityType === type);
-  return t?.name ?? type;
+  const template = manifest.templates.find((candidate: any) => candidate.entityType === type);
+  return template?.name ?? humanizeType(type);
 }
 
 function fieldsForType(entityType: string | null) {
   if (!entityType) return allFields;
-  return allFields.filter((f: any) => !f.entityTypes || f.entityTypes.includes(entityType));
+  return allFields.filter((field: any) => !field.entityTypes || field.entityTypes.includes(entityType));
 }
 
-function isEmptyValue(v: unknown) {
-  if (v === null || v === undefined) return true;
-  if (typeof v === "string" && v.trim() === "") return true;
-  if (Array.isArray(v) && v.length === 0) return true;
-  // date objects with no year etc. considered empty if parse fails
-  if (typeof v === "object" && v !== null) {
+function isEmptyValue(value: unknown) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string" && value.trim() === "") return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  if (typeof value === "object" && value !== null) {
     try {
-      const asDate = parseCalendarDate(v);
-      if (asDate) return false;
-      // empty object like {} considered empty
-      if (Object.keys(v as object).length === 0) return true;
+      if (parseCalendarDate(value)) return false;
+      if (Object.keys(value).length === 0) return true;
     } catch {}
   }
   return false;
@@ -69,8 +86,7 @@ function fieldDisplay(value: unknown) {
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "object") {
     try {
-      const asDate = parseCalendarDate(value);
-      if (asDate) return formatCalendarDate(value);
+      if (parseCalendarDate(value)) return formatCalendarDate(value);
     } catch {}
     try {
       return JSON.stringify(value);
@@ -82,61 +98,66 @@ function fieldDisplay(value: unknown) {
 }
 
 function entityName(id: string) {
-  return entities.find((e) => e.id === id)?.name ?? id.slice(0, 8);
+  return entities.find((candidate) => candidate.id === id)?.name ?? id.slice(0, 8);
 }
 
 function entityTypeOf(id: string) {
-  return entities.find((e) => e.id === id)?.entity_type ?? null;
+  return entities.find((candidate) => candidate.id === id)?.entity_type ?? null;
 }
 
-function humanizeType(t: string) {
-  return t.replaceAll("_", " ");
+function humanizeType(value: string) {
+  const label = value.replaceAll("_", " ").replaceAll("-", " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 function formatSystemTimestamp(value: unknown): string {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return "";
-  // stored as nanoseconds since unix epoch
-  const ms = Math.floor(n / 1_000_000);
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  const timestamp = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(timestamp)) return "";
+  const date = new Date(Math.floor(timestamp / 1_000_000));
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-// derived groups for main TOC
-const filteredEntities = $derived(
-  (() => {
-    const term = tocSearch.trim().toLowerCase();
-    if (!term) return entities;
-    return entities.filter((e) => `${e.name} ${e.entity_type ?? ""} ${e.id}`.toLowerCase().includes(term));
-  })(),
-);
-
+const displayedEntities = $derived(searchMatches ?? entities);
 const grouped = $derived(
   (() => {
-    const map = new Map<string, Entity[]>();
-    for (const e of filteredEntities) {
-      const key = e.entity_type ?? "__unknown";
-      const arr = map.get(key) ?? [];
-      arr.push(e);
-      map.set(key, arr);
+    const groups = new Map<string, Entity[]>();
+    for (const candidate of displayedEntities) {
+      const key = candidate.entity_type ?? "__unknown";
+      const list = groups.get(key) ?? [];
+      list.push(candidate);
+      groups.set(key, list);
     }
-    return [...map.entries()]
+    return [...groups.entries()]
       .map(([type, list]) => ({
         type,
         label: labelForType(type),
         count: list.length,
-        list: list.sort((a, b) => a.name.localeCompare(b.name)),
+        list: list
+          .sort((left, right) => left.name.localeCompare(right.name))
+          .map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            typeLabel: labelForType(candidate.entity_type),
+          })),
       }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .sort((left, right) => left.label.localeCompare(right.label));
   })(),
 );
-
-// derived inbound/outbound
-const outbound = $derived(relationships.filter((r: any) => r.source_id === currentId));
-const inbound = $derived(relationships.filter((r: any) => r.target_id === currentId));
+const recent = $derived(
+  [...entities]
+    .sort((left, right) => Number(right.updated_at) - Number(left.updated_at))
+    .slice(0, 6)
+    .map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      typeLabel: labelForType(candidate.entity_type),
+    })),
+);
+const outbound = $derived(relationships.filter((relationship: any) => relationship.source_id === currentId));
+const inbound = $derived(relationships.filter((relationship: any) => relationship.target_id === currentId));
 const profileAssetAny = $derived(
-  assets.find((asset) => asset.namespace === "lore" && asset.role === "profile") ?? null,
+  assets.find((asset) => manifest.namespaces.includes(asset.namespace) && asset.role === "profile") ?? null,
 );
 const profileAsset = $derived(
   profileAssetAny && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(profileAssetAny.mime_type)
@@ -144,6 +165,33 @@ const profileAsset = $derived(
     : null,
 );
 const profileFallback = $derived(profileAssetAny && !profileAsset ? profileAssetAny : null);
+const visibleFields = $derived(
+  (() => {
+    if (!entity) return [];
+    return fieldsForType(entity.entity_type)
+      .filter((definition: any) => definition.type !== "relationship")
+      .map((definition: any) => ({
+        key: definition.key,
+        label: definition.label,
+        value: fieldDisplay(fields[definition.key]),
+      }))
+      .filter((row: any) => !isEmptyValue(fields[row.key]) && row.value);
+  })(),
+);
+const visibleRelationshipFields = $derived(
+  (() => {
+    if (!entity) return [];
+    return fieldsForType(entity.entity_type)
+      .filter((definition: any) => definition.type === "relationship")
+      .map((definition: any) => ({
+        label: definition.label,
+        targets: outbound
+          .filter((relationship: any) => relationship.relationship_type === definition.relationshipType)
+          .map((relationship: any) => ({ id: relationship.target_id, name: entityName(relationship.target_id) })),
+      }))
+      .filter((row: any) => row.targets.length > 0);
+  })(),
+);
 
 $effect(() => {
   const asset = profileAsset;
@@ -155,18 +203,9 @@ $effect(() => {
       .readAssetBytes(asset.id)
       .then((bytes) => {
         if (disposed) return;
-        try {
-          const blob = new Blob([Uint8Array.from(bytes)], { type: asset.mime_type });
-          objectUrl = URL.createObjectURL(blob);
-          if (disposed) {
-            URL.revokeObjectURL(objectUrl);
-            objectUrl = "";
-            return;
-          }
-          profileMediaUrl = objectUrl;
-        } catch {
-          if (!disposed) profileMediaUrl = "";
-        }
+        const blob = new Blob([Uint8Array.from(bytes)], { type: asset.mime_type });
+        objectUrl = URL.createObjectURL(blob);
+        profileMediaUrl = objectUrl;
       })
       .catch(() => {
         if (!disposed) profileMediaUrl = "";
@@ -178,87 +217,35 @@ $effect(() => {
   };
 });
 
-// infobox visible fields (non-empty)
-const visibleFields = $derived(
-  (() => {
-    if (!entity) return [];
-    const defs = fieldsForType(entity.entity_type);
-    const rows: Array<{ key: string; label: string; value: string; kind: string }> = [];
-    for (const def of defs) {
-      if (def.type === "relationship") continue;
-      const v = fields[def.key];
-      if (isEmptyValue(v)) continue;
-      const display = fieldDisplay(v);
-      if (!display) continue;
-      rows.push({ key: def.key, label: def.label, value: display, kind: def.type });
-    }
-    return rows;
-  })(),
-);
-
-const visibleRelationshipFields = $derived(
-  (() => {
-    if (!entity) return [];
-    const defs = fieldsForType(entity.entity_type).filter((d: any) => d.type === "relationship");
-    const rows: Array<{ label: string; type: string; targets: Array<{ id: string; name: string }> }> = [];
-    for (const def of defs) {
-      const rels = outbound.filter((r: any) => r.relationship_type === def.relationshipType);
-      if (rels.length === 0) continue;
-      rows.push({
-        label: def.label,
-        type: def.relationshipType,
-        targets: rels.map((r: any) => ({ id: r.target_id, name: entityName(r.target_id) })),
+$effect(() => {
+  const query = tocSearch.trim();
+  const request = ++searchRequest;
+  searchError = "";
+  if (!query) {
+    searchMatches = null;
+    searching = false;
+    return;
+  }
+  searching = true;
+  const timer = window.setTimeout(() => {
+    void project
+      .search(query)
+      .then((matches) => {
+        if (request !== searchRequest) return;
+        searchMatches = matches.filter(
+          (candidate) => !candidate.deleted && candidate.entity_type && allEntityTypes.includes(candidate.entity_type),
+        );
+      })
+      .catch((cause) => {
+        if (request !== searchRequest) return;
+        searchMatches = [];
+        searchError = cause instanceof Error ? cause.message : String(cause);
+      })
+      .finally(() => {
+        if (request === searchRequest) searching = false;
       });
-    }
-    return rows;
-  })(),
-);
-
-async function loadAll() {
-  loading = true;
-  try {
-    const all = await project.listEntities();
-    entities = all
-      .filter((e) => !e.deleted && e.entity_type && allEntityTypes.includes(e.entity_type))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  } catch {}
-  loading = false;
-}
-
-async function loadEntity(id: string) {
-  loading = true;
-  try {
-    const [ent, docs, flds, rels, assts] = await Promise.all([
-      project.listEntities().then((list) => list.find((e) => e.id === id) ?? null),
-      project.listDocuments(id),
-      project.listFields(id).catch(() => []),
-      project.listRelationships(id).catch(() => []),
-      project.listAssets(id).catch(() => []),
-    ]);
-    entity = ent;
-    documentBody = docs[0]?.body ?? "";
-    const fieldMap: Record<string, unknown> = {};
-    for (const f of flds as any[]) fieldMap[f.key] = f.value;
-    fields = fieldMap;
-    relationships = rels as any[];
-    assets = assts;
-    try {
-      mapLocations = await project.listMapLocations(id);
-    } catch {
-      mapLocations = [];
-    }
-  } catch {}
-  loading = false;
-}
-
-onMount(() => {
-  void loadAll().then(() => {
-    if (currentId) {
-      history = [currentId];
-      historyIndex = 0;
-      void loadEntity(currentId);
-    }
-  });
+  }, 180);
+  return () => window.clearTimeout(timer);
 });
 
 $effect(() => {
@@ -266,9 +253,51 @@ $effect(() => {
   if (id) void loadEntity(id);
 });
 
+async function loadAll() {
+  loading = true;
+  try {
+    entities = (await project.listEntities())
+      .filter(
+        (candidate) => !candidate.deleted && candidate.entity_type && allEntityTypes.includes(candidate.entity_type),
+      )
+      .sort((left, right) => left.name.localeCompare(right.name));
+  } finally {
+    loading = false;
+  }
+}
+
+async function loadEntity(id: string) {
+  const request = ++entityLoadRequest;
+  loading = true;
+  try {
+    const knownEntity = entities.find((candidate) => candidate.id === id) ?? null;
+    const [loadedEntity, documents, storedFields, storedRelationships, storedAssets, storedMapLocations] =
+      await Promise.all([
+        knownEntity
+          ? Promise.resolve(knownEntity)
+          : project.listEntities().then((list) => list.find((candidate) => candidate.id === id) ?? null),
+        project.listDocuments(id),
+        project.listFields(id).catch(() => []),
+        project.listRelationships(id).catch(() => []),
+        project.listAssets(id).catch(() => []),
+        project.listMapLocations(id).catch(() => []),
+      ]);
+    if (request !== entityLoadRequest || currentId !== id) return;
+    entity = loadedEntity;
+    documentBody = documents[0]?.body ?? "";
+    fields = Object.fromEntries((storedFields as any[]).map((field) => [field.key, field.value]));
+    relationships = storedRelationships as any[];
+    assets = storedAssets;
+    mapLocations = storedMapLocations;
+  } finally {
+    if (request === entityLoadRequest) loading = false;
+  }
+}
+
+onMount(() => void loadAll());
+
 function pushHistory(id: string) {
   if (historyIndex >= 0 && history[historyIndex] === id) return;
-  // drop any forward entries when navigating to a new entity
   if (historyIndex < history.length - 1) history = history.slice(0, historyIndex + 1);
   history = [...history, id];
   historyIndex = history.length - 1;
@@ -279,8 +308,7 @@ function openEntity(id: string) {
   pushHistory(id);
   currentId = id;
   onSelectEntity(id);
-  // scroll to top of wiki container
-  document.querySelector(".wiki-container")?.scrollTo(0, 0);
+  document.querySelector(".kb-content")?.scrollTo(0, 0);
 }
 
 function goBack() {
@@ -288,7 +316,6 @@ function goBack() {
   historyIndex -= 1;
   currentId = history[historyIndex];
   onSelectEntity(currentId);
-  document.querySelector(".wiki-container")?.scrollTo(0, 0);
 }
 
 function goForward() {
@@ -296,707 +323,998 @@ function goForward() {
   historyIndex += 1;
   currentId = history[historyIndex];
   onSelectEntity(currentId);
-  document.querySelector(".wiki-container")?.scrollTo(0, 0);
-}
-
-function handleEdit() {
-  if (!currentId) return;
-  // close wiki and reveal entity in host editor
-  onSelectEntity(currentId);
-  onClose();
 }
 
 function goToMain() {
+  entityLoadRequest += 1;
+  loading = false;
   currentId = null;
   entity = null;
   documentBody = "";
   fields = {};
   relationships = [];
+  assets = [];
+  mapLocations = [];
 }
 
-function handleClose() {
+function handleEdit() {
+  if (!currentId) return;
+  onSelectEntity(currentId);
   onClose();
 }
 </script>
 
-<section class="wiki-shell" aria-label="Lore wiki">
-  <header class="wiki-header">
-    <div class="wiki-header-left">
-      <button class="quiet-button" type="button" onclick={handleClose}
-        ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-          ><ArrowLeft size={14} strokeWidth={1.8} /></span> Back to workspace</button>
-      <div class="wiki-title">
-        <span class="overline">LORE WIKI</span>
-        {#if currentId && entity}
-          <h1>{entity.name}</h1>
-          <small>{labelForType(entity.entity_type)} · {formatSystemTimestamp(entity.updated_at)}</small>
-        {:else}
-          <h1>World encyclopedia</h1>
-          <small>{entities.length} articles · {grouped.length} categories</small>
-        {/if}
-      </div>
+<section class="kb-shell" aria-label="Lore knowledge base">
+  <header class="kb-topbar">
+    <div class="kb-brand">
+      <button class="back-workspace" type="button" onclick={onClose} aria-label="Back to workspace">
+        <ArrowLeft size={15} strokeWidth={1.8} />
+      </button>
+      <span class="brand-mark"><BookOpen size={16} strokeWidth={1.8} /></span>
+      <div><strong>{manifest.name} knowledge base</strong><small>{entities.length} published pages</small></div>
     </div>
+    {#if entity && currentId}
+      <div class="topbar-actions">
+        <button
+          type="button"
+          class="toolbar-button icon"
+          onclick={goBack}
+          disabled={historyIndex <= 0}
+          aria-label="Back">
+          <ArrowLeft size={14} strokeWidth={1.8} />
+        </button>
+        <button
+          type="button"
+          class="toolbar-button icon"
+          onclick={goForward}
+          disabled={historyIndex >= history.length - 1}
+          aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
+        <button type="button" class="toolbar-button" onclick={handleEdit}
+          ><Pencil size={14} strokeWidth={1.8} /> Edit</button>
+        <WikiExportMenu entityId={currentId} manifestId={manifest.id} articleName={entity.name} />
+      </div>
+    {/if}
   </header>
 
-  <div class="wiki-container">
-    {#if loading && !entity && !grouped.length}
-      <p class="wiki-empty">Loading wiki…</p>
-    {:else if !currentId}
-      <div class="wiki-main">
-        <div class="wiki-main-intro">
-          <h2>Browse the archive</h2>
-          <p>
-            Every person, place, faction and artifact as an interconnected encyclopedia. Search or pick a category below
-            — each article shows its infobox, story, and what links to it.
-          </p>
-          <div class="wiki-search">
-            <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
-              placeholder="Search articles"
-              bind:value={tocSearch}
-              aria-label="Search wiki" />
+  <div class="kb-workspace">
+    <WikiSidebar
+      bind:query={tocSearch}
+      groups={grouped}
+      {recent}
+      {currentId}
+      {searching}
+      onHome={goToMain}
+      onOpen={openEntity} />
+
+    <main class="kb-content">
+      {#if searchError}<p class="kb-alert" role="alert">Search is unavailable: {searchError}</p>{/if}
+      {#if loading && !entity && entities.length === 0}
+        <div class="kb-loading" aria-live="polite">Loading knowledge base…</div>
+      {:else if !currentId}
+        <section class="kb-home">
+          <div class="home-hero">
+            <span class="eyebrow"><Sparkles size={12} strokeWidth={1.8} /> Your world, connected</span>
+            <h1>A living reference for everything in your world.</h1>
+            <p>Search across names, article text, and structured details—or browse the collection by category.</p>
+            <div class="home-stats">
+              <span><strong>{entities.length}</strong> pages</span>
+              <span><strong>{grouped.length}</strong> categories</span>
+              <span><strong>{recent.length}</strong> recently updated</span>
+            </div>
           </div>
-        </div>
-        {#if grouped.length === 0}
-          <p class="wiki-empty">No articles yet. Create your first lore entry to build the wiki.</p>
-        {:else}
-          <div class="wiki-groups">
-            {#each grouped as group}
-              <section class="wiki-group">
-                <div class="wiki-group-header">
-                  <h3>{group.label}</h3>
-                  <small>{group.count}</small>
+
+          {#if recent.length > 0}
+            <section class="home-section">
+              <div class="section-heading">
+                <div>
+                  <span>CONTINUE EXPLORING</span>
+                  <h2>Recently updated</h2>
                 </div>
-                <ul class="wiki-group-list">
-                  {#each group.list as ent}
-                    <li>
-                      <button type="button" class="wiki-link" onclick={() => openEntity(ent.id)}>
-                        <span class="wiki-link-name">{ent.name}</span>
-                      </button>
-                    </li>
-                  {/each}
+              </div>
+              <div class="recent-grid">
+                {#each recent.slice(0, 4) as item}
+                  {@const recentEntity = entities.find((candidate) => candidate.id === item.id)}
+                  <button type="button" onclick={() => openEntity(item.id)}>
+                    <span class="recent-icon">{item.name.slice(0, 1).toUpperCase()}</span>
+                    <span
+                      ><small>{item.typeLabel}</small><strong>{item.name}</strong><em
+                        >Updated {formatSystemTimestamp(recentEntity?.updated_at)}</em
+                      ></span>
+                    <ArrowRight size={15} strokeWidth={1.7} />
+                  </button>
+                {/each}
+              </div>
+            </section>
+          {/if}
+
+          <section class="home-section">
+            <div class="section-heading">
+              <div>
+                <span>COLLECTIONS</span>
+                <h2>Browse by category</h2>
+              </div>
+            </div>
+            {#if grouped.length === 0}
+              <div class="empty-state">
+                <BookOpen size={25} strokeWidth={1.5} /><strong>No wiki pages yet</strong>
+                <p>Create a Lore entry to begin building this knowledge base.</p>
+              </div>
+            {:else}
+              <div class="category-grid">
+                {#each grouped as group}
+                  <article>
+                    <header>
+                      <span>{group.label.slice(0, 1).toUpperCase()}</span>
+                      <div>
+                        <h3>{group.label}</h3>
+                        <small>{group.count} {group.count === 1 ? "page" : "pages"}</small>
+                      </div>
+                    </header>
+                    <ul>
+                      {#each group.list.slice(0, 4) as item}
+                        <li><button type="button" onclick={() => openEntity(item.id)}>{item.name}</button></li>
+                      {/each}
+                    </ul>
+                    {#if group.count > 4}<small class="more-count">+ {group.count - 4} more in the sidebar</small>{/if}
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        </section>
+      {:else if entity}
+        <div class="article-grid">
+          <article class="kb-article">
+            <nav class="breadcrumbs" aria-label="Breadcrumb">
+              <button type="button" onclick={goToMain}>Knowledge base</button><span>/</span><span
+                >{labelForType(entity.entity_type)}</span>
+            </nav>
+            <header class="article-heading">
+              <span class="article-type">{labelForType(entity.entity_type)}</span>
+              <h1>{entity.name}</h1>
+              <p>Last updated {formatSystemTimestamp(entity.updated_at)}</p>
+            </header>
+            {#if loading}<div class="article-loading">Refreshing article…</div>{/if}
+            {#if documentBody}
+              <div class="article-body">
+                {#key currentId}
+                  <MarkdownArticle markdown={documentBody} {entities} onOpenEntity={openEntity} showOutline={false} />
+                {/key}
+              </div>
+            {:else}
+              <div class="empty-state article-empty">
+                <BookOpen size={24} strokeWidth={1.5} /><strong>This page is ready for its story.</strong>
+                <p>Add prose in the workspace editor, then return here to read it as an article.</p>
+                <button type="button" onclick={handleEdit}>Write article</button>
+              </div>
+            {/if}
+
+            {#if assets.length > 0}
+              <section class="article-section">
+                <h2><Paperclip size={16} strokeWidth={1.8} /> Attachments</h2>
+                <ul class="resource-list">
+                  {#each assets as asset}<li>
+                      <Diamond size={12} strokeWidth={1.8} /><span
+                        ><strong>{asset.filename}</strong><small
+                          >{asset.mime_type} · {Math.max(1, Math.round(asset.size / 1024))} KB</small
+                        ></span>
+                    </li>{/each}
                 </ul>
               </section>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {:else if entity}
-      <div class="wiki-layout">
-        <article class="wiki-article">
-          <div class="wiki-nav-history">
-            <button type="button" class="quiet-button small icon" onclick={goToMain} aria-label="Wiki home"
-              ><House size={14} strokeWidth={1.8} /></button>
-            <button
-              type="button"
-              class="quiet-button small icon"
-              onclick={goBack}
-              disabled={historyIndex <= 0}
-              aria-label="Back"><ArrowLeft size={14} strokeWidth={1.8} /></button>
-            <button
-              type="button"
-              class="quiet-button small icon"
-              onclick={goForward}
-              disabled={historyIndex >= history.length - 1}
-              aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
-            <button type="button" class="quiet-button small icon" onclick={handleEdit} aria-label="Edit"
-              ><Pencil size={14} strokeWidth={1.8} /></button>
-          </div>
-          <nav class="wiki-breadcrumb" aria-label="Breadcrumb">
-            <button type="button" class="wiki-crumb" onclick={goToMain}>Wiki</button>
-            <span aria-hidden="true">›</span>
-            <span class="wiki-crumb-current">{labelForType(entity.entity_type)}</span>
-            <span aria-hidden="true">›</span>
-            <span class="wiki-crumb-current">{entity.name}</span>
-          </nav>
+            {/if}
+            {#if mapLocations.length > 0}
+              <section class="article-section">
+                <h2><MapPinned size={16} strokeWidth={1.8} /> Maps</h2>
+                <ul class="resource-list">
+                  {#each mapLocations as location}<li>
+                      <MapPinned size={13} strokeWidth={1.8} /><span
+                        ><strong>{location.label || "Location"}</strong><small
+                          >{location.role} · {location.mapEntityId.slice(0, 8)}</small
+                        ></span>
+                    </li>{/each}
+                </ul>
+              </section>
+            {/if}
+          </article>
 
-          <header class="wiki-article-header">
-            <h1>{entity.name}</h1>
-          </header>
-
-          {#if documentBody}
-            <div class="wiki-body">
-              <MarkdownArticle markdown={documentBody} {entities} onOpenEntity={openEntity} />
-            </div>
-          {:else}
-            <div class="wiki-empty-box">
-              <p class="wiki-empty">This article has no body yet.</p>
-              <button class="quiet-button" type="button" onclick={handleEdit}>Write article</button>
-            </div>
-          {/if}
-
-          {#if assets.length > 0}
-            <section class="wiki-section">
-              <h3>Attachments</h3>
-              <ul class="wiki-assets">
-                {#each assets as a}
-                  <li>
-                    <span class="wiki-asset-icon"><Diamond size={12} strokeWidth={1.8} aria-hidden="true" /></span
-                    ><strong>{a.filename}</strong><small>{Math.max(1, Math.round(a.size / 1024))} KB</small>
-                  </li>
-                {/each}
-              </ul>
+          <aside class="kb-rail" aria-label="Article information">
+            <section class="info-card">
+              {#if profileMediaUrl}<img
+                  class="profile-media"
+                  src={profileMediaUrl}
+                  alt={`${entity.name} profile`} />{:else if profileFallback}<div class="profile-file">
+                  <Diamond size={18} strokeWidth={1.7} /><span
+                    ><strong>{profileFallback.filename}</strong><small>{profileFallback.mime_type}</small></span>
+                </div>{/if}
+              <header>
+                <h2>{entity.name}</h2>
+                <p>{labelForType(entity.entity_type)}</p>
+              </header>
+              <dl>
+                {#each visibleFields as row}<div>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>{/each}
+                {#each visibleRelationshipFields as row}<div>
+                    <dt>{row.label}</dt>
+                    <dd>
+                      {#each row.targets as target, index}<button type="button" onclick={() => openEntity(target.id)}
+                          >{target.name}</button
+                        >{#if index < row.targets.length - 1},
+                        {/if}{/each}
+                    </dd>
+                  </div>{/each}
+              </dl>
+              {#if visibleFields.length === 0 && visibleRelationshipFields.length === 0}<p class="card-empty">
+                  No structured details yet.
+                </p>{/if}
             </section>
-          {/if}
 
-          {#if mapLocations.length > 0}
-            <section class="wiki-section">
-              <h3>Maps</h3>
-              <ul class="wiki-map-links">
-                {#each mapLocations as loc}
-                  <li>
-                    <span class="wiki-rel-label">{loc.role}</span><strong>{loc.label || "Location"}</strong><small
-                      >{loc.mapEntityId.slice(0, 8)}</small>
-                  </li>
-                {/each}
-              </ul>
-            </section>
-          {/if}
-        </article>
+            {#if articleOutline.length > 0}
+              <nav class="rail-card outline-card" aria-label="On this page">
+                <h2>On this page</h2>
+                <ol>
+                  {#each articleOutline as item}<li class={`depth-${item.depth}`}>
+                      <a href={`#${item.id}`}>{item.text}</a>
+                    </li>{/each}
+                </ol>
+              </nav>
+            {/if}
 
-        <aside class="wiki-infobox" aria-label="Infobox">
-          <div class="wiki-infobox-card">
-            {#if profileMediaUrl}<img
-                class="wiki-profile-media"
-                src={profileMediaUrl}
-                alt={`${entity.name} profile`} />{:else if profileFallback}<div
-                class="wiki-profile-fallback"
-                role="img"
-                aria-label={`${entity.name} profile`}>
-                <span class="wiki-profile-fallback-icon" aria-hidden="true">◆</span>
-                <div>
-                  <strong>{profileFallback.filename}</strong><small>Main file · {profileFallback.mime_type}</small>
-                </div>
-              </div>{/if}
-            <div class="wiki-infobox-header">
-              <h3>{entity.name}</h3>
-              <small>{labelForType(entity.entity_type)}</small>
-            </div>
-            <dl class="wiki-infobox-fields">
-              {#if visibleFields.length === 0 && visibleRelationshipFields.length === 0}
-                <p class="wiki-empty small" style="padding: 4px 0;">No infobox data. Add fields in the inspector.</p>
-              {/if}
-              {#each visibleFields as row}
-                <div class="wiki-field-row">
-                  <dt>{row.label}</dt>
-                  <dd>{row.value}</dd>
-                </div>
-              {/each}
-              {#each visibleRelationshipFields as row}
-                <div class="wiki-field-row">
-                  <dt>{row.label}</dt>
-                  <dd>
-                    {#each row.targets as t, i}
-                      <button type="button" class="wiki-link small" onclick={() => openEntity(t.id)}>{t.name}</button
-                      >{#if i < row.targets.length - 1},
-                      {/if}
-                    {/each}
-                  </dd>
-                </div>
-              {/each}
-            </dl>
-          </div>
-
-          {#if entity}
-            <div class="wiki-toc-card">
-              <strong>Connections</strong>
+            <section class="rail-card connections-card">
+              <h2><Link2 size={13} strokeWidth={1.8} /> Connections</h2>
               {#if outbound.length === 0 && inbound.length === 0}
-                <p class="wiki-empty small">No linked articles yet.</p>
+                <p class="card-empty">No linked pages yet.</p>
               {:else}
-                {#if outbound.length > 0}
-                  <p class="wiki-section-hint">Links from this article:</p>
-                  <ul class="wiki-relationships">
-                    {#each outbound as rel}
-                      {@const otherId = rel.target_id}
-                      {@const otherType = entityTypeOf(otherId)}
-                      <li>
-                        <span class="wiki-rel-label">{humanizeType(rel.relationship_type)}</span>
-                        <span class="wiki-rel-arrow" aria-hidden="true"
-                          ><ArrowRight size={12} strokeWidth={1.8} aria-hidden="true" /></span>
-                        <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}>
-                          {entityName(otherId)} <small>{otherType ? `· ${labelForType(otherType)}` : ""}</small>
-                        </button>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-                {#if inbound.length > 0}
-                  <p class="wiki-section-hint">Links here:</p>
-                  <ul class="wiki-backlinks">
-                    {#each inbound as rel}
-                      {@const otherId = rel.source_id}
-                      {@const otherType = entityTypeOf(otherId)}
-                      <li>
-                        <span class="wiki-rel-arrow" aria-hidden="true"
-                          ><ArrowLeft size={12} strokeWidth={1.8} aria-hidden="true" /></span>
-                        <button type="button" class="wiki-link small" onclick={() => openEntity(otherId)}
-                          >{entityName(otherId)}</button>
-                        <span class="wiki-backlink-meta"
-                          >· {humanizeType(rel.relationship_type)}{otherType
-                            ? ` · ${labelForType(otherType)}`
-                            : ""}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
+                {#if outbound.length > 0}<h3>From this page</h3>
+                  <ul>
+                    {#each outbound as relationship}<li>
+                        <span>{humanizeType(relationship.relationship_type)}</span><button
+                          type="button"
+                          onclick={() => openEntity(relationship.target_id)}
+                          >{entityName(relationship.target_id)}</button>
+                      </li>{/each}
+                  </ul>{/if}
+                {#if inbound.length > 0}<h3>Links here</h3>
+                  <ul>
+                    {#each inbound as relationship}<li>
+                        <span>{humanizeType(relationship.relationship_type)}</span><button
+                          type="button"
+                          onclick={() => openEntity(relationship.source_id)}
+                          >{entityName(relationship.source_id)}<small
+                            >{entityTypeOf(relationship.source_id)
+                              ? ` · ${labelForType(entityTypeOf(relationship.source_id))}`
+                              : ""}</small
+                          ></button>
+                      </li>{/each}
+                  </ul>{/if}
               {/if}
-            </div>
-
-            <div class="wiki-toc-card subtle">
-              <strong>On this page</strong>
-              <p class="wiki-empty small">Headings from the article appear in the body’s table of contents.</p>
-            </div>
-          {/if}
-        </aside>
-      </div>
-    {:else}
-      <p class="wiki-empty">Article not found.</p>
-    {/if}
+            </section>
+          </aside>
+        </div>
+      {:else}
+        <div class="empty-state">
+          <BookOpen size={25} strokeWidth={1.5} /><strong>Page not found</strong>
+          <p>It may have been removed or no longer belongs to this knowledge base.</p>
+          <button type="button" onclick={goToMain}>Return home</button>
+        </div>
+      {/if}
+    </main>
   </div>
 </section>
 
 <style>
-.wiki-shell {
+.kb-shell {
   display: flex;
-  min-height: 0;
   height: calc(100vh - 58px);
+  min-height: 0;
   flex-direction: column;
-  background: var(--canvas, #fbf8f0);
+  background: #f4f5f2;
+  color: #252b26;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
-.wiki-header {
+.kb-topbar {
+  z-index: 20;
   display: flex;
+  min-height: 58px;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 70px;
-  padding: 12px 40px;
-  border-bottom: 1px solid var(--line, #e9e1d4);
-  background: var(--surface, #fffefa);
+  padding: 10px 18px;
+  border-bottom: 1px solid #dde1da;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 8px rgba(30, 37, 31, 0.03);
 }
-.wiki-header-left {
+.kb-brand,
+.topbar-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 9px;
+}
+.kb-brand {
   min-width: 0;
 }
-.wiki-title h1 {
-  margin: 4px 0 0;
-  font: 500 26px/1.05 var(--font-display, Georgia, serif);
-  color: var(--ink, #302c26);
+.kb-brand > div {
+  display: grid;
+  gap: 2px;
 }
-.wiki-title small {
-  color: var(--ink-soft, #8f897e);
-  font-size: 11px;
+.kb-brand strong {
+  font-size: 12px;
 }
-.overline {
-  color: var(--ink-faint, #b8b0a0);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.kb-brand small {
+  color: #899088;
+  font-size: 9px;
 }
-.quiet-button {
-  padding: 8px 10px;
-  border: 1px solid #ded8cd;
+.brand-mark {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
   border-radius: 8px;
-  background: var(--surface, #fffefa);
-  color: var(--ink-soft, #62594e);
-  font: 500 11px/1.2 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-  cursor: pointer;
+  background: #e4ece4;
+  color: #416047;
 }
-.quiet-button:hover {
-  background: var(--surface-muted, #f7f1e7);
-  color: var(--ink);
-}
-.quiet-button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.quiet-button.small {
-  padding: 4px 8px;
-  font-size: 11px;
-}
-.quiet-button.small.icon {
+.back-workspace,
+.toolbar-button {
   display: inline-flex;
+  min-height: 34px;
   align-items: center;
   justify-content: center;
-  padding: 4px 9px;
-  line-height: 1;
-  font-size: 14px;
+  gap: 6px;
+  border: 1px solid #d9ddd6;
+  border-radius: 8px;
+  background: #fff;
+  color: #4d584f;
+  cursor: pointer;
 }
-.quiet-button:active {
-  transform: translateY(1px);
+.back-workspace {
+  width: 34px;
 }
-.wiki-container {
+.toolbar-button {
+  padding: 0 10px;
+  font: 650 11px var(--font-body, Inter, sans-serif);
+}
+.toolbar-button.icon {
+  width: 34px;
+  padding: 0;
+}
+.toolbar-button:hover {
+  background: #f2f6f2;
+  color: #2f4e35;
+}
+.toolbar-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.kb-workspace {
+  display: grid;
+  min-height: 0;
   flex: 1;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+.kb-content {
+  min-width: 0;
   overflow: auto;
-  padding: 28px 40px 40px;
 }
-.wiki-main-intro {
-  max-width: 720px;
-  margin-bottom: 24px;
+.kb-alert {
+  margin: 14px 22px 0;
+  padding: 9px 11px;
+  border: 1px solid #edcec5;
+  border-radius: 8px;
+  background: #fff2ee;
+  color: #934b3d;
+  font-size: 11px;
 }
-.wiki-main-intro h2 {
-  margin: 0 0 6px;
-  font: 500 22px var(--font-display, Georgia, serif);
-  color: var(--ink);
+.kb-loading,
+.article-loading {
+  color: #818981;
+  font-size: 11px;
 }
-.wiki-main-intro p {
-  margin: 0 0 14px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
+.kb-loading {
+  padding: 48px;
 }
-.wiki-search {
+.article-loading {
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #f3f5f1;
+}
+.kb-home {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 44px clamp(24px, 5vw, 70px) 70px;
+}
+.home-hero {
+  padding: clamp(30px, 5vw, 56px);
+  border: 1px solid #dce2da;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #fff 0%, #f0f5ee 100%);
+  box-shadow: 0 16px 50px rgba(38, 46, 39, 0.06);
+}
+.eyebrow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 360px;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 1px 2px rgba(38, 42, 33, 0.04);
+  gap: 6px;
+  color: #648069;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
-.wiki-search input {
-  flex: 1;
-  border: none;
-  background: transparent;
-  outline: none;
-  font: inherit;
-  font-size: 12px;
-  color: var(--ink);
+.home-hero h1 {
+  max-width: 720px;
+  margin: 13px 0 12px;
+  color: #1f2921;
+  font: 600 clamp(32px, 5vw, 54px)/1.04 var(--font-display, Georgia, serif);
+  letter-spacing: -0.025em;
 }
-.wiki-groups {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 16px;
+.home-hero p {
+  max-width: 620px;
+  margin: 0;
+  color: #697169;
+  font-size: 13px;
+  line-height: 1.65;
 }
-.wiki-group {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 16px;
-  box-shadow: 0 1px 3px rgba(38, 42, 33, 0.06);
-}
-.wiki-group-header {
+.home-stats {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 26px;
 }
-.wiki-group-header h3 {
-  margin: 0;
-  font: 600 14px var(--font-display);
-  color: var(--ink);
-}
-.wiki-group-header small {
-  color: var(--ink-faint);
-  font-size: 11px;
-  background: var(--surface-muted);
-  padding: 2px 7px;
+.home-stats span {
+  padding: 7px 11px;
+  border: 1px solid #dce3db;
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #707870;
+  font-size: 10px;
 }
-.wiki-group-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 4px;
-}
-.wiki-link {
-  border: none;
-  background: transparent;
-  color: var(--accent-dark, #365342);
-  font: inherit;
+.home-stats strong {
+  margin-right: 3px;
+  color: #34503a;
   font-size: 12px;
+}
+.home-section {
+  margin-top: 40px;
+}
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.section-heading span {
+  color: #929990;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.section-heading h2 {
+  margin: 4px 0 0;
+  font: 600 21px var(--font-display, Georgia, serif);
+}
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.recent-grid > button {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid #dfe2dc;
+  border-radius: 12px;
+  background: #fff;
+  color: #29302a;
   text-align: left;
   cursor: pointer;
-  padding: 0;
-  display: inline-flex;
-  gap: 6px;
-  align-items: baseline;
 }
-.wiki-link:hover {
+.recent-grid > button:hover {
+  border-color: #bdc9bd;
+  box-shadow: 0 8px 24px rgba(38, 46, 39, 0.06);
+}
+.recent-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 10px;
+  background: #e8eee6;
+  color: #436048;
+  font: 650 17px var(--font-display, Georgia, serif);
+}
+.recent-grid button > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.recent-grid small,
+.recent-grid em {
+  color: #8d948d;
+  font-size: 9px;
+  font-style: normal;
+}
+.recent-grid strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.category-grid article {
+  padding: 16px;
+  border: 1px solid #dfe2dc;
+  border-radius: 13px;
+  background: #fff;
+}
+.category-grid header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #eceee9;
+}
+.category-grid header > span {
+  display: grid;
+  width: 35px;
+  height: 35px;
+  place-items: center;
+  border-radius: 9px;
+  background: #edf1eb;
+  color: #526c56;
+  font: 650 14px var(--font-display, Georgia, serif);
+}
+.category-grid h3 {
+  margin: 0;
+  font: 600 14px var(--font-display, Georgia, serif);
+}
+.category-grid header small {
+  color: #939993;
+  font-size: 9px;
+}
+.category-grid ul {
+  display: grid;
+  gap: 2px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.category-grid li button {
+  width: 100%;
+  padding: 5px 2px;
+  border: 0;
+  background: transparent;
+  color: #46604b;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.category-grid li button:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.wiki-link.small {
-  font-size: 11px;
+.more-count {
+  display: block;
+  margin-top: 7px;
+  color: #9a9f99;
+  font-size: 9px;
 }
-.wiki-link-name {
-  font-weight: 500;
-  color: var(--accent-dark);
-}
-.wiki-empty {
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.wiki-empty.small {
-  font-size: 11px;
-}
-.wiki-empty-box {
+.article-grid {
   display: grid;
-  place-items: start;
-  gap: 10px;
-  padding: 18px;
-  border: 1px dashed var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
-}
-.wiki-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 24px;
-  align-items: start;
-  max-width: 1180px;
+  width: min(1240px, 100%);
+  min-height: 100%;
+  grid-template-columns: minmax(0, 820px) 300px;
+  gap: 26px;
   margin: 0 auto;
-  width: 100%;
+  padding: 32px clamp(22px, 4vw, 52px) 70px;
+  align-items: start;
 }
-.wiki-article {
+.kb-article {
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 24px 26px;
-  box-shadow: 0 2px 8px rgba(38, 42, 33, 0.06);
+  padding: clamp(26px, 5vw, 58px);
+  border: 1px solid #dfe2dc;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 40px rgba(35, 42, 36, 0.055);
 }
-.wiki-breadcrumb {
+.breadcrumbs {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 16px;
-  font-size: 12px;
-  color: var(--ink-soft);
+  gap: 7px;
+  margin-bottom: 26px;
+  color: #8d948d;
+  font-size: 10px;
 }
-.wiki-nav-history {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.wiki-crumb {
-  border: none;
+.breadcrumbs button {
+  border: 0;
   background: transparent;
-  color: var(--accent-dark);
-  cursor: pointer;
+  color: #52705a;
   font: inherit;
-  padding: 0;
+  cursor: pointer;
 }
-.wiki-crumb:hover {
-  text-decoration: underline;
+.article-heading {
+  margin-bottom: 32px;
+  padding-bottom: 23px;
+  border-bottom: 1px solid #e5e7e2;
 }
-.wiki-crumb-current {
-  color: var(--ink);
-  font-weight: 600;
+.article-type {
+  color: #637e67;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
-.wiki-article-header {
-  margin-bottom: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--line);
+.article-heading h1 {
+  margin: 8px 0 8px;
+  color: #1e241f;
+  font: 650 clamp(34px, 5vw, 50px)/1.03 var(--font-display, Georgia, serif);
+  letter-spacing: -0.025em;
 }
-.wiki-article-header h1 {
-  margin: 0 0 8px;
-  font: 600 28px/1.1 var(--font-display, Georgia, serif);
-  color: var(--ink);
+.article-heading p {
+  margin: 0;
+  color: #939993;
+  font-size: 10px;
 }
-.wiki-body {
-  min-width: 0;
+.article-body {
+  font-size: 14px;
+  line-height: 1.78;
 }
-.wiki-section {
-  margin-top: 26px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
+.article-section {
+  margin-top: 34px;
+  padding-top: 22px;
+  border-top: 1px solid #e7e9e4;
 }
-.wiki-section h3 {
-  margin: 0 0 10px;
-  font: 600 13px var(--font-display);
-  color: var(--ink);
+.article-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 12px;
+  font: 600 15px var(--font-display, Georgia, serif);
 }
-.wiki-section-hint {
-  margin: 9px 0 10px;
-  color: var(--ink-faint);
-  font-size: 11px;
-}
-.wiki-relationships,
-.wiki-assets,
-.wiki-map-links,
-.wiki-backlinks {
-  list-style: none;
+.resource-list {
+  display: grid;
+  gap: 7px;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 8px;
-  font-size: 12px;
+  list-style: none;
 }
-.wiki-relationships li,
-.wiki-backlinks li {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: var(--surface-muted);
-  border: 1px solid transparent;
-}
-.wiki-rel-label {
-  color: var(--ink-faint);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 600;
-}
-.wiki-rel-arrow {
-  color: var(--ink-faint);
-}
-.wiki-backlink-meta {
-  color: var(--ink-faint);
-  font-size: 11px;
-}
-.wiki-assets li,
-.wiki-map-links li {
+.resource-list li {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid #e5e8e2;
   border-radius: 8px;
-  background: var(--surface-muted);
+  background: #f8f9f7;
+  color: #58705d;
 }
-.wiki-asset-icon {
-  color: var(--accent-dark);
-  font-size: 10px;
-}
-.wiki-infobox {
+.resource-list li span {
   display: grid;
-  gap: 16px;
+  gap: 2px;
+}
+.resource-list strong {
+  color: #3a423b;
+  font-size: 11px;
+}
+.resource-list small {
+  color: #90968f;
+  font-size: 9px;
+}
+.kb-rail {
   position: sticky;
   top: 0;
+  display: grid;
+  gap: 13px;
 }
-.wiki-infobox-card {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
+.info-card,
+.rail-card {
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(38, 42, 33, 0.06);
+  border: 1px solid #dde1da;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(35, 42, 36, 0.04);
 }
-.wiki-profile-media {
+.profile-media {
   display: block;
   width: 100%;
-  max-height: 360px;
+  max-height: 310px;
   object-fit: cover;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-muted);
+  border-bottom: 1px solid #e1e4de;
 }
-.wiki-profile-fallback {
+.profile-file {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-muted);
+  gap: 9px;
+  padding: 14px;
+  background: #edf1eb;
+  color: #58705d;
 }
-.wiki-profile-fallback-icon {
+.profile-file span {
   display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: #ede2d2;
-  color: var(--accent);
-  font-size: 14px;
 }
-.wiki-profile-fallback div {
-  min-width: 0;
-}
-.wiki-profile-fallback strong {
-  display: block;
-  font-size: 12px;
-  color: var(--ink);
-}
-.wiki-profile-fallback small {
-  display: block;
-  margin-top: 2px;
-  color: var(--ink-faint);
+.profile-file strong {
+  color: #364139;
   font-size: 11px;
 }
-.wiki-infobox-header {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, var(--surface-muted) 0%, var(--surface) 100%);
+.profile-file small {
+  font-size: 9px;
 }
-.wiki-infobox-header h3 {
+.info-card > header {
+  padding: 15px 16px 12px;
+  border-bottom: 1px solid #e7e9e4;
+  background: linear-gradient(#f7f9f6, #fff);
+}
+.info-card h2 {
   margin: 0;
-  font: 600 16px var(--font-display);
-  color: var(--ink);
+  font: 600 17px var(--font-display, Georgia, serif);
 }
-.wiki-infobox-header small {
-  color: var(--ink-soft);
-  font-size: 11px;
+.info-card header p {
+  margin: 3px 0 0;
+  color: #838b83;
+  font-size: 10px;
 }
-.wiki-infobox-fields {
-  margin: 0;
-  padding: 14px 16px;
+.info-card dl {
   display: grid;
   gap: 12px;
+  margin: 0;
+  padding: 14px 16px;
 }
-.wiki-field-row {
+.info-card dl div {
   display: grid;
   gap: 3px;
 }
-.wiki-field-row dt {
-  color: var(--ink-faint);
-  font-size: 10px;
-  letter-spacing: 0.06em;
+.info-card dt {
+  color: #8b928b;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-weight: 600;
 }
-.wiki-field-row dd {
+.info-card dd {
   margin: 0;
-  color: var(--ink);
-  font-size: 12px;
+  color: #39413a;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.info-card dd button,
+.connections-card button {
+  border: 0;
+  background: transparent;
+  color: #42634a;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.rail-card {
+  padding: 14px 15px;
+}
+.rail-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 9px;
+  color: #707870;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.outline-card ol,
+.connections-card ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.outline-card a {
+  display: block;
+  color: #59645b;
+  font-size: 10px;
+  line-height: 1.35;
+  text-decoration: none;
+}
+.outline-card a:hover {
+  color: #35583d;
+}
+.outline-card .depth-2 {
+  padding-left: 9px;
+}
+.outline-card .depth-3,
+.outline-card .depth-4,
+.outline-card .depth-5,
+.outline-card .depth-6 {
+  padding-left: 18px;
+}
+.connections-card h3 {
+  margin: 12px 0 6px;
+  color: #979c96;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.connections-card li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid #f0f1ee;
+}
+.connections-card li > span {
+  color: #979d97;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+.connections-card button {
+  font-size: 10px;
+}
+.connections-card button small {
+  color: #939993;
+}
+.card-empty {
+  margin: 10px 15px 15px;
+  color: #959b95;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.rail-card .card-empty {
+  margin: 0;
+}
+.empty-state {
+  display: grid;
+  min-height: 240px;
+  place-items: center;
+  align-content: center;
+  padding: 28px;
+  color: #849087;
+  text-align: center;
+}
+.empty-state strong {
+  margin-top: 10px;
+  color: #354039;
+  font: 600 18px var(--font-display, Georgia, serif);
+}
+.empty-state p {
+  max-width: 42ch;
+  margin: 6px 0 0;
+  font-size: 11px;
   line-height: 1.5;
 }
-.wiki-toc-card {
-  border: 1px solid var(--line);
+.empty-state button {
+  margin-top: 13px;
+  padding: 8px 11px;
+  border: 1px solid #cbd5ca;
+  border-radius: 8px;
+  background: #f2f6f1;
+  color: #3e6146;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.article-empty {
+  min-height: 260px;
+  border: 1px dashed #dfe3dc;
   border-radius: 12px;
-  background: var(--surface);
-  padding: 14px 16px;
-  box-shadow: 0 1px 3px rgba(38, 42, 33, 0.04);
+  background: #fafbf9;
 }
-.wiki-toc-card strong {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+@media (max-width: 1100px) {
+  .article-grid {
+    grid-template-columns: minmax(0, 1fr) 270px;
+    gap: 18px;
+    padding-inline: 24px;
+  }
 }
-.wiki-toc-card.subtle {
-  background: var(--surface-muted);
-}
-@media (max-width: 1080px) {
-  .wiki-layout {
+@media (max-width: 900px) {
+  .kb-workspace {
     grid-template-columns: 1fr;
   }
-  .wiki-infobox {
+  .kb-content {
+    min-height: 0;
+  }
+  .article-grid {
+    grid-template-columns: 1fr;
+  }
+  .kb-rail {
     position: static;
   }
-}
-@media (max-width: 760px) {
-  .wiki-header {
-    display: grid;
-    gap: 10px;
-    padding: 14px 17px;
-  }
-  .wiki-header-left {
-    flex-direction: column;
+  .kb-topbar {
     align-items: flex-start;
   }
-  .wiki-container {
-    padding: 20px 17px 28px;
+  .topbar-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
-  .wiki-article {
-    padding: 18px 16px;
+}
+@media (max-width: 650px) {
+  .kb-topbar {
+    padding: 9px 12px;
+  }
+  .kb-brand small,
+  .toolbar-button.icon {
+    display: none;
+  }
+  .toolbar-button {
+    min-height: 32px;
+  }
+  .kb-home {
+    padding: 24px 15px 45px;
+  }
+  .home-hero {
+    padding: 26px 22px;
+  }
+  .recent-grid {
+    grid-template-columns: 1fr;
+  }
+  .article-grid {
+    padding: 15px 12px 42px;
+  }
+  .kb-article {
+    padding: 24px 18px;
+  }
+  .article-heading h1 {
+    font-size: 34px;
+  }
+  .topbar-actions {
+    gap: 5px;
+  }
+}
+@media print {
+  .kb-shell {
+    height: auto;
+    background: #fff;
+  }
+  .kb-topbar,
+  .kb-alert {
+    display: none !important;
+  }
+  .kb-workspace {
+    display: block;
+  }
+  .kb-content {
+    overflow: visible;
+  }
+  .article-grid {
+    display: block;
+    width: auto;
+    padding: 0;
+  }
+  .kb-article {
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+  }
+  .breadcrumbs,
+  .article-loading,
+  .article-empty button {
+    display: none !important;
+  }
+  .kb-rail {
+    display: block;
+    margin-top: 28px;
+  }
+  .kb-rail > * {
+    margin-top: 14px;
+    break-inside: avoid;
+    box-shadow: none;
+  }
+  .outline-card {
+    display: none;
+  }
+  .article-section,
+  .connections-card {
+    break-inside: avoid;
+  }
+  .profile-media {
+    max-width: 280px;
+  }
+  .article-heading h1 {
+    font-size: 38px;
   }
 }
 </style>

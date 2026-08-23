@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn main_window_capability_allows_printing_wiki_pages() {
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+    let permissions = capability["permissions"].as_array().unwrap();
+    assert!(permissions
+        .iter()
+        .any(|permission| permission == "core:webview:allow-print"));
+}
+
+#[test]
 fn physical_jobs_are_session_scoped_and_expire() {
     let mut manager = PhysicalJobManager::default();
     let first_session = manager.begin_session("project-a".into());

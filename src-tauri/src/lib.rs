@@ -15,7 +15,7 @@ use daena_core::{
     CoreError, CoreService, CreateEntity, CreateEntry, CreateEntryField, CreateEntryRelationship,
     Entity, ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
     GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
-    RelationshipInput, SaveDocument, SaveEntry,
+    RelationshipInput, SaveDocument, SaveEntry, WikiPageExportFormat,
 };
 use daena_plugin_api::{
     merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
@@ -9206,6 +9206,31 @@ async fn project_export_markdown(
 }
 
 #[tauri::command]
+async fn project_export_wiki_page(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    entity_id: String,
+    destination: String,
+    format: WikiPageExportFormat,
+    manifest_id: String,
+) -> Result<String, String> {
+    let plugins = plugins.inner().clone();
+    with_read_project(state, move |project| {
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let manifest = effective_module_manifests(project, &host)?
+            .into_iter()
+            .find_map(|(manifest, enabled)| {
+                (enabled && manifest.id == manifest_id).then_some(manifest)
+            })
+            .ok_or_else(|| CoreError::Validation("wiki manifest is not enabled".into()))?;
+        project.export_wiki_page_to(&entity_id, destination, format, &manifest)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_recovery_backup(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedCore>,
@@ -9591,6 +9616,7 @@ pub fn run() {
             project_query_map_locations,
             project_backup,
             project_export_markdown,
+            project_export_wiki_page,
             project_recovery_backup,
             project_restore_recovery_backup,
             project_restore,

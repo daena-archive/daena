@@ -6,6 +6,7 @@ import MarkdownNode from "./MarkdownNode.svelte";
 export let markdown = "";
 export let entities: Entity[] = [];
 export let onOpenEntity: (id: string) => void = () => {};
+export let showOutline = true;
 
 $: tree = parseMarkdown(markdown);
 $: outline = headingOutlineFromTree(tree);
@@ -13,7 +14,7 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 </script>
 
 <div class="markdown-article">
-  {#if outline.length > 1}
+  {#if showOutline && outline.length > 1}
     <nav class="markdown-toc" aria-label="Table of contents">
       <strong>On this page</strong>
       <ol>

@@ -5249,6 +5249,7 @@ onMount(() => {
       </div>
     {:else if loreWikiOpen}
       <WikiView
+        manifest={manifestForWorkspaceSection("lore")!}
         initialEntityId={loreWikiEntityId}
         onClose={closeLoreWiki}
         onSelectEntity={(id) => {

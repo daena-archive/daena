@@ -6,7 +6,8 @@ use crate::external_import::{
     ImportedFieldReport, ImportedObjectReport, ImportedRelationshipReport, StagedLinkKind,
     StagedLinkResolution, ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
-use daena_plugin_api::MetadataFieldDefinition;
+use daena_plugin_api::{MetadataFieldDefinition, PluginManifest};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use rusqlite::{named_params, params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,6 +104,13 @@ pub struct SearchPassage {
     pub content: String,
     pub lexical_rank: f64,
     pub source_kind: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WikiPageExportFormat {
+    Markdown,
+    Html,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldValue {
@@ -956,6 +964,276 @@ fn markdown_relationship_heading(value: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
         None => "Relationship".into(),
     }
+}
+
+fn rewrite_markdown_entity_links_as_labels(body: &str) -> String {
+    let mut output = String::with_capacity(body.len());
+    let mut in_fence = false;
+    for (line_index, line) in body.split('\n').enumerate() {
+        if line_index > 0 {
+            output.push('\n');
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            output.push_str(line);
+            continue;
+        }
+        if in_fence {
+            output.push_str(line);
+            continue;
+        }
+
+        let mut cursor = 0;
+        while cursor < line.len() {
+            if line[cursor..].starts_with('`') {
+                if let Some(end) = line[cursor + 1..].find('`') {
+                    let end = cursor + end + 2;
+                    output.push_str(&line[cursor..end]);
+                    cursor = end;
+                    continue;
+                }
+            }
+            if line[cursor..].starts_with("[[") {
+                if let Some(label_end) = line[cursor + 2..].find("]](") {
+                    let label_start = cursor + 2;
+                    let label_end = label_start + label_end;
+                    if let Some(id_end) = line[label_end + 3..].find(')') {
+                        output.push_str(&line[label_start..label_end]);
+                        cursor = label_end + 3 + id_end + 1;
+                        continue;
+                    }
+                }
+            }
+            if line[cursor..].starts_with('[') && !line[cursor..].starts_with("[[") {
+                if let Some(label_end) = line[cursor + 1..].find("](") {
+                    let label_start = cursor + 1;
+                    let label_end = label_start + label_end;
+                    let target_start = label_end + 2;
+                    if let Some(target_end) = line[target_start..].find(')') {
+                        let target_end = target_start + target_end;
+                        if line[target_start..target_end].starts_with("daena://entity/") {
+                            output.push_str(&line[label_start..label_end]);
+                            cursor = target_end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(next) = line[cursor..].chars().next() {
+                output.push(next);
+                cursor += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+    output
+}
+
+fn wiki_display_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(value) => {
+            if *value {
+                "Yes".into()
+            } else {
+                "No".into()
+            }
+        }
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(wiki_display_value)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_json::Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+fn wiki_entity_type_label(manifest: &PluginManifest, entity_type: Option<&str>) -> String {
+    let Some(entity_type) = entity_type else {
+        return "Uncategorized".into();
+    };
+    manifest
+        .templates
+        .iter()
+        .find(|template| template.entity_type == entity_type)
+        .map(|template| template.name.clone())
+        .unwrap_or_else(|| markdown_relationship_heading(entity_type))
+}
+
+fn wiki_field_label(
+    manifest: &PluginManifest,
+    namespace: &str,
+    key: &str,
+    entity_type: Option<&str>,
+) -> Option<String> {
+    manifest
+        .schemas
+        .iter()
+        .find(|schema| schema.namespace == namespace)
+        .and_then(|schema| schema.fields.iter().find(|field| field.key == key))
+        .filter(|field| field.field_type != "relationship")
+        .filter(|field| {
+            field.entity_types.as_ref().is_none_or(|entity_types| {
+                entity_types.is_empty()
+                    || entity_type.is_some_and(|entity_type| {
+                        entity_types
+                            .iter()
+                            .any(|candidate| candidate == entity_type)
+                    })
+            })
+        })
+        .map(|field| field.label.clone())
+}
+
+fn wiki_relationship_label(manifest: &PluginManifest, relationship_type: &str) -> String {
+    manifest
+        .schemas
+        .iter()
+        .flat_map(|schema| schema.fields.iter())
+        .find(|field| field.relationship_type.as_deref() == Some(relationship_type))
+        .map(|field| field.label.clone())
+        .unwrap_or_else(|| markdown_relationship_heading(relationship_type))
+}
+
+fn markdown_to_safe_html(markdown: &str) -> String {
+    let mut output = String::new();
+    for event in Parser::new_ext(markdown, Options::all()) {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Paragraph => output.push_str("<p>"),
+                Tag::Heading { level, .. } => output.push_str(&format!("<{level}>")),
+                Tag::BlockQuote(_) => output.push_str("<blockquote>"),
+                Tag::CodeBlock(kind) => {
+                    output.push_str("<pre><code");
+                    if let CodeBlockKind::Fenced(language) = kind {
+                        if !language.is_empty() {
+                            output.push_str(" class=\"language-");
+                            output.push_str(&html_escape(&language));
+                            output.push('"');
+                        }
+                    }
+                    output.push('>');
+                }
+                Tag::HtmlBlock | Tag::MetadataBlock(_) => {}
+                Tag::List(Some(start)) => output.push_str(&format!("<ol start=\"{start}\">")),
+                Tag::List(None) => output.push_str("<ul>"),
+                Tag::Item => output.push_str("<li>"),
+                Tag::FootnoteDefinition(label) => {
+                    output.push_str(&format!("<aside id=\"footnote-{}\">", html_escape(&label)))
+                }
+                Tag::DefinitionList => output.push_str("<dl>"),
+                Tag::DefinitionListTitle => output.push_str("<dt>"),
+                Tag::DefinitionListDefinition => output.push_str("<dd>"),
+                Tag::Table(_) => output.push_str("<table>"),
+                Tag::TableHead => output.push_str("<thead>"),
+                Tag::TableRow => output.push_str("<tr>"),
+                Tag::TableCell => output.push_str("<td>"),
+                Tag::Emphasis => output.push_str("<em>"),
+                Tag::Strong => output.push_str("<strong>"),
+                Tag::Strikethrough => output.push_str("<del>"),
+                Tag::Link {
+                    dest_url, title, ..
+                } => {
+                    let destination = dest_url.trim();
+                    let destination = if destination.to_ascii_lowercase().starts_with("javascript:")
+                    {
+                        "#"
+                    } else {
+                        destination
+                    };
+                    output.push_str("<a href=\"");
+                    output.push_str(&html_escape(destination));
+                    if !title.is_empty() {
+                        output.push_str("\" title=\"");
+                        output.push_str(&html_escape(&title));
+                    }
+                    output.push_str("\">");
+                }
+                Tag::Image { .. } => output.push_str("<span class=\"image-alt\">"),
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Paragraph => output.push_str("</p>"),
+                TagEnd::Heading(level) => output.push_str(&format!("</{level}>")),
+                TagEnd::BlockQuote(_) => output.push_str("</blockquote>"),
+                TagEnd::CodeBlock => output.push_str("</code></pre>"),
+                TagEnd::HtmlBlock | TagEnd::MetadataBlock(_) => {}
+                TagEnd::List(true) => output.push_str("</ol>"),
+                TagEnd::List(false) => output.push_str("</ul>"),
+                TagEnd::Item => output.push_str("</li>"),
+                TagEnd::FootnoteDefinition => output.push_str("</aside>"),
+                TagEnd::DefinitionList => output.push_str("</dl>"),
+                TagEnd::DefinitionListTitle => output.push_str("</dt>"),
+                TagEnd::DefinitionListDefinition => output.push_str("</dd>"),
+                TagEnd::Table => output.push_str("</table>"),
+                TagEnd::TableHead => output.push_str("</thead><tbody>"),
+                TagEnd::TableRow => output.push_str("</tr>"),
+                TagEnd::TableCell => output.push_str("</td>"),
+                TagEnd::Emphasis => output.push_str("</em>"),
+                TagEnd::Strong => output.push_str("</strong>"),
+                TagEnd::Strikethrough => output.push_str("</del>"),
+                TagEnd::Link => output.push_str("</a>"),
+                TagEnd::Image => output.push_str("</span>"),
+            },
+            Event::Text(value) => output.push_str(&html_escape(&value)),
+            Event::Code(value) => {
+                output.push_str("<code>");
+                output.push_str(&html_escape(&value));
+                output.push_str("</code>");
+            }
+            Event::InlineMath(value) => {
+                output.push_str("<code class=\"math\">");
+                output.push_str(&html_escape(&value));
+                output.push_str("</code>");
+            }
+            Event::DisplayMath(value) => {
+                output.push_str("<pre class=\"math\"><code>");
+                output.push_str(&html_escape(&value));
+                output.push_str("</code></pre>");
+            }
+            Event::Html(value) | Event::InlineHtml(value) => output.push_str(&html_escape(&value)),
+            Event::FootnoteReference(label) => output.push_str(&format!(
+                "<sup><a href=\"#footnote-{}\">{}</a></sup>",
+                html_escape(&label),
+                html_escape(&label)
+            )),
+            Event::SoftBreak => output.push('\n'),
+            Event::HardBreak => output.push_str("<br>\n"),
+            Event::Rule => output.push_str("<hr>"),
+            Event::TaskListMarker(checked) => output.push_str(if checked {
+                "<input type=\"checkbox\" checked disabled>"
+            } else {
+                "<input type=\"checkbox\" disabled>"
+            }),
+        }
+    }
+    if output.contains("<tbody>") && !output.contains("</tbody>") {
+        output = output.replace("</table>", "</tbody></table>");
+    }
+    output
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn wiki_export_target(destination: &Path, stem: &str, extension: &str) -> PathBuf {
+    let mut target = destination.join(format!("{stem}.{extension}"));
+    let mut suffix = 2;
+    while target.exists() {
+        target = destination.join(format!("{stem}-{suffix}.{extension}"));
+        suffix += 1;
+    }
+    target
 }
 
 fn project_database_path(root: &Path) -> PathBuf {
@@ -8464,6 +8742,193 @@ impl ProjectStore {
             asset.revision = self.revision_for_asset_value(asset)?;
         }
         Ok(assets)
+    }
+
+    pub fn export_wiki_page_to(
+        &self,
+        entity_id: &str,
+        destination: impl AsRef<Path>,
+        format: WikiPageExportFormat,
+        manifest: &PluginManifest,
+    ) -> Result<String, CoreError> {
+        let entities = self.list_entities()?;
+        let entity = entities
+            .iter()
+            .find(|entity| entity.id == entity_id && !entity.deleted)
+            .ok_or_else(|| CoreError::Validation("wiki article not found".into()))?;
+        let allowed_types = manifest
+            .schemas
+            .iter()
+            .flat_map(|schema| schema.entity_types.iter())
+            .collect::<BTreeSet<_>>();
+        if entity
+            .entity_type
+            .as_ref()
+            .is_none_or(|entity_type| !allowed_types.contains(entity_type))
+        {
+            return Err(CoreError::Validation(
+                "entity is not part of the selected wiki manifest".into(),
+            ));
+        }
+
+        let document = self.list_documents(entity.id.clone())?.into_iter().next();
+        if document
+            .as_ref()
+            .is_some_and(|document| document.format != "markdown")
+        {
+            return Err(CoreError::Validation(
+                "wiki page export requires a Markdown document".into(),
+            ));
+        }
+        let body = document
+            .map(|document| rewrite_markdown_entity_links_as_labels(&document.body))
+            .unwrap_or_default();
+
+        let mut fields = self
+            .list_fields(entity.id.clone())?
+            .into_iter()
+            .filter_map(|field| {
+                let label = wiki_field_label(
+                    manifest,
+                    &field.namespace,
+                    &field.key,
+                    entity.entity_type.as_deref(),
+                )?;
+                let value = wiki_display_value(&field.value);
+                (!value.trim().is_empty()).then_some((label, field.namespace, field.key, value))
+            })
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| {
+            left.0
+                .to_lowercase()
+                .cmp(&right.0.to_lowercase())
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+
+        let names = entities
+            .iter()
+            .map(|entity| (entity.id.as_str(), entity.name.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let relationships = self.list_relationships(entity.id.clone())?;
+        let mut outbound = relationships
+            .iter()
+            .filter(|relationship| relationship.source_id == entity.id)
+            .map(|relationship| {
+                (
+                    wiki_relationship_label(manifest, &relationship.relationship_type),
+                    names
+                        .get(relationship.target_id.as_str())
+                        .copied()
+                        .unwrap_or(relationship.target_id.as_str()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut inbound = relationships
+            .iter()
+            .filter(|relationship| relationship.target_id == entity.id)
+            .map(|relationship| {
+                (
+                    wiki_relationship_label(manifest, &relationship.relationship_type),
+                    names
+                        .get(relationship.source_id.as_str())
+                        .copied()
+                        .unwrap_or(relationship.source_id.as_str()),
+                )
+            })
+            .collect::<Vec<_>>();
+        outbound.sort();
+        inbound.sort();
+
+        let mut attachments = self
+            .list_assets(entity.id.clone())?
+            .into_iter()
+            .map(|asset| (asset.filename, asset.mime_type, asset.size))
+            .collect::<Vec<_>>();
+        attachments.sort_by_key(|left| left.0.to_lowercase());
+
+        let mut markdown = format!(
+            "# {}\n\n*{}*\n",
+            markdown_escape_label(&entity.name),
+            markdown_escape_label(&wiki_entity_type_label(
+                manifest,
+                entity.entity_type.as_deref()
+            ))
+        );
+        if !fields.is_empty() {
+            markdown.push_str("\n## Details\n\n| Field | Value |\n| --- | --- |\n");
+            for (label, _, _, value) in &fields {
+                markdown.push_str("| ");
+                markdown.push_str(&label.replace('|', "\\|").replace('\n', " "));
+                markdown.push_str(" | ");
+                markdown.push_str(&value.replace('|', "\\|").replace('\n', "<br>"));
+                markdown.push_str(" |\n");
+            }
+        }
+        if !body.trim().is_empty() {
+            markdown.push('\n');
+            markdown.push_str(body.trim());
+            markdown.push('\n');
+        }
+        if !outbound.is_empty() || !inbound.is_empty() {
+            markdown.push_str("\n## Connections\n");
+            if !outbound.is_empty() {
+                markdown.push_str("\n### From this page\n\n");
+                for (label, name) in &outbound {
+                    markdown.push_str(&format!(
+                        "- **{}:** {}\n",
+                        markdown_escape_label(label),
+                        markdown_escape_label(name)
+                    ));
+                }
+            }
+            if !inbound.is_empty() {
+                markdown.push_str("\n### Links here\n\n");
+                for (label, name) in &inbound {
+                    markdown.push_str(&format!(
+                        "- **{}:** {}\n",
+                        markdown_escape_label(label),
+                        markdown_escape_label(name)
+                    ));
+                }
+            }
+        }
+        if !attachments.is_empty() {
+            markdown.push_str("\n## Attachments\n\n");
+            for (filename, mime_type, size) in &attachments {
+                markdown.push_str(&format!(
+                    "- {} — {} ({} KB)\n",
+                    markdown_escape_label(filename),
+                    markdown_escape_label(mime_type),
+                    (size + 1023) / 1024
+                ));
+            }
+        }
+
+        let destination = destination.as_ref();
+        std::fs::create_dir_all(destination).map_err(|source| CoreError::Io {
+            operation: "create wiki export destination",
+            source,
+        })?;
+        let stem = markdown_export_stem(&entity.name);
+        let (extension, bytes) = match format {
+            WikiPageExportFormat::Markdown => ("md", markdown.into_bytes()),
+            WikiPageExportFormat::Html => {
+                let article = markdown_to_safe_html(&markdown);
+                let title = html_escape(&entity.name);
+                let html = format!(
+                    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>{}</style></head><body><main class=\"article\">{article}</main></body></html>",
+                    "html{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#f5f3ee;color:#272923;font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.article{width:min(820px,calc(100% - 40px));margin:48px auto;padding:clamp(28px,6vw,72px);border:1px solid #dedbd2;border-radius:18px;background:#fff;box-shadow:0 18px 55px rgba(44,45,38,.08)}h1,h2,h3{color:#20231e;font-family:ui-serif,Georgia,serif;line-height:1.18}h1{font-size:2.5rem;margin-top:0}h2{margin-top:2.2em;padding-top:.7em;border-top:1px solid #e6e3db}a{color:#35614a}blockquote{margin-left:0;padding-left:1rem;border-left:3px solid #b4773f;color:#666}table{width:100%;border-collapse:collapse;margin:1.5rem 0;font-size:.92rem}th,td{padding:.65rem .75rem;border:1px solid #dfddd5;text-align:left;vertical-align:top}th{background:#f5f3ee}pre{overflow:auto;padding:1rem;border-radius:10px;background:#f3f1eb}img{max-width:100%;height:auto}@media print{body{background:#fff}.article{width:auto;margin:0;padding:0;border:0;box-shadow:none}h2,h3{break-after:avoid}table,pre,blockquote{break-inside:avoid}}"
+                );
+                ("html", html.into_bytes())
+            }
+        };
+        let target = wiki_export_target(destination, &stem, extension);
+        std::fs::write(&target, bytes).map_err(|source| CoreError::Io {
+            operation: "write wiki page export",
+            source,
+        })?;
+        Ok(target.to_string_lossy().into_owned())
     }
 
     pub fn export_markdown_to(&self, destination: impl AsRef<Path>) -> Result<String, CoreError> {

@@ -593,6 +593,7 @@ export interface GitResetResult {
 }
 export type { ModuleManifest };
 export type ProjectModuleManifest = ModuleManifest & { enabled: boolean };
+export type WikiPageExportFormat = "markdown" | "html";
 export interface InstalledPluginVersion {
   id: string;
   version: string;
@@ -1447,6 +1448,8 @@ export const project = {
     invoke<MapPin[]>("project_query_map_locations", { mapEntityId, minX, minY, maxX, maxY }),
   backup: () => invoke<string>("project_backup"),
   exportMarkdown: (destination: string) => invoke<string>("project_export_markdown", { destination }),
+  exportWikiPage: (entityId: string, destination: string, format: WikiPageExportFormat, manifestId: string) =>
+    invoke<string>("project_export_wiki_page", { entityId, destination, format, manifestId }),
   recoveryBackup: () => invoke<string>("project_recovery_backup"),
   restoreRecoveryBackup: (path: string) => invoke<void>("project_restore_recovery_backup", { path }),
   restore: (path: string) => invoke<void>("project_restore", { path }),

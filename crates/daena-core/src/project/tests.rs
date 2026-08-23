@@ -3314,6 +3314,88 @@ fn markdown_export_prefixes_colliding_entity_names() {
 }
 
 #[test]
+fn wiki_page_export_is_manifest_aware_standalone_and_safe() {
+    let destination =
+        std::env::temp_dir().join(format!("daena-wiki-page-export-{}", Uuid::new_v4()));
+    let store = ProjectStore::in_memory().unwrap();
+    let person = store
+        .create_entity(CreateEntity {
+            name: "Ada / Archivist".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "The Glass Library".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: person.id.clone(),
+            body: format!(
+                "## Early life\n\nVisited [[The Glass Library]]({}).\n\n<script>alert('no')</script>",
+                place.id
+            ),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: person.id.clone(),
+            namespace: "lore".into(),
+            key: "occupation".into(),
+            value: serde_json::json!("Royal archivist"),
+            revision: String::new(),
+        })
+        .unwrap();
+    store
+        .create_relationship(RelationshipInput {
+            source_id: person.id.clone(),
+            target_id: place.id.clone(),
+            relationship_type: "originates_from".into(),
+            metadata: None,
+        })
+        .unwrap();
+    let manifest: daena_plugin_api::PluginManifest = serde_json::from_str(include_str!(
+        "../../../../packages/modules/lore/manifest.json"
+    ))
+    .unwrap();
+
+    let markdown_path = store
+        .export_wiki_page_to(
+            &person.id,
+            &destination,
+            WikiPageExportFormat::Markdown,
+            &manifest,
+        )
+        .unwrap();
+    let markdown = std::fs::read_to_string(markdown_path).unwrap();
+    assert!(markdown.contains("# Ada / Archivist"));
+    assert!(markdown.contains("| Occupation | Royal archivist |"));
+    assert!(markdown.contains("Visited The Glass Library."));
+    assert!(markdown.contains("**Origin:** The Glass Library"));
+    assert!(!markdown.contains("[[The Glass Library]]"));
+
+    let html_path = store
+        .export_wiki_page_to(
+            &person.id,
+            &destination,
+            WikiPageExportFormat::Html,
+            &manifest,
+        )
+        .unwrap();
+    let html = std::fs::read_to_string(html_path).unwrap();
+    assert!(html.contains("<!doctype html>"));
+    assert!(html.contains("<h2>Early life</h2>"));
+    assert!(html.contains("&lt;script&gt;alert(&#39;no&#39;)&lt;/script&gt;"));
+    assert!(!html.contains("<script>"));
+    assert!(!html.contains("https://"));
+
+    std::fs::remove_dir_all(&destination).unwrap();
+}
+
+#[test]
 fn restore_replaces_records_missing_from_the_backup() {
     let source = ProjectStore::in_memory().unwrap();
     source

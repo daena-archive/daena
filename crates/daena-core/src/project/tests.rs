@@ -5275,6 +5275,22 @@ fn repeated_checkpoint_skips_unchanged_portable_files() {
             .unwrap(),
         0
     );
+    let installed: crate::storage::CheckpointManifest =
+        crate::storage::read_json(&root.join(crate::storage::CHECKPOINT_MANIFEST_FILE)).unwrap();
+    let fully_rehashed = crate::storage::build_checkpoint_manifest(&root, generation).unwrap();
+    assert_eq!(installed, fully_rehashed);
+    assert!(
+        crate::storage::build_checkpoint_manifest_from_verified_sources(
+            &root,
+            generation,
+            &[crate::storage::CanonicalSource {
+                path: "entities/missing/entity.json".into(),
+                content_hash: "sha256:missing".into(),
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+            }],
+        )
+        .is_err()
+    );
 
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
@@ -5330,6 +5346,183 @@ fn entity_revision_batch_matches_point_revision() {
         listed.revision,
         store.revision_for_entity(&source.id).unwrap()
     );
+}
+
+#[test]
+fn entity_revision_tracks_asset_role_and_reference_scope() {
+    let store = ProjectStore::in_memory().unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Revision asset owner".into(),
+            entity_type: Some("note".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset(AssetInput {
+            entity_id: entity.id.clone(),
+            namespace: "test".into(),
+            filename: "portrait.png".into(),
+            content_hash: "sha256:portrait".into(),
+            size: 8,
+            mime_type: "image/png".into(),
+            path: "assets/images/portrait.png".into(),
+        })
+        .unwrap();
+    let before = store
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == entity.id)
+        .unwrap()
+        .revision;
+
+    store
+        .update_asset_metadata_with_request(
+            AssetMetadataUpdate {
+                asset_id: asset.id,
+                filename: None,
+                role: Some(ASSET_ROLE_PROFILE.into()),
+                reference_scope: Some(ASSET_REFERENCE_SCOPE_PROJECT.into()),
+            },
+            &asset.revision,
+            None,
+        )
+        .unwrap();
+
+    let after = store
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id == entity.id)
+        .unwrap()
+        .revision;
+    assert_ne!(after, before);
+    assert_eq!(after, store.revision_for_entity(&entity.id).unwrap());
+}
+
+#[test]
+#[ignore = "manual large-project storage benchmark"]
+fn large_snapshot_rebuild_import_benchmark() {
+    const ENTITY_COUNT: usize = 10_000;
+    let seed = ProjectStore::in_memory().unwrap();
+    let mut snapshot = seed.export_snapshot().unwrap();
+    for index in 0..ENTITY_COUNT {
+        let id = Uuid::new_v4().to_string();
+        let timestamp = "2026-01-01T00:00:00Z".to_string();
+        snapshot.entities.push(Entity {
+            id: id.clone(),
+            name: format!("Entity {index:05}"),
+            entity_type: Some("benchmark".into()),
+            deleted: false,
+            created_at: timestamp.clone(),
+            updated_at: timestamp.clone(),
+            revision: String::new(),
+        });
+        snapshot.documents.push(Document {
+            id: Uuid::new_v4().to_string(),
+            entity_id: id.clone(),
+            format: "markdown".into(),
+            body: format!("# Entity {index}\n\nRepresentative benchmark content.\n"),
+            updated_at: timestamp,
+            revision: String::new(),
+        });
+        snapshot.fields.push(FieldValue {
+            entity_id: id,
+            namespace: "benchmark".into(),
+            key: "index".into(),
+            value: serde_json::json!(index),
+            revision: String::new(),
+        });
+    }
+
+    let old_like_store = ProjectStore::in_memory().unwrap();
+    let old_like_started = std::time::Instant::now();
+    let payload = serde_json::to_string(&snapshot).unwrap();
+    old_like_store
+        .import_json_with_mode_and_sync_with_request_and_search(&payload, true, false, None, false)
+        .unwrap();
+    let old_like_elapsed = old_like_started.elapsed();
+
+    let direct_store = ProjectStore::in_memory().unwrap();
+    let direct_started = std::time::Instant::now();
+    direct_store
+        .import_snapshot_with_mode_and_sync_with_request_and_search(
+            &snapshot, true, false, None, false,
+        )
+        .unwrap();
+    let direct_elapsed = direct_started.elapsed();
+    let page_started = std::time::Instant::now();
+    let page = direct_store
+        .query_entities(EntityListQuery {
+            limit: Some(100),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    let page_elapsed = page_started.elapsed();
+    let full_list_started = std::time::Instant::now();
+    let full_list_count = direct_store.list_entities().unwrap().len();
+    let full_list_elapsed = full_list_started.elapsed();
+
+    eprintln!(
+        "large snapshot ({ENTITY_COUNT} entities/documents/fields): JSON import {old_like_elapsed:?}, direct import {direct_elapsed:?}, 100-entity page {page_elapsed:?}, full revision list {full_list_elapsed:?}"
+    );
+    assert_eq!(page.items.len(), 100);
+    assert_eq!(full_list_count, ENTITY_COUNT);
+}
+
+#[test]
+#[ignore = "manual large-asset checkpoint benchmark"]
+fn large_asset_checkpoint_hashing_benchmark() {
+    use std::io::Write as _;
+
+    const ASSET_MIB: usize = 32;
+    let root = std::env::temp_dir().join(format!("daena-large-asset-{}", Uuid::new_v4()));
+    let source = std::env::temp_dir().join(format!("daena-large-asset-{}.bin", Uuid::new_v4()));
+    let mut source_file = std::fs::File::create(&source).unwrap();
+    let block = vec![0x5a_u8; 1024 * 1024];
+    for _ in 0..ASSET_MIB {
+        source_file.write_all(&block).unwrap();
+    }
+    source_file.sync_all().unwrap();
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Large asset owner".into(),
+            entity_type: Some("map".into()),
+        })
+        .unwrap();
+    store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id.clone(),
+            namespace: "benchmark".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "large-map.bin".into(),
+            mime_type: "application/octet-stream".into(),
+        })
+        .unwrap();
+    store.flush_checkpoint("initial large asset").unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id,
+            body: "Checkpoint mutation".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+
+    let checkpoint_started = std::time::Instant::now();
+    let generation = store.flush_checkpoint("large asset benchmark").unwrap();
+    let checkpoint_elapsed = checkpoint_started.elapsed();
+    let redundant_rehash_started = std::time::Instant::now();
+    crate::storage::build_checkpoint_manifest(&root, generation).unwrap();
+    let redundant_rehash_elapsed = redundant_rehash_started.elapsed();
+    eprintln!(
+        "large asset checkpoint ({ASSET_MIB} MiB): optimized export {checkpoint_elapsed:?}, eliminated manifest rehash {redundant_rehash_elapsed:?}"
+    );
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_file(source).unwrap();
 }
 
 #[test]
@@ -5468,6 +5661,8 @@ fn entity_scoped_reads_use_covering_indexes() {
 
     assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,format,body,updated_at FROM documents WHERE entity_id='entity' ORDER BY updated_at DESC").contains("documents_entity_updated_idx"));
     assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id='entity' ORDER BY created_at").contains("assets_entity_created_idx"));
+    assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,name FROM entities WHERE deleted=0 ORDER BY name COLLATE NOCASE,id LIMIT 100").contains("entities_live_name_nocase_idx"));
+    assert!(query_plan("EXPLAIN QUERY PLAN SELECT id,name FROM entities WHERE deleted=0 AND entity_type='map' ORDER BY name COLLATE NOCASE,id LIMIT 100").contains("entities_live_type_name_nocase_idx"));
 }
 
 #[test]

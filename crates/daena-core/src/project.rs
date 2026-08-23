@@ -1830,10 +1830,12 @@ impl ProjectStore {
         }
 
         let store = Self::open_database(&next_path, Some(root.to_path_buf()), None, false, false)?;
-        let payload = serde_json::to_string(&canonical.snapshot)
-            .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        store.import_json_with_mode_and_sync_with_request_and_search(
-            &payload, true, false, None, false,
+        store.import_snapshot_with_mode_and_sync_with_request_and_search(
+            &canonical.snapshot,
+            true,
+            false,
+            None,
+            false,
         )?;
         store.rebuild_search()?;
         store.verify_index()?;
@@ -2486,7 +2488,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let assets = self
             .connection
-            .prepare("SELECT id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id=?1 ORDER BY id")?
+            .prepare("SELECT id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id=?1 ORDER BY id")?
             .query_map(params![entity_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2497,6 +2499,8 @@ impl ProjectStore {
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2608,12 +2612,23 @@ impl ProjectStore {
             }
         }
 
-        type AssetRevision = (String, String, String, String, i64, String, String, String);
+        type AssetRevision = (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+        );
         let mut assets: BTreeMap<String, Vec<AssetRevision>> = BTreeMap::new();
         let sql = if restricted {
-            format!("SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
+            format!("SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
         } else {
-            "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at FROM assets ORDER BY entity_id,id".into()
+            "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets ORDER BY entity_id,id".into()
         };
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
@@ -2630,6 +2645,8 @@ impl ProjectStore {
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
                         row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
                     ),
                 ))
             },
@@ -2998,13 +3015,7 @@ impl ProjectStore {
                 continue;
             }
             let staged = crate::storage::normalized_project_path(&staging_root, &source.path)?;
-            let bytes = std::fs::read(&staged).map_err(|error| {
-                CoreError::Validation(format!(
-                    "checkpoint staging file {} is unavailable: {error}",
-                    staged.display()
-                ))
-            })?;
-            transaction.stage_bytes_with_expected(&source.path, &bytes, portable_hash)?;
+            transaction.stage_file_with_expected(&source.path, &staged, portable_hash)?;
         }
         for source in &previous_sources {
             if source.path != "project.json" && !current_paths.contains(source.path.as_str()) {
@@ -3012,8 +3023,24 @@ impl ProjectStore {
             }
         }
         let applied = transaction.commit(None::<&serde_json::Value>)?;
-        self.install_checkpoint_manifest(root, target_generation)?;
+        self.install_checkpoint_manifest_from_verified_sources(
+            root,
+            target_generation,
+            &current_sources,
+        )?;
         Ok(applied.len())
+    }
+
+    fn install_checkpoint_manifest_from_verified_sources(
+        &self,
+        root: &Path,
+        generation: Generation,
+        sources: &[crate::storage::CanonicalSource],
+    ) -> Result<(), CoreError> {
+        let checkpoint = crate::storage::build_checkpoint_manifest_from_verified_sources(
+            root, generation, sources,
+        )?;
+        self.install_checkpoint_manifest_value(root, generation, &checkpoint)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3023,9 +3050,18 @@ impl ProjectStore {
         generation: Generation,
     ) -> Result<(), CoreError> {
         let checkpoint = crate::storage::build_checkpoint_manifest(root, generation)?;
+        self.install_checkpoint_manifest_value(root, generation, &checkpoint)
+    }
+
+    fn install_checkpoint_manifest_value(
+        &self,
+        root: &Path,
+        generation: Generation,
+        checkpoint: &crate::storage::CheckpointManifest,
+    ) -> Result<(), CoreError> {
         let digest =
-            crate::storage::canonical_json_bytes(&checkpoint).map(|bytes| digest_bytes(&bytes))?;
-        crate::storage::write_checkpoint_manifest(root, &checkpoint)?;
+            crate::storage::canonical_json_bytes(checkpoint).map(|bytes| digest_bytes(&bytes))?;
+        crate::storage::write_checkpoint_manifest(root, checkpoint)?;
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
             "UPDATE runtime_meta SET exported_generation=CASE WHEN content_generation>=?1 THEN ?1 ELSE exported_generation END, checkpoint_digest=?2, export_error=NULL WHERE key='runtime'",
@@ -4240,7 +4276,9 @@ impl ProjectStore {
                metadata TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
+             CREATE INDEX IF NOT EXISTS entities_live_name_nocase_idx ON entities(name COLLATE NOCASE,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS entities_type_name_idx ON entities(entity_type,name,id) WHERE deleted=0;
+             CREATE INDEX IF NOT EXISTS entities_live_type_name_nocase_idx ON entities(entity_type,name COLLATE NOCASE,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS entities_created_idx ON entities(created_at,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS entities_updated_idx ON entities(updated_at,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
@@ -4328,7 +4366,9 @@ impl ProjectStore {
 
     fn ensure_query_indexes(&self) -> Result<(), CoreError> {
         self.connection.execute_batch(
-            "CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
+            "CREATE INDEX IF NOT EXISTS entities_live_name_nocase_idx ON entities(name COLLATE NOCASE,id) WHERE deleted=0;
+             CREATE INDEX IF NOT EXISTS entities_live_type_name_nocase_idx ON entities(entity_type,name COLLATE NOCASE,id) WHERE deleted=0;
+             CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
              CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);",
         )?;
         Ok(())
@@ -4881,7 +4921,7 @@ impl ProjectStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let sort_field = query.sort_field.unwrap_or_else(|| {
+        let sort_field = query.sort_field.unwrap_or({
             if search_terms.is_empty() {
                 EntitySortField::Name
             } else {
@@ -8210,6 +8250,23 @@ impl ProjectStore {
     ) -> Result<usize, CoreError> {
         let snapshot: ProjectSnapshot = serde_json::from_str(payload)
             .map_err(|error| CoreError::NotFound(error.to_string()))?;
+        self.import_snapshot_with_mode_and_sync_with_request_and_search(
+            &snapshot,
+            replace,
+            sync_canonical,
+            request_id,
+            rebuild_search,
+        )
+    }
+
+    fn import_snapshot_with_mode_and_sync_with_request_and_search(
+        &self,
+        snapshot: &ProjectSnapshot,
+        replace: bool,
+        sync_canonical: bool,
+        request_id: Option<&str>,
+        rebuild_search: bool,
+    ) -> Result<usize, CoreError> {
         if snapshot.format_version != current_snapshot_version() {
             return Err(CoreError::NotFound(format!(
                 "unsupported project snapshot version {}",
@@ -8252,28 +8309,75 @@ impl ProjectStore {
                  DELETE FROM migration_history;",
             )?;
         }
-        for entity in &snapshot.entities {
-            transaction.execute("INSERT INTO entities(id,name,entity_type,deleted,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name,entity_type=excluded.entity_type,deleted=excluded.deleted,created_at=excluded.created_at,updated_at=excluded.updated_at", params![entity.id, entity.name, entity.entity_type, i64::from(entity.deleted), entity.created_at, entity.updated_at])?;
-        }
-        for document in &snapshot.documents {
-            transaction.execute("INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,format=excluded.format,body=excluded.body,updated_at=excluded.updated_at", params![document.id, document.entity_id, document.format, document.body, document.updated_at])?;
-        }
-        for field in &snapshot.fields {
-            let value = encode_field_value(&field.value)?;
-            transaction.execute("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value", params![field.entity_id, field.namespace, field.key, value])?;
-        }
-        for relationship in &snapshot.relationships {
-            transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,target_id=excluded.target_id,relationship_type=excluded.relationship_type,metadata=excluded.metadata", params![relationship.id, relationship.source_id, relationship.target_id, relationship.relationship_type, relationship.metadata])?;
-        }
-        for asset in &snapshot.assets {
-            validate_asset_role(&asset.role)?;
-            validate_asset_reference_scope(&asset.reference_scope)?;
-            if asset.role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&asset.mime_type) {
-                return Err(CoreError::Validation(
-                    "profile assets must use a supported raster image MIME type".into(),
-                ));
+        {
+            let mut statement = transaction.prepare_cached("INSERT INTO entities(id,name,entity_type,deleted,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET name=excluded.name,entity_type=excluded.entity_type,deleted=excluded.deleted,created_at=excluded.created_at,updated_at=excluded.updated_at")?;
+            for entity in &snapshot.entities {
+                statement.execute(params![
+                    entity.id,
+                    entity.name,
+                    entity.entity_type,
+                    i64::from(entity.deleted),
+                    entity.created_at,
+                    entity.updated_at
+                ])?;
             }
-            transaction.execute("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at,role=excluded.role,reference_scope=excluded.reference_scope", params![asset.id, asset.entity_id, asset.namespace, asset.filename, asset.content_hash, asset.size, asset.mime_type, asset.path, asset.created_at, asset.role, asset.reference_scope])?;
+        }
+        {
+            let mut statement = transaction.prepare_cached("INSERT INTO documents(id,entity_id,format,body,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,format=excluded.format,body=excluded.body,updated_at=excluded.updated_at")?;
+            for document in &snapshot.documents {
+                statement.execute(params![
+                    document.id,
+                    document.entity_id,
+                    document.format,
+                    document.body,
+                    document.updated_at
+                ])?;
+            }
+        }
+        {
+            let mut statement = transaction.prepare_cached("INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value")?;
+            for field in &snapshot.fields {
+                let value = encode_field_value(&field.value)?;
+                statement.execute(params![field.entity_id, field.namespace, field.key, value])?;
+            }
+        }
+        {
+            let mut statement = transaction.prepare_cached("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET source_id=excluded.source_id,target_id=excluded.target_id,relationship_type=excluded.relationship_type,metadata=excluded.metadata")?;
+            for relationship in &snapshot.relationships {
+                statement.execute(params![
+                    relationship.id,
+                    relationship.source_id,
+                    relationship.target_id,
+                    relationship.relationship_type,
+                    relationship.metadata
+                ])?;
+            }
+        }
+        {
+            let mut statement = transaction.prepare_cached("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at,role=excluded.role,reference_scope=excluded.reference_scope")?;
+            for asset in &snapshot.assets {
+                validate_asset_role(&asset.role)?;
+                validate_asset_reference_scope(&asset.reference_scope)?;
+                if asset.role == ASSET_ROLE_PROFILE && !asset_can_be_profile_media(&asset.mime_type)
+                {
+                    return Err(CoreError::Validation(
+                        "profile assets must use a supported raster image MIME type".into(),
+                    ));
+                }
+                statement.execute(params![
+                    asset.id,
+                    asset.entity_id,
+                    asset.namespace,
+                    asset.filename,
+                    asset.content_hash,
+                    asset.size,
+                    asset.mime_type,
+                    asset.path,
+                    asset.created_at,
+                    asset.role,
+                    asset.reference_scope
+                ])?;
+            }
         }
         for module in &snapshot.modules {
             transaction.execute("INSERT INTO module_versions(module_id,version) VALUES (?1,?2) ON CONFLICT(module_id) DO UPDATE SET version=excluded.version", params![module.module_id, module.version])?;
@@ -8304,13 +8408,23 @@ impl ProjectStore {
                 params![field.module_id, field.namespace, field.key, field.field_type, i64::from(field.required)],
             )?;
         }
-        for record in &snapshot.module_records {
-            let value = serde_json::to_string(&record.value)
-                .map_err(|error| CoreError::Validation(error.to_string()))?;
-            transaction.execute(
+        {
+            let mut statement = transaction.prepare_cached(
                 "INSERT INTO module_records(module_id,collection,id,owner_entity_id,value,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET module_id=excluded.module_id,collection=excluded.collection,owner_entity_id=excluded.owner_entity_id,value=excluded.value,created_at=excluded.created_at,updated_at=excluded.updated_at",
-                params![record.module_id, record.collection, record.id, record.owner_entity_id, value, record.created_at, record.updated_at],
             )?;
+            for record in &snapshot.module_records {
+                let value = serde_json::to_string(&record.value)
+                    .map_err(|error| CoreError::Validation(error.to_string()))?;
+                statement.execute(params![
+                    record.module_id,
+                    record.collection,
+                    record.id,
+                    record.owner_entity_id,
+                    value,
+                    record.created_at,
+                    record.updated_at
+                ])?;
+            }
         }
         for migration in &snapshot.migration_history {
             transaction.execute(

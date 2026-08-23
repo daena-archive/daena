@@ -6,8 +6,8 @@ use crate::project::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -149,6 +149,78 @@ pub fn build_checkpoint_manifest(
     root: &Path,
     content_generation: i64,
 ) -> Result<CheckpointManifest, CoreError> {
+    let sources = collect_canonical_sources(root)?;
+    checkpoint_manifest_from_sources(root, content_generation, &sources)
+}
+
+/// Builds a checkpoint from hashes already verified by the exporter. Paths
+/// outside that verified set are still discovered and hashed so the manifest
+/// remains a complete portable-tree inventory.
+pub(crate) fn build_checkpoint_manifest_from_verified_sources(
+    root: &Path,
+    content_generation: i64,
+    verified_sources: &[CanonicalSource],
+) -> Result<CheckpointManifest, CoreError> {
+    let verified = verified_sources
+        .iter()
+        .map(|source| (source.path.as_str(), source))
+        .collect::<BTreeMap<_, _>>();
+    if verified.len() != verified_sources.len() {
+        return Err(codec_error(
+            root,
+            "checkpoint.sources",
+            "verified checkpoint sources contain duplicate paths",
+        ));
+    }
+    let mut sources = Vec::new();
+    let mut seen_verified = BTreeSet::new();
+    for path in collect_canonical_paths(root)? {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| codec_error(&path, "source.path", error))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = match verified.get(relative.as_str()) {
+            Some(source) => {
+                if source.format_version != PROJECT_FORMAT_VERSION {
+                    return Err(codec_error(
+                        &path,
+                        "checkpoint.format-version",
+                        "verified checkpoint source uses the wrong format version",
+                    ));
+                }
+                seen_verified.insert(relative);
+                (*source).clone()
+            }
+            None => CanonicalSource {
+                path: relative,
+                content_hash: digest_file(&path)?,
+                format_version: PROJECT_FORMAT_VERSION,
+            },
+        };
+        sources.push(source);
+    }
+    if let Some(missing) = verified_sources
+        .iter()
+        .find(|source| !seen_verified.contains(&source.path))
+    {
+        return Err(codec_error(
+            root,
+            "checkpoint.sources",
+            format!(
+                "verified checkpoint source is missing after export: {}",
+                missing.path
+            ),
+        ));
+    }
+    checkpoint_manifest_from_sources(root, content_generation, &sources)
+}
+
+fn checkpoint_manifest_from_sources(
+    root: &Path,
+    content_generation: i64,
+    sources: &[CanonicalSource],
+) -> Result<CheckpointManifest, CoreError> {
     let manifest_path = root.join("project.json");
     let project: ProjectManifest = read_json(&manifest_path)?;
     project.validate(&manifest_path)?;
@@ -159,17 +231,17 @@ pub fn build_checkpoint_manifest(
             "content generation cannot be negative",
         ));
     }
-    let files = collect_canonical_sources(root)?
-        .into_iter()
+    let files = sources
+        .iter()
         .map(|source| {
             let path = normalized_project_path(root, &source.path)?;
             let size = fs::metadata(&path)
                 .map_err(|error| codec_error(&path, "checkpoint.metadata", error))?
                 .len();
             Ok(CheckpointFile {
-                path: source.path,
+                path: source.path.clone(),
                 size,
-                sha256: source.content_hash,
+                sha256: source.content_hash.clone(),
             })
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
@@ -1772,6 +1844,23 @@ fn validate_asset_directory(root: &Path, relative: &Path) -> Result<(), CoreErro
 }
 
 fn collect_canonical_sources(root: &Path) -> Result<Vec<CanonicalSource>, CoreError> {
+    collect_canonical_paths(root)?
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| codec_error(&path, "source.path", error))?;
+            let path_string = relative.to_string_lossy().replace('\\', "/");
+            Ok(CanonicalSource {
+                path: path_string,
+                content_hash: digest_file(&path)?,
+                format_version: PROJECT_FORMAT_VERSION,
+            })
+        })
+        .collect()
+}
+
+fn collect_canonical_paths(root: &Path) -> Result<Vec<PathBuf>, CoreError> {
     let mut paths = Vec::new();
     for relative in ["project.json", "entities", "plugins", "assets"] {
         let path = root.join(relative);
@@ -1786,23 +1875,7 @@ fn collect_canonical_sources(root: &Path) -> Result<Vec<CanonicalSource>, CoreEr
             .unwrap()
             .cmp(right.strip_prefix(root).unwrap())
     });
-    paths
-        .into_iter()
-        .map(|path| {
-            let bytes =
-                fs::read(&path).map_err(|error| codec_error(&path, "source.read", error))?;
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|error| codec_error(&path, "source.path", error))?;
-            let path = relative.to_string_lossy().replace('\\', "/");
-            let format_version = PROJECT_FORMAT_VERSION;
-            Ok(CanonicalSource {
-                path,
-                content_hash: digest_bytes(&bytes),
-                format_version,
-            })
-        })
-        .collect()
+    Ok(paths)
 }
 
 fn collect_files(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(), CoreError> {
@@ -1975,8 +2048,19 @@ pub(crate) fn canonical_json_string(value: &serde_json::Value) -> Result<String,
 }
 
 fn digest_file(path: &Path) -> Result<String, CoreError> {
-    let bytes = fs::read(path).map_err(|error| codec_error(path, "asset.read", error))?;
-    Ok(digest_bytes(&bytes))
+    let mut file = File::open(path).map_err(|error| codec_error(path, "asset.read", error))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| codec_error(path, "asset.read", error))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {

@@ -14,7 +14,7 @@
 - `docs/ARCHITECTURE.md` defines the product and current architecture.
 - `docs/PLUGIN_PLATFORM_PLAN.md` defines plugin-platform acceptance criteria.
 - `docs/STORAGE.md` defines canonical project-storage behavior.
-- Project files are canonical. `.daena/index.sqlite` is disposable derived state and must be rebuildable from the canonical files.
+- `.daena/index.sqlite` and `.daena/assets/` are the live runtime authority. Portable project files are deterministic checkpoints and must be sufficient to rebuild runtime state when the checkpoint is clean and validated; see `docs/STORAGE.md`.
 
 ## Code discovery
 

@@ -546,6 +546,7 @@ export interface Asset {
   created_at: string;
   role: "attachment" | "profile";
   reference_scope: "entity" | "project";
+  provenance?: Record<string, unknown> | null;
   revision: string;
 }
 export interface SyncSummary {
@@ -679,7 +680,16 @@ export interface AppSettings {
 }
 export interface AiSettings {
   provider: AiProviderSettings;
+  imageProvider: ImageProviderSettings;
   consents: Array<{ projectId: string; provider: string; endpoint: string }>;
+}
+export interface ImageProviderSettings {
+  enabled: boolean;
+  id: string;
+  name: string;
+  adapter: string;
+  endpoint: string;
+  model: string;
 }
 export interface AiProviderSettings {
   id: string;
@@ -698,7 +708,88 @@ export interface AppSettingsUpdate {
   general?: { recentProjects?: RecentProjectSetting[] };
   ai?: {
     provider?: Partial<AiProviderSettings>;
+    imageProvider?: Partial<ImageProviderSettings>;
   };
+}
+
+export interface ImageProviderDiscovery {
+  providerId: string;
+  providerName: string;
+  endpoint: string;
+  local: true;
+  capabilities: string[];
+  models: string[];
+  samplers: string[];
+  schedulers: string[];
+}
+
+export interface ImageProviderStatus {
+  providerId: string;
+  providerName: string;
+  endpoint: string;
+  model: string;
+  enabled: boolean;
+  local: true;
+  available: boolean;
+  modelAvailable: boolean;
+  capabilities: string[];
+  errorCode: string | null;
+  error: string | null;
+}
+
+export interface ImageContextItem {
+  entityId: string;
+  label: string;
+  sourceKind: "identity" | "field" | "document" | "relationship" | "timeline" | "location";
+}
+
+export interface ImagePromptProvenance {
+  method: "manual" | "entity" | "selected-context" | "rewrite" | "detailed" | "simplified";
+  llmAssisted: boolean;
+  editedAfterAssistance: boolean;
+  textProviderId: string | null;
+  textModel: string | null;
+}
+
+export interface ImageGenerationRequest {
+  projectId: string;
+  entityId: string;
+  prompt: string;
+  negativePrompt: string;
+  model: string;
+  width: number;
+  height: number;
+  seed: number;
+  outputCount: number;
+  steps: number;
+  guidanceScale: number;
+  sampler: string;
+  scheduler: string;
+  context: ImageContextItem[];
+  promptProvenance: ImagePromptProvenance;
+}
+
+export interface ImageCandidate {
+  id: string;
+  filename: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  size: number;
+  width: number;
+  height: number;
+  seed: number;
+  acceptedAssetId: string | null;
+}
+
+export interface ImageGenerationStatus {
+  jobId: string;
+  state: "queued" | "running" | "downloading" | "completed" | "failed" | "cancelled";
+  stage: string;
+  completed: number;
+  total: number;
+  queuePosition: number | null;
+  candidates: ImageCandidate[];
+  errorCode: string | null;
+  error: string | null;
 }
 export interface AiProviderStatus {
   endpoint: string;
@@ -1558,6 +1649,38 @@ export const project = {
   aiProviderImportCredential: () => invoke<RemoteCredentialStatus>("ai_provider_import_credential"),
   aiProviderSetCredential: (apiKey: string) => invoke<RemoteCredentialStatus>("ai_provider_set_credential", { apiKey }),
   aiProviderClearCredential: () => invoke<RemoteCredentialStatus>("ai_provider_clear_credential"),
+  imageProviderStatus: () => invoke<ImageProviderStatus>("image_provider_status"),
+  imageProviderDiscover: () => invoke<ImageProviderDiscovery>("image_provider_discover"),
+  imageGenerateStart: (request: ImageGenerationRequest) =>
+    invoke<ImageGenerationStatus>("image_generate_start", { request }),
+  imageGenerationStatus: (jobId: string, projectId: string) =>
+    invoke<ImageGenerationStatus>("image_generation_status", { jobId, projectId }),
+  imageGenerationCancel: (jobId: string, projectId: string) =>
+    invoke<ImageGenerationStatus>("image_generation_cancel", { jobId, projectId }),
+  imageCandidateBytes: (jobId: string, candidateId: string, projectId: string) =>
+    invoke<number[]>("image_candidate_bytes", { jobId, candidateId, projectId }),
+  imageCandidateAccept: (
+    jobId: string,
+    candidateId: string,
+    projectId: string,
+    entityId: string,
+    namespace: string,
+    filename: string,
+    requestId = crypto.randomUUID(),
+  ) =>
+    invoke<Asset>("image_candidate_accept", {
+      jobId,
+      candidateId,
+      projectId,
+      entityId,
+      namespace,
+      filename,
+      requestId,
+    }),
+  imageCandidateDiscard: (jobId: string, candidateId: string, projectId: string) =>
+    invoke<ImageGenerationStatus>("image_candidate_discard", { jobId, candidateId, projectId }),
+  imageGenerationDiscard: (jobId: string, projectId: string) =>
+    invoke<void>("image_generation_discard", { jobId, projectId }),
   aiRemoteSetConsent: (projectId: string, allowed: boolean) =>
     invoke<void>("ai_remote_set_consent", { projectId, allowed }),
   aiIndexStatus: () => invoke<AiIndexStatus>("ai_index_status"),
@@ -1571,6 +1694,7 @@ export const project = {
     entityId?: string,
     retrievalQuery?: string,
     retrievalDepth = 2,
+    includeRetrieval = true,
   ) =>
     invoke<string>("ai_generate_text", {
       projectId,
@@ -1579,7 +1703,7 @@ export const project = {
       entityId,
       retrievalQuery,
       retrievalDepth,
-      includeRetrieval: true,
+      includeRetrieval,
     }),
   aiGenerateStructured: (
     projectId: string,

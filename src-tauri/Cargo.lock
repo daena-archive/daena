@@ -918,6 +918,7 @@ dependencies = [
  "daena-physical",
  "daena-plugin-api",
  "daena-plugin-host",
+ "infer",
  "keyring",
  "notify",
  "reqwest",

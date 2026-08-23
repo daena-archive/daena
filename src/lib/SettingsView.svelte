@@ -21,6 +21,7 @@ import {
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { project } from "$lib/project/client";
+import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
 
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type RecentProject = { name: string; root: string };
@@ -93,6 +94,7 @@ let {
   onRecoveryBackup,
   onRestoreRecoveryBackup,
   onAiSettingsChange,
+  onAiImageSettingsChange,
   onAiCheck,
   onAiModelsLoad,
   onAiIndexRefresh,
@@ -119,6 +121,14 @@ let {
       embeddingModel: string;
       capabilities: string[];
     };
+    imageProvider: {
+      enabled: boolean;
+      id: string;
+      name: string;
+      adapter: string;
+      endpoint: string;
+      model: string;
+    };
     consents: Array<{ projectId: string; provider: string; endpoint: string }>;
   };
   aiStatus: {
@@ -143,6 +153,10 @@ let {
   onAiSettingsChange: (
     key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
     value: string,
+  ) => void;
+  onAiImageSettingsChange: (
+    key: "enabled" | "id" | "name" | "adapter" | "endpoint" | "model",
+    value: string | boolean,
   ) => void;
   onAiCheck: () => void;
   onAiModelsLoad: () => void;
@@ -788,6 +802,9 @@ async function handleClose() {
               </div>
             </div>
           {/if}
+          <ImageProviderSettingsCard
+            settings={aiSettings.imageProvider}
+            onChange={(key, value) => onAiImageSettingsChange(key, value)} />
           {#if aiEnabled}
             <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
               <div class="ai-card-heading ai-card-heading-compact">

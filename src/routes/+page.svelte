@@ -324,6 +324,14 @@ let aiSettings = $state<AiSettings>({
     embeddingModel: "",
     capabilities: [],
   },
+  imageProvider: {
+    enabled: false,
+    id: "comfyui-local",
+    name: "ComfyUI",
+    adapter: "comfyui",
+    endpoint: "http://127.0.0.1:8188",
+    model: "",
+  },
   consents: [],
 });
 let aiStatus = $state<AiProviderStatus | null>(null);
@@ -1966,6 +1974,16 @@ function updateAiSetting(
   aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, [key]: value } };
   void project.settingsUpdate({ ai: { provider: { [key]: value } } });
   if (key === "id" || key === "endpoint") void refreshRemoteCredential();
+}
+function updateAiImageSetting(
+  key: "enabled" | "id" | "name" | "adapter" | "endpoint" | "model",
+  value: string | boolean,
+) {
+  aiSettings = {
+    ...aiSettings,
+    imageProvider: { ...aiSettings.imageProvider, [key]: value },
+  };
+  void project.settingsUpdate({ ai: { imageProvider: { [key]: value } } });
 }
 function showAiIndexMessage(message: string) {
   if (aiIndexMessageTimer !== null) window.clearTimeout(aiIndexMessageTimer);
@@ -5061,6 +5079,7 @@ onMount(() => {
         {aiIndexBusy}
         {aiIndexMessage}
         onAiSettingsChange={updateAiSetting}
+        onAiImageSettingsChange={updateAiImageSetting}
         onAiCheck={() => void checkAiProvider()}
         onAiModelsLoad={() => void loadAiModels()}
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
@@ -5374,6 +5393,10 @@ onMount(() => {
       <WikiView
         manifest={manifestForWorkspaceSection("lore")!}
         initialEntityId={loreWikiEntityId}
+        projectId={projectInfo?.root ?? ""}
+        aiEnabled={projectInfo?.aiEnabled ?? false}
+        imageProvider={aiSettings.imageProvider}
+        textProvider={aiSettings.provider}
         onClose={closeLoreWiki}
         onSelectEntity={(id) => {
           const ent = entities.find((e) => e.id === id);

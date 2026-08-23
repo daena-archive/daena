@@ -37,6 +37,7 @@ mod ai;
 mod atlas_jobs;
 mod atlas_studio;
 mod external_import_jobs;
+mod image_generation;
 mod settings;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
@@ -358,6 +359,15 @@ fn cancel_external_import_jobs() -> Result<(), String> {
     if let Some(imports) = EXTERNAL_IMPORTS.get() {
         external_import_jobs::cancel_external_imports(imports)?;
     }
+    Ok(())
+}
+
+fn cancel_image_generation_jobs(
+    jobs: &crate::image_generation::SharedImageGeneration,
+) -> Result<(), String> {
+    jobs.lock()
+        .map_err(|_| "image generation state is unavailable".to_string())?
+        .cancel_all();
     Ok(())
 }
 
@@ -2184,6 +2194,7 @@ fn dispatch_binary_asset_rpc(
                         source_path: source_path.to_string_lossy().into_owned(),
                         filename: "map.map".into(),
                         mime_type: "application/x-fmg-map".into(),
+                        provenance: None,
                     },
                     request_id,
                 )
@@ -6396,6 +6407,7 @@ async fn project_close(
     plugins: tauri::State<'_, SharedPluginHost>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
     watcher: tauri::State<'_, SharedProjectWatcher>,
+    image_jobs: tauri::State<'_, image_generation::SharedImageGeneration>,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs.inner())?;
     cancel_external_import_jobs()?;
@@ -6405,8 +6417,17 @@ async fn project_close(
     let core = state.inner().clone();
     let jobs = jobs.inner().clone();
     let watcher = watcher.inner().clone();
+    let image_jobs = image_jobs.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        close_project_for_app(&app, &core, &jobs, &plugins, &ai_runtime, &watcher)
+        close_project_for_app(
+            &app,
+            &core,
+            &jobs,
+            &plugins,
+            &ai_runtime,
+            &watcher,
+            &image_jobs,
+        )
     })
     .await
     .map_err(|error| format!("project close worker failed: {error}"))?
@@ -6419,9 +6440,11 @@ fn close_project_for_app(
     plugins: &SharedPluginHost,
     ai_runtime: &ai::SharedAiRuntime,
     watcher: &SharedProjectWatcher,
+    image_jobs: &image_generation::SharedImageGeneration,
 ) -> Result<(), String> {
     cancel_physical_jobs(jobs)?;
     cancel_external_import_jobs()?;
+    cancel_image_generation_jobs(image_jobs)?;
     stop_project_watcher(watcher)?;
     flush_checkpoint_for_shared_core(core, "project lifecycle transition")?;
     let session = current_session(core)?;
@@ -9462,6 +9485,9 @@ pub fn run() {
     let external_imports = Arc::new(Mutex::new(
         external_import_jobs::ExternalImportJobManager::default(),
     ));
+    let image_jobs = Arc::new(Mutex::new(
+        image_generation::ImageGenerationManager::default(),
+    ));
     let _ = EXTERNAL_IMPORTS.set(external_imports.clone());
     let protocol_studio = atlas_studio.clone();
     let protocol_studio_core = core.clone();
@@ -9474,6 +9500,7 @@ pub fn run() {
     let close_plugins = plugins.clone();
     let close_watcher = watcher.clone();
     let close_ai_runtime = ai_runtime.clone();
+    let close_image_jobs = image_jobs.clone();
     tauri::Builder::default()
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -9512,6 +9539,7 @@ pub fn run() {
                     &close_plugins,
                     &close_ai_runtime,
                     &close_watcher,
+                    &close_image_jobs,
                 ) {
                     eprintln!("project cleanup during window close failed: {error}");
                 }
@@ -9552,6 +9580,7 @@ pub fn run() {
         .manage(external_imports)
         .manage(watcher)
         .manage(ai_runtime)
+        .manage(image_jobs)
         .invoke_handler(tauri::generate_handler![
             greet,
             settings_get,
@@ -9572,6 +9601,15 @@ pub fn run() {
             ai::ai_generate_structured,
             ai::ai_cancel_text,
             ai::ai_poll_text,
+            image_generation::image_provider_status,
+            image_generation::image_provider_discover,
+            image_generation::image_generate_start,
+            image_generation::image_generation_status,
+            image_generation::image_generation_cancel,
+            image_generation::image_candidate_bytes,
+            image_generation::image_candidate_accept,
+            image_generation::image_candidate_discard,
+            image_generation::image_generation_discard,
             git_tool_info,
             open_external_url,
             plugin_bootstrap,

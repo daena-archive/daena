@@ -894,6 +894,7 @@ fn runtime_asset_bytes_survive_an_interrupted_export() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "durable.bin".into(),
             mime_type: "application/octet-stream".into(),
+            provenance: None,
         })
         .unwrap();
     assert!(!root.join(&asset.path).exists());
@@ -1593,6 +1594,7 @@ fn asset_file_import_is_committed_with_canonical_metadata() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "sample.bin".into(),
             mime_type: "application/octet-stream".into(),
+            provenance: None,
         })
         .unwrap();
     store.flush_checkpoint("test export").unwrap();
@@ -1607,6 +1609,57 @@ fn asset_file_import_is_committed_with_canonical_metadata() {
     drop(store);
     std::fs::remove_file(source).unwrap();
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn generated_asset_provenance_survives_checkpoint_and_runtime_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-generated-asset-{}", Uuid::new_v4()));
+    let source = root.with_extension("png");
+    std::fs::write(&source, b"generated-image-bytes").unwrap();
+    let provenance = serde_json::json!({
+        "schemaVersion": 1,
+        "kind": "ai-image-generation",
+        "finalPrompt": "A rain-dark citadel above the sea",
+        "imageProvider": {"id": "comfyui-local", "local": true},
+        "imageModel": "world.safetensors",
+        "seed": 42,
+        "dimensions": {"width": 1024, "height": 1024},
+        "contextEntities": ["entity-context"],
+        "creationTimestamp": "123",
+    });
+
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Citadel".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let asset = store
+        .register_asset_file(AssetFileInput {
+            entity_id: entity.id.clone(),
+            namespace: "lore".into(),
+            source_path: source.to_string_lossy().into_owned(),
+            filename: "citadel.png".into(),
+            mime_type: "image/png".into(),
+            provenance: Some(provenance.clone()),
+        })
+        .unwrap();
+    assert_eq!(asset.provenance, Some(provenance.clone()));
+    store.flush_checkpoint("generated provenance test").unwrap();
+    let canonical: crate::storage::AssetsFile =
+        crate::storage::read_json(&root.join("entities").join(&entity.id).join("assets.json"))
+            .unwrap();
+    assert_eq!(canonical.assets[0].provenance, Some(provenance.clone()));
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    let recovered = rebuilt.list_assets(entity.id).unwrap();
+    assert_eq!(recovered[0].provenance, Some(provenance));
+    drop(rebuilt);
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1630,6 +1683,7 @@ fn asset_metadata_survives_checkpoint_and_runtime_rebuild() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "source.png".into(),
             mime_type: "image/png".into(),
+            provenance: None,
         })
         .unwrap();
     let original_path = asset.path.clone();
@@ -1731,6 +1785,7 @@ fn checkpoint_export_stages_existing_assets_from_the_transaction_tree() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "map.map".into(),
             mime_type: "application/octet-stream".into(),
+            provenance: None,
         })
         .unwrap();
 
@@ -3229,6 +3284,7 @@ fn assets_and_module_state_survive_export_import() {
             size: 42,
             mime_type: "image/png".into(),
             path: "map.png".into(),
+            provenance: None,
         })
         .unwrap();
     source
@@ -3746,6 +3802,7 @@ fn directory_assets_are_copied_and_hashed() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "notes.txt".into(),
             mime_type: "text/plain".into(),
+            provenance: None,
         })
         .unwrap();
     store.flush_checkpoint("test export").unwrap();
@@ -4064,6 +4121,7 @@ fn create_map_creates_descriptor_with_null_source_until_first_save() {
                 source_path: source_path.to_string_lossy().into_owned(),
                 filename: "map.map".into(),
                 mime_type: "application/x-fmg-map".into(),
+                provenance: None,
             },
             None,
         )
@@ -4123,6 +4181,7 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
             source_path: source_a.to_string_lossy().into_owned(),
             filename: "world.map".into(),
             mime_type: "application/x-fmg-map".into(),
+            provenance: None,
         })
         .unwrap();
     let asset_b = store
@@ -4132,6 +4191,7 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
             source_path: source_b.to_string_lossy().into_owned(),
             filename: "regional.map".into(),
             mime_type: "application/x-fmg-map".into(),
+            provenance: None,
         })
         .unwrap();
 
@@ -4482,6 +4542,7 @@ fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "world.map".into(),
             mime_type: "application/x-fmg-map".into(),
+            provenance: None,
         })
         .unwrap();
     let map_id = map.id.clone();
@@ -4566,6 +4627,7 @@ fn map_recovery_copies_are_canonical_listed_newest_first_and_restored() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "map.map".into(),
             mime_type: "application/x-fmg-map".into(),
+            provenance: None,
         })
         .unwrap();
     store
@@ -4948,6 +5010,7 @@ fn feature_resolution_returns_unresolved_when_json_asset_lacks_features_key() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "nofeat.map".into(),
             mime_type: "application/x-fmg-map".into(),
+            provenance: None,
         })
         .unwrap();
 
@@ -5013,6 +5076,7 @@ fn asset_replacement_rejects_wrong_hash_size_and_revision() {
             size: 3,
             mime_type: "application/octet-stream".into(),
             path: "assets/maps/world.map".into(),
+            provenance: None,
         })
         .unwrap();
     let correct_hash = format!("sha256:{:x}", Sha256::digest(b"new"));
@@ -5089,6 +5153,7 @@ fn asset_metadata_rename_profile_scope_and_replacement_are_consistent() {
             size: 1,
             mime_type: "image/png".into(),
             path: "assets/images/original-first.png".into(),
+            provenance: None,
         })
         .unwrap();
     let second = store
@@ -5100,6 +5165,7 @@ fn asset_metadata_rename_profile_scope_and_replacement_are_consistent() {
             size: 1,
             mime_type: "image/webp".into(),
             path: "assets/images/original-second.webp".into(),
+            provenance: None,
         })
         .unwrap();
     let other_namespace = store
@@ -5111,6 +5177,7 @@ fn asset_metadata_rename_profile_scope_and_replacement_are_consistent() {
             size: 1,
             mime_type: "image/png".into(),
             path: "assets/images/manuscript-cover.png".into(),
+            provenance: None,
         })
         .unwrap();
 
@@ -5237,6 +5304,7 @@ fn asset_metadata_rejects_invalid_values_and_non_image_profiles() {
             size: 5,
             mime_type: "text/plain".into(),
             path: "assets/files/notes.txt".into(),
+            provenance: None,
         })
         .unwrap();
 
@@ -5382,6 +5450,7 @@ fn entity_revision_tracks_asset_role_and_reference_scope() {
             size: 8,
             mime_type: "image/png".into(),
             path: "assets/images/portrait.png".into(),
+            provenance: None,
         })
         .unwrap();
     let before = store
@@ -5515,6 +5584,7 @@ fn large_asset_checkpoint_hashing_benchmark() {
             source_path: source.to_string_lossy().into_owned(),
             filename: "large-map.bin".into(),
             mime_type: "application/octet-stream".into(),
+            provenance: None,
         })
         .unwrap();
     store.flush_checkpoint("initial large asset").unwrap();

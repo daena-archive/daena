@@ -21,7 +21,8 @@ contracts remain in the focused plans below:
   maps and map/entity integration.
 - [`NATIVE_MAP_INTEGRATION.md`](./NATIVE_MAP_INTEGRATION.md) defines Daena-owned
   vector maps, landmass generation, and image import.
-- [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the future AI subsystem.
+- [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
+- [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
 - [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the
   reviewable external-source migration pipeline and importer boundary.
 
@@ -45,7 +46,7 @@ The current product direction includes:
   modules;
 - deterministic, file-based project data that remains usable outside Daena;
 - explicit user-controlled Git snapshots around portable project files; and
-- future provider-neutral AI assistance that never becomes a second data model
+- provider-neutral AI assistance that never becomes a second data model
   or mutation authority.
 
 Collaboration, cloud synchronization, public publishing, mobile targets, and
@@ -284,7 +285,7 @@ and story metadata remain Daena-owned project fields and links. Provider
 adapters are replaceable and must not force provider-specific data into the
 shared entity model.
 
-AI, when implemented, must use core retrieval and broker authorization. It may
+AI uses core retrieval and broker authorization. It may
 assemble context and propose changes, but users accept every mutation through
 the same revision-aware runtime transaction and portable synchronization path.
 Provider credentials, network access, temporary generations, and derived

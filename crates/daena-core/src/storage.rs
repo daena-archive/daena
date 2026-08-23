@@ -361,6 +361,8 @@ pub struct CanonicalAsset {
     pub role: String,
     #[serde(default = "default_asset_reference_scope")]
     pub reference_scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<serde_json::Value>,
 }
 
 fn default_asset_role() -> String {
@@ -762,6 +764,7 @@ pub fn write_canonical_project(
                 created_at: asset.created_at.clone(),
                 role: asset.role.clone(),
                 reference_scope: asset.reference_scope.clone(),
+                provenance: asset.provenance.clone(),
             });
     }
 
@@ -1071,6 +1074,7 @@ pub(crate) fn write_canonical_entity(
             created_at: asset.created_at.clone(),
             role: asset.role.clone(),
             reference_scope: asset.reference_scope.clone(),
+            provenance: asset.provenance.clone(),
         })
         .collect::<Vec<_>>();
     assets.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1456,6 +1460,7 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                         created_at: asset.created_at,
                         role: asset.role,
                         reference_scope: asset.reference_scope,
+                        provenance: asset.provenance,
                         revision: String::new(),
                     });
                 }

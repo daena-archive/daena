@@ -7,13 +7,22 @@ import {
   Diamond,
   Link2,
   MapPinned,
+  ImagePlus,
   Paperclip,
   Pencil,
   Sparkles,
 } from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import { headingOutline } from "$lib/markdown";
-import { project, type Asset, type Entity, type ModuleManifest } from "$lib/project/client";
+import {
+  project,
+  type AiProviderSettings,
+  type Asset,
+  type Entity,
+  type ImageProviderSettings,
+  type ModuleManifest,
+} from "$lib/project/client";
+import ImageGenerationDialog, { type ImageContextChoice } from "$lib/ai/ImageGenerationDialog.svelte";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
@@ -22,11 +31,19 @@ import WikiSidebar from "./WikiSidebar.svelte";
 let {
   manifest,
   initialEntityId = null as string | null,
+  projectId,
+  aiEnabled,
+  imageProvider,
+  textProvider,
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
 }: {
   manifest: ModuleManifest;
   initialEntityId?: string | null;
+  projectId: string;
+  aiEnabled: boolean;
+  imageProvider: ImageProviderSettings;
+  textProvider: AiProviderSettings;
   onClose?: () => void;
   onSelectEntity?: (id: string) => void;
 } = $props();
@@ -60,6 +77,7 @@ let wikiHasMore = $state(false);
 let wikiTypeCounts = $state<Array<{ entity_type: string | null; count: number }>>([]);
 let wikiSearchKey = "";
 let entityLoadRequest = 0;
+let imageGenerationOpen = $state(false);
 
 const schemas = $derived(manifest.schemas ?? []);
 const allEntityTypes = $derived(schemas.flatMap((schema: any) => schema.entityTypes));
@@ -204,6 +222,73 @@ const visibleRelationshipFields = $derived(
           .map((relationship: any) => ({ id: relationship.target_id, name: entityName(relationship.target_id) })),
       }))
       .filter((row: any) => row.targets.length > 0);
+  })(),
+);
+const imageContextChoices = $derived(
+  (() => {
+    if (!entity) return [] as ImageContextChoice[];
+    const priority = /appearance|physical|clothing|species|culture|occupation|era|architecture|location/i;
+    const choices: ImageContextChoice[] = [
+      {
+        id: "identity:name",
+        entityId: entity.id,
+        label: "Name",
+        value: entity.name,
+        sourceKind: "identity",
+        defaultSelected: true,
+      },
+      {
+        id: "identity:type",
+        entityId: entity.id,
+        label: "Entity type",
+        value: labelForType(entity.entity_type),
+        sourceKind: "identity",
+        defaultSelected: true,
+      },
+    ];
+    for (const row of visibleFields) {
+      choices.push({
+        id: `field:${row.key}`,
+        entityId: entity.id,
+        label: row.label,
+        value: row.value,
+        sourceKind: "field",
+        defaultSelected: priority.test(`${row.key} ${row.label}`),
+      });
+    }
+    const prose = documentBody.trim().replace(/\s+/g, " ");
+    if (prose) {
+      choices.push({
+        id: "document:description",
+        entityId: entity.id,
+        label: "Article description",
+        value: prose.slice(0, 1200),
+        sourceKind: "document",
+        defaultSelected: false,
+      });
+    }
+    for (const relationship of relationships) {
+      const relatedId = relationship.source_id === entity.id ? relationship.target_id : relationship.source_id;
+      choices.push({
+        id: `relationship:${relationship.id}`,
+        entityId: relatedId,
+        label: humanizeType(relationship.relationship_type),
+        value: entityName(relatedId),
+        sourceKind: "relationship",
+        defaultSelected: false,
+      });
+    }
+    for (const location of mapLocations) {
+      choices.push({
+        id: `location:${location.id ?? location.locationId ?? location.mapEntityId}`,
+        entityId: entity.id,
+        label: "Map location",
+        value: location.label || location.role || "Linked location",
+        sourceKind: "location",
+        defaultSelected: false,
+      });
+    }
+    return choices;
   })(),
 );
 
@@ -404,6 +489,11 @@ function handleEdit() {
     onclick={goForward}
     disabled={historyIndex >= history.length - 1}
     aria-label="Forward"><ArrowRight size={14} strokeWidth={1.8} /></button>
+  {#if entity && currentId && aiEnabled && imageProvider.enabled}
+    <button type="button" class="workspace-topbar-action" onclick={() => (imageGenerationOpen = true)}>
+      <ImagePlus size={14} strokeWidth={1.8} /> Generate illustration
+    </button>
+  {/if}
   <button type="button" class="workspace-topbar-action" onclick={handleEdit}
     ><Pencil size={14} strokeWidth={1.8} /> Edit</button>
   {#if entity && currentId}
@@ -652,6 +742,20 @@ function handleEdit() {
     </main>
   </div>
 </section>
+
+{#if imageGenerationOpen && entity && currentId}
+  <ImageGenerationDialog
+    {projectId}
+    {entity}
+    namespace={manifest.namespaces[0] ?? "daena.core"}
+    contextChoices={imageContextChoices}
+    {imageProvider}
+    {textProvider}
+    onAccepted={(asset) => {
+      if (!assets.some((existing) => existing.id === asset.id)) assets = [...assets, asset];
+    }}
+    onClose={() => (imageGenerationOpen = false)} />
+{/if}
 
 <style>
 .kb-shell {

@@ -9,6 +9,7 @@ pub const SETTINGS_FORMAT_VERSION: u32 = 2;
 const MAX_RECENT_PROJECTS: usize = 6;
 const DEFAULT_AI_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_AI_MODEL: &str = "";
+const DEFAULT_IMAGE_ENDPOINT: &str = "http://127.0.0.1:8188";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,7 +31,55 @@ pub struct AiSettings {
     #[serde(default)]
     pub provider: AiProviderSettings,
     #[serde(default)]
+    pub image_provider: ImageProviderSettings,
+    #[serde(default)]
     pub consents: Vec<RemoteConsent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageProviderSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_image_provider_id")]
+    pub id: String,
+    #[serde(default = "default_image_provider_name")]
+    pub name: String,
+    #[serde(default = "default_image_provider_adapter")]
+    pub adapter: String,
+    #[serde(default = "default_image_endpoint")]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl Default for ImageProviderSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            id: default_image_provider_id(),
+            name: default_image_provider_name(),
+            adapter: default_image_provider_adapter(),
+            endpoint: default_image_endpoint(),
+            model: String::new(),
+        }
+    }
+}
+
+fn default_image_provider_id() -> String {
+    "comfyui-local".into()
+}
+
+fn default_image_provider_name() -> String {
+    "ComfyUI".into()
+}
+
+fn default_image_provider_adapter() -> String {
+    "comfyui".into()
+}
+
+fn default_image_endpoint() -> String {
+    DEFAULT_IMAGE_ENDPOINT.into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +172,18 @@ pub struct GeneralSettingsUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiSettingsUpdate {
     pub provider: Option<AiProviderSettingsUpdate>,
+    pub image_provider: Option<ImageProviderSettingsUpdate>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageProviderSettingsUpdate {
+    pub enabled: Option<bool>,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub adapter: Option<String>,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -223,6 +284,26 @@ impl SettingsStore {
                     settings.ai.provider.capabilities = capabilities;
                 }
             }
+            if let Some(provider) = ai.image_provider {
+                if let Some(enabled) = provider.enabled {
+                    settings.ai.image_provider.enabled = enabled;
+                }
+                if let Some(id) = provider.id {
+                    settings.ai.image_provider.id = id;
+                }
+                if let Some(name) = provider.name {
+                    settings.ai.image_provider.name = name;
+                }
+                if let Some(adapter) = provider.adapter {
+                    settings.ai.image_provider.adapter = adapter;
+                }
+                if let Some(endpoint) = provider.endpoint {
+                    settings.ai.image_provider.endpoint = endpoint;
+                }
+                if let Some(model) = provider.model {
+                    settings.ai.image_provider.model = model;
+                }
+            }
         }
         settings = normalize(settings);
         self.save(&settings)?;
@@ -262,6 +343,17 @@ fn normalize(mut settings: AppSettings) -> AppSettings {
         .filter(|project| !project.name.trim().is_empty() && !project.root.trim().is_empty())
         .take(MAX_RECENT_PROJECTS)
         .collect();
+    settings.ai.image_provider.id = settings.ai.image_provider.id.trim().to_string();
+    settings.ai.image_provider.name = settings.ai.image_provider.name.trim().to_string();
+    settings.ai.image_provider.adapter = settings.ai.image_provider.adapter.trim().to_string();
+    settings.ai.image_provider.endpoint = settings
+        .ai
+        .image_provider
+        .endpoint
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    settings.ai.image_provider.model = settings.ai.image_provider.model.trim().to_string();
     settings
 }
 
@@ -343,6 +435,7 @@ mod tests {
                         capabilities: Some(vec!["text.generate".into(), "text.embed".into()]),
                         ..AiProviderSettingsUpdate::default()
                     }),
+                    image_provider: None,
                 }),
             })
             .unwrap();
@@ -351,6 +444,66 @@ mod tests {
         assert_eq!(loaded.ai.provider.endpoint, "https://api.example.com/v1");
         assert_eq!(loaded.ai.provider.capabilities.len(), 2);
         assert_eq!(loaded.ai.provider.model, default_ai_model());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn update_merges_local_image_provider_fields() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-image-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: None,
+                ai: Some(AiSettingsUpdate {
+                    provider: None,
+                    image_provider: Some(ImageProviderSettingsUpdate {
+                        enabled: Some(true),
+                        endpoint: Some("http://127.0.0.1:8188/".into()),
+                        model: Some(" world.safetensors ".into()),
+                        ..ImageProviderSettingsUpdate::default()
+                    }),
+                }),
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert!(loaded.ai.image_provider.enabled);
+        assert_eq!(loaded.ai.image_provider.endpoint, "http://127.0.0.1:8188");
+        assert_eq!(loaded.ai.image_provider.model, "world.safetensors");
+        assert_eq!(loaded.ai.image_provider.adapter, "comfyui");
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn existing_v2_settings_gain_disabled_image_provider_defaults() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-v2-image-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("settings.json"),
+            br#"{
+  "formatVersion": 2,
+  "ai": {
+    "provider": {
+      "id": "lm-studio",
+      "name": "LM Studio",
+      "adapter": "openai-compatible",
+      "endpoint": "http://127.0.0.1:1234/v1",
+      "model": "writer",
+      "embeddingModel": "",
+      "capabilities": []
+    },
+    "consents": []
+  }
+}"#,
+        )
+        .unwrap();
+        let loaded = SettingsStore::new(&directory).load().unwrap();
+        assert_eq!(loaded.ai.provider.model, "writer");
+        assert_eq!(loaded.ai.image_provider, ImageProviderSettings::default());
         let _ = fs::remove_dir_all(directory);
     }
 

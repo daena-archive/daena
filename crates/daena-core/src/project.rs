@@ -209,6 +209,8 @@ pub struct AssetInput {
     pub size: i64,
     pub mime_type: String,
     pub path: String,
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,6 +220,8 @@ pub struct AssetFileInput {
     pub source_path: String,
     pub filename: String,
     pub mime_type: String,
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +339,8 @@ pub struct Asset {
     pub created_at: String,
     pub role: String,
     pub reference_scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<serde_json::Value>,
     #[serde(default)]
     pub revision: String,
 }
@@ -601,6 +607,46 @@ fn decode_field_value(value: String) -> serde_json::Value {
 
 fn encode_field_value(value: &serde_json::Value) -> Result<String, CoreError> {
     serde_json::to_string(value).map_err(|error| CoreError::NotFound(error.to_string()))
+}
+
+fn encode_asset_provenance(
+    provenance: &Option<serde_json::Value>,
+) -> Result<Option<String>, CoreError> {
+    const MAX_ASSET_PROVENANCE_BYTES: usize = 256 * 1024;
+    let Some(value) = provenance else {
+        return Ok(None);
+    };
+    if !value.is_object() {
+        return Err(CoreError::Validation(
+            "asset provenance must be a JSON object".into(),
+        ));
+    }
+    let encoded = serde_json::to_string(value)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    if encoded.len() > MAX_ASSET_PROVENANCE_BYTES {
+        return Err(CoreError::Validation(
+            "asset provenance exceeds 256 KiB".into(),
+        ));
+    }
+    Ok(Some(encoded))
+}
+
+fn decode_asset_provenance(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<serde_json::Value>> {
+    let encoded = row.get::<_, Option<String>>(index)?;
+    encoded
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
 }
 
 fn external_import_source_key(importer_id: &str, source_id: &str) -> String {
@@ -1459,7 +1505,7 @@ fn ensure_runtime_asset(
 }
 
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 6;
+const RUNTIME_SCHEMA_VERSION: i64 = 7;
 const EXPORTER_CONTRACT_VERSION: &str = "2";
 const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
 const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -2488,7 +2534,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let assets = self
             .connection
-            .prepare("SELECT id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id=?1 ORDER BY id")?
+            .prepare("SELECT id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE entity_id=?1 ORDER BY id")?
             .query_map(params![entity_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2501,6 +2547,7 @@ impl ProjectStore {
                     row.get::<_, String>(7)?,
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2623,12 +2670,13 @@ impl ProjectStore {
             String,
             String,
             String,
+            Option<String>,
         );
         let mut assets: BTreeMap<String, Vec<AssetRevision>> = BTreeMap::new();
         let sql = if restricted {
-            format!("SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
+            format!("SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE entity_id IN ({placeholders}) ORDER BY entity_id,id")
         } else {
-            "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets ORDER BY entity_id,id".into()
+            "SELECT entity_id,id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets ORDER BY entity_id,id".into()
         };
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
@@ -2647,6 +2695,7 @@ impl ProjectStore {
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
                     ),
                 ))
             },
@@ -2742,7 +2791,7 @@ impl ProjectStore {
 
     fn revision_for_asset(&self, id: &str) -> Result<String, CoreError> {
         let value = self.connection.query_row(
-            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE id=?1",
+            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE id=?1",
             params![id],
             |row| {
                 Ok((
@@ -2757,6 +2806,7 @@ impl ProjectStore {
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
                     row.get::<_, String>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             },
         )?;
@@ -2776,6 +2826,7 @@ impl ProjectStore {
             &asset.created_at,
             &asset.role,
             &asset.reference_scope,
+            encode_asset_provenance(&asset.provenance)?,
         ))
     }
 
@@ -4293,7 +4344,7 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT NOT NULL REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
               CREATE INDEX IF NOT EXISTS module_records_owner_idx ON module_records(module_id, collection, owner_entity_id, id);
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
-             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'attachment' CHECK(role IN ('attachment','profile')), reference_scope TEXT NOT NULL DEFAULT 'entity' CHECK(reference_scope IN ('entity','project')));
+             CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'attachment' CHECK(role IN ('attachment','profile')), reference_scope TEXT NOT NULL DEFAULT 'entity' CHECK(reference_scope IN ('entity','project')), provenance TEXT);
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
              CREATE TABLE IF NOT EXISTS map_location_projection (location_id TEXT PRIMARY KEY, entity_id TEXT NOT NULL, map_entity_id TEXT NOT NULL, label TEXT, role TEXT NOT NULL, anchor_kind TEXT NOT NULL, provider TEXT, feature_kind TEXT, feature_id TEXT, min_x REAL, min_y REAL, max_x REAL, max_y REAL, valid_from TEXT, valid_to TEXT, resolution TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS map_feature_projection (map_entity_id TEXT NOT NULL, feature_id TEXT NOT NULL, layer_id TEXT NOT NULL, kind TEXT NOT NULL, min_x REAL NOT NULL, min_y REAL NOT NULL, max_x REAL NOT NULL, max_y REAL NOT NULL, PRIMARY KEY (map_entity_id, feature_id));
@@ -5698,6 +5749,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
             revision: String::new(),
         };
         let preview_asset = Asset {
@@ -5712,6 +5764,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
             revision: String::new(),
         };
         let imported = ImportedImageMap {
@@ -5860,6 +5913,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
             revision: String::new(),
         };
         let accepted = AcceptedVectorMap {
@@ -6010,6 +6064,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
             revision: String::new(),
         };
         let accepted = AcceptedPhysicalMap {
@@ -6272,6 +6327,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
             revision: String::new(),
         };
         let request_id = self.request_id(request_id)?;
@@ -8116,7 +8172,7 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
         let assets = self
             .connection
-            .prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets ORDER BY entity_id,created_at,id")?
+            .prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets ORDER BY entity_id,created_at,id")?
             .query_map([], |row| {
                 Ok(Asset {
                     id: row.get(0)?,
@@ -8130,6 +8186,7 @@ impl ProjectStore {
                     created_at: row.get(8)?,
                     role: row.get(9)?,
                     reference_scope: row.get(10)?,
+                    provenance: decode_asset_provenance(row, 11)?,
                     revision: String::new(),
                 })
             })?
@@ -8354,7 +8411,7 @@ impl ProjectStore {
             }
         }
         {
-            let mut statement = transaction.prepare_cached("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at,role=excluded.role,reference_scope=excluded.reference_scope")?;
+            let mut statement = transaction.prepare_cached("INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET entity_id=excluded.entity_id,namespace=excluded.namespace,filename=excluded.filename,content_hash=excluded.content_hash,size=excluded.size,mime_type=excluded.mime_type,path=excluded.path,created_at=excluded.created_at,role=excluded.role,reference_scope=excluded.reference_scope,provenance=excluded.provenance")?;
             for asset in &snapshot.assets {
                 validate_asset_role(&asset.role)?;
                 validate_asset_reference_scope(&asset.reference_scope)?;
@@ -8364,6 +8421,7 @@ impl ProjectStore {
                         "profile assets must use a supported raster image MIME type".into(),
                     ));
                 }
+                let provenance = encode_asset_provenance(&asset.provenance)?;
                 statement.execute(params![
                     asset.id,
                     asset.entity_id,
@@ -8375,7 +8433,8 @@ impl ProjectStore {
                     asset.path,
                     asset.created_at,
                     asset.role,
-                    asset.reference_scope
+                    asset.reference_scope,
+                    provenance
                 ])?;
             }
         }
@@ -8501,6 +8560,7 @@ impl ProjectStore {
                 "asset size cannot be negative".into(),
             ));
         }
+        let provenance = encode_asset_provenance(&input.provenance)?;
         if let Some(root) = self.root.as_deref() {
             ensure_runtime_asset(root, &input.path, &input.content_hash, input.size)?;
         }
@@ -8519,6 +8579,7 @@ impl ProjectStore {
             created_at: now.clone(),
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: input.provenance.clone(),
             revision: String::new(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
@@ -8528,8 +8589,8 @@ impl ProjectStore {
             &[format!("entities/{}/", input.entity_id), input.path.clone()],
         )?;
         transaction.execute(
-            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now],
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,provenance) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![id, input.entity_id, input.namespace, input.filename, input.content_hash, input.size, input.mime_type, input.path, now, provenance],
         )?;
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&input.entity_id))?;
@@ -8547,6 +8608,7 @@ impl ProjectStore {
             created_at: now,
             role: ASSET_ROLE_ATTACHMENT.into(),
             reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: input.provenance,
             revision,
         })
     }
@@ -8569,6 +8631,7 @@ impl ProjectStore {
         expected_revision: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<Asset, CoreError> {
+        encode_asset_provenance(&input.provenance)?;
         let source = Path::new(&input.source_path);
         let metadata =
             std::fs::metadata(source).map_err(|error| CoreError::NotFound(error.to_string()))?;
@@ -8608,6 +8671,7 @@ impl ProjectStore {
                 size,
                 mime_type: input.mime_type,
                 path: relative_path.clone(),
+                provenance: input.provenance,
             },
             expected_revision,
             Some(&request_id),
@@ -8634,7 +8698,7 @@ impl ProjectStore {
         let mut asset = self
             .connection
             .query_row(
-                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE id=?1",
+                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE id=?1",
                 params![asset_id],
                 |row| {
                     Ok(Asset {
@@ -8649,6 +8713,7 @@ impl ProjectStore {
                         created_at: row.get(8)?,
                         role: row.get(9)?,
                         reference_scope: row.get(10)?,
+                        provenance: decode_asset_provenance(row, 11)?,
                         revision: String::new(),
                     })
                 },
@@ -8985,7 +9050,7 @@ impl ProjectStore {
 
     pub fn list_shared_assets(&self) -> Result<Vec<Asset>, CoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE reference_scope='project' ORDER BY created_at DESC LIMIT 200",
+            "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE reference_scope='project' ORDER BY created_at DESC LIMIT 200",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(Asset {
@@ -9000,6 +9065,7 @@ impl ProjectStore {
                 created_at: row.get(8)?,
                 role: row.get(9)?,
                 reference_scope: row.get(10)?,
+                provenance: decode_asset_provenance(row, 11)?,
                 revision: String::new(),
             })
         })?;
@@ -9021,7 +9087,7 @@ impl ProjectStore {
         let mut asset = self
             .connection
             .query_row(
-                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE path=?1",
+                "SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE path=?1",
                 params![path],
                 |row| {
                     Ok(Asset {
@@ -9036,6 +9102,7 @@ impl ProjectStore {
                         created_at: row.get(8)?,
                         role: row.get(9)?,
                         reference_scope: row.get(10)?,
+                        provenance: decode_asset_provenance(row, 11)?,
                         revision: String::new(),
                     })
                 },
@@ -9052,7 +9119,7 @@ impl ProjectStore {
     }
 
     fn list_assets_unchecked(&self, entity_id: String) -> Result<Vec<Asset>, CoreError> {
-        let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
+        let mut statement = self.connection.prepare("SELECT id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at,role,reference_scope,provenance FROM assets WHERE entity_id=?1 ORDER BY created_at")?;
         let rows = statement.query_map(params![entity_id], |row| {
             Ok(Asset {
                 id: row.get(0)?,
@@ -9066,6 +9133,7 @@ impl ProjectStore {
                 created_at: row.get(8)?,
                 role: row.get(9)?,
                 reference_scope: row.get(10)?,
+                provenance: decode_asset_provenance(row, 11)?,
                 revision: String::new(),
             })
         })?;

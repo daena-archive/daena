@@ -9,7 +9,7 @@ use daena_ai::index::{
 };
 use daena_ai::{
     AiCaller, AiError, ContextBudget, RetrievalMode, RetrievalPolicy, RetrievedPassage, SourceRef,
-    DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION,
+    DEFAULT_GENERATION_DEADLINE, DEFAULT_LIMITS, PROMPT_TEMPLATE_VERSION,
 };
 use daena_core::{CoreError, ProjectStore};
 use daena_plugin_api::{AiRetrievalMode, AiRetrievalPolicyPayload};
@@ -761,6 +761,10 @@ struct OpenAiChoice {
 struct OpenAiDelta {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1900,6 +1904,7 @@ fn drain_remote_sse_lines(
     request_id: &str,
     output: &mut String,
     finish_reason_seen: &mut bool,
+    reasoning_seen: &mut bool,
 ) -> Result<(Vec<AiStreamEvent>, bool), AiError> {
     let mut events = Vec::new();
     let mut done = false;
@@ -1923,30 +1928,70 @@ fn drain_remote_sse_lines(
             events.push(usage_event(request_id, usage));
         }
         for choice in parsed.choices {
-            if choice.finish_reason.is_some() {
-                *finish_reason_seen = true;
-            }
-            let Some(delta) = choice.delta.content else {
-                continue;
-            };
-            output.push_str(&delta);
-            if output.len() > DEFAULT_LIMITS.max_output_bytes {
-                return Err(AiError::OutputValidationFailed);
-            }
-            events.push(AiStreamEvent {
-                sequence: 0,
-                request_id: request_id.to_string(),
-                phase: "delta".into(),
-                delta: Some(delta),
-                output: None,
-                error: None,
-            });
+            append_openai_choice_events(
+                choice,
+                request_id,
+                output,
+                finish_reason_seen,
+                reasoning_seen,
+                &mut events,
+            )?;
         }
     }
     if bytes.len() > MAX_PROVIDER_FRAME_BYTES {
         return Err(AiError::InvalidProviderResponse);
     }
     Ok((events, done))
+}
+
+fn append_openai_choice_events(
+    choice: OpenAiChoice,
+    request_id: &str,
+    output: &mut String,
+    finish_reason_seen: &mut bool,
+    reasoning_seen: &mut bool,
+    events: &mut Vec<AiStreamEvent>,
+) -> Result<(), AiError> {
+    if choice.finish_reason.is_some() {
+        *finish_reason_seen = true;
+    }
+    let OpenAiDelta {
+        content,
+        reasoning,
+        reasoning_content,
+    } = choice.delta;
+    if !*reasoning_seen
+        && reasoning
+            .as_deref()
+            .or(reasoning_content.as_deref())
+            .is_some_and(|value| !value.is_empty())
+    {
+        *reasoning_seen = true;
+        events.push(AiStreamEvent {
+            sequence: 0,
+            request_id: request_id.to_string(),
+            phase: "reasoning".into(),
+            delta: None,
+            output: None,
+            error: None,
+        });
+    }
+    let Some(delta) = content else {
+        return Ok(());
+    };
+    output.push_str(&delta);
+    if output.len() > DEFAULT_LIMITS.max_output_bytes {
+        return Err(AiError::OutputValidationFailed);
+    }
+    events.push(AiStreamEvent {
+        sequence: 0,
+        request_id: request_id.to_string(),
+        phase: "delta".into(),
+        delta: Some(delta),
+        output: None,
+        error: None,
+    });
+    Ok(())
 }
 
 async fn cancellation_requested(cancelled: &std::sync::atomic::AtomicBool) {
@@ -2072,14 +2117,15 @@ async fn generate_remote_stream(
     let mut bytes = Vec::new();
     let mut output = String::new();
     let mut finish_reason_seen = false;
+    let mut reasoning_seen = false;
     loop {
         let chunk = tokio::select! {
             _ = cancellation_requested(cancelled) => {
-                emit(remote_terminal_event(request_id, false));
+                emit(terminal_event_with_partial_output(request_id, false, &output));
                 return;
             }
             _ = tokio::time::sleep_until(deadline_at) => {
-                emit(remote_terminal_event(request_id, true));
+                emit(terminal_event_with_partial_output(request_id, true, &output));
                 return;
             }
             chunk = response.chunk() => match chunk {
@@ -2087,7 +2133,7 @@ async fn generate_remote_stream(
                 Err(error) => {
                     let _redacted_diagnostic = redact_diagnostic(&error.to_string(), &api_key);
                     if error.is_timeout() || tokio::time::Instant::now() >= deadline_at {
-                        emit(remote_terminal_event(request_id, true));
+                        emit(terminal_event_with_partial_output(request_id, true, &output));
                     } else {
                         fail(AiError::ProviderUnavailable);
                     }
@@ -2104,6 +2150,7 @@ async fn generate_remote_stream(
                         request_id,
                         &mut output,
                         &mut finish_reason_seen,
+                        &mut reasoning_seen,
                     ) {
                         Ok((events, done)) => {
                             for event in events {
@@ -2148,6 +2195,7 @@ async fn generate_remote_stream(
                 request_id,
                 &mut output,
                 &mut finish_reason_seen,
+                &mut reasoning_seen,
             ) {
                 Ok((events, done)) => {
                     for event in events {
@@ -2351,6 +2399,18 @@ fn remote_terminal_event(request_id: &str, deadline: bool) -> AiStreamEvent {
             .to_string(),
         ),
     }
+}
+
+fn terminal_event_with_partial_output(
+    request_id: &str,
+    deadline: bool,
+    output: &str,
+) -> AiStreamEvent {
+    let mut event = remote_terminal_event(request_id, deadline);
+    if !output.is_empty() {
+        event.output = Some(output.to_string());
+    }
+    event
 }
 
 fn build_generation_prompt(
@@ -2605,7 +2665,7 @@ pub async fn ai_generate_text(
         instruction,
         append_retrieved_context(selection, retrieved_context),
         None,
-        DEFAULT_LIMITS.default_deadline,
+        DEFAULT_GENERATION_DEADLINE,
         citations,
         provider.remote,
         provider.api_key,
@@ -2658,7 +2718,7 @@ pub async fn ai_generate_structured(
         instruction,
         append_retrieved_context(context, retrieved_context),
         Some(output_contract),
-        DEFAULT_LIMITS.default_deadline,
+        DEFAULT_GENERATION_DEADLINE,
         citations,
         provider.remote,
         provider.api_key,
@@ -2915,29 +2975,16 @@ pub fn start_ai_request_mode(
         let mut output = String::new();
         let mut terminal_emitted = false;
         let mut finish_reason_seen = false;
+        let mut reasoning_seen = false;
         loop {
             let deadline_hit = deadline_exceeded.load(std::sync::atomic::Ordering::Relaxed)
                 || request_started.elapsed() >= deadline;
             if deadline_hit || cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                emit(AiStreamEvent {
-                    sequence: 0,
-                    request_id: request_id_for_task.clone(),
-                    phase: if deadline_hit {
-                        "deadline_exceeded".into()
-                    } else {
-                        "cancelled".into()
-                    },
-                    delta: None,
-                    output: None,
-                    error: Some(
-                        if deadline_hit {
-                            AiError::DeadlineExceeded
-                        } else {
-                            AiError::Cancelled
-                        }
-                        .to_string(),
-                    ),
-                });
+                emit(terminal_event_with_partial_output(
+                    &request_id_for_task,
+                    deadline_hit,
+                    &output,
+                ));
                 terminal_emitted = true;
                 break;
             }
@@ -2951,6 +2998,7 @@ pub fn start_ai_request_mode(
                             &request_id_for_task,
                             &mut output,
                             &mut finish_reason_seen,
+                            &mut reasoning_seen,
                         ) {
                             Ok((events, done)) => {
                                 for event in events {
@@ -3051,32 +3099,21 @@ pub fn start_ai_request_mode(
                     emit(usage_event(&request_id_for_task, usage));
                 }
                 for choice in parsed.choices {
-                    if choice.finish_reason.is_some() {
-                        finish_reason_seen = true;
-                    }
-                    let Some(delta) = choice.delta.content else {
-                        continue;
-                    };
-                    output.push_str(&delta);
-                    if output.len() > DEFAULT_LIMITS.max_output_bytes {
-                        emit(AiStreamEvent {
-                            sequence: 0,
-                            request_id: request_id_for_task.clone(),
-                            phase: "failed".into(),
-                            delta: None,
-                            output: None,
-                            error: Some(AiError::OutputValidationFailed.to_string()),
-                        });
+                    let mut events = Vec::new();
+                    if let Err(error) = append_openai_choice_events(
+                        choice,
+                        &request_id_for_task,
+                        &mut output,
+                        &mut finish_reason_seen,
+                        &mut reasoning_seen,
+                        &mut events,
+                    ) {
+                        emit(ai_event(&request_id_for_task, "failed", Some(error)));
                         return;
                     }
-                    emit(AiStreamEvent {
-                        sequence: 0,
-                        request_id: request_id_for_task.clone(),
-                        phase: "delta".into(),
-                        delta: Some(delta),
-                        output: None,
-                        error: None,
-                    });
+                    for event in events {
+                        emit(event);
+                    }
                 }
             }
         }
@@ -3488,6 +3525,10 @@ mod tests {
         let event = remote_terminal_event("request", true);
         assert_eq!(event.phase, "deadline_exceeded");
         assert_eq!(event.error.as_deref(), Some("DeadlineExceeded"));
+
+        let event = terminal_event_with_partial_output("request", true, "partial draft");
+        assert_eq!(event.output.as_deref(), Some("partial draft"));
+        assert!(DEFAULT_GENERATION_DEADLINE > DEFAULT_LIMITS.default_deadline);
     }
 
     #[test]
@@ -3528,16 +3569,27 @@ mod tests {
         let mut bytes = br#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#.to_vec();
         let mut output = String::new();
         let mut finish_reason_seen = false;
-        let (events, done) =
-            drain_remote_sse_lines(&mut bytes, "request", &mut output, &mut finish_reason_seen)
-                .unwrap();
+        let mut reasoning_seen = false;
+        let (events, done) = drain_remote_sse_lines(
+            &mut bytes,
+            "request",
+            &mut output,
+            &mut finish_reason_seen,
+            &mut reasoning_seen,
+        )
+        .unwrap();
         assert!(events.is_empty());
         assert!(!done);
 
         bytes.extend_from_slice(b"\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\ndata: [DONE]\n");
-        let (events, done) =
-            drain_remote_sse_lines(&mut bytes, "request", &mut output, &mut finish_reason_seen)
-                .unwrap();
+        let (events, done) = drain_remote_sse_lines(
+            &mut bytes,
+            "request",
+            &mut output,
+            &mut finish_reason_seen,
+            &mut reasoning_seen,
+        )
+        .unwrap();
         assert!(done);
         assert!(finish_reason_seen);
         assert_eq!(output, "Hello");
@@ -3549,6 +3601,41 @@ mod tests {
             "Hello"
         );
         assert!(events.iter().any(|event| event.phase == "usage"));
+    }
+
+    #[test]
+    fn remote_sse_parser_normalizes_reasoning_activity_without_leaking_it() {
+        let mut bytes = b"data: {\"choices\":[{\"delta\":{\"reasoning\":\"private plan\"}}]}\n\
+data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"more private plan\"}}]}\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"Visible answer\"}}]}\n"
+            .to_vec();
+        let mut output = String::new();
+        let mut finish_reason_seen = false;
+        let mut reasoning_seen = false;
+
+        let (events, done) = drain_remote_sse_lines(
+            &mut bytes,
+            "request",
+            &mut output,
+            &mut finish_reason_seen,
+            &mut reasoning_seen,
+        )
+        .unwrap();
+
+        assert!(!done);
+        assert!(reasoning_seen);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.phase == "reasoning")
+                .count(),
+            1
+        );
+        assert_eq!(output, "Visible answer");
+        assert!(events.iter().all(|event| {
+            event.delta.as_deref() != Some("private plan")
+                && event.delta.as_deref() != Some("more private plan")
+        }));
     }
 
     #[test]

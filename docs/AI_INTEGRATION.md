@@ -410,6 +410,20 @@ There is exactly one terminal event. Events received after cancellation or a
 terminal event are ignored. The host bounds accumulated output even if a
 provider ignores requested limits.
 
+Interactive generation uses a separate deadline from provider-control work.
+Model discovery, health checks, and embeddings retain the conservative
+30-second control deadline; text and structured generation default to five
+minutes and broker callers may request at most ten minutes. The generation
+deadline remains an absolute host-enforced bound rather than an activity-reset
+timeout.
+
+OpenAI-compatible adapters normalize provider reasoning fields into a
+content-free `reasoning` progress event. Reasoning text is never appended to a
+proposal, exposed as generated document text, or retained in the buffered
+event stream. User-visible `content` deltas remain the only proposal body. A
+deadline or cancellation terminal event includes any partial visible output so
+the shell can preserve it for review instead of returning to an empty prompt.
+
 Errors use stable categories such as:
 
 ```text

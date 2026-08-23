@@ -3691,11 +3691,8 @@ fn dispatch_host_rpc(
             let deadline_ms = payload
                 .get("deadlineMs")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(daena_ai::DEFAULT_LIMITS.default_deadline.as_millis() as u64)
-                .clamp(
-                    1,
-                    daena_ai::DEFAULT_LIMITS.default_deadline.as_millis() as u64,
-                );
+                .unwrap_or(daena_ai::DEFAULT_GENERATION_DEADLINE.as_millis() as u64)
+                .clamp(1, daena_ai::MAX_GENERATION_DEADLINE.as_millis() as u64);
             let selection = immediate_context
                 .get("selection")
                 .and_then(serde_json::Value::as_str)

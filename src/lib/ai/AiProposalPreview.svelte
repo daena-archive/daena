@@ -3,6 +3,7 @@ let {
   original,
   proposal = $bindable(""),
   streamText = "",
+  progressMessage = "Generating proposal…",
   busy = false,
   cancelling = false,
   onCancel,
@@ -12,6 +13,7 @@ let {
   original: string;
   proposal?: string;
   streamText?: string;
+  progressMessage?: string;
   busy?: boolean;
   cancelling?: boolean;
   onCancel: () => void;
@@ -33,15 +35,14 @@ let {
       <header class="ai-diff-card-header">
         <div>
           <strong>Proposal</strong><small
-            >{cancelling ? "Stopping generation" : busy ? "Generating live" : "Edit before accepting"}</small>
+            >{cancelling ? "Stopping generation" : busy ? progressMessage : "Edit before accepting"}</small>
         </div>
         <span class="ai-diff-badge">{cancelling ? "Stopping" : busy ? "Streaming" : "Editable"}</span>
       </header>
       {#if busy}
         <span class="sr-only" role="status" aria-live="polite"
-          >{cancelling ? "Cancellation requested" : "Generating proposal"}</span>
-        <pre class="ai-proposal-output">{streamText ||
-            (cancelling ? "Stopping generation…" : "Generating proposal…")}</pre>
+          >{cancelling ? "Cancellation requested" : progressMessage}</span>
+        <pre class="ai-proposal-output">{streamText || (cancelling ? "Stopping generation…" : progressMessage)}</pre>
       {:else}
         <textarea class="ai-proposal-editor" rows="9" bind:value={proposal} aria-label="Editable AI proposal"
         ></textarea>

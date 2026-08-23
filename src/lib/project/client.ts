@@ -731,7 +731,7 @@ export interface AiHybridMatch {
 export interface AiStreamEvent {
   sequence: number;
   requestId: string;
-  phase: "started" | "delta" | "usage" | "completed" | "cancelled" | "deadline_exceeded" | "failed";
+  phase: "started" | "reasoning" | "delta" | "usage" | "completed" | "cancelled" | "deadline_exceeded" | "failed";
   delta: string | null;
   output: string | null;
   error: string | null;

@@ -41,6 +41,12 @@ pub const DEFAULT_LIMITS: Limits = Limits {
     temporary_result_ttl: Duration::from_secs(10 * 60),
 };
 
+/// Interactive generation can include model loading, prompt processing, and
+/// reasoning before user-visible text arrives. Keep that budget separate from
+/// the shorter provider-control deadline used for discovery and embeddings.
+pub const DEFAULT_GENERATION_DEADLINE: Duration = Duration::from_secs(5 * 60);
+pub const MAX_GENERATION_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallerKind {
     TrustedShell,

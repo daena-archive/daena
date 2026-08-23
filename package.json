@@ -36,6 +36,7 @@
     "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
     "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs && node --experimental-strip-types scripts/editor-roundtrip.test.mjs",
+    "test:ai-stream": "node --experimental-strip-types scripts/ai-stream-state.test.mjs",
     "tauri": "tauri"
   },
   "license": "Apache-2.0",

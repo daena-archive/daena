@@ -229,11 +229,19 @@ function handleAiMessageEvent(event: AiStreamEvent) {
     aiMessageRequestId = null;
     clearAiMessageListener();
   } else if (event.phase === "failed" || event.phase === "cancelled" || event.phase === "deadline_exceeded") {
-    commitMessage = aiMessageBase;
+    const partialText = event.output ?? aiMessageStream;
+    commitMessage =
+      event.phase === "deadline_exceeded" && partialText
+        ? appendAiMessage(aiMessageBase, formatSnapshotMessage(partialText))
+        : aiMessageBase;
     aiMessageBusy = false;
     aiMessageRequestId = null;
     clearAiMessageListener();
-    if (event.phase !== "cancelled") onError(event.error ?? "Could not generate a snapshot message.");
+    if (event.phase === "deadline_exceeded" && partialText) {
+      onError("AI generation reached its time limit. The partial snapshot message is preserved.");
+    } else if (event.phase !== "cancelled") {
+      onError(event.error ?? "Could not generate a snapshot message.");
+    }
   }
 }
 

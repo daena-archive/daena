@@ -108,6 +108,7 @@ import { projectionModule, type ProjectionKind } from "$lib/modules/projections"
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
+import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
 import {
   formatCalendarDate,
@@ -346,6 +347,7 @@ let aiRequestId = $state<string | null>(null);
 let aiInstruction = $state("Rewrite this to be more vivid while preserving the meaning.");
 let aiStreamText = $state("");
 let aiPreviewOutput = $state("");
+let aiProgressMessage = $state("Preparing model…");
 let aiSourceSelection = $state("");
 let aiSourceSelectionPlain = $state("");
 let aiGenerationContext = $state("");
@@ -2242,6 +2244,9 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
+    if (payload.phase === "deadline_exceeded") {
+      error = "AI field generation reached its time limit before returning complete suggestions.";
+    }
   } else if (payload.phase === "completed") {
     clearAiFieldListener();
     aiFieldFillBusy = false;
@@ -2437,6 +2442,7 @@ function closeAiRewrite() {
   aiSourceEntityId = null;
   aiStreamText = "";
   aiPreviewOutput = "";
+  aiProgressMessage = "Preparing model…";
   aiUsage = null;
   aiSourceSelection = "";
   aiSourceSelectionPlain = "";
@@ -2471,7 +2477,17 @@ function handleAiEvent(payload: AiStreamEvent) {
   if (aiSourceEntityId !== null && selected?.id !== aiSourceEntityId) return;
   if (payload.sequence <= aiLastSequence) return;
   aiLastSequence = payload.sequence;
-  if (payload.phase === "delta" && payload.delta) aiStreamText += payload.delta;
+  const nextStreamState = reduceTextGenerationEvent(
+    {
+      streamText: aiStreamText,
+      proposal: aiPreviewOutput,
+      progressMessage: aiProgressMessage,
+    },
+    payload,
+  );
+  aiStreamText = nextStreamState.streamText;
+  aiPreviewOutput = nextStreamState.proposal;
+  aiProgressMessage = nextStreamState.progressMessage;
   if (payload.phase === "usage" && payload.output) {
     try {
       aiUsage = JSON.parse(payload.output);
@@ -2480,7 +2496,6 @@ function handleAiEvent(payload: AiStreamEvent) {
     }
   }
   if (payload.phase === "completed") {
-    aiPreviewOutput = payload.output ?? aiStreamText;
     aiBusy = false;
     aiCancelPending = false;
     aiRequestId = null;
@@ -2490,7 +2505,11 @@ function handleAiEvent(payload: AiStreamEvent) {
     aiCancelPending = false;
     aiRequestId = null;
     clearAiStreamListener();
-    if (payload.phase === "deadline_exceeded") error = payload.error ?? "AI request exceeded its deadline";
+    if (payload.phase === "deadline_exceeded") {
+      error = aiPreviewOutput
+        ? "AI generation reached its time limit. The partial proposal is preserved below."
+        : "AI generation reached its time limit before producing a proposal.";
+    }
   } else if (payload.phase === "failed") {
     aiBusy = false;
     aiCancelPending = false;
@@ -2507,6 +2526,7 @@ async function startAiRewrite() {
   aiSourceRevision = loadedDocumentRevision;
   aiStreamText = "";
   aiPreviewOutput = "";
+  aiProgressMessage = "Preparing model…";
   aiLastSequence = -1;
   aiStartCancelled = false;
   aiBusy = true;
@@ -5904,6 +5924,7 @@ onMount(() => {
                         original={aiSourceSelectionPlain}
                         bind:proposal={aiPreviewOutput}
                         streamText={aiStreamText}
+                        progressMessage={aiProgressMessage}
                         busy={aiBusy}
                         cancelling={aiCancelPending}
                         onCancel={() => void cancelAiRewrite()}

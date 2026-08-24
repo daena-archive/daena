@@ -146,11 +146,10 @@ revised.
 
 ```text
 Rail Git  -->  Settings → Git
-                 ├─ Tool status (version / download)
-                 ├─ Remotes (add / edit / remove)
-                 ├─ Changes (select paths → message → commit)
-                 ├─ History (log → tree → file preview → hard reset)
-                 └─ Remote recovery banner (force-with-lease | restore)
+                 ├─ Repository overview + remote recovery when needed
+                 ├─ Create snapshot (changes → message → commit)
+                 ├─ Snapshot history (expand → review → restore)
+                 └─ Sync & repository (remotes / push / maintenance)
 ```
 
 ---
@@ -354,18 +353,26 @@ Wire each through `src-tauri/src/lib.rs` `generate_handler!` and
 
 ### 9.1 Settings → Git layout
 
-Single scrollable panel with sections:
+Single scrollable panel with the author workflow first and repository mechanics
+progressively disclosed:
 
-1. **Git tool** — version, or missing + Open git-scm.com downloads.
-2. **Remotes** — list all remotes; add via modal; edit URL via modal; remove.
-3. **Changes** — preflight diagnostics; entity-grouped checkboxes (project /
-   entity name / plugin / asset) derived from `staging_paths`; select all/none;
-   message field; Generate message uses group titles; Commit selected still
-   sends the underlying canonical paths.
-4. **History** — commit list; selecting a commit loads snapshot paths; selecting
-   a path opens read-only preview; **Restore this snapshot…** triggers the
-   danger confirm then hard reset.
-5. **Remote recovery** — conditional sticky banner after divergent reset.
+1. **Repository overview** — branch and snapshot-ready change count, with tool
+   installation guidance only when Git is unavailable.
+2. **Remote recovery** — prominent conditional banner after a divergent reset;
+   this remains above normal snapshot work until resolved.
+3. **Create snapshot** — preflight diagnostics; collapsible entity-grouped
+   checkboxes (project / entity name / plugin / asset) derived from
+   `staging_paths`; select all/none; and a collapsible message editor whose
+   closed state keeps the title visible. **Suggest message** uses group titles;
+   the optional AI action is explicitly labeled. The primary action states why
+   it is blocked and still sends the underlying canonical paths.
+4. **Snapshot history** — compact, newest-first rows. Expanding one row lazily
+   loads its message body and reveals **Review changes** plus the destructive
+   **Restore this snapshot…** action. Snapshot review automatically selects the
+   first changed file, uses author-facing file labels, and keeps commit hashes
+   and stored paths behind technical-details disclosures.
+5. **Sync & repository** — collapsed by default at the bottom. It owns remote
+   add/edit/remove, Push, the detected Git version, and **Condense history…**.
 
 Without an open project: show tool status only (version / install). Remotes,
 changes, and history require a directory-backed open project.
@@ -379,8 +386,8 @@ Keep a compact flyout:
 - Init when needed;
 - primary CTA: **Open Git settings**.
 
-Move the detailed commit modal behavior into Settings → Changes so one surface
-owns staging, messaging, and history.
+Keep detailed snapshot creation and review in the Snapshots settings surface so
+one place owns staging, messaging, history, and repository sync.
 
 ### 9.3 Autosave
 

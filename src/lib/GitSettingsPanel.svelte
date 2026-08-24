@@ -13,6 +13,7 @@ import {
 } from "@lucide/svelte";
 import { listen } from "@tauri-apps/api/event";
 import { onDestroy, untrack } from "svelte";
+import { formatDiffLineForDisplay } from "$lib/git/diff-display";
 import {
   project,
   type Entity,
@@ -63,6 +64,12 @@ let entities = $state<Entity[]>([]);
 let log = $state<GitLogEntry[]>([]);
 let selectedGroupIds = $state<string[]>([]);
 let commitMessage = $state("");
+let messageExpanded = $state(true);
+let changesExpanded = $state(true);
+let repositoryExpanded = $state(false);
+let expandedHistoryHash = $state<string | null>(null);
+let historyMessages = $state<Record<string, string>>({});
+let historyMessageLoading = $state<string | null>(null);
 let busy = $state(false);
 let loading = $state(false);
 let loadError = $state("");
@@ -78,6 +85,7 @@ let recoveryUpstream = $state<GitUpstream | null>(null);
 let refreshToken = 0;
 let snapshotLoadToken = 0;
 let diffRequestToken = 0;
+let historyMessageToken = 0;
 let busyDepth = 0;
 let selectionProjectId: string | null = null;
 let remoteDialog = $state<HTMLElement | null>(null);
@@ -95,7 +103,14 @@ let aiMessageUnlisten: (() => void) | null = null;
 let wrapDiffLines = $state(false);
 let expandedSnapshotGroups = $state<string[]>([]);
 let snapshotChangeGroups = $derived(groupSnapshotChanges(snapshotChanges, entities));
-let diffLines = $derived(changeDiff.split("\n").filter((line) => !isDiffMetadata(line)));
+let commitMessageTitle = $derived(snapshotMessageTitle(commitMessage));
+let commitMessageBody = $derived(snapshotMessageBody(commitMessage));
+let diffLines = $derived(
+  changeDiff
+    .split("\n")
+    .filter((line) => !isDiffMetadata(line))
+    .map((line) => formatDiffLineForDisplay(selectedChangePath, line)),
+);
 type GitConfirmation = {
   title: string;
   message: string;
@@ -109,6 +124,14 @@ let squashMessage = $state("Consolidate snapshot history");
 
 function friendly(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function snapshotMessageTitle(value: string) {
+  return value.replaceAll("\r\n", "\n").split("\n")[0]?.trim() ?? "";
+}
+
+function snapshotMessageBody(value: string) {
+  return value.replaceAll("\r\n", "\n").split("\n").slice(1).join("\n").trim();
 }
 
 function notifyStatus(nextStatus: GitStatus | null) {
@@ -225,6 +248,7 @@ function handleAiMessageEvent(event: AiStreamEvent) {
     const terminalText = event.output ?? "";
     const finalText = terminalText.length >= aiMessageStream.length ? terminalText : aiMessageStream;
     commitMessage = appendAiMessage(aiMessageBase, formatSnapshotMessage(finalText));
+    if (commitMessage.trim()) messageExpanded = false;
     aiMessageBusy = false;
     aiMessageRequestId = null;
     clearAiMessageListener();
@@ -234,6 +258,7 @@ function handleAiMessageEvent(event: AiStreamEvent) {
       event.phase === "deadline_exceeded" && partialText
         ? appendAiMessage(aiMessageBase, formatSnapshotMessage(partialText))
         : aiMessageBase;
+    if (event.phase === "deadline_exceeded" && commitMessage.trim()) messageExpanded = false;
     aiMessageBusy = false;
     aiMessageRequestId = null;
     clearAiMessageListener();
@@ -550,6 +575,15 @@ function selectedPathsFromGroups(groupIds: string[], groups: ChangeGroup[]) {
 let selectedPaths = $derived(selectedPathsFromGroups(selectedGroupIds, changeGroups));
 let selectedFileCount = $derived(selectedPaths.length);
 let totalChangeCount = $derived(preflight?.staging_paths.length ?? 0);
+let snapshotBlockReason = $derived(
+  !preflight?.ready
+    ? "Resolve the snapshot diagnostics before continuing."
+    : selectedPaths.length === 0
+      ? "Select at least one change."
+      : !commitMessage.trim()
+        ? "Add a snapshot message."
+        : "",
+);
 
 function groupIsSelected(groupId: string) {
   return selectedGroupIds.includes(groupId);
@@ -567,6 +601,36 @@ function selectAllGroups() {
 
 function clearGroups() {
   selectedGroupIds = [];
+}
+
+function toggleMessageEditor() {
+  if (!commitMessage.trim()) {
+    messageExpanded = true;
+    return;
+  }
+  messageExpanded = !messageExpanded;
+}
+
+async function toggleHistoryMessage(hash: string) {
+  if (expandedHistoryHash === hash) {
+    expandedHistoryHash = null;
+    return;
+  }
+  expandedHistoryHash = hash;
+  if (historyMessages[hash] !== undefined) return;
+
+  const token = ++historyMessageToken;
+  historyMessageLoading = hash;
+  try {
+    const message = await project.gitShowMessage(hash);
+    if (token === historyMessageToken && expandedHistoryHash === hash) {
+      historyMessages = { ...historyMessages, [hash]: message };
+    }
+  } catch (cause) {
+    if (token === historyMessageToken) onError(friendly(cause));
+  } finally {
+    if (token === historyMessageToken) historyMessageLoading = null;
+  }
 }
 
 function askConfirmation(
@@ -604,6 +668,7 @@ function syncSelectedGroups(groups: ChangeGroup[], previousSelected: string[]) {
 function resetProjectState() {
   snapshotLoadToken += 1;
   diffRequestToken += 1;
+  historyMessageToken += 1;
   if (aiMessageRequestId) void project.aiCancelText(aiMessageRequestId).catch(() => undefined);
   clearAiMessageListener();
   aiMessageBusy = false;
@@ -616,6 +681,12 @@ function resetProjectState() {
   selectedGroupIds = [];
   selectionProjectId = null;
   commitMessage = "";
+  messageExpanded = true;
+  changesExpanded = true;
+  repositoryExpanded = false;
+  expandedHistoryHash = null;
+  historyMessages = {};
+  historyMessageLoading = null;
   recoveryUpstream = null;
   selectedCommit = null;
   selectedCommitMessage = "";
@@ -687,6 +758,7 @@ function generateMessage() {
   const selected = changeGroups.filter((group) => selectedGroupIds.includes(group.id));
   if (selected.length === 0) {
     commitMessage = "";
+    messageExpanded = true;
     return;
   }
   const buckets = {
@@ -708,6 +780,7 @@ function generateMessage() {
     .join("\n");
   const more = selected.length > 12 ? `\n- …and ${selected.length - 12} more` : "";
   commitMessage = `${headline}\n\n${list}${more}\n`;
+  messageExpanded = false;
 }
 
 async function initializeGit() {
@@ -723,6 +796,7 @@ async function commitSelected() {
   await withBusy("Creating snapshot…", async () => {
     notifyStatus(await project.gitCommit(formatSnapshotMessage(commitMessage), selectedPaths));
     commitMessage = "";
+    messageExpanded = true;
     await refresh();
   });
 }
@@ -826,19 +900,29 @@ async function openDownload() {
 async function selectCommit(hash: string) {
   if (selectedCommit === hash) return;
   const loadToken = ++snapshotLoadToken;
+  let firstChangedPath: string | null = null;
   selectedCommit = hash;
   selectedCommitMessage = "";
   selectedChangePath = null;
   changeDiff = "";
   snapshotChanges = [];
   await withBusy("Loading snapshot…", async () => {
-    const [message, changes] = await Promise.all([project.gitShowMessage(hash), project.gitShowChanges(hash)]);
+    const [message, changes] = await Promise.all([
+      historyMessages[hash] !== undefined ? Promise.resolve(historyMessages[hash]) : project.gitShowMessage(hash),
+      project.gitShowChanges(hash),
+    ]);
     if (loadToken === snapshotLoadToken && selectedCommit === hash) {
       selectedCommitMessage = message;
+      historyMessages = { ...historyMessages, [hash]: message };
       snapshotChanges = changes;
-      expandedSnapshotGroups = groupSnapshotChanges(changes, entities).map((group) => group.label);
+      const groups = groupSnapshotChanges(changes, entities);
+      expandedSnapshotGroups = groups[0] ? [groups[0].label] : [];
+      firstChangedPath = changes[0]?.path ?? null;
     }
   });
+  if (firstChangedPath && loadToken === snapshotLoadToken && selectedCommit === hash) {
+    await selectSnapshotChange(firstChangedPath);
+  }
 }
 
 function closeSnapshotModal() {
@@ -959,23 +1043,25 @@ onDestroy(() => {
     </div>
   </div>
 
-  <section class="git-block elevated">
-    <div class="block-heading">
-      <div class="heading-left">
-        <span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-        <h3>Version control</h3>
+  {#if !projectOpen || tool === null || !tool.available}
+    <section class="git-block elevated">
+      <div class="block-heading">
+        <div class="heading-left">
+          <span class="heading-icon"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <h3>Version control</h3>
+        </div>
+        <span class="block-hint">Git availability</span>
       </div>
-      <span class="block-hint">Git availability</span>
-    </div>
-    {#if tool === null}
-      <p class="settings-empty">Checking Git…</p>
-    {:else if tool.available}
-      <p class="git-tool-ok">{tool.version}</p>
-    {:else}
-      <p class="settings-empty">{tool.error ?? "Git was not found on this computer."}</p>
-      <button type="button" class="primary-button" onclick={() => void openDownload()}>Download Git</button>
-    {/if}
-  </section>
+      {#if tool === null}
+        <p class="settings-empty">Checking Git…</p>
+      {:else if tool.available}
+        <p class="git-tool-ok">{tool.version}</p>
+      {:else}
+        <p class="settings-empty">{tool.error ?? "Git was not found on this computer."}</p>
+        <button type="button" class="primary-button" onclick={() => void openDownload()}>Download Git</button>
+      {/if}
+    </section>
+  {/if}
 
   {#if !projectOpen}
     <div class="empty-inline">
@@ -1057,61 +1143,15 @@ onDestroy(() => {
       </section>
     {/if}
 
-    <section class="git-block elevated">
-      <div class="block-heading">
-        <div class="heading-left">
-          <span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Remotes</h3>
-          <span class="count-badge">{remotes.length}</span>
-        </div>
-        <button type="button" class="primary-button" disabled={busy} onclick={openAddRemoteModal}>Add remote</button>
-      </div>
-      {#if remotes.length === 0}
-        <p class="settings-empty">No remotes configured. Add one or more remotes to push and restore history.</p>
-      {:else}
-        <ul class="git-remote-list">
-          {#each remotes as remote}
-            <li>
-              <div>
-                <strong>{remote.name}</strong>
-                <small>{remote.fetchUrl}</small>
-                {#if remote.pushUrl !== remote.fetchUrl}<small>Push: {remote.pushUrl}</small>{/if}
-              </div>
-              <div class="git-remote-actions">
-                <button
-                  type="button"
-                  class="primary-button compact-button"
-                  disabled={busy || loading || !status.branch || log.length === 0}
-                  title={!status.branch
-                    ? "Switch to a branch before pushing"
-                    : log.length === 0
-                      ? "Create a snapshot before pushing"
-                      : `Push ${status.branch} to ${remote.name}`}
-                  onclick={() => void pushRemote(remote)}>Push</button>
-                <button type="button" class="quiet-button" disabled={busy} onclick={() => openEditRemoteModal(remote)}
-                  >Edit URL</button>
-                <button
-                  type="button"
-                  class="quiet-button"
-                  disabled={busy}
-                  onclick={() => void removeRemote(remote.name)}>Remove</button>
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-
-    <section class="git-block elevated">
+    <section class="git-block git-create-block elevated">
       <div class="block-heading">
         <div class="heading-left">
           <span class="heading-icon"><FileText size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-          <h3>Changes</h3>
-          <span class="count-badge">{changeGroups.length}</span>
+          <h3>Create snapshot</h3>
         </div>
         <span class="block-hint">Canonical files only</span>
       </div>
-      <p class="git-section-copy">Choose the canonical project changes to include in the next snapshot.</p>
+      <p class="git-section-copy">Choose what to preserve, add a short message, then create the snapshot.</p>
       {#if preflight && !preflight.ready}
         <div class="git-diagnostics" role="alert">
           <strong>Snapshot blocked</strong>
@@ -1125,60 +1165,108 @@ onDestroy(() => {
       {#if changeGroups.length === 0}
         <p class="settings-empty">Working tree has no canonical changes to commit.</p>
       {:else}
-        <div class="git-change-toolbar">
-          <div>
-            <strong>{selectedFileCount} of {totalChangeCount} files selected</strong><small
-              >Selection is limited to canonical project files.</small>
-          </div>
-          <div class="git-actions">
-            <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
-            <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
-          </div>
+        <div class="git-disclosure">
+          <button
+            type="button"
+            class="git-disclosure-toggle"
+            aria-expanded={changesExpanded}
+            onclick={() => (changesExpanded = !changesExpanded)}>
+            <span class="git-disclosure-copy">
+              <strong>Changes</strong>
+              <small>{selectedFileCount} of {totalChangeCount} files selected</small>
+            </span>
+            <span class="git-disclosure-chevron" aria-hidden="true">
+              {#if changesExpanded}<ChevronDown size={16} strokeWidth={1.8} />{:else}<ChevronRight
+                  size={16}
+                  strokeWidth={1.8} />{/if}
+            </span>
+          </button>
+          {#if changesExpanded}
+            <div class="git-disclosure-body">
+              <div class="git-change-toolbar">
+                <small>Selection is limited to canonical project files.</small>
+                <div class="git-actions">
+                  <button type="button" class="quiet-button" onclick={selectAllGroups}>Select all</button>
+                  <button type="button" class="quiet-button" onclick={clearGroups}>Select none</button>
+                </div>
+              </div>
+              <ul class="git-change-list">
+                {#each changeGroups as group}
+                  <li class:selected={groupIsSelected(group.id)}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={groupIsSelected(group.id)}
+                        onchange={() => toggleGroup(group.id)} />
+                      <span>
+                        <strong>{group.title}</strong>
+                        <small>{group.subtitle}</small>
+                      </span>
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
         </div>
-        <ul class="git-change-list">
-          {#each changeGroups as group}
-            <li class:selected={groupIsSelected(group.id)}>
-              <label>
-                <input type="checkbox" checked={groupIsSelected(group.id)} onchange={() => toggleGroup(group.id)} />
-                <span>
-                  <strong>{group.title}</strong>
-                  <small>{group.subtitle}</small>
-                </span>
-              </label>
-            </li>
-          {/each}
-        </ul>
         <div class="git-commit-card">
-          <label class="create-input-field git-message-field" for="git-commit-message">
-            <span>Snapshot message</span>
-            <textarea
-              id="git-commit-message"
-              rows="4"
-              bind:value={commitMessage}
-              placeholder="Describe this snapshot"
-              disabled={busy || aiMessageBusy}></textarea>
-            {#if aiEnabled && (aiMessageBusy || !commitMessage.trim())}
-              <button
-                type="button"
-                class="git-ai-message-button"
-                aria-label={aiMessageBusy ? "Cancel AI message generation" : "Generate snapshot message with AI"}
-                title={aiMessageBusy ? "Cancel generation" : "Generate snapshot message with AI"}
-                disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
-                onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}
-                >{#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" />{:else}<Sparkles
-                    size={14}
-                    strokeWidth={1.8}
-                    aria-hidden="true" />{/if}</button>
-            {/if}
-          </label>
-          <div class="git-commit-actions">
-            <button type="button" class="quiet-button" onclick={generateMessage}>Generate message</button>
+          <button
+            type="button"
+            class="git-message-toggle"
+            aria-expanded={messageExpanded}
+            onclick={toggleMessageEditor}>
+            <span class="git-disclosure-copy">
+              <span>Snapshot message</span>
+              <strong>{commitMessageTitle || "Add a message"}</strong>
+              <small
+                >{commitMessageTitle
+                  ? commitMessageBody
+                    ? "Title and notes"
+                    : "Title only"
+                  : "A short title is required"}</small>
+            </span>
+            <span class="git-disclosure-chevron" aria-hidden="true">
+              {#if messageExpanded}<ChevronDown size={16} strokeWidth={1.8} />{:else}<ChevronRight
+                  size={16}
+                  strokeWidth={1.8} />{/if}
+            </span>
+          </button>
+          {#if messageExpanded}
+            <label class="create-input-field git-message-field" for="git-commit-message">
+              <span>Title on the first line; optional notes below</span>
+              <textarea
+                id="git-commit-message"
+                rows="4"
+                bind:value={commitMessage}
+                placeholder="Describe this snapshot"
+                disabled={busy || aiMessageBusy}></textarea>
+            </label>
+            <div class="git-message-actions">
+              <button type="button" class="quiet-button" disabled={busy || aiMessageBusy} onclick={generateMessage}
+                >Suggest message</button>
+              {#if aiEnabled && (aiMessageBusy || !commitMessage.trim())}
+                <button
+                  type="button"
+                  class="quiet-button git-ai-action"
+                  disabled={busy || (!aiMessageBusy && (!preflight?.ready || selectedPaths.length === 0))}
+                  onclick={() => void (aiMessageBusy ? cancelAiMessage() : generateAiMessage())}>
+                  {#if aiMessageBusy}<X size={14} strokeWidth={1.8} aria-hidden="true" /> Cancel AI{:else}<Sparkles
+                      size={14}
+                      strokeWidth={1.8}
+                      aria-hidden="true" /> Write with AI{/if}
+                </button>
+              {/if}
+            </div>
+          {/if}
+          <div class="git-commit-footer">
+            <span class:ready={!snapshotBlockReason} role="status">
+              {snapshotBlockReason || `${selectedFileCount} ${selectedFileCount === 1 ? "file" : "files"} ready`}
+            </span>
             <button
               type="button"
               class="primary-button"
-              disabled={busy || !commitMessage.trim() || selectedPaths.length === 0 || !preflight?.ready}
-              onclick={() => void commitSelected()}
-              >Create snapshot · {selectedFileCount} {selectedFileCount === 1 ? "file" : "files"}</button>
+              disabled={busy || Boolean(snapshotBlockReason)}
+              onclick={() => void commitSelected()}>Create snapshot</button>
           </div>
         </div>
       {/if}
@@ -1191,32 +1279,52 @@ onDestroy(() => {
           <h3>Snapshot history</h3>
           <span class="count-badge">{log.length}</span>
         </div>
-        {#if preflight?.staging_paths.length}<small class="git-section-note"
-            >Commit pending changes before squashing history.</small
-          >{/if}
-        {#if log.length > 1}<button
-            type="button"
-            class="quiet-button"
-            disabled={busy || !preflight?.ready || preflight.staging_paths.length > 0}
-            onclick={askSuperSquash}>Keep latest</button
-          >{/if}
+        <span class="block-hint">Newest first</span>
       </div>
       {#if log.length === 0}
         <p class="settings-empty">No snapshots yet.</p>
       {:else}
         <ul class="git-log-list">
           {#each log as entry}
-            <li class:active={selectedCommit === entry.hash}>
+            <li class:expanded={expandedHistoryHash === entry.hash}>
               <button
                 type="button"
-                class="git-log-button"
-                disabled={busy}
-                onclick={() => void selectCommit(entry.hash)}>
-                <strong>{entry.subject}</strong>
-                <small>{entry.hash} · {snapshotDateLabel(entry.date)}</small>
+                class="git-history-toggle"
+                aria-expanded={expandedHistoryHash === entry.hash}
+                onclick={() => void toggleHistoryMessage(entry.hash)}>
+                <span class="git-disclosure-chevron" aria-hidden="true">
+                  {#if expandedHistoryHash === entry.hash}<ChevronDown
+                      size={16}
+                      strokeWidth={1.8} />{:else}<ChevronRight size={16} strokeWidth={1.8} />{/if}
+                </span>
+                <span class="git-history-copy">
+                  <strong>{entry.subject || "Untitled snapshot"}</strong>
+                  <small>{snapshotDateLabel(entry.date)}</small>
+                </span>
               </button>
-              <button type="button" class="quiet-button" disabled={busy} onclick={() => askReset(entry.hash)}
-                >Restore</button>
+              {#if expandedHistoryHash === entry.hash}
+                <div class="git-history-details">
+                  {#if historyMessageLoading === entry.hash}
+                    <p>Loading message…</p>
+                  {:else}
+                    {@const historyBody = snapshotMessageBody(historyMessages[entry.hash] ?? "")}
+                    <p class:empty={!historyBody}>{historyBody || "No additional notes for this snapshot."}</p>
+                  {/if}
+                  <details class="git-technical-details">
+                    <summary>Technical details</summary>
+                    <code>{entry.hash}</code>
+                  </details>
+                  <div class="git-history-actions">
+                    <button
+                      type="button"
+                      class="quiet-button"
+                      disabled={busy}
+                      onclick={() => void selectCommit(entry.hash)}>Review changes</button>
+                    <button type="button" class="danger-button" disabled={busy} onclick={() => askReset(entry.hash)}
+                      >Restore this snapshot…</button>
+                  </div>
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -1237,14 +1345,17 @@ onDestroy(() => {
                 <span class="panel-kicker">SNAPSHOT DETAILS</span>
                 <strong id="snapshot-title">{snapshotEntry?.subject ?? "Snapshot details"}</strong>
                 <small class="git-snapshot-meta"
-                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : selectedCommit} · {selectedCommit}</small>
+                  >{snapshotEntry ? snapshotDateLabel(snapshotEntry.date) : "Snapshot"}</small>
                 {#if selectedCommitMessage}
-                  {@const messageParts = selectedCommitMessage.replaceAll("\r\n", "\n").split("\n")}
-                  {@const messageBody = messageParts.slice(1).join("\n").trim()}
+                  {@const messageBody = snapshotMessageBody(selectedCommitMessage)}
                   {#if messageBody}
                     <p class="git-snapshot-comment">{messageBody}</p>
                   {/if}
                 {/if}
+                <details class="git-technical-details snapshot-technical-details">
+                  <summary>Technical details</summary>
+                  <code>{selectedCommit}</code>
+                </details>
               </div>
               <button
                 type="button"
@@ -1254,8 +1365,12 @@ onDestroy(() => {
                 onclick={closeSnapshotModal}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
             </div>
             <div class="git-snapshot-summary">
-              <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
-              <span>Select a file to inspect its diff.</span>
+              <div>
+                <strong>{snapshotChanges.length} changed {snapshotChanges.length === 1 ? "file" : "files"}</strong>
+                <span>The first change is selected automatically.</span>
+              </div>
+              <button type="button" class="danger-button" disabled={busy} onclick={() => askReset(selectedCommit!)}
+                >Restore this snapshot…</button>
             </div>
             {#if snapshotChanges.length === 0}
               <p class="settings-empty">{busy ? "Loading changes…" : "No canonical file changes in this snapshot."}</p>
@@ -1308,7 +1423,13 @@ onDestroy(() => {
                     <p class="settings-empty">Loading diff…</p>
                   {:else if selectedChangePath}
                     <div class="git-diff-heading">
-                      <strong>{selectedChangePath}</strong>
+                      <div class="git-diff-file-copy">
+                        <strong>{snapshotChangeLabel(selectedChangePath)}</strong>
+                        <details class="git-technical-details">
+                          <summary>Show stored path</summary>
+                          <code>{selectedChangePath}</code>
+                        </details>
+                      </div>
                       <label class="diff-wrap-toggle">
                         <input type="checkbox" bind:checked={wrapDiffLines} />
                         <span>Wrap lines</span>
@@ -1328,6 +1449,96 @@ onDestroy(() => {
                 </div>
               </div>
             {/if}
+          </div>
+        </div>
+      {/if}
+    </section>
+
+    <section class="git-block git-repository-block elevated">
+      <button
+        type="button"
+        class="git-section-toggle"
+        aria-expanded={repositoryExpanded}
+        onclick={() => (repositoryExpanded = !repositoryExpanded)}>
+        <span class="heading-left">
+          <span class="heading-icon"><Cable size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+          <span>
+            <strong>Sync & repository</strong>
+            <small>{remotes.length} {remotes.length === 1 ? "remote" : "remotes"} · {tool?.version}</small>
+          </span>
+        </span>
+        <span class="git-disclosure-chevron" aria-hidden="true">
+          {#if repositoryExpanded}<ChevronDown size={16} strokeWidth={1.8} />{:else}<ChevronRight
+              size={16}
+              strokeWidth={1.8} />{/if}
+        </span>
+      </button>
+      {#if repositoryExpanded}
+        <div class="git-repository-content">
+          <div class="git-repository-group">
+            <div class="git-subsection-heading">
+              <div>
+                <strong>Remotes</strong>
+                <small>Push snapshots or connect another repository.</small>
+              </div>
+              <button type="button" class="primary-button" disabled={busy} onclick={openAddRemoteModal}
+                >Add remote</button>
+            </div>
+            {#if remotes.length === 0}
+              <p class="settings-empty">No remotes configured. Local snapshots still work without one.</p>
+            {:else}
+              <ul class="git-remote-list">
+                {#each remotes as remote}
+                  <li>
+                    <div>
+                      <strong>{remote.name}</strong>
+                      <small>{remote.fetchUrl}</small>
+                      {#if remote.pushUrl !== remote.fetchUrl}<small>Push: {remote.pushUrl}</small>{/if}
+                    </div>
+                    <div class="git-remote-actions">
+                      <button
+                        type="button"
+                        class="primary-button compact-button"
+                        disabled={busy || loading || !status.branch || log.length === 0}
+                        title={!status.branch
+                          ? "Switch to a branch before pushing"
+                          : log.length === 0
+                            ? "Create a snapshot before pushing"
+                            : `Push ${status.branch} to ${remote.name}`}
+                        onclick={() => void pushRemote(remote)}>Push</button>
+                      <button
+                        type="button"
+                        class="quiet-button"
+                        disabled={busy}
+                        onclick={() => openEditRemoteModal(remote)}>Edit URL</button>
+                      <button
+                        type="button"
+                        class="quiet-button"
+                        disabled={busy}
+                        onclick={() => void removeRemote(remote.name)}>Remove</button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+          <div class="git-repository-group">
+            <div class="git-subsection-heading">
+              <div>
+                <strong>History maintenance</strong>
+                <small>Git: {tool?.version}. Condensing permanently removes earlier local snapshots.</small>
+              </div>
+              {#if log.length > 1}
+                <button
+                  type="button"
+                  class="quiet-button"
+                  disabled={busy || !preflight?.ready || preflight.staging_paths.length > 0}
+                  title={preflight?.staging_paths.length
+                    ? "Create a snapshot for pending changes first"
+                    : "Replace history with one snapshot of the latest committed state"}
+                  onclick={askSuperSquash}>Condense history…</button>
+              {/if}
+            </div>
           </div>
         </div>
       {/if}
@@ -1491,13 +1702,6 @@ onDestroy(() => {
   font-size: 12px;
   line-height: 1.45;
 }
-.git-section-note {
-  display: block;
-  margin-top: 4px;
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 500;
-}
 .git-block h3 {
   margin: 0 0 10px;
   font-size: 14px;
@@ -1528,12 +1732,8 @@ onDestroy(() => {
   gap: 12px;
   margin-bottom: 12px;
 }
-.git-change-toolbar strong,
 .git-change-toolbar small {
   display: block;
-}
-.git-change-toolbar strong {
-  font-size: 12px;
 }
 .git-change-toolbar small {
   margin-top: 3px;
@@ -1543,19 +1743,116 @@ onDestroy(() => {
 .git-change-toolbar .git-actions {
   margin: 0;
 }
-.git-commit-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
 .git-commit-card {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 12px;
+  padding: 12px;
   border: 1px solid var(--theme-warning-border, #e5d8c6);
   border-radius: 10px;
   background: var(--theme-warning-bg, #fcf8f1);
+}
+.git-disclosure {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.git-disclosure-toggle,
+.git-message-toggle,
+.git-section-toggle,
+.git-history-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.git-disclosure-toggle:hover,
+.git-message-toggle:hover,
+.git-section-toggle:hover,
+.git-history-toggle:hover {
+  background: color-mix(in srgb, var(--surface-muted) 70%, transparent);
+}
+.git-disclosure-copy,
+.git-history-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.git-disclosure-copy > span {
+  color: var(--ink-faint);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.git-disclosure-copy strong,
+.git-history-copy strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-disclosure-copy small,
+.git-history-copy small {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-disclosure-chevron {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+}
+.git-disclosure-body {
+  padding: 12px 12px 0;
+  border-top: 1px solid var(--line);
+}
+.git-message-toggle {
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--theme-warning-border, #e5d8c6);
+}
+.git-message-toggle[aria-expanded="false"] {
+  padding-bottom: 2px;
+  border-bottom: 0;
+}
+.git-message-actions,
+.git-commit-footer,
+.git-history-actions,
+.git-subsection-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.git-message-actions {
+  justify-content: flex-start;
+}
+.git-ai-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.git-commit-footer {
+  padding-top: 10px;
+  border-top: 1px solid var(--theme-warning-border, #e5d8c6);
+}
+.git-commit-footer > span {
+  color: var(--theme-danger-text, #9b4438);
+  font-size: 11px;
+}
+.git-commit-footer > span.ready {
+  color: var(--theme-success-text, #3f7449);
 }
 .git-remote-list,
 .git-path-list,
@@ -1567,8 +1864,7 @@ onDestroy(() => {
   display: grid;
   gap: 8px;
 }
-.git-remote-list li,
-.git-log-list li {
+.git-remote-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1576,14 +1872,11 @@ onDestroy(() => {
 }
 .git-remote-list strong,
 .git-remote-list small,
-.git-log-button strong,
-.git-log-button small,
 .git-change-list strong,
 .git-change-list small {
   display: block;
 }
 .git-remote-list small,
-.git-log-button small,
 .git-change-list small {
   margin-top: 3px;
   color: var(--ink-soft);
@@ -1664,7 +1957,6 @@ onDestroy(() => {
   max-height: 220px;
   overflow: auto;
 }
-.git-log-button,
 .git-file-button {
   width: 100%;
   display: flex;
@@ -1693,9 +1985,117 @@ onDestroy(() => {
 .git-change-status.change-deleted {
   color: var(--theme-danger-text, #a44d42);
 }
-.git-log-list li.active,
 .git-file-button.active {
   color: var(--accent-dark);
+}
+.git-log-list {
+  margin-bottom: 0;
+}
+.git-log-list li {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+.git-log-list li.expanded {
+  border-color: var(--theme-warning-border, #d8c3a5);
+  background: var(--surface-muted);
+}
+.git-history-toggle {
+  justify-content: flex-start;
+}
+.git-history-copy {
+  flex: 1;
+}
+.git-history-details {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px 40px;
+  border-top: 1px solid var(--line);
+}
+.git-history-details > p {
+  max-width: 78ch;
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.git-history-details > p.empty {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+.git-history-actions {
+  justify-content: flex-start;
+}
+.git-technical-details {
+  min-width: 0;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.git-technical-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 700;
+}
+.git-technical-details code {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.snapshot-technical-details {
+  margin-top: 8px;
+}
+.git-repository-block {
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.git-section-toggle {
+  padding: 15px 17px;
+}
+.git-section-toggle .heading-left {
+  min-width: 0;
+}
+.git-section-toggle .heading-left > span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.git-section-toggle strong {
+  font-size: 14px;
+}
+.git-section-toggle small,
+.git-subsection-heading small {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.git-repository-content {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+.git-repository-group {
+  padding: 15px 17px;
+}
+.git-repository-group + .git-repository-group {
+  border-top: 1px solid var(--line);
+}
+.git-subsection-heading {
+  margin-bottom: 12px;
+}
+.git-subsection-heading strong,
+.git-subsection-heading small {
+  display: block;
+}
+.git-subsection-heading small {
+  margin-top: 3px;
+}
+.git-repository-group .git-remote-list {
+  margin-bottom: 0;
 }
 .git-snapshot-dialog {
   width: calc(100vw - 64px);
@@ -1721,12 +2121,16 @@ onDestroy(() => {
 }
 .git-snapshot-summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
+}
+.git-snapshot-summary > div {
+  display: grid;
+  gap: 3px;
 }
 .git-snapshot-summary span {
   color: var(--ink-soft);
@@ -1825,6 +2229,11 @@ onDestroy(() => {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.git-diff-file-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
 .diff-wrap-toggle {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1856,7 +2265,7 @@ onDestroy(() => {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--theme-warning-bg, #f7f4ee);
+  background: var(--canvas);
   color: var(--ink);
   font:
     11px/1.55 ui-monospace,
@@ -1871,8 +2280,13 @@ onDestroy(() => {
 }
 .git-diff-view span {
   display: block;
+  width: max-content;
+  min-width: 100%;
   min-height: 1.55em;
   padding: 0 10px;
+}
+.git-diff-view.diff-wrap span {
+  width: auto;
 }
 .git-diff-view .diff-added {
   background: var(--theme-success-bg, #e7f3e5);
@@ -1891,6 +2305,32 @@ onDestroy(() => {
   font-weight: 700;
 }
 @media (max-width: 700px) {
+  .git-overview {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .git-overview-stat {
+    display: none;
+  }
+  .git-change-toolbar,
+  .git-commit-footer,
+  .git-subsection-heading,
+  .git-remote-list li,
+  .git-snapshot-summary,
+  .git-diff-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .git-change-toolbar .git-actions,
+  .git-remote-actions {
+    width: 100%;
+  }
+  .git-commit-footer .primary-button,
+  .git-snapshot-summary .danger-button {
+    width: 100%;
+  }
+  .git-history-details {
+    padding-left: 12px;
+  }
   .git-snapshot-dialog {
     width: calc(100vw - 24px);
     min-width: 0;
@@ -2032,30 +2472,7 @@ onDestroy(() => {
   position: relative;
 }
 .git-message-field > textarea {
-  padding-bottom: 30px;
-}
-.git-ai-message-button {
-  position: absolute;
-  bottom: 9px;
-  left: 9px;
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 13px;
-  cursor: pointer;
-}
-.git-ai-message-button:hover {
-  background: var(--warning-line);
-}
-.git-ai-message-button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+  min-height: 104px;
 }
 .modal-backdrop {
   position: fixed;

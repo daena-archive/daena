@@ -22,7 +22,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --config ./svelte.config.js && npm run check:plugin-contract",
     "check:plugin-contract": "node scripts/validate-plugin-contract.mjs && node scripts/check-plugin-contract-drift.mjs",
     "check:manifest-fixtures": "npm run build:plugin-sdk && node scripts/validate-manifest-fixtures.mjs && node scripts/check-manifest-fixtures-drift.mjs",
-    "check:maps:native-vector": "node scripts/maps-native-vector.test.mjs && node --experimental-strip-types scripts/maps-native-vector-generator.test.mjs && node --experimental-strip-types scripts/maps-native-vector-editor.test.mjs",
+    "check:maps:native-vector": "node scripts/maps-native-vector.test.mjs && node --experimental-strip-types scripts/maps-field-persistence.test.mjs && node --experimental-strip-types scripts/maps-native-vector-generator.test.mjs && node --experimental-strip-types scripts/maps-native-vector-editor.test.mjs",
     "check:maps:physical": "node scripts/maps-native-vector-provenance.test.mjs && node scripts/maps-physical.test.mjs && node scripts/maps-physical-surface.test.mjs",
     "check:maps:atlas": "node scripts/maps-atlas.test.mjs",
     "check:maps:physical-benchmark": "node scripts/maps-physical-benchmark.mjs",
@@ -35,7 +35,8 @@
     "test:plugin-declarative": "node scripts/plugin-declarative.test.mjs",
     "test:plugin-cli": "node scripts/plugin-cli.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
-    "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs && node --experimental-strip-types scripts/editor-roundtrip.test.mjs",
+    "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs && node --experimental-strip-types scripts/editor-roundtrip.test.mjs && node --experimental-strip-types scripts/git-diff-display.test.mjs",
+    "test:git-ui": "node scripts/git-settings-ux.test.mjs",
     "test:ai-stream": "node --experimental-strip-types scripts/ai-stream-state.test.mjs",
     "test:theme": "node --experimental-strip-types scripts/theme.test.mjs",
     "tauri": "tauri"

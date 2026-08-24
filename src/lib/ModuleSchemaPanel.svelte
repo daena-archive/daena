@@ -3356,7 +3356,7 @@ input::placeholder {
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(255, 254, 250, 0.96);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter: blur(10px);
   box-shadow: 0 8px 24px rgba(48, 44, 38, 0.08);
 }

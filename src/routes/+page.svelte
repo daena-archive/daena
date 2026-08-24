@@ -127,6 +127,12 @@ import {
   serializeCalendarDate,
   type CalendarDate,
 } from "$lib/date";
+import {
+  isEmptyFieldValue,
+  isStructuredFieldValue,
+  restoreStructuredFieldValue,
+  shouldPersistFieldValue,
+} from "$lib/fields/persistence";
 
 type InstalledModule = ProjectModuleManifest;
 type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
@@ -258,6 +264,7 @@ let autoSaveFailureCount = 0;
 let documentRevision = 0;
 let loadedDocumentRevision = "";
 let loadedFieldRevisions: Record<string, string> = {};
+let loadedStructuredFieldKeys = new Set<string>();
 let selectedLoadToken = 0;
 let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
 let conflictDiskBody = $state("");
@@ -723,15 +730,6 @@ function namespaceForField(definition: FieldDefinition): string {
 }
 function fieldRevisionKey(namespace: string, key: string) {
   return `${namespace}\u0000${key}`;
-}
-function isEmptyFieldValue(value: unknown) {
-  return (
-    value === undefined ||
-    value === null ||
-    value === "" ||
-    (typeof value === "string" && !value.trim()) ||
-    (Array.isArray(value) && value.length === 0)
-  );
 }
 function fieldDisplayValue(value: unknown): string {
   if (Array.isArray(value)) return value.map((item) => fieldDisplayValue(item)).join(", ");
@@ -2829,6 +2827,7 @@ async function loadSelectedState(entity: Entity) {
     mapLocations = [];
     loadedDocumentRevision = "";
     loadedFieldRevisions = {};
+    loadedStructuredFieldKeys = new Set();
     const context = contextFor();
     const documents = await project.listDocuments(entityId);
     if (!isCurrent()) return;
@@ -2848,6 +2847,11 @@ async function loadSelectedState(entity: Entity) {
     const values = Object.fromEntries(relevantFields.map((field) => [field.key, field.value]));
     loadedFieldRevisions = Object.fromEntries(
       relevantFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
+    );
+    loadedStructuredFieldKeys = new Set(
+      relevantFields
+        .filter((field) => isStructuredFieldValue(field.value))
+        .map((field) => fieldRevisionKey(field.namespace, field.key)),
     );
     dateEditorOpen = {};
     const nextDateCalendars: Record<string, string> = {};
@@ -3160,6 +3164,11 @@ async function overwriteConflict() {
     loadedFieldRevisions = Object.fromEntries(
       storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
     );
+    loadedStructuredFieldKeys = new Set(
+      storedFields
+        .filter((field) => isStructuredFieldValue(field.value))
+        .map((field) => fieldRevisionKey(field.namespace, field.key)),
+    );
     documentConflict = null;
     conflictDiskBody = "";
     if (!(await saveDocument()) && !documentConflict && !saveError)
@@ -3316,8 +3325,16 @@ async function persistDocumentSnapshot(): Promise<boolean> {
   const entityId = selected.id;
   const body = documentBody;
   const revision = documentRevision;
-  const definitionsForSave = definitions().filter((definition) => definition.type !== "relationship");
   const fieldsSnapshot = { ...fields };
+  const definitionsForSave = definitions().filter((definition) => {
+    if (definition.type === "relationship") return false;
+    const namespace = namespaceForField(definition);
+    const key = fieldRevisionKey(namespace, definition.key);
+    return shouldPersistFieldValue(
+      fieldsSnapshot[definition.key],
+      Object.prototype.hasOwnProperty.call(loadedFieldRevisions, key),
+    );
+  });
   try {
     await project.saveEntry(
       {
@@ -3325,11 +3342,21 @@ async function persistDocumentSnapshot(): Promise<boolean> {
         fields: definitionsForSave.map((definition) => {
           const namespace = namespaceForField(definition);
           const value = fieldValueForSave(definition, fieldsSnapshot[definition.key] ?? "");
+          const persistedValue =
+            definition.type === "date"
+              ? value
+                ? (parseCalendarDate(value) ?? value)
+                : value
+              : restoreStructuredFieldValue(
+                  value,
+                  loadedStructuredFieldKeys.has(fieldRevisionKey(namespace, definition.key)),
+                  definition.label,
+                );
           return {
             entity_id: entityId,
             namespace,
             key: definition.key,
-            value: definition.type === "date" && value ? (parseCalendarDate(value) ?? value) : value,
+            value: persistedValue,
             revision: loadedFieldRevisions[fieldRevisionKey(namespace, definition.key)] ?? "",
           };
         }),
@@ -3344,6 +3371,11 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       loadedDocumentRevision = documents[0]?.revision ?? "";
       loadedFieldRevisions = Object.fromEntries(
         storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
+      );
+      loadedStructuredFieldKeys = new Set(
+        storedFields
+          .filter((field) => isStructuredFieldValue(field.value))
+          .map((field) => fieldRevisionKey(field.namespace, field.key)),
       );
     }
     if (selected?.id === entityId && documentRevision === revision) {
@@ -4173,6 +4205,7 @@ function clearSelection() {
   saveError = "";
   loadedDocumentRevision = "";
   loadedFieldRevisions = {};
+  loadedStructuredFieldKeys = new Set();
   documentConflict = null;
   conflictDiskBody = "";
   projectDiagnostics = [];

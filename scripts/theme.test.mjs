@@ -40,4 +40,24 @@ vm.runInNewContext(startupSource, {
 assert.deepEqual(startupRoot.dataset, { theme: "dark", themePreference: "system" });
 assert.equal(startupRoot.style.colorScheme, "dark");
 
+function cssRule(source, selector) {
+  const start = source.indexOf(`${selector} {`);
+  assert.notEqual(start, -1, `missing CSS rule ${selector}`);
+  const end = source.indexOf("}", start);
+  assert.notEqual(end, -1, `unterminated CSS rule ${selector}`);
+  return source.slice(start, end + 1);
+}
+
+const schemaSettingsSource = await readFile(new URL("../src/lib/SchemaSettingsPanel.svelte", import.meta.url), "utf8");
+assert.match(cssRule(schemaSettingsSource, ".schema-plugin-toolbar"), /var\(--surface\)/);
+
+const moduleSchemaSource = await readFile(new URL("../src/lib/ModuleSchemaPanel.svelte", import.meta.url), "utf8");
+assert.match(cssRule(moduleSchemaSource, ".save-bar"), /var\(--surface\)/);
+
+const gitSettingsSource = await readFile(new URL("../src/lib/GitSettingsPanel.svelte", import.meta.url), "utf8");
+assert.match(cssRule(gitSettingsSource, ".git-diff-view"), /background: var\(--canvas\)/);
+assert.match(cssRule(gitSettingsSource, ".git-diff-view span"), /width: max-content/);
+assert.match(cssRule(gitSettingsSource, ".git-diff-view span"), /min-width: 100%/);
+assert.match(cssRule(gitSettingsSource, ".git-diff-view.diff-wrap span"), /width: auto/);
+
 console.log("theme tests passed");

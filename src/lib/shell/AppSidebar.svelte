@@ -4,7 +4,6 @@ import ProjectSwitcher from "./ProjectSwitcher.svelte";
 import {
   CalendarRange,
   Boxes,
-  GitFork,
   Home,
   Languages,
   Library,
@@ -48,8 +47,6 @@ let {
   tools,
   homeActive,
   createOpen,
-  snapshotsTitle,
-  snapshotChangeCount,
   projectCenterActive,
   settingsActive,
   version,
@@ -58,13 +55,12 @@ let {
   onRemoveRecent,
   onProjectMenuChange,
   onOpenProjectCenter,
+  onOpenSettings,
   onCloseProject,
   onOpenHome,
   onCreate,
   onOpenWorkspace,
   onOpenTool,
-  onOpenSnapshots,
-  onOpenSettings,
   onCollapsedChange,
 }: {
   ready: boolean;
@@ -76,8 +72,6 @@ let {
   tools: SidebarToolItem[];
   homeActive: boolean;
   createOpen: boolean;
-  snapshotsTitle: string;
-  snapshotChangeCount: number;
   projectCenterActive: boolean;
   settingsActive: boolean;
   version: string;
@@ -86,13 +80,12 @@ let {
   onRemoveRecent: (root: string) => void;
   onProjectMenuChange: (open: boolean) => void;
   onOpenProjectCenter: () => void;
+  onOpenSettings: () => void;
   onCloseProject: () => void;
   onOpenHome: () => void;
   onCreate: () => void;
   onOpenWorkspace: (key: string) => void;
   onOpenTool: (key: string) => void;
-  onOpenSnapshots: () => void;
-  onOpenSettings: () => void;
   onCollapsedChange: (collapsed: boolean) => void;
 } = $props();
 
@@ -128,8 +121,7 @@ function workspaceIcon(section: WorkspaceSection) {
     {onOpenRecent}
     {onRemoveRecent}
     onMenuChange={onProjectMenuChange}
-    {onOpenProjectCenter}
-    {onCloseProject} />
+    onCloseProject={onCloseProject} />
 
   {#if ready}
     <button
@@ -192,10 +184,6 @@ function workspaceIcon(section: WorkspaceSection) {
       title="Project"
       onclick={onOpenProjectCenter}>
       <span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project</span>
-    </button>
-    <button class="rail-button muted-button rail-git-button" title={snapshotsTitle} onclick={onOpenSnapshots}>
-      <span class="rail-icon"><GitFork size={16} strokeWidth={1.8} /></span><span>Snapshots</span>
-      {#if snapshotChangeCount > 0}<small class="rail-git-count">{snapshotChangeCount}</small>{/if}
     </button>
   {/if}
   <button

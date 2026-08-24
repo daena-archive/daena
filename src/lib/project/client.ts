@@ -70,6 +70,7 @@ export interface EntityListQuery {
   sortDirection?: EntitySortDirection;
   offset?: number;
   limit?: number;
+  archived?: boolean;
 }
 export interface EntityTypeCount {
   entity_type: string | null;
@@ -1215,11 +1216,24 @@ export const project = {
         sort_direction: query.sortDirection ?? null,
         offset: query.offset ?? null,
         limit: query.limit ?? null,
+        archived: query.archived ?? null,
       },
     }),
   search: (query: string) => invoke<Entity[]>("project_search", { query }),
   deleteEntity: (id: string, options?: MutationOptions) =>
     invoke<void>("project_delete_entity", {
+      id,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
+  restoreEntity: (id: string, options?: MutationOptions) =>
+    invoke<void>("project_restore_entity", {
+      id,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+    }),
+  purgeEntity: (id: string, options?: MutationOptions) =>
+    invoke<void>("project_purge_entity", {
       id,
       expected_revision: options?.expectedRevision ?? null,
       request_id: requestId(options),

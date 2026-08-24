@@ -143,6 +143,7 @@ import {
 } from "$lib/theme";
 import {
   formatCalendarDate,
+  formatRuntimeTimestampLabel,
   GREGORIAN_CALENDAR_ID,
   isCompleteCalendarDate,
   isGregorianCalendarId,
@@ -336,6 +337,7 @@ let showSettings = $state(false);
 let settingsSurface = $state<"application" | "project">("application");
 let settingsSection = $state<SettingsSection>("general");
 let projectSection = $state<ProjectSection>("overview");
+let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
 let moduleSchemaOverlay = $state<ModuleSchemaOverlay>({ version: 1 });
 let moduleSchemaPackage = $state<{
@@ -504,6 +506,9 @@ let dateEditorOpen = $state<Record<string, boolean>>({});
 let dateCalendarByField = $state<Record<string, string>>({});
 
 const toastDurationMs = 3500;
+function showToast(message: string) {
+  error = message;
+}
 $effect(() => {
   if (!error) return;
   const timeout = window.setTimeout(() => {
@@ -677,10 +682,7 @@ function recentlyUpdatedEntities() {
     .slice(0, 6);
 }
 function updatedDateLabel(timestamp: string) {
-  const date = new Date(timestamp);
-  return Number.isNaN(date.getTime())
-    ? "Recently updated"
-    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+  return formatRuntimeTimestampLabel(timestamp, { dateStyle: "medium" });
 }
 function viewRenderer(
   plugin: PluginAdminEntry,
@@ -2077,6 +2079,7 @@ function sectionLabel() {
     if (projectSection === "extensions") return "Project · Extensions";
     if (projectSection === "fields") return "Project · Fields & Types";
     if (projectSection === "snapshots") return "Project · Snapshots";
+    if (projectSection === "archive") return "Project · Archive";
     if (projectSection === "advanced") return "Project · Advanced";
     return "Project";
   }
@@ -3276,6 +3279,20 @@ async function loadEntities() {
   await refreshCalendarDefinitions();
 }
 
+async function refreshArchivedCount() {
+  try {
+    const page = await project.queryEntities({ archived: true, limit: 1 });
+    archivedCount = page.total;
+  } catch {
+    archivedCount = 0;
+  }
+}
+
+async function handleArchiveChanged() {
+  await loadEntities();
+  await refreshArchivedCount();
+}
+
 async function refreshCalendarDefinitions() {
   const next: Record<string, CalendarDefinition> = {};
   try {
@@ -3486,6 +3503,7 @@ async function finishOpening(info?: ProjectInfo) {
   await reconcileWorkspaceSection();
   rememberProject(projectInfo);
   await loadEntities();
+  await refreshArchivedCount();
   await refreshGit();
   await refreshAdmin();
   shellNavigationHistory = emptyShellNavigationHistory();
@@ -4539,6 +4557,7 @@ async function archiveSelected() {
     await contextFor().entities.delete(current.id as UUID, { expectedRevision: current.revision });
     clearSelection();
     await loadEntities();
+    await refreshArchivedCount();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -4858,6 +4877,7 @@ async function openSettings(section: SettingsSection = "general") {
   projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
+  showProjectMenu = false;
 }
 async function openProjectCenter(section: ProjectSection = "overview") {
   if (!ready || !(await flushAutoSave())) return;
@@ -4893,6 +4913,7 @@ async function openProjectCenter(section: ProjectSection = "overview") {
     showAiIndexMessage("");
     await refreshAiIndexStatus();
   }
+  await refreshArchivedCount();
 }
 function closeSettings() {
   recordCurrentShellLocation();
@@ -5650,9 +5671,6 @@ onMount(() => {
     }))}
     homeActive={projectHomeOpen && !showSettings}
     createOpen={showCreateForm}
-    snapshotsTitle={gitMessage ||
-      (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots")}
-    snapshotChangeCount={gitStatus?.repository ? gitStatus.canonical_changes.length : 0}
     projectCenterActive={showSettings && settingsSurface === "project"}
     settingsActive={showSettings && settingsSurface === "application"}
     version={displayVersion}
@@ -5666,7 +5684,6 @@ onMount(() => {
     onCreate={toggleCreateForm}
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
-    onOpenSnapshots={() => void openProjectCenter("snapshots")}
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
@@ -6180,6 +6197,7 @@ onMount(() => {
         snapshotChangeCount={gitStatus?.canonical_changes.length ?? 0}
         snapshotRepository={gitStatus?.repository ?? false}
         snapshotBranch={gitStatus?.branch ?? null}
+        {archivedCount}
         {aiIndexStatus}
         {aiIndexBusy}
         {aiIndexMessage}
@@ -6198,7 +6216,10 @@ onMount(() => {
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
         onAiIndexRebuild={() => void rebuildAiIndex()}
-        onAiIndexCancel={() => void cancelAiIndex()}>
+        onAiIndexCancel={() => void cancelAiIndex()}
+        typeLabel={entityTypeLabel}
+        onArchiveChanged={() => void handleArchiveChanged()}
+        onArchiveToast={showToast}>
         {#snippet extensions()}
           <div class="panel-hero">
             <div class="hero-icon">

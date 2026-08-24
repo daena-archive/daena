@@ -49,7 +49,10 @@ assert.match(appSidebar, /onOpenProject/, "project opening remains reachable fro
 assert.match(appSidebar, /onCloseProject/, "project closing remains reachable from the extracted sidebar");
 assert.match(appSidebar, /<ProjectSwitcher/, "project lifecycle controls use the extracted project switcher");
 assert.match(projectSwitcher, /RECENT PROJECTS/, "the project switcher owns launcher recents");
-assert.match(projectSwitcher, /Project center/, "the project switcher routes administration to the Project area");
+assert.doesNotMatch(projectSwitcher, /Settings/, "application settings are not duplicated in the project switcher");
+assert.doesNotMatch(projectSwitcher, /Project center/, "Project center is not duplicated in the project switcher");
+assert.match(appSidebar, />Project<\/span>/, "Project center remains reachable from the sidebar rail");
+assert.match(appSidebar, />Settings<\/span>/, "application settings remain reachable from the sidebar rail");
 assert.match(shell, /\{:else if projectHomeOpen\}/, "Home has a first-class main content surface");
 assert.match(shell, /recentlyUpdatedEntities\(\)/, "Home exposes cross-workspace recent work");
 assert.match(

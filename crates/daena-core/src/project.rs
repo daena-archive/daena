@@ -106,6 +106,7 @@ pub struct EntityListQuery {
     pub sort_direction: Option<EntitySortDirection>,
     pub offset: Option<u64>,
     pub limit: Option<u32>,
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4960,26 +4961,48 @@ impl ProjectStore {
         let offset_i64 = i64::try_from(offset)
             .map_err(|_| CoreError::Validation("entity query offset is too large".into()))?;
 
-        let search_terms = query
-            .query
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter_map(|term| {
-                let escaped = term.replace('"', "");
-                (!escaped.is_empty()).then(|| format!("\"{escaped}\"*"))
-            })
-            .collect::<Vec<_>>()
-            .join(" AND ");
+        let archived_only = query.archived == Some(true);
+        let search_terms = if archived_only {
+            String::new()
+        } else {
+            query
+                .query
+                .as_deref()
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter_map(|term| {
+                    let escaped = term.replace('"', "");
+                    (!escaped.is_empty()).then(|| format!("\"{escaped}\"*"))
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
 
         let mut params = Vec::<SqlValue>::new();
         let mut from = "FROM entities e".to_owned();
-        if !search_terms.is_empty() {
+        let mut conditions = vec![if archived_only {
+            "e.deleted=1".to_owned()
+        } else {
+            "e.deleted=0".to_owned()
+        }];
+        if archived_only {
+            if let Some(text) = query.query.as_deref() {
+                for term in text.split_whitespace() {
+                    let escaped = term
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    if !escaped.is_empty() {
+                        conditions.push("e.name LIKE ? ESCAPE '\\'".to_owned());
+                        params.push(SqlValue::Text(format!("%{escaped}%")));
+                    }
+                }
+            }
+        } else if !search_terms.is_empty() {
             from.push_str(" JOIN (SELECT entity_id, MIN(rank) AS rank FROM world_search WHERE world_search MATCH ? GROUP BY entity_id) search ON search.entity_id=e.id");
             params.push(SqlValue::Text(search_terms.clone()));
         }
 
-        let mut conditions = vec!["e.deleted=0".to_owned()];
         let entity_types = query
             .entity_types
             .into_iter()
@@ -5033,15 +5056,19 @@ impl ProjectStore {
             .collect::<Result<Vec<_>, _>>()?;
 
         let sort_field = query.sort_field.unwrap_or({
-            if search_terms.is_empty() {
+            if archived_only && search_terms.is_empty() {
+                EntitySortField::UpdatedAt
+            } else if search_terms.is_empty() {
                 EntitySortField::Name
             } else {
                 EntitySortField::Relevance
             }
         });
-        let direction = match query.sort_direction.unwrap_or_default() {
-            EntitySortDirection::Asc => "ASC",
-            EntitySortDirection::Desc => "DESC",
+        let direction = match (query.sort_direction, archived_only, sort_field) {
+            (Some(EntitySortDirection::Asc), _, _) => "ASC",
+            (Some(EntitySortDirection::Desc), _, _) => "DESC",
+            (None, true, EntitySortField::UpdatedAt) => "DESC",
+            (None, _, _) => "ASC",
         };
         let order = match sort_field {
             EntitySortField::Name => format!("e.name COLLATE NOCASE {direction}, e.id {direction}"),
@@ -7426,6 +7453,135 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.refresh_maps_projection_for_entities(std::slice::from_ref(&id))?;
+        self.notify_export_worker()?;
+        Ok(())
+    }
+
+    pub fn restore_entity(&self, id: String) -> Result<(), CoreError> {
+        self.restore_entity_with_options(id, None, None)
+    }
+
+    pub fn restore_entity_with_options(
+        &self,
+        id: String,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&id)?,
+            "entity",
+        )?;
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{id}/")],
+        )?;
+        if transaction.execute(
+            "UPDATE entities SET deleted=0, updated_at=?2 WHERE id=?1 AND deleted=1",
+            params![id, chrono_like_now()],
+        )? == 0
+        {
+            return Err(CoreError::NotFound("archived entity not found".into()));
+        }
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&id))?;
+        self.notify_export_worker()?;
+        Ok(())
+    }
+
+    pub fn purge_entity(&self, id: String) -> Result<(), CoreError> {
+        self.purge_entity_with_options(id, None, None)
+    }
+
+    pub fn purge_entity_with_options(
+        &self,
+        id: String,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        if self
+            .committed_mutation::<serde_json::Value>(request_id)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let deleted: i64 = self
+            .connection
+            .query_row(
+                "SELECT deleted FROM entities WHERE id=?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|_| CoreError::NotFound("archived entity not found".into()))?;
+        if deleted == 0 {
+            return Err(CoreError::Validation(
+                "only archived entities can be permanently deleted".into(),
+            ));
+        }
+        Self::ensure_expected_revision(
+            expected_revision,
+            self.revision_for_entity(&id)?,
+            "entity",
+        )?;
+        let related_entities = self
+            .connection
+            .prepare(
+                "SELECT DISTINCT entity_id FROM (
+                    SELECT source_id AS entity_id FROM relationships WHERE target_id=?1
+                    UNION
+                    SELECT target_id AS entity_id FROM relationships WHERE source_id=?1
+                )",
+            )?
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("entities/{id}/")],
+        )?;
+        transaction.execute(
+            "DELETE FROM module_records WHERE owner_entity_id=?1",
+            params![id],
+        )?;
+        transaction.execute(
+            "DELETE FROM relationships WHERE source_id=?1 OR target_id=?1",
+            params![id],
+        )?;
+        transaction.execute("DELETE FROM documents WHERE entity_id=?1", params![id])?;
+        transaction.execute("DELETE FROM entity_fields WHERE entity_id=?1", params![id])?;
+        transaction.execute("DELETE FROM assets WHERE entity_id=?1", params![id])?;
+        transaction.execute(
+            "DELETE FROM map_projection WHERE map_entity_id=?1",
+            params![id],
+        )?;
+        transaction.execute(
+            "DELETE FROM map_location_projection WHERE entity_id=?1 OR map_entity_id=?1",
+            params![id],
+        )?;
+        transaction.execute(
+            "DELETE FROM map_feature_projection WHERE map_entity_id=?1",
+            params![id],
+        )?;
+        transaction.execute("DELETE FROM world_search WHERE entity_id=?1", params![id])?;
+        if transaction.execute("DELETE FROM entities WHERE id=?1 AND deleted=1", params![id])? == 0
+        {
+            return Err(CoreError::NotFound("archived entity not found".into()));
+        }
+        transaction.commit()?;
+        let mut refresh_ids = related_entities;
+        refresh_ids.push(id);
+        refresh_ids.sort();
+        refresh_ids.dedup();
+        self.refresh_maps_projection_for_entities(&refresh_ids)?;
         self.notify_export_worker()?;
         Ok(())
     }

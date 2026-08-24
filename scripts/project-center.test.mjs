@@ -16,7 +16,7 @@ assert.doesNotMatch(settings, /> Plugins<\/button>/, "application Settings does 
 assert.doesNotMatch(settings, /> Snapshots<\/button>/, "application Settings does not contain project history");
 assert.doesNotMatch(settings, /> Schema<\/button>/, "application Settings does not expose technical Schema navigation");
 
-for (const section of ["Overview", "Data &amp; recovery", "Extensions", "Fields &amp; Types", "Snapshots", "Advanced"])
+for (const section of ["Overview", "Data &amp; recovery", "Extensions", "Fields &amp; Types", "Snapshots", "Archive", "Advanced"])
   assert.match(projectCenter, new RegExp(`> ${section}`), `Project Center includes ${section}`);
 for (const operation of [
   "Import material",

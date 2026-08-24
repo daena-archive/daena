@@ -126,22 +126,6 @@
 .muted-button {
   color: var(--rail-text-faint);
 }
-.rail-git-button {
-  position: relative;
-}
-.rail-git-count {
-  display: grid;
-  min-width: 18px;
-  height: 18px;
-  place-items: center;
-  margin-left: auto;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--rail-accent);
-  color: var(--brass-ink);
-  font-size: 10px;
-  font-weight: 800;
-}
 .rail-spacer {
   flex: 1;
 }
@@ -377,16 +361,6 @@
 }
 .rail-collapsed .rail-label {
   display: none;
-}
-.rail-collapsed .rail-git-button .rail-git-count {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 14px;
-  height: 14px;
-  margin: 0;
-  padding: 0 3px;
-  font-size: 8px;
 }
 .rail-collapsed .rail-footer {
   padding: 17px 0 0;

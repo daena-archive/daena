@@ -83,8 +83,9 @@ assert.match(controls, /var\(--touch-target-min\)/, "touch sizing uses a shared 
 assert.match(controls, /@media \(prefers-reduced-motion: reduce\)/, "motion can be reduced across the shell");
 assert.match(controls, /@media \(forced-colors: active\)/, "focus remains visible in forced-colors mode");
 
-assert.doesNotMatch(sidebar, />Snapshots<\/span>/, "Snapshots is not duplicated as a standalone rail destination");
-assert.match(sidebar, /snapshotChangeCount/, "Project remains the snapshot-status entry point in the rail");
+assert.doesNotMatch(sidebar, />Snapshots<\/span>/, "Snapshots is not a standalone rail destination");
+assert.match(sidebar, />Project<\/span>/, "Project center remains reachable from the sidebar rail");
+assert.match(sidebar, />Settings<\/span>/, "application settings remain reachable from the sidebar rail");
 assert.doesNotMatch(projectCenter, /Developer fixtures|Add example world/, "developer fixtures stay out of beta UI");
 assert.doesNotMatch(
   shell,

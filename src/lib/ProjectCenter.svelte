@@ -2,6 +2,7 @@
 import { onMount, type Snippet } from "svelte";
 import {
   AlertTriangle,
+  Archive,
   Bot,
   Boxes,
   ChevronLeft,
@@ -25,6 +26,7 @@ import { project } from "$lib/project/client";
 import type { ProjectSection } from "$lib/modules/workspace";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
+import ArchivedDocumentsPanel from "$lib/ArchivedDocumentsPanel.svelte";
 
 type ProjectSummary = {
   name: string;
@@ -41,6 +43,7 @@ let {
   snapshotChangeCount = 0,
   snapshotRepository = false,
   snapshotBranch = null,
+  archivedCount = 0,
   aiIndexStatus,
   aiIndexBusy = false,
   aiIndexMessage = "",
@@ -63,6 +66,9 @@ let {
   onAiIndexRefresh,
   onAiIndexRebuild,
   onAiIndexCancel,
+  typeLabel,
+  onArchiveChanged,
+  onArchiveToast,
 }: {
   section?: ProjectSection;
   summary: ProjectSummary;
@@ -70,6 +76,7 @@ let {
   snapshotChangeCount?: number;
   snapshotRepository?: boolean;
   snapshotBranch?: string | null;
+  archivedCount?: number;
   aiIndexStatus: { state: string | null; message: string | null } | null;
   aiIndexBusy?: boolean;
   aiIndexMessage?: string;
@@ -92,6 +99,9 @@ let {
   onAiIndexRefresh: () => void;
   onAiIndexRebuild: () => void;
   onAiIndexCancel: () => void;
+  typeLabel: (entityType: string | null) => string;
+  onArchiveChanged?: () => void;
+  onArchiveToast?: (message: string) => void;
 } = $props();
 
 let actionBusy = $state(false);
@@ -218,6 +228,10 @@ async function seedExampleProject() {
         <GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots
         {#if snapshotChangeCount > 0}<span class="nav-count">{snapshotChangeCount}</span>{/if}
       </button>
+      <button class:active={section === "archive"} onclick={() => void goToSection("archive")}>
+        <Archive size={14} strokeWidth={1.8} aria-hidden="true" /> Archive
+        {#if archivedCount > 0}<span class="nav-count">{archivedCount}</span>{/if}
+      </button>
       <div class="nav-separator"></div>
       <button class:active={section === "advanced"} onclick={() => void goToSection("advanced")}>
         <Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Advanced
@@ -265,6 +279,15 @@ async function seedExampleProject() {
                 >Shape project-specific authoring without editing packages</small
               ></span>
           </button>
+          {#if archivedCount > 0}
+            <button type="button" onclick={() => void goToSection("archive")}>
+              <span class="status-icon"><Archive size={17} /></span>
+              <span
+                ><strong>{archivedCount} archived entr{archivedCount === 1 ? "y" : "ies"}</strong><small
+                  >Restore or permanently delete archived work</small
+                ></span>
+            </button>
+          {/if}
         </div>
         <div class="project-identity">
           <div><span>Project folder</span><strong title={summary.root}>{summary.root}</strong></div>
@@ -348,6 +371,11 @@ async function seedExampleProject() {
         {@render fields()}
       {:else if section === "snapshots"}
         {@render snapshots()}
+      {:else if section === "archive"}
+        <ArchivedDocumentsPanel
+          {typeLabel}
+          onChanged={onArchiveChanged}
+          onToast={onArchiveToast} />
       {:else}
         <div class="section-heading">
           <span class="heading-icon"><Wrench size={17} /></span>

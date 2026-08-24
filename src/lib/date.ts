@@ -126,3 +126,27 @@ export function compareCalendarDates(left: unknown, right: unknown): number {
     (a.second ?? 0) - (b.second ?? 0)
   );
 }
+
+/** Runtime timestamps from the core are nanoseconds since the Unix epoch. */
+export function formatRuntimeTimestampLabel(
+  timestamp: string,
+  options: Intl.DateTimeFormatOptions = { dateStyle: "medium" },
+): string {
+  const trimmed = timestamp.trim();
+  if (!trimmed) return "Unknown";
+  if (/^\d+$/.test(trimmed)) {
+    try {
+      const ms = Number(BigInt(trimmed) / 1_000_000n);
+      const date = new Date(ms);
+      if (Number.isFinite(ms) && ms > 0 && !Number.isNaN(date.getTime())) {
+        return new Intl.DateTimeFormat(undefined, options).format(date);
+      }
+    } catch {
+      // Fall through to ISO parsing.
+    }
+  }
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : new Intl.DateTimeFormat(undefined, options).format(date);
+}

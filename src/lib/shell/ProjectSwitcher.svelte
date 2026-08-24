@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Boxes, ChevronDown, FolderOpen, LogOut, X } from "@lucide/svelte";
+import { ChevronDown, FolderOpen, LogOut, X } from "@lucide/svelte";
 
 export interface ProjectSwitcherRecent {
   name: string;
@@ -16,7 +16,6 @@ interface Props {
   onOpenRecent: (root: string) => void;
   onRemoveRecent: (root: string) => void;
   onMenuChange: (open: boolean) => void;
-  onOpenProjectCenter: () => void;
   onCloseProject: () => void;
 }
 
@@ -30,7 +29,6 @@ let {
   onOpenRecent,
   onRemoveRecent,
   onMenuChange,
-  onOpenProjectCenter,
   onCloseProject,
 }: Props = $props();
 
@@ -98,8 +96,6 @@ $effect(() => {
         <button class="rail-button" role="menuitem" onclick={onOpenProject}
           ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open another folder</span
           ></button>
-        <button class="rail-button" role="menuitem" onclick={onOpenProjectCenter}
-          ><span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project center</span></button>
         <button class="rail-button" role="menuitem" onclick={onCloseProject}
           ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>Close project</span></button>
       </div>

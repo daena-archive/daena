@@ -2798,6 +2798,257 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
 }
 
 #[test]
+fn archived_entities_can_be_listed_restored_and_purged() {
+    let store = ProjectStore::in_memory().unwrap();
+    let alpha = store
+        .create_entity(CreateEntity {
+            name: "Archived Alpha".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let beta = store
+        .create_entity(CreateEntity {
+            name: "Live Beta".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: alpha.id.clone(),
+            body: "Hidden notes".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.delete_entity(alpha.id.clone()).unwrap();
+
+    let live = store.list_entities().unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, beta.id);
+
+    let archived = store
+        .query_entities(EntityListQuery {
+            archived: Some(true),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(archived.total, 1);
+    assert_eq!(archived.items[0].id, alpha.id);
+    assert!(archived.items[0].deleted);
+
+    let searched = store
+        .query_entities(EntityListQuery {
+            archived: Some(true),
+            query: Some("alpha".into()),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.items[0].id, alpha.id);
+
+    assert!(store.search("Hidden notes".into()).unwrap().is_empty());
+
+    store.restore_entity(alpha.id.clone()).unwrap();
+    let restored = store.list_entities().unwrap();
+    assert_eq!(restored.len(), 2);
+    assert!(!store.get_entity(&alpha.id).unwrap().unwrap().deleted);
+    assert!(!store.search("Hidden notes".into()).unwrap().is_empty());
+
+    store.delete_entity(alpha.id.clone()).unwrap();
+    assert!(matches!(
+        store.restore_entity(beta.id.clone()),
+        Err(CoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        store.purge_entity(beta.id.clone()),
+        Err(CoreError::Validation(message)) if message.contains("archived")
+    ));
+
+    store.purge_entity(alpha.id.clone()).unwrap();
+    assert!(store.get_entity(&alpha.id).unwrap().is_none());
+    let archived_after = store
+        .query_entities(EntityListQuery {
+            archived: Some(true),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(archived_after.total, 0);
+}
+
+#[test]
+fn purge_removes_relationships_to_archived_entity() {
+    let store = ProjectStore::in_memory().unwrap();
+    let source = store
+        .create_entity(CreateEntity {
+            name: "Source".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let target = store
+        .create_entity(CreateEntity {
+            name: "Target".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let relationship = store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id.clone(),
+            relationship_type: "points_to".into(),
+            metadata: None,
+        })
+        .unwrap();
+    store.delete_entity(target.id.clone()).unwrap();
+    assert!(store
+        .create_relationship(RelationshipInput {
+            source_id: source.id.clone(),
+            target_id: target.id.clone(),
+            relationship_type: "points_to".into(),
+            metadata: None,
+        })
+        .is_err());
+    store.purge_entity(target.id.clone()).unwrap();
+    let relationships = store.list_relationships(source.id).unwrap();
+    assert!(relationships.iter().all(|entry| entry.id != relationship.id));
+}
+
+#[test]
+fn purge_removes_portable_entity_folder_after_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-purge-export-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "To Purge".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    store
+        .save_document(SaveDocument {
+            entity_id: entity.id.clone(),
+            body: "Temporary".into(),
+            format: Some("markdown".into()),
+        })
+        .unwrap();
+    store.flush_checkpoint("before archive").unwrap();
+    store.delete_entity(entity.id.clone()).unwrap();
+    store.flush_checkpoint("after archive").unwrap();
+    let entity_dir = root.join(format!("entities/{}", entity.id));
+    assert!(entity_dir.join("entity.json").is_file());
+
+    store.purge_entity(entity.id.clone()).unwrap();
+    store.flush_checkpoint("after purge").unwrap();
+    assert!(!entity_dir.exists());
+}
+
+#[test]
+fn archived_entity_query_paginates() {
+    let store = ProjectStore::in_memory().unwrap();
+    for index in 0..3 {
+        let entity = store
+            .create_entity(CreateEntity {
+                name: format!("Archived {index}"),
+                entity_type: Some("person".into()),
+            })
+            .unwrap();
+        store.delete_entity(entity.id).unwrap();
+    }
+
+    let first = store
+        .query_entities(EntityListQuery {
+            archived: Some(true),
+            sort_field: Some(EntitySortField::Name),
+            sort_direction: Some(EntitySortDirection::Asc),
+            limit: Some(2),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(first.total, 3);
+    assert_eq!(first.items.len(), 2);
+    assert!(first.has_more);
+
+    let second = store
+        .query_entities(EntityListQuery {
+            archived: Some(true),
+            sort_field: Some(EntitySortField::Name),
+            sort_direction: Some(EntitySortDirection::Asc),
+            offset: Some(2),
+            limit: Some(2),
+            ..EntityListQuery::default()
+        })
+        .unwrap();
+    assert_eq!(second.total, 3);
+    assert_eq!(second.items.len(), 1);
+    assert!(!second.has_more);
+}
+
+#[test]
+fn purge_refreshes_entities_with_locations_on_purged_map() {
+    let store = ProjectStore::in_memory().unwrap();
+    let map = store
+        .create_entity(CreateEntity {
+            name: "Regional map".into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+        })
+        .unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Old Harbor".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: map.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "map".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
+                "sourceAssetId": null,
+                "previewAssetId": null,
+                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+    let location_id = Uuid::new_v4().to_string();
+    store
+        .set_field(FieldValue {
+            entity_id: place.id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "locations": [{
+                    "id": location_id,
+                    "mapEntityId": map.id,
+                    "role": "origin",
+                    "label": "Old Harbor",
+                    "anchor": {"kind": "point", "point": [0.5, 0.5]},
+                    "validity": {"from": null, "to": null}
+                }]
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+
+    assert_eq!(store.map_locations_for_entity(place.id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        store.map_location_projection(map.id.clone()).unwrap().len(),
+        1
+    );
+
+    store.delete_entity(map.id.clone()).unwrap();
+    store.purge_entity(map.id.clone()).unwrap();
+
+    assert!(store.get_entity(&map.id).unwrap().is_none());
+    assert_eq!(
+        store.map_locations_for_entity(place.id.clone()).unwrap().len(),
+        1,
+        "location owners should be refreshed after purging a referenced map"
+    );
+}
+
+#[test]
 fn create_entry_writes_template_content_atomically() {
     let store = ProjectStore::in_memory().unwrap();
     let entity = store

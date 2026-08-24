@@ -5651,6 +5651,7 @@ fn dispatch_module_rpc(
                 sort_direction,
                 offset: payload.offset,
                 limit: payload.limit,
+                ..EntityListQuery::default()
             })?;
             let record = daena_plugin_api::EntityPageRecord {
                 items: page
@@ -6992,6 +6993,40 @@ async fn project_delete_entity(
 ) -> Result<(), String> {
     with_core(state, move |core| {
         core.project(trusted_shell())?.delete_entity_with_options(
+            id,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_restore_entity(
+    state: tauri::State<'_, SharedCore>,
+    id: String,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.restore_entity_with_options(
+            id,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_purge_entity(
+    state: tauri::State<'_, SharedCore>,
+    id: String,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.purge_entity_with_options(
             id,
             expected_revision.as_deref(),
             request_id.as_deref(),
@@ -9803,6 +9838,8 @@ pub fn run() {
             project_search,
             project_update_entity,
             project_delete_entity,
+            project_restore_entity,
+            project_purge_entity,
             project_save_document,
             project_save_entry,
             project_list_documents,

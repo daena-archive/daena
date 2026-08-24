@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
+import WorkbenchState from "./WorkbenchState.svelte";
 
 interface Props {
   loading?: boolean;
@@ -8,6 +9,7 @@ interface Props {
   children?: Snippet;
   element?: HTMLElement | null;
   onScroll?: () => void;
+  onRetry?: () => void;
 }
 
 let {
@@ -17,6 +19,7 @@ let {
   children,
   element = $bindable(null),
   onScroll = () => {},
+  onRetry = () => {},
 }: Props = $props();
 </script>
 
@@ -26,11 +29,23 @@ let {
   class="inspector-panel panel-surface"
   aria-label="Inspector"
   aria-busy={loading}
-  inert={loading || Boolean(error)}
+  inert={loading}
   onscroll={onScroll}>
-  {#if empty}
-    <span>INSPECTOR</span>
-    <p>Select an entry to see its properties, relationships, and attachments.</p>
+  {#if loading}
+    <WorkbenchState
+      kind="loading"
+      compact
+      title="Loading details"
+      message="Reading fields, relationships, and assets." />
+  {:else if error}
+    {#snippet retryAction()}<button type="button" onclick={onRetry}>Retry</button>{/snippet}
+    <WorkbenchState kind="error" compact title="Details unavailable" message={error} actions={retryAction} />
+  {:else if empty}
+    <WorkbenchState
+      kind="empty"
+      compact
+      title="Nothing selected"
+      message="Select an entry to see its details, relationships, assets, and backlinks." />
   {:else if children}
     {@render children()}
   {/if}
@@ -46,19 +61,14 @@ let {
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
-.inspector-empty {
-  display: grid;
-  min-height: 240px;
-  padding: 30px;
-  place-items: center;
-  color: var(--ink-faint);
-  text-align: center;
-  font-size: 10px;
-}
-.inspector-empty p {
-  max-width: 170px;
-  margin-top: 13px;
-  line-height: 1.6;
+.inspector-panel :global(.workbench-state button) {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: 700 10px var(--font-body);
 }
 @media (max-width: 1180px) {
   .inspector-panel {

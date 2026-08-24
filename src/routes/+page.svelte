@@ -81,8 +81,11 @@ import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
 import CollectionPane from "$lib/shell/CollectionPane.svelte";
 import ContentPane from "$lib/shell/ContentPane.svelte";
 import InspectorPane from "$lib/shell/InspectorPane.svelte";
+import InspectorSection from "$lib/shell/InspectorSection.svelte";
+import PaneResizeHandle from "$lib/shell/PaneResizeHandle.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
+import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import QuickOpen from "$lib/shell/QuickOpen.svelte";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
@@ -153,6 +156,7 @@ type CreateOption = { key: string; module: InstalledModule; template: EntityTemp
 type CreateGroup = { module: InstalledModule; options: CreateOption[] };
 type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
 type CreateDialogView = "templates" | "form";
+type WorkbenchPane = "collection" | "content" | "inspector";
 type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
@@ -256,6 +260,12 @@ let inspectorPaneElement = $state<HTMLElement | null>(null);
 let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
 let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
 let restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
+let workbenchViewportWidth = $state(window.innerWidth);
+let workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>({
+  collection: localStorage.getItem("daena:workbench-pane:collection") !== "false",
+  content: localStorage.getItem("daena:workbench-pane:content") !== "false",
+  inspector: localStorage.getItem("daena:workbench-pane:inspector") !== "false",
+});
 let specializedSurfaceElement = $state<HTMLElement | null>(null);
 let specializedSurfaceScrollByKey = $state<Record<string, number>>({});
 let pendingSpecializedSurfaceScroll = $state<{ key: string; scrollTop: number } | null>(null);
@@ -1324,12 +1334,64 @@ async function restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
   await tick();
 }
 
+const collectionPaneMin = 190;
+const collectionPaneMax = 380;
+const inspectorPaneMin = 230;
+const inspectorPaneMax = 440;
+
+function activePaneDimensions(): WorkspacePaneDimensions {
+  const storedCollectionWidth = Number(localStorage.getItem("daena:workbench-pane-width:collection"));
+  const storedInspectorWidth = Number(localStorage.getItem("daena:workbench-pane-width:inspector"));
+  return {
+    collectionWidth:
+      restoredWorkspacePaneDimensions?.collectionWidth ||
+      (Number.isFinite(storedCollectionWidth) && storedCollectionWidth > 0 ? storedCollectionWidth : 245),
+    contentWidth: restoredWorkspacePaneDimensions?.contentWidth || 640,
+    inspectorWidth:
+      restoredWorkspacePaneDimensions?.inspectorWidth ||
+      (Number.isFinite(storedInspectorWidth) && storedInspectorWidth > 0 ? storedInspectorWidth : 290),
+    viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
+  };
+}
+
+function workbenchSupportsInspector() {
+  return section !== "language" && (section !== "maps" || sandboxView?.renderer !== "maps");
+}
+
+function resizeWorkbenchPane(pane: "collection" | "inspector", delta: number) {
+  const panes = activePaneDimensions();
+  if (pane === "collection")
+    panes.collectionWidth = Math.max(collectionPaneMin, Math.min(collectionPaneMax, panes.collectionWidth + delta));
+  else panes.inspectorWidth = Math.max(inspectorPaneMin, Math.min(inspectorPaneMax, panes.inspectorWidth + delta));
+  restoredWorkspacePaneDimensions = panes;
+  localStorage.setItem(`daena:workbench-pane-width:${pane}`, String(panes[`${pane}Width`]));
+}
+
+function toggleWorkbenchPane(pane: WorkbenchPane) {
+  const visible = !workbenchPaneVisibility[pane];
+  workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
+  localStorage.setItem(`daena:workbench-pane:${pane}`, String(visible));
+  if (pane === "content" && !visible) editorFullscreen = false;
+}
+
 function workspaceGridStyle() {
-  const panes = restoredWorkspacePaneDimensions;
-  if (!panes || panes.collectionWidth <= 0 || panes.inspectorWidth <= 0) return undefined;
-  const collectionWidth = Math.max(190, Math.min(360, Math.round(panes.collectionWidth)));
-  const inspectorWidth = Math.max(220, Math.min(420, Math.round(panes.inspectorWidth)));
-  return `--collection-pane-width: ${collectionWidth}px; --inspector-pane-width: ${inspectorWidth}px`;
+  if (mapSurfaceOpen) return undefined;
+  const panes = activePaneDimensions();
+  const collectionVisible = workbenchPaneVisibility.collection;
+  const contentVisible = workbenchPaneVisibility.content;
+  const inspectorVisible = workbenchPaneVisibility.inspector && workbenchSupportsInspector();
+  const columns: string[] = [];
+  if (workbenchViewportWidth <= 1180) {
+    if (collectionVisible && contentVisible) return "grid-template-columns: 220px minmax(320px, 1fr)";
+    if (collectionVisible && !contentVisible && inspectorVisible) return "grid-template-columns: 220px minmax(0, 1fr)";
+    return "grid-template-columns: minmax(0, 1fr)";
+  }
+  if (collectionVisible) columns.push(`${Math.round(panes.collectionWidth)}px`);
+  if (collectionVisible && contentVisible) columns.push("10px");
+  if (contentVisible) columns.push("minmax(360px, 1fr)");
+  if (contentVisible && inspectorVisible) columns.push("10px");
+  if (inspectorVisible) columns.push(`${Math.round(panes.inspectorWidth)}px`);
+  return `grid-template-columns: ${columns.length ? columns.join(" ") : "minmax(0, 1fr)"}`;
 }
 
 function rememberCollectionScroll() {
@@ -2472,9 +2534,10 @@ function updateDocumentBody(value: string) {
 function setEditorFullscreen(value: boolean) {
   editorFullscreen = value;
 }
-async function toggleDocumentMode() {
+async function setDocumentMode(mode: "read" | "edit") {
+  if (mode === documentMode) return;
   if (documentMode === "edit" && !(await flushAutoSave())) return;
-  documentMode = documentMode === "read" ? "edit" : "read";
+  documentMode = mode;
 }
 function friendlyError(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -4306,6 +4369,15 @@ function relationshipsForDefinition(definition: FieldDefinition) {
       relationship.source_id === selected?.id && relationship.relationship_type === definition.relationshipType,
   );
 }
+function relationshipDefinitions() {
+  return definitions().filter((candidate) => candidate.type === "relationship");
+}
+function backlinkRelationships() {
+  return relationships.filter((relationship) => relationship.target_id === selected?.id);
+}
+function relationshipSourceName(relationship: Relationship) {
+  return entities.find((entity) => entity.id === relationship.source_id)?.name ?? relationship.source_id;
+}
 function definitionForRelationship(relationship: Relationship): FieldDefinition | null {
   const manifests = modules.filter((module) => module.enabled).map((module) => module as unknown as ModuleManifest);
   if (manifests.length === 0) {
@@ -5160,12 +5232,9 @@ onMount(() => {
     }
   };
   const handleWorkbenchResize = () => {
-    if (
-      restoredWorkspacePaneDimensions &&
-      Math.abs(restoredWorkspacePaneDimensions.viewportWidth - window.innerWidth) > 2
-    ) {
-      restoredWorkspacePaneDimensions = null;
-    }
+    workbenchViewportWidth = window.innerWidth;
+    if (restoredWorkspacePaneDimensions)
+      restoredWorkspacePaneDimensions = { ...restoredWorkspacePaneDimensions, viewportWidth: window.innerWidth };
   };
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
@@ -5418,16 +5487,14 @@ onMount(() => {
             <div class="create-dialog-heading">
               <div>
                 {#if createDialogView === "templates"}<span class="panel-kicker">CREATE</span><strong
-                    id="create-dialog-title">Choose a template</strong
-                  >
+                    id="create-dialog-title">Choose a template</strong>
                   <p>Start with the kind of entry you want to add to this world.</p>{:else if createOption}<button
                     type="button"
                     class="create-dialog-back"
                     disabled={createBusy}
                     onclick={returnToCreationMenu}>All templates</button
                   ><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><strong
-                    id="create-dialog-title">Create {createOption.template.name}</strong
-                  >
+                    id="create-dialog-title">Create {createOption.template.name}</strong>
                   <p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p>{/if}
               </div>
               <button
@@ -6287,6 +6354,21 @@ onMount(() => {
           title={sectionLabel()}
           description={workspaceHeadingDescription()}
           actions={section === "maps" || section === "language" ? workspaceHeaderActions : undefined} />
+        <nav class="workbench-layout-controls" aria-label="Workbench panes">
+          <span>Layout</span><button
+            type="button"
+            aria-pressed={workbenchPaneVisibility.collection}
+            onclick={() => toggleWorkbenchPane("collection")}>Collection</button
+          ><button
+            type="button"
+            aria-pressed={workbenchPaneVisibility.content}
+            onclick={() => toggleWorkbenchPane("content")}>Content</button
+          >{#if workbenchSupportsInspector()}<button
+              type="button"
+              aria-pressed={workbenchPaneVisibility.inspector}
+              onclick={() => toggleWorkbenchPane("inspector")}>Inspector</button
+            >{/if}
+        </nav>
       {/if}
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
@@ -6474,21 +6556,27 @@ onMount(() => {
                 onclick={() => (collectionQuery.page += 1)}>Next</button>
             </nav>{/if}
         {/snippet}
-        <CollectionPane
-          kicker={collectionKicker()}
-          count={collectionResult().total}
-          label={collectionLabel()}
-          viewMode={collectionQuery.viewMode}
-          controls={collectionControls}
-          children={collectionItems}
-          footer={collectionFooter}
-          hidden={mapSurfaceOpen}
-          bind:element={collectionPaneElement}
-          bind:listElement={collectionListElement}
-          onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
-          onScroll={rememberCollectionScroll} />
+        {#if workbenchPaneVisibility.collection}<CollectionPane
+            kicker={collectionKicker()}
+            count={collectionResult().total}
+            label={collectionLabel()}
+            viewMode={collectionQuery.viewMode}
+            controls={collectionControls}
+            children={collectionItems}
+            footer={collectionFooter}
+            hidden={mapSurfaceOpen}
+            bind:element={collectionPaneElement}
+            bind:listElement={collectionListElement}
+            onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
+            onScroll={rememberCollectionScroll} />{/if}
+        {#if !mapSurfaceOpen && workbenchPaneVisibility.collection && workbenchPaneVisibility.content}<PaneResizeHandle
+            label="Resize collection pane"
+            value={activePaneDimensions().collectionWidth}
+            min={collectionPaneMin}
+            max={collectionPaneMax}
+            onResize={(delta) => resizeWorkbenchPane("collection", delta)} />{/if}
 
-        {#if section === "language"}
+        {#if workbenchPaneVisibility.content && section === "language"}
           {@const languageProjection = projectionModule("language")}
           {#key selected?.id ?? "language"}
             <ModuleMount
@@ -6500,7 +6588,7 @@ onMount(() => {
               })}
               className="language-mount" />
           {/key}
-        {:else}
+        {:else if workbenchPaneVisibility.content}
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
               {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
@@ -6641,186 +6729,212 @@ onMount(() => {
                       onclick={() => void openSelectedMapEditor()}>Open map editor</button
                     >{/if}
                 {/snippet}
-                <StatusSummary
-                  visible={Boolean(selected)}
-                  loading={selectedLoading}
-                  loadError={selectedLoadError}
-                  saving={isSaving}
-                  {saveError}
-                  dirty={hasUnsavedChanges}
-                  {savedAt}
-                  actions={editorStatusActions}
-                  onRetryLoad={() => void reloadSelectedFromDisk()}
-                  onRetrySave={() => void flushAutoSave()} />
+                <div class="editor-header-controls">
+                  {#if selected}<div class="document-mode-toggle" aria-label="Document mode">
+                      <button
+                        type="button"
+                        class:active={documentMode === "read"}
+                        aria-pressed={documentMode === "read"}
+                        disabled={selectedLoading || Boolean(selectedLoadError)}
+                        onclick={() => void setDocumentMode("read")}>Article</button
+                      ><button
+                        type="button"
+                        class:active={documentMode === "edit"}
+                        aria-pressed={documentMode === "edit"}
+                        disabled={selectedLoading || Boolean(selectedLoadError)}
+                        onclick={() => void setDocumentMode("edit")}>Edit</button>
+                    </div>{/if}
+                  <StatusSummary
+                    visible={Boolean(selected)}
+                    loading={selectedLoading}
+                    loadError={selectedLoadError}
+                    saving={isSaving}
+                    {saveError}
+                    dirty={hasUnsavedChanges}
+                    {savedAt}
+                    actions={editorStatusActions}
+                    onRetryLoad={() => void reloadSelectedFromDisk()}
+                    onRetrySave={() => void flushAutoSave()} />
+                </div>
               </div>
               {#if selected}
-                {#if documentConflict}
-                  <div class="document-conflict" role="alert">
-                    <strong
-                      >{documentConflict.diagnostics.length
-                        ? "Canonical source needs attention"
-                        : "This entry changed elsewhere"}</strong>
-                    <p>
-                      {documentConflict.diagnostics.length
-                        ? documentConflict.diagnostics[0]
-                        : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
-                    </p>
-                    {#if !documentConflict.diagnostics.length}<details class="conflict-compare">
-                        <summary>Compare with the currently saved document</summary>
-                        <pre>{conflictDiskBody}</pre>
-                      </details>{/if}
-                    <div class="conflict-actions">
-                      <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button><button
-                        class="quiet-button"
-                        type="button"
-                        onclick={overwriteConflict}
-                        disabled={documentConflict.diagnostics.length > 0}>Overwrite as new revision</button
-                      ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
-                        >Save recovery copy</button>
-                    </div>
-                  </div>
-                {/if}
-                {#if aiRewriteOpen}
-                  <div class="ai-rewrite-modal-backdrop">
-                    <div
-                      class="ai-rewrite-panel"
-                      role="dialog"
-                      aria-modal="true"
-                      aria-labelledby="ai-rewrite-title"
-                      tabindex="-1"
-                      onkeydown={(event) => {
-                        if (event.key === "Escape" && !aiBusy) closeAiRewrite();
-                      }}>
-                      <div class="ai-rewrite-heading">
-                        <div>
-                          <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
-                            id="ai-rewrite-title"
-                            >{aiCancelPending
-                              ? "Cancelling request…"
-                              : aiBusy
-                                ? aiMode === "generate"
-                                  ? "Generating text…"
-                                  : "Rewriting selection…"
-                                : aiPreviewOutput
-                                  ? aiMode === "generate"
-                                    ? "Review generated text"
-                                    : "Review rewrite"
-                                  : aiMode === "generate"
-                                    ? "Generate text"
-                                    : "Rewrite selection"}</strong>
-                        </div>
-                      </div>
-                      {#if !aiBusy}<label class="ai-instruction"
-                          >Instruction<textarea
-                            rows="2"
-                            bind:value={aiInstruction}
-                            disabled={aiBusy}
-                            placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
-                          ></textarea
-                          ></label
-                        >{/if}
-                      <AiProposalPreview
-                        original={aiSourceSelectionPlain}
-                        bind:proposal={aiPreviewOutput}
-                        streamText={aiStreamText}
-                        progressMessage={aiProgressMessage}
-                        busy={aiBusy}
-                        cancelling={aiCancelPending}
-                        onCancel={() => void cancelAiRewrite()}
-                        onDiscard={closeAiRewrite}
-                        onAccept={() => void acceptAiRewrite()} />
-                      {#if aiUsage}<p class="muted-note">
-                          Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
-                        </p>{/if}
-                      {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
-                          <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
-                            >Accept proposal</button>
-                          <button
-                            class="quiet-button ai-retry-button"
-                            type="button"
-                            onclick={() => void startAiRewrite()}>Retry</button>
-                          <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
-                            >Discard</button>
-                        </div>
-                      {:else if !aiBusy}<div class="ai-rewrite-actions">
-                          <button
-                            class="primary-button"
-                            type="button"
-                            disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
-                            onclick={() => void startAiRewrite()}
-                            >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
-                          <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
-                        </div>{/if}
-                    </div>
-                  </div>
-                {/if}
-                {#if documentMode === "read"}
-                  <MarkdownArticle
-                    markdown={documentBody}
-                    {entities}
-                    onOpenEntity={(id) => {
-                      const target = entities.find((entity) => entity.id === id && !entity.deleted);
-                      if (target) void selectEntity(target);
-                    }} />
-                {:else}
-                  {#key selected?.id}
-                    <RichTextEditor
-                      bind:this={editorRef}
-                      value={documentBody}
-                      {entities}
-                      entityId={selected?.id ?? null}
-                      defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
-                      editable={!selectedLoading &&
-                        !selectedLoadError &&
-                        projectDiagnostics.length === 0 &&
-                        !aiBusy &&
-                        !aiRewriteOpen}
-                      fullscreen={editorFullscreen}
-                      aiEnabled={projectInfo?.aiEnabled ?? false}
-                      onChange={updateDocumentBody}
-                      onSelectionChange={setAiSelection}
-                      onAiRequest={openAiAction}
-                      onSaveRequest={() => void flushAutoSave()}
-                      onFullscreenChange={setEditorFullscreen}
-                      placeholder={section === "writing"
-                        ? writingView === "manuscripts"
-                          ? "Write your manuscript…"
-                          : "Write this reference page…"
-                        : section === "maps"
-                          ? "Describe this map and the world it contains…"
-                          : "Write the canonical story of this entry…"} />
-                  {/key}
-                {/if}
-                <div class="editor-footer">
-                  <div></div>
-                  <div>
-                    <button
+                {#if selectedLoading}
+                  <WorkbenchState
+                    kind="loading"
+                    title="Loading entry"
+                    message="Reading the document, details, relationships, and assets." />
+                {:else if selectedLoadError}
+                  {#snippet retrySelectedLoad()}<button
                       class="quiet-button"
                       type="button"
-                      disabled={selectedLoading}
-                      onclick={() => void toggleDocumentMode()}
-                      >{documentMode === "read" ? "Edit" : "View article"}</button>
-                    <button class="quiet-button" disabled={selectedLoading} onclick={archiveSelected}>Archive</button>
+                      onclick={() => void reloadSelectedFromDisk()}>Retry</button
+                    >{/snippet}
+                  <WorkbenchState
+                    kind="error"
+                    title="Entry unavailable"
+                    message={selectedLoadError}
+                    actions={retrySelectedLoad} />
+                {:else}
+                  {@const activeConflict = documentConflict}
+                  {#if activeConflict}
+                    {#snippet conflictResolutionActions()}<div class="conflict-workbench-actions">
+                        {#if !activeConflict.diagnostics.length}<details class="conflict-compare">
+                            <summary>Compare with the currently saved document</summary>
+                            <pre>{conflictDiskBody}</pre>
+                          </details>{/if}
+                        <div class="conflict-actions">
+                          <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button
+                          ><button
+                            class="quiet-button"
+                            type="button"
+                            onclick={overwriteConflict}
+                            disabled={activeConflict.diagnostics.length > 0}>Overwrite as new revision</button
+                          ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
+                            >Save recovery copy</button>
+                        </div>
+                      </div>{/snippet}
+                    <WorkbenchState
+                      kind="conflict"
+                      compact
+                      title={activeConflict.diagnostics.length
+                        ? "Canonical source needs attention"
+                        : "This entry changed elsewhere"}
+                      message={activeConflict.diagnostics.length
+                        ? activeConflict.diagnostics[0]
+                        : "Your unsaved document and details are preserved. Choose how to reconcile them before saving."}
+                      actions={conflictResolutionActions} />
+                  {/if}
+                  {#if aiRewriteOpen}
+                    <div class="ai-rewrite-modal-backdrop">
+                      <div
+                        class="ai-rewrite-panel"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="ai-rewrite-title"
+                        tabindex="-1"
+                        onkeydown={(event) => {
+                          if (event.key === "Escape" && !aiBusy) closeAiRewrite();
+                        }}>
+                        <div class="ai-rewrite-heading">
+                          <div>
+                            <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
+                              id="ai-rewrite-title"
+                              >{aiCancelPending
+                                ? "Cancelling request…"
+                                : aiBusy
+                                  ? aiMode === "generate"
+                                    ? "Generating text…"
+                                    : "Rewriting selection…"
+                                  : aiPreviewOutput
+                                    ? aiMode === "generate"
+                                      ? "Review generated text"
+                                      : "Review rewrite"
+                                    : aiMode === "generate"
+                                      ? "Generate text"
+                                      : "Rewrite selection"}</strong>
+                          </div>
+                        </div>
+                        {#if !aiBusy}<label class="ai-instruction"
+                            >Instruction<textarea
+                              rows="2"
+                              bind:value={aiInstruction}
+                              disabled={aiBusy}
+                              placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                            ></textarea
+                            ></label
+                          >{/if}
+                        <AiProposalPreview
+                          original={aiSourceSelectionPlain}
+                          bind:proposal={aiPreviewOutput}
+                          streamText={aiStreamText}
+                          progressMessage={aiProgressMessage}
+                          busy={aiBusy}
+                          cancelling={aiCancelPending}
+                          onCancel={() => void cancelAiRewrite()}
+                          onDiscard={closeAiRewrite}
+                          onAccept={() => void acceptAiRewrite()} />
+                        {#if aiUsage}<p class="muted-note">
+                            Provider usage: {aiUsage.inputTokens} input + {aiUsage.outputTokens} output tokens.
+                          </p>{/if}
+                        {#if !aiBusy && aiPreviewOutput}<div class="ai-rewrite-actions">
+                            <button class="primary-button" type="button" onclick={() => void acceptAiRewrite()}
+                              >Accept proposal</button>
+                            <button
+                              class="quiet-button ai-retry-button"
+                              type="button"
+                              onclick={() => void startAiRewrite()}>Retry</button>
+                            <button class="quiet-button ai-discard-button" type="button" onclick={closeAiRewrite}
+                              >Discard</button>
+                          </div>
+                        {:else if !aiBusy}<div class="ai-rewrite-actions">
+                            <button
+                              class="primary-button"
+                              type="button"
+                              disabled={(aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim()}
+                              onclick={() => void startAiRewrite()}
+                              >{aiMode === "generate" ? "Generate text" : "Generate rewrite"}</button>
+                            <button class="quiet-button" type="button" onclick={closeAiRewrite}>Cancel</button>
+                          </div>{/if}
+                      </div>
+                    </div>
+                  {/if}
+                  {#if documentMode === "read"}
+                    <MarkdownArticle
+                      markdown={documentBody}
+                      {entities}
+                      onOpenEntity={(id) => {
+                        const target = entities.find((entity) => entity.id === id && !entity.deleted);
+                        if (target) void selectEntity(target);
+                      }} />
+                  {:else}
+                    {#key selected?.id}
+                      <RichTextEditor
+                        bind:this={editorRef}
+                        value={documentBody}
+                        {entities}
+                        entityId={selected?.id ?? null}
+                        defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
+                        editable={!selectedLoading &&
+                          !selectedLoadError &&
+                          projectDiagnostics.length === 0 &&
+                          !aiBusy &&
+                          !aiRewriteOpen}
+                        fullscreen={editorFullscreen}
+                        aiEnabled={projectInfo?.aiEnabled ?? false}
+                        onChange={updateDocumentBody}
+                        onSelectionChange={setAiSelection}
+                        onAiRequest={openAiAction}
+                        onSaveRequest={() => void flushAutoSave()}
+                        onFullscreenChange={setEditorFullscreen}
+                        placeholder={section === "writing"
+                          ? writingView === "manuscripts"
+                            ? "Write your manuscript…"
+                            : "Write this reference page…"
+                          : section === "maps"
+                            ? "Describe this map and the world it contains…"
+                            : "Write the canonical story of this entry…"} />
+                    {/key}
+                  {/if}
+                  <div class="editor-footer">
+                    <div></div>
+                    <div>
+                      <button class="quiet-button" disabled={selectedLoading} onclick={archiveSelected}>Archive</button>
+                    </div>
                   </div>
-                </div>
+                {/if}
               {:else}
-                <div class="editor-empty">
-                  <div class="empty-mark">✦</div>
-                  <h3>
-                    {section === "maps"
-                      ? "Your map notes are waiting."
-                      : section === "writing"
-                        ? writingView === "manuscripts"
-                          ? "Your draft is waiting."
-                          : "Your reference desk is waiting."
-                        : "Your canvas is waiting."}
-                  </h3>
-                  <p>
-                    {section === "maps"
-                      ? "Select a map from the atlas, or create one with a map integration."
-                      : "Select an entry from the library, or create something new to begin writing."}
-                  </p>
-                </div>
+                <WorkbenchState
+                  kind="empty"
+                  title={section === "maps"
+                    ? "Your map notes are waiting."
+                    : section === "writing"
+                      ? writingView === "manuscripts"
+                        ? "Your draft is waiting."
+                        : "Your reference desk is waiting."
+                      : "Your canvas is waiting."}
+                  message={section === "maps"
+                    ? "Select a map from the atlas, or create one with a map integration."
+                    : "Select an entry from the collection, or create something new to begin writing."} />
               {/if}
             {/if}
           {/snippet}
@@ -6831,11 +6945,22 @@ onMount(() => {
             children={contentPaneBody} />
         {/if}
 
-        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}
+        {#if !mapSurfaceOpen && workbenchPaneVisibility.content && workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
+            label="Resize inspector pane"
+            value={activePaneDimensions().inspectorWidth}
+            min={inspectorPaneMin}
+            max={inspectorPaneMax}
+            direction={-1}
+            onResize={(delta) => resizeWorkbenchPane("inspector", delta)} />{/if}
+
+        {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && selected}
           {@const inspectedEntity = selected}
           {#snippet inspectorBody()}
             <div class="inspector-heading">
-              <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
+              <div>
+                <span class="panel-kicker">INSPECTOR</span><strong
+                  >{entityTypeLabel(inspectedEntity.entity_type)}</strong>
+              </div>
               <div class="inspector-heading-actions">
                 <span class="inspector-type">{inspectedEntity.entity_type}</span
                 >{#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
@@ -6888,284 +7013,324 @@ onMount(() => {
                     ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
-            <section class="inspector-section">
-              <h3>Properties</h3>
-              {#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div
-                  class="property-field">
-                  <span
-                    >{definition.label}{#if definition.required}<b>*</b>{/if}</span
-                  >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
-                        dateDraftForField(definition.key) ?? {
-                          calendar: GREGORIAN_CALENDAR_ID,
-                          era: "CE",
-                          precision: "day",
-                        }}{@const parts = datePartsDraft(definition.key)}{@const calendar = definitionForDateField(
-                        definition.key,
-                      )}{@const months = calendar?.months ?? []}
-                      <div class="date-editor">
-                        <CalendarPicker
-                          selectedId={selectedCalendarId(definition.key)}
-                          calendars={worldCalendars()}
-                          onSelect={(id) => setDateCalendar(definition.key, id)} />
-                        <div class="date-fields">
-                          <label for={`${definition.key}-year`}
-                            >Year<input
-                              id={`${definition.key}-year`}
-                              aria-label={`${definition.label} year`}
-                              type="number"
-                              value={parts?.year ?? date.year ?? ""}
-                              onchange={(event) =>
-                                updateDatePart(
-                                  definition.key,
-                                  "year",
-                                  (event.currentTarget as HTMLInputElement).value,
-                                  Number.MIN_SAFE_INTEGER,
-                                )} /></label
-                          >{#if months.length > 0}<label for={`${definition.key}-month`}
-                              >Month<select
-                                id={`${definition.key}-month`}
-                                aria-label={`${definition.label} month`}
-                                value={parts?.month ?? ""}
+            <InspectorSection
+              title="Details"
+              count={definitions().filter((candidate) => candidate.type !== "relationship").length}>
+              <section class="inspector-section inspector-section-plain">
+                <h3>Properties</h3>
+                {#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div
+                    class="property-field">
+                    <span
+                      >{definition.label}{#if definition.required}<b>*</b>{/if}</span
+                    >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
+                          dateDraftForField(definition.key) ?? {
+                            calendar: GREGORIAN_CALENDAR_ID,
+                            era: "CE",
+                            precision: "day",
+                          }}{@const parts = datePartsDraft(definition.key)}{@const calendar = definitionForDateField(
+                          definition.key,
+                        )}{@const months = calendar?.months ?? []}
+                        <div class="date-editor">
+                          <CalendarPicker
+                            selectedId={selectedCalendarId(definition.key)}
+                            calendars={worldCalendars()}
+                            onSelect={(id) => setDateCalendar(definition.key, id)} />
+                          <div class="date-fields">
+                            <label for={`${definition.key}-year`}
+                              >Year<input
+                                id={`${definition.key}-year`}
+                                aria-label={`${definition.label} year`}
+                                type="number"
+                                value={parts?.year ?? date.year ?? ""}
                                 onchange={(event) =>
                                   updateDatePart(
                                     definition.key,
-                                    "month",
-                                    (event.currentTarget as HTMLSelectElement).value,
-                                    1,
-                                    months.length,
-                                  )}
-                                ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
-                                    >{month.name}</option
-                                  >{/each}</select>
-                              ></label
-                            >{:else}<label for={`${definition.key}-month`}
-                              >Month<input
-                                id={`${definition.key}-month`}
-                                aria-label={`${definition.label} month`}
+                                    "year",
+                                    (event.currentTarget as HTMLInputElement).value,
+                                    Number.MIN_SAFE_INTEGER,
+                                  )} /></label
+                            >{#if months.length > 0}<label for={`${definition.key}-month`}
+                                >Month<select
+                                  id={`${definition.key}-month`}
+                                  aria-label={`${definition.label} month`}
+                                  value={parts?.month ?? ""}
+                                  onchange={(event) =>
+                                    updateDatePart(
+                                      definition.key,
+                                      "month",
+                                      (event.currentTarget as HTMLSelectElement).value,
+                                      1,
+                                      months.length,
+                                    )}
+                                  ><option value="">Month</option>{#each months as month, index}<option
+                                      value={index + 1}>{month.name}</option
+                                    >{/each}</select>
+                                ></label
+                              >{:else}<label for={`${definition.key}-month`}
+                                >Month<input
+                                  id={`${definition.key}-month`}
+                                  aria-label={`${definition.label} month`}
+                                  type="number"
+                                  min="1"
+                                  max="12"
+                                  value={parts?.month ?? date.month ?? ""}
+                                  onchange={(event) =>
+                                    updateDatePart(
+                                      definition.key,
+                                      "month",
+                                      (event.currentTarget as HTMLInputElement).value,
+                                      1,
+                                      12,
+                                    )} /></label
+                              >{/if}<label for={`${definition.key}-day`}
+                              >Day<input
+                                id={`${definition.key}-day`}
+                                aria-label={`${definition.label} day`}
                                 type="number"
                                 min="1"
-                                max="12"
-                                value={parts?.month ?? date.month ?? ""}
+                                max={daysInCalendarMonth(
+                                  calendar,
+                                  parts?.year ?? date.year ?? 1,
+                                  parts?.month ?? date.month ?? 1,
+                                )}
+                                value={parts?.day ?? date.day ?? ""}
                                 onchange={(event) =>
                                   updateDatePart(
                                     definition.key,
-                                    "month",
+                                    "day",
                                     (event.currentTarget as HTMLInputElement).value,
                                     1,
-                                    12,
+                                    daysInCalendarMonth(
+                                      calendar,
+                                      parts?.year ?? date.year ?? 1,
+                                      parts?.month ?? date.month ?? 1,
+                                    ),
                                   )} /></label
-                            >{/if}<label for={`${definition.key}-day`}
-                            >Day<input
-                              id={`${definition.key}-day`}
-                              aria-label={`${definition.label} day`}
-                              type="number"
-                              min="1"
-                              max={daysInCalendarMonth(
-                                calendar,
-                                parts?.year ?? date.year ?? 1,
-                                parts?.month ?? date.month ?? 1,
-                              )}
-                              value={parts?.day ?? date.day ?? ""}
-                              onchange={(event) =>
-                                updateDatePart(
-                                  definition.key,
-                                  "day",
-                                  (event.currentTarget as HTMLInputElement).value,
-                                  1,
-                                  daysInCalendarMonth(
-                                    calendar,
-                                    parts?.year ?? date.year ?? 1,
-                                    parts?.month ?? date.month ?? 1,
-                                  ),
-                                )} /></label
-                          ><label class="date-time-field" for={`${definition.key}-time`}
-                            >Time<input
-                              id={`${definition.key}-time`}
-                              aria-label={`${definition.label} time`}
-                              type="time"
-                              step="1"
-                              value={calendarTimeValue(date)}
-                              onchange={(event) =>
-                                updateDateTime(
-                                  definition.key,
-                                  (event.currentTarget as HTMLInputElement).value,
-                                )} /></label>
-                        </div>
-                        <small class="date-preview"
-                          >{typeof (parts?.year ?? date.year) === "number"
-                            ? formatWithCalendar(fields[definition.key], calendar)
-                            : "Add a date"}</small
-                        ><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}
-                          >Clear date</button>
-                      </div>{:else}<button
-                        class="date-empty"
-                        type="button"
-                        onclick={() => openDateEditor(definition.key)}>Add a date</button
-                      >{/if}{:else if definition.type === "boolean"}<input
-                      type="checkbox"
-                      aria-label={definition.label}
-                      checked={fieldInputValue(definition, fields[definition.key]) === true}
-                      onchange={(event) =>
-                        updateField(definition, event)} />{:else if definition.type === "number"}<input
-                      type="number"
-                      aria-label={definition.label}
-                      value={fieldInputValue(definition, fields[definition.key])}
-                      placeholder="Add {definition.label.toLowerCase()}"
-                      onchange={(event) =>
-                        updateField(
-                          definition,
-                          event,
-                        )} />{:else if definition.type === "enum" && definition.options?.length}<select
-                      aria-label={definition.label}
-                      multiple={definition.multiple ?? false}
-                      value={definition.multiple
-                        ? Array.isArray(fields[definition.key])
-                          ? fields[definition.key]
-                          : []
-                        : String(fields[definition.key] ?? "")}
-                      onchange={(event) => updateField(definition, event)}
-                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option
-                        >{/each}</select>
-                    >{:else if (definition as any).type === "oneof"}<select
-                      aria-label={definition.label}
-                      value={String(fields[definition.key] ?? "")}
-                      onchange={(event) => updateField(definition, event)}
-                      ><option value="">Choose {definition.label.toLowerCase()}</option
-                      >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                      {#each (definition as any).oneOf ?? [] as variant}
-                        {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                      {/each}</select>
-                    >{:else}<input
-                      type="text"
-                      value={fieldInputValue(definition, fields[definition.key])}
-                      placeholder="Add {definition.label.toLowerCase()}"
-                      oninput={(event) => updateField(definition, event)} />{/if}
-                </div>{/each}
-            </section>
-            {#if selected?.entity_type === "calendar" && projectInfo}
-              <section class="inspector-section">
-                <CalendarEditor
-                  context={contextFor("timeline")}
-                  entityId={inspectedEntity.id as UUID}
-                  onsaved={(definition) => {
-                    if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
-                  }} />
+                            ><label class="date-time-field" for={`${definition.key}-time`}
+                              >Time<input
+                                id={`${definition.key}-time`}
+                                aria-label={`${definition.label} time`}
+                                type="time"
+                                step="1"
+                                value={calendarTimeValue(date)}
+                                onchange={(event) =>
+                                  updateDateTime(
+                                    definition.key,
+                                    (event.currentTarget as HTMLInputElement).value,
+                                  )} /></label>
+                          </div>
+                          <small class="date-preview"
+                            >{typeof (parts?.year ?? date.year) === "number"
+                              ? formatWithCalendar(fields[definition.key], calendar)
+                              : "Add a date"}</small
+                          ><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}
+                            >Clear date</button>
+                        </div>{:else}<button
+                          class="date-empty"
+                          type="button"
+                          onclick={() => openDateEditor(definition.key)}>Add a date</button
+                        >{/if}{:else if definition.type === "boolean"}<input
+                        type="checkbox"
+                        aria-label={definition.label}
+                        checked={fieldInputValue(definition, fields[definition.key]) === true}
+                        onchange={(event) =>
+                          updateField(definition, event)} />{:else if definition.type === "number"}<input
+                        type="number"
+                        aria-label={definition.label}
+                        value={fieldInputValue(definition, fields[definition.key])}
+                        placeholder="Add {definition.label.toLowerCase()}"
+                        onchange={(event) =>
+                          updateField(
+                            definition,
+                            event,
+                          )} />{:else if definition.type === "enum" && definition.options?.length}<select
+                        aria-label={definition.label}
+                        multiple={definition.multiple ?? false}
+                        value={definition.multiple
+                          ? Array.isArray(fields[definition.key])
+                            ? fields[definition.key]
+                            : []
+                          : String(fields[definition.key] ?? "")}
+                        onchange={(event) => updateField(definition, event)}
+                        >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                          >{/each}</select>
+                      >{:else if (definition as any).type === "oneof"}<select
+                        aria-label={definition.label}
+                        value={String(fields[definition.key] ?? "")}
+                        onchange={(event) => updateField(definition, event)}
+                        ><option value="">Choose {definition.label.toLowerCase()}</option
+                        >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                        {#each (definition as any).oneOf ?? [] as variant}
+                          {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
+                        {/each}</select>
+                      >{:else}<input
+                        type="text"
+                        value={fieldInputValue(definition, fields[definition.key])}
+                        placeholder="Add {definition.label.toLowerCase()}"
+                        oninput={(event) => updateField(definition, event)} />{/if}
+                  </div>{/each}
               </section>
-            {/if}
-            {#each definitions().filter((candidate) => candidate.type === "relationship") as definition}<section
-                class="inspector-section">
-                <div class="section-title">
-                  <h3>{definition.label}</h3>
-                  <span>{selectedRelationshipIds(definition).length}</span>
-                </div>
-                <RelationshipPicker
-                  field={definition}
-                  {entities}
-                  selectedIds={selectedRelationshipIds(definition)}
-                  hideChips
-                  onChange={(ids) => void updateRelationshipField(definition, ids)} />
-                {#if relationshipsForDefinition(definition).length > 0}<div
-                    class="relationship-detail-list"
-                    aria-label={`${definition.label} details`}>
-                    {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
-                      {@const relDefinition = definitionForRelationship(relationship) ?? definition}
-                      {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
-                      <div class="relationship-detail-row" data-entity-id={relationship.target_id}>
-                        <div class="relationship-detail-copy">
-                          <strong>{relationshipTargetName(relationship)}</strong>
-                          <small
-                            >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
-                              "Entity"}{#if summary}
-                              · {summary}{/if}</small>
-                        </div>
-                        <div class="relationship-detail-actions">
-                          {#if relDefinition.metadataFields?.length}
-                            <button
-                              class="quiet-button relationship-details-button"
-                              type="button"
-                              aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
-                              onclick={() => openRelationshipMetadata(relationship)}
-                              ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                          {/if}
-                          <button
-                            class="quiet-button relationship-remove-button"
-                            type="button"
-                            aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
-                            onclick={() => void confirmRemoveRelationship(definition, relationship)}
-                            ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>{/if}
-              </section>{/each}
-            <section class="inspector-section">
-              <div class="section-title">
-                <h3>Attachments</h3>
-                <span>{assets.length}</span>
-              </div>
-              <button class="drop-zone" type="button" onclick={attachAsset}
-                ><span><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
-                ><small>Copied into this project</small></button
-              >{#each assets as asset (asset.id)}<button
-                  type="button"
-                  class:asset-main={asset.role === "profile"}
-                  class="asset-row asset-row-button"
-                  onclick={() => openAssetDialog(asset)}
-                  disabled={assetBusyId === asset.id}
-                  aria-label={`Edit ${asset.filename}`}>
-                  <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
-                  <div class="asset-details">
-                    <strong>{asset.filename}</strong><small
-                      >{Math.max(1, Math.round(asset.size / 1024))} KB · {asset.reference_scope === "project"
-                        ? "Project references allowed"
-                        : "Entity only"} · {asset.mime_type}</small
-                    >{#if asset.role === "profile"}<span class="asset-role">Main file</span>{/if}
+              {#if selected?.entity_type === "calendar" && projectInfo}
+                <section class="inspector-section inspector-section-plain">
+                  <CalendarEditor
+                    context={contextFor("timeline")}
+                    entityId={inspectedEntity.id as UUID}
+                    onsaved={(definition) => {
+                      if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
+                    }} />
+                </section>
+              {/if}
+            </InspectorSection>
+            <InspectorSection
+              title="Relationships"
+              count={relationships.filter((relationship) => relationship.source_id === selected?.id).length}>
+              {#if relationshipDefinitions().length === 0}<p class="inspector-group-empty">
+                  No relationship fields are available for this entry.
+                </p>{/if}
+              {#each relationshipDefinitions() as definition}<section
+                  class="inspector-section inspector-section-plain relationship-field-section">
+                  <div class="section-title">
+                    <h3>{definition.label}</h3>
+                    <span>{selectedRelationshipIds(definition).length}</span>
                   </div>
-                  <span class="asset-row-edit-hint" aria-hidden="true">Edit →</span>
-                </button>{/each}
-            </section>
-            {#if mapsEnabled()}<section class="inspector-section map-contribution" aria-label="Maps contribution">
+                  <RelationshipPicker
+                    field={definition}
+                    {entities}
+                    selectedIds={selectedRelationshipIds(definition)}
+                    hideChips
+                    onChange={(ids) => void updateRelationshipField(definition, ids)} />
+                  {#if relationshipsForDefinition(definition).length > 0}<div
+                      class="relationship-detail-list"
+                      aria-label={`${definition.label} details`}>
+                      {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                        {@const relDefinition = definitionForRelationship(relationship) ?? definition}
+                        {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
+                        <div class="relationship-detail-row">
+                          <button
+                            type="button"
+                            class="relationship-detail-copy related-item-trigger"
+                            data-entity-id={relationship.target_id}
+                            aria-label={`Preview ${relationshipTargetName(relationship)}`}>
+                            <strong>{relationshipTargetName(relationship)}</strong>
+                            <small
+                              >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
+                                "Entity"}{#if summary}
+                                · {summary}{/if}</small>
+                          </button>
+                          <div class="relationship-detail-actions">
+                            {#if relDefinition.metadataFields?.length}
+                              <button
+                                class="quiet-button relationship-details-button"
+                                type="button"
+                                aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
+                                onclick={() => openRelationshipMetadata(relationship)}
+                                ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                            {/if}
+                            <button
+                              class="quiet-button relationship-remove-button"
+                              type="button"
+                              aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
+                              onclick={() => void confirmRemoveRelationship(definition, relationship)}
+                              ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>{/if}
+                </section>{/each}
+            </InspectorSection>
+            <InspectorSection title="Assets" count={assets.length}>
+              <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
-                  <h3>Maps</h3>
-                  <span>{mapLocations.length}</span>
+                  <h3>Attached files</h3>
+                  <span>{assets.length}</span>
                 </div>
-                {#if mapLocations.length === 0}<small>No map links yet.</small
-                  >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
-                      <div>
-                        <strong>{location.label || location.role}</strong><small
-                          >{location.role} · {location.mapEntityId.slice(
-                            0,
-                            8,
-                          )}{#if location.resolution === "unresolved"}
-                            · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
-                      </div>
-                      <div>
-                        {#if location.resolution === "unresolved"}<span
-                            class="map-unresolved-note"
-                            title="The map feature this link pointed to was removed or renumbered."
-                            >Feature missing</span
-                          >{:else}<button
+                <button class="drop-zone" type="button" onclick={attachAsset}
+                  ><span><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
+                  ><small>Copied into this project</small></button
+                >{#each assets as asset (asset.id)}<button
+                    type="button"
+                    class:asset-main={asset.role === "profile"}
+                    class="asset-row asset-row-button"
+                    onclick={() => openAssetDialog(asset)}
+                    disabled={assetBusyId === asset.id}
+                    aria-label={`Edit ${asset.filename}`}>
+                    <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
+                    <div class="asset-details">
+                      <strong>{asset.filename}</strong><small
+                        >{Math.max(1, Math.round(asset.size / 1024))} KB · {asset.reference_scope === "project"
+                          ? "Project references allowed"
+                          : "Entity only"} · {asset.mime_type}</small
+                      >{#if asset.role === "profile"}<span class="asset-role">Main file</span>{/if}
+                    </div>
+                    <span class="asset-row-edit-hint" aria-hidden="true">Edit →</span>
+                  </button>{/each}
+              </section>
+            </InspectorSection>
+            <InspectorSection title="Backlinks" count={backlinkRelationships().length} open={false}>
+              {#if backlinkRelationships().length === 0}<p class="inspector-group-empty">
+                  Nothing links to this entry yet.
+                </p>{:else}<div class="relationship-detail-list backlink-list" aria-label="Backlinks">
+                  {#each backlinkRelationships() as relationship (relationship.id)}<div class="relationship-detail-row">
+                      <button
+                        type="button"
+                        class="relationship-detail-copy related-item-trigger"
+                        data-entity-id={relationship.source_id}
+                        aria-label={`Preview ${relationshipSourceName(relationship)}`}>
+                        <strong>{relationshipSourceName(relationship)}</strong><small
+                          >{entityTypeLabel(
+                            entities.find((entity) => entity.id === relationship.source_id)?.entity_type ?? null,
+                          )} · {relationship.relationship_type}</small>
+                      </button>
+                    </div>{/each}
+                </div>{/if}
+            </InspectorSection>
+            {#if mapsEnabled()}<InspectorSection title="Maps" count={mapLocations.length} open={false}
+                ><section
+                  class="inspector-section inspector-section-plain map-contribution"
+                  aria-label="Maps contribution">
+                  <div class="section-title">
+                    <h3>Maps</h3>
+                    <span>{mapLocations.length}</span>
+                  </div>
+                  {#if mapLocations.length === 0}<small>No map links yet.</small
+                    >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
+                        <div>
+                          <strong>{location.label || location.role}</strong><small
+                            >{location.role} · {location.mapEntityId.slice(
+                              0,
+                              8,
+                            )}{#if location.resolution === "unresolved"}
+                              · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
+                        </div>
+                        <div>
+                          {#if location.resolution === "unresolved"}<span
+                              class="map-unresolved-note"
+                              title="The map feature this link pointed to was removed or renumbered."
+                              >Feature missing</span
+                            >{:else}<button
+                              class="quiet-button"
+                              type="button"
+                              onclick={() => void openMapLocation(location)}>Show on map</button
+                            >{/if}<button
                             class="quiet-button"
                             type="button"
-                            onclick={() => void openMapLocation(location)}>Show on map</button
-                          >{/if}<button
-                          class="quiet-button"
-                          type="button"
-                          onclick={() => void editMapLocation(location)}>Edit</button
-                        ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
-                          >Rebind</button
-                        ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
-                          >Unlink</button>
-                      </div>
-                    </div>{/each}{/if}
-              </section>{/if}
+                            onclick={() => void editMapLocation(location)}>Edit</button
+                          ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
+                            >Rebind</button
+                          ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
+                            >Unlink</button>
+                        </div>
+                      </div>{/each}{/if}
+                </section></InspectorSection
+              >{/if}
           {/snippet}
           <InspectorPane
             loading={selectedLoading}
             error={selectedLoadError}
             bind:element={inspectorPaneElement}
-            children={inspectorBody} />
-        {:else if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language"}
+            children={inspectorBody}
+            onRetry={() => void reloadSelectedFromDisk()} />
+        {:else if workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
           <InspectorPane bind:element={inspectorPaneElement} empty />
         {/if}
       </section>
@@ -7655,10 +7820,40 @@ onMount(() => {
 .projection-bar:empty {
   display: none;
 }
+.workbench-layout-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin: -14px 40px 12px;
+}
+.workbench-layout-controls > span {
+  margin-right: 3px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.workbench-layout-controls button {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 9px;
+}
+.workbench-layout-controls button:hover,
+.workbench-layout-controls button[aria-pressed="true"] {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
 .workspace-grid {
   display: grid;
   grid-template-columns: var(--collection-pane-width, 245px) minmax(360px, 1fr) var(--inspector-pane-width, 270px);
-  gap: 14px;
+  gap: 4px;
   padding: 0 40px 40px;
 }
 .workspace-grid-no-inspector {
@@ -7721,11 +7916,14 @@ onMount(() => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  min-height: 72px;
+  min-height: 58px;
+  gap: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
 }
 .editor-header h2 {
-  margin: 8px 0 0;
-  font: 500 28px/1.1 var(--font-display);
+  margin: 5px 0 0;
+  font: 500 22px/1.1 var(--font-display);
 }
 .editor-title {
   min-width: 0;
@@ -7743,7 +7941,41 @@ onMount(() => {
   padding: 0;
   display: inline-grid;
   place-items: center;
-  margin-top: 8px;
+  margin-top: 3px;
+}
+.editor-header-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 7px;
+}
+.document-mode-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--canvas);
+}
+.document-mode-toggle button {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+.document-mode-toggle button.active {
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+}
+.document-mode-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 .entity-edit-dialog {
   width: min(460px, 92vw);
@@ -7787,21 +8019,8 @@ onMount(() => {
 .dialog .new-form-heading + .dialog-body-copy {
   margin-top: 4px;
 }
-.document-conflict {
-  margin: -4px 0 16px;
-  padding: 13px 14px;
-  border: 1px solid var(--theme-warning-border, #e2b48c);
-  border-radius: 9px;
-  background: var(--theme-warning-bg, #fff5e9);
-  color: var(--theme-warning-text, #765a39);
-}
-.document-conflict strong {
-  font-size: 12px;
-}
-.document-conflict p {
-  margin: 5px 0 10px;
-  font-size: 11px;
-  line-height: 1.5;
+.conflict-workbench-actions {
+  width: min(560px, 100%);
 }
 .conflict-compare {
   margin: 8px 0 10px;
@@ -7986,13 +8205,6 @@ onMount(() => {
   display: flex;
   gap: 4px;
 }
-.editor-empty {
-  display: grid;
-  place-items: center;
-  min-height: 500px;
-  padding: 30px;
-  text-align: center;
-}
 .empty-mark,
 .disabled-icon {
   display: grid;
@@ -8003,17 +8215,6 @@ onMount(() => {
   background: var(--accent-bg);
   color: var(--accent);
   font-size: 23px;
-}
-.editor-empty h3 {
-  margin: 18px 0 6px;
-  font: 500 23px var(--font-display);
-}
-.editor-empty p {
-  max-width: 280px;
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.6;
 }
 .inspector-heading-actions {
   display: flex;
@@ -8261,6 +8462,21 @@ onMount(() => {
   padding: 18px 16px;
   border-bottom: 1px solid var(--line);
 }
+.inspector-section.inspector-section-plain {
+  padding: 9px 0 0;
+  border-bottom: 0;
+}
+.inspector-section.inspector-section-plain + .inspector-section.inspector-section-plain {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.inspector-group-empty {
+  margin: 8px 0 0;
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
 .inspector-section h3,
 .section-title h3 {
   margin: 0;
@@ -8323,6 +8539,22 @@ onMount(() => {
 }
 .relationship-detail-copy {
   min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.relationship-detail-copy:hover strong,
+.relationship-detail-copy:focus-visible strong {
+  color: var(--accent-dark);
+  text-decoration: underline;
+}
+.relationship-detail-copy:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid color-mix(in srgb, var(--accent-soft) 40%, transparent);
+  outline-offset: 3px;
 }
 .relationship-detail-copy strong,
 .relationship-detail-copy small {
@@ -9260,6 +9492,9 @@ onMount(() => {
   .projection-bar {
     margin-inline: 28px;
   }
+  .workbench-layout-controls {
+    margin-inline: 28px;
+  }
   .workspace-grid {
     grid-template-columns: 215px minmax(280px, 1fr);
     padding-inline: 28px;
@@ -9283,6 +9518,11 @@ onMount(() => {
   .projection-bar {
     margin: 0 17px 12px;
   }
+  .workbench-layout-controls {
+    justify-content: flex-start;
+    margin: 0 17px 10px;
+    overflow-x: auto;
+  }
   .workspace-grid {
     gap: 12px;
     padding: 0 17px 25px;
@@ -9291,6 +9531,9 @@ onMount(() => {
     min-height: 62px;
     gap: 10px;
   }
+  .editor-header-controls {
+    align-items: flex-end;
+  }
   .editor-footer {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -9298,9 +9541,6 @@ onMount(() => {
   .editor-footer > div {
     width: 100%;
     justify-content: flex-end;
-  }
-  .editor-empty {
-    min-height: 300px;
   }
   .date-fields {
     gap: 5px;

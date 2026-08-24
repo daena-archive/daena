@@ -30,6 +30,12 @@ function scheduleHide() {
   }, 150);
 }
 
+function openActiveEntity() {
+  const entity = activeEntity;
+  activeEntity = null;
+  if (entity) onOpen(entity);
+}
+
 async function showFor(target: HTMLElement) {
   const id = target.dataset.entityId;
   const entity = entities.find((candidate) => candidate.id === id && !candidate.deleted);
@@ -65,7 +71,7 @@ onMount(() => {
   const resolveTarget = (target: EventTarget | null) =>
     target instanceof Element
       ? target.closest<HTMLElement>(
-          "a[data-entity-id], .relationship-chip[data-entity-id], .relationship-detail-row[data-entity-id]",
+          "a[data-entity-id], .relationship-chip[data-entity-id], .related-item-trigger[data-entity-id]",
         )
       : null;
   const onMouseOver = (event: MouseEvent) => {
@@ -107,7 +113,7 @@ onMount(() => {
     {:else}
       <p class="entity-hover-empty">No document preview available.</p>
     {/if}
-    <button type="button" onclick={() => onOpen(activeEntity!)}>Open entity</button>
+    <button type="button" onclick={openActiveEntity}>Open fully</button>
   </section>
 {/if}
 

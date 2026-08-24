@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 
 const shell = await readFile(new URL("../src/routes/+page.svelte", import.meta.url), "utf8");
 const projectHome = await readFile(new URL("../src/lib/shell/ProjectHome.svelte", import.meta.url), "utf8");
+const globalToolbar = await readFile(new URL("../src/lib/shell/GlobalToolbar.svelte", import.meta.url), "utf8");
+const workspaceHeader = await readFile(new URL("../src/lib/shell/WorkspaceHeader.svelte", import.meta.url), "utf8");
 const workspaceViewNav = await readFile(new URL("../src/lib/shell/WorkspaceViewNav.svelte", import.meta.url), "utf8");
 const history = await readFile(new URL("../src/lib/navigation/history.ts", import.meta.url), "utf8");
 const plan = await readFile(new URL("../docs/BETA_UX_REDESIGN_TEMP.md", import.meta.url), "utf8");
@@ -49,10 +51,20 @@ assert.match(workspaceViewNav, /id: "manuscripts"/, "Writing Manuscripts is dire
 assert.match(workspaceViewNav, /id: "reference"/, "Writing Reference is directly reachable");
 assert.match(workspaceViewNav, /id: "library"/, "Lore Library is directly reachable from alternate Lore views");
 
-assert.match(shell, /aria-label="Go back"/, "the shell exposes Back navigation");
-assert.match(shell, /aria-label="Go forward"/, "the shell exposes Forward navigation");
+assert.match(shell, /<GlobalToolbar/, "the global toolbar is isolated from page orchestration");
+assert.match(globalToolbar, /aria-label="Go back"/, "the toolbar exposes Back navigation");
+assert.match(globalToolbar, /aria-label="Go forward"/, "the toolbar exposes Forward navigation");
+assert.match(shell, /<WorkspaceHeader/, "workspace orientation uses a shared header component");
+assert.match(workspaceHeader, /<h1>\{title\}<\/h1>/, "the workspace header owns its title hierarchy");
 assert.match(shell, /async function restoreShellLocation/, "history restoration is routed through the shell guards");
 assert.match(history, /SHELL_HISTORY_LIMIT = 40/, "navigation history has a defined memory bound");
+assert.match(history, /collection: WorkspaceCollectionLocation/, "workspace history includes collection context");
+assert.match(
+  shell,
+  /applyWorkspaceCollectionLocation\(target\.collection\)/,
+  "Back and Forward restore collection filters",
+);
+assert.match(shell, /onscroll=\{rememberCollectionScroll\}/, "collection scroll position is retained for history");
 assert.match(shell, />TOOLS</, "unowned plugin views are grouped as tools rather than primary workspaces");
 
 assert.doesNotMatch(shell, />Open wiki</, "workspace views are no longer duplicated as heading actions");

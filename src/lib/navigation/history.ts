@@ -1,7 +1,19 @@
-import type { SettingsSection, TimelineView, WorkspaceSection, WritingView } from "$lib/modules/workspace";
+import type {
+  CollectionQuery,
+  SettingsSection,
+  TimelineView,
+  WorkspaceSection,
+  WritingView,
+} from "$lib/modules/workspace";
 
 export type WorkspaceLocationView =
   "library" | "wiki" | "graph" | "timeline" | "events" | "eras" | "calendars" | "manuscripts" | "reference" | "default";
+
+export interface WorkspaceCollectionLocation {
+  query: Omit<CollectionQuery, "section">;
+  expandedGroups: string[];
+  scrollTop: number;
+}
 
 export type ShellLocation =
   | { kind: "home" }
@@ -13,6 +25,7 @@ export type ShellLocation =
       entityId: string | null;
       writingView: WritingView;
       timelineView: TimelineView;
+      collection: WorkspaceCollectionLocation;
     }
   | {
       kind: "plugin";
@@ -41,14 +54,17 @@ export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "home") return "home";
   if (location.kind === "settings") return `settings:${location.section}`;
   if (location.kind === "plugin") return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}`;
-  return [
-    "workspace",
-    location.section,
-    location.view,
-    location.entityId ?? "",
-    location.writingView,
-    location.timelineView,
-  ].join(":");
+  return `workspace:${JSON.stringify({
+    section: location.section,
+    view: location.view,
+    entityId: location.entityId,
+    writingView: location.writingView,
+    timelineView: location.timelineView,
+    collection: {
+      ...location.collection,
+      scrollTop: Math.round(location.collection.scrollTop),
+    },
+  })}`;
 }
 
 export function sameShellLocation(left: ShellLocation, right: ShellLocation): boolean {

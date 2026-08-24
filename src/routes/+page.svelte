@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onMount, tick } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
@@ -42,6 +42,7 @@ import {
   shellHistoryForward,
   type ShellLocation,
   type ShellNavigationHistory,
+  type WorkspaceCollectionLocation,
   type WorkspaceLocationView,
 } from "$lib/navigation/history";
 import {
@@ -72,6 +73,8 @@ import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
 import ProjectHome from "$lib/shell/ProjectHome.svelte";
+import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
+import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
 import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
@@ -114,8 +117,6 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
-  ArrowLeft,
-  ArrowRight,
   UsersRound,
   Sword,
   TreePine,
@@ -249,6 +250,10 @@ let collectionLoading = $state(false);
 let collectionError = $state("");
 let collectionRequest = 0;
 let collectionScopeKey = "";
+let collectionQueryRestoring = false;
+let collectionListElement = $state<HTMLDivElement | null>(null);
+let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
+let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
 
 $effect(() => {
   const q = collectionQuery;
@@ -259,8 +264,12 @@ $effect(() => {
 });
 
 $effect(() => {
+  collectionQueryRestoring = true;
   collectionQuery = loadCollectionQuery(section);
   expandedGroups = new Set();
+  void tick().then(() => {
+    collectionQueryRestoring = false;
+  });
 });
 let name = $state("");
 let selectedCreateKey = $state("");
@@ -1271,6 +1280,46 @@ function currentWorkspaceLocationView(): WorkspaceLocationView {
   return "default";
 }
 
+function currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
+  const pendingScrollTop = pendingCollectionScroll?.section === section ? pendingCollectionScroll.scrollTop : null;
+  return {
+    query: {
+      textSearch: collectionQuery.textSearch,
+      sortField: collectionQuery.sortField,
+      sortDir: collectionQuery.sortDir,
+      pageSize: collectionQuery.pageSize,
+      page: collectionQuery.page,
+      excludedTypes: [...collectionQuery.excludedTypes].sort(),
+      viewMode: collectionQuery.viewMode,
+    },
+    expandedGroups: [...expandedGroups].sort(),
+    scrollTop: pendingScrollTop ?? collectionListElement?.scrollTop ?? collectionScrollBySection[section] ?? 0,
+  };
+}
+
+function rememberCollectionScroll() {
+  if (!collectionListElement) return;
+  collectionScrollBySection[section] = collectionListElement.scrollTop;
+}
+
+function queueCollectionScroll(target: WorkspaceSection, scrollTop: number) {
+  collectionScrollBySection[target] = scrollTop;
+  pendingCollectionScroll = { section: target, scrollTop };
+}
+
+async function applyWorkspaceCollectionLocation(location: WorkspaceCollectionLocation) {
+  collectionQueryRestoring = true;
+  collectionQuery = {
+    section,
+    ...location.query,
+    excludedTypes: [...location.query.excludedTypes],
+  };
+  expandedGroups = new Set(location.expandedGroups);
+  queueCollectionScroll(section, location.scrollTop);
+  await tick();
+  collectionQueryRestoring = false;
+}
+
 function currentShellLocation(): ShellLocation {
   if (showSettings) return { kind: "settings", section: settingsSection };
   if (projectHomeOpen) return { kind: "home" };
@@ -1297,6 +1346,7 @@ function currentShellLocation(): ShellLocation {
     entityId: selected?.id ?? null,
     writingView,
     timelineView,
+    collection: currentWorkspaceCollectionLocation(),
   };
 }
 
@@ -1632,7 +1682,7 @@ $effect(() => {
     collectionQuery.pageSize,
     collectionQuery.excludedTypes,
   ]);
-  if (collectionScopeKey && collectionScopeKey !== scopeKey) {
+  if (collectionScopeKey && collectionScopeKey !== scopeKey && !collectionQueryRestoring) {
     collectionPage = emptyEntityPage();
     if (collectionQuery.page !== 0) collectionQuery.page = 0;
   }
@@ -1693,6 +1743,30 @@ $effect(() => {
     query ? 180 : 0,
   );
   return () => window.clearTimeout(timer);
+});
+
+$effect(() => {
+  const pending = pendingCollectionScroll;
+  void collectionPage.items;
+  if (
+    !pending ||
+    collectionLoading ||
+    collectionQuery.section !== pending.section ||
+    section !== pending.section ||
+    projectHomeOpen ||
+    showSettings ||
+    hostView ||
+    sandboxView ||
+    projectionView ||
+    loreWikiOpen
+  )
+    return;
+  pendingCollectionScroll = null;
+  void tick().then(() => {
+    if (!collectionListElement || section !== pending.section) return;
+    collectionListElement.scrollTop = pending.scrollTop;
+    collectionScrollBySection[pending.section] = collectionListElement.scrollTop;
+  });
 });
 
 function toggleTypeFilter(type: string) {
@@ -1771,6 +1845,7 @@ async function switchSection(next: WorkspaceSection) {
   recordShellDeparture(departure);
   const sectionChanged = section !== next;
   section = next;
+  queueCollectionScroll(next, collectionScrollBySection[next] ?? 0);
   projectHomeOpen = false;
   if (sectionChanged) {
     clearSelection();
@@ -1840,6 +1915,46 @@ function sectionLabel() {
         : section === "language"
           ? "Languages"
           : "Maps";
+}
+
+function breadcrumbItems() {
+  const items = ["Private studio", sectionLabel()];
+  if (section === "writing" && !projectHomeOpen)
+    items.push(writingView === "manuscripts" ? "Manuscripts" : "Reference pages");
+  if (section === "timeline" && !projectHomeOpen)
+    items.push(timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events");
+  if (selected && !projectHomeOpen && !showSettings) items.push(selected.name);
+  return items;
+}
+
+function workspaceHeadingKicker() {
+  return section === "lore"
+    ? "WORLD BIBLE"
+    : section === "timeline"
+      ? "CHRONOLOGY"
+      : section === "maps"
+        ? "MAP ATLAS"
+        : section === "language"
+          ? "LANGUAGE WORKSHOP"
+          : "DRAFTING DESK";
+}
+
+function workspaceHeadingDescription() {
+  return section === "lore"
+    ? "A living reference for every person, place, and power."
+    : section === "timeline"
+      ? timelineView === "eras"
+        ? "Named periods of history, independent of any one calendar."
+        : timelineView === "calendars"
+          ? "Optional ways to name years, months, weeks, and seasons."
+          : "Events, eras, and the threads that connect them."
+      : section === "maps"
+        ? "Keep every map beside its notes, links, and provider source."
+        : section === "language"
+          ? "Words, sounds, writing, and grammar for every language of your world."
+          : writingView === "manuscripts"
+            ? "Draft stories, essays, and other long-form work."
+            : "Build the pages, notes, and references behind the story.";
 }
 
 function collectionLabel() {
@@ -2022,6 +2137,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       } else if (target.section === "writing") {
         await switchWritingView(target.writingView);
       }
+      await tick();
+      await applyWorkspaceCollectionLocation(target.collection);
       const restoredEntity = await restoreShellEntity(target.entityId);
       if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
         await openWorkspaceView(target.view);
@@ -2035,13 +2152,25 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
   }
 }
 
+function shellLocationAvailable(target: ShellLocation) {
+  if (target.kind === "workspace") return enabledWorkspaceSections().includes(target.section);
+  if (target.kind === "plugin") return pluginNavigationItemByKey(target.key) !== null;
+  return true;
+}
+
 async function navigateShellHistory(direction: "back" | "forward") {
   if (shellNavigationBusy) return;
   const current = currentShellLocation();
-  const transition =
-    direction === "back"
-      ? shellHistoryBack(shellNavigationHistory, current)
-      : shellHistoryForward(shellNavigationHistory, current);
+  let history = shellNavigationHistory;
+  let transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
+  while (transition && !shellLocationAvailable(transition.target)) {
+    history =
+      direction === "back"
+        ? { ...history, back: history.back.slice(0, -1) }
+        : { ...history, forward: history.forward.slice(1) };
+    shellNavigationHistory = history;
+    transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
+  }
   if (!transition) return;
   shellNavigationBusy = true;
   try {
@@ -4515,6 +4644,9 @@ function resetProjectSessionState() {
   clearSelection();
   shellNavigationHistory = emptyShellNavigationHistory();
   shellNavigationBusy = false;
+  collectionScrollBySection = {};
+  pendingCollectionScroll = null;
+  collectionQueryRestoring = false;
   projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
@@ -5007,44 +5139,16 @@ onMount(() => {
   </aside>
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
-    <header class:startup-topbar={!ready} class="topbar">
-      <div class="topbar-leading">
-        {#if ready}
-          <div class="history-actions" aria-label="Navigation history">
-            <button
-              type="button"
-              aria-label="Go back"
-              title="Go back"
-              disabled={shellNavigationBusy || shellNavigationHistory.back.length === 0}
-              onclick={() => void navigateShellHistory("back")}
-              ><ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
-            <button
-              type="button"
-              aria-label="Go forward"
-              title="Go forward"
-              disabled={shellNavigationBusy || shellNavigationHistory.forward.length === 0}
-              onclick={() => void navigateShellHistory("forward")}
-              ><ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
-          </div>
-        {/if}
-        <div class="breadcrumbs" aria-label="Breadcrumb">
-          <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong
-          >{#if section === "writing" && !projectHomeOpen}<i>/</i><span
-              >{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span
-            >{/if}{#if section === "timeline" && !projectHomeOpen}<i>/</i><span
-              >{timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events"}</span
-            >{/if}{#if selected && !projectHomeOpen && !showSettings}<i>/</i><span>{selected.name}</span>{/if}
-        </div>
-      </div>
-      <div class="top-actions">
-        {#if ready}<label class="global-search"
-            ><span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
-              aria-label="Search your world"
-              bind:value={globalQuery}
-              placeholder="Search whole world" /></label
-          ><span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>{/if}
-      </div>
-    </header>
+    <GlobalToolbar
+      {ready}
+      breadcrumbs={breadcrumbItems()}
+      query={globalQuery}
+      navigationBusy={shellNavigationBusy}
+      canGoBack={shellNavigationHistory.back.length > 0}
+      canGoForward={shellNavigationHistory.forward.length > 0}
+      onQueryChange={(query) => (globalQuery = query)}
+      onBack={() => void navigateShellHistory("back")}
+      onForward={() => void navigateShellHistory("forward")} />
     {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results">
         <div class="search-modal-heading">
           <strong>Search results</strong><button
@@ -5849,59 +5953,32 @@ onMount(() => {
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
         </div>{/if}
       {#if !mapSurfaceOpen}
-        <div class="workspace-heading">
-          <div>
-            <span class="overline"
-              >{section === "lore"
-                ? "WORLD BIBLE"
-                : section === "timeline"
-                  ? "CHRONOLOGY"
-                  : section === "maps"
-                    ? "MAP ATLAS"
-                    : section === "language"
-                      ? "LANGUAGE WORKSHOP"
-                      : "DRAFTING DESK"}</span>
-            <h1>{sectionLabel()}</h1>
-            <p>
-              {section === "lore"
-                ? "A living reference for every person, place, and power."
-                : section === "timeline"
-                  ? timelineView === "eras"
-                    ? "Named periods of history, independent of any one calendar."
-                    : timelineView === "calendars"
-                      ? "Optional ways to name years, months, weeks, and seasons."
-                      : "Events, eras, and the threads that connect them."
-                  : section === "maps"
-                    ? "Keep every map beside its notes, links, and provider source."
-                    : section === "language"
-                      ? "Words, sounds, writing, and grammar for every language of your world."
-                      : writingView === "manuscripts"
-                        ? "Draft stories, essays, and other long-form work."
-                        : "Build the pages, notes, and references behind the story."}
-            </p>
-          </div>
-          <div class="heading-actions">
-            {#if section === "maps"}<div class="map-provider-create">
-                <button
-                  class="primary-button"
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded={mapProviderMenuOpen === "header"}
-                  onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
-                  >Create map</button>
-                {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
-                    <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                      >Create physical world</button>
-                    <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
-                    <button type="button" role="menuitem" disabled>Import image</button>
-                    <button type="button" role="menuitem" disabled>Import vector map</button>
-                  </div>{/if}
-              </div>{/if}
-            {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
-                >Create language</button
-              >{/if}
-          </div>
-        </div>
+        {#snippet workspaceHeaderActions()}
+          {#if section === "maps"}<div class="map-provider-create">
+              <button
+                class="primary-button"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={mapProviderMenuOpen === "header"}
+                onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
+                >Create map</button>
+              {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
+                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                    >Create physical world</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
+                  <button type="button" role="menuitem" disabled>Import image</button>
+                  <button type="button" role="menuitem" disabled>Import vector map</button>
+                </div>{/if}
+            </div>{/if}
+          {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
+              >Create language</button
+            >{/if}
+        {/snippet}
+        <WorkspaceHeader
+          kicker={workspaceHeadingKicker()}
+          title={sectionLabel()}
+          description={workspaceHeadingDescription()}
+          actions={section === "maps" || section === "language" ? workspaceHeaderActions : undefined} />
       {/if}
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
@@ -6013,7 +6090,7 @@ onMount(() => {
                 </fieldset>
               </div>{/if}
           </div>
-          <div class="collection-list">
+          <div class="collection-list" bind:this={collectionListElement} onscroll={rememberCollectionScroll}>
             {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
             {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
                 Loading {collectionLabel()}…
@@ -7399,113 +7476,6 @@ onMount(() => {
   flex-direction: column;
   overflow: hidden;
 }
-.app-main.sandbox-active > .topbar {
-  flex: 0 0 auto;
-}
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 58px;
-  padding: 0 40px 0;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
-}
-.topbar-leading,
-.history-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-}
-.topbar-leading {
-  gap: 12px;
-}
-.history-actions {
-  flex: 0 0 auto;
-  gap: 3px;
-}
-.history-actions button {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-.history-actions button:hover:not(:disabled) {
-  border-color: var(--line);
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.history-actions button:disabled {
-  color: var(--ink-faint);
-  cursor: default;
-  opacity: 0.42;
-}
-.breadcrumbs,
-.top-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.breadcrumbs {
-  min-width: 0;
-  color: var(--ink-faint);
-  font-size: 12px;
-}
-.breadcrumbs strong {
-  color: var(--ink-soft);
-}
-.breadcrumbs span:last-child {
-  overflow: hidden;
-  max-width: 180px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.breadcrumbs i {
-  color: #d0ccc2;
-  font-style: normal;
-}
-.global-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 230px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink-faint);
-}
-.global-search input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 12px;
-}
-.sync-badge {
-  color: var(--ink-faint);
-  font-size: 10px;
-}
-.sync-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-}
-.sync-badge span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #72a97a;
-}
 .disabled-state {
   max-width: 1080px;
   min-height: calc(100vh - 58px);
@@ -7514,9 +7484,6 @@ onMount(() => {
   display: flex;
   align-items: center;
   gap: 8vw;
-}
-.startup-topbar {
-  display: none;
 }
 .welcome {
   position: relative;
@@ -7721,22 +7688,6 @@ onMount(() => {
   box-shadow: none;
   transform: none;
 }
-.workspace-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 32px 40px 25px;
-}
-.workspace-heading h1 {
-  margin: 8px 0 4px;
-  font: 500 38px/1 var(--font-display);
-}
-.workspace-heading p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 13px;
-}
 :global(.module-mount.language-mount) {
   display: flex;
   flex-direction: column;
@@ -7751,10 +7702,6 @@ onMount(() => {
   height: 100%;
   min-height: 0;
   flex: 1;
-}
-.heading-actions {
-  display: flex;
-  gap: 7px;
 }
 .projection-bar {
   min-height: 42px;
@@ -7785,9 +7732,6 @@ onMount(() => {
   height: 100vh;
   flex-direction: column;
   overflow: hidden;
-}
-.app-main.map-surface-open > .topbar {
-  flex: 0 0 auto;
 }
 .workspace-grid.map-surface-expanded {
   display: grid;
@@ -8884,17 +8828,6 @@ onMount(() => {
   .project-menu .rail-button span:not(.rail-icon) {
     display: inline;
   }
-  .topbar {
-    min-height: 58px;
-    padding: 0 17px;
-  }
-  .breadcrumbs span:first-child,
-  .sync-badge {
-    display: none;
-  }
-  .global-search {
-    width: 150px;
-  }
   .welcome {
     min-height: 720px;
     align-items: flex-start;
@@ -8936,16 +8869,6 @@ onMount(() => {
     bottom: 48px;
     width: 235px;
     padding: 21px;
-  }
-  .workspace-heading {
-    display: block;
-    padding: 30px 17px 18px;
-  }
-  .workspace-heading h1 {
-    font-size: 33px;
-  }
-  .heading-actions {
-    margin-top: 18px;
   }
   .projection-bar {
     margin: 0 17px 12px;
@@ -9689,12 +9612,6 @@ onMount(() => {
   overscroll-behavior: contain;
   z-index: 1;
 }
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 4;
-  backdrop-filter: blur(14px);
-}
 .workspace-grid > * {
   min-width: 0;
 }
@@ -9717,14 +9634,12 @@ onMount(() => {
   overflow-wrap: anywhere;
 }
 .collection-search,
-.global-search,
 .property-field input {
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease;
 }
-.collection-search:focus-within,
-.global-search:focus-within {
+.collection-search:focus-within {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
@@ -9807,12 +9722,6 @@ onMount(() => {
 }
 
 @media (max-width: 1040px) {
-  .topbar {
-    padding-inline: 28px;
-  }
-  .workspace-heading {
-    padding: 36px 28px 23px;
-  }
   .projection-bar {
     margin-inline: 28px;
   }
@@ -9855,24 +9764,6 @@ onMount(() => {
   .workspace-nav .rail-button span:not(.rail-icon) {
     display: inline;
   }
-  .topbar {
-    position: relative;
-    align-items: stretch;
-    flex-direction: column;
-    gap: 10px;
-    min-height: 0;
-    padding: 12px 17px;
-  }
-  .breadcrumbs {
-    width: 100%;
-  }
-  .top-actions {
-    width: 100%;
-  }
-  .global-search {
-    flex: 1;
-    width: auto;
-  }
   .search-modal {
     top: 105px;
     right: 17px;
@@ -9888,19 +9779,6 @@ onMount(() => {
   }
   .welcome p {
     font-size: 14px;
-  }
-  .workspace-heading {
-    padding: 28px 17px 18px;
-  }
-  .workspace-heading h1 {
-    font-size: clamp(31px, 10vw, 38px);
-  }
-  .workspace-heading p {
-    max-width: 38ch;
-    line-height: 1.5;
-  }
-  .heading-actions {
-    width: 100%;
   }
   .projection-bar {
     margin: 0 17px 12px;
@@ -10548,15 +10426,7 @@ onMount(() => {
 .empty-create:hover {
   background: var(--warning-line);
 }
-@media (max-width: 1040px) {
-  .workspace-heading {
-    padding: 28px 28px 16px;
-  }
-}
 @media (max-width: 760px) {
-  .workspace-heading {
-    padding: 20px 17px 12px;
-  }
   .list-empty {
     min-height: 260px;
     padding: 28px 14px 32px;

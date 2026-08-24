@@ -9,6 +9,19 @@ import {
 } from "../src/lib/navigation/history.ts";
 
 const home = { kind: "home" };
+const collection = {
+  query: {
+    textSearch: "",
+    sortField: "updated_at",
+    sortDir: "desc",
+    pageSize: 25,
+    page: 0,
+    excludedTypes: [],
+    viewMode: "grouped",
+  },
+  expandedGroups: [],
+  scrollTop: 0,
+};
 const lore = {
   kind: "workspace",
   section: "lore",
@@ -16,6 +29,7 @@ const lore = {
   entityId: null,
   writingView: "manuscripts",
   timelineView: "events",
+  collection,
 };
 const graph = { ...lore, view: "graph" };
 const settings = { kind: "settings", section: "git" };
@@ -25,6 +39,21 @@ history = recordShellLocation(history, home);
 history = recordShellLocation(history, lore);
 history = recordShellLocation(history, lore);
 assert.deepEqual(history.back, [home, lore], "recording the same departure twice does not add a dead history step");
+
+const filteredLore = {
+  ...lore,
+  collection: {
+    ...collection,
+    query: { ...collection.query, textSearch: "harbor", excludedTypes: ["person"] },
+    expandedGroups: ["place"],
+    scrollTop: 184,
+  },
+};
+assert.equal(
+  sameShellLocation(lore, filteredLore),
+  false,
+  "filter and scroll context are part of a workspace location",
+);
 
 const back = shellHistoryBack(history, graph);
 assert.ok(back, "Back is available after locations have been recorded");

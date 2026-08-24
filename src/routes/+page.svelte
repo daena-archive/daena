@@ -73,6 +73,7 @@ import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
 import ProjectHome from "$lib/shell/ProjectHome.svelte";
+import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
 import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
@@ -94,24 +95,10 @@ import timelineManifestJson from "../../packages/modules/timeline/manifest.json"
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import {
-  Library,
-  Home,
-  CalendarRange,
   Pencil,
-  Languages,
   Map as MapIcon,
-  FolderOpen,
-  Download,
-  Import as ImportIcon,
-  DatabaseZap,
-  FlaskConical,
-  LogOut,
   Plus,
   Puzzle,
-  GitBranch,
-  Settings as SettingsIcon,
-  PanelLeftClose,
-  PanelLeftOpen,
   ShieldCheck,
   X,
   Search,
@@ -163,7 +150,6 @@ type WorkspaceNavigationItem = {
   key: string;
   section: WorkspaceSection;
   title: string;
-  icon: any;
   beta: boolean;
   renderer: "workspace" | "maps";
   view?: PluginAdminEntry["views"][number];
@@ -587,13 +573,6 @@ function enabledWorkspaceSections() {
     modules.some((module) => module.id === workspaceModuleId(target) && module.enabled),
   );
 }
-function sectionIcon(target: WorkspaceSection) {
-  if (target === "lore") return Library;
-  if (target === "timeline") return CalendarRange;
-  if (target === "writing") return Pencil;
-  if (target === "language") return Languages;
-  return MapIcon;
-}
 function workspaceSectionLabel(target: WorkspaceSection) {
   return target === "lore"
     ? "Lore library"
@@ -665,7 +644,6 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
         key: `workspace:${plugin.id}`,
         section: target,
         title: workspaceSectionLabel(target),
-        icon: sectionIcon(target),
         beta: target === "maps",
         renderer: target === "maps" && view ? "maps" : "workspace",
         ...(view ? { view } : {}),
@@ -1430,6 +1408,16 @@ async function openNavigationItem(item: NavigationItem) {
     return;
   }
   await openPluginView(item);
+}
+
+function openSidebarNavigationItem(key: string) {
+  const item = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
+  if (item) void openNavigationItem(item);
+}
+
+function updateRailCollapsed(collapsed: boolean) {
+  railCollapsed = collapsed;
+  localStorage.setItem("daena:rail-collapsed", String(collapsed));
 }
 
 async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
@@ -4962,181 +4950,48 @@ onMount(() => {
       </div>
     </div>
   {/if}
-  <aside
-    class:startup-rail={!ready}
-    class:rail-collapsed={railCollapsed && ready}
-    class:menu-open={railCollapsed && ready && showProjectMenu}
-    class="rail">
-    <div class="brand">
-      {#if railCollapsed && ready}
-        <img class="brand-icon" src="/branding/icon.png" alt="Daena" />
-      {:else}
-        <img class="brand-logo" src={logoUrl} alt="Daena Archive" />
-      {/if}
-    </div>
-    {#if !ready}
-      <div class="startup-actions">
-        <button class="rail-button startup-primary" onclick={openProjectDirectory}
-          ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open project folder</span
-          ></button>
-      </div>
-      {#if recentProjects.length > 0}
-        <div class="rail-label recent-label">RECENT PROJECTS</div>
-        <div class="recent-projects">
-          {#each recentProjects as recent}<div class="recent-project">
-              <button class="recent-project-open" onclick={() => openRecentProject(recent.root)}
-                ><span class="project-dot"></span><span><strong>{recent.name}</strong><small>{recent.root}</small></span
-                ></button
-              ><button
-                class="recent-project-remove"
-                aria-label={`Remove ${recent.name} from recent projects`}
-                title="Remove from recent projects"
-                onclick={() => removeRecentProject(recent.root)}
-                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-            </div>{/each}
-        </div>
-      {/if}
-    {:else}
-      <div class="project-switcher">
-        <button
-          type="button"
-          aria-expanded={showProjectMenu}
-          aria-haspopup="menu"
-          class:active={showProjectMenu}
-          class="project-card"
-          onclick={() => (showProjectMenu = !showProjectMenu)}>
-          <span class:online={ready} class="project-dot"></span>
-          <span class="project-copy"><strong>{projectInfo?.name ?? "Local project"}</strong></span>
-          <span class="project-chevron" aria-hidden="true"
-            ><ChevronDown size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-        </button>
-        {#if showProjectMenu}
-          {#if railCollapsed}<button
-              class="rail-backdrop"
-              aria-label="Close menu"
-              onclick={() => (showProjectMenu = false)}></button
-            >{/if}
-          <div class="project-menu" role="menu">
-            <button class="rail-button" role="menuitem" onclick={openProjectDirectory}
-              ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open another folder</span
-              ></button>
-            <button class="rail-button" role="menuitem" onclick={() => void exportMarkdownProject()}
-              ><span class="rail-icon"><Download size={16} strokeWidth={1.8} /></span><span>Export Markdown</span
-              ></button>
-            <button class="rail-button" role="menuitem" onclick={openExternalImport}
-              ><span class="rail-icon"><ImportIcon size={16} strokeWidth={1.8} /></span><span
-                >Import external material</span
-              ></button>
-            <button class="rail-button" role="menuitem" onclick={() => void rebuildSearchIndex()}
-              ><span class="rail-icon"><DatabaseZap size={16} strokeWidth={1.8} /></span><span>Rebuild index</span
-              ></button>
-            <button class="rail-button" role="menuitem" onclick={seedExample}
-              ><span class="rail-icon"><FlaskConical size={16} strokeWidth={1.8} /></span><span>Seed example</span
-              ></button>
-            <button class="rail-button" role="menuitem" onclick={closeProject}
-              ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>Close project</span></button>
-          </div>
-        {/if}
-      </div>
-      <button
-        type="button"
-        aria-current={projectHomeOpen && !showSettings ? "page" : undefined}
-        class:active={projectHomeOpen && !showSettings}
-        class="rail-button rail-home-button"
-        onclick={() => void openProjectHome()}>
-        <span class="rail-icon"><Home size={16} strokeWidth={1.8} aria-hidden="true" /></span><span>Home</span>
-      </button>
-      {#if enabledWorkspaceSections().length > 0}<button
-          aria-expanded={showCreateForm}
-          class="rail-create-button"
-          title="New entry"
-          onclick={toggleCreateForm}
-          ><span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>New entry</span></button
-        >{/if}
-      {#if workspaceNavigationItems().length > 0}
-        <div class="rail-label">WORKSPACE</div>
-        <nav class="workspace-nav" aria-label="Workspace sections">
-          {#each workspaceNavigationItems() as item (item.key)}
-            {@const Icon = item.icon}
-            <button
-              title={item.beta ? `${item.title} · Beta plugin — may be unstable` : item.title}
-              aria-current={navigationActive(item) ? "page" : undefined}
-              class:active={navigationActive(item)}
-              class="rail-button"
-              onclick={() => void openNavigationItem(item)}
-              >{#if item.section === "lore"}
-                <span class="rail-icon"><Library size={16} strokeWidth={1.8} /></span>
-              {:else if item.section === "timeline"}
-                <span class="rail-icon"><CalendarRange size={16} strokeWidth={1.8} /></span>
-              {:else if item.section === "writing"}
-                <span class="rail-icon"><Pencil size={16} strokeWidth={1.8} /></span>
-              {:else if item.section === "language"}
-                <span class="rail-icon"><Languages size={16} strokeWidth={1.8} /></span>
-              {:else if item.section === "maps"}
-                <span class="rail-icon"><MapIcon size={16} strokeWidth={1.8} /></span>
-              {:else}
-                <span class="rail-icon"><Icon size={16} strokeWidth={1.8} /></span>
-              {/if}<span
-                >{item.title}{#if item.beta}<em class="workspace-beta">Beta</em>{/if}</span
-              ></button>
-          {/each}
-        </nav>
-      {/if}
-      {#if pluginViews().length > 0}
-        <div class="rail-label plugin-views-label">TOOLS</div>
-        <nav class="workspace-nav" aria-label="Plugin views">
-          {#each pluginViews() as item (item.key)}
-            <div class="plugin-nav-row">
-              <button
-                class:active={navigationActive(item)}
-                class="rail-button"
-                title={pluginViewLabel(item)}
-                aria-current={navigationActive(item) ? "page" : undefined}
-                aria-label={`Open ${item.plugin.name}: ${item.view.title}`}
-                onclick={() => void openNavigationItem(item)}
-                ><span class="rail-icon"><Puzzle size={16} strokeWidth={1.8} /></span><span class="plugin-nav-title"
-                  >{pluginViewLabel(item)}</span
-                ></button>
-            </div>
-          {/each}
-        </nav>
-      {/if}
-    {/if}
-    <div class="rail-spacer"></div>
-    {#if ready}
-      <button
-        class="rail-button muted-button rail-git-button"
-        title={gitMessage ||
-          (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
-        onclick={() => void openSettings("git")}
-        ><span class="rail-icon"><GitBranch size={16} strokeWidth={1.8} /></span><span>Snapshots</span
-        >{#if gitStatus?.repository && gitStatus.canonical_changes.length > 0}<small class="rail-git-count"
-            >{gitStatus.canonical_changes.length}</small
-          >{/if}</button>
-    {/if}
-    <button
-      aria-expanded={showSettings}
-      class:active={showSettings}
-      class="rail-button muted-button"
-      title="Settings"
-      onclick={() => void openSettings()}
-      ><span class="rail-icon"><SettingsIcon size={16} strokeWidth={1.8} /></span><span>Settings</span></button>
-    {#if ready}<button
-        class="rail-button muted-button rail-collapse-toggle"
-        aria-label={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        title={railCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-        onclick={() => {
-          railCollapsed = !railCollapsed;
-          localStorage.setItem("daena:rail-collapsed", String(railCollapsed));
-        }}
-        ><span class="rail-icon"
-          >{#if railCollapsed}<PanelLeftOpen size={16} strokeWidth={1.8} />{:else}<PanelLeftClose
-              size={16}
-              strokeWidth={1.8} />{/if}</span
-        ><span>{railCollapsed ? "Expand" : "Collapse"}</span></button
-      >{/if}
-    <div class="rail-footer">v{displayVersion}</div>
-  </aside>
+  <AppSidebar
+    {ready}
+    collapsed={railCollapsed}
+    projectMenuOpen={showProjectMenu}
+    projectName={projectInfo?.name ?? "Local project"}
+    {recentProjects}
+    workspaces={workspaceNavigationItems().map((item) => ({
+      key: item.key,
+      section: item.section,
+      title: item.title,
+      beta: item.beta,
+      active: navigationActive(item),
+    }))}
+    tools={pluginViews().map((item) => ({
+      key: item.key,
+      title: pluginViewLabel(item),
+      ariaLabel: `Open ${item.plugin.name}: ${item.view.title}`,
+      active: navigationActive(item),
+    }))}
+    homeActive={projectHomeOpen && !showSettings}
+    createOpen={showCreateForm}
+    snapshotsTitle={gitMessage ||
+      (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
+    snapshotChangeCount={gitStatus?.repository ? gitStatus.canonical_changes.length : 0}
+    settingsActive={showSettings}
+    version={displayVersion}
+    onOpenProject={openProjectDirectory}
+    onOpenRecent={(root) => void openRecentProject(root)}
+    onRemoveRecent={removeRecentProject}
+    onProjectMenuChange={(open) => (showProjectMenu = open)}
+    onExportMarkdown={() => void exportMarkdownProject()}
+    onImportExternal={openExternalImport}
+    onRebuildIndex={() => void rebuildSearchIndex()}
+    onSeedExample={seedExample}
+    onCloseProject={closeProject}
+    onOpenHome={() => void openProjectHome()}
+    onCreate={toggleCreateForm}
+    onOpenWorkspace={openSidebarNavigationItem}
+    onOpenTool={openSidebarNavigationItem}
+    onOpenSnapshots={() => void openSettings("git")}
+    onOpenSettings={() => void openSettings()}
+    onCollapsedChange={updateRailCollapsed} />
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
     <GlobalToolbar
@@ -7123,349 +6978,6 @@ onMount(() => {
   min-height: 100vh;
   display: flex;
 }
-.rail {
-  width: 248px;
-  flex: 0 0 248px;
-  display: flex;
-  flex-direction: column;
-  padding: 25px 15px 18px;
-  background: #283a30;
-  color: #eef0e9;
-  transition:
-    width 0.2s ease,
-    flex-basis 0.2s ease,
-    padding 0.2s ease;
-}
-.rail-collapsed.menu-open {
-  overflow: visible;
-}
-.startup-rail {
-  padding-top: 34px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 0 10px 40px;
-}
-.rail:not(.startup-rail) .brand {
-  padding-bottom: 20px;
-}
-.brand-mark {
-  display: grid;
-  place-items: start center;
-  width: 31px;
-  height: 31px;
-  overflow: hidden;
-  border-radius: 9px;
-  background: #d5ab6c;
-}
-.project-card strong,
-.recent-project strong,
-.recent-project small {
-  display: block;
-}
-.recent-project small {
-  margin-top: 3px;
-  color: var(--theme-neutral-text-muted, #aab9ad);
-  font-size: 11px;
-}
-.rail-label {
-  margin: 0 10px 9px;
-  color: var(--theme-neutral-text-muted, #819688);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-}
-.recent-label {
-  margin-top: 27px;
-}
-.rail-button {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 10px 11px;
-  margin-bottom: 3px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #b9c8bc;
-  text-align: left;
-  cursor: pointer;
-}
-.rail-button:hover,
-.rail-button.active {
-  background: #3b5243;
-  color: #fff;
-}
-.startup-primary {
-  margin-top: 8px;
-  background: #d5ab6c;
-  color: var(--brass-ink);
-  font-weight: 700;
-}
-.startup-primary:hover {
-  background: #e1bc82;
-  color: var(--brass-ink);
-}
-.rail-icon {
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--theme-warning-text, #d5ab6c);
-  flex: 0 0 18px;
-}
-.startup-primary .rail-icon {
-  color: var(--brass-ink);
-}
-.muted-button {
-  color: var(--theme-neutral-text-muted, #91a397);
-}
-.rail-git-button {
-  position: relative;
-}
-.rail-git-count {
-  display: grid;
-  place-items: center;
-  min-width: 18px;
-  height: 18px;
-  margin-left: auto;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: #d5ab6c;
-  color: var(--brass-ink);
-  font-size: 10px;
-  font-weight: 800;
-}
-.rail-spacer {
-  flex: 1;
-}
-.rail-footer {
-  padding: 17px 10px 0;
-  color: var(--theme-neutral-text-soft, #708476);
-  font-size: 11px;
-}
-.rail-collapsed {
-  width: 56px;
-  flex: 0 0 56px;
-  padding: 25px 8px 18px;
-  align-items: center;
-}
-.rail-collapsed .brand {
-  justify-content: center;
-  padding: 0 0 16px;
-}
-.brand-icon {
-  display: block;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  object-fit: contain;
-}
-.rail-collapsed .project-switcher {
-  position: relative;
-  margin-bottom: 10px;
-}
-.rail-collapsed .project-card {
-  justify-content: center;
-  padding: 8px;
-}
-.rail-collapsed .project-card .project-copy,
-.rail-collapsed .project-card .project-chevron {
-  display: none;
-}
-.rail-collapsed .project-menu {
-  position: absolute;
-  left: calc(100% + 6px);
-  top: 0;
-  z-index: 200;
-  min-width: 200px;
-  padding: 6px;
-  border-radius: 10px;
-  background: #2f4a38;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-}
-.rail-collapsed .project-menu .rail-button {
-  width: 100%;
-  padding: 10px 11px;
-  justify-content: flex-start;
-}
-.rail-collapsed .project-menu .rail-button span:not(.rail-icon) {
-  display: inline;
-}
-.rail-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 199;
-  background: transparent;
-  border: 0;
-  cursor: default;
-}
-.rail-collapsed .rail-create-button {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  justify-content: center;
-  margin: 10px auto 12px;
-}
-.rail-collapsed .rail-create-button span:not(.rail-icon) {
-  display: none;
-}
-.rail-collapsed .rail-label {
-  display: none;
-}
-.rail-collapsed .rail-button {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  justify-content: center;
-  margin: 0 auto 5px;
-}
-.rail-collapsed .rail-button span:not(.rail-icon) {
-  display: none;
-}
-.rail-collapsed .rail-git-button .rail-git-count {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  margin: 0;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  font-size: 8px;
-}
-.rail-collapsed .rail-footer {
-  text-align: center;
-  font-size: 9px;
-  padding: 17px 0 0;
-}
-.rail-collapsed .rail-collapse-toggle span:not(.rail-icon) {
-  display: none;
-}
-.rail-collapsed .plugin-nav-row {
-  display: flex;
-  justify-content: center;
-}
-.rail-collapsed .workspace-nav {
-  align-items: center;
-  margin-top: 4px;
-}
-.rail-collapsed .rail-button[title]:hover::after {
-  content: attr(title);
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 200;
-  padding: 5px 10px;
-  border-radius: 6px;
-  background: #1a2a20;
-  color: #eef0e9;
-  font-size: 11px;
-  white-space: nowrap;
-  pointer-events: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-.rail-collapsed .rail-button {
-  position: relative;
-}
-.project-switcher {
-  margin-bottom: 18px;
-}
-.project-card {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  gap: 10px;
-  padding: 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #eef0e9;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.project-card:hover,
-.project-card.active {
-  background: #3b5243;
-}
-.project-copy {
-  min-width: 0;
-  flex: 1;
-}
-.project-chevron {
-  flex: 0 0 auto;
-  color: var(--theme-neutral-text-muted, #aab9ad);
-  font-size: 16px;
-  line-height: 1;
-  transform: translateY(-3px);
-}
-.project-card strong,
-.recent-project strong {
-  font-size: 13px;
-  max-width: 185px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #777f78;
-}
-.project-dot.online {
-  background: #88c18e;
-  box-shadow: 0 0 0 4px rgba(136, 193, 142, 0.12);
-}
-.recent-projects {
-  display: grid;
-  gap: 3px;
-}
-.recent-project {
-  width: 100%;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #eef0e9;
-  text-align: left;
-  cursor: pointer;
-}
-.recent-project:hover {
-  background: #3b5243;
-}
-.recent-project small {
-  overflow: hidden;
-  max-width: 180px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-menu {
-  margin: 3px 0 8px 8px;
-  padding-left: 8px;
-  border-left: 1px solid #486052;
-}
-.project-menu .rail-button {
-  padding: 8px 9px;
-  color: var(--theme-neutral-text-muted, #aab9ad);
-  font-size: 11px;
-}
-.module-menu {
-  margin: 6px 8px 12px;
-  padding: 8px 10px;
-  border: 1px solid #486052;
-  border-radius: 8px;
-  background: #30483a;
-}
 .app-main {
   min-width: 0;
   flex: 1;
@@ -8773,61 +8285,6 @@ onMount(() => {
   .studio-shell {
     display: block;
   }
-  .rail {
-    display: block;
-    width: 100%;
-    height: auto;
-    padding: 12px 14px;
-  }
-  .startup-rail {
-    min-height: 0;
-    padding: 24px 14px;
-  }
-  .brand {
-    padding: 0 4px 12px;
-  }
-  .rail-label,
-  .rail-spacer,
-  .rail-footer,
-  .module-menu {
-    display: none;
-  }
-  .startup-rail .rail-label,
-  .startup-rail .recent-projects {
-    display: block;
-  }
-  .startup-rail .recent-label {
-    margin-top: 27px;
-  }
-  .startup-rail .rail-button {
-    display: flex;
-    width: 100%;
-    margin: 0 0 5px;
-    padding: 10px 11px;
-  }
-  .startup-rail .rail-button span:not(.rail-icon) {
-    display: inline;
-  }
-  .rail-button {
-    display: inline-flex;
-    width: auto;
-    margin: 0 3px 0 0;
-    padding: 8px 10px;
-  }
-  .rail-button span:not(.rail-icon) {
-    display: none;
-  }
-  .rail-collapse-toggle {
-    display: none;
-  }
-  .project-menu .rail-button {
-    display: flex;
-    width: 100%;
-    margin: 0 0 3px;
-  }
-  .project-menu .rail-button span:not(.rail-icon) {
-    display: inline;
-  }
   .welcome {
     min-height: 720px;
     align-items: flex-start;
@@ -8973,56 +8430,6 @@ onMount(() => {
     ui-sans-serif,
     system-ui,
     sans-serif;
-}
-.recent-project {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
-  min-width: 0;
-  gap: 4px;
-}
-.recent-project-open {
-  display: flex;
-  align-items: flex-start;
-  width: 100%;
-  min-width: 0;
-  gap: 10px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.recent-project-open > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-}
-.recent-project strong,
-.recent-project small {
-  max-width: 100%;
-}
-.recent-project-open:focus-visible,
-.recent-project-remove:focus-visible {
-  outline: 2px solid var(--theme-warning-border, #d5ab6c);
-  outline-offset: 2px;
-}
-.recent-project-remove {
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  margin: -2px -3px 0 0;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--theme-neutral-text-muted, #91a397);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-.recent-project-remove:hover {
-  background: #486052;
-  color: #fff;
 }
 .collection-search {
   position: relative;
@@ -9582,35 +8989,8 @@ onMount(() => {
   outline: 3px solid rgba(180, 119, 63, 0.28);
   outline-offset: 2px;
 }
-.workspace-nav {
-  display: grid;
-  gap: 3px;
-}
-.plugin-nav-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.rail-button {
-  transition:
-    background 0.16s ease,
-    color 0.16s ease,
-    transform 0.16s ease;
-}
-.rail-button:active,
 .primary-button:active {
   transform: translateY(1px);
-}
-.rail {
-  position: sticky;
-  top: 0;
-  align-self: flex-start;
-  height: 100vh;
-  max-height: 100vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  z-index: 1;
 }
 .workspace-grid > * {
   min-width: 0;
@@ -9710,9 +9090,6 @@ onMount(() => {
 .editor-fullscreen .editor-footer {
   padding-top: 12px;
 }
-.rail-collapsed ~ .app-main .editor-fullscreen {
-  inset: 0 0 0 56px;
-}
 .dialog {
   max-height: min(680px, calc(100vh - 32px));
   overflow-y: auto;
@@ -9734,35 +9111,6 @@ onMount(() => {
 @media (max-width: 760px) {
   :global(body) {
     overflow-x: hidden;
-  }
-  .rail {
-    position: static;
-    height: auto;
-    max-height: none;
-    overflow: visible;
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-  .workspace-nav {
-    display: flex;
-    gap: 4px;
-    margin: 0 -4px 9px;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .workspace-nav::-webkit-scrollbar {
-    display: none;
-  }
-  .workspace-nav .rail-button {
-    flex: 1 0 auto;
-    justify-content: center;
-    width: auto;
-    margin: 0;
-    padding-inline: 12px;
-  }
-  .workspace-nav .rail-button span:not(.rail-icon) {
-    display: inline;
   }
   .search-modal {
     top: 105px;
@@ -9858,15 +9206,6 @@ onMount(() => {
 }
 
 @media (max-width: 430px) {
-  .startup-rail {
-    padding-top: 20px;
-  }
-  .brand {
-    padding-bottom: 10px;
-  }
-  .startup-primary {
-    min-height: 43px;
-  }
   .welcome {
     min-height: 650px;
     padding: 38px 18px;
@@ -9902,29 +9241,6 @@ onMount(() => {
   }
 }
 
-.rail-create-button {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin: 0 0 18px;
-  padding: 12px 11px;
-  border: 1px solid rgba(213, 171, 108, 0.55);
-  border-radius: 8px;
-  background: #d5ab6c;
-  color: var(--brass-ink);
-  font-size: 14px;
-  font-weight: 800;
-  text-align: left;
-  cursor: pointer;
-}
-.rail-create-button:hover {
-  background: #e1bc82;
-}
-.rail-create-button .rail-icon {
-  color: var(--brass-ink);
-  font-size: 17px;
-}
 .create-dialog {
   display: flex;
   flex-direction: column;
@@ -10236,9 +9552,6 @@ onMount(() => {
 }
 
 @media (max-width: 760px) {
-  .rail-create-button {
-    display: none;
-  }
   .mobile-create-button {
     position: fixed;
     right: 18px;
@@ -10322,9 +9635,6 @@ onMount(() => {
   }
 }
 
-.rail:not(.startup-rail) .brand {
-  padding-bottom: 8px;
-}
 .host-view-back {
   margin: 24px 40px 0;
 }
@@ -10615,15 +9925,6 @@ onMount(() => {
 .runtime-dot.runtime-off {
   color: var(--theme-warning-text, #c0b7a8);
 }
-.workspace-beta {
-  margin-left: 5px;
-  color: var(--theme-warning-text, #936525);
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
 .plugin-warning {
   margin: 10px 0 0;
   padding: 8px 10px;
@@ -10867,30 +10168,6 @@ li.granted .cap-mark {
 }
 .danger-button:hover {
   background: #8f3f28;
-}
-
-.rail {
-  padding-top: 23px;
-}
-.startup-rail {
-  padding-top: 23px;
-}
-.brand {
-  align-self: center;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: 0;
-  margin: 0 0 8px;
-  padding: 0;
-}
-.rail:not(.startup-rail) .brand {
-  padding-bottom: 0;
-}
-.brand-logo {
-  display: block;
-  width: min(100%, 220px);
-  height: auto;
 }
 
 @media (max-width: 600px) {

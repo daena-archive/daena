@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const shell = await readFile(new URL("../src/routes/+page.svelte", import.meta.url), "utf8");
+const appSidebar = await readFile(new URL("../src/lib/shell/AppSidebar.svelte", import.meta.url), "utf8");
 const projectHome = await readFile(new URL("../src/lib/shell/ProjectHome.svelte", import.meta.url), "utf8");
 const globalToolbar = await readFile(new URL("../src/lib/shell/GlobalToolbar.svelte", import.meta.url), "utf8");
 const workspaceHeader = await readFile(new URL("../src/lib/shell/WorkspaceHeader.svelte", import.meta.url), "utf8");
@@ -28,10 +29,15 @@ assert.match(
 );
 assert.match(shell, /projectHomeOpen = true;\s*ready = true;/, "opening a project lands on Home");
 
-const homeNavigation = shell.indexOf("<span>Home</span>");
-const workspaceNavigation = shell.indexOf('aria-label="Workspace sections"');
+const homeNavigation = appSidebar.indexOf("<span>Home</span>");
+const workspaceNavigation = appSidebar.indexOf('aria-label="Workspace sections"');
 assert.ok(homeNavigation >= 0, "Home is a visible sidebar destination");
 assert.ok(workspaceNavigation > homeNavigation, "Home appears before workspace destinations");
+assert.match(shell, /<AppSidebar/, "the application sidebar is isolated from page orchestration");
+assert.match(shell, /workspaceNavigationItems\(\)\.map/, "sidebar workspaces remain manifest-derived");
+assert.match(shell, /pluginViews\(\)\.map/, "sidebar tools remain enabled-contribution-derived");
+assert.match(appSidebar, /onOpenProject/, "project opening remains reachable from the extracted sidebar");
+assert.match(appSidebar, /onCloseProject/, "project closing remains reachable from the extracted sidebar");
 assert.match(shell, /\{:else if projectHomeOpen\}/, "Home has a first-class main content surface");
 assert.match(shell, /recentlyUpdatedEntities\(\)/, "Home exposes cross-workspace recent work");
 assert.match(
@@ -65,7 +71,7 @@ assert.match(
   "Back and Forward restore collection filters",
 );
 assert.match(shell, /onscroll=\{rememberCollectionScroll\}/, "collection scroll position is retained for history");
-assert.match(shell, />TOOLS</, "unowned plugin views are grouped as tools rather than primary workspaces");
+assert.match(appSidebar, />TOOLS</, "unowned plugin views are grouped as tools rather than primary workspaces");
 
 assert.doesNotMatch(shell, />Open wiki</, "workspace views are no longer duplicated as heading actions");
 assert.doesNotMatch(shell, />Open graph</, "Graph navigation is represented as a peer view");

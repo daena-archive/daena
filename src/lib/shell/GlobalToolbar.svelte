@@ -4,21 +4,21 @@ import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
 let {
   ready,
   breadcrumbs,
-  query,
+  quickOpenShortcut,
   navigationBusy,
   canGoBack,
   canGoForward,
-  onQueryChange,
+  onQuickOpen,
   onBack,
   onForward,
 }: {
   ready: boolean;
   breadcrumbs: string[];
-  query: string;
+  quickOpenShortcut: string;
   navigationBusy: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
-  onQueryChange: (query: string) => void;
+  onQuickOpen: () => void;
   onBack: () => void;
   onForward: () => void;
 } = $props();
@@ -51,14 +51,10 @@ let {
   </div>
   <div class="top-actions">
     {#if ready}
-      <label class="global-search">
+      <button class="global-search" type="button" aria-haspopup="dialog" onclick={onQuickOpen}>
         <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-        <input
-          aria-label="Search your world"
-          value={query}
-          oninput={(event) => onQueryChange(event.currentTarget.value)}
-          placeholder="Search whole world" />
-      </label>
+        <span class="global-search-label">Quick Open</span><kbd>{quickOpenShortcut}</kbd>
+      </button>
       <span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>
     {/if}
   </div>
@@ -148,22 +144,30 @@ let {
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease;
 }
-.global-search:focus-within {
+.global-search:hover,
+.global-search:focus-visible {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
-.global-search input {
+.global-search-label {
   min-width: 0;
   flex: 1;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 12px;
+  color: var(--ink-soft);
+}
+.global-search kbd {
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--canvas);
+  color: var(--ink-faint);
+  font: 500 9px var(--font-sans);
 }
 .sync-badge {
   display: flex;

@@ -83,6 +83,9 @@ import ContentPane from "$lib/shell/ContentPane.svelte";
 import InspectorPane from "$lib/shell/InspectorPane.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
+import QuickOpen from "$lib/shell/QuickOpen.svelte";
+import { trapModalTab } from "$lib/shell/modalFocus";
+import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
@@ -149,6 +152,7 @@ type RecentProject = { name: string; root: string };
 type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
 type CreateGroup = { module: InstalledModule; options: CreateOption[] };
 type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
+type CreateDialogView = "templates" | "form";
 type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
@@ -203,6 +207,8 @@ let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
+let quickOpenOpen = $state(false);
+let quickOpenSearchLoading = $state(false);
 let filterOpen = $state(false);
 let expandedGroups = $state<Set<string>>(new Set());
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
@@ -468,6 +474,11 @@ let recentProjects = $state<RecentProject[]>([]);
 let searchMatches = $state<Entity[] | null>(null);
 let searchRequest = 0;
 let showCreateForm = $state(false);
+let createDialogView = $state<CreateDialogView>("templates");
+let createMoreDetailsOpen = $state(false);
+let createBusy = $state(false);
+let createDialogElement = $state<HTMLElement | null>(null);
+let createDialogReturnFocus: HTMLElement | null = null;
 let dateEditorOpen = $state<Record<string, boolean>>({});
 let dateCalendarByField = $state<Record<string, string>>({});
 
@@ -481,6 +492,7 @@ $effect(() => {
 });
 $effect(() => {
   const modalOpen =
+    quickOpenOpen ||
     showCreateForm ||
     aiRewriteOpen ||
     editorFullscreen ||
@@ -497,7 +509,10 @@ $effect(() => {
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== "Escape") return;
-    if (showCreateForm) {
+    if (quickOpenOpen) {
+      event.preventDefault();
+      closeQuickOpen();
+    } else if (showCreateForm) {
       event.preventDefault();
       closeCreateForm();
     } else if (entityEditDialog) {
@@ -968,14 +983,13 @@ function resetCreateFields(option: CreateOption | null) {
   createDateEditorOpen = {};
   createDateCalendarByField = {};
   createDocumentBody = option?.template.document ?? "";
+  createMoreDetailsOpen = false;
 }
-function selectCreateOption(key: string) {
-  if (key === selectedCreateKey && Object.keys(createFieldValues).length > 0) return;
-  requestCreateDiscard(() => {
-    name = "";
-    selectedCreateKey = key;
-    resetCreateFields(createOptions().find((option) => option.key === key) ?? null);
-  });
+function requiredCreateFields(option: CreateOption | null = selectedCreateOption()) {
+  return createFieldsFor(option).filter((item) => item.required);
+}
+function optionalCreateFields(option: CreateOption | null = selectedCreateOption()) {
+  return createFieldsFor(option).filter((item) => !item.required);
 }
 function setCreateField(key: string, value: unknown) {
   createFieldValues = { ...createFieldValues, [key]: value };
@@ -3701,17 +3715,20 @@ async function saveConflictRecoveryCopy() {
   }
 }
 
-async function createEntity(event: SubmitEvent) {
-  event.preventDefault();
-  if (projectDiagnostics.length > 0) return;
-  const option = selectedCreateOption();
-  if (!name.trim() || !option || !option.module.enabled) return;
+async function createWithOption(
+  option: CreateOption,
+  requestedName: string,
+  values: Record<string, unknown>,
+  openingDocument: string,
+) {
+  if (projectDiagnostics.length > 0 || createBusy || !requestedName.trim() || !option.module.enabled) return false;
   const departure = currentShellLocation();
+  createBusy = true;
   try {
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
-      const value = createFieldValues[field.key];
+      const value = values[field.key];
       const empty =
         value === "" ||
         value === null ||
@@ -3740,24 +3757,19 @@ async function createEntity(event: SubmitEvent) {
       availableServices: enabledServices(),
     });
     const created = await context.entities.create({
-      name: name.trim(),
+      name: requestedName.trim(),
       type: option.template.entityType,
       fields: fieldsForCreate,
       relationships: relationshipsForCreate,
-      document: createDocumentBody.trim() ? { body: createDocumentBody.trim(), format: "markdown" } : undefined,
+      document: openingDocument.trim() ? { body: openingDocument.trim(), format: "markdown" } : undefined,
     });
     recordShellDeparture(departure);
     section =
-      option.template.entityType === "event" ||
-      option.template.entityType === "encounter" ||
-      option.template.entityType === "era" ||
-      option.template.entityType === "calendar"
-        ? "timeline"
-        : option.template.entityType === "manuscript" || option.template.entityType === "reference-page"
-          ? "writing"
-          : option.template.entityType === "language"
-            ? "language"
-            : "lore";
+      workspaceSectionOrder.find((target) =>
+        manifestForWorkspaceSection(target)?.schemas.some((schema) =>
+          schema.entityTypes.includes(option.template.entityType),
+        ),
+      ) ?? section;
     if (option.template.entityType === "manuscript") writingView = "manuscripts";
     if (option.template.entityType === "reference-page") writingView = "reference";
     if (option.template.entityType === "era") timelineView = "eras";
@@ -3766,6 +3778,9 @@ async function createEntity(event: SubmitEvent) {
     projectHomeOpen = false;
     name = "";
     showCreateForm = false;
+    createDialogView = "templates";
+    const returnFocus = createDialogReturnFocus;
+    createDialogReturnFocus = null;
     resetCreateFields(null);
     await loadEntities();
     await selectEntity(
@@ -3780,34 +3795,259 @@ async function createEntity(event: SubmitEvent) {
       },
       false,
     );
+    void tick().then(() => returnFocus?.focus());
+    return true;
   } catch (cause) {
     error = friendlyError(cause);
+    return false;
+  } finally {
+    createBusy = false;
   }
+}
+
+async function createEntity(event: SubmitEvent) {
+  event.preventDefault();
+  const option = selectedCreateOption();
+  if (!option) return;
+  await createWithOption(option, name, createFieldValues, createDocumentBody);
 }
 
 function closeCreateForm() {
   requestCreateDiscard(() => {
     showCreateForm = false;
+    createDialogView = "templates";
     name = "";
     resetCreateFields(null);
+    const returnFocus = createDialogReturnFocus;
+    createDialogReturnFocus = null;
+    void tick().then(() => returnFocus?.focus());
   });
 }
 
-function toggleCreateForm() {
-  if (showCreateForm) {
-    closeCreateForm();
-    return;
-  }
+function rememberCreateReturnFocus() {
+  if (!showCreateForm)
+    createDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function activateCreateOption(option: CreateOption, initialName = "") {
+  const switchingTemplate = option.key !== selectedCreateKey;
+  if (switchingTemplate || Object.keys(createFieldValues).length === 0) {
+    name = initialName;
+    selectedCreateKey = option.key;
+    resetCreateFields(option);
+  } else if (initialName) name = initialName;
+  createDialogView = "form";
+  showCreateForm = true;
+  setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
+}
+
+function openFocusedCreate(optionKey?: string, initialName = "") {
   const options = createOptions();
   if (options.length === 0) {
     error = "Enable a module with a creation template to get started.";
     return;
   }
-  const defaultOption = defaultCreateOption(options);
-  if (defaultOption && selectedCreateKey !== defaultOption.key) selectCreateOption(defaultOption.key);
-  else if (Object.keys(createFieldValues).length === 0) resetCreateFields(selectedCreateOption());
+  const option = options.find((candidate) => candidate.key === optionKey) ?? defaultCreateOption(options);
+  if (!option) return;
+  rememberCreateReturnFocus();
+  const activate = () => activateCreateOption(option, initialName);
+  if (option.key !== selectedCreateKey && hasCreateValues()) requestCreateDiscard(activate);
+  else activate();
+}
+
+function openCreationMenu() {
+  const options = createOptions();
+  if (options.length === 0) {
+    error = "Enable a module with a creation template to get started.";
+    return;
+  }
+  rememberCreateReturnFocus();
+  createDialogView = "templates";
   showCreateForm = true;
-  setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
+  setTimeout(() => createDialogElement?.querySelector<HTMLButtonElement>("[data-template-index]")?.focus(), 0);
+}
+
+function openContextualCreate() {
+  const options = createOptions();
+  if (options.length === 0) {
+    error = "Enable a module with a creation template to get started.";
+    return;
+  }
+  const option = defaultCreateOption(options);
+  if (!option) return;
+  openFocusedCreate(option.key);
+}
+
+function returnToCreationMenu() {
+  createDialogView = "templates";
+  setTimeout(
+    () =>
+      createDialogElement?.querySelector<HTMLButtonElement>(`[data-template-index="${selectedCreateKey}"]`)?.focus(),
+    0,
+  );
+}
+
+function toggleCreateForm() {
+  if (showCreateForm) closeCreateForm();
+  else openCreationMenu();
+}
+
+function handleCreateDialogKeydown(event: KeyboardEvent) {
+  const templateButton = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-template-index]");
+  if (templateButton && ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+    const buttons = Array.from(createDialogElement?.querySelectorAll<HTMLButtonElement>("[data-template-index]") ?? []);
+    const index = buttons.indexOf(templateButton);
+    if (index >= 0 && buttons.length > 0) {
+      event.preventDefault();
+      const columnCount = Math.max(
+        1,
+        getComputedStyle(templateButton.parentElement ?? templateButton).gridTemplateColumns.split(" ").length,
+      );
+      const offset =
+        event.key === "ArrowDown"
+          ? columnCount
+          : event.key === "ArrowUp"
+            ? -columnCount
+            : event.key === "ArrowRight"
+              ? 1
+              : -1;
+      buttons[(index + offset + buttons.length) % buttons.length]?.focus();
+    }
+    return;
+  }
+  trapModalTab(event, createDialogElement);
+}
+
+function quickOpenShortcutLabel() {
+  if (typeof navigator === "undefined") return "Ctrl K";
+  return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K";
+}
+
+function quickOpenItems(): QuickOpenItem[] {
+  const query = globalQuery.trim();
+  const entityItems: QuickOpenItem[] = (query ? (searchMatches ?? []) : recentlyUpdatedEntities().slice(0, 7)).map(
+    (entity) => ({
+      id: `entity:${entity.id}`,
+      category: query ? "Results" : "Recent",
+      label: entity.name,
+      description: entityTypeLabel(entity.entity_type),
+      keywords: [entity.entity_type ?? ""],
+      action: { kind: "entity", entityId: entity.id },
+    }),
+  );
+  const destinations: QuickOpenItem[] = [
+    {
+      id: "destination:home",
+      category: "Destinations",
+      label: "Project Home",
+      description: "Overview, workspaces, and recent activity",
+      keywords: ["home", "overview"],
+      action: { kind: "destination", destination: "home" },
+    },
+    ...workspaceNavigationItems().map((item): QuickOpenItem => ({
+      id: `destination:${item.key}`,
+      category: "Destinations",
+      label: item.title,
+      description: `${workspaceDescription(item.section)} workspace`,
+      keywords: [item.section, "workspace"],
+      action: { kind: "destination", destination: `navigation:${item.key}` },
+    })),
+    ...pluginViews().map((item): QuickOpenItem => ({
+      id: `destination:${item.key}`,
+      category: "Destinations",
+      label: pluginViewLabel(item),
+      description: "Plugin tool",
+      keywords: [item.plugin.name, item.view.title, "tool"],
+      action: { kind: "destination", destination: `navigation:${item.key}` },
+    })),
+  ];
+  const creation: QuickOpenItem[] = createOptions().map((option) => ({
+    id: `create:${option.key}`,
+    category: "Create",
+    label: `Create ${option.template.name}`,
+    description: `${option.module.name} · open focused creation`,
+    keywords: [option.module.name, option.template.entityType, option.template.description ?? ""],
+    action: { kind: "create", templateKey: option.key },
+  }));
+  const commands: QuickOpenItem[] = [
+    {
+      id: "command:template-gallery",
+      category: "Commands",
+      label: "Browse creation templates",
+      description: "Choose from every enabled template",
+      keywords: ["new", "create", "gallery", "template"],
+      action: { kind: "command", command: "template-gallery" },
+    },
+    {
+      id: "command:snapshots",
+      category: "Commands",
+      label: "Open Snapshots",
+      description: "Review project history and checkpoint changes",
+      keywords: ["git", "history", "checkpoint"],
+      action: { kind: "command", command: "snapshots" },
+    },
+    {
+      id: "command:plugins",
+      category: "Commands",
+      label: "Manage Plugins",
+      description: "Enable, disable, or inspect project extensions",
+      keywords: ["extensions", "modules", "tools"],
+      action: { kind: "command", command: "plugins" },
+    },
+    {
+      id: "command:settings",
+      category: "Commands",
+      label: "Open Settings",
+      description: "Application and project preferences",
+      keywords: ["preferences", "configuration"],
+      action: { kind: "command", command: "settings" },
+    },
+  ];
+  return rankQuickOpenItems([...entityItems, ...destinations, ...creation, ...commands], query, 80);
+}
+
+function openQuickOpen() {
+  if (!ready || showCreateForm || entityEditDialog || showExternalImport) return;
+  quickOpenOpen = true;
+}
+
+function closeQuickOpen() {
+  quickOpenOpen = false;
+  globalQuery = "";
+  searchMatches = null;
+  quickOpenSearchLoading = false;
+  searchRequest += 1;
+}
+
+async function selectQuickOpenItem(item: QuickOpenItem) {
+  const action = item.action;
+  const matchedEntity =
+    action.kind === "entity"
+      ? [...(searchMatches ?? []), ...entities].find((candidate) => candidate.id === action.entityId)
+      : null;
+  closeQuickOpen();
+  await tick();
+  if (action.kind === "entity") {
+    if (matchedEntity) await selectSearchResult(matchedEntity);
+    return;
+  }
+  if (action.kind === "destination") {
+    if (action.destination === "home") await openProjectHome();
+    else if (action.destination.startsWith("navigation:")) {
+      openSidebarNavigationItem(action.destination.slice("navigation:".length));
+    }
+    return;
+  }
+  if (action.kind === "create") {
+    const option = createOptions().find((candidate) => candidate.key === action.templateKey);
+    if (!option) return;
+    openFocusedCreate(option.key);
+    return;
+  }
+  if (action.command === "template-gallery") openCreationMenu();
+  else if (action.command === "snapshots") await openSettings("git");
+  else if (action.command === "plugins") await openSettings("plugins");
+  else await openSettings();
 }
 
 function updateField(definition: FieldDefinition, event: Event) {
@@ -4773,8 +5013,14 @@ function resetProjectSessionState() {
   mapPickNotice = "";
   searchMatches = null;
   globalQuery = "";
+  quickOpenOpen = false;
+  quickOpenSearchLoading = false;
   collectionQuery.textSearch = "";
   showSettings = false;
+  showCreateForm = false;
+  createDialogView = "templates";
+  createMoreDetailsOpen = false;
+  createDialogReturnFocus = null;
   schemaPluginId = null;
   schemaPluginName = "";
   moduleSchemaPackage = null;
@@ -4859,11 +5105,13 @@ async function restoreRecoveryBackup(path: string) {
 }
 $effect(() => {
   const term = globalQuery.trim();
-  if (!ready || !term) {
+  if (!ready || !quickOpenOpen || !term) {
     searchMatches = null;
+    quickOpenSearchLoading = false;
     return;
   }
   const request = ++searchRequest;
+  quickOpenSearchLoading = true;
   void project
     .search(term)
     .then((matches) => {
@@ -4871,6 +5119,9 @@ $effect(() => {
     })
     .catch((cause) => {
       if (request === searchRequest) error = friendlyError(cause);
+    })
+    .finally(() => {
+      if (request === searchRequest) quickOpenSearchLoading = false;
     });
 });
 onMount(() => {
@@ -4895,6 +5146,19 @@ onMount(() => {
     event.preventDefault();
     void navigateShellHistory(event.key === "ArrowLeft" ? "back" : "forward");
   };
+  const handleQuickOpenKey = (event: KeyboardEvent) => {
+    const modifier = event.metaKey || event.ctrlKey;
+    if (!ready || !modifier || event.altKey || event.shiftKey || event.repeat) return;
+    const key = event.key.toLowerCase();
+    if (key === "k") {
+      event.preventDefault();
+      if (quickOpenOpen) closeQuickOpen();
+      else openQuickOpen();
+    } else if (key === "n" && !quickOpenOpen && !showCreateForm && !entityEditDialog && !showExternalImport) {
+      event.preventDefault();
+      openContextualCreate();
+    }
+  };
   const handleWorkbenchResize = () => {
     if (
       restoredWorkspacePaneDimensions &&
@@ -4905,6 +5169,7 @@ onMount(() => {
   };
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
+  window.addEventListener("keydown", handleQuickOpenKey);
   window.addEventListener("resize", handleWorkbenchResize);
   let closeListenerDisposed = false;
   let unlistenWindowClose: (() => void) | undefined;
@@ -5047,6 +5312,7 @@ onMount(() => {
     unlistenWindowClose?.();
     window.removeEventListener("beforeunload", handleBeforeUnload);
     window.removeEventListener("keydown", handleHistoryKey);
+    window.removeEventListener("keydown", handleQuickOpenKey);
     window.removeEventListener("resize", handleWorkbenchResize);
     cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
@@ -5124,289 +5390,325 @@ onMount(() => {
     <GlobalToolbar
       {ready}
       breadcrumbs={breadcrumbItems()}
-      query={globalQuery}
+      quickOpenShortcut={quickOpenShortcutLabel()}
       navigationBusy={shellNavigationBusy}
       canGoBack={shellNavigationHistory.back.length > 0}
       canGoForward={shellNavigationHistory.forward.length > 0}
-      onQueryChange={(query) => (globalQuery = query)}
+      onQuickOpen={openQuickOpen}
       onBack={() => void navigateShellHistory("back")}
       onForward={() => void navigateShellHistory("forward")} />
-    {#if ready && globalQuery.trim()}<div class="search-modal" role="dialog" aria-label="World search results">
-        <div class="search-modal-heading">
-          <strong>Search results</strong><button
-            class="quiet-button"
-            aria-label="Close search"
-            onclick={() => (globalQuery = "")}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
-        </div>
-        {#if searchMatches === null}<p class="search-state">
-            Searching the whole world…
-          </p>{:else if searchMatches.length === 0}<p class="search-state">No matches found.</p>{:else}<div
-            class="search-results">
-            {#each searchMatches as result}<button class="search-result" onclick={() => selectSearchResult(result)}
-                ><span class={`entity-glyph ${entityGlyphClass(result)}`}
-                  >{#if result.entity_type === "daena.maps:map"}<MapIcon
-                      size={14}
-                      strokeWidth={1.8}
-                      aria-hidden="true" />{:else}{entityGlyph(result)}{/if}</span
-                ><span><strong>{result.name}</strong><small>{result.entity_type ?? "Uncategorized"}</small></span
-                ></button
-              >{/each}
-          </div>{/if}
-      </div>{/if}
+    {#if quickOpenOpen}<QuickOpen
+        query={globalQuery}
+        items={quickOpenItems()}
+        loading={quickOpenSearchLoading}
+        onQueryChange={(query) => (globalQuery = query)}
+        onSelect={(item) => void selectQuickOpenItem(item)}
+        onClose={closeQuickOpen} />{/if}
     {#if showCreateForm}{@const createOption = selectedCreateOption()}
       <div class="modal-backdrop">
-        <form class="dialog create-dialog" onsubmit={createEntity}>
-          <div class="create-dialog-heading">
-            <div>
-              <span class="panel-kicker">CREATE SOMETHING NEW</span><strong>Choose a starting point</strong>
-              <p>Templates set the shape of your new entry. You can fill in the details before it is saved.</p>
-            </div>
-            <button type="button" class="new-form-close" aria-label="Close create dialog" onclick={closeCreateForm}
-              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
-          </div>
-          <div class="create-dialog-body">
-            <aside class="create-template-panel">
-              <div class="create-panel-label">TEMPLATES</div>
-              <div class="create-template-list">
-                {#each createGroups() as group}<div class="create-template-group">
-                    <span>{group.module.name}</span>{#each group.options as option}<button
-                        type="button"
-                        class:selected={option.key === selectedCreateKey}
-                        class="create-template-card"
-                        onclick={() => selectCreateOption(option.key)}
-                        ><span class="create-template-icon"
-                          >{option.template.icon ?? option.template.name.slice(0, 1)}</span
-                        ><span class="create-template-copy"
-                          ><strong>{option.template.name}</strong><small
-                            >{option.template.description ?? option.template.entityType}</small
-                          ></span
-                        ><span class="create-template-check">{option.key === selectedCreateKey ? "✓" : ""}</span
-                        ></button
-                      >{/each}
-                  </div>{/each}
+        <div
+          bind:this={createDialogElement}
+          class="dialog create-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-dialog-title"
+          tabindex="-1"
+          onkeydown={handleCreateDialogKeydown}>
+          <form class="create-dialog-form" onsubmit={createEntity}>
+            <div class="create-dialog-heading">
+              <div>
+                {#if createDialogView === "templates"}<span class="panel-kicker">CREATE</span><strong
+                    id="create-dialog-title">Choose a template</strong
+                  >
+                  <p>Start with the kind of entry you want to add to this world.</p>{:else if createOption}<button
+                    type="button"
+                    class="create-dialog-back"
+                    disabled={createBusy}
+                    onclick={returnToCreationMenu}>All templates</button
+                  ><span class="panel-kicker">{createOption.module.name.toUpperCase()}</span><strong
+                    id="create-dialog-title">Create {createOption.template.name}</strong
+                  >
+                  <p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p>{/if}
               </div>
-            </aside>
-            <section class="create-form-panel">
-              {#if createOption}<div class="create-form-title">
-                  <span class="panel-kicker">{createOption.module.name.toUpperCase()}</span>
-                  <h2>{createOption.template.name}</h2>
-                  <p>{createOption.template.description ?? `Create a new ${createOption.template.entityType}.`}</p>
-                </div>
-                <label class="create-input-field" for="new-entity"
-                  ><span>Name <b>*</b></span><input
-                    id="new-entity"
-                    required
-                    bind:value={name}
-                    placeholder={`e.g. ${createOption.template.name}`}
-                    autocomplete="off" /></label
-                >{#each createFieldsFor(createOption) as item}<div class="create-input-field">
-                    <label for={`create-${item.field.key}`}
-                      ><span
-                        >{item.field.label}
-                        {#if item.required}<b>*</b>{/if}</span
-                      ></label
-                    >{#if item.field.type === "relationship"}<RelationshipPicker
-                        field={item.field}
-                        {entities}
-                        selectedIds={createRelationshipValues(item.field.key)}
-                        onChange={(ids) =>
-                          setCreateRelationshipValues(
-                            item.field.key,
-                            ids,
-                          )} />{:else if item.field.type === "text"}<textarea
-                        id={`create-${item.field.key}`}
-                        required={item.required}
-                        rows="3"
-                        value={String(createFieldValues[item.field.key] ?? "")}
-                        placeholder={`Add ${item.field.label.toLowerCase()}`}
-                        oninput={(event) =>
-                          setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea
-                      >{:else if item.field.type === "number"}<input
-                        id={`create-${item.field.key}`}
-                        type="number"
-                        required={item.required}
-                        value={String(createFieldValues[item.field.key] ?? "")}
-                        placeholder={`Add ${item.field.label.toLowerCase()}`}
-                        oninput={(event) =>
-                          setCreateField(
-                            item.field.key,
-                            (event.currentTarget as HTMLInputElement).value,
-                          )} />{:else if item.field.type === "boolean"}<label
-                        class="create-checkbox"
-                        for={`create-${item.field.key}`}
-                        ><input
-                          id={`create-${item.field.key}`}
-                          type="checkbox"
-                          required={item.required}
-                          checked={createFieldValues[item.field.key] === true}
-                          onchange={(event) =>
-                            setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span
-                          >Yes</span
+              <button
+                type="button"
+                class="new-form-close"
+                aria-label="Close create dialog"
+                disabled={createBusy}
+                onclick={closeCreateForm}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+            </div>
+            {#if createDialogView === "templates"}<div class="create-template-gallery">
+                {#each createGroups() as group}<section class="create-template-group">
+                    <div class="create-template-group-heading">
+                      <span>{group.module.name}</span><small
+                        >{group.options.length} {group.options.length === 1 ? "template" : "templates"}</small>
+                    </div>
+                    <div class="create-template-tiles">
+                      {#each group.options as option}<button
+                          type="button"
+                          data-template-index={option.key}
+                          class="create-template-card"
+                          disabled={createBusy}
+                          onclick={() => openFocusedCreate(option.key)}
+                          ><span class="create-template-icon"
+                            >{option.template.icon ?? option.template.name.slice(0, 1)}</span
+                          ><span class="create-template-copy"
+                            ><strong>{option.template.name}</strong><small
+                              >{option.template.description ?? option.template.entityType}</small
+                            ></span
+                          ><span class="create-template-arrow">›</span></button
+                        >{/each}
+                    </div>
+                  </section>{/each}
+              </div>{:else}<section class="create-form-panel">
+                {#if createOption}<label class="create-input-field" for="new-entity"
+                    ><span>Name <b>*</b></span><input
+                      id="new-entity"
+                      required
+                      bind:value={name}
+                      placeholder={`e.g. ${createOption.template.name}`}
+                      autocomplete="off" /></label
+                  >{#snippet createFieldControl(item: CreateField)}<div class="create-input-field">
+                      <label for={`create-${item.field.key}`}
+                        ><span
+                          >{item.field.label}
+                          {#if item.required}<b>*</b>{/if}</span
                         ></label
-                      >{:else if item.field.type === "enum"}<select
-                        id={`create-${item.field.key}`}
-                        required={item.required}
-                        multiple={item.field.multiple ?? false}
-                        value={item.field.multiple
-                          ? Array.isArray(createFieldValues[item.field.key])
-                            ? createFieldValues[item.field.key]
-                            : []
-                          : String(createFieldValues[item.field.key] ?? "")}
-                        onchange={(event) => updateCreateEnumField(item.field.key, event, item.field.multiple ?? false)}
-                        ><option value="">Choose {item.field.label.toLowerCase()}</option
-                        >{#each item.field.options ?? [] as option}<option value={option}>{option}</option
-                          >{/each}</select>
-                      >{:else if (item.field as any).type === "oneof"}<select
-                        id={`create-${item.field.key}`}
-                        required={item.required}
-                        value={String(createFieldValues[item.field.key] ?? "")}
-                        onchange={(event) =>
-                          setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
-                        ><option value="">Choose {item.field.label.toLowerCase()}</option
-                        >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                        {#each (item.field as any).oneOf ?? [] as variant}
-                          {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                        {/each}</select>
-                      >{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date =
-                          createDateDraftForField(item.field.key) ?? {
-                            calendar: GREGORIAN_CALENDAR_ID,
-                            era: "CE",
-                            precision: "day",
-                          }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
-                          createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
-                        <div class="date-editor">
-                          <CalendarPicker
-                            selectedId={calendarIdForStoredDate(
-                              createDateForField(item.field.key),
-                              createDateCalendarByField[item.field.key],
-                            )}
-                            calendars={worldCalendars()}
-                            onSelect={(id) => setCreateDateCalendar(item.field.key, id)} />
-                          <div class="date-fields">
-                            <label for={`create-${item.field.key}-year`}
-                              >Year<input
-                                id={`create-${item.field.key}-year`}
-                                aria-label={`${item.field.label} year`}
-                                type="number"
-                                value={parts?.year ?? date.year ?? ""}
-                                onchange={(event) =>
-                                  updateCreateDatePart(
-                                    item.field.key,
-                                    "year",
-                                    (event.currentTarget as HTMLInputElement).value,
-                                    Number.MIN_SAFE_INTEGER,
-                                  )} /></label
-                            >{#if months.length > 0}<label for={`create-${item.field.key}-month`}
-                                >Month<select
-                                  id={`create-${item.field.key}-month`}
-                                  aria-label={`${item.field.label} month`}
-                                  value={parts?.month ?? ""}
+                      >{#if item.field.type === "relationship"}<RelationshipPicker
+                          field={item.field}
+                          {entities}
+                          selectedIds={createRelationshipValues(item.field.key)}
+                          onChange={(ids) =>
+                            setCreateRelationshipValues(
+                              item.field.key,
+                              ids,
+                            )} />{:else if item.field.type === "text"}<textarea
+                          id={`create-${item.field.key}`}
+                          required={item.required}
+                          rows="3"
+                          value={String(createFieldValues[item.field.key] ?? "")}
+                          placeholder={`Add ${item.field.label.toLowerCase()}`}
+                          oninput={(event) =>
+                            setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}
+                        ></textarea
+                        >{:else if item.field.type === "number"}<input
+                          id={`create-${item.field.key}`}
+                          type="number"
+                          required={item.required}
+                          value={String(createFieldValues[item.field.key] ?? "")}
+                          placeholder={`Add ${item.field.label.toLowerCase()}`}
+                          oninput={(event) =>
+                            setCreateField(
+                              item.field.key,
+                              (event.currentTarget as HTMLInputElement).value,
+                            )} />{:else if item.field.type === "boolean"}<label
+                          class="create-checkbox"
+                          for={`create-${item.field.key}`}
+                          ><input
+                            id={`create-${item.field.key}`}
+                            type="checkbox"
+                            required={item.required}
+                            checked={createFieldValues[item.field.key] === true}
+                            onchange={(event) =>
+                              setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span
+                            >Yes</span
+                          ></label
+                        >{:else if item.field.type === "enum"}<select
+                          id={`create-${item.field.key}`}
+                          required={item.required}
+                          multiple={item.field.multiple ?? false}
+                          value={item.field.multiple
+                            ? Array.isArray(createFieldValues[item.field.key])
+                              ? createFieldValues[item.field.key]
+                              : []
+                            : String(createFieldValues[item.field.key] ?? "")}
+                          onchange={(event) =>
+                            updateCreateEnumField(item.field.key, event, item.field.multiple ?? false)}
+                          ><option value="">Choose {item.field.label.toLowerCase()}</option
+                          >{#each item.field.options ?? [] as option}<option value={option}>{option}</option
+                            >{/each}</select>
+                        >{:else if (item.field as any).type === "oneof"}<select
+                          id={`create-${item.field.key}`}
+                          required={item.required}
+                          value={String(createFieldValues[item.field.key] ?? "")}
+                          onchange={(event) =>
+                            setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
+                          ><option value="">Choose {item.field.label.toLowerCase()}</option
+                          >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                          {#each (item.field as any).oneOf ?? [] as variant}
+                            {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
+                              >{/each}
+                          {/each}</select>
+                        >{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date =
+                            createDateDraftForField(item.field.key) ?? {
+                              calendar: GREGORIAN_CALENDAR_ID,
+                              era: "CE",
+                              precision: "day",
+                            }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
+                            createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
+                          <div class="date-editor">
+                            <CalendarPicker
+                              selectedId={calendarIdForStoredDate(
+                                createDateForField(item.field.key),
+                                createDateCalendarByField[item.field.key],
+                              )}
+                              calendars={worldCalendars()}
+                              onSelect={(id) => setCreateDateCalendar(item.field.key, id)} />
+                            <div class="date-fields">
+                              <label for={`create-${item.field.key}-year`}
+                                >Year<input
+                                  id={`create-${item.field.key}-year`}
+                                  aria-label={`${item.field.label} year`}
+                                  type="number"
+                                  value={parts?.year ?? date.year ?? ""}
                                   onchange={(event) =>
                                     updateCreateDatePart(
                                       item.field.key,
-                                      "month",
-                                      (event.currentTarget as HTMLSelectElement).value,
-                                      1,
-                                      months.length,
-                                    )}
-                                  ><option value="">Month</option>{#each months as month, index}<option
-                                      value={index + 1}>{month.name}</option
-                                    >{/each}</select>
-                                ></label
-                              >{:else}<label for={`create-${item.field.key}-month`}
-                                >Month<input
-                                  id={`create-${item.field.key}-month`}
-                                  aria-label={`${item.field.label} month`}
+                                      "year",
+                                      (event.currentTarget as HTMLInputElement).value,
+                                      Number.MIN_SAFE_INTEGER,
+                                    )} /></label
+                              >{#if months.length > 0}<label for={`create-${item.field.key}-month`}
+                                  >Month<select
+                                    id={`create-${item.field.key}-month`}
+                                    aria-label={`${item.field.label} month`}
+                                    value={parts?.month ?? ""}
+                                    onchange={(event) =>
+                                      updateCreateDatePart(
+                                        item.field.key,
+                                        "month",
+                                        (event.currentTarget as HTMLSelectElement).value,
+                                        1,
+                                        months.length,
+                                      )}
+                                    ><option value="">Month</option>{#each months as month, index}<option
+                                        value={index + 1}>{month.name}</option
+                                      >{/each}</select>
+                                  ></label
+                                >{:else}<label for={`create-${item.field.key}-month`}
+                                  >Month<input
+                                    id={`create-${item.field.key}-month`}
+                                    aria-label={`${item.field.label} month`}
+                                    type="number"
+                                    min="1"
+                                    max="12"
+                                    value={parts?.month ?? date.month ?? ""}
+                                    onchange={(event) =>
+                                      updateCreateDatePart(
+                                        item.field.key,
+                                        "month",
+                                        (event.currentTarget as HTMLInputElement).value,
+                                        1,
+                                        12,
+                                      )} /></label
+                                >{/if}<label for={`create-${item.field.key}-day`}
+                                >Day<input
+                                  id={`create-${item.field.key}-day`}
+                                  aria-label={`${item.field.label} day`}
                                   type="number"
                                   min="1"
-                                  max="12"
-                                  value={parts?.month ?? date.month ?? ""}
+                                  max={daysInCalendarMonth(
+                                    calendar,
+                                    parts?.year ?? date.year ?? 1,
+                                    parts?.month ?? date.month ?? 1,
+                                  )}
+                                  value={parts?.day ?? date.day ?? ""}
                                   onchange={(event) =>
                                     updateCreateDatePart(
                                       item.field.key,
-                                      "month",
+                                      "day",
                                       (event.currentTarget as HTMLInputElement).value,
                                       1,
-                                      12,
+                                      daysInCalendarMonth(
+                                        calendar,
+                                        parts?.year ?? date.year ?? 1,
+                                        parts?.month ?? date.month ?? 1,
+                                      ),
                                     )} /></label
-                              >{/if}<label for={`create-${item.field.key}-day`}
-                              >Day<input
-                                id={`create-${item.field.key}-day`}
-                                aria-label={`${item.field.label} day`}
-                                type="number"
-                                min="1"
-                                max={daysInCalendarMonth(
-                                  calendar,
-                                  parts?.year ?? date.year ?? 1,
-                                  parts?.month ?? date.month ?? 1,
-                                )}
-                                value={parts?.day ?? date.day ?? ""}
-                                onchange={(event) =>
-                                  updateCreateDatePart(
-                                    item.field.key,
-                                    "day",
-                                    (event.currentTarget as HTMLInputElement).value,
-                                    1,
-                                    daysInCalendarMonth(
-                                      calendar,
-                                      parts?.year ?? date.year ?? 1,
-                                      parts?.month ?? date.month ?? 1,
-                                    ),
-                                  )} /></label
-                            ><label class="date-time-field" for={`create-${item.field.key}-time`}
-                              >Time<input
-                                id={`create-${item.field.key}-time`}
-                                aria-label={`${item.field.label} time`}
-                                type="time"
-                                step="1"
-                                value={calendarTimeValue(date)}
-                                onchange={(event) =>
-                                  updateCreateDateTime(
-                                    item.field.key,
-                                    (event.currentTarget as HTMLInputElement).value,
-                                  )} /></label>
-                          </div>
-                          <small class="date-preview"
-                            >{typeof (parts?.year ?? date.year) === "number"
-                              ? formatWithCalendar(createFieldValues[item.field.key], calendar)
-                              : "Add a date"}</small
-                          ><button class="date-clear" type="button" onclick={() => clearCreateDateField(item.field.key)}
-                            >Clear date</button>
-                        </div>{:else}<button
-                          class="date-empty"
-                          type="button"
-                          onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button
-                        >{/if}{/if}
-                  </div>{/each}{#if createOption.template.document !== undefined}<label
-                    class="create-input-field"
-                    for="create-document"
-                    ><span>Opening note</span><textarea
-                      id="create-document"
-                      rows="5"
-                      bind:value={createDocumentBody}
-                      placeholder="Add a first note (optional)"></textarea
-                    ></label
-                  >{/if}{:else}<div class="create-form-empty">Select a template to begin.</div>{/if}
-            </section>
-          </div>
-          <div class="create-dialog-actions">
-            <button type="button" class="quiet-button" onclick={closeCreateForm}>Cancel</button><button
-              class="primary-button"
-              type="submit"
-              disabled={!name.trim() || !createOption}>Create {createOption?.template.name ?? "entry"}</button>
-          </div>
-        </form>
+                              ><label class="date-time-field" for={`create-${item.field.key}-time`}
+                                >Time<input
+                                  id={`create-${item.field.key}-time`}
+                                  aria-label={`${item.field.label} time`}
+                                  type="time"
+                                  step="1"
+                                  value={calendarTimeValue(date)}
+                                  onchange={(event) =>
+                                    updateCreateDateTime(
+                                      item.field.key,
+                                      (event.currentTarget as HTMLInputElement).value,
+                                    )} /></label>
+                            </div>
+                            <small class="date-preview"
+                              >{typeof (parts?.year ?? date.year) === "number"
+                                ? formatWithCalendar(createFieldValues[item.field.key], calendar)
+                                : "Add a date"}</small
+                            ><button
+                              class="date-clear"
+                              type="button"
+                              onclick={() => clearCreateDateField(item.field.key)}>Clear date</button>
+                          </div>{:else}<button
+                            class="date-empty"
+                            type="button"
+                            onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button
+                          >{/if}{/if}
+                    </div>{/snippet}{#each requiredCreateFields(createOption) as item}{@render createFieldControl(
+                      item,
+                    )}{/each}{@const optionalFields =
+                    optionalCreateFields(
+                      createOption,
+                    )}{#if optionalFields.length > 0 || createOption.template.document !== undefined}<button
+                      class="create-more-details-toggle"
+                      type="button"
+                      aria-expanded={createMoreDetailsOpen}
+                      aria-controls="create-more-details"
+                      onclick={() => (createMoreDetailsOpen = !createMoreDetailsOpen)}
+                      ><span
+                        ><strong>More details</strong><small
+                          >{optionalFields.length} optional {optionalFields.length === 1
+                            ? "field"
+                            : "fields"}{createOption.template.document !== undefined
+                            ? `${optionalFields.length > 0 ? " and an " : "An "}opening note`
+                            : ""}</small
+                        ></span
+                      ><ChevronDown
+                        size={16}
+                        strokeWidth={1.8}
+                        class={createMoreDetailsOpen ? "expanded" : ""}
+                        aria-hidden="true" /></button
+                    >{#if createMoreDetailsOpen}<div id="create-more-details" class="create-more-details">
+                        {#each optionalFields as item}{@render createFieldControl(
+                            item,
+                          )}{/each}{#if createOption.template.document !== undefined}<label
+                            class="create-input-field"
+                            for="create-document"
+                            ><span>Opening note</span><textarea
+                              id="create-document"
+                              rows="5"
+                              bind:value={createDocumentBody}
+                              placeholder="Add a first note (optional)"></textarea
+                            ></label
+                          >{/if}
+                      </div>{/if}{/if}{:else}<div class="create-form-empty">Choose a template to begin.</div>{/if}
+              </section>{/if}
+            {#if createDialogView === "form"}<div class="create-dialog-actions">
+                <button type="button" class="quiet-button" disabled={createBusy} onclick={closeCreateForm}
+                  >Cancel</button
+                ><button class="primary-button" type="submit" disabled={createBusy || !name.trim() || !createOption}
+                  >{createBusy ? "Creating…" : `Create ${createOption?.template.name ?? "entry"}`}</button>
+              </div>{/if}
+          </form>
+        </div>
       </div>{/if}
     {#if showDiscardPrompt}<div class="discard-backdrop">
         <div class="discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-create-title">
           <span class="panel-kicker">UNSAVED VALUES</span>
           <h2 id="discard-create-title">Discard this creation?</h2>
-          <p>Your entered values will be cleared. You can keep editing or start over with the new template.</p>
+          <p>Your entered values will be cleared. Cancel to return without losing them.</p>
           <div class="discard-actions">
-            <button type="button" class="quiet-button" onclick={keepCreateEditing}>Keep editing</button><button
+            <button type="button" class="quiet-button" onclick={keepCreateEditing}>Cancel</button><button
               type="button"
               class="primary-button"
-              onclick={discardCreateValues}>Discard values</button>
+              onclick={discardCreateValues}>Discard</button>
           </div>
         </div>
       </div>{/if}
@@ -8719,15 +9021,6 @@ onMount(() => {
   line-height: 1;
   letter-spacing: 0.02em;
 }
-.search-result .entity-glyph {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  font-size: 10px;
-  font-weight: 800;
-}
 .entity-glyph-person {
   color: var(--theme-warning-text, #9b6847);
   background: var(--theme-warning-bg, #f8eadf) !important;
@@ -8901,72 +9194,13 @@ onMount(() => {
 .dialog .new-form-actions {
   margin-top: 20px;
 }
-.search-modal {
-  position: absolute;
-  top: 58px;
-  right: 40px;
-  z-index: 5;
-  width: min(460px, calc(100vw - 80px));
-  max-height: min(560px, calc(100vh - 100px));
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-lg);
-}
-.search-modal-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 13px 15px 10px;
-  border-bottom: 1px solid var(--line);
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-.search-modal-heading .quiet-button {
-  padding: 0 4px;
-  font-size: 18px;
-}
-.search-state {
+.plugins-list .search-state {
   margin: 0;
   padding: 28px 16px;
   color: var(--ink-faint);
   font-size: 11px;
   text-align: center;
 }
-.search-results {
-  padding: 7px;
-}
-.search-result {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-.search-result:hover {
-  border-color: var(--theme-warning-border, #e5d8c6);
-  background: var(--surface-muted);
-}
-.search-result strong,
-.search-result small {
-  display: block;
-}
-.search-result strong {
-  font-size: 12px;
-}
-.search-result small {
-  margin-top: 3px;
-  color: var(--ink-faint);
-  font-size: 10px;
-}
-
 :global(html) {
   background: var(--canvas);
 }
@@ -9022,10 +9256,6 @@ onMount(() => {
   max-height: min(680px, calc(100vh - 32px));
   overflow-y: auto;
 }
-.search-modal {
-  top: 58px;
-}
-
 @media (max-width: 1040px) {
   .projection-bar {
     margin-inline: 28px;
@@ -9039,12 +9269,6 @@ onMount(() => {
 @media (max-width: 760px) {
   :global(body) {
     overflow-x: hidden;
-  }
-  .search-modal {
-    top: 105px;
-    right: 17px;
-    left: 17px;
-    width: auto;
   }
   .welcome {
     min-height: 680px;
@@ -9138,10 +9362,13 @@ onMount(() => {
 .create-dialog {
   display: flex;
   flex-direction: column;
-  width: min(980px, 100%);
-  max-height: min(760px, calc(100vh - 32px));
+  width: min(820px, 100%);
+  max-height: min(780px, calc(100vh - 32px));
   padding: 0;
   overflow: hidden;
+}
+.create-dialog-form {
+  display: contents;
 }
 .create-dialog-heading {
   display: flex;
@@ -9157,88 +9384,102 @@ onMount(() => {
   font: 500 27px/1.05 var(--font-display);
 }
 .create-dialog-heading p {
-  max-width: 560px;
+  max-width: 600px;
   margin: 9px 0 0;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.5;
 }
-.create-dialog-body {
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  min-height: 440px;
-  overflow: hidden;
+.create-dialog-back {
+  display: block;
+  margin: 0 0 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-dark);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 750;
 }
-.create-template-panel {
-  min-width: 0;
+.create-dialog-back::before {
+  content: "←";
+  margin-right: 6px;
+}
+.create-template-gallery {
+  min-height: 360px;
+  padding: 24px 26px 30px;
   overflow-y: auto;
-  padding: 20px 13px 20px;
-  border-right: 1px solid var(--line);
-  background: var(--surface-muted);
-}
-.create-panel-label {
-  display: block;
-  margin-bottom: 16px;
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-.create-template-group > span {
-  display: block;
-  margin: 0 4px 2px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  background: var(--canvas);
 }
 .create-template-group {
-  display: grid;
-  gap: 6px;
-  margin-top: 18px;
+  margin-top: 26px;
 }
 .create-template-group:first-child {
   margin-top: 0;
 }
+.create-template-group-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.create-template-group-heading span {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.create-template-group-heading small {
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+.create-template-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
 .create-template-card {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 18px;
-  align-items: center;
-  gap: 9px;
+  min-height: 132px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  align-content: start;
+  gap: 13px 8px;
   width: 100%;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
 }
-.create-template-card:hover {
-  border-color: var(--theme-warning-border, #e5d8c6);
-  background: var(--surface);
-}
-.create-template-card.selected {
-  border-color: var(--theme-warning-border, #d8c3a5);
-  background: var(--surface);
-  box-shadow:
-    inset 3px 0 var(--accent),
-    var(--shadow-sm);
+.create-template-card:hover,
+.create-template-card:focus-visible {
+  border-color: var(--accent-soft);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(38, 42, 33, 0.12));
+  transform: translateY(-1px);
 }
 .create-template-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   border-radius: 10px;
   background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 13px;
+  color: var(--accent-dark);
+  font-size: 14px;
   font-weight: 800;
 }
 .create-template-copy {
+  grid-column: 1 / -1;
   min-width: 0;
 }
 .create-template-copy strong,
@@ -9248,39 +9489,31 @@ onMount(() => {
   text-overflow: ellipsis;
 }
 .create-template-copy strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 .create-template-copy small {
-  margin-top: 4px;
+  display: -webkit-box;
+  margin-top: 6px;
   color: var(--ink-faint);
   font-size: 10px;
-  line-height: 1.35;
-  white-space: nowrap;
+  line-height: 1.45;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
-.create-template-check {
-  color: var(--accent);
-  font-size: 15px;
-  font-weight: 800;
-  text-align: center;
+.create-template-arrow {
+  align-self: center;
+  color: var(--ink-faint);
+  font-size: 22px;
+  line-height: 1;
 }
 .create-form-panel {
+  width: min(620px, 100%);
   min-width: 0;
+  margin: 0 auto;
   overflow-y: auto;
-  padding: 25px 28px 28px;
-}
-.create-form-title {
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--line);
-}
-.create-form-title h2 {
-  margin: 7px 0 4px;
-  font: 500 25px/1.1 var(--font-display);
-}
-.create-form-title p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
+  padding: 8px 28px 30px;
 }
 .create-input-field {
   display: block;
@@ -9339,6 +9572,48 @@ onMount(() => {
   width: 16px;
   height: 16px;
   accent-color: var(--accent-dark);
+}
+.create-more-details-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 22px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+}
+.create-more-details-toggle:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-quiet);
+}
+.create-more-details-toggle strong,
+.create-more-details-toggle small {
+  display: block;
+}
+.create-more-details-toggle strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+.create-more-details-toggle small {
+  margin-top: 3px;
+  color: var(--ink-faint);
+  font-size: 9px;
+}
+.create-more-details-toggle :global(svg) {
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+.create-more-details-toggle :global(svg.expanded) {
+  transform: rotate(180deg);
+}
+.create-more-details {
+  padding: 1px 2px 4px;
 }
 .create-form-empty {
   display: grid;
@@ -9476,47 +9751,27 @@ onMount(() => {
   .create-dialog-heading strong {
     font-size: 23px;
   }
-  .create-dialog-body {
-    grid-template-columns: 1fr;
+  .create-template-gallery {
     min-height: 0;
-    overflow: auto;
-  }
-  .create-template-panel {
-    max-height: 235px;
-    padding: 16px 12px 14px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .create-panel-label {
-    margin-bottom: 12px;
+    padding: 18px;
   }
   .create-template-group {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 13px;
+    margin-top: 20px;
   }
-  .create-template-group > span {
-    grid-column: 1 / -1;
+  .create-template-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .create-template-card {
-    grid-template-columns: 30px minmax(0, 1fr) 14px;
-    padding: 8px;
+    min-height: 116px;
+    padding: 12px;
   }
   .create-template-icon {
-    width: 29px;
-    height: 29px;
+    width: 34px;
+    height: 34px;
     border-radius: 8px;
-    font-size: 11px;
-  }
-  .create-template-copy strong {
-    font-size: 11px;
-  }
-  .create-template-copy small {
-    font-size: 9px;
   }
   .create-form-panel {
-    padding: 20px 18px 22px;
-    overflow: visible;
+    padding: 4px 18px 22px;
   }
   .create-dialog-actions {
     padding: 13px 18px;
@@ -9526,6 +9781,15 @@ onMount(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+@media (max-width: 470px) {
+  .create-template-tiles {
+    grid-template-columns: 1fr;
+  }
+  .create-template-card {
+    min-height: 106px;
   }
 }
 

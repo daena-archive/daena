@@ -5324,6 +5324,18 @@ async function openExternalImport() {
   if (!(await flushAutoSave())) return;
   showExternalImport = true;
 }
+async function seedExample() {
+  try {
+    if (!(await flushAutoSave())) return;
+    await project.seedExample();
+    clearSelection();
+    await loadEntities();
+    modules = await project.listModuleManifests();
+    error = "Example world seeded.";
+  } catch (cause) {
+    throw new Error(friendlyError(cause));
+  }
+}
 async function rebuildSearchIndex() {
   const request = ++searchRequest;
   try {
@@ -5654,6 +5666,7 @@ onMount(() => {
     onCreate={toggleCreateForm}
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
+    onOpenSnapshots={() => void openProjectCenter("snapshots")}
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
@@ -6180,6 +6193,7 @@ onMount(() => {
         onRestoreRecoveryBackup={restoreRecoveryBackup}
         onImportCheckpoint={importPortableCheckpoint}
         onRebuildIndex={rebuildSearchIndex}
+        onSeedExample={seedExample}
         onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
@@ -6580,15 +6594,12 @@ onMount(() => {
                   <button type="button" role="menuitem" disabled>Import vector map</button>
                 </div>{/if}
             </div>{/if}
-          {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
-              >Create language</button
-            >{/if}
         {/snippet}
         <WorkspaceHeader
           kicker={workspaceHeadingKicker()}
           title={sectionLabel()}
           description={workspaceHeadingDescription()}
-          actions={section === "maps" || section === "language" ? workspaceHeaderActions : undefined} />
+          actions={section === "maps" ? workspaceHeaderActions : undefined} />
         <nav class="workbench-layout-controls" aria-label="Workbench panes">
           <span>Layout</span><button
             type="button"

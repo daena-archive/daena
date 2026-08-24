@@ -208,6 +208,7 @@ dependencies = [
 name = "daena-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "roxmltree",
  "serde",
  "serde_json",
 ]

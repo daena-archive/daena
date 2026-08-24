@@ -668,19 +668,29 @@ h2 {
 .relationship-metadata-field input:not([type="checkbox"]),
 .relationship-metadata-field select {
   width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: var(--control-min-height);
+  padding: 9px 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--canvas);
   color: var(--ink);
   font-size: 13px;
   outline: none;
 }
+.relationship-metadata-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--canvas);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
 .relationship-metadata-field input:not([type="checkbox"]):focus,
 .relationship-metadata-field select:focus {
   border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .relationship-metadata-field input[type="checkbox"] {
   width: 18px;
@@ -757,18 +767,29 @@ h2 {
 .date-fields select {
   min-width: 0;
   width: 100%;
+  min-height: var(--control-min-height);
   padding: 8px 6px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--canvas);
   color: var(--ink);
   font-size: 11px;
   outline: none;
 }
+.date-fields select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--canvas);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
 .date-fields input:focus,
 .date-fields select:focus {
   border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .date-preview {
   color: var(--accent);

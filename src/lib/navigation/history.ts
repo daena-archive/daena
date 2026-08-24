@@ -15,6 +15,13 @@ export interface WorkspaceCollectionLocation {
   scrollTop: number;
 }
 
+export interface WorkspacePaneDimensions {
+  collectionWidth: number;
+  contentWidth: number;
+  inspectorWidth: number;
+  viewportWidth: number;
+}
+
 export type ShellLocation =
   | { kind: "home" }
   | { kind: "settings"; section: SettingsSection }
@@ -26,12 +33,15 @@ export type ShellLocation =
       writingView: WritingView;
       timelineView: TimelineView;
       collection: WorkspaceCollectionLocation;
+      panes: WorkspacePaneDimensions;
+      surfaceScrollTop: number;
     }
   | {
       kind: "plugin";
       key: string;
       section: WorkspaceSection;
       entityId: string | null;
+      surfaceScrollTop: number;
     };
 
 export interface ShellNavigationHistory {
@@ -53,13 +63,16 @@ export function emptyShellNavigationHistory(): ShellNavigationHistory {
 export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "home") return "home";
   if (location.kind === "settings") return `settings:${location.section}`;
-  if (location.kind === "plugin") return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}`;
+  if (location.kind === "plugin") {
+    return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}:${Math.round(location.surfaceScrollTop)}`;
+  }
   return `workspace:${JSON.stringify({
     section: location.section,
     view: location.view,
     entityId: location.entityId,
     writingView: location.writingView,
     timelineView: location.timelineView,
+    surfaceScrollTop: Math.round(location.surfaceScrollTop),
     collection: {
       ...location.collection,
       scrollTop: Math.round(location.collection.scrollTop),
@@ -73,7 +86,10 @@ export function sameShellLocation(left: ShellLocation, right: ShellLocation): bo
 
 export function recordShellLocation(history: ShellNavigationHistory, current: ShellLocation): ShellNavigationHistory {
   if (history.back.at(-1) && sameShellLocation(history.back.at(-1)!, current)) {
-    return history.forward.length === 0 ? history : { ...history, forward: [] };
+    return {
+      back: [...history.back.slice(0, -1), current],
+      forward: [],
+    };
   }
   return {
     back: [...history.back, current].slice(-SHELL_HISTORY_LIMIT),

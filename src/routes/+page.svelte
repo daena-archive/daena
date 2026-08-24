@@ -44,6 +44,7 @@ import {
   type ShellNavigationHistory,
   type WorkspaceCollectionLocation,
   type WorkspaceLocationView,
+  type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
 import {
   collectionEntityTypes,
@@ -77,6 +78,11 @@ import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
 import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
+import CollectionPane from "$lib/shell/CollectionPane.svelte";
+import ContentPane from "$lib/shell/ContentPane.svelte";
+import InspectorPane from "$lib/shell/InspectorPane.svelte";
+import StatusSummary from "$lib/shell/StatusSummary.svelte";
+import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
@@ -238,8 +244,15 @@ let collectionRequest = 0;
 let collectionScopeKey = "";
 let collectionQueryRestoring = false;
 let collectionListElement = $state<HTMLDivElement | null>(null);
+let collectionPaneElement = $state<HTMLElement | null>(null);
+let contentPaneElement = $state<HTMLElement | null>(null);
+let inspectorPaneElement = $state<HTMLElement | null>(null);
 let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
 let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
+let restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
+let specializedSurfaceElement = $state<HTMLElement | null>(null);
+let specializedSurfaceScrollByKey = $state<Record<string, number>>({});
+let pendingSpecializedSurfaceScroll = $state<{ key: string; scrollTop: number } | null>(null);
 
 $effect(() => {
   const q = collectionQuery;
@@ -1275,6 +1288,36 @@ function currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
   };
 }
 
+function measuredPaneWidth(element: HTMLElement | null, fallback: number) {
+  const width = element?.getBoundingClientRect().width ?? 0;
+  return width > 0 ? Math.round(width) : fallback;
+}
+
+function currentWorkspacePaneDimensions(): WorkspacePaneDimensions {
+  const fallback = restoredWorkspacePaneDimensions;
+  return {
+    collectionWidth: measuredPaneWidth(collectionPaneElement, fallback?.collectionWidth ?? 0),
+    contentWidth: measuredPaneWidth(contentPaneElement, fallback?.contentWidth ?? 0),
+    inspectorWidth: measuredPaneWidth(inspectorPaneElement, fallback?.inspectorWidth ?? 0),
+    viewportWidth: typeof window === "undefined" ? (fallback?.viewportWidth ?? 0) : window.innerWidth,
+  };
+}
+
+async function restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
+  const viewportWidth = typeof window === "undefined" ? panes.viewportWidth : window.innerWidth;
+  restoredWorkspacePaneDimensions =
+    panes.viewportWidth > 0 && Math.abs(panes.viewportWidth - viewportWidth) <= 2 ? { ...panes } : null;
+  await tick();
+}
+
+function workspaceGridStyle() {
+  const panes = restoredWorkspacePaneDimensions;
+  if (!panes || panes.collectionWidth <= 0 || panes.inspectorWidth <= 0) return undefined;
+  const collectionWidth = Math.max(190, Math.min(360, Math.round(panes.collectionWidth)));
+  const inspectorWidth = Math.max(220, Math.min(420, Math.round(panes.inspectorWidth)));
+  return `--collection-pane-width: ${collectionWidth}px; --inspector-pane-width: ${inspectorWidth}px`;
+}
+
 function rememberCollectionScroll() {
   if (!collectionListElement) return;
   collectionScrollBySection[section] = collectionListElement.scrollTop;
@@ -1298,6 +1341,55 @@ async function applyWorkspaceCollectionLocation(location: WorkspaceCollectionLoc
   collectionQueryRestoring = false;
 }
 
+function specializedSurfaceKey(): string | null {
+  if (hostView) return `plugin:${hostView.plugin.id}:${hostView.view.id}`;
+  if (sandboxView?.view && sandboxView.renderer !== "maps") {
+    return `plugin:${sandboxView.plugin.id}:${sandboxView.view.id}`;
+  }
+  if (loreWikiOpen) return "workspace:lore:wiki";
+  if (projectionView?.kind === "graph") return "workspace:lore:graph";
+  if (projectionView?.kind === "timeline") return "workspace:timeline:timeline";
+  return null;
+}
+
+function specializedSurfaceKeyForLocation(location: ShellLocation): string | null {
+  if (location.kind === "plugin") return `plugin:${location.key}`;
+  if (location.kind !== "workspace") return null;
+  if (location.view === "wiki" || location.view === "graph" || location.view === "timeline") {
+    return `workspace:${location.section}:${location.view}`;
+  }
+  return null;
+}
+
+function currentSpecializedSurfaceScrollTop() {
+  const key = specializedSurfaceKey();
+  if (!key) return 0;
+  return pendingSpecializedSurfaceScroll?.key === key
+    ? pendingSpecializedSurfaceScroll.scrollTop
+    : (specializedSurfaceElement?.scrollTop ?? specializedSurfaceScrollByKey[key] ?? 0);
+}
+
+function rememberSpecializedSurfaceScroll(scrollTop: number) {
+  const key = specializedSurfaceKey();
+  if (!key) return;
+  specializedSurfaceScrollByKey[key] = scrollTop;
+  if (pendingSpecializedSurfaceScroll?.key === key) pendingSpecializedSurfaceScroll = null;
+}
+
+async function restoreSpecializedSurfaceScroll(location: ShellLocation) {
+  if (location.kind === "home" || location.kind === "settings") return;
+  const key = specializedSurfaceKeyForLocation(location);
+  if (!key) return;
+  pendingSpecializedSurfaceScroll = { key, scrollTop: location.surfaceScrollTop };
+  specializedSurfaceScrollByKey[key] = location.surfaceScrollTop;
+  await tick();
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  if (specializedSurfaceKey() !== key || !specializedSurfaceElement) return;
+  specializedSurfaceElement.scrollTop = location.surfaceScrollTop;
+  specializedSurfaceScrollByKey[key] = specializedSurfaceElement.scrollTop;
+  pendingSpecializedSurfaceScroll = null;
+}
+
 function currentShellLocation(): ShellLocation {
   if (showSettings) return { kind: "settings", section: settingsSection };
   if (projectHomeOpen) return { kind: "home" };
@@ -1307,6 +1399,7 @@ function currentShellLocation(): ShellLocation {
       key: `${hostView.plugin.id}:${hostView.view.id}`,
       section,
       entityId: selected?.id ?? null,
+      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
     };
   }
   if (sandboxView?.view) {
@@ -1315,6 +1408,7 @@ function currentShellLocation(): ShellLocation {
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
       section,
       entityId: selected?.id ?? null,
+      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
     };
   }
   return {
@@ -1325,6 +1419,8 @@ function currentShellLocation(): ShellLocation {
     writingView,
     timelineView,
     collection: currentWorkspaceCollectionLocation(),
+    panes: currentWorkspacePaneDimensions(),
+    surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
   };
 }
 
@@ -1963,6 +2059,24 @@ function collectionLabel() {
           : "maps";
 }
 
+function collectionKicker() {
+  return section === "lore"
+    ? "LORE LIBRARY"
+    : section === "timeline"
+      ? timelineView === "eras"
+        ? "ERAS"
+        : timelineView === "calendars"
+          ? "CALENDARS"
+          : "TIMELINE"
+      : section === "maps"
+        ? "MAPS"
+        : section === "language"
+          ? "LANGUAGES"
+          : writingView === "manuscripts"
+            ? "MANUSCRIPTS"
+            : "REFERENCE PAGES";
+}
+
 function createLabel() {
   return section === "lore"
     ? "entry"
@@ -2116,6 +2230,7 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await switchSection(target.section);
       await restoreShellEntity(target.entityId);
       await openPluginView(pluginItem!);
+      await restoreSpecializedSurfaceScroll(target);
     } else {
       await switchSection(target.section);
       if (target.section === "lore") {
@@ -2131,6 +2246,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
         await openWorkspaceView(target.view);
       }
+      await restoreWorkspacePaneDimensions(target.panes);
+      await restoreSpecializedSurfaceScroll(target);
       const expected = restoredEntity || !target.entityId ? target : { ...target, entityId: null };
       return sameShellLocation(currentShellLocation(), expected);
     }
@@ -4778,8 +4895,17 @@ onMount(() => {
     event.preventDefault();
     void navigateShellHistory(event.key === "ArrowLeft" ? "back" : "forward");
   };
+  const handleWorkbenchResize = () => {
+    if (
+      restoredWorkspacePaneDimensions &&
+      Math.abs(restoredWorkspacePaneDimensions.viewportWidth - window.innerWidth) > 2
+    ) {
+      restoredWorkspacePaneDimensions = null;
+    }
+  };
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
+  window.addEventListener("resize", handleWorkbenchResize);
   let closeListenerDisposed = false;
   let unlistenWindowClose: (() => void) | undefined;
   void getCurrentWindow()
@@ -4921,6 +5047,7 @@ onMount(() => {
     unlistenWindowClose?.();
     window.removeEventListener("beforeunload", handleBeforeUnload);
     window.removeEventListener("keydown", handleHistoryKey);
+    window.removeEventListener("resize", handleWorkbenchResize);
     cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
@@ -5759,40 +5886,64 @@ onMount(() => {
         onOpenWorkspace={(target) => void switchSection(target)}
         onOpenEntity={(entity) => void selectSearchResult(entity)} />
     {:else if projectionView}
-      {#key projectionView.title}
-        <ProjectionView
-          title={projectionView.title}
-          subtitle={projectionView.subtitle}
-          kind={projectionView.kind}
-          view={projectionView.module.views[0]}
-          context={buildModuleContext(projectionView.manifest, projectInfo?.root ?? "", {
-            focusEntityId: selected?.id as UUID | undefined,
-            availableServices: enabledServices(),
-          })}
-          onClose={() => void closeProjectionView()} />
-      {/key}
+      <SpecializedSurface
+        restoreKey={specializedSurfaceKey() ?? "projection"}
+        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
+        bind:element={specializedSurfaceElement}
+        onScroll={rememberSpecializedSurfaceScroll}>
+        {#key projectionView.title}
+          <ProjectionView
+            title={projectionView.title}
+            subtitle={projectionView.subtitle}
+            kind={projectionView.kind}
+            view={projectionView.module.views[0]}
+            context={buildModuleContext(projectionView.manifest, projectInfo?.root ?? "", {
+              focusEntityId: selected?.id as UUID | undefined,
+              availableServices: enabledServices(),
+            })}
+            onClose={() => void closeProjectionView()} />
+        {/key}
+      </SpecializedSurface>
     {:else if hostView}
-      <div class="host-view-shell">
-        <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
-        ><HostView plugin={hostView.plugin} view={hostView.view} />
-      </div>
+      <SpecializedSurface
+        restoreKey={specializedSurfaceKey() ?? "host"}
+        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
+        bind:element={specializedSurfaceElement}
+        onScroll={rememberSpecializedSurfaceScroll}>
+        <div class="host-view-shell">
+          <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
+          ><HostView plugin={hostView.plugin} view={hostView.view} />
+        </div>
+      </SpecializedSurface>
     {:else if loreWikiOpen}
-      <WikiView
-        manifest={manifestForWorkspaceSection("lore")!}
-        initialEntityId={loreWikiEntityId}
-        projectId={projectInfo?.root ?? ""}
-        aiEnabled={projectInfo?.aiEnabled ?? false}
-        imageProvider={aiSettings.imageProvider}
-        textProvider={aiSettings.provider}
-        onClose={() => void closeLoreWiki()}
-        onSelectEntity={(id) => {
-          const ent = entities.find((e) => e.id === id);
-          if (ent) void selectEntity(ent);
-        }} />
+      <SpecializedSurface
+        restoreKey={specializedSurfaceKey() ?? "wiki"}
+        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
+        bind:element={specializedSurfaceElement}
+        onScroll={rememberSpecializedSurfaceScroll}>
+        <WikiView
+          manifest={manifestForWorkspaceSection("lore")!}
+          initialEntityId={loreWikiEntityId}
+          projectId={projectInfo?.root ?? ""}
+          aiEnabled={projectInfo?.aiEnabled ?? false}
+          imageProvider={aiSettings.imageProvider}
+          textProvider={aiSettings.provider}
+          onClose={() => void closeLoreWiki()}
+          onSelectEntity={(id) => {
+            const ent = entities.find((e) => e.id === id);
+            if (ent) void selectEntity(ent);
+          }} />
+      </SpecializedSurface>
     {:else if sandboxView && sandboxView.renderer !== "maps"}
-      {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
-        <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
-      {/key}
+      <SpecializedSurface
+        restoreKey={specializedSurfaceKey() ?? "sandbox"}
+        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
+        bind:element={specializedSurfaceElement}
+        onScroll={rememberSpecializedSurfaceScroll}>
+        {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
+          <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
+        {/key}
+      </SpecializedSurface>
     {:else if enabledWorkspaceSections().length === 0}
       <section class="empty-workspace-state">
         <div class="disabled-icon">◌</div>
@@ -5839,40 +5990,9 @@ onMount(() => {
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
         class:map-surface-expanded={mapSurfaceOpen}
         class:workspace-grid-no-inspector={section === "language"}
-        class="workspace-grid">
-        <aside class="collection-panel panel-surface">
-          <div class="panel-heading">
-            <div>
-              <span class="panel-kicker"
-                >{section === "lore"
-                  ? "LORE LIBRARY"
-                  : section === "timeline"
-                    ? timelineView === "eras"
-                      ? "ERAS"
-                      : timelineView === "calendars"
-                        ? "CALENDARS"
-                        : "TIMELINE"
-                    : section === "maps"
-                      ? "MAPS"
-                      : section === "language"
-                        ? "LANGUAGES"
-                        : writingView === "manuscripts"
-                          ? "MANUSCRIPTS"
-                          : "REFERENCE PAGES"}</span
-              ><strong>{collectionResult().total} {collectionLabel()}</strong>
-            </div>
-            <div class="view-mode-toggle">
-              <button
-                class:active={collectionQuery.viewMode === "flat"}
-                aria-label="Flat list"
-                onclick={() => (collectionQuery.viewMode = "flat")}>≡</button
-              ><button
-                class:active={collectionQuery.viewMode === "grouped"}
-                aria-label="Grouped by type"
-                onclick={() => (collectionQuery.viewMode = "grouped")}>⊟</button>
-            </div>
-          </div>
-
+        class="workspace-grid"
+        style={workspaceGridStyle()}>
+        {#snippet collectionControls()}
           <div class="collection-search">
             <span><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label={`Search ${collectionLabel()}`}
@@ -5945,95 +6065,97 @@ onMount(() => {
                 </fieldset>
               </div>{/if}
           </div>
-          <div class="collection-list" bind:this={collectionListElement} onscroll={rememberCollectionScroll}>
-            {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
-            {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
-                Loading {collectionLabel()}…
-              </div>{:else if collectionResult().total === 0}<div class="list-empty" role="status">
-                <span class="empty-mark" aria-hidden="true">✦</span><strong
-                  >{collectionQuery.textSearch
-                    ? `No ${collectionLabel()} match that search.`
-                    : `No ${collectionLabel()} yet.`}</strong>
-                <p>
-                  {collectionQuery.textSearch
-                    ? "Try another search or create something new."
-                    : section === "maps"
-                      ? "Create a map through an installed map integration."
-                      : `Create your first ${createLabel()} to begin building this collection.`}
-                </p>
-                {#if section === "maps"}<div class="empty-create-actions">
-                    <button
-                      class="empty-create"
-                      type="button"
-                      aria-haspopup="menu"
-                      aria-expanded={mapProviderMenuOpen === "empty"}
-                      onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
-                      ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                        ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
-                    {#if mapProviderMenuOpen === "empty"}<div
-                        class="map-provider-menu empty-map-provider-menu"
-                        role="menu">
-                        <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                          >Create physical world</button>
-                        <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
-                          >Create with FMG</button>
-                        <button type="button" role="menuitem" disabled>Import image</button>
-                        <button type="button" role="menuitem" disabled>Import vector map</button>
-                      </div>{/if}
-                  </div>
-                {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
+        {/snippet}
+        {#snippet collectionItems()}
+          {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
+          {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
+              Loading {collectionLabel()}…
+            </div>{:else if collectionResult().total === 0}<div class="list-empty" role="status">
+              <span class="empty-mark" aria-hidden="true">✦</span><strong
+                >{collectionQuery.textSearch
+                  ? `No ${collectionLabel()} match that search.`
+                  : `No ${collectionLabel()} yet.`}</strong>
+              <p>
+                {collectionQuery.textSearch
+                  ? "Try another search or create something new."
+                  : section === "maps"
+                    ? "Create a map through an installed map integration."
+                    : `Create your first ${createLabel()} to begin building this collection.`}
+              </p>
+              {#if section === "maps"}<div class="empty-create-actions">
+                  <button
+                    class="empty-create"
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={mapProviderMenuOpen === "empty"}
+                    onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
                     ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                      ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-                    Create {createLabel()}</button
-                  >{/if}
-              </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div
-                  class="collection-group">
-                  <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
-                    ><span class="group-chevron"
-                      >{#if expandedGroups.has(group.type)}<ChevronDown
-                          size={12}
-                          strokeWidth={1.8}
-                          aria-hidden="true" />{:else}<ChevronRight
-                          size={12}
-                          strokeWidth={1.8}
-                          aria-hidden="true" />{/if}</span
-                    ><span class={`entity-glyph ${entityGlyphClassForType(group.type)}`}
-                      >{#if group.type === "daena.maps:map"}<MapIcon
-                          size={14}
-                          strokeWidth={1.8}
-                          aria-hidden="true" />{:else}{glyphForType(group.type)}{/if}</span
-                    ><strong>{group.label}</strong><small>{group.count}</small></button
-                  >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
-                        class:selected={selected?.id === entity.id}
-                        class="collection-item"
-                        onclick={() => selectEntity(entity)}
-                        ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
-                          >{#if entity.entity_type === "daena.maps:map"}<MapIcon
-                              size={14}
-                              strokeWidth={1.8}
-                              aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
-                        ><span class="item-copy"
-                          ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                        ><span class="item-arrow" aria-hidden="true"
-                          ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
-                        ></button
-                      >{/each}{/if}
-                </div>{/each}{:else}{#each collectionResult().entities as entity}<button
-                  class:selected={selected?.id === entity.id}
-                  class="collection-item"
-                  onclick={() => selectEntity(entity)}
-                  ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
-                    >{#if entity.entity_type === "daena.maps:map"}<MapIcon
+                      ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
+                  {#if mapProviderMenuOpen === "empty"}<div
+                      class="map-provider-menu empty-map-provider-menu"
+                      role="menu">
+                      <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                        >Create physical world</button>
+                      <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
+                        >Create with FMG</button>
+                      <button type="button" role="menuitem" disabled>Import image</button>
+                      <button type="button" role="menuitem" disabled>Import vector map</button>
+                    </div>{/if}
+                </div>
+              {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
+                  ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                    ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+                  Create {createLabel()}</button
+                >{/if}
+            </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div
+                class="collection-group">
+                <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
+                  ><span class="group-chevron"
+                    >{#if expandedGroups.has(group.type)}<ChevronDown
+                        size={12}
+                        strokeWidth={1.8}
+                        aria-hidden="true" />{:else}<ChevronRight
+                        size={12}
+                        strokeWidth={1.8}
+                        aria-hidden="true" />{/if}</span
+                  ><span class={`entity-glyph ${entityGlyphClassForType(group.type)}`}
+                    >{#if group.type === "daena.maps:map"}<MapIcon
                         size={14}
                         strokeWidth={1.8}
-                        aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
-                  ><span class="item-copy"
-                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                  ><span class="item-arrow" aria-hidden="true"
-                    ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
-                  ></button
-                >{/each}{/if}
-          </div>
+                        aria-hidden="true" />{:else}{glyphForType(group.type)}{/if}</span
+                  ><strong>{group.label}</strong><small>{group.count}</small></button
+                >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
+                      class:selected={selected?.id === entity.id}
+                      class="collection-item"
+                      onclick={() => selectEntity(entity)}
+                      ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
+                        >{#if entity.entity_type === "daena.maps:map"}<MapIcon
+                            size={14}
+                            strokeWidth={1.8}
+                            aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
+                      ><span class="item-copy"
+                        ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
+                      ><span class="item-arrow" aria-hidden="true"
+                        ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                      ></button
+                    >{/each}{/if}
+              </div>{/each}{:else}{#each collectionResult().entities as entity}<button
+                class:selected={selected?.id === entity.id}
+                class="collection-item"
+                onclick={() => selectEntity(entity)}
+                ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
+                  >{#if entity.entity_type === "daena.maps:map"}<MapIcon
+                      size={14}
+                      strokeWidth={1.8}
+                      aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
+                ><span class="item-copy"
+                  ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
+                ><span class="item-arrow" aria-hidden="true"
+                  ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                ></button
+              >{/each}{/if}
+        {/snippet}
+        {#snippet collectionFooter()}
           {#if collectionResult().total > 0}<nav class="collection-pagination" aria-label="Collection pages">
               <button
                 type="button"
@@ -6049,7 +6171,20 @@ onMount(() => {
                 disabled={!collectionPage.has_more || collectionLoading}
                 onclick={() => (collectionQuery.page += 1)}>Next</button>
             </nav>{/if}
-        </aside>
+        {/snippet}
+        <CollectionPane
+          kicker={collectionKicker()}
+          count={collectionResult().total}
+          label={collectionLabel()}
+          viewMode={collectionQuery.viewMode}
+          controls={collectionControls}
+          children={collectionItems}
+          footer={collectionFooter}
+          hidden={mapSurfaceOpen}
+          bind:element={collectionPaneElement}
+          bind:listElement={collectionListElement}
+          onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
+          onScroll={rememberCollectionScroll} />
 
         {#if section === "language"}
           {@const languageProjection = projectionModule("language")}
@@ -6064,12 +6199,7 @@ onMount(() => {
               className="language-mount" />
           {/key}
         {:else}
-          <article
-            class:editor-fullscreen={editorFullscreen}
-            class:map-editor-active={section === "maps" &&
-              sandboxView?.renderer === "maps" &&
-              Boolean(sandboxView.view)}
-            class="editor-panel">
+          {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
               {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
               {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
@@ -6202,30 +6332,24 @@ onMount(() => {
                       >{/if}
                   </div>
                 </div>
-                {#if selected}
-                  <div class="editor-status">
-                    {#if selectedLoading}<span class="saving-dot"></span> Loading…{:else if selectedLoadError}<span
-                        class="unsaved-dot"></span
-                      ><span title={selectedLoadError}>Could not load entry</span><button
-                        class="quiet-button"
-                        type="button"
-                        onclick={() => void reloadSelectedFromDisk()}>Retry</button
-                      >{:else if isSaving}<span class="saving-dot"></span> Saving…{:else if saveError}<span
-                        class="unsaved-dot"></span
-                      ><span title={saveError}>Save paused — retrying</span><button
-                        class="quiet-button"
-                        type="button"
-                        onclick={() => void flushAutoSave()}>Retry now</button
-                      >{:else if hasUnsavedChanges}<span class="unsaved-dot"></span> Unsaved changes{:else if savedAt}<span
-                        class="saved-dot">✓</span>
-                      Saved {savedAt}{/if}
-                    {#if section === "maps"}<button
-                        class="quiet-button"
-                        type="button"
-                        onclick={() => void openSelectedMapEditor()}>Open map editor</button
-                      >{/if}
-                  </div>
-                {/if}
+                {#snippet editorStatusActions()}
+                  {#if section === "maps"}<button
+                      class="quiet-button"
+                      type="button"
+                      onclick={() => void openSelectedMapEditor()}>Open map editor</button
+                    >{/if}
+                {/snippet}
+                <StatusSummary
+                  visible={Boolean(selected)}
+                  loading={selectedLoading}
+                  loadError={selectedLoadError}
+                  saving={isSaving}
+                  {saveError}
+                  dirty={hasUnsavedChanges}
+                  {savedAt}
+                  actions={editorStatusActions}
+                  onRetryLoad={() => void reloadSelectedFromDisk()}
+                  onRetrySave={() => void flushAutoSave()} />
               </div>
               {#if selected}
                 {#if documentConflict}
@@ -6374,11 +6498,6 @@ onMount(() => {
                       disabled={selectedLoading}
                       onclick={() => void toggleDocumentMode()}
                       >{documentMode === "read" ? "Edit" : "View article"}</button>
-                    <button
-                      class="quiet-button"
-                      type="button"
-                      disabled={selectedLoading}
-                      onclick={() => void openEntityEditDialog()}>Edit</button>
                     <button class="quiet-button" disabled={selectedLoading} onclick={archiveSelected}>Archive</button>
                   </div>
                 </div>
@@ -6402,17 +6521,21 @@ onMount(() => {
                 </div>
               {/if}
             {/if}
-          </article>
+          {/snippet}
+          <ContentPane
+            fullscreen={editorFullscreen}
+            mapEditorActive={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
+            bind:element={contentPaneElement}
+            children={contentPaneBody} />
         {/if}
 
-        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}<aside
-            class="inspector-panel panel-surface"
-            aria-busy={selectedLoading}
-            inert={selectedLoading || Boolean(selectedLoadError)}>
+        {#if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language" && selected}
+          {@const inspectedEntity = selected}
+          {#snippet inspectorBody()}
             <div class="inspector-heading">
               <div><span class="panel-kicker">INSPECTOR</span><strong>Details</strong></div>
               <div class="inspector-heading-actions">
-                <span class="inspector-type">{selected.entity_type}</span
+                <span class="inspector-type">{inspectedEntity.entity_type}</span
                 >{#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
                     class="inspector-ai-action"
                     type="button"
@@ -6621,7 +6744,7 @@ onMount(() => {
               <section class="inspector-section">
                 <CalendarEditor
                   context={contextFor("timeline")}
-                  entityId={selected.id as UUID}
+                  entityId={inspectedEntity.id as UUID}
                   onsaved={(definition) => {
                     if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
                   }} />
@@ -6734,11 +6857,15 @@ onMount(() => {
                       </div>
                     </div>{/each}{/if}
               </section>{/if}
-          </aside>{:else if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language"}<aside
-            class="inspector-panel panel-surface inspector-empty">
-            <span>INSPECTOR</span>
-            <p>Select an entry to see its properties, relationships, and attachments.</p>
-          </aside>{/if}
+          {/snippet}
+          <InspectorPane
+            loading={selectedLoading}
+            error={selectedLoadError}
+            bind:element={inspectorPaneElement}
+            children={inspectorBody} />
+        {:else if (section !== "maps" || sandboxView?.renderer !== "maps") && section !== "language"}
+          <InspectorPane bind:element={inspectorPaneElement} empty />
+        {/if}
       </section>
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">
@@ -7228,15 +7355,15 @@ onMount(() => {
 }
 .workspace-grid {
   display: grid;
-  grid-template-columns: 245px minmax(360px, 1fr) 270px;
+  grid-template-columns: var(--collection-pane-width, 245px) minmax(360px, 1fr) var(--inspector-pane-width, 270px);
   gap: 14px;
   padding: 0 40px 40px;
 }
 .workspace-grid-no-inspector {
-  grid-template-columns: 245px minmax(360px, 1fr);
+  grid-template-columns: var(--collection-pane-width, 245px) minmax(360px, 1fr);
 }
 .maps-workspace {
-  grid-template-columns: 245px minmax(0, 1fr);
+  grid-template-columns: var(--collection-pane-width, 245px) minmax(0, 1fr);
 }
 .app-main.map-surface-open {
   display: flex;
@@ -7253,15 +7380,6 @@ onMount(() => {
   gap: 0;
   padding: 8px 10px 10px;
   align-items: stretch;
-}
-.workspace-grid.map-surface-expanded .collection-panel {
-  display: none;
-}
-.workspace-grid.map-surface-expanded .editor-panel {
-  min-height: 0;
-  height: 100%;
-  padding: 0;
-  overflow: hidden;
 }
 .workspace-grid.map-surface-expanded .map-editor-shell,
 .workspace-grid.map-surface-expanded .map-surface {
@@ -7280,32 +7398,11 @@ onMount(() => {
     padding: 6px 8px 8px;
   }
 }
-.panel-surface,
-.editor-panel {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-}
-.collection-panel,
-.inspector-panel {
-  min-height: 650px;
-}
-.collection-panel {
-  display: flex;
-  flex-direction: column;
-}
-.panel-heading,
 .inspector-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 18px 17px 12px;
-}
-.panel-heading strong {
-  display: block;
-  margin-top: 5px;
-  font: 500 28px var(--font-display);
 }
 .project-diagnostics {
   display: grid;
@@ -7317,14 +7414,6 @@ onMount(() => {
   background: var(--theme-warning-bg, #fff5e9);
   color: var(--theme-warning-text, #765a39);
   font-size: 11px;
-}
-.editor-panel {
-  min-height: 650px;
-  padding: 24px 25px 18px;
-}
-.map-editor-active {
-  display: flex;
-  flex-direction: column;
 }
 .editor-header {
   display: flex;
@@ -7395,26 +7484,6 @@ onMount(() => {
 }
 .dialog .new-form-heading + .dialog-body-copy {
   margin-top: 4px;
-}
-.editor-status {
-  color: var(--ink-faint);
-  font-size: 11px;
-}
-.saving-dot,
-.saved-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: #d6a35f;
-}
-.saved-dot {
-  width: auto;
-  height: auto;
-  margin: 0 4px 0 0;
-  color: var(--theme-success-text, #6fa276);
-  background: transparent;
 }
 .document-conflict {
   margin: -4px 0 16px;
@@ -8249,36 +8318,9 @@ onMount(() => {
   cursor: pointer;
   font-size: 17px;
 }
-.inspector-empty {
-  display: grid;
-  place-items: center;
-  min-height: 240px;
-  padding: 30px;
-  color: var(--ink-faint);
-  text-align: center;
-  font-size: 10px;
-}
-.inspector-empty p {
-  max-width: 170px;
-  margin-top: 13px;
-  line-height: 1.6;
-}
 @media (max-width: 1180px) {
   .workspace-grid {
     grid-template-columns: 220px minmax(320px, 1fr);
-  }
-  .inspector-panel {
-    grid-column: 1 / -1;
-    min-height: auto;
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-  }
-  .inspector-heading {
-    grid-column: 1 / -1;
-  }
-  .inspector-section {
-    border-right: 1px solid var(--line);
-    border-bottom: 0;
   }
 }
 @media (max-width: 760px) {
@@ -8335,29 +8377,9 @@ onMount(() => {
     flex-direction: column;
     padding: 0 17px 25px;
   }
-  .collection-panel,
-  .editor-panel,
-  .inspector-panel {
-    width: 100%;
-    min-height: auto;
-  }
   :global(.module-mount.language-mount) {
     width: 100%;
     min-height: auto;
-  }
-  .collection-list {
-    max-height: 260px;
-    overflow-y: auto;
-  }
-  .inspector-panel {
-    display: block;
-  }
-  .inspector-section {
-    border-bottom: 1px solid var(--line);
-    border-right: 0;
-  }
-  .editor-panel {
-    padding: 18px 14px 14px;
   }
   .editor-header h2 {
     font-size: 24px;
@@ -8540,29 +8562,6 @@ onMount(() => {
 }
 .sort-dir-toggle:hover {
   background: var(--theme-warning-bg, #f0ece5);
-}
-.view-mode-toggle {
-  display: flex;
-  gap: 2px;
-  margin-left: auto;
-}
-.view-mode-toggle button {
-  appearance: none;
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 14px;
-  cursor: pointer;
-}
-.view-mode-toggle button:hover,
-.view-mode-toggle button.active {
-  background: var(--theme-warning-bg, #f0ece5);
-  color: var(--accent-dark);
 }
 .collection-group-header {
   appearance: none;
@@ -8992,20 +8991,6 @@ onMount(() => {
 .primary-button:active {
   transform: translateY(1px);
 }
-.workspace-grid > * {
-  min-width: 0;
-}
-.collection-panel,
-.editor-panel {
-  overflow: clip;
-}
-.inspector-panel {
-  overflow: visible;
-}
-.panel-heading {
-  gap: 12px;
-}
-.panel-heading > div,
 .editor-header > div:first-child,
 .inspector-heading > div {
   min-width: 0;
@@ -9032,63 +9017,6 @@ onMount(() => {
     color 0.16s ease,
     opacity 0.16s ease,
     transform 0.16s ease;
-}
-.unsaved-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: #d6a35f;
-}
-.editor-fullscreen {
-  position: fixed;
-  inset: 0 0 0 248px;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  overflow: auto;
-  padding: 28px clamp(22px, 5vw, 72px) 24px;
-  border: 0;
-  border-radius: 0;
-  background: var(--canvas);
-  box-shadow: 0 24px 80px rgba(37, 37, 31, 0.18);
-}
-.editor-fullscreen.map-editor-active {
-  inset: 0;
-  padding: 0;
-}
-.editor-fullscreen .editor-header {
-  width: min(1120px, 100%);
-  flex: 0 0 auto;
-  align-self: center;
-}
-.editor-fullscreen :global(.editor-shell) {
-  display: grid;
-  width: min(1120px, 100%);
-  min-height: 0;
-  flex: 1 1 auto;
-  align-self: center;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-.editor-fullscreen :global(.editor-content) {
-  overflow: auto;
-}
-.editor-fullscreen .editor-footer {
-  width: min(1120px, 100%);
-  flex: 0 0 auto;
-  align-self: center;
-}
-.editor-fullscreen .editor-header h2 {
-  font-size: 32px;
-}
-.editor-fullscreen .map-editor-shell {
-  width: 100%;
-  align-self: center;
-}
-.editor-fullscreen .editor-footer {
-  padding-top: 12px;
 }
 .dialog {
   max-height: min(680px, calc(100vh - 32px));
@@ -9135,37 +9063,9 @@ onMount(() => {
     gap: 12px;
     padding: 0 17px 25px;
   }
-  .collection-panel,
-  .editor-panel,
-  .inspector-panel {
-    border-radius: 11px;
-  }
-  .collection-list {
-    max-height: 320px;
-    -webkit-overflow-scrolling: touch;
-  }
-  .panel-heading strong {
-    font-size: 24px;
-  }
-  .editor-panel {
-    padding: 18px 14px 14px;
-  }
-  .editor-fullscreen {
-    inset: 0;
-    padding: 16px 14px 12px;
-  }
-  .editor-fullscreen .editor-header {
-    min-height: 58px;
-  }
-  .editor-fullscreen .editor-header h2 {
-    font-size: 24px;
-  }
   .editor-header {
     min-height: 62px;
     gap: 10px;
-  }
-  .editor-status {
-    flex: 0 0 auto;
   }
   .editor-footer {
     align-items: flex-start;
@@ -9177,12 +9077,6 @@ onMount(() => {
   }
   .editor-empty {
     min-height: 300px;
-  }
-  .inspector-panel {
-    display: block;
-  }
-  .inspector-section {
-    border-right: 0;
   }
   .date-fields {
     gap: 5px;

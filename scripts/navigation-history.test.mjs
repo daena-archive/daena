@@ -30,6 +30,13 @@ const lore = {
   writingView: "manuscripts",
   timelineView: "events",
   collection,
+  panes: {
+    collectionWidth: 245,
+    contentWidth: 640,
+    inspectorWidth: 270,
+    viewportWidth: 1440,
+  },
+  surfaceScrollTop: 0,
 };
 const graph = { ...lore, view: "graph" };
 const settings = { kind: "settings", section: "git" };
@@ -39,6 +46,14 @@ history = recordShellLocation(history, home);
 history = recordShellLocation(history, lore);
 history = recordShellLocation(history, lore);
 assert.deepEqual(history.back, [home, lore], "recording the same departure twice does not add a dead history step");
+
+const resizedLore = {
+  ...lore,
+  panes: { ...lore.panes, collectionWidth: 280, contentWidth: 605 },
+};
+history = recordShellLocation(history, resizedLore);
+assert.equal(history.back.length, 2, "pane resizing does not add a dead history step");
+assert.deepEqual(history.back.at(-1).panes, resizedLore.panes, "the latest pane dimensions replace stale history data");
 
 const filteredLore = {
   ...lore,
@@ -53,6 +68,26 @@ assert.equal(
   sameShellLocation(lore, filteredLore),
   false,
   "filter and scroll context are part of a workspace location",
+);
+
+const scrolledGraph = { ...graph, surfaceScrollTop: 312 };
+assert.equal(
+  sameShellLocation(graph, scrolledGraph),
+  false,
+  "specialized surface scroll is part of a workspace location",
+);
+
+const plugin = {
+  kind: "plugin",
+  key: "daena.example:main",
+  section: "lore",
+  entityId: null,
+  surfaceScrollTop: 0,
+};
+assert.equal(
+  sameShellLocation(plugin, { ...plugin, surfaceScrollTop: 96 }),
+  false,
+  "plugin surface scroll is part of a plugin location",
 );
 
 const back = shellHistoryBack(history, graph);

@@ -53,6 +53,7 @@ export interface PluginRpcClient {
   subscribeEvent(name: string, version: number): Promise<void>;
   pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
   callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
+  getAppVersion(): Promise<{ version: string }>;
   beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
   updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
   deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
@@ -370,6 +371,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
       callTransport<T[]>(transport, "event.poll", { type: qualified(name, version) }),
     callService: <T>(name: string, major: number, payload: unknown, deadlineMs = 5000) =>
       callTransport<T>(transport, "service.call", { name, major, payload, deadlineMs }),
+    getAppVersion: () => callTransport<{ version: string }>(transport, "app.version", {}),
     beginAssetRead: (assetId, namespace) =>
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
     updateAssetMetadata: (input, options) =>

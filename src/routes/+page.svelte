@@ -2,6 +2,7 @@
 import { onMount } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
 import {
@@ -278,6 +279,7 @@ let schemaPluginId = $state<string | null>(null);
 let schemaPluginName = $state("");
 let schemaEditorDirty = $state(false);
 let schemaOverlayLoadToken = 0;
+let displayVersion = $state(appVersionSyncFallback());
 
 const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
 const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
@@ -4286,6 +4288,7 @@ $effect(() => {
     });
 });
 onMount(() => {
+  void appVersion().then((v) => (displayVersion = v));
   void loadRecentProjects();
   void closeNativePluginWebviews();
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -4627,7 +4630,7 @@ onMount(() => {
               strokeWidth={1.8} />{/if}</span
         ><span>{railCollapsed ? "Expand" : "Collapse"}</span></button
       >{/if}
-    <div class="rail-footer">v0.1.0</div>
+    <div class="rail-footer">v{displayVersion}</div>
   </aside>
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">

@@ -328,6 +328,7 @@ export interface AiRequestStartPayload {
     taskId: string;
     userInstruction: string;
 }
+export type AppVersionPayload = Record<string, never>;
 export interface AssetDeletePayload {
     assetId: string;
     expectedRevision: string;
@@ -607,6 +608,7 @@ export interface BrokerMethodPayloads {
     "ai.request.poll": AiRequestIdPayload;
     "ai.request.result": AiRequestIdPayload;
     "ai.request.start": AiRequestStartPayload;
+    "app.version": AppVersionPayload;
     "asset.delete": AssetDeletePayload;
     "asset.list": AssetListPayload;
     "asset.read.begin": AssetReadBeginPayload;

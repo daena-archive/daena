@@ -3526,7 +3526,9 @@ async fn plugin_rpc(
     };
     let current_project = current_info(&core)?.map(|info| info.root);
     let event_project_id = session.project_id.clone();
-    let result = if current_project.as_deref() != Some(session.project_id.as_str()) {
+    let result = if method == "app.version" {
+        Ok(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }))
+    } else if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
     } else if matches!(
         method.as_str(),
@@ -4158,6 +4160,11 @@ async fn sync_project_usage_and_wait(
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {name}! You've been greeted from Rust!")
+}
+
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[tauri::command]
@@ -9583,6 +9590,7 @@ pub fn run() {
         .manage(image_jobs)
         .invoke_handler(tauri::generate_handler![
             greet,
+            app_version,
             settings_get,
             settings_update,
             ai::ai_provider_status,

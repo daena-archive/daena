@@ -1,8 +1,18 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+// @ts-ignore - node types not needed for vite config
+import { readFileSync } from "node:fs";
 
 // @ts-ignore process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+
+let appVersion = "0.0.0";
+try {
+  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
+  if (pkg?.version) appVersion = String(pkg.version);
+} catch {
+  // ignore — fallback to 0.0.0 for web preview
+}
 
 /** Vite only treats `.json` as JSON. A `.geojson` file is otherwise parsed as JS, where `{ "type":` is a syntax error. */
 /** @returns {import("vite").Plugin} */
@@ -24,6 +34,9 @@ function geojson() {
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   plugins: [geojson(), sveltekit()],
   build: {
     chunkSizeWarningLimit: 4000,

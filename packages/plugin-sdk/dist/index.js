@@ -232,6 +232,7 @@ export function createPluginRpcClient(transport) {
         subscribeEvent: (name, version) => callTransport(transport, "event.subscribe", { type: qualified(name, version) }),
         pollEvents: (name, version) => callTransport(transport, "event.poll", { type: qualified(name, version) }),
         callService: (name, major, payload, deadlineMs = 5000) => callTransport(transport, "service.call", { name, major, payload, deadlineMs }),
+        getAppVersion: () => callTransport(transport, "app.version", {}),
         beginAssetRead: (assetId, namespace) => callTransport(transport, "asset.read.begin", { assetId, namespace }),
         updateAssetMetadata: (input, options) => callTransport(transport, "asset.update", input, options?.requestId),
         deleteAsset: (input, options) => callTransport(transport, "asset.delete", input, options?.requestId),

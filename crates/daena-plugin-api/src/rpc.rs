@@ -768,6 +768,11 @@ pub struct AiRequestIdPayload {
     pub request_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AppVersionPayload {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

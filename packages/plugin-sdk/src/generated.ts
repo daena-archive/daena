@@ -59,6 +59,7 @@ export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
 export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includeSharedFields: boolean; mode: AiRetrievalMode; passageCount: number; query?: string | null; relationshipDepth: number; seedIds: string[] }
 export interface AiRequestIdPayload { requestId: string }
 export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
+export type AppVersionPayload = Record<string, never>
 export interface AssetDeletePayload { assetId: string; expectedRevision: string; namespace: string }
 export interface AssetListPayload { entityId: string; namespace?: string | null }
 export interface AssetReadBeginPayload { assetId: string; namespace: string }
@@ -118,6 +119,7 @@ export interface BrokerMethodPayloads {
   "ai.request.poll": AiRequestIdPayload;
   "ai.request.result": AiRequestIdPayload;
   "ai.request.start": AiRequestStartPayload;
+  "app.version": AppVersionPayload;
   "asset.delete": AssetDeletePayload;
   "asset.list": AssetListPayload;
   "asset.read.begin": AssetReadBeginPayload;

@@ -583,6 +583,12 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         requires_revision: false,
         capability: RpcCapability::AnyStatic(&["ai.text.generate", "ai.text.generate-structured"]),
     },
+    RpcMethodDef {
+        name: "app.version",
+        payload_schema: "AppVersionPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&[]),
+    },
 ];
 
 pub fn rpc_method(name: &str) -> Option<&'static RpcMethodDef> {
@@ -601,7 +607,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 59);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 60);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

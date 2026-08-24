@@ -12,7 +12,7 @@
 //! path, so the emitted `$ref`s already point at `#/$defs/<Name>`.
 
 use daena_plugin_api::rpc::{
-    AiRequestIdPayload, AiRequestStartPayload, AssetDeletePayload, AssetListPayload,
+    AiRequestIdPayload, AiRequestStartPayload, AppVersionPayload, AssetDeletePayload, AssetListPayload,
     AssetMetadataUpdatePayload, AssetReadBeginPayload, AssetRegisterPayload,
     AssetReplaceBeginPayload, AssetReplaceCommitPayload, AssetTransferCancelPayload,
     DocumentListPayload, DocumentSavePayload, EntityCreateDocument, EntityCreateField,
@@ -484,6 +484,7 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "ServiceCallPayload" => gen.subschema_for::<ServiceCallPayload>(),
         "AiRequestStartPayload" => gen.subschema_for::<AiRequestStartPayload>(),
         "AiRequestIdPayload" => gen.subschema_for::<AiRequestIdPayload>(),
+        "AppVersionPayload" => gen.subschema_for::<AppVersionPayload>(),
         other => panic!("catalog references unknown payload schema {other}"),
     };
 }

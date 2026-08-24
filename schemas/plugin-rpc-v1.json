@@ -110,6 +110,10 @@
       ],
       "type": "object"
     },
+    "AppVersionPayload": {
+      "additionalProperties": false,
+      "type": "object"
+    },
     "AssetDeletePayload": {
       "additionalProperties": false,
       "properties": {
@@ -2480,6 +2484,22 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "app.version"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AppVersionPayload"
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -2543,7 +2563,8 @@
             "ai.request.poll",
             "ai.request.cancel",
             "ai.request.result",
-            "ai.request.citations"
+            "ai.request.citations",
+            "app.version"
           ]
         },
         "payload": {},
@@ -2667,6 +2688,10 @@
     },
     "ai.request.start": {
       "payload": "AiRequestStartPayload",
+      "requestId": "envelope"
+    },
+    "app.version": {
+      "payload": "AppVersionPayload",
       "requestId": "envelope"
     },
     "asset.delete": {

@@ -31,6 +31,9 @@ export interface PluginRpcClient {
     subscribeEvent(name: string, version: number): Promise<void>;
     pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
     callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
+    getAppVersion(): Promise<{
+        version: string;
+    }>;
     beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
     updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
     deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;

@@ -3,6 +3,7 @@ import type { WorkspaceSection } from "$lib/modules/workspace";
 import ProjectSwitcher from "./ProjectSwitcher.svelte";
 import {
   CalendarRange,
+  Boxes,
   GitBranch,
   Home,
   Languages,
@@ -49,16 +50,14 @@ let {
   createOpen,
   snapshotsTitle,
   snapshotChangeCount,
+  projectCenterActive,
   settingsActive,
   version,
   onOpenProject,
   onOpenRecent,
   onRemoveRecent,
   onProjectMenuChange,
-  onExportMarkdown,
-  onImportExternal,
-  onRebuildIndex,
-  onSeedExample,
+  onOpenProjectCenter,
   onCloseProject,
   onOpenHome,
   onCreate,
@@ -79,16 +78,14 @@ let {
   createOpen: boolean;
   snapshotsTitle: string;
   snapshotChangeCount: number;
+  projectCenterActive: boolean;
   settingsActive: boolean;
   version: string;
   onOpenProject: () => void;
   onOpenRecent: (root: string) => void;
   onRemoveRecent: (root: string) => void;
   onProjectMenuChange: (open: boolean) => void;
-  onExportMarkdown: () => void;
-  onImportExternal: () => void;
-  onRebuildIndex: () => void;
-  onSeedExample: () => void;
+  onOpenProjectCenter: () => void;
   onCloseProject: () => void;
   onOpenHome: () => void;
   onCreate: () => void;
@@ -131,10 +128,7 @@ function workspaceIcon(section: WorkspaceSection) {
     {onOpenRecent}
     {onRemoveRecent}
     onMenuChange={onProjectMenuChange}
-    {onExportMarkdown}
-    {onImportExternal}
-    {onRebuildIndex}
-    {onSeedExample}
+    {onOpenProjectCenter}
     {onCloseProject} />
 
   {#if ready}
@@ -191,6 +185,14 @@ function workspaceIcon(section: WorkspaceSection) {
 
   <div class="rail-spacer"></div>
   {#if ready}
+    <button
+      aria-current={projectCenterActive ? "page" : undefined}
+      class:active={projectCenterActive}
+      class="rail-button muted-button"
+      title="Project"
+      onclick={onOpenProjectCenter}>
+      <span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project</span>
+    </button>
     <button class="rail-button muted-button rail-git-button" title={snapshotsTitle} onclick={onOpenSnapshots}>
       <span class="rail-icon"><GitBranch size={16} strokeWidth={1.8} /></span><span>Snapshots</span>
       {#if snapshotChangeCount > 0}<small class="rail-git-count">{snapshotChangeCount}</small>{/if}

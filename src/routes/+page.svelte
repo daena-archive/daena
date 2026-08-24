@@ -52,6 +52,7 @@ import {
   DEFAULT_COLLECTION_QUERY,
   type TimelineView,
   type WorkspaceSection,
+  type ProjectSection,
   type SettingsSection,
   type CollectionQuery,
   type CollectionResult,
@@ -74,6 +75,7 @@ import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
 import ProjectHome from "$lib/shell/ProjectHome.svelte";
+import ProjectCenter from "$lib/ProjectCenter.svelte";
 import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
@@ -84,6 +86,7 @@ import InspectorPane from "$lib/shell/InspectorPane.svelte";
 import InspectorSection from "$lib/shell/InspectorSection.svelte";
 import PaneResizeHandle from "$lib/shell/PaneResizeHandle.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
+import StatusCenter, { type StatusCenterItem, type StatusCenterTone } from "$lib/shell/StatusCenter.svelte";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import QuickOpen from "$lib/shell/QuickOpen.svelte";
@@ -325,7 +328,10 @@ let mapReconcileNotice = $state("");
 let mapPickNotice = $state("");
 let projectDiagnostics = $state<string[]>([]);
 let showSettings = $state(false);
+let settingsSurface = $state<"application" | "project">("application");
 let settingsSection = $state<SettingsSection>("general");
+let projectSection = $state<ProjectSection>("overview");
+let statusCenterOpen = $state(false);
 let moduleSchemaOverlay = $state<ModuleSchemaOverlay>({ version: 1 });
 let moduleSchemaPackage = $state<{
   schemas: Array<{ namespace: string; entityTypes: string[]; fields: FieldDefinition[] }>;
@@ -1453,7 +1459,7 @@ function rememberSpecializedSurfaceScroll(scrollTop: number) {
 }
 
 async function restoreSpecializedSurfaceScroll(location: ShellLocation) {
-  if (location.kind === "home" || location.kind === "settings") return;
+  if (location.kind === "home" || location.kind === "settings" || location.kind === "project") return;
   const key = specializedSurfaceKeyForLocation(location);
   if (!key) return;
   pendingSpecializedSurfaceScroll = { key, scrollTop: location.surfaceScrollTop };
@@ -1467,6 +1473,7 @@ async function restoreSpecializedSurfaceScroll(location: ShellLocation) {
 }
 
 function currentShellLocation(): ShellLocation {
+  if (showSettings && settingsSurface === "project") return { kind: "project", section: projectSection };
   if (showSettings) return { kind: "settings", section: settingsSection };
   if (projectHomeOpen) return { kind: "home" };
   if (hostView) {
@@ -2060,10 +2067,13 @@ async function switchTimelineView(next: TimelineView) {
 
 function sectionLabel() {
   if (showSettings) {
-    if (settingsSection === "plugins") return "Settings · Plugins";
-    if (settingsSection === "schema") return "Settings · Schema";
-    if (settingsSection === "git") return "Settings · Snapshots";
-    return "Settings";
+    if (settingsSurface === "application") return settingsSection === "ai" ? "Settings · AI" : "Settings";
+    if (projectSection === "data") return "Project · Data & recovery";
+    if (projectSection === "extensions") return "Project · Extensions";
+    if (projectSection === "fields") return "Project · Fields & Types";
+    if (projectSection === "snapshots") return "Project · Snapshots";
+    if (projectSection === "advanced") return "Project · Advanced";
+    return "Project";
   }
   if (projectHomeOpen) return "Home";
   return section === "lore"
@@ -2302,6 +2312,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await openProjectHome();
     } else if (target.kind === "settings") {
       await openSettings(target.section);
+    } else if (target.kind === "project") {
+      await openProjectCenter(target.section);
     } else if (target.kind === "plugin") {
       await switchSection(target.section);
       await restoreShellEntity(target.entityId);
@@ -3306,6 +3318,177 @@ async function refreshGit() {
   }
 }
 
+async function refreshProjectStatus() {
+  if (!ready) return;
+  try {
+    const info = await project.info();
+    if (info) projectInfo = info;
+  } catch (cause) {
+    error = friendlyError(cause);
+  }
+  await refreshGit();
+}
+
+function openStatusDestination(section: ProjectSection) {
+  statusCenterOpen = false;
+  void openProjectCenter(section);
+}
+
+function statusCenterItems(): StatusCenterItem[] {
+  if (!ready || !projectInfo) return [];
+  const items: StatusCenterItem[] = [];
+  const saving = saveInFlight !== null;
+  if (selected) {
+    items.push(
+      documentConflict
+        ? {
+            id: "save",
+            label: "Document conflict",
+            detail: "The open draft and the project copy diverged. Compare or recover before continuing.",
+            tone: "danger",
+            actionLabel: "Return to draft",
+            onAction: () => (statusCenterOpen = false),
+          }
+        : saveError
+          ? {
+              id: "save",
+              label: "Save paused",
+              detail: saveError,
+              tone: "danger",
+              actionLabel: "Retry",
+              onAction: () => {
+                statusCenterOpen = false;
+                void saveDocument();
+              },
+            }
+          : saving
+            ? { id: "save", label: "Saving entry", detail: selected.name, tone: "busy" }
+            : hasUnsavedChanges
+              ? {
+                  id: "save",
+                  label: "Unsaved changes",
+                  detail: `${selected.name} is queued for local save.`,
+                  tone: "warning",
+                }
+              : {
+                  id: "save",
+                  label: "Entry saved",
+                  detail: savedAt ? `Saved locally at ${savedAt}.` : "The open entry has no pending edits.",
+                  tone: "success",
+                },
+    );
+  }
+
+  const sync = projectInfo.sync;
+  items.push(
+    sync.export_error
+      ? {
+          id: "checkpoint",
+          label: "Checkpoint failed",
+          detail: sync.export_error,
+          tone: "danger",
+          actionLabel: "Review",
+          onAction: () => openStatusDestination("advanced"),
+        }
+      : sync.state === "pending"
+        ? {
+            id: "checkpoint",
+            label: "Checkpoint pending",
+            detail: `${sync.dirty_count} portable change${sync.dirty_count === 1 ? "" : "s"} waiting to be written.`,
+            tone: "busy",
+            actionLabel: "Project data",
+            onAction: () => openStatusDestination("data"),
+          }
+        : {
+            id: "checkpoint",
+            label: "Checkpoint current",
+            detail: "Portable project files match the local project state.",
+            tone: "success",
+            actionLabel: "Project data",
+            onAction: () => openStatusDestination("data"),
+          },
+  );
+
+  items.push(
+    gitMessage
+      ? {
+          id: "snapshot",
+          label: "Snapshot status unavailable",
+          detail: gitMessage,
+          tone: "warning",
+          actionLabel: "Review",
+          onAction: () => openStatusDestination("snapshots"),
+        }
+      : {
+          id: "snapshot",
+          label: gitStatus?.repository ? "Snapshots ready" : "Snapshots not configured",
+          detail: gitStatus?.repository
+            ? `${gitStatus.canonical_changes.length} project change${gitStatus.canonical_changes.length === 1 ? "" : "s"} since the last Snapshot.`
+            : "Set up project history when you are ready to preserve milestones.",
+          tone: gitStatus?.canonical_changes.length ? "warning" : "neutral",
+          actionLabel: "Open Snapshots",
+          onAction: () => openStatusDestination("snapshots"),
+        },
+  );
+
+  const mapStates = Object.values(mapSaveStates).map((state) => state.status);
+  const backgroundBusy =
+    projectTransitionBusy ||
+    aiIndexBusy ||
+    moduleSchemaBusy ||
+    mapStates.some((status) => ["saving", "restoring", "loading"].includes(status));
+  const backgroundFailed = mapStates.some((status) => status === "error" || status === "conflict");
+  const diagnostic = projectDiagnostics[0];
+  items.push(
+    diagnostic || backgroundFailed
+      ? {
+          id: "background",
+          label: diagnostic ? "Project conflict" : "Background task needs attention",
+          detail: diagnostic ?? "A map save or recovery task did not complete cleanly.",
+          tone: "danger",
+          actionLabel: diagnostic ? "Diagnostics" : undefined,
+          onAction: diagnostic ? () => openStatusDestination("advanced") : undefined,
+        }
+      : backgroundBusy
+        ? {
+            id: "background",
+            label: "Background work in progress",
+            detail:
+              projectTransitionMessage ||
+              (aiIndexBusy
+                ? "Building the semantic index…"
+                : moduleSchemaBusy
+                  ? "Saving Fields & Types…"
+                  : "Saving map changes…"),
+            tone: "busy",
+          }
+        : {
+            id: "background",
+            label: "No background work",
+            detail: "Daena has no unfinished maintenance task.",
+            tone: "neutral",
+          },
+  );
+  return items;
+}
+
+function statusCenterTone(): StatusCenterTone {
+  const tones = statusCenterItems().map((item) => item.tone);
+  if (tones.includes("danger")) return "danger";
+  if (tones.includes("busy")) return "busy";
+  if (tones.includes("warning")) return "warning";
+  if (tones.includes("success")) return "success";
+  return "neutral";
+}
+
+function statusCenterSummary() {
+  const tone = statusCenterTone();
+  if (tone === "danger") return "Needs attention";
+  if (tone === "busy") return "Working…";
+  if (tone === "warning") return "Changes pending";
+  return "Project current";
+}
+
 async function finishOpening(info?: ProjectInfo) {
   projectInfo = info ?? (await project.info());
   if (!projectInfo) throw new Error("The project did not return an identity");
@@ -4052,7 +4235,7 @@ function quickOpenItems(): QuickOpenItem[] {
     {
       id: "command:plugins",
       category: "Commands",
-      label: "Manage Plugins",
+      label: "Manage Extensions",
       description: "Enable, disable, or inspect project extensions",
       keywords: ["extensions", "modules", "tools"],
       action: { kind: "command", command: "plugins" },
@@ -4061,8 +4244,8 @@ function quickOpenItems(): QuickOpenItem[] {
       id: "command:settings",
       category: "Commands",
       label: "Open Settings",
-      description: "Application and project preferences",
-      keywords: ["preferences", "configuration"],
+      description: "Application preferences",
+      keywords: ["preferences", "configuration", "theme", "provider"],
       action: { kind: "command", command: "settings" },
     },
   ];
@@ -4108,8 +4291,8 @@ async function selectQuickOpenItem(item: QuickOpenItem) {
     return;
   }
   if (action.command === "template-gallery") openCreationMenu();
-  else if (action.command === "snapshots") await openSettings("git");
-  else if (action.command === "plugins") await openSettings("plugins");
+  else if (action.command === "snapshots") await openProjectCenter("snapshots");
+  else if (action.command === "plugins") await openProjectCenter("extensions");
   else await openSettings();
 }
 
@@ -4205,6 +4388,12 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       autoSaveFailureCount = 0;
       saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      void project
+        .info()
+        .then((info) => {
+          if (info) projectInfo = info;
+        })
+        .catch(() => {});
     }
     return true;
   } catch (cause) {
@@ -4658,36 +4847,49 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
 }
 async function openSettings(section: SettingsSection = "general") {
   if (!(await flushAutoSave())) return;
-  if (showSettings && settingsSection === section) return;
+  if (showSettings && settingsSurface === "application" && settingsSection === section) return;
   const departure = currentShellLocation();
-  const wasEditingSchema = showSettings && settingsSection === "schema" && !!schemaPluginId;
-  if (showSettings) {
-    if (!(await beforeSettingsNavigate(section))) return;
-  }
+  if (showSettings && !(await beforeAdministrationNavigate())) return;
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   showSettings = true;
+  settingsSurface = "application";
   settingsSection = section;
   projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
-  if (section === "plugins" && ready) {
+}
+async function openProjectCenter(section: ProjectSection = "overview") {
+  if (!ready || !(await flushAutoSave())) return;
+  if (showSettings && settingsSurface === "project" && projectSection === section) return;
+  const departure = currentShellLocation();
+  const wasEditingFields =
+    showSettings && settingsSurface === "project" && projectSection === "fields" && !!schemaPluginId;
+  if (showSettings && !(await beforeAdministrationNavigate(section))) return;
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  showSettings = true;
+  settingsSurface = "project";
+  projectSection = section;
+  projectionView = null;
+  installSummary = null;
+  deleteBackupPath = "";
+  showProjectMenu = false;
+  if (section === "extensions") {
     adminPlugins = null;
     await refreshAdmin();
   }
-  if (section === "schema" && ready) {
+  if (section === "fields") {
     if (schemaPluginId && !moduleSupportsSchemaOverlay(schemaPluginId)) {
       schemaPluginId = null;
       schemaPluginName = "";
       moduleSchemaPackage = null;
     }
-    // Refresh remounts the editor via overlayRevision; skip while dirty so we don't
-    // wipe edits / clear the leave guard while the UI still shows "Unsaved changes".
-    if (schemaPluginId && (!wasEditingSchema || !isSchemaEditorDirty())) {
+    if (schemaPluginId && (!wasEditingFields || !isSchemaEditorDirty())) {
       await refreshModuleSchemaEditor(schemaPluginId);
     }
   }
-  if (section === "ai" && ready) {
+  if (section === "advanced") {
     showAiIndexMessage("");
     await refreshAiIndexStatus();
   }
@@ -4695,29 +4897,40 @@ async function openSettings(section: SettingsSection = "general") {
 function closeSettings() {
   recordCurrentShellLocation();
   showSettings = false;
+  settingsSurface = "application";
+  settingsSection = "general";
+  projectSection = "overview";
+  statusCenterOpen = false;
 }
 function setSchemaEditorDirty(dirty: boolean) {
   schemaEditorDirty = dirty;
 }
 async function beforeSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
-  // Re-clicking Schema while already there is a no-op.
-  if (settingsSection === "schema" && next === "schema") return true;
-  // Leaving Schema (other section or close) — ask the live editor guard.
-  // Never use window.confirm here: on macOS Tauri/WKWebView it is a silent no-op.
-  if (settingsSection === "schema") {
-    if (!(await allowLeaveSchemaEditor())) return false;
-    schemaEditorDirty = false;
-  }
-  return true;
-}
-async function beforeVisibleSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
-  if (!(await beforeSettingsNavigate(next))) return false;
   if (next && next !== settingsSection) recordCurrentShellLocation();
   return true;
 }
+async function beforeProjectNavigate(next: ProjectSection | null): Promise<boolean> {
+  if (projectSection === "fields" && next === "fields") return true;
+  if (projectSection === "fields") {
+    if (!(await allowLeaveSchemaEditor())) return false;
+    schemaEditorDirty = false;
+  }
+  if (next && next !== projectSection) recordCurrentShellLocation();
+  return true;
+}
+async function beforeVisibleSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
+  return beforeSettingsNavigate(next);
+}
+async function beforeVisibleProjectNavigate(next: ProjectSection | null): Promise<boolean> {
+  return beforeProjectNavigate(next);
+}
+async function beforeAdministrationNavigate(nextProjectSection: ProjectSection | null = null): Promise<boolean> {
+  if (!showSettings || settingsSurface === "application") return true;
+  return beforeProjectNavigate(nextProjectSection);
+}
 /** Close settings from outside SettingsView (rail, plugin open, etc.). */
 async function dismissSettings(): Promise<boolean> {
-  if (!(await beforeSettingsNavigate(null))) return false;
+  if (!(await beforeAdministrationNavigate())) return false;
   showSettings = false;
   return true;
 }
@@ -4789,7 +5002,7 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
   }
 }
 $effect(() => {
-  if (!showSettings || settingsSection !== "plugins" || !ready) return;
+  if (!showSettings || settingsSurface !== "project" || projectSection !== "extensions" || !ready) return;
   void refreshAdmin();
 });
 async function installFromPicker() {
@@ -5089,6 +5302,10 @@ function resetProjectSessionState() {
   quickOpenSearchLoading = false;
   collectionQuery.textSearch = "";
   showSettings = false;
+  settingsSurface = "application";
+  settingsSection = "general";
+  projectSection = "overview";
+  statusCenterOpen = false;
   showCreateForm = false;
   createDialogView = "templates";
   createMoreDetailsOpen = false;
@@ -5116,7 +5333,7 @@ async function seedExample() {
     modules = await project.listModuleManifests();
     error = "Example world seeded.";
   } catch (cause) {
-    error = friendlyError(cause);
+    throw new Error(friendlyError(cause));
   }
 }
 async function rebuildSearchIndex() {
@@ -5128,7 +5345,7 @@ async function rebuildSearchIndex() {
     const matches = await project.search(term);
     if (request === searchRequest) searchMatches = matches;
   } catch (cause) {
-    if (request === searchRequest) error = friendlyError(cause);
+    if (request === searchRequest) throw new Error(friendlyError(cause));
   }
 }
 async function importPortableCheckpoint() {
@@ -5159,7 +5376,7 @@ async function exportMarkdownProject() {
     });
     if (output) error = `Markdown export written to ${output}`;
   } catch (cause) {
-    error = friendlyError(cause);
+    throw new Error(friendlyError(cause));
   }
 }
 async function createRecoveryBackup() {
@@ -5434,28 +5651,34 @@ onMount(() => {
     homeActive={projectHomeOpen && !showSettings}
     createOpen={showCreateForm}
     snapshotsTitle={gitMessage ||
-      (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots settings")}
+      (gitStatus?.repository ? `Snapshots · ${gitStatus.branch || "detached"}` : "Open Snapshots")}
     snapshotChangeCount={gitStatus?.repository ? gitStatus.canonical_changes.length : 0}
-    settingsActive={showSettings}
+    projectCenterActive={showSettings && settingsSurface === "project"}
+    settingsActive={showSettings && settingsSurface === "application"}
     version={displayVersion}
     onOpenProject={openProjectDirectory}
     onOpenRecent={(root) => void openRecentProject(root)}
     onRemoveRecent={removeRecentProject}
     onProjectMenuChange={(open) => (showProjectMenu = open)}
-    onExportMarkdown={() => void exportMarkdownProject()}
-    onImportExternal={openExternalImport}
-    onRebuildIndex={() => void rebuildSearchIndex()}
-    onSeedExample={seedExample}
+    onOpenProjectCenter={() => void openProjectCenter()}
     onCloseProject={closeProject}
     onOpenHome={() => void openProjectHome()}
     onCreate={toggleCreateForm}
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
-    onOpenSnapshots={() => void openSettings("git")}
+    onOpenSnapshots={() => void openProjectCenter("snapshots")}
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
+    {#snippet projectStatusControl()}
+      <StatusCenter
+        bind:open={statusCenterOpen}
+        summary={statusCenterSummary()}
+        tone={statusCenterTone()}
+        items={statusCenterItems()}
+        onOpenChange={(open) => open && void refreshProjectStatus()} />
+    {/snippet}
     <GlobalToolbar
       {ready}
       breadcrumbs={breadcrumbItems()}
@@ -5465,7 +5688,8 @@ onMount(() => {
       canGoForward={shellNavigationHistory.forward.length > 0}
       onQuickOpen={openQuickOpen}
       onBack={() => void navigateShellHistory("back")}
-      onForward={() => void navigateShellHistory("forward")} />
+      onForward={() => void navigateShellHistory("forward")}
+      status={projectStatusControl} />
     {#if quickOpenOpen}<QuickOpen
         query={globalQuery}
         items={quickOpenItems()}
@@ -5920,13 +6144,12 @@ onMount(() => {
         activeView={currentWorkspaceLocationView()}
         onSelect={(view) => void openWorkspaceView(view)} />
     {/if}
-    {#if showSettings}
+    {#if showSettings && settingsSurface === "application"}
       <SettingsView
         bind:section={settingsSection}
         {recentProjects}
         {themePreference}
         onThemeChange={updateThemePreference}
-        projectOpen={ready}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
         onBeforeNavigate={beforeVisibleSettingsNavigate}
@@ -5935,27 +6158,48 @@ onMount(() => {
         {aiModels}
         {aiModelsBusy}
         {aiModelsMessage}
-        {aiIndexStatus}
-        {aiIndexBusy}
-        {aiIndexMessage}
         onAiSettingsChange={updateAiSetting}
         onAiImageSettingsChange={updateAiImageSetting}
         onAiCheck={() => void checkAiProvider()}
         onAiModelsLoad={() => void loadAiModels()}
-        onAiIndexRefresh={() => void refreshAiIndexStatus()}
-        onAiIndexRebuild={() => void rebuildAiIndex()}
-        onAiIndexCancel={() => void cancelAiIndex()}
         {remoteCredential}
-        onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiRemoteImport={() => void importRemoteCredential()}
         onAiRemoteSave={(apiKey) => saveRemoteCredential(apiKey)}
-        onAiRemoteClear={() => void clearRemoteCredential()}
-        aiEnabled={projectInfo?.aiEnabled ?? false}
-        onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
+        onAiRemoteClear={() => void clearRemoteCredential()} />
+    {:else if showSettings && projectInfo}
+      <ProjectCenter
+        bind:section={projectSection}
+        summary={{
+          name: projectInfo.name,
+          root: projectInfo.root,
+          indexStatus: projectInfo.index_status,
+          sync: projectInfo.sync,
+          aiEnabled: projectInfo.aiEnabled,
+        }}
+        diagnostics={projectDiagnostics}
+        snapshotChangeCount={gitStatus?.canonical_changes.length ?? 0}
+        snapshotRepository={gitStatus?.repository ?? false}
+        snapshotBranch={gitStatus?.branch ?? null}
+        {aiIndexStatus}
+        {aiIndexBusy}
+        {aiIndexMessage}
+        remoteProvider={aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://")}
+        onClose={closeSettings}
+        onBeforeNavigate={beforeVisibleProjectNavigate}
+        onImportExternal={openExternalImport}
+        onExportMarkdown={exportMarkdownProject}
         onPortableBackup={createPortableBackup}
         onRecoveryBackup={createRecoveryBackup}
-        onRestoreRecoveryBackup={restoreRecoveryBackup}>
-        {#snippet plugins()}
+        onRestoreRecoveryBackup={restoreRecoveryBackup}
+        onImportCheckpoint={importPortableCheckpoint}
+        onRebuildIndex={rebuildSearchIndex}
+        onSeedExample={seedExample}
+        onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
+        onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
+        onAiIndexRefresh={() => void refreshAiIndexStatus()}
+        onAiIndexRebuild={() => void rebuildAiIndex()}
+        onAiIndexCancel={() => void cancelAiIndex()}>
+        {#snippet extensions()}
           <div class="panel-hero">
             <div class="hero-icon">
               <Puzzle size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -6188,7 +6432,7 @@ onMount(() => {
             {/if}
           </div>
         {/snippet}
-        {#snippet schema()}
+        {#snippet fields()}
           <SchemaSettingsPanel
             projectOpen={ready}
             candidates={schemaOverlayCandidates()}
@@ -6203,7 +6447,7 @@ onMount(() => {
             onSave={saveModuleSchemaOverlay}
             onDirtyChange={setSchemaEditorDirty} />
         {/snippet}
-        {#snippet git()}
+        {#snippet snapshots()}
           <GitSettingsPanel
             projectOpen={ready}
             projectId={projectInfo?.root ?? ""}
@@ -6212,7 +6456,7 @@ onMount(() => {
             onStatusChange={(status) => (gitStatus = status)}
             beforeWrite={flushAutoSave} />
         {/snippet}
-      </SettingsView>
+      </ProjectCenter>
     {:else if !ready}
       <section class="welcome">
         <div class="welcome-copy">
@@ -6250,8 +6494,9 @@ onMount(() => {
           updatedLabel: updatedDateLabel(entity.updated_at),
         }))}
         onNewEntry={toggleCreateForm}
-        onSnapshots={() => void openSettings("git")}
-        onExtensions={() => void openSettings("plugins")}
+        onSnapshots={() => void openProjectCenter("snapshots")}
+        onProjectCenter={() => void openProjectCenter()}
+        onExtensions={() => void openProjectCenter("extensions")}
         onOpenWorkspace={(target) => void switchSection(target)}
         onOpenEntity={(entity) => void selectSearchResult(entity)} />
     {:else if projectionView}
@@ -6318,8 +6563,8 @@ onMount(() => {
         <div class="disabled-icon">◌</div>
         <span class="overline">WORKSPACE READY</span>
         <h1>Choose a workspace to begin.</h1>
-        <p>No workspace modules are enabled in this project. Enable one from Settings → Plugins to start working.</p>
-        <button class="primary-button" onclick={() => void openSettings("plugins")}>Open Plugins</button>
+        <p>No workspace modules are enabled in this project. Enable one from Project → Extensions to start working.</p>
+        <button class="primary-button" onclick={() => void openProjectCenter("extensions")}>Open Extensions</button>
       </section>
     {:else}
       {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert">

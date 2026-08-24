@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { Snippet } from "svelte";
 import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
 
 let {
@@ -11,6 +12,7 @@ let {
   onQuickOpen,
   onBack,
   onForward,
+  status,
 }: {
   ready: boolean;
   breadcrumbs: string[];
@@ -21,6 +23,7 @@ let {
   onQuickOpen: () => void;
   onBack: () => void;
   onForward: () => void;
+  status?: Snippet;
 } = $props();
 </script>
 
@@ -55,7 +58,9 @@ let {
         <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
         <span class="global-search-label">Quick Open</span><kbd>{quickOpenShortcut}</kbd>
       </button>
-      <span class="sync-badge" title="Your work is stored locally"><span></span> Local</span>
+      {#if status}{@render status()}{:else}<span class="sync-badge" title="Your work is stored locally"
+          ><span></span> Local</span
+        >{/if}
     {/if}
   </div>
 </header>

@@ -1,33 +1,9 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
-import { onMount } from "svelte";
-import {
-  X,
-  Settings2,
-  FolderOpen,
-  DatabaseZap,
-  Sparkles,
-  Bot,
-  GitBranch,
-  Puzzle,
-  ChevronLeft,
-  Layers,
-  Cpu,
-  Globe,
-  Sun,
-  Moon,
-  Monitor,
-  ShieldCheck,
-  Wrench,
-  SlidersHorizontal,
-} from "@lucide/svelte";
-import { setSchemaEditorDiscardPrompt } from "$lib/schemaEditorGuard";
-import { confirmDialog } from "$lib/dialogs.svelte";
-import { project } from "$lib/project/client";
+import { X, Settings2, FolderOpen, Sparkles, Bot, ChevronLeft, Globe, Sun, Moon, Monitor } from "@lucide/svelte";
 import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
 import type { ThemePreference } from "$lib/theme";
 
-type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
+type SettingsSection = "general" | "ai";
 type RecentProject = { name: string; root: string };
 type AiProviderPreset = {
   id: string;
@@ -74,51 +50,31 @@ let {
   recentProjects,
   themePreference,
   onThemeChange,
-  projectOpen,
   onRemoveRecent,
   onClose,
   onBeforeNavigate,
-  plugins,
-  schema,
-  git,
   aiSettings,
   aiStatus,
   aiModels,
   aiModelsBusy,
   aiModelsMessage,
-  aiIndexStatus,
-  aiIndexBusy,
-  aiIndexMessage,
   remoteCredential,
-  onAiRemoteConsent,
   onAiRemoteImport,
   onAiRemoteSave,
   onAiRemoteClear,
-  aiEnabled,
-  onToggleAi,
-  onPortableBackup,
-  onRecoveryBackup,
-  onRestoreRecoveryBackup,
   onAiSettingsChange,
   onAiImageSettingsChange,
   onAiCheck,
   onAiModelsLoad,
-  onAiIndexRefresh,
-  onAiIndexRebuild,
-  onAiIndexCancel,
 }: {
   section?: SettingsSection;
   recentProjects: RecentProject[];
   themePreference: ThemePreference;
   onThemeChange: (preference: ThemePreference) => void;
-  projectOpen: boolean;
   onRemoveRecent: (root: string) => void;
   onClose: () => void;
   /** Return false to cancel leaving the current settings section or closing Settings. */
   onBeforeNavigate?: (next: SettingsSection | null) => boolean | Promise<boolean>;
-  plugins: Snippet;
-  schema: Snippet;
-  git: Snippet;
   aiSettings: {
     provider: {
       id: string;
@@ -149,15 +105,6 @@ let {
   aiModels: string[];
   aiModelsBusy: boolean;
   aiModelsMessage: string;
-  aiIndexStatus: {
-    available: boolean;
-    state: string | null;
-    provider: string | null;
-    embeddingAvailable: boolean;
-    message: string | null;
-  } | null;
-  aiIndexBusy: boolean;
-  aiIndexMessage: string;
   onAiSettingsChange: (
     key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
     value: string,
@@ -168,21 +115,11 @@ let {
   ) => void;
   onAiCheck: () => void;
   onAiModelsLoad: () => void;
-  onAiIndexRefresh: () => void;
-  onAiIndexRebuild: () => void;
-  onAiIndexCancel: () => void;
   remoteCredential: { configured: boolean } | null;
-  onAiRemoteConsent: (allowed: boolean) => void;
   onAiRemoteImport: () => void;
   /** Returns true when the credential was stored, so the input can be cleared. */
   onAiRemoteSave: (apiKey: string) => Promise<boolean>;
   onAiRemoteClear: () => void;
-  /** Project-level AI opt-in (default off). */
-  aiEnabled: boolean;
-  onToggleAi: (enabled: boolean) => void;
-  onPortableBackup: () => Promise<string>;
-  onRecoveryBackup: () => Promise<string>;
-  onRestoreRecoveryBackup: (path: string) => Promise<void>;
 } = $props();
 
 let providerModalOpen = $state(false);
@@ -190,8 +127,6 @@ let modelPickerOpen = $state<"chat" | "embedding" | null>(null);
 let embeddingSectionOpen = $state(false);
 let credentialInput = $state("");
 let credentialBusy = $state(false);
-let recoveryPath = $state("");
-let storageBusy = $state(false);
 
 async function saveRemoteCredential() {
   const key = credentialInput.trim();
@@ -203,36 +138,9 @@ async function saveRemoteCredential() {
     credentialBusy = false;
   }
 }
-let storageMessage = $state("");
-let storageError = $state("");
-
-function storageErrorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-let schemaDiscardOpen = $state(false);
-let schemaDiscardResolver: ((allowed: boolean) => void) | null = null;
 
 $effect(() => {
   if (aiSettings.provider.embeddingModel.trim()) embeddingSectionOpen = true;
-});
-
-onMount(() => {
-  // In-app confirm: window.confirm is a silent no-op on macOS Tauri/WKWebView.
-  setSchemaEditorDiscardPrompt(
-    () =>
-      new Promise<boolean>((resolve) => {
-        schemaDiscardResolver = resolve;
-        schemaDiscardOpen = true;
-      }),
-  );
-  return () => {
-    setSchemaEditorDiscardPrompt(null);
-    if (schemaDiscardResolver) {
-      schemaDiscardResolver(false);
-      schemaDiscardResolver = null;
-    }
-    schemaDiscardOpen = false;
-  };
 });
 
 $effect(() => {
@@ -246,24 +154,6 @@ $effect(() => {
   window.addEventListener("keydown", onKey, true);
   return () => window.removeEventListener("keydown", onKey, true);
 });
-
-$effect(() => {
-  if (!schemaDiscardOpen) return;
-  const onKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      resolveSchemaDiscard(false);
-    }
-  };
-  window.addEventListener("keydown", onKey, true);
-  return () => window.removeEventListener("keydown", onKey, true);
-});
-
-function resolveSchemaDiscard(allowed: boolean) {
-  schemaDiscardOpen = false;
-  schemaDiscardResolver?.(allowed);
-  schemaDiscardResolver = null;
-}
 
 function chooseModel(kind: "chat" | "embedding", value: string) {
   onAiSettingsChange(kind === "chat" ? "model" : "embeddingModel", value);
@@ -317,68 +207,6 @@ function closeModelPickerSoon() {
   }, 120);
 }
 
-async function createPortableBackup() {
-  storageBusy = true;
-  storageError = "";
-  try {
-    storageMessage = `Portable backup: ${await onPortableBackup()}`;
-  } catch (cause) {
-    storageError = `Portable backup failed: ${storageErrorMessage(cause)}`;
-    storageMessage = "";
-  } finally {
-    storageBusy = false;
-  }
-}
-
-async function createRecoveryBackup() {
-  storageBusy = true;
-  storageError = "";
-  try {
-    recoveryPath = await onRecoveryBackup();
-    storageMessage = `Recovery backup: ${recoveryPath}`;
-  } catch (cause) {
-    storageError = `Recovery backup failed: ${storageErrorMessage(cause)}`;
-    storageMessage = "";
-  } finally {
-    storageBusy = false;
-  }
-}
-
-async function pickRestorePath() {
-  try {
-    const selection = await project.pickDirectory();
-    const path = typeof selection === "string" ? selection : Array.isArray(selection) ? selection[0] : null;
-    if (path) recoveryPath = path;
-  } catch {
-    // ignore picker cancellation
-  }
-}
-
-async function restoreRecoveryBackup() {
-  if (
-    !recoveryPath.trim() ||
-    !(await confirmDialog({
-      title: "Restore recovery backup?",
-      message: "This replaces the current runtime state with the recovery backup.",
-      confirmLabel: "Restore",
-      danger: true,
-    }))
-  )
-    return;
-  storageBusy = true;
-  storageError = "";
-  try {
-    await onRestoreRecoveryBackup(recoveryPath.trim());
-    recoveryPath = "";
-    storageMessage = "Recovery backup restored.";
-  } catch (cause) {
-    storageError = `Restore failed: ${storageErrorMessage(cause)}`;
-    storageMessage = "";
-  } finally {
-    storageBusy = false;
-  }
-}
-
 async function goToSection(next: SettingsSection) {
   if (next === section) return;
   if (onBeforeNavigate && !(await onBeforeNavigate(next))) return;
@@ -400,7 +228,7 @@ async function handleClose() {
       <div>
         <span class="panel-kicker">APPLICATION</span>
         <h1>Settings</h1>
-        <p>App preferences and the plugins that power this project.</p>
+        <p>Appearance and provider preferences that follow you across projects.</p>
       </div>
     </div>
     <button type="button" class="quiet-button header-back" onclick={() => void handleClose()}
@@ -420,24 +248,6 @@ async function handleClose() {
         class:active={section === "ai"}
         class="settings-nav-button"
         onclick={() => void goToSection("ai")}><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> AI</button>
-      <button
-        type="button"
-        class:active={section === "plugins"}
-        class="settings-nav-button"
-        onclick={() => void goToSection("plugins")}
-        ><Puzzle size={14} strokeWidth={1.8} aria-hidden="true" /> Plugins</button>
-      <button
-        type="button"
-        class:active={section === "schema"}
-        class="settings-nav-button"
-        onclick={() => void goToSection("schema")}
-        ><SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Schema</button>
-      <button
-        type="button"
-        class:active={section === "git"}
-        class="settings-nav-button"
-        onclick={() => void goToSection("git")}
-        ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
     </nav>
 
     <div class="settings-panel">
@@ -449,14 +259,11 @@ async function handleClose() {
           <div class="hero-copy">
             <span class="kicker">APPLICATION</span>
             <strong>General</strong>
-            <p>Recent projects and portable storage. Everything stays local-first.</p>
+            <p>Appearance and recent projects. These preferences follow you across projects.</p>
           </div>
           <div class="hero-stats">
             <span class="stat-pill"
               ><FolderOpen size={12} strokeWidth={1.8} aria-hidden="true" /> {recentProjects.length} recent</span>
-            <span class="stat-pill"
-              ><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" />
-              {projectOpen ? "Project open" : "No project"}</span>
           </div>
         </div>
 
@@ -532,58 +339,6 @@ async function handleClose() {
             </ul>
           {/if}
         </div>
-
-        {#if projectOpen}
-          <div class="block elevated">
-            <div class="block-heading">
-              <div class="heading-left">
-                <span class="heading-icon accent"><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-                <h4>Project storage</h4>
-              </div>
-              <span class="block-hint">Portable vs recovery</span>
-            </div>
-            <p class="subtle-note">
-              Portable = migratable snapshot<br />
-              Recovery = local undo point
-            </p>
-            <div class="settings-actions">
-              <button type="button" class="primary" disabled={storageBusy} onclick={() => void createPortableBackup()}
-                ><DatabaseZap size={14} strokeWidth={1.8} aria-hidden="true" /> Create portable backup</button>
-              <button type="button" class="primary" disabled={storageBusy} onclick={() => void createRecoveryBackup()}
-                ><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /> Create recovery backup</button>
-            </div>
-            <div class="block recovery-restore-block">
-              <div class="heading-left" style="gap:8px">
-                <span class="heading-icon"><Wrench size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-                <h4 style="margin:0; font-size:12px">Restore from recovery backup</h4>
-              </div>
-              <label class="settings-path-field" style="margin:0">
-                <span>Backup to restore (source folder)</span>
-                <div style="display:flex; gap:8px; align-items:center">
-                  <input
-                    bind:value={recoveryPath}
-                    placeholder="Choose or paste a recovery backup folder"
-                    style="flex:1" />
-                  <button type="button" class="quiet" disabled={storageBusy} onclick={() => void pickRestorePath()}
-                    ><FolderOpen size={14} strokeWidth={1.8} aria-hidden="true" /> Browse</button>
-                </div>
-              </label>
-              <button
-                type="button"
-                class="quiet"
-                disabled={storageBusy || !recoveryPath.trim()}
-                onclick={() => void restoreRecoveryBackup()}>Restore recovery backup</button>
-            </div>
-            {#if storageError}
-              <div class="inline-alert error" role="alert">
-                <span>{storageError}</span>
-                <button type="button" class="quiet icon" aria-label="Dismiss error" onclick={() => (storageError = "")}
-                  ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-              </div>
-            {/if}
-            {#if storageMessage}<div class="inline-alert success" role="status">{storageMessage}</div>{/if}
-          </div>
-        {/if}
       {:else if section === "ai"}
         <div class="panel-hero">
           <div class="hero-icon">
@@ -595,11 +350,6 @@ async function handleClose() {
             <p>Configure one provider. Every generation, rewrite, and field-fill uses the active provider.</p>
           </div>
           <div class="hero-stats">
-            {#if projectOpen}
-              <span class="stat-pill" class:on={aiEnabled} class:off={!aiEnabled}
-                ><Sparkles size={12} strokeWidth={1.8} aria-hidden="true" /> AI
-                {aiEnabled ? "enabled" : "disabled"}</span>
-            {/if}
             <span class="stat-pill"
               ><Bot size={12} strokeWidth={1.8} aria-hidden="true" /> {aiSettings.provider.name || "No provider"}</span>
             <span class="stat-pill"
@@ -608,29 +358,6 @@ async function handleClose() {
         </div>
 
         <div class="ai-settings-form">
-          {#if projectOpen}
-            <section class="ai-settings-card ai-enable-card elevated" aria-labelledby="ai-enable-heading">
-              <div class="ai-card-heading">
-                <div>
-                  <span class="ai-card-kicker">THIS PROJECT</span>
-                  <strong id="ai-enable-heading">AI features</strong>
-                  <p>
-                    {#if aiEnabled}
-                      AI is enabled for this project. Disable it to hide every AI surface until it is turned on again.
-                    {:else}
-                      AI is off for this project and every AI surface is hidden. Enable it to use rewrite, generation,
-                      field fill, and semantic search here.
-                    {/if}
-                  </p>
-                </div>
-                <span class="ai-card-badge" class:ok={aiEnabled}>{aiEnabled ? "Enabled" : "Off"}</span>
-              </div>
-              <button type="button" class={aiEnabled ? "quiet" : "primary"} onclick={() => onToggleAi(!aiEnabled)}>
-                {#if aiEnabled}<X size={14} strokeWidth={1.8} aria-hidden="true" /> Disable AI{:else}
-                  <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> Enable AI{/if}
-              </button>
-            </section>
-          {/if}
           <section class="ai-settings-card ai-overview-card elevated" aria-labelledby="ai-overview-heading">
             <div class="ai-card-heading">
               <div>
@@ -831,16 +558,6 @@ async function handleClose() {
                         DAENA_REMOTE_API_KEY set and use the environment import.
                       </p>
                     </div>
-                    {#if projectOpen && aiEnabled}
-                      <div class="ai-action-group">
-                        <span class="ai-action-label">Project access</span>
-                        <div class="ai-settings-actions ai-card-actions">
-                          <button type="button" class="primary" onclick={() => onAiRemoteConsent(true)}
-                            >Allow for this project</button>
-                          <button type="button" class="quiet" onclick={() => onAiRemoteConsent(false)}>Revoke</button>
-                        </div>
-                      </div>
-                    {/if}
                   {/if}
                 </section>
               </div>
@@ -849,74 +566,10 @@ async function handleClose() {
           <ImageProviderSettingsCard
             settings={aiSettings.imageProvider}
             onChange={(key, value) => onAiImageSettingsChange(key, value)} />
-          {#if aiEnabled}
-            <section class="ai-settings-card elevated" aria-labelledby="retrieval-index-heading">
-              <div class="ai-card-heading ai-card-heading-compact">
-                <div>
-                  <span class="ai-card-kicker">PROJECT CONTEXT</span>
-                  <strong id="retrieval-index-heading">Semantic retrieval</strong>
-                  <p>
-                    Embeddings use the active provider when supported; lexical retrieval remains available otherwise.
-                  </p>
-                </div>
-                <Cpu size={18} strokeWidth={1.7} aria-hidden="true" />
-              </div>
-              <div class="ai-settings-actions">
-                <button type="button" class="quiet" onclick={onAiIndexRefresh}>Refresh status</button>
-                <button type="button" class="primary" onclick={onAiIndexRebuild} disabled={aiIndexBusy}
-                  >{aiIndexBusy ? "Building index…" : "Build semantic index"}</button>
-                {#if aiIndexBusy}<button type="button" class="quiet" onclick={onAiIndexCancel}>Cancel</button>{/if}
-                {#if aiIndexStatus}<span class="ai-status"
-                    >{aiIndexStatus.message ?? aiIndexStatus.state ?? "Unavailable"}</span
-                  >{/if}
-                {#if aiIndexMessage}<span class="ai-status">{aiIndexMessage}</span>{/if}
-              </div>
-            </section>
-          {/if}
         </div>
-      {:else if section === "plugins"}
-        {#if !projectOpen}
-          <div class="panel-hero">
-            <div class="hero-icon">
-              <Puzzle size={18} strokeWidth={1.8} aria-hidden="true" />
-            </div>
-            <div class="hero-copy">
-              <span class="kicker">EXTENSIONS</span>
-              <strong>Plugins</strong>
-              <p>Open a project to install, enable, and review plugin capabilities.</p>
-            </div>
-          </div>
-          <div class="empty-card">
-            <div class="empty-icon"><Puzzle size={20} strokeWidth={1.7} aria-hidden="true" /></div>
-            <strong>No project is open</strong>
-            <p>Plugins are installed per-project. Open a project to manage them.</p>
-          </div>
-        {:else}
-          {@render plugins()}
-        {/if}
-      {:else if section === "schema"}
-        {@render schema()}
-      {:else}
-        {@render git()}
       {/if}
     </div>
   </div>
-
-  {#if schemaDiscardOpen}
-    <div class="schema-discard-backdrop" role="presentation">
-      <div class="schema-discard-dialog" role="alertdialog" aria-modal="true" aria-labelledby="schema-discard-title">
-        <div class="dialog-icon warn">
-          <GitBranch size={18} strokeWidth={1.8} aria-hidden="true" />
-        </div>
-        <strong id="schema-discard-title">Discard unsaved schema changes?</strong>
-        <p>Your edits to types, fields, and templates will be lost.</p>
-        <div class="schema-discard-actions">
-          <button type="button" class="quiet" onclick={() => resolveSchemaDiscard(false)}>Keep editing</button>
-          <button type="button" class="danger" onclick={() => resolveSchemaDiscard(true)}>Discard</button>
-        </div>
-      </div>
-    </div>
-  {/if}
 </section>
 
 <style>
@@ -926,68 +579,6 @@ async function handleClose() {
   min-height: calc(100vh - 58px);
   padding: 28px 32px 40px;
   background: var(--canvas);
-}
-.schema-discard-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(48, 44, 38, 0.35);
-  backdrop-filter: blur(4px);
-}
-.schema-discard-dialog {
-  width: min(420px, calc(100vw - 32px));
-  display: grid;
-  gap: 10px;
-  padding: 18px 20px;
-  border: 1px solid var(--line-strong);
-  border-radius: 14px;
-  background: var(--surface);
-  box-shadow: 0 18px 40px rgba(48, 44, 38, 0.18);
-}
-.schema-discard-dialog strong {
-  font: 600 16px var(--font-display, Georgia, serif);
-}
-.schema-discard-dialog p {
-  margin: 0;
-  color: var(--ink-muted);
-  font-size: 13px;
-  line-height: 1.45;
-}
-.schema-discard-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 6px;
-}
-.dialog-icon.warn {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-line);
-  color: var(--danger);
-}
-.danger {
-  border: 1px solid var(--theme-danger-border, #e0b8ad);
-  border-radius: 9px;
-  padding: 7px 12px;
-  background: var(--danger-bg);
-  color: var(--danger);
-  font:
-    600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  cursor: pointer;
-}
-.danger:hover {
-  background: var(--theme-danger-bg, #f3ddd6);
-  border-color: var(--theme-danger-border, #c9897d);
 }
 .settings-header {
   display: flex;
@@ -1171,16 +762,6 @@ async function handleClose() {
     system-ui,
     sans-serif;
 }
-.stat-pill.on {
-  border-color: var(--success-line);
-  background: var(--success-bg);
-  color: var(--success);
-}
-.stat-pill.off {
-  border-color: var(--danger-line);
-  background: var(--danger-bg);
-  color: var(--danger);
-}
 .block {
   display: grid;
   gap: 14px;
@@ -1307,22 +888,6 @@ async function handleClose() {
   color: var(--ink-faint);
   font-size: 10.5px;
 }
-.subtle-note {
-  margin: 0;
-  padding: 9px 11px;
-  border-radius: 9px;
-  background: var(--surface-subtle);
-  border: 1px solid var(--theme-warning-border, #f0e8d9);
-  color: var(--ink-muted);
-  font:
-    400 11.5px/1.5 Inter,
-    sans-serif;
-}
-.recovery-restore-block {
-  gap: 10px;
-  padding: 14px;
-  background: var(--surface-subtle);
-}
 .empty-inline {
   display: flex;
   gap: 12px;
@@ -1344,37 +909,6 @@ async function handleClose() {
 .empty-inline span {
   font:
     400 12px/1.5 Inter,
-    sans-serif;
-}
-.empty-card {
-  display: grid;
-  gap: 10px;
-  justify-items: start;
-  padding: 22px 18px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 14px;
-  background: var(--surface-quiet);
-}
-.empty-card .empty-icon {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  border: 1px solid var(--line-soft);
-  color: var(--ink-muted);
-}
-.empty-card strong {
-  color: var(--ink);
-  font: 600 15px var(--font-display, Georgia, serif);
-}
-.empty-card p {
-  margin: 0;
-  max-width: 520px;
-  color: var(--ink-soft);
-  font:
-    400 12.5px/1.5 Inter,
     sans-serif;
 }
 
@@ -1414,65 +948,6 @@ async function handleClose() {
     SFMono-Regular,
     Menlo,
     monospace;
-}
-.settings-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 4px 0;
-}
-.settings-path-field {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0;
-  color: var(--theme-neutral-text-soft, #6d625d);
-  font-size: 12px;
-}
-.settings-path-field span {
-  color: var(--ink-muted);
-  font:
-    600 10px Inter,
-    sans-serif;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.settings-path-field input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 11px;
-  border: 1px solid var(--theme-warning-border, #d9cec7);
-  border-radius: 9px;
-  background: var(--theme-surface-bg, #fff);
-  color: var(--theme-neutral-text, #302a27);
-  font:
-    400 13px Inter,
-    sans-serif;
-}
-.settings-path-field input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.12);
-}
-.inline-alert {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  font:
-    400 12px Inter,
-    sans-serif;
-}
-.inline-alert.error {
-  border: 1px solid var(--danger-line);
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-.inline-alert.success {
-  border: 1px solid var(--theme-success-border, #d8e9cc);
-  background: var(--theme-success-bg, #f0f6e8);
-  color: var(--theme-success-text, #3f6b4c);
 }
 .ai-settings-form {
   display: grid;
@@ -1686,9 +1161,6 @@ async function handleClose() {
   font-size: 11px;
   line-height: 1.5;
 }
-.ai-card-heading-compact {
-  align-items: center;
-}
 .ai-card-kicker {
   color: var(--accent);
   font-size: 9px;
@@ -1705,11 +1177,6 @@ async function handleClose() {
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
-}
-.ai-card-badge.ok {
-  border-color: var(--success-line);
-  background: var(--success-bg);
-  color: var(--success);
 }
 .ai-field-grid {
   display: grid;

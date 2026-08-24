@@ -83,11 +83,11 @@ function pluginInitial(name: string) {
         <SlidersHorizontal size={16} strokeWidth={1.8} aria-hidden="true" />
       </div>
       <div class="heading-copy">
-        <span class="kicker">PROJECT OVERLAYS</span>
-        <strong>Schema</strong>
+        <span class="kicker">PROJECT STRUCTURE</span>
+        <strong>Fields &amp; Types</strong>
         <p>
-          Extend installed plugins without forking them. Disable built-ins you don’t need and add your own types,
-          fields, and create-templates — stored as a project overlay.
+          Shape the forms and entry types used in this project. Installed extensions remain intact while your project
+          keeps its own authoring choices.
         </p>
       </div>
     </div>
@@ -97,8 +97,8 @@ function pluginInitial(name: string) {
         <div class="empty-icon">
           <Layers size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
-        <strong>Open a project to customize schemas</strong>
-        <p>Schema overlays are saved inside the project’s folder and travel with the project.</p>
+        <strong>Open a project to customize Fields &amp; Types</strong>
+        <p>These choices are saved inside the project and travel with it.</p>
       </div>
     {:else if candidates.length === 0}
       <div class="empty-state">
@@ -107,8 +107,8 @@ function pluginInitial(name: string) {
         </div>
         <strong>No customizable plugins found</strong>
         <p>
-          No enabled plugin declares <code>schema.overlay</code>. Enable a plugin that supports overlays — like
-          <strong>Lore</strong> — or install one from Settings → Plugins.
+          No enabled extension offers customizable Fields &amp; Types. Enable a compatible extension — like
+          <strong>Lore</strong> — or install one from Project → Extensions.
         </p>
       </div>
     {:else}
@@ -119,7 +119,7 @@ function pluginInitial(name: string) {
           {candidates.length === 1 ? "plugin" : "plugins"} customizable
         </span>
       </div>
-      <ul class="schema-plugin-list">
+      <ul class="schema-plugin-list" aria-label="Customizable extensions">
         {#each candidates as plugin}
           <li>
             <button type="button" class="schema-plugin-card" onclick={() => void selectPlugin(plugin.id)}>
@@ -142,7 +142,7 @@ function pluginInitial(name: string) {
     <div class="schema-plugin-toolbar">
       <button type="button" class="crumb-button" onclick={() => void clearSelection()}>
         <ChevronLeft size={14} strokeWidth={1.9} aria-hidden="true" />
-        All schemas
+        All Fields &amp; Types
       </button>
       <span class="crumb-divider" aria-hidden="true">/</span>
       <span class="schema-plugin-crumb" title={selectedPluginId ?? ""}>
@@ -256,18 +256,6 @@ function pluginInitial(name: string) {
     ui-sans-serif,
     system-ui,
     sans-serif;
-}
-.empty-state code {
-  padding: 1px 6px;
-  border-radius: 6px;
-  background: var(--theme-warning-bg, #f1ebe1);
-  border: 1px solid var(--line-soft);
-  color: var(--theme-neutral-text-soft, #6f675c);
-  font:
-    500 11px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
 }
 .plugin-grid-meta {
   display: flex;

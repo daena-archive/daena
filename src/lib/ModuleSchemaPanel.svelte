@@ -1,5 +1,11 @@
 <script lang="ts">
-import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay, FieldMetadataOverride, MetadataFieldDefinition } from "$lib/project/client";
+import type {
+  EntityTemplate,
+  FieldDefinition,
+  ModuleSchemaOverlay,
+  FieldMetadataOverride,
+  MetadataFieldDefinition,
+} from "$lib/project/client";
 import FieldPicker from "$lib/FieldPicker.svelte";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
@@ -219,7 +225,7 @@ function draftsFromMetadataFields(fields: unknown): MetadataFieldDraft[] {
     oneOf: Array.isArray(f.oneOf)
       ? (f.oneOf as Array<Record<string, unknown>>).map((v) => {
           const vt = String(v.type ?? "");
-          const allowed = (["text", "number", "boolean", "date", "enum"] as const) as readonly string[];
+          const allowed = ["text", "number", "boolean", "date", "enum"] as const as readonly string[];
           return {
             label: String(v.label ?? ""),
             type: (allowed.includes(vt) ? vt : "text") as Exclude<MetadataFieldType, "oneof" | "relationship">,
@@ -273,7 +279,9 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
           return out;
         })
         .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
-        .sort((a, b) => String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)));
+        .sort((a, b) =>
+          String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)),
+        );
       const seen = new Set<string>();
       const deduped: unknown[] = [];
       for (const e of normalized) {
@@ -335,7 +343,9 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
           return out;
         })
         .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
-        .sort((a, b) => String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)));
+        .sort((a, b) =>
+          String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)),
+        );
       const seen = new Set<string>();
       const deduped: unknown[] = [];
       for (const e of normalized) {
@@ -1211,13 +1221,18 @@ function removeEditFieldOneOfVariant(index: number) {
 }
 
 function addNewFieldMetadata() {
-  newFieldMetadata = [...newFieldMetadata, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+  newFieldMetadata = [
+    ...newFieldMetadata,
+    { key: "", label: "", type: "text", required: false, options: "", oneOf: [] },
+  ];
 }
 function removeNewFieldMetadata(index: number) {
   newFieldMetadata = newFieldMetadata.filter((_, i) => i !== index);
 }
 function addNewFieldMetadataOneOfVariant(metaIndex: number) {
-  const copy = newFieldMetadata.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  const copy = newFieldMetadata.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m,
+  );
   newFieldMetadata = copy;
 }
 function removeNewFieldMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
@@ -1227,13 +1242,18 @@ function removeNewFieldMetadataOneOfVariant(metaIndex: number, variantIndex: num
   newFieldMetadata = copy;
 }
 function addEditFieldMetadata() {
-  editFieldMetadata = [...editFieldMetadata, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+  editFieldMetadata = [
+    ...editFieldMetadata,
+    { key: "", label: "", type: "text", required: false, options: "", oneOf: [] },
+  ];
 }
 function removeEditFieldMetadata(index: number) {
   editFieldMetadata = editFieldMetadata.filter((_, i) => i !== index);
 }
 function addEditFieldMetadataOneOfVariant(metaIndex: number) {
-  const copy = editFieldMetadata.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  const copy = editFieldMetadata.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m,
+  );
   editFieldMetadata = copy;
 }
 function removeEditFieldMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
@@ -1245,7 +1265,9 @@ function removeEditFieldMetadataOneOfVariant(metaIndex: number, variantIndex: nu
 
 function builtinOriginalMetadata(field: FieldDefinition): MetadataFieldDefinition[] {
   const builtin = packageFields.find((f) => f.key === field.key);
-  return ((builtin as unknown as Record<string, unknown>)?.metadataFields as MetadataFieldDefinition[] | undefined) ?? [];
+  return (
+    ((builtin as unknown as Record<string, unknown>)?.metadataFields as MetadataFieldDefinition[] | undefined) ?? []
+  );
 }
 
 function effectiveBuiltinMetadata(field: FieldDefinition): MetadataFieldDefinition[] {
@@ -1253,9 +1275,15 @@ function effectiveBuiltinMetadata(field: FieldDefinition): MetadataFieldDefiniti
   const override = (draft.fieldMetadataOverrides ?? []).find((ov) => ov.fieldKey === field.key);
   if (!override) return original as unknown as MetadataFieldDefinition[];
   const map = new Map<string, MetadataFieldDefinition>();
-  for (const mf of original as unknown as MetadataFieldDefinition[]) map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
-  for (const mf of (override.metadataFields as unknown as MetadataFieldDefinition[])) map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
-  return [...map.values()].sort((a, b) => String((a as unknown as Record<string, unknown>).key).localeCompare(String((b as unknown as Record<string, unknown>).key)));
+  for (const mf of original as unknown as MetadataFieldDefinition[])
+    map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
+  for (const mf of override.metadataFields as unknown as MetadataFieldDefinition[])
+    map.set((mf as unknown as Record<string, unknown>).key as string, mf as unknown as MetadataFieldDefinition);
+  return [...map.values()].sort((a, b) =>
+    String((a as unknown as Record<string, unknown>).key).localeCompare(
+      String((b as unknown as Record<string, unknown>).key),
+    ),
+  );
 }
 
 function builtinMetadataFieldExtras(field: FieldDefinition): string {
@@ -1275,13 +1303,15 @@ function startBuiltinMetadataEdit(field: FieldDefinition) {
     return {
       key: String(r.key ?? ""),
       label: String(r.label ?? ""),
-      type: (METADATA_FIELD_TYPES as readonly string[]).includes(String(r.type)) ? (r.type as MetadataFieldType) : "text",
+      type: (METADATA_FIELD_TYPES as readonly string[]).includes(String(r.type))
+        ? (r.type as MetadataFieldType)
+        : "text",
       required: Boolean(r.required),
       options: formatOptions(r.options as string[] | undefined),
       oneOf: Array.isArray(r.oneOf)
         ? (r.oneOf as Array<Record<string, unknown>>).map((v) => {
             const vt = String(v.type ?? "");
-            const allowed = (["text", "number", "boolean", "date", "enum"] as const) as readonly string[];
+            const allowed = ["text", "number", "boolean", "date", "enum"] as const as readonly string[];
             return {
               label: String(v.label ?? ""),
               type: (allowed.includes(vt) ? vt : "text") as Exclude<MetadataFieldType, "oneof" | "relationship">,
@@ -1313,10 +1343,13 @@ function commitBuiltinMetadataEdit() {
     if (!k || seenKeys.has(k)) return;
     seenKeys.add(k);
   }
-  const effDefs = editBuiltinMetadataDrafts.map(metadataDraftToDefinition).filter(Boolean) as unknown as MetadataFieldDefinition[];
+  const effDefs = editBuiltinMetadataDrafts
+    .map(metadataDraftToDefinition)
+    .filter(Boolean) as unknown as MetadataFieldDefinition[];
   const original = builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[];
   const originalMap = new Map<string, string>();
-  for (const mf of original) originalMap.set(String((mf as unknown as Record<string, unknown>).key), JSON.stringify(mf));
+  for (const mf of original)
+    originalMap.set(String((mf as unknown as Record<string, unknown>).key), JSON.stringify(mf));
   const effMap = new Map<string, string>();
   for (const mf of effDefs) effMap.set(String((mf as unknown as Record<string, unknown>).key), JSON.stringify(mf));
   // delta = effDefs that are new or changed vs original
@@ -1331,7 +1364,11 @@ function commitBuiltinMetadataEdit() {
   let nextOverrides = [...(draft.fieldMetadataOverrides ?? [])].filter((ov) => ov.fieldKey !== fieldKey);
   if (delta.length > 0) {
     // store delta sorted; validation will ensure conflicting type not present (we already check), but we must keep delta sorted
-    delta.sort((a, b) => String((a as unknown as Record<string, unknown>).key).localeCompare(String((b as unknown as Record<string, unknown>).key)));
+    delta.sort((a, b) =>
+      String((a as unknown as Record<string, unknown>).key).localeCompare(
+        String((b as unknown as Record<string, unknown>).key),
+      ),
+    );
     nextOverrides.push({ fieldKey, metadataFields: delta as unknown as FieldMetadataOverride["metadataFields"] });
     nextOverrides.sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
   }
@@ -1340,18 +1377,27 @@ function commitBuiltinMetadataEdit() {
 }
 
 function addEditBuiltinMetadata() {
-  editBuiltinMetadataDrafts = [...editBuiltinMetadataDrafts, { key: "", label: "", type: "text", required: false, options: "", oneOf: [] }];
+  editBuiltinMetadataDrafts = [
+    ...editBuiltinMetadataDrafts,
+    { key: "", label: "", type: "text", required: false, options: "", oneOf: [] },
+  ];
 }
 function removeEditBuiltinMetadata(index: number) {
   const fieldKey = editingBuiltinMetadataFieldKey;
   const field = fieldKey ? packageFields.find((f) => f.key === fieldKey) : null;
-  const originalKeys = new Set((builtinOriginalMetadata(field as FieldDefinition) as unknown as MetadataFieldDefinition[]).map((mf) => String((mf as unknown as Record<string, unknown>).key)));
+  const originalKeys = new Set(
+    (builtinOriginalMetadata(field as FieldDefinition) as unknown as MetadataFieldDefinition[]).map((mf) =>
+      String((mf as unknown as Record<string, unknown>).key),
+    ),
+  );
   const draftKey = editBuiltinMetadataDrafts[index]?.key;
   if (draftKey && originalKeys.has(draftKey)) return; // prevent removing builtin keys (additive)
   editBuiltinMetadataDrafts = editBuiltinMetadataDrafts.filter((_, i) => i !== index);
 }
 function addEditBuiltinMetadataOneOfVariant(metaIndex: number) {
-  const copy = editBuiltinMetadataDrafts.map((m, i) => (i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m));
+  const copy = editBuiltinMetadataDrafts.map((m, i) =>
+    i === metaIndex ? { ...m, oneOf: [...m.oneOf, { label: "", type: "text" as const, options: "" }] } : m,
+  );
   editBuiltinMetadataDrafts = copy;
 }
 function removeEditBuiltinMetadataOneOfVariant(metaIndex: number, variantIndex: number) {
@@ -1538,11 +1584,11 @@ function removeCustomTemplate(id: string) {
       <SlidersHorizontal size={18} strokeWidth={1.8} aria-hidden="true" />
     </div>
     <div class="hero-copy">
-      <span class="kicker">PROJECT OVERLAY</span>
-      <strong>Types &amp; fields</strong>
+      <span class="kicker">PROJECT STRUCTURE</span>
+      <strong>Fields &amp; Types</strong>
       <p>
-        Package defaults stay intact. Disable what you don’t need and layer project-specific types, fields, and
-        templates. Nothing you do here modifies the installed plugin.
+        Choose what authors see in this project. Extension defaults stay intact while project-specific types, fields,
+        and templates travel with the project.
       </p>
     </div>
     <div class="hero-stats" aria-label="Overlay summary">
@@ -1560,11 +1606,11 @@ function removeCustomTemplate(id: string) {
   {#if !projectOpen}
     <div class="empty-card">
       <div class="empty-icon"><Blocks size={20} strokeWidth={1.7} aria-hidden="true" /></div>
-      <strong>Open a project to customize this schema</strong>
-      <p>Schema overlays are saved inside the project’s folder and travel with the project.</p>
+      <strong>Open a project to customize Fields &amp; Types</strong>
+      <p>Project structure choices are saved inside the project and travel with it.</p>
     </div>
   {:else}
-    <div class="tab-bar" role="tablist" aria-label="Schema sections">
+    <div class="tab-bar" role="tablist" aria-label="Fields and Types sections">
       <button
         type="button"
         role="tab"
@@ -1803,21 +1849,32 @@ function removeCustomTemplate(id: string) {
                     <div class="type-select" role="group" aria-label={`Attributes for ${field.label}`}>
                       <span class="type-select-label">Attributes <em>(additive to builtin)</em></span>
                       {#if editBuiltinMetadataDrafts.length === 0}
-                        <span class="meta-hint">No attributes — builtins: {(builtinOriginalMetadata(field) as unknown as unknown[]).length}, effective: {effectiveBuiltinMetadata(field).length}. Add a new one.</span>
+                        <span class="meta-hint"
+                          >No attributes — builtins: {(builtinOriginalMetadata(field) as unknown as unknown[]).length},
+                          effective: {effectiveBuiltinMetadata(field).length}. Add a new one.</span>
                       {/if}
                       {#each editBuiltinMetadataDrafts as meta, metaIdx}
-                        {@const isBuiltinKey = (builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[]).some((m) => String((m as unknown as Record<string, unknown>).key) === meta.key)}
+                        {@const isBuiltinKey = (
+                          builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[]
+                        ).some((m) => String((m as unknown as Record<string, unknown>).key) === meta.key)}
                         <div class="metadata-row">
                           <div class="metadata-main">
                             <input
                               bind:value={meta.label}
                               placeholder="Attribute label"
                               oninput={() => {
-                                if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
+                                if (
+                                  !meta.key ||
+                                  slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))
+                                ) {
                                   meta.key = slugifyFieldKey(meta.label);
                                 }
                               }} />
-                            <input bind:value={meta.key} placeholder="key" disabled={isBuiltinKey} title={isBuiltinKey ? "Builtin key cannot be renamed" : "Metadata key"} />
+                            <input
+                              bind:value={meta.key}
+                              placeholder="key"
+                              disabled={isBuiltinKey}
+                              title={isBuiltinKey ? "Builtin key cannot be renamed" : "Metadata key"} />
                             <select bind:value={meta.type}>
                               {#each METADATA_FIELD_TYPES as mt}
                                 <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
@@ -1827,7 +1884,12 @@ function removeCustomTemplate(id: string) {
                               <input type="checkbox" bind:checked={meta.required} />
                               <span>Required</span>
                             </label>
-                            <button type="button" class="quiet icon" disabled={isBuiltinKey} title={isBuiltinKey ? "Builtin attributes cannot be removed (additive)" : "Remove"} onclick={() => removeEditBuiltinMetadata(metaIdx)}
+                            <button
+                              type="button"
+                              class="quiet icon"
+                              disabled={isBuiltinKey}
+                              title={isBuiltinKey ? "Builtin attributes cannot be removed (additive)" : "Remove"}
+                              onclick={() => removeEditBuiltinMetadata(metaIdx)}
                               ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                           </div>
                           {#if meta.type === "enum"}
@@ -1845,20 +1907,33 @@ function removeCustomTemplate(id: string) {
                                   {#if variant.type === "enum"}
                                     <input bind:value={variant.options} placeholder="Options, comma separated" />
                                   {/if}
-                                  <button type="button" class="quiet icon" onclick={() => removeEditBuiltinMetadataOneOfVariant(metaIdx, vIdx)}
+                                  <button
+                                    type="button"
+                                    class="quiet icon"
+                                    onclick={() => removeEditBuiltinMetadataOneOfVariant(metaIdx, vIdx)}
                                     ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                                 </div>
                               {/each}
-                              <button type="button" class="quiet small" onclick={() => addEditBuiltinMetadataOneOfVariant(metaIdx)}
+                              <button
+                                type="button"
+                                class="quiet small"
+                                onclick={() => addEditBuiltinMetadataOneOfVariant(metaIdx)}
                                 ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
                             </div>
                           {/if}
-                          {#if isBuiltinKey}<span class="meta-hint">Builtin attribute — editing overrides the packaged definition.</span>{/if}
+                          {#if isBuiltinKey}<span class="meta-hint"
+                              >Builtin attribute — editing overrides the packaged definition.</span
+                            >{/if}
                         </div>
                       {/each}
                       <button type="button" class="quiet" onclick={addEditBuiltinMetadata}
                         ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-                      <span class="meta-hint">Builtin { (builtinOriginalMetadata(field) as unknown as unknown[]).length } + override {(draft.fieldMetadataOverrides ?? []).find((ov) => ov.fieldKey===field.key)?.metadataFields?.length ?? 0} = effective {effectiveBuiltinMetadata(field).length}. Stored as delta.</span>
+                      <span class="meta-hint"
+                        >Builtin {(builtinOriginalMetadata(field) as unknown as unknown[]).length} + override {(
+                          draft.fieldMetadataOverrides ?? []
+                        ).find((ov) => ov.fieldKey === field.key)?.metadataFields?.length ?? 0} = effective {effectiveBuiltinMetadata(
+                          field,
+                        ).length}. Stored as delta.</span>
                     </div>
                     <div class="edit-actions">
                       <button type="button" class="action" onclick={commitBuiltinMetadataEdit}
@@ -1881,18 +1956,35 @@ function removeCustomTemplate(id: string) {
                     <span class="meta"
                       >{scopeLabel(builtinFieldScope(field))} <span class="dot">·</span> <code>{field.key}</code>
                       {#if field.type === "relationship" && (field as unknown as Record<string, unknown>).metadataFields}
-                        <span class="dot">·</span> {((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length} builtin attr{( ((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length ===1 ? "" : "s")}
+                        <span class="dot">·</span>
+                        {((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length} builtin attr{(
+                          (field as unknown as Record<string, unknown>).metadataFields as unknown[]
+                        ).length === 1
+                          ? ""
+                          : "s"}
                       {/if}
-                      {#if field.type === "relationship" && (draft.fieldMetadataOverrides ?? []).some((ov) => ov.fieldKey===field.key)}
-                        <span class="dot">·</span> +{(draft.fieldMetadataOverrides ?? []).find((ov)=>ov.fieldKey===field.key)?.metadataFields?.length ?? 0} override
+                      {#if field.type === "relationship" && (draft.fieldMetadataOverrides ?? []).some((ov) => ov.fieldKey === field.key)}
+                        <span class="dot">·</span> +{(draft.fieldMetadataOverrides ?? []).find(
+                          (ov) => ov.fieldKey === field.key,
+                        )?.metadataFields?.length ?? 0} override
                       {/if}
                     </span>
                   </div>
                   <div class="item-actions">
-                    <button type="button" class="quiet" onclick={() => { editingBuiltinMetadataFieldKey = null; editBuiltinMetadataDrafts = []; editingBuiltinFieldKey = field.key; }}
-                      >Edit scope</button>
+                    <button
+                      type="button"
+                      class="quiet"
+                      onclick={() => {
+                        editingBuiltinMetadataFieldKey = null;
+                        editBuiltinMetadataDrafts = [];
+                        editingBuiltinFieldKey = field.key;
+                      }}>Edit scope</button>
                     {#if field.type === "relationship"}
-                      <button type="button" class="quiet" disabled={isDisabled(draft.disabledFields, field.key)} onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
+                      <button
+                        type="button"
+                        class="quiet"
+                        disabled={isDisabled(draft.disabledFields, field.key)}
+                        onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
                     {/if}
                   </div>
                 {/if}
@@ -2007,7 +2099,10 @@ function removeCustomTemplate(id: string) {
                                 bind:value={meta.label}
                                 placeholder="Attribute label"
                                 oninput={() => {
-                                  if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
+                                  if (
+                                    !meta.key ||
+                                    slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))
+                                  ) {
                                     meta.key = slugifyFieldKey(meta.label);
                                   }
                                 }} />
@@ -2048,7 +2143,10 @@ function removeCustomTemplate(id: string) {
                                       ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                                   </div>
                                 {/each}
-                                <button type="button" class="quiet small" onclick={() => addEditFieldMetadataOneOfVariant(metaIdx)}
+                                <button
+                                  type="button"
+                                  class="quiet small"
+                                  onclick={() => addEditFieldMetadataOneOfVariant(metaIdx)}
                                   ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
                               </div>
                             {/if}
@@ -2059,7 +2157,9 @@ function removeCustomTemplate(id: string) {
                         {/each}
                         <button type="button" class="quiet" onclick={addEditFieldMetadata}
                           ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-                        <span class="meta-hint">Stored as <code>metadataFields</code> on the relationship field; validated on every link and shown in the relationship details dialog.</span>
+                        <span class="meta-hint"
+                          >Stored as <code>metadataFields</code> on the relationship field; validated on every link and shown
+                          in the relationship details dialog.</span>
                       </div>
                     {/if}
                     <div class="type-select" role="group" aria-label="Applies to entity types">
@@ -2235,7 +2335,10 @@ function removeCustomTemplate(id: string) {
                           {#if variant.type === "enum"}
                             <input bind:value={variant.options} placeholder="Options, comma separated" />
                           {/if}
-                          <button type="button" class="quiet icon" onclick={() => removeNewFieldMetadataOneOfVariant(metaIdx, vIdx)}
+                          <button
+                            type="button"
+                            class="quiet icon"
+                            onclick={() => removeNewFieldMetadataOneOfVariant(metaIdx, vIdx)}
                             ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
                         </div>
                       {/each}
@@ -3326,7 +3429,8 @@ select {
   appearance: none;
   -webkit-appearance: none;
   background-image:
-    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%), linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
+    linear-gradient(45deg, transparent 50%, var(--ink-muted) 50%),
+    linear-gradient(135deg, var(--ink-muted) 50%, transparent 50%);
   background-position:
     calc(100% - 16px) calc(50% - 2px),
     calc(100% - 11px) calc(50% - 2px);

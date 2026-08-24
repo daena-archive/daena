@@ -39,7 +39,9 @@ const lore = {
   surfaceScrollTop: 0,
 };
 const graph = { ...lore, view: "graph" };
-const settings = { kind: "settings", section: "git" };
+const settings = { kind: "settings", section: "ai" };
+const project = { kind: "project", section: "snapshots" };
+assert.equal(sameShellLocation(settings, project), false, "application Settings and Project are distinct locations");
 
 let history = emptyShellNavigationHistory();
 history = recordShellLocation(history, home);

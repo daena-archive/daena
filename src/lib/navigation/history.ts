@@ -1,5 +1,6 @@
 import type {
   CollectionQuery,
+  ProjectSection,
   SettingsSection,
   TimelineView,
   WorkspaceSection,
@@ -25,6 +26,7 @@ export interface WorkspacePaneDimensions {
 export type ShellLocation =
   | { kind: "home" }
   | { kind: "settings"; section: SettingsSection }
+  | { kind: "project"; section: ProjectSection }
   | {
       kind: "workspace";
       section: WorkspaceSection;
@@ -63,6 +65,7 @@ export function emptyShellNavigationHistory(): ShellNavigationHistory {
 export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "home") return "home";
   if (location.kind === "settings") return `settings:${location.section}`;
+  if (location.kind === "project") return `project:${location.section}`;
   if (location.kind === "plugin") {
     return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}:${Math.round(location.surfaceScrollTop)}`;
   }

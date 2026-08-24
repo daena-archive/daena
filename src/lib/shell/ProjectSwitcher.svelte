@@ -1,14 +1,5 @@
 <script lang="ts">
-import {
-  ChevronDown,
-  DatabaseZap,
-  Download,
-  FlaskConical,
-  FolderOpen,
-  Import as ImportIcon,
-  LogOut,
-  X,
-} from "@lucide/svelte";
+import { Boxes, ChevronDown, FolderOpen, LogOut, X } from "@lucide/svelte";
 
 export interface ProjectSwitcherRecent {
   name: string;
@@ -25,10 +16,7 @@ interface Props {
   onOpenRecent: (root: string) => void;
   onRemoveRecent: (root: string) => void;
   onMenuChange: (open: boolean) => void;
-  onExportMarkdown: () => void;
-  onImportExternal: () => void;
-  onRebuildIndex: () => void;
-  onSeedExample: () => void;
+  onOpenProjectCenter: () => void;
   onCloseProject: () => void;
 }
 
@@ -42,10 +30,7 @@ let {
   onOpenRecent,
   onRemoveRecent,
   onMenuChange,
-  onExportMarkdown,
-  onImportExternal,
-  onRebuildIndex,
-  onSeedExample,
+  onOpenProjectCenter,
   onCloseProject,
 }: Props = $props();
 </script>
@@ -95,15 +80,8 @@ let {
         <button class="rail-button" role="menuitem" onclick={onOpenProject}
           ><span class="rail-icon"><FolderOpen size={16} strokeWidth={1.8} /></span><span>Open another folder</span
           ></button>
-        <button class="rail-button" role="menuitem" onclick={onExportMarkdown}
-          ><span class="rail-icon"><Download size={16} strokeWidth={1.8} /></span><span>Export Markdown</span></button>
-        <button class="rail-button" role="menuitem" onclick={onImportExternal}
-          ><span class="rail-icon"><ImportIcon size={16} strokeWidth={1.8} /></span><span>Import external material</span
-          ></button>
-        <button class="rail-button" role="menuitem" onclick={onRebuildIndex}
-          ><span class="rail-icon"><DatabaseZap size={16} strokeWidth={1.8} /></span><span>Rebuild index</span></button>
-        <button class="rail-button" role="menuitem" onclick={onSeedExample}
-          ><span class="rail-icon"><FlaskConical size={16} strokeWidth={1.8} /></span><span>Seed example</span></button>
+        <button class="rail-button" role="menuitem" onclick={onOpenProjectCenter}
+          ><span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project center</span></button>
         <button class="rail-button" role="menuitem" onclick={onCloseProject}
           ><span class="rail-icon"><LogOut size={16} strokeWidth={1.8} /></span><span>Close project</span></button>
       </div>

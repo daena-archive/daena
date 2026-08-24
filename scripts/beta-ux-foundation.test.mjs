@@ -49,7 +49,7 @@ assert.match(appSidebar, /onOpenProject/, "project opening remains reachable fro
 assert.match(appSidebar, /onCloseProject/, "project closing remains reachable from the extracted sidebar");
 assert.match(appSidebar, /<ProjectSwitcher/, "project lifecycle controls use the extracted project switcher");
 assert.match(projectSwitcher, /RECENT PROJECTS/, "the project switcher owns launcher recents");
-assert.match(projectSwitcher, /Export Markdown/, "the project switcher owns open-project actions");
+assert.match(projectSwitcher, /Project center/, "the project switcher routes administration to the Project area");
 assert.match(shell, /\{:else if projectHomeOpen\}/, "Home has a first-class main content surface");
 assert.match(shell, /recentlyUpdatedEntities\(\)/, "Home exposes cross-workspace recent work");
 assert.match(

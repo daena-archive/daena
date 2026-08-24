@@ -3,6 +3,7 @@ import type { Entity } from "$lib/project/client";
 import type { WorkspaceSection } from "$lib/modules/workspace";
 import {
   CalendarRange,
+  Boxes,
   ChevronRight,
   Clock3,
   GitBranch,
@@ -36,6 +37,7 @@ let {
   recents,
   onNewEntry,
   onSnapshots,
+  onProjectCenter,
   onExtensions,
   onOpenWorkspace,
   onOpenEntity,
@@ -47,6 +49,7 @@ let {
   recents: ProjectHomeRecent[];
   onNewEntry: () => void;
   onSnapshots: () => void;
+  onProjectCenter: () => void;
   onExtensions: () => void;
   onOpenWorkspace: (section: WorkspaceSection) => void;
   onOpenEntity: (entity: Entity) => void;
@@ -75,6 +78,8 @@ function sectionIcon(section: WorkspaceSection) {
       {/if}
       <button type="button" class="quiet-button" onclick={onSnapshots}
         ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>
+      <button type="button" class="quiet-button" onclick={onProjectCenter}
+        ><Boxes size={14} strokeWidth={1.8} aria-hidden="true" /> Project</button>
     </div>
   </div>
 

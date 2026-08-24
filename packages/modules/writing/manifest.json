@@ -29,8 +29,8 @@
     {
       "namespace": "writing",
       "entityTypes": [
-        { "id": "manuscript", "name": "Manuscript", "icon": { "kind": "catalog", "id": "manuscript" } },
-        { "id": "reference-page", "name": "Reference page", "icon": { "kind": "catalog", "id": "reference" } }
+        { "id": "manuscript", "name": "Manuscript", "icon": { "kind": "catalog", "id": "manuscript" }, "iconColor": { "kind": "preset", "id": "ink" } },
+        { "id": "reference-page", "name": "Reference page", "icon": { "kind": "catalog", "id": "reference" }, "iconColor": { "kind": "preset", "id": "slate" } }
       ],
       "fields": [
         {

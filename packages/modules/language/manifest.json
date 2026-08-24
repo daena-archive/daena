@@ -23,7 +23,7 @@
   "schemas": [
     {
       "namespace": "language",
-      "entityTypes": [{ "id": "language", "name": "Language", "icon": { "kind": "catalog", "id": "language" } }],
+      "entityTypes": [{ "id": "language", "name": "Language", "icon": { "kind": "catalog", "id": "language" }, "iconColor": { "kind": "preset", "id": "ocean" } }],
       "fields": [
         { "key": "nativeName", "label": "Native name", "type": "text" },
         { "key": "aliases", "label": "Aliases", "type": "text" },

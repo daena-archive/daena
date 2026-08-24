@@ -331,6 +331,50 @@ impl IconRef {
     }
 }
 
+/// Curated entity-type colors. Preset IDs are owned by Daena; custom colors
+/// require explicit light and dark foreground hex values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum EntityTypeColor {
+    Preset { id: String },
+    Custom { light: String, dark: String },
+}
+
+pub const TYPE_COLOR_PRESET_IDS: &[&str] = &[
+    "brass", "copper", "ember", "moss", "pine", "ocean", "sky", "frost", "amber", "gold", "sand",
+    "rose", "plum", "violet", "slate", "ink",
+];
+
+fn normalize_hex_color(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() != 7 || !trimmed.starts_with('#') {
+        return None;
+    }
+    let hex = &trimmed[1..];
+    if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("#{}", hex.to_ascii_lowercase()))
+}
+
+pub fn validate_entity_type_color(color: &EntityTypeColor) -> Result<(), ContractError> {
+    match color {
+        EntityTypeColor::Preset { id } => {
+            if !TYPE_COLOR_PRESET_IDS.contains(&id.as_str()) {
+                return Err(ContractError(format!("unknown type color preset: {id}")));
+            }
+        }
+        EntityTypeColor::Custom { light, dark } => {
+            normalize_hex_color(light)
+                .ok_or_else(|| ContractError(format!("invalid light type color: {light}")))?;
+            normalize_hex_color(dark)
+                .ok_or_else(|| ContractError(format!("invalid dark type color: {dark}")))?;
+        }
+    }
+    Ok(())
+}
+
 pub const MAX_ICON_SVG_BYTES: usize = 32 * 1024;
 
 pub const CATALOG_ICON_IDS: &[&str] = &[
@@ -400,6 +444,8 @@ pub struct EntityTypeDefinition {
     pub id: String,
     pub name: String,
     pub icon: IconRef,
+    #[serde(rename = "iconColor")]
+    pub icon_color: EntityTypeColor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1028,6 +1074,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 )));
             }
             validate_manifest_icon_ref(&entity_type.icon)?;
+            validate_entity_type_color(&entity_type.icon_color)?;
         }
     }
     let mut fields = BTreeMap::new();

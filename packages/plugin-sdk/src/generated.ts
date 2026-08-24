@@ -9,6 +9,7 @@
 export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
 export const CATALOG_ICON_IDS = ["agriculture","anchor","animal","art","artifact","bird","calendar","camp","castle","collection","compass","concept","craft","crown","culture","danger","encounter","era","event","faction","fire","fish","flower","forest","group","heart","home","ice","insect","key","language","library","lock","magic","manuscript","map","mine","moon","mountain","music","object","person","place","plant","reference","science","scroll","settlement","ship","spirit","star","storm","sun","theatre","unknown","wand","wealth"] as const;
+export const TYPE_COLOR_PRESET_IDS = ["brass","copper","ember","moss","pine","ocean","sky","frost","amber","gold","sand","rose","plum","violet","slate","ink"] as const;
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { required: boolean; version: string }
 export interface OneOfVariant { label: string; options?: string[] | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship" }
@@ -17,7 +18,8 @@ export type TimelineFieldRole = "point" | "start" | "end";
 export type TimelineFieldLayer = "dates" | "lifelines";
 export interface TimelineFieldContribution { group?: string | null; label?: string | null; layer?: TimelineFieldLayer | null; role: TimelineFieldRole }
 export type IconRef = { id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "key" | "language" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "wand" | "wealth"; kind: "catalog" } | { kind: "plugin-svg"; path: string } | { kind: "user-svg"; svg: string };
-export interface EntityTypeDefinition { icon: IconRef; id: string; name: string }
+export type EntityTypeColor = { id: "brass" | "copper" | "ember" | "moss" | "pine" | "ocean" | "sky" | "frost" | "amber" | "gold" | "sand" | "rose" | "plum" | "violet" | "slate" | "ink"; kind: "preset" } | { dark: string; kind: "custom"; light: string };
+export interface EntityTypeDefinition { icon: IconRef; iconColor: EntityTypeColor; id: string; name: string }
 export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; timeline?: TimelineFieldContribution; type: FieldType }
 export interface SchemaContribution { entityTypes: EntityTypeDefinition[]; fields: FieldDefinition[]; namespace: string }
 export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: IconRef | null; id: string; name: string; requiredFields?: string[] | null }

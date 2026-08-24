@@ -32,7 +32,7 @@ use daena_plugin_api::rpc::{
     RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
-    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS,
+    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS,
     DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG,
 };
 use schemars::gen::{SchemaGenerator, SchemaSettings};
@@ -224,6 +224,37 @@ fn manifest_schema() -> Value {
                     "svg".into(),
                     json!({"type": "string", "minLength": 1, "maxLength": 32768}),
                 );
+            }
+        }
+    }
+    {
+        let variants = defs_entry(&mut root, "EntityTypeColor")
+            .get_mut("oneOf")
+            .and_then(Value::as_array_mut)
+            .expect("EntityTypeColor oneOf");
+        for variant in variants {
+            let properties = variant
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+                .expect("EntityTypeColor properties");
+            let kind = properties
+                .get("kind")
+                .and_then(|schema| schema.get("enum"))
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str);
+            if kind == Some("preset") {
+                properties.insert(
+                    "id".into(),
+                    json!({"enum": TYPE_COLOR_PRESET_IDS, "type": "string"}),
+                );
+            } else if kind == Some("custom") {
+                for key in ["light", "dark"] {
+                    properties.insert(
+                        key.into(),
+                        json!({"type": "string", "pattern": r"^#[0-9A-Fa-f]{6}$"}),
+                    );
+                }
             }
         }
     }

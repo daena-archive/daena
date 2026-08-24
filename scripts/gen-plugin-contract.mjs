@@ -170,6 +170,7 @@ const MANIFEST_DEF_ORDER = [
   "TimelineFieldLayer",
   "TimelineFieldContribution",
   "IconRef",
+  "EntityTypeColor",
   "EntityTypeDefinition",
   "FieldDefinition",
   "SchemaContribution",
@@ -208,6 +209,13 @@ const catalogIconIds = catalogIconVariant?.properties?.id?.enum;
 if (!Array.isArray(catalogIconIds) || catalogIconIds.length === 0)
   throw new Error("manifest schema IconRef catalog variant must declare icon IDs");
 manifestLines.push(`export const CATALOG_ICON_IDS = ${JSON.stringify(catalogIconIds)} as const;`);
+const colorPresetVariant = manifestDefs.EntityTypeColor?.oneOf?.find(
+  (variant) => variant.properties?.kind?.enum?.[0] === "preset",
+);
+const typeColorPresetIds = colorPresetVariant?.properties?.id?.enum;
+if (!Array.isArray(typeColorPresetIds) || typeColorPresetIds.length === 0)
+  throw new Error("manifest schema EntityTypeColor preset variant must declare preset IDs");
+manifestLines.push(`export const TYPE_COLOR_PRESET_IDS = ${JSON.stringify(typeColorPresetIds)} as const;`);
 
 for (const name of MANIFEST_DEF_ORDER) {
   if (SKIP_DEFS.has(name)) continue;

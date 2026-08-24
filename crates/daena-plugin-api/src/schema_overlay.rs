@@ -1,8 +1,8 @@
 //! Project-owned module schema overlays (host-side customization of package defaults).
 
 use crate::{
-    validate_icon_ref, EntityTemplate, EntityTypeDefinition, FieldDefinition,
-    MetadataFieldDefinition, PluginManifest,
+    validate_entity_type_color, validate_icon_ref, EntityTemplate, EntityTypeColor,
+    EntityTypeDefinition, FieldDefinition, IconRef, MetadataFieldDefinition, PluginManifest,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -120,6 +120,8 @@ pub struct ModuleSchemaOverlay {
     pub template_overrides: Vec<TemplateOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_metadata_overrides: Vec<FieldMetadataOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_type_appearance_overrides: Vec<EntityTypeAppearanceOverride>,
 }
 
 /// Project-specific metadata extension for a packaged relationship field.
@@ -153,6 +155,18 @@ pub struct TemplateOverride {
     pub required_fields: Option<Vec<String>>,
 }
 
+/// Project-specific icon and color overrides for a packaged entity type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityTypeAppearanceOverride {
+    pub entity_type_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<IconRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_color: Option<EntityTypeColor>,
+}
+
 /// Package builtins + current overlay for the schema settings editor.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +195,7 @@ impl Default for ModuleSchemaOverlay {
             field_scope_overrides: Vec::new(),
             template_overrides: Vec::new(),
             field_metadata_overrides: Vec::new(),
+            entity_type_appearance_overrides: Vec::new(),
         }
     }
 }
@@ -196,6 +211,7 @@ impl ModuleSchemaOverlay {
             && self.field_scope_overrides.is_empty()
             && self.template_overrides.is_empty()
             && self.field_metadata_overrides.is_empty()
+            && self.entity_type_appearance_overrides.is_empty()
     }
 }
 
@@ -324,6 +340,7 @@ pub fn validate_module_overlay(
             return Err(format!("invalid custom entity type: {}", entity_type.id));
         }
         validate_icon_ref(&entity_type.icon).map_err(|error| error.0)?;
+        validate_entity_type_color(&entity_type.icon_color).map_err(|error| error.0)?;
         if package_types.contains(entity_type.id.as_str()) {
             return Err(format!(
                 "custom entity type collides with builtin type: {}",
@@ -762,6 +779,40 @@ pub fn validate_module_overlay(
         }
     }
 
+    let mut appearance_override_ids = BTreeSet::new();
+    for appearance in &overlay.entity_type_appearance_overrides {
+        if !is_entity_type_id(&appearance.entity_type_id) {
+            return Err(format!(
+                "invalid entity type appearance override id: {}",
+                appearance.entity_type_id
+            ));
+        }
+        if appearance.icon.is_none() && appearance.icon_color.is_none() {
+            return Err(format!(
+                "entity type appearance override {} must set icon or iconColor",
+                appearance.entity_type_id
+            ));
+        }
+        if !appearance_override_ids.insert(appearance.entity_type_id.as_str()) {
+            return Err(format!(
+                "duplicate entity type appearance override: {}",
+                appearance.entity_type_id
+            ));
+        }
+        if !effective_types.contains(appearance.entity_type_id.as_str()) {
+            return Err(format!(
+                "entity type appearance override references unknown type: {}",
+                appearance.entity_type_id
+            ));
+        }
+        if let Some(icon) = &appearance.icon {
+            validate_icon_ref(icon).map_err(|error| error.0)?;
+        }
+        if let Some(color) = &appearance.icon_color {
+            validate_entity_type_color(color).map_err(|error| error.0)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -802,6 +853,21 @@ pub fn merge_module_manifest(
     schema
         .entity_types
         .dedup_by(|left, right| left.id == right.id);
+
+    for appearance in &overlay.entity_type_appearance_overrides {
+        if let Some(entity_type) = schema
+            .entity_types
+            .iter_mut()
+            .find(|entity_type| entity_type.id == appearance.entity_type_id)
+        {
+            if let Some(icon) = &appearance.icon {
+                entity_type.icon = icon.clone();
+            }
+            if let Some(color) = &appearance.icon_color {
+                entity_type.icon_color = color.clone();
+            }
+        }
+    }
 
     schema.fields.retain(|field| {
         !overlay
@@ -885,6 +951,31 @@ fn unique_len(values: &[String]) -> usize {
     values.iter().collect::<BTreeSet<_>>().len()
 }
 
+fn default_entity_type_color() -> EntityTypeColor {
+    EntityTypeColor::Preset {
+        id: "brass".into(),
+    }
+}
+
+fn migrate_overlay_custom_entity_type_colors(value: &mut serde_json::Value) {
+    let Some(custom_types) = value
+        .as_object_mut()
+        .and_then(|object| object.get_mut("customEntityTypes"))
+        .and_then(|entry| entry.as_array_mut())
+    else {
+        return;
+    };
+    let default_color = serde_json::to_value(default_entity_type_color())
+        .expect("default entity type color serializes");
+    for entry in custom_types {
+        if let Some(object) = entry.as_object_mut() {
+            object
+                .entry("iconColor".to_string())
+                .or_insert(default_color.clone());
+        }
+    }
+}
+
 /// Parse overlay JSON; empty object becomes default empty overlay.
 pub fn parse_module_overlay(value: &serde_json::Value) -> Result<ModuleSchemaOverlay, String> {
     if value.is_null() {
@@ -893,8 +984,10 @@ pub fn parse_module_overlay(value: &serde_json::Value) -> Result<ModuleSchemaOve
     if value.as_object().is_some_and(|object| object.is_empty()) {
         return Ok(ModuleSchemaOverlay::default());
     }
+    let mut migrated = value.clone();
+    migrate_overlay_custom_entity_type_colors(&mut migrated);
     let mut overlay: ModuleSchemaOverlay =
-        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        serde_json::from_value(migrated).map_err(|error| error.to_string())?;
     if overlay.version == 0 {
         overlay.version = SCHEMA_OVERLAY_VERSION;
     }
@@ -1039,6 +1132,9 @@ mod tests {
                 name: "Species".into(),
                 icon: crate::IconRef::UserSvg {
                     svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#.into(),
+                },
+                icon_color: EntityTypeColor::Preset {
+                    id: "moss".into(),
                 },
             }],
             custom_fields: vec![FieldDefinition {
@@ -1196,6 +1292,9 @@ mod tests {
                 icon: crate::IconRef::Catalog {
                     id: "manuscript".into(),
                 },
+                icon_color: EntityTypeColor::Preset {
+                    id: "ink".into(),
+                },
             }],
             custom_fields: vec![FieldDefinition {
                 key: "wordCount".into(),
@@ -1331,5 +1430,45 @@ mod tests {
         assert!(validate_module_overlay(&package, &overlay)
             .unwrap_err()
             .contains("duplicate field metadata override"));
+    }
+
+    #[test]
+    fn parse_module_overlay_migrates_missing_icon_color_on_custom_types() {
+        let value = serde_json::json!({
+            "version": 1,
+            "customEntityTypes": [{
+                "id": "chapter",
+                "name": "Chapter",
+                "icon": { "kind": "catalog", "id": "reference" }
+            }]
+        });
+        let overlay = parse_module_overlay(&value).expect("parse legacy overlay");
+        assert_eq!(overlay.custom_entity_types.len(), 1);
+        assert_eq!(
+            overlay.custom_entity_types[0].icon_color,
+            EntityTypeColor::Preset {
+                id: "brass".into()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_appearance_override_for_disabled_entity_type() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            disabled_entity_types: vec!["person".into()],
+            entity_type_appearance_overrides: vec![EntityTypeAppearanceOverride {
+                entity_type_id: "person".into(),
+                icon: Some(crate::IconRef::Catalog {
+                    id: "person".into(),
+                }),
+                icon_color: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("entity type appearance override references unknown type"));
     }
 }

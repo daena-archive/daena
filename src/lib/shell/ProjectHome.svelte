@@ -1,7 +1,7 @@
 <script lang="ts">
-import type { Entity, IconRef } from "$lib/project/client";
+import type { Entity, EntityTypeColor, IconRef } from "$lib/project/client";
 import type { WorkspaceSection } from "$lib/modules/workspace";
-import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
 import {
   CalendarRange,
   Boxes,
@@ -25,6 +25,7 @@ export interface ProjectHomeWorkspace {
 export interface ProjectHomeRecent {
   entity: Entity;
   icon: IconRef;
+  iconColor: EntityTypeColor;
   pluginId: string | null;
   typeLabel: string;
   updatedLabel: string;
@@ -148,9 +149,7 @@ function sectionIcon(section: WorkspaceSection) {
       <div class="project-home-recents">
         {#each recents as recent}
           <button type="button" class="project-home-recent" onclick={() => onOpenEntity(recent.entity)}>
-            <span class="entity-glyph">
-              <EntityIcon icon={recent.icon} pluginId={recent.pluginId} size={14} />
-            </span>
+            <EntityGlyph icon={recent.icon} iconColor={recent.iconColor} pluginId={recent.pluginId} size={14} box={30} />
             <span>
               <strong>{recent.entity.name}</strong>
               <small>{recent.typeLabel} · {recent.updatedLabel}</small>
@@ -382,18 +381,6 @@ function sectionIcon(section: WorkspaceSection) {
 :global(.project-home-card-icon) {
   flex: 0 0 auto;
   color: var(--ink-faint);
-}
-.entity-glyph {
-  display: grid;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--surface-muted);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 800;
 }
 .project-home-empty {
   padding: 22px;

@@ -2,7 +2,7 @@
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
-import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers, Sparkles } from "@lucide/svelte";
+import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers } from "@lucide/svelte";
 
 export type SchemaPluginCandidate = {
   id: string;
@@ -71,9 +71,6 @@ function handleDirtyChange(next: boolean) {
   onDirtyChange?.(next);
 }
 
-function pluginInitial(name: string) {
-  return (name.trim()[0] ?? "?").toUpperCase();
-}
 </script>
 
 <section class="schema-settings">
@@ -85,10 +82,6 @@ function pluginInitial(name: string) {
       <div class="heading-copy">
         <span class="kicker">PROJECT STRUCTURE</span>
         <strong>Fields &amp; Types</strong>
-        <p>
-          Shape the forms and entry types used in this project. Installed extensions remain intact while your project
-          keeps its own authoring choices.
-        </p>
       </div>
     </div>
 
@@ -98,7 +91,6 @@ function pluginInitial(name: string) {
           <Layers size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
         <strong>Open a project to customize Fields &amp; Types</strong>
-        <p>These choices are saved inside the project and travel with it.</p>
       </div>
     {:else if candidates.length === 0}
       <div class="empty-state">
@@ -106,28 +98,17 @@ function pluginInitial(name: string) {
           <Puzzle size={20} strokeWidth={1.7} aria-hidden="true" />
         </div>
         <strong>No customizable plugins found</strong>
-        <p>
-          No enabled extension offers customizable Fields &amp; Types. Enable a compatible extension — like
-          <strong>Lore</strong> — or install one from Project → Extensions.
-        </p>
       </div>
     {:else}
-      <div class="plugin-grid-meta">
-        <span class="meta-count">
-          <Sparkles size={12} strokeWidth={1.8} aria-hidden="true" />
-          {candidates.length}
-          {candidates.length === 1 ? "plugin" : "plugins"} customizable
-        </span>
-      </div>
       <ul class="schema-plugin-list" aria-label="Customizable extensions">
         {#each candidates as plugin}
           <li>
             <button type="button" class="schema-plugin-card" onclick={() => void selectPlugin(plugin.id)}>
-              <span class="card-icon" aria-hidden="true">{pluginInitial(plugin.name)}</span>
+              <span class="card-icon" aria-hidden="true">
+                <Puzzle size={18} strokeWidth={1.8} />
+              </span>
               <span class="card-copy">
                 <strong>{plugin.name}</strong>
-                <span class="card-desc"
-                  >Customize types, fields, and create-templates. Built-ins stay intact — toggle what you need.</span>
                 <span class="card-id">{plugin.id}</span>
               </span>
               <span class="card-arrow" aria-hidden="true">
@@ -146,7 +127,9 @@ function pluginInitial(name: string) {
       </button>
       <span class="crumb-divider" aria-hidden="true">/</span>
       <span class="schema-plugin-crumb" title={selectedPluginId ?? ""}>
-        <span class="crumb-icon">{pluginInitial(selectedPluginName || selectedPluginId || "?")}</span>
+        <span class="crumb-icon" aria-hidden="true">
+          <Puzzle size={13} strokeWidth={1.9} />
+        </span>
         {selectedPluginName || selectedPluginId}
       </span>
       {#if editorDirty}
@@ -161,6 +144,7 @@ function pluginInitial(name: string) {
         {projectOpen}
         {packageManifest}
         {overlay}
+        pluginId={selectedPluginId}
         {busy}
         {message}
         {onSave}
@@ -215,15 +199,6 @@ function pluginInitial(name: string) {
   font: 600 18px/1.1 var(--font-display, Georgia, serif);
   letter-spacing: -0.01em;
 }
-.settings-section-heading p {
-  margin: 7px 0 0;
-  color: var(--ink-soft);
-  font:
-    400 12.5px/1.55 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
 .empty-state {
   display: grid;
   gap: 10px;
@@ -246,39 +221,6 @@ function pluginInitial(name: string) {
 .empty-state strong {
   color: var(--ink);
   font: 600 14px/1.2 var(--font-display, Georgia, serif);
-}
-.empty-state p {
-  margin: 0;
-  max-width: 560px;
-  color: var(--ink-soft);
-  font:
-    400 12.5px/1.5 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.plugin-grid-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 2px;
-}
-.meta-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  border: 1px solid var(--line-soft);
-  color: var(--ink-muted);
-  font:
-    600 11px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
 }
 .schema-plugin-list {
   display: grid;
@@ -326,7 +268,6 @@ function pluginInitial(name: string) {
   background: var(--surface-warm);
   border: 1px solid var(--line-soft);
   color: var(--ink-muted);
-  font: 700 14px var(--font-display, Georgia, serif);
 }
 .card-copy {
   flex: 1;
@@ -337,19 +278,6 @@ function pluginInitial(name: string) {
 .card-copy strong {
   color: var(--ink);
   font: 600 14.5px/1.15 var(--font-display, Georgia, serif);
-}
-.card-desc {
-  color: var(--ink-soft);
-  font:
-    400 12px/1.45 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  display: -webkit-box;
-  line-clamp: 2;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 .card-id {
   color: var(--ink-faint);
@@ -435,7 +363,6 @@ function pluginInitial(name: string) {
   border-radius: 999px;
   background: var(--accent-dark);
   color: var(--on-accent);
-  font: 700 11px var(--font-display, Georgia, serif);
 }
 .schema-dirty-hint,
 .schema-clean-hint {

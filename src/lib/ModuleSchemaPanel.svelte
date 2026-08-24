@@ -1,5 +1,6 @@
 <script lang="ts">
 import type {
+  EntityTypeAppearanceOverride,
   EntityTypeDefinition,
   EntityTemplate,
   FieldDefinition,
@@ -7,10 +8,14 @@ import type {
   ModuleSchemaOverlay,
   FieldMetadataOverride,
   MetadataFieldDefinition,
+  EntityTypeColor,
 } from "$lib/project/client";
 import FieldPicker from "$lib/FieldPicker.svelte";
-import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
+import TypeAppearancePicker from "$lib/entity-colors/TypeAppearancePicker.svelte";
+import TypeColorPicker from "$lib/entity-colors/TypeColorPicker.svelte";
 import IconPicker from "$lib/entity-icons/IconPicker.svelte";
+import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
@@ -65,6 +70,7 @@ let {
   projectOpen,
   packageManifest,
   overlay,
+  pluginId = null,
   busy = false,
   message = "",
   onSave,
@@ -73,6 +79,7 @@ let {
   projectOpen: boolean;
   packageManifest: PackageManifest;
   overlay: ModuleSchemaOverlay;
+  pluginId?: string | null;
   busy?: boolean;
   message?: string;
   onSave: (overlay: ModuleSchemaOverlay) => Promise<void>;
@@ -86,6 +93,53 @@ const packageTypeDefinitions = $derived(
 const packageTypes = $derived(packageTypeDefinitions.map((entityType) => entityType.id));
 const packageFields = $derived([...(packageSchema?.fields ?? [])]);
 const packageTemplates = $derived([...(packageManifest.templates ?? [])]);
+
+function appearanceOverride(typeId: string): EntityTypeAppearanceOverride | undefined {
+  return (draft.entityTypeAppearanceOverrides ?? []).find((candidate) => candidate.entityTypeId === typeId);
+}
+
+function effectivePackageAppearance(type: EntityTypeDefinition) {
+  const override = appearanceOverride(type.id);
+  return {
+    icon: override?.icon ?? type.icon,
+    iconColor: override?.iconColor ?? type.iconColor,
+  };
+}
+
+function packageAppearanceChanged(type: EntityTypeDefinition) {
+  const override = appearanceOverride(type.id);
+  if (!override) return false;
+  const sameIcon = !override.icon || JSON.stringify(override.icon) === JSON.stringify(type.icon);
+  const sameColor = !override.iconColor || JSON.stringify(override.iconColor) === JSON.stringify(type.iconColor);
+  return !(sameIcon && sameColor);
+}
+
+function setPackageAppearanceOverride(
+  typeId: string,
+  next: { icon: IconRef; iconColor: EntityTypeColor },
+  base: EntityTypeDefinition,
+) {
+  const sameIcon = JSON.stringify(next.icon) === JSON.stringify(base.icon);
+  const sameColor = JSON.stringify(next.iconColor) === JSON.stringify(base.iconColor);
+  let overrides = [...(draft.entityTypeAppearanceOverrides ?? [])];
+  if (sameIcon && sameColor) {
+    overrides = overrides.filter((candidate) => candidate.entityTypeId !== typeId);
+  } else {
+    const entry: EntityTypeAppearanceOverride = { entityTypeId: typeId };
+    if (!sameIcon) entry.icon = next.icon;
+    if (!sameColor) entry.iconColor = next.iconColor;
+    const index = overrides.findIndex((candidate) => candidate.entityTypeId === typeId);
+    if (index >= 0) overrides[index] = entry;
+    else overrides.push(entry);
+    overrides.sort((left, right) => left.entityTypeId.localeCompare(right.entityTypeId));
+  }
+  setDraft({ ...draft, entityTypeAppearanceOverrides: overrides.length > 0 ? overrides : undefined });
+}
+
+function clearPackageAppearanceOverride(typeId: string) {
+  const overrides = (draft.entityTypeAppearanceOverrides ?? []).filter((candidate) => candidate.entityTypeId !== typeId);
+  setDraft({ ...draft, entityTypeAppearanceOverrides: overrides.length > 0 ? overrides : undefined });
+}
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -250,6 +304,7 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
       id: ensureTypeId(entityType.id, "type"),
       name: entityType.name.trim() || humanizeId(entityType.id),
       icon: entityType.icon ?? FALLBACK_ICON,
+      iconColor: entityType.iconColor ?? DEFAULT_TYPE_COLOR,
     }))
     .filter((entityType, index, all) => all.findIndex((candidate) => candidate.id === entityType.id) === index)
     .sort((left, right) => left.id.localeCompare(right.id));
@@ -374,6 +429,16 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     })
     .filter((ov) => ov.fieldKey && ov.metadataFields && ov.metadataFields.length > 0)
     .sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
+  const disabledEntityTypes = new Set(value.disabledEntityTypes ?? []);
+  const entityTypeAppearanceOverrides = cloneJson(value.entityTypeAppearanceOverrides ?? [])
+    .map((override) => ({
+      entityTypeId: ensureTypeId(override.entityTypeId, "type"),
+      ...(override.icon ? { icon: override.icon } : {}),
+      ...(override.iconColor ? { iconColor: override.iconColor } : {}),
+    }))
+    .filter((override) => override.entityTypeId && (override.icon || override.iconColor))
+    .filter((override) => !disabledEntityTypes.has(override.entityTypeId))
+    .sort((left, right) => left.entityTypeId.localeCompare(right.entityTypeId));
   return {
     version: value.version || 1,
     disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].sort(),
@@ -385,6 +450,7 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     fieldScopeOverrides,
     templateOverrides,
     fieldMetadataOverrides,
+    entityTypeAppearanceOverrides,
   };
 }
 
@@ -412,10 +478,12 @@ let builtinTemplatesCollapsed = $state(false);
 
 let newType = $state("");
 let newTypeIcon = $state<IconRef>({ kind: "catalog", id: "concept" });
+let newTypeColor = $state<EntityTypeColor>(DEFAULT_TYPE_COLOR);
 let newTypeFieldKeys = $state<string[]>([]);
 let editingTypeId = $state<string | null>(null);
 let editTypeValue = $state("");
 let editTypeIcon = $state<IconRef>(FALLBACK_ICON);
+let editTypeColor = $state<EntityTypeColor>(DEFAULT_TYPE_COLOR);
 let editTypeFieldKeys = $state<string[]>([]);
 
 let newFieldLabel = $state("");
@@ -545,8 +613,9 @@ function toggleDisabled(listKey: "disabledEntityTypes" | "disabledFields" | "dis
     if (editingBuiltinFieldKey === id) editingBuiltinFieldKey = null;
     if (editingBuiltinMetadataFieldKey === id) cancelBuiltinMetadataEdit();
   }
-  if (listKey === "disabledEntityTypes") {
-    // Prune metadata overrides that reference removed entity types? No, metadata overrides are per field, not per type, so no pruning needed.
+  if (listKey === "disabledEntityTypes" && current.has(id)) {
+    const overrides = (next.entityTypeAppearanceOverrides ?? []).filter((ov) => ov.entityTypeId !== id);
+    next.entityTypeAppearanceOverrides = overrides.length > 0 ? overrides : undefined;
   }
   setDraft(next);
 }
@@ -863,6 +932,7 @@ function cancelTypeEdit() {
   editingTypeId = null;
   editTypeValue = "";
   editTypeIcon = FALLBACK_ICON;
+  editTypeColor = DEFAULT_TYPE_COLOR;
   editTypeFieldKeys = [];
 }
 
@@ -873,6 +943,7 @@ function startTypeEdit(type: string) {
   const definition = (draft.customEntityTypes ?? []).find((candidate) => candidate.id === type);
   editTypeValue = definition?.name ?? humanizeId(type);
   editTypeIcon = definition?.icon ?? FALLBACK_ICON;
+  editTypeColor = definition?.iconColor ?? DEFAULT_TYPE_COLOR;
   editTypeFieldKeys = effectiveFieldsForType(type)
     .map((field) => field.key)
     .sort();
@@ -885,13 +956,15 @@ function addCustomType() {
   if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === id)) return;
   setDraft({
     ...draft,
-    customEntityTypes: [...(draft.customEntityTypes ?? []), { id, name, icon: newTypeIcon }].sort((left, right) =>
-      left.id.localeCompare(right.id),
-    ),
+    customEntityTypes: [
+      ...(draft.customEntityTypes ?? []),
+      { id, name, icon: newTypeIcon, iconColor: newTypeColor },
+    ].sort((left, right) => left.id.localeCompare(right.id)),
   });
   if (newTypeFieldKeys.length > 0) applyTypeFieldSelection(id, newTypeFieldKeys);
   newType = "";
   newTypeIcon = { kind: "catalog", id: "concept" };
+  newTypeColor = DEFAULT_TYPE_COLOR;
   newTypeFieldKeys = [];
 }
 
@@ -911,7 +984,11 @@ function commitTypeEdit() {
   setDraft({
     ...draft,
     customEntityTypes: (draft.customEntityTypes ?? [])
-      .map((item) => (item.id === from ? { ...item, id: to, name: editTypeValue.trim(), icon: editTypeIcon } : item))
+      .map((item) =>
+        item.id === from
+          ? { ...item, id: to, name: editTypeValue.trim(), icon: editTypeIcon, iconColor: editTypeColor }
+          : item,
+      )
       .sort((left, right) => left.id.localeCompare(right.id)),
     ...(to !== from
       ? {
@@ -1702,6 +1779,7 @@ function removeCustomTemplate(id: string) {
           <div class="chip-row">
             {#each packageTypeDefinitions as type}
               {@const disabled = isDisabled(draft.disabledEntityTypes, type.id)}
+              {@const appearance = effectivePackageAppearance(type)}
               <button
                 type="button"
                 class="chip"
@@ -1713,11 +1791,30 @@ function removeCustomTemplate(id: string) {
                     size={11}
                     strokeWidth={1.8}
                     aria-hidden="true" />{/if}
-                <EntityIcon icon={type.icon} size={13} />
+                <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={13} box={22} />
                 {type.name}
               </button>
             {/each}
           </div>
+          {#if packageTypeDefinitions.some((type) => !isDisabled(draft.disabledEntityTypes, type.id))}
+            <div class="appearance-overrides">
+              <span class="appearance-overrides-label">Package type appearance</span>
+              {#each packageTypeDefinitions.filter((type) => !isDisabled(draft.disabledEntityTypes, type.id)) as type}
+                {@const appearance = effectivePackageAppearance(type)}
+                <div class="appearance-row">
+                  <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={14} box={28} />
+                  <strong class="appearance-row-name">{type.name}</strong>
+                  <code class="appearance-row-id">{type.id}</code>
+                  <TypeAppearancePicker
+                    compact
+                    value={{ icon: appearance.icon, iconColor: appearance.iconColor }}
+                    showReset={packageAppearanceChanged(type)}
+                    onReset={() => clearPackageAppearanceOverride(type.id)}
+                    onChange={(next) => setPackageAppearanceOverride(type.id, next, type)} />
+                </div>
+              {/each}
+            </div>
+          {/if}
           <p class="subtle-note">
             Disabled types and their exclusive fields/templates are hidden from create menus. Re-enable to bring them
             back.
@@ -1752,7 +1849,12 @@ function removeCustomTemplate(id: string) {
                       <span>Name</span>
                       <input bind:value={editTypeValue} placeholder="Species" />
                     </label>
-                    <IconPicker value={editTypeIcon} onChange={(icon) => (editTypeIcon = icon)} />
+                    <TypeAppearancePicker
+                      value={{ icon: editTypeIcon, iconColor: editTypeColor }}
+                      onChange={(next) => {
+                        editTypeIcon = next.icon;
+                        editTypeColor = next.iconColor;
+                      }} />
                     <div class="type-select" role="group" aria-label={`Fields for ${editTypeValue || type.name}`}>
                       <span class="type-select-label">Fields</span>
                       <FieldPicker
@@ -1769,7 +1871,9 @@ function removeCustomTemplate(id: string) {
                   </div>
                 {:else}
                   <div class="item-main">
-                    <strong><EntityIcon icon={type.icon} size={15} /> {type.name}</strong>
+                    <strong
+                      ><EntityGlyph icon={type.icon} iconColor={type.iconColor} {pluginId} size={15} box={24} />
+                      {type.name}</strong>
                     <code>{type.id}</code>
                   </div>
                   <div class="item-actions">
@@ -1801,6 +1905,7 @@ function removeCustomTemplate(id: string) {
                 onkeydown={(event) => event.key === "Enter" && addCustomType()} />
             </label>
             <IconPicker value={newTypeIcon} onChange={(icon) => (newTypeIcon = icon)} />
+            <TypeColorPicker value={newTypeColor} onChange={(iconColor) => (newTypeColor = iconColor)} />
             <button type="button" class="action primary-action" onclick={addCustomType}
               ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
           </div>
@@ -3107,6 +3212,47 @@ function removeCustomTemplate(id: string) {
   font:
     400 12px/1.5 Inter,
     sans-serif;
+}
+
+.appearance-overrides {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.appearance-overrides-label {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.appearance-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow-x: auto;
+}
+.appearance-row-name {
+  flex: 0 0 auto;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.appearance-row-id {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.appearance-row :global(.type-appearance-picker) {
+  flex: 1;
+  min-width: 0;
 }
 
 .chip-row,

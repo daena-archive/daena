@@ -19,6 +19,7 @@ let query = $state("");
 let fileInput = $state<HTMLInputElement>();
 let trigger = $state<HTMLButtonElement>();
 let popover = $state<HTMLDivElement>();
+let pickerRoot = $state<HTMLDivElement>();
 let popoverStyle = $state("");
 let svgError = $state("");
 const selectedLabel = $derived(
@@ -47,13 +48,18 @@ function placePopover() {
 
 async function togglePicker() {
   if (open) {
-    open = false;
+    closePicker();
     return;
   }
   popoverStyle = "";
   open = true;
   await tick();
   placePopover();
+}
+
+function closePicker() {
+  open = false;
+  query = "";
 }
 
 $effect(() => {
@@ -66,9 +72,27 @@ $effect(() => {
     window.removeEventListener("scroll", reposition, true);
   };
 });
+
+$effect(() => {
+  if (!open) return;
+  const onPointerDown = (event: PointerEvent) => {
+    const target = event.target;
+    if (!(target instanceof Node) || pickerRoot?.contains(target)) return;
+    closePicker();
+  };
+  const onKeydown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") closePicker();
+  };
+  window.addEventListener("pointerdown", onPointerDown, true);
+  window.addEventListener("keydown", onKeydown, true);
+  return () => {
+    window.removeEventListener("pointerdown", onPointerDown, true);
+    window.removeEventListener("keydown", onKeydown, true);
+  };
+});
 </script>
 
-<div class="icon-picker">
+<div class="icon-picker" bind:this={pickerRoot}>
   <span class="picker-label">{label}</span>
   <button
     type="button"
@@ -92,8 +116,7 @@ $effect(() => {
             aria-label={option.label}
             onclick={() => {
               onChange({ kind: "catalog", id: option.id });
-              open = false;
-              query = "";
+              closePicker();
             }}>
             <EntityIcon icon={{ kind: "catalog", id: option.id }} size={18} />
           </button>
@@ -116,8 +139,7 @@ $effect(() => {
             svgError = validateUserSvg(svg) ?? "";
             if (!svgError) {
               onChange({ kind: "user-svg", svg });
-              open = false;
-              query = "";
+              closePicker();
             }
           }} />
         {#if svgError}<span>{svgError}</span>{/if}

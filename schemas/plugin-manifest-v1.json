@@ -215,11 +215,81 @@
       ],
       "type": "object"
     },
+    "EntityTypeColor": {
+      "description": "Curated entity-type colors. Preset IDs are owned by Daena; custom colors require explicit light and dark foreground hex values.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "enum": [
+                "brass",
+                "copper",
+                "ember",
+                "moss",
+                "pine",
+                "ocean",
+                "sky",
+                "frost",
+                "amber",
+                "gold",
+                "sand",
+                "rose",
+                "plum",
+                "violet",
+                "slate",
+                "ink"
+              ],
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "preset"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "dark": {
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "custom"
+              ],
+              "type": "string"
+            },
+            "light": {
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "dark",
+            "kind",
+            "light"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "EntityTypeDefinition": {
       "additionalProperties": false,
       "properties": {
         "icon": {
           "$ref": "#/$defs/IconRef"
+        },
+        "iconColor": {
+          "$ref": "#/$defs/EntityTypeColor"
         },
         "id": {
           "minLength": 1,
@@ -232,6 +302,7 @@
       },
       "required": [
         "icon",
+        "iconColor",
         "id",
         "name"
       ],

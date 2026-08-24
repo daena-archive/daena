@@ -2,7 +2,8 @@
 import { onMount, tick } from "svelte";
 import { Clock3, Command, Compass, FileText, Plus, Search, X } from "@lucide/svelte";
 import { groupQuickOpenItems, moveQuickOpenIndex, type QuickOpenItem } from "$lib/quick-open/model";
-import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
+import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { trapModalTab } from "./modalFocus";
 
 interface Props {
@@ -122,7 +123,12 @@ function handleKeydown(event: KeyboardEvent) {
               onmousemove={() => (activeIndex = index)}
               onclick={() => onSelect(item)}>
               <span class="quick-open-icon">
-                {#if item.icon}<EntityIcon icon={item.icon} pluginId={item.pluginId} size={16} />{:else}<Icon
+                {#if item.icon}<EntityGlyph
+                    icon={item.icon}
+                    iconColor={item.iconColor ?? DEFAULT_TYPE_COLOR}
+                    pluginId={item.pluginId}
+                    size={16}
+                    box={28} />{:else}<Icon
                     size={16}
                     strokeWidth={1.8}
                     aria-hidden="true" />{/if}

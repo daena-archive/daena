@@ -31,12 +31,12 @@
     {
       "namespace": "lore",
       "entityTypes": [
-        { "id": "person", "name": "Person", "icon": { "kind": "catalog", "id": "person" } },
-        { "id": "place", "name": "Place", "icon": { "kind": "catalog", "id": "place" } },
-        { "id": "faction", "name": "Faction", "icon": { "kind": "catalog", "id": "faction" } },
-        { "id": "artifact", "name": "Artifact", "icon": { "kind": "catalog", "id": "artifact" } },
-        { "id": "culture", "name": "Culture", "icon": { "kind": "catalog", "id": "culture" } },
-        { "id": "concept", "name": "Concept", "icon": { "kind": "catalog", "id": "concept" } }
+        { "id": "person", "name": "Person", "icon": { "kind": "catalog", "id": "person" }, "iconColor": { "kind": "preset", "id": "rose" } },
+        { "id": "place", "name": "Place", "icon": { "kind": "catalog", "id": "place" }, "iconColor": { "kind": "preset", "id": "moss" } },
+        { "id": "faction", "name": "Faction", "icon": { "kind": "catalog", "id": "faction" }, "iconColor": { "kind": "preset", "id": "ember" } },
+        { "id": "artifact", "name": "Artifact", "icon": { "kind": "catalog", "id": "artifact" }, "iconColor": { "kind": "preset", "id": "copper" } },
+        { "id": "culture", "name": "Culture", "icon": { "kind": "catalog", "id": "culture" }, "iconColor": { "kind": "preset", "id": "gold" } },
+        { "id": "concept", "name": "Concept", "icon": { "kind": "catalog", "id": "concept" }, "iconColor": { "kind": "preset", "id": "violet" } }
       ],
       "fields": [
         { "key": "summary", "label": "Summary", "type": "text" },

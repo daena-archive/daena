@@ -1,3 +1,5 @@
+import type { EntityTypeColor, IconRef } from "$lib/project/client";
+
 export type QuickOpenCategory = "Results" | "Recent" | "Destinations" | "Create" | "Commands";
 
 export type QuickOpenAction =
@@ -13,6 +15,7 @@ export interface QuickOpenItem {
   description: string;
   keywords?: string[];
   icon?: IconRef;
+  iconColor?: EntityTypeColor;
   pluginId?: string | null;
   action: QuickOpenAction;
 }
@@ -64,4 +67,3 @@ export function groupQuickOpenItems(items: QuickOpenItem[]) {
     .map((category) => ({ category, items: items.filter((item) => item.category === category) }))
     .filter((group) => group.items.length > 0);
 }
-import type { IconRef } from "../../../packages/plugin-sdk/src/generated";

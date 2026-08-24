@@ -3,6 +3,25 @@ import type { Entity, EntityPage } from "$lib/project/client";
 export type WritingView = "manuscripts" | "reference";
 export type TimelineView = "events" | "eras" | "calendars";
 export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
+export const WORKSPACE_MODULE_IDS = {
+  lore: "daena.lore",
+  timeline: "daena.timeline",
+  writing: "daena.writing",
+  language: "daena.language",
+  maps: "daena.maps",
+} as const satisfies Record<WorkspaceSection, string>;
+
+export function workspaceSectionDescription(section: WorkspaceSection): string {
+  if (section === "lore") return "People, places, factions, cultures, and the ideas that connect them.";
+  if (section === "timeline") return "Events, eras, calendars, and the chronology of your world.";
+  if (section === "writing") return "Manuscripts and reference pages beside the world they draw from.";
+  if (section === "language") return "Sounds, writing systems, vocabulary, and grammar.";
+  return "Maps, world surfaces, locations, and geographic links.";
+}
+
+export function workspaceModuleId(section: WorkspaceSection): string {
+  return WORKSPACE_MODULE_IDS[section];
+}
 export type SettingsSection = "general" | "ai";
 export type ProjectSection = "overview" | "data" | "extensions" | "fields" | "snapshots" | "archive" | "advanced";
 export type SortField = "name" | "created_at" | "updated_at";

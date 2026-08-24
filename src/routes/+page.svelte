@@ -22,6 +22,7 @@ import {
   type AiStreamEvent,
   type AiIndexStatus,
   type ModuleSchemaOverlay,
+  type EntityTypeColor,
 } from "$lib/project/client";
 import type {
   EntityTypeDefinition,
@@ -59,6 +60,8 @@ import {
   type CollectionQuery,
   type CollectionResult,
   type WritingView,
+  workspaceSectionDescription,
+  workspaceModuleId,
 } from "$lib/modules/workspace";
 import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.svelte";
 import {
@@ -93,7 +96,8 @@ import "$lib/shell/controls.css";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import QuickOpen from "$lib/shell/QuickOpen.svelte";
-import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
+import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
@@ -601,16 +605,8 @@ const activeManifest = () => {
           : null) as unknown as ModuleManifest | null;
 };
 const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "language", "maps"];
-function workspaceModuleId(target: WorkspaceSection) {
-  return target === "lore"
-    ? "daena.lore"
-    : target === "timeline"
-      ? "daena.timeline"
-      : target === "writing"
-        ? "daena.writing"
-        : target === "language"
-          ? "daena.language"
-          : "daena.maps";
+function workspaceDescription(target: WorkspaceSection) {
+  return workspaceSectionDescription(target);
 }
 function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest | null {
   const moduleId = workspaceModuleId(target);
@@ -621,6 +617,9 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
   if (target === "writing") return writingManifestJson as unknown as ModuleManifest;
   if (target === "language") return languageManifestJson as unknown as ModuleManifest;
   return null;
+}
+function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
+  return schema.entityTypes.map((entityType) => entityType.id);
 }
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
@@ -638,20 +637,6 @@ function workspaceSectionLabel(target: WorkspaceSection) {
           ? "Languages"
           : "Maps";
 }
-function workspaceDescription(target: WorkspaceSection) {
-  return target === "lore"
-    ? "People, places, factions, cultures, and the ideas that connect them."
-    : target === "timeline"
-      ? "Events, eras, calendars, and the chronology of your world."
-      : target === "writing"
-        ? "Manuscripts and reference pages beside the world they draw from."
-        : target === "language"
-          ? "Sounds, writing systems, vocabulary, and grammar."
-          : "Maps, world surfaces, locations, and geographic links.";
-}
-function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
-  return schema.entityTypes.map((entityType) => entityType.id);
-}
 function entityTypePresentation(entityType: string | null): {
   definition: EntityTypeDefinition;
   pluginId: string;
@@ -665,11 +650,19 @@ function entityTypePresentation(entityType: string | null): {
   }
   return null;
 }
-function iconForEntityType(entityType: string | null): { icon: IconRef; pluginId: string | null } {
+function iconForEntityType(entityType: string | null): {
+  icon: IconRef;
+  pluginId: string | null;
+  iconColor: EntityTypeColor;
+} {
   const presentation = entityTypePresentation(entityType);
   return presentation
-    ? { icon: presentation.definition.icon, pluginId: presentation.pluginId }
-    : { icon: FALLBACK_ICON, pluginId: null };
+    ? {
+        icon: presentation.definition.icon,
+        pluginId: presentation.pluginId,
+        iconColor: presentation.definition.iconColor,
+      }
+    : { icon: FALLBACK_ICON, pluginId: null, iconColor: DEFAULT_TYPE_COLOR };
 }
 function workspaceEntityCount(target: WorkspaceSection) {
   const entityTypes = new Set(manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? []);
@@ -962,11 +955,15 @@ function createGroups(): CreateGroup[] {
   }
   return [...groups.values()];
 }
-function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string } {
-  const entityTypeIcon = option.module.schemas
+function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string; iconColor: EntityTypeColor } {
+  const entityType = option.module.schemas
     .flatMap((schema) => schema.entityTypes)
-    .find((entityType) => entityType.id === option.template.entityType)?.icon;
-  return { icon: option.template.icon ?? entityTypeIcon ?? FALLBACK_ICON, pluginId: option.module.id };
+    .find((candidate) => candidate.id === option.template.entityType);
+  return {
+    icon: option.template.icon ?? entityType?.icon ?? FALLBACK_ICON,
+    pluginId: option.module.id,
+    iconColor: entityType?.iconColor ?? DEFAULT_TYPE_COLOR,
+  };
 }
 function selectedCreateOption() {
   return createOptions().find((option) => option.key === selectedCreateKey) ?? null;
@@ -4190,6 +4187,7 @@ function quickOpenItems(): QuickOpenItem[] {
         keywords: [entity.entity_type ?? ""],
         icon: presentation.icon,
         pluginId: presentation.pluginId,
+        iconColor: presentation.iconColor,
         action: { kind: "entity", entityId: entity.id },
       };
     },
@@ -4230,6 +4228,7 @@ function quickOpenItems(): QuickOpenItem[] {
       keywords: [option.module.name, option.template.entityType, option.template.description ?? ""],
       icon: presentation.icon,
       pluginId: presentation.pluginId,
+      iconColor: presentation.iconColor,
       action: { kind: "create", templateKey: option.key },
     };
   });
@@ -5758,9 +5757,12 @@ onMount(() => {
                           class="create-template-card"
                           disabled={createBusy}
                           onclick={() => openFocusedCreate(option.key)}
-                          ><span class="create-template-icon">
-                            <EntityIcon icon={optionIcon.icon} pluginId={optionIcon.pluginId} size={19} />
-                          </span><span class="create-template-copy"
+                          ><EntityGlyph
+                            icon={optionIcon.icon}
+                            iconColor={optionIcon.iconColor}
+                            pluginId={optionIcon.pluginId}
+                            size={19}
+                            box={40} /><span class="create-template-copy"
                             ><strong>{option.template.name}</strong><small
                               >{option.template.description ?? option.template.entityType}</small
                             ></span
@@ -6514,6 +6516,7 @@ onMount(() => {
             entity,
             icon: presentation.icon,
             pluginId: presentation.pluginId,
+            iconColor: presentation.iconColor,
             typeLabel: entityTypeLabel(entity.entity_type),
             updatedLabel: updatedDateLabel(entity.updated_at),
           };
@@ -6770,17 +6773,23 @@ onMount(() => {
                         size={12}
                         strokeWidth={1.8}
                         aria-hidden="true" />{/if}</span
-                  ><span class="entity-glyph">
-                    <EntityIcon icon={groupIcon.icon} pluginId={groupIcon.pluginId} size={14} />
-                  </span><strong>{group.label}</strong><small>{group.count}</small></button
+                  ><EntityGlyph
+                    icon={groupIcon.icon}
+                    iconColor={groupIcon.iconColor}
+                    pluginId={groupIcon.pluginId}
+                    size={14}
+                    box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
                 >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}<button
                       class:selected={selected?.id === entity.id}
                       class="collection-item"
                       onclick={() => selectEntity(entity)}
-                      ><span class="entity-glyph">
-                        <EntityIcon icon={rowIcon.icon} pluginId={rowIcon.pluginId} size={14} />
-                      </span><span class="item-copy"
+                      ><EntityGlyph
+                        icon={rowIcon.icon}
+                        iconColor={rowIcon.iconColor}
+                        pluginId={rowIcon.pluginId}
+                        size={14}
+                        box={40} /><span class="item-copy"
                         ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                       ><span class="item-arrow" aria-hidden="true"
                         ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
@@ -6792,9 +6801,12 @@ onMount(() => {
                 class:selected={selected?.id === entity.id}
                 class="collection-item"
                 onclick={() => selectEntity(entity)}
-                ><span class="entity-glyph">
-                  <EntityIcon icon={rowIcon.icon} pluginId={rowIcon.pluginId} size={14} />
-                </span><span class="item-copy"
+                ><EntityGlyph
+                  icon={rowIcon.icon}
+                  iconColor={rowIcon.iconColor}
+                  pluginId={rowIcon.pluginId}
+                  size={14}
+                  box={40} /><span class="item-copy"
                   ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                 ><span class="item-arrow" aria-hidden="true"
                   ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
@@ -9402,15 +9414,8 @@ onMount(() => {
   background: var(--theme-warning-bg, #f8f5ef);
   border-radius: 6px;
 }
-.collection-group-header .entity-glyph {
-  display: grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--theme-warning-bg, #f0ece5);
-  font-size: 10px;
-  font-weight: 800;
+.collection-group-header :global(.entity-glyph) {
+  flex: 0 0 22px;
 }
 .collection-group-header strong {
   font-size: 12px;
@@ -9526,20 +9531,8 @@ onMount(() => {
   outline: 3px solid rgba(180, 119, 63, 0.25);
   outline-offset: 1px;
 }
-.collection-item .entity-glyph {
-  display: grid;
-  place-items: center;
+.collection-item :global(.entity-glyph) {
   flex: 0 0 40px;
-  width: 40px;
-  height: 40px;
-  border: 0;
-  border-radius: 50%;
-  background: var(--theme-warning-bg, #f0ece5);
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0.02em;
 }
 .collection-item .item-copy {
   display: grid;
@@ -9959,16 +9952,9 @@ onMount(() => {
   box-shadow: var(--shadow-md, 0 4px 12px rgba(38, 42, 33, 0.12));
   transform: translateY(-1px);
 }
-.create-template-icon {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: var(--accent-dark);
-  color: var(--on-accent);
-  font-size: 14px;
-  font-weight: 800;
+.create-template-card :global(.entity-glyph) {
+  grid-row: 1;
+  grid-column: 1;
 }
 .create-template-copy {
   grid-column: 1 / -1;

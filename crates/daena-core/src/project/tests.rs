@@ -2579,7 +2579,8 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
         "customEntityTypes": [{
             "id": "species",
             "name": "Species",
-            "icon": { "kind": "catalog", "id": "animal" }
+            "icon": { "kind": "catalog", "id": "animal" },
+            "iconColor": { "kind": "preset", "id": "moss" }
         }],
         "customFields": [{
             "key": "lifespan",

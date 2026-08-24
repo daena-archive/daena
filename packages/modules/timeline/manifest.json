@@ -33,10 +33,10 @@
     {
       "namespace": "timeline",
       "entityTypes": [
-        { "id": "event", "name": "Timeline event", "icon": { "kind": "catalog", "id": "event" } },
-        { "id": "encounter", "name": "Encounter", "icon": { "kind": "catalog", "id": "encounter" } },
-        { "id": "era", "name": "Era", "icon": { "kind": "catalog", "id": "era" } },
-        { "id": "calendar", "name": "Calendar", "icon": { "kind": "catalog", "id": "calendar" } }
+        { "id": "event", "name": "Timeline event", "icon": { "kind": "catalog", "id": "event" }, "iconColor": { "kind": "preset", "id": "amber" } },
+        { "id": "encounter", "name": "Encounter", "icon": { "kind": "catalog", "id": "encounter" }, "iconColor": { "kind": "preset", "id": "ember" } },
+        { "id": "era", "name": "Era", "icon": { "kind": "catalog", "id": "era" }, "iconColor": { "kind": "preset", "id": "pine" } },
+        { "id": "calendar", "name": "Calendar", "icon": { "kind": "catalog", "id": "calendar" }, "iconColor": { "kind": "preset", "id": "brass" } }
       ],
       "fields": [
         {

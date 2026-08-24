@@ -32,11 +32,12 @@
     {
       "namespace": "maps",
       "entityTypes": [
-        { "id": "daena.maps:map", "name": "Map", "icon": { "kind": "catalog", "id": "map" } },
+        { "id": "daena.maps:map", "name": "Map", "icon": { "kind": "catalog", "id": "map" }, "iconColor": { "kind": "preset", "id": "ocean" } },
         {
           "id": "daena.maps:physical-natural-event",
           "name": "Physical natural event",
-          "icon": { "kind": "catalog", "id": "storm" }
+          "icon": { "kind": "catalog", "id": "storm" },
+          "iconColor": { "kind": "preset", "id": "frost" }
         }
       ],
       "fields": [

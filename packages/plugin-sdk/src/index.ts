@@ -17,7 +17,7 @@ import type {
   EntityPageRecord,
   EntityQueryPayload,
 } from "./generated.js";
-import { CATALOG_ICON_IDS } from "./generated.js";
+import { CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS } from "./generated.js";
 
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
@@ -330,6 +330,29 @@ function checkKeys(value: Record<string, unknown>, label: string, allowed: strin
 }
 
 const catalogIconIds = new Set<string>(CATALOG_ICON_IDS);
+const typeColorPresetIds = new Set<string>(TYPE_COLOR_PRESET_IDS);
+
+function validateEntityTypeColor(value: unknown, label: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  if (value.kind === "preset") {
+    checkKeys(value, label, ["kind", "id"], errors);
+    if (typeof value.id !== "string" || !typeColorPresetIds.has(value.id))
+      errors.push(`${label} uses an unknown color preset`);
+    return;
+  }
+  if (value.kind === "custom") {
+    checkKeys(value, label, ["kind", "light", "dark"], errors);
+    if (typeof value.light !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(value.light))
+      errors.push(`${label} light must be a #RRGGBB hex value`);
+    if (typeof value.dark !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(value.dark))
+      errors.push(`${label} dark must be a #RRGGBB hex value`);
+    return;
+  }
+  errors.push(`${label} has an unknown kind`);
+}
 
 function validateIconRef(value: unknown, label: string, errors: string[]): void {
   if (!isRecord(value)) {
@@ -626,11 +649,12 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
             errors.push("schema entityTypes must contain objects");
             continue;
           }
-          checkKeys(entityType, "entity type", ["id", "name", "icon"], errors);
+          checkKeys(entityType, "entity type", ["id", "name", "icon", "iconColor"], errors);
           if (typeof entityType.id !== "string" || !entityType.id.trim()) errors.push("entity type id is required");
           if (typeof entityType.name !== "string" || !entityType.name.trim())
             errors.push(`entity type ${String(entityType.id)} name is required`);
           validateIconRef(entityType.icon, `entity type ${String(entityType.id)} icon`, errors);
+          validateEntityTypeColor(entityType.iconColor, `entity type ${String(entityType.id)} iconColor`, errors);
         }
         for (const field of schema.fields) {
           if (!isRecord(field)) {

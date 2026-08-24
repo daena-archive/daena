@@ -487,24 +487,27 @@ fn ai_gate_fails_closed_until_project_opt_in() {
         drop(project);
         let project = ProjectStore::open_directory(&root).unwrap();
         project.set_ai_enabled(true).unwrap();
+        assert!(ensure_project_ai_enabled(root.to_str().unwrap()).is_ok());
+        project.flush_checkpoint("AI gate test").unwrap();
     }
     assert!(ensure_project_ai_enabled(root.to_str().unwrap()).is_ok());
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn ai_toggle_works_through_read_only_store_like_the_command_path() {
-    // with_read_project hands commands an open_read_only store; the toggle
-    // must still persist through it because project.json is a plain file.
+fn ai_toggle_uses_the_writer_and_readers_observe_the_exported_setting() {
     let root = std::env::temp_dir().join(format!("daena-ai-toggle-ro-{}", uuid::Uuid::new_v4()));
-    ProjectStore::open_directory(&root).unwrap();
+    let writer = ProjectStore::open_directory(&root).unwrap();
     let reader = ProjectStore::open_read_only(&root).unwrap();
     assert!(!reader.info().unwrap().ai_enabled);
-    let info = reader.set_ai_enabled(true).unwrap();
-    assert!(info.ai_enabled);
+    assert!(reader.set_ai_enabled(true).is_err());
     drop(reader);
+    assert!(writer.set_ai_enabled(true).unwrap().ai_enabled);
+    writer.flush_checkpoint("AI command-path test").unwrap();
     let reader = ProjectStore::open_read_only(&root).unwrap();
     assert!(reader.info().unwrap().ai_enabled);
+    drop(reader);
+    drop(writer);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -514,10 +517,9 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
     static PROJECT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     let root = PROJECT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("daena-ai-broker-{}", uuid::Uuid::new_v4()));
-        ProjectStore::open_directory(&root)
-            .unwrap()
-            .set_ai_enabled(true)
-            .unwrap();
+        let project = ProjectStore::open_directory(&root).unwrap();
+        project.set_ai_enabled(true).unwrap();
+        project.flush_checkpoint("AI broker test").unwrap();
         root
     });
     AiBrokerContext {

@@ -3737,28 +3737,84 @@ fn directory_projects_create_portable_layout() {
 #[test]
 fn ai_enabled_defaults_to_false_and_round_trips() {
     let root = std::env::temp_dir().join(format!("daena-ai-flag-{}", Uuid::new_v4()));
-    let store = ProjectStore::open_directory(&root).unwrap();
+    let mut store = ProjectStore::open_directory(&root).unwrap();
     assert!(!store.info().unwrap().ai_enabled);
     let manifest =
         crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
             .unwrap();
     assert!(!manifest.ai_enabled);
-    drop(store);
-
-    let store = ProjectStore::open_directory(&root).unwrap();
+    let initial_generation = store.content_generation().unwrap();
     let info = store.set_ai_enabled(true).unwrap();
     assert!(info.ai_enabled);
-    // Canonical file carries the flag and survives a reopen (fresh .daena state).
+    assert!(store.content_generation().unwrap() > initial_generation);
+    let changed_generation = store.content_generation().unwrap();
+    assert!(store.set_ai_enabled(true).unwrap().ai_enabled);
+    assert_eq!(store.content_generation().unwrap(), changed_generation);
+    store.flush_checkpoint("AI setting regression").unwrap();
     let manifest =
         crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
             .unwrap();
     assert!(manifest.ai_enabled);
+    let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+        &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+    )
+    .unwrap();
+    crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
+    // Importing the just-exported portable checkpoint must not fail with a
+    // stale project.json digest after changing the AI setting.
+    store.import_checkpoint().unwrap();
+    assert!(store.info().unwrap().ai_enabled);
     drop(store);
 
     let store = ProjectStore::open_directory(&root).unwrap();
     assert!(store.info().unwrap().ai_enabled);
     let info = store.set_ai_enabled(false).unwrap();
     assert!(!info.ai_enabled);
+    store.flush_checkpoint("AI setting disabled").unwrap();
+    let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+        &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+    )
+    .unwrap();
+    crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_setting_mutations_keep_the_portable_checkpoint_valid() {
+    fn flush_and_validate(store: &ProjectStore, root: &std::path::Path, reason: &str) {
+        store.flush_checkpoint(reason).unwrap();
+        let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+            &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+        )
+        .unwrap();
+        crate::storage::validate_checkpoint(root, &checkpoint).unwrap();
+    }
+
+    let root = std::env::temp_dir().join(format!("daena-project-settings-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+
+    store.set_ai_enabled(true).unwrap();
+    flush_and_validate(&store, &root, "AI setting");
+
+    store
+        .set_module_enabled("daena.lore".into(), false)
+        .unwrap();
+    flush_and_validate(&store, &root, "module enabled setting");
+
+    store
+        .set_module_schema_overlay(
+            "daena.lore".into(),
+            Some(serde_json::json!({"version": 1})),
+        )
+        .unwrap();
+    flush_and_validate(&store, &root, "schema overlay setting");
+
+    store
+        .set_module_package_version("daena.lore", Some("1.2.0"))
+        .unwrap();
+    flush_and_validate(&store, &root, "module package setting");
+
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -5351,11 +5407,12 @@ fn repeated_checkpoint_skips_unchanged_portable_files() {
         })
         .unwrap();
     let generation = store.flush_checkpoint("initial checkpoint").unwrap();
+    let manifest = store.runtime_project_manifest().unwrap();
     let snapshot = store.export_snapshot().unwrap();
 
     assert_eq!(
         store
-            .export_complete_snapshot(&root, &snapshot, generation)
+            .export_complete_snapshot(&root, &manifest, &snapshot, generation)
             .unwrap(),
         0
     );

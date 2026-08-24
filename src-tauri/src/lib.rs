@@ -330,12 +330,13 @@ fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
     Ok(core.info())
 }
 
-/// Project-level AI opt-in gate. Reads canonical `project.json` directly so the
-/// decision never depends on cached state; fails closed when unreadable.
+/// Project-level AI opt-in gate. Reads the authoritative runtime database on
+/// every decision and fails closed when the project cannot be opened.
 pub(crate) fn ensure_project_ai_enabled(project_root: &str) -> Result<(), String> {
-    let path = std::path::Path::new(project_root).join("project.json");
-    let enabled = daena_core::read_json::<daena_core::ProjectManifest>(&path)
-        .is_ok_and(|manifest| manifest.ai_enabled);
+    let enabled = ProjectStore::open_read_only(project_root)
+        .ok()
+        .and_then(|project| project.ai_enabled().ok())
+        .unwrap_or(false);
     if !enabled {
         return Err("AI is disabled for this project. Enable AI in Settings first.".into());
     }
@@ -6498,7 +6499,10 @@ async fn project_set_ai_enabled(
     state: tauri::State<'_, SharedCore>,
     enabled: bool,
 ) -> Result<ProjectInfo, String> {
-    with_read_project(state, move |project| project.set_ai_enabled(enabled)).await
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.set_ai_enabled(enabled)
+    })
+    .await
 }
 
 #[tauri::command]

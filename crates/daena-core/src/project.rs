@@ -1883,6 +1883,14 @@ impl ProjectStore {
             None,
             false,
         )?;
+        store.connection.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('ai_enabled',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [if canonical.manifest.ai_enabled {
+                "true"
+            } else {
+                "false"
+            }],
+        )?;
         store.rebuild_search()?;
         store.verify_index()?;
         store.connection.execute(
@@ -1997,13 +2005,14 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
+            let manifest = self.runtime_project_manifest()?;
             let snapshot = self.export_snapshot()?;
-            Ok::<_, CoreError>((target_generation, snapshot))
+            Ok::<_, CoreError>((target_generation, manifest, snapshot))
         })();
         match export_result {
-            Ok((target_generation, snapshot)) => {
+            Ok((target_generation, manifest, snapshot)) => {
                 self.connection.execute_batch("COMMIT")?;
-                self.export_complete_snapshot(root, &snapshot, target_generation)?;
+                self.export_complete_snapshot(root, &manifest, &snapshot, target_generation)?;
             }
             Err(error) => {
                 let _ = self.connection.execute_batch("ROLLBACK");
@@ -2241,6 +2250,14 @@ impl ProjectStore {
         let candidate = Self::open_database(&next_path, Some(root.clone()), None, false, false)?;
         candidate.import_json_with_mode_and_sync_with_request_and_search(
             &payload, true, false, None, false,
+        )?;
+        candidate.connection.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('ai_enabled',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [if canonical.manifest.ai_enabled {
+                "true"
+            } else {
+                "false"
+            }],
         )?;
         let digest =
             crate::storage::canonical_json_bytes(&checkpoint).map(|bytes| digest_bytes(&bytes))?;
@@ -2938,11 +2955,11 @@ impl ProjectStore {
     fn export_complete_snapshot(
         &self,
         root: &Path,
+        manifest: &crate::storage::ProjectManifest,
         snapshot: &ProjectSnapshot,
         target_generation: Generation,
     ) -> Result<usize, CoreError> {
         let manifest_path = root.join("project.json");
-        let manifest: crate::storage::ProjectManifest = crate::storage::read_json(&manifest_path)?;
         manifest.validate(&manifest_path)?;
         let previous_sources = Self::checkpoint_sources(root)?;
         let request_id = Uuid::new_v4().to_string();
@@ -2952,6 +2969,7 @@ impl ProjectStore {
             operation: "create checkpoint staging root",
             source: error,
         })?;
+        crate::storage::write_json(&staging_root.join("project.json"), manifest)?;
         let mut documents_by_entity = BTreeMap::new();
         for document in &snapshot.documents {
             documents_by_entity
@@ -3044,13 +3062,13 @@ impl ProjectStore {
                 format_version: crate::storage::PROJECT_FORMAT_VERSION,
             });
         }
-        if let Some(content_hash) = crate::sync::hash_path(root, "project.json")? {
-            current_sources.push(crate::storage::CanonicalSource {
-                path: "project.json".into(),
-                content_hash,
-                format_version: crate::storage::PROJECT_FORMAT_VERSION,
-            });
-        }
+        let project_manifest_hash = crate::sync::hash_path(&staging_root, "project.json")?
+            .ok_or_else(|| CoreError::Validation("staged project manifest is missing".into()))?;
+        current_sources.push(crate::storage::CanonicalSource {
+            path: "project.json".into(),
+            content_hash: project_manifest_hash,
+            format_version: crate::storage::PROJECT_FORMAT_VERSION,
+        });
         current_sources.sort_by(|left, right| left.path.cmp(&right.path));
         current_sources.dedup_by(|left, right| left.path == right.path);
         let current_paths = current_sources
@@ -3058,7 +3076,7 @@ impl ProjectStore {
             .map(|source| source.path.as_str())
             .collect::<BTreeSet<_>>();
         for source in &current_sources {
-            if source.path == "project.json" || transaction_staged_paths.contains(&source.path) {
+            if transaction_staged_paths.contains(&source.path) {
                 continue;
             }
             let portable_hash = crate::sync::hash_path(root, &source.path)?;
@@ -3156,26 +3174,69 @@ impl ProjectStore {
             .into(),
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
-            ai_enabled: manifest
-                .as_ref()
-                .is_some_and(|manifest| manifest.ai_enabled),
+            ai_enabled: self.ai_enabled().unwrap_or(false),
         })
     }
 
-    /// Persists the project-level AI opt-in flag to canonical `project.json`.
-    pub fn set_ai_enabled(&self, enabled: bool) -> Result<ProjectInfo, CoreError> {
+    fn runtime_ai_enabled(&self) -> Result<Option<bool>, CoreError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM project_meta WHERE key='ai_enabled'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|value| match value.as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(CoreError::Validation(
+                    "runtime project AI setting is invalid".into(),
+                )),
+            })
+            .transpose()
+    }
+
+    pub fn ai_enabled(&self) -> Result<bool, CoreError> {
+        if let Some(enabled) = self.runtime_ai_enabled()? {
+            return Ok(enabled);
+        }
         let root = self
             .root
             .as_ref()
             .ok_or_else(|| CoreError::NotFound("no project is open".to_string()))?;
-        let metadata_path = root.join("project.json");
-        let mut manifest =
-            crate::storage::read_json::<crate::storage::ProjectManifest>(&metadata_path)?;
-        if manifest.ai_enabled != enabled {
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
+            .map(|manifest| manifest.ai_enabled)
+    }
+
+    fn runtime_project_manifest(
+        &self,
+    ) -> Result<crate::storage::ProjectManifest, CoreError> {
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("no project is open".to_string()))?;
+        let path = root.join("project.json");
+        let mut manifest = crate::storage::read_json::<crate::storage::ProjectManifest>(&path)?;
+        if let Some(enabled) = self.runtime_ai_enabled()? {
             manifest.ai_enabled = enabled;
-            manifest.validate(&metadata_path)?;
-            crate::storage::write_json(&metadata_path, &manifest)?;
         }
+        manifest.validate(&path)?;
+        Ok(manifest)
+    }
+
+    /// Persists the project-level AI opt-in through the runtime authority and
+    /// lets the checkpoint exporter render canonical `project.json`.
+    pub fn set_ai_enabled(&self, enabled: bool) -> Result<ProjectInfo, CoreError> {
+        if self.ai_enabled()? == enabled {
+            return Ok(self.info().expect("root is present"));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('ai_enabled',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [if enabled { "true" } else { "false" }],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
         Ok(self.info().expect("root is present"))
     }
 
@@ -4313,6 +4374,7 @@ impl ProjectStore {
              );
              CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              INSERT OR IGNORE INTO project_meta(key, value) VALUES ('schema_version', '1');
+             INSERT OR IGNORE INTO project_meta(key, value) VALUES ('ai_enabled', 'false');
              CREATE TABLE IF NOT EXISTS entities (
                id TEXT PRIMARY KEY, name TEXT NOT NULL, entity_type TEXT,
                deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL

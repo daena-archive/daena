@@ -30,7 +30,14 @@
   "schemas": [
     {
       "namespace": "lore",
-      "entityTypes": ["person", "place", "faction", "artifact", "culture", "concept"],
+      "entityTypes": [
+        { "id": "person", "name": "Person", "icon": { "kind": "catalog", "id": "person" } },
+        { "id": "place", "name": "Place", "icon": { "kind": "catalog", "id": "place" } },
+        { "id": "faction", "name": "Faction", "icon": { "kind": "catalog", "id": "faction" } },
+        { "id": "artifact", "name": "Artifact", "icon": { "kind": "catalog", "id": "artifact" } },
+        { "id": "culture", "name": "Culture", "icon": { "kind": "catalog", "id": "culture" } },
+        { "id": "concept", "name": "Concept", "icon": { "kind": "catalog", "id": "concept" } }
+      ],
       "fields": [
         { "key": "summary", "label": "Summary", "type": "text" },
         { "key": "aliases", "label": "Aliases", "type": "text" },
@@ -232,7 +239,6 @@
       "name": "Person",
       "entityType": "person",
       "description": "A character with a history, voice, and place in the world.",
-      "icon": "P",
       "requiredFields": [],
       "fields": {
         "summary": "",
@@ -252,7 +258,6 @@
       "name": "Place",
       "entityType": "place",
       "description": "A location, landmark, or region worth remembering.",
-      "icon": "L",
       "requiredFields": [],
       "fields": {
         "summary": "",
@@ -269,7 +274,6 @@
       "name": "Artifact",
       "entityType": "artifact",
       "description": "An object with meaning, history, or a story of its own.",
-      "icon": "A",
       "requiredFields": [],
       "fields": {
         "summary": "",
@@ -286,7 +290,6 @@
       "name": "Faction",
       "entityType": "faction",
       "description": "A group, institution, or power with shared interests.",
-      "icon": "F",
       "requiredFields": [],
       "fields": {
         "summary": "",
@@ -303,7 +306,6 @@
       "name": "Culture",
       "entityType": "culture",
       "description": "A people, tradition, or way of life that shapes the world.",
-      "icon": "C",
       "requiredFields": [],
       "fields": {
         "summary": "",
@@ -320,7 +322,6 @@
       "name": "Concept",
       "entityType": "concept",
       "description": "An idea, phenomenon, tradition, or other subject worth remembering.",
-      "icon": "◇",
       "fields": { "summary": "", "aliases": "", "createdAt": "" }
     }
   ],

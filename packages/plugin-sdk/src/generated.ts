@@ -8,6 +8,7 @@
 
 export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
+export const CATALOG_ICON_IDS = ["agriculture","anchor","animal","art","artifact","bird","calendar","camp","castle","collection","compass","concept","craft","crown","culture","danger","encounter","era","event","faction","fire","fish","flower","forest","group","heart","home","ice","insect","key","language","library","lock","magic","manuscript","map","mine","moon","mountain","music","object","person","place","plant","reference","science","scroll","settlement","ship","spirit","star","storm","sun","theatre","unknown","wand","wealth"] as const;
 export interface Entrypoints { ui?: string; wasm?: string }
 export interface Dependency { required: boolean; version: string }
 export interface OneOfVariant { label: string; options?: string[] | null; type: "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship" }
@@ -15,9 +16,11 @@ export interface MetadataFieldDefinition { key: string; label: string; oneOf?: O
 export type TimelineFieldRole = "point" | "start" | "end";
 export type TimelineFieldLayer = "dates" | "lifelines";
 export interface TimelineFieldContribution { group?: string | null; label?: string | null; layer?: TimelineFieldLayer | null; role: TimelineFieldRole }
+export type IconRef = { id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "key" | "language" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "wand" | "wealth"; kind: "catalog" } | { kind: "plugin-svg"; path: string } | { kind: "user-svg"; svg: string };
+export interface EntityTypeDefinition { icon: IconRef; id: string; name: string }
 export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; timeline?: TimelineFieldContribution; type: FieldType }
-export interface SchemaContribution { entityTypes: string[]; fields: FieldDefinition[]; namespace: string }
-export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: string | null; id: string; name: string; requiredFields?: string[] | null }
+export interface SchemaContribution { entityTypes: EntityTypeDefinition[]; fields: FieldDefinition[]; namespace: string }
+export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: IconRef | null; id: string; name: string; requiredFields?: string[] | null }
 export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
 export interface Migration { from: number; id: string; operations: MigrationOperation[]; recovery: "backup" | "preserve-data"; to: number }
 export type ViewComponent = { id: string; text: string; type: "heading" } | { id: string; text: string; type: "text" } | { entityType: string; id: string; limit: number; title: string; type: "entity-list" } | { id: string; source: string; title: string; type: "entity-detail" } | { editable: boolean; fields: string[]; id: string; namespace: string; source: string; title: string; type: "field-form" } | { command: string; id: string; label: string; type: "button" };
@@ -59,7 +62,7 @@ export type AiRetrievalMode = "none" | "explicit_only" | "related" | "project";
 export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includeSharedFields: boolean; mode: AiRetrievalMode; passageCount: number; query?: string | null; relationshipDepth: number; seedIds: string[] }
 export interface AiRequestIdPayload { requestId: string }
 export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
-export type AppVersionPayload = Record<string, never>
+export type AppVersionPayload = Record<string, unknown>;
 export interface AssetDeletePayload { assetId: string; expectedRevision: string; namespace: string }
 export interface AssetListPayload { entityId: string; namespace?: string | null }
 export interface AssetReadBeginPayload { assetId: string; namespace: string }

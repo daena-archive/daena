@@ -31,7 +31,13 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
         namespaces: vec![namespace.into()],
         schemas: vec![daena_plugin_api::SchemaContribution {
             namespace: namespace.into(),
-            entity_types: vec!["person".into()],
+            entity_types: vec![daena_plugin_api::EntityTypeDefinition {
+                id: "person".into(),
+                name: "Person".into(),
+                icon: daena_plugin_api::IconRef::Catalog {
+                    id: "person".into(),
+                },
+            }],
             fields: vec![daena_plugin_api::FieldDefinition {
                 key: "summary".into(),
                 label: "Summary".into(),

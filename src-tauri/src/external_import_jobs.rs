@@ -892,7 +892,12 @@ fn import_mapping_catalog(
     let mut relationship_types = BTreeSet::new();
     for manifest in manifests {
         for schema in manifest.schemas {
-            entity_types.extend(schema.entity_types);
+            entity_types.extend(
+                schema
+                    .entity_types
+                    .into_iter()
+                    .map(|entity_type| entity_type.id),
+            );
             for field in schema.fields {
                 let id = format!("{}:{}", schema.namespace, field.key);
                 let requires_metadata = field.metadata_fields.as_ref().is_some_and(|fields| {

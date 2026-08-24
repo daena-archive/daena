@@ -656,7 +656,9 @@ export const timeline: DaenaModule = {
             if (!snapshot) {
               const [entities, enabledManifests] = await Promise.all([context.entities.list(), context.modules.list()]);
               const calendarOptions = await loadCalendarOptions(context, entities);
-              const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
+              const entityTypes = new Set(
+                context.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
+              );
               const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, context.module.id);
               const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
               const loaded: LoadedTimelineEntry[] = await Promise.all(
@@ -727,7 +729,9 @@ export const timeline: DaenaModule = {
                 )
                 .map((option) => [option.id, option.definition]),
             );
-            const entityTypes = new Set(context.module.schemas.flatMap((schema) => schema.entityTypes));
+            const entityTypes = new Set(
+              context.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
+            );
             const dated: TimelineEvent[] = [];
             const contributed: TimelineEvent[] = [];
             const undated: UndatedEvent[] = [];

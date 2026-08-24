@@ -23,9 +23,9 @@ use std::time::{Duration, SystemTime};
 pub mod package;
 pub mod runtime;
 pub use package::{
-    plan_rollback, plan_upgrade, select_migrations, ArchiveLimits, CapabilityConsent,
-    InstalledVersion, MigrationPlan, PackageCatalog, PackageError, PackageSignature, PluginPackage,
-    RollbackPlan, UpgradePlan, VerificationPolicy,
+    manifest_svg_icon_paths, plan_rollback, plan_upgrade, select_migrations, validate_icon_svg,
+    ArchiveLimits, CapabilityConsent, InstalledVersion, MigrationPlan, PackageCatalog,
+    PackageError, PackageSignature, PluginPackage, RollbackPlan, UpgradePlan, VerificationPolicy,
 };
 pub use runtime::{
     plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,
@@ -210,6 +210,17 @@ fn validate_package_tree(root: &Path, manifest: &PluginManifest) -> Result<(), H
                 "manifest entrypoint is missing: {entrypoint}"
             )));
         }
+    }
+    for icon_path in manifest_svg_icon_paths(manifest) {
+        let path = root.join(icon_path);
+        if !path.is_file() {
+            return Err(HostError(format!(
+                "manifest SVG icon is missing: {icon_path}"
+            )));
+        }
+        validate_icon_svg(&fs::read(path).map_err(io_error)?).map_err(|error| {
+            HostError(format!("invalid manifest SVG icon {icon_path}: {error}"))
+        })?;
     }
     Ok(())
 }
@@ -2802,7 +2813,10 @@ fn validate_schema_resource(
                 .iter()
                 .find(|schema| schema.namespace == namespace)
                 .ok_or_else(|| rpc_error("schema.undeclared", "schema is not declared", false))?;
-            if !schema.entity_types.iter().any(|kind| kind == entity_type)
+            if !schema
+                .entity_types
+                .iter()
+                .any(|kind| kind.id == entity_type)
                 || field
                     .entity_types
                     .as_ref()
@@ -2831,11 +2845,12 @@ fn validate_schema_resource(
         "entity.create" => {
             let entity_type = payload.get("type").and_then(serde_json::Value::as_str);
             if let Some(entity_type) = entity_type {
-                if !manifest
-                    .schemas
-                    .iter()
-                    .any(|schema| schema.entity_types.iter().any(|kind| kind == entity_type))
-                {
+                if !manifest.schemas.iter().any(|schema| {
+                    schema
+                        .entity_types
+                        .iter()
+                        .any(|kind| kind.id == entity_type)
+                }) {
                     return Err(rpc_error(
                         "schema.undeclared",
                         "entity type is not declared",
@@ -2898,11 +2913,12 @@ fn validate_schema_resource(
         }
         "entity.update" => {
             if let Some(entity_type) = payload.get("type").and_then(serde_json::Value::as_str) {
-                if !manifest
-                    .schemas
-                    .iter()
-                    .any(|schema| schema.entity_types.iter().any(|kind| kind == entity_type))
-                {
+                if !manifest.schemas.iter().any(|schema| {
+                    schema
+                        .entity_types
+                        .iter()
+                        .any(|kind| kind.id == entity_type)
+                }) {
                     return Err(rpc_error(
                         "schema.undeclared",
                         "entity type is not declared",

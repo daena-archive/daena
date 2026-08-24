@@ -989,6 +989,7 @@ dependencies = [
 name = "daena-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "roxmltree",
  "serde",
  "serde_json",
 ]
@@ -1000,6 +1001,7 @@ dependencies = [
  "base64 0.22.1",
  "daena-plugin-api",
  "ed25519-dalek",
+ "roxmltree",
  "semver",
  "serde",
  "serde_json",

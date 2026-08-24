@@ -72,6 +72,41 @@ fn field_entity_types_must_match_declared_types() {
 }
 
 #[test]
+fn entity_type_icons_use_the_closed_catalog_or_safe_package_svg_paths() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].entity_types[0].icon = IconRef::Catalog {
+        id: "not-in-the-catalog".into(),
+    };
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].entity_types[0].icon = IconRef::PluginSvg {
+        path: "../outside.svg".into(),
+    };
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].entity_types[0].icon = IconRef::PluginSvg {
+        path: "icons/person.svg".into(),
+    };
+    assert!(validate_manifest(&manifest).is_ok());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].entity_types[0].icon = IconRef::UserSvg {
+        svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#.into(),
+    };
+    assert!(validate_manifest(&manifest).is_err());
+    assert!(
+        validate_passive_svg(match &manifest.schemas[0].entity_types[0].icon {
+            IconRef::UserSvg { svg } => svg.as_bytes(),
+            _ => unreachable!(),
+        })
+        .is_ok()
+    );
+}
+
+#[test]
 fn timeline_contributions_require_shared_date_fields_and_grouped_boundaries() {
     let json = include_str!("../../../packages/modules/lore/manifest.json");
     let mut manifest = parse_manifest(json).unwrap();

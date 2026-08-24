@@ -6,6 +6,7 @@
  */
 export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
+export declare const CATALOG_ICON_IDS: readonly ["agriculture", "anchor", "animal", "art", "artifact", "bird", "calendar", "camp", "castle", "collection", "compass", "concept", "craft", "crown", "culture", "danger", "encounter", "era", "event", "faction", "fire", "fish", "flower", "forest", "group", "heart", "home", "ice", "insect", "key", "language", "library", "lock", "magic", "manuscript", "map", "mine", "moon", "mountain", "music", "object", "person", "place", "plant", "reference", "science", "scroll", "settlement", "ship", "spirit", "star", "storm", "sun", "theatre", "unknown", "wand", "wealth"];
 export interface Entrypoints {
     ui?: string;
     wasm?: string;
@@ -35,6 +36,21 @@ export interface TimelineFieldContribution {
     layer?: TimelineFieldLayer | null;
     role: TimelineFieldRole;
 }
+export type IconRef = {
+    id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "key" | "language" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "wand" | "wealth";
+    kind: "catalog";
+} | {
+    kind: "plugin-svg";
+    path: string;
+} | {
+    kind: "user-svg";
+    svg: string;
+};
+export interface EntityTypeDefinition {
+    icon: IconRef;
+    id: string;
+    name: string;
+}
 export interface FieldDefinition {
     cardinality?: "one" | "many";
     entityTypes?: string[];
@@ -52,7 +68,7 @@ export interface FieldDefinition {
     type: FieldType;
 }
 export interface SchemaContribution {
-    entityTypes: string[];
+    entityTypes: EntityTypeDefinition[];
     fields: FieldDefinition[];
     namespace: string;
 }
@@ -61,7 +77,7 @@ export interface EntityTemplate {
     document?: string | null;
     entityType: string;
     fields: Record<string, unknown>;
-    icon?: string | null;
+    icon?: IconRef | null;
     id: string;
     name: string;
     requiredFields?: string[] | null;
@@ -328,7 +344,7 @@ export interface AiRequestStartPayload {
     taskId: string;
     userInstruction: string;
 }
-export type AppVersionPayload = Record<string, never>;
+export type AppVersionPayload = Record<string, unknown>;
 export interface AssetDeletePayload {
     assetId: string;
     expectedRevision: string;

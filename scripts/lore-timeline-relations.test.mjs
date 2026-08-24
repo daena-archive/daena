@@ -11,8 +11,8 @@ const timeline = JSON.parse(readFileSync(join(root, "packages/modules/timeline/m
 
 const loreFields = lore.schemas[0].fields;
 const byKey = Object.fromEntries(loreFields.map((field) => [field.key, field]));
-const timelineTypes = new Set(timeline.schemas[0].entityTypes);
-const loreTypes = new Set(lore.schemas[0].entityTypes);
+const timelineTypes = new Set(timeline.schemas[0].entityTypes.map((entityType) => entityType.id));
+const loreTypes = new Set(lore.schemas[0].entityTypes.map((entityType) => entityType.id));
 const withTimeline = new Set([...loreTypes, ...timelineTypes]);
 
 assert.equal(byKey.birth.type, "date");

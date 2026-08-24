@@ -2576,7 +2576,11 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
             "fields": { "summary": "", "aliases": "", "occupation": "" },
             "requiredFields": ["occupation"]
         }],
-        "customEntityTypes": ["species"],
+        "customEntityTypes": [{
+            "id": "species",
+            "name": "Species",
+            "icon": { "kind": "catalog", "id": "animal" }
+        }],
         "customFields": [{
             "key": "lifespan",
             "label": "Lifespan",
@@ -3803,10 +3807,7 @@ fn project_setting_mutations_keep_the_portable_checkpoint_valid() {
     flush_and_validate(&store, &root, "module enabled setting");
 
     store
-        .set_module_schema_overlay(
-            "daena.lore".into(),
-            Some(serde_json::json!({"version": 1})),
-        )
+        .set_module_schema_overlay("daena.lore".into(), Some(serde_json::json!({"version": 1})))
         .unwrap();
     flush_and_validate(&store, &root, "schema overlay setting");
 

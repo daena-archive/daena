@@ -17,6 +17,7 @@ import type {
   EntityPageRecord,
   EntityQueryPayload,
 } from "./generated.js";
+import { CATALOG_ICON_IDS } from "./generated.js";
 
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
@@ -328,6 +329,28 @@ function checkKeys(value: Record<string, unknown>, label: string, allowed: strin
   for (const key of Object.keys(value)) if (!known.has(key)) errors.push(`unknown ${label} key: ${key}`);
 }
 
+const catalogIconIds = new Set<string>(CATALOG_ICON_IDS);
+
+function validateIconRef(value: unknown, label: string, errors: string[]): void {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  if (value.kind === "catalog") {
+    checkKeys(value, label, ["kind", "id"], errors);
+    if (typeof value.id !== "string" || !catalogIconIds.has(value.id))
+      errors.push(`${label} uses an unknown catalog icon`);
+    return;
+  }
+  if (value.kind === "plugin-svg") {
+    checkKeys(value, label, ["kind", "path"], errors);
+    if (typeof value.path !== "string" || !isPackagePath(value.path) || !value.path.toLowerCase().endsWith(".svg"))
+      errors.push(`${label} must reference a package-relative SVG file`);
+    return;
+  }
+  errors.push(`${label} has an unknown kind`);
+}
+
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient {
   return {
@@ -597,7 +620,18 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
       checkKeys(schema, "schema", ["namespace", "entityTypes", "fields"], errors);
       if (!Array.isArray(schema.entityTypes) || !Array.isArray(schema.fields))
         errors.push("schema entityTypes and fields must be arrays");
-      else
+      else {
+        for (const entityType of schema.entityTypes) {
+          if (!isRecord(entityType)) {
+            errors.push("schema entityTypes must contain objects");
+            continue;
+          }
+          checkKeys(entityType, "entity type", ["id", "name", "icon"], errors);
+          if (typeof entityType.id !== "string" || !entityType.id.trim()) errors.push("entity type id is required");
+          if (typeof entityType.name !== "string" || !entityType.name.trim())
+            errors.push(`entity type ${String(entityType.id)} name is required`);
+          validateIconRef(entityType.icon, `entity type ${String(entityType.id)} icon`, errors);
+        }
         for (const field of schema.fields) {
           if (!isRecord(field)) {
             errors.push("schema fields must contain objects");
@@ -680,6 +714,7 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
             }
           }
         }
+      }
     }
   if (Array.isArray(templates))
     for (const template of templates) {
@@ -694,6 +729,8 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
         errors,
       );
       if (!isRecord(template.fields)) errors.push("template fields must be an object");
+      if (template.icon !== undefined && template.icon !== null)
+        validateIconRef(template.icon, `template ${String(template.id)} icon`, errors);
     }
   for (const [label, list] of [
     ["views", views],
@@ -862,7 +899,9 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   const owned = new Set(namespaceList);
   for (const schema of schemas as PluginManifest["schemas"])
     if (!owned.has(schema.namespace)) errors.push(`unowned schema namespace: ${schema.namespace}`);
-  const entityTypes = new Set((schemas as PluginManifest["schemas"]).flatMap((schema) => schema.entityTypes));
+  const entityTypeDefinitions = (schemas as PluginManifest["schemas"]).flatMap((schema) => schema.entityTypes);
+  const entityTypes = new Set(entityTypeDefinitions.map((entityType) => entityType.id));
+  if (entityTypes.size !== entityTypeDefinitions.length) errors.push("duplicate entity type");
   if (Array.isArray(records)) {
     const recordIds = new Set<string>();
     for (const record of records) {

@@ -23,6 +23,70 @@ fn manifest(version: &str) -> String {
     )
 }
 
+fn manifest_with_svg_icon(version: &str) -> String {
+    manifest(version).replace(
+        r#""schemas":[]"#,
+        r#""schemas":[{"namespace":"icons","entityTypes":[{"id":"note","name":"Note","icon":{"kind":"plugin-svg","path":"icons/note.svg"}}],"fields":[]}]"#,
+    ).replace(r#""namespaces":[]"#, r#""namespaces":["icons"]"#)
+}
+
+#[test]
+fn passive_plugin_svg_profile_accepts_geometry_and_rejects_active_content() {
+    validate_icon_svg(
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#,
+    )
+    .unwrap();
+
+    for unsafe_svg in [
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><script/></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path style="fill:red" d="M0 0"/></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="url(https://example.test/a.svg)" d="M0 0"/></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><text>secret</text></svg>"#.as_slice(),
+    ] {
+        assert!(validate_icon_svg(unsafe_svg).is_err());
+    }
+}
+
+#[test]
+fn package_install_requires_declared_svg_icons_to_exist_and_be_passive() {
+    let dir = tempdir().unwrap();
+    let missing_path = dir.path().join("missing-icon.wbplugin");
+    archive(
+        &missing_path,
+        &manifest_with_svg_icon("1.0.0"),
+        &[("dist/index.html", b"ok")],
+    );
+    let missing_error = verify_and_extract(
+        &missing_path,
+        &dir.path().join("missing-install"),
+        ArchiveLimits::default(),
+        VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap_err();
+    assert!(missing_error.0.contains("manifest SVG icon is missing"));
+
+    let active_path = dir.path().join("active-icon.wbplugin");
+    archive(
+        &active_path,
+        &manifest_with_svg_icon("1.0.1"),
+        &[
+            ("dist/index.html", b"ok"),
+            (
+                "icons/note.svg",
+                br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><script/></svg>"#,
+            ),
+        ],
+    );
+    let active_error = verify_and_extract(
+        &active_path,
+        &dir.path().join("active-install"),
+        ArchiveLimits::default(),
+        VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap_err();
+    assert!(active_error.0.contains("invalid manifest SVG icon"));
+}
+
 #[test]
 fn rejects_traversal_and_missing_entrypoint() {
     let dir = tempdir().unwrap();

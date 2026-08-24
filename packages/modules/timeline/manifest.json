@@ -32,7 +32,12 @@
   "schemas": [
     {
       "namespace": "timeline",
-      "entityTypes": ["event", "encounter", "era", "calendar"],
+      "entityTypes": [
+        { "id": "event", "name": "Timeline event", "icon": { "kind": "catalog", "id": "event" } },
+        { "id": "encounter", "name": "Encounter", "icon": { "kind": "catalog", "id": "encounter" } },
+        { "id": "era", "name": "Era", "icon": { "kind": "catalog", "id": "era" } },
+        { "id": "calendar", "name": "Calendar", "icon": { "kind": "catalog", "id": "calendar" } }
+      ],
       "fields": [
         {
           "key": "startsAt",
@@ -81,7 +86,6 @@
       "name": "Timeline event",
       "entityType": "event",
       "description": "A moment, turning point, or span of history.",
-      "icon": "E",
       "fields": { "startsAt": "", "endsAt": "" }
     },
     {
@@ -89,7 +93,6 @@
       "name": "Encounter",
       "entityType": "encounter",
       "description": "A meeting or interaction between people at a place and time.",
-      "icon": "X",
       "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [] }
     },
     {
@@ -97,7 +100,6 @@
       "name": "Era",
       "entityType": "era",
       "description": "A named period of Timeline history.",
-      "icon": "Æ",
       "fields": { "startsAt": "", "endsAt": "", "yearStart": "", "description": "" }
     },
     {
@@ -105,7 +107,6 @@
       "name": "Calendar",
       "entityType": "calendar",
       "description": "A way this world names and divides time. Leave it empty to keep using Gregorian dates.",
-      "icon": "C",
       "fields": { "description": "" }
     }
   ],

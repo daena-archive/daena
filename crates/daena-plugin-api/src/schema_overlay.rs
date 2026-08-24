@@ -1,6 +1,9 @@
 //! Project-owned module schema overlays (host-side customization of package defaults).
 
-use crate::{EntityTemplate, FieldDefinition, MetadataFieldDefinition, PluginManifest};
+use crate::{
+    validate_icon_ref, EntityTemplate, EntityTypeDefinition, FieldDefinition,
+    MetadataFieldDefinition, PluginManifest,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -106,7 +109,7 @@ pub struct ModuleSchemaOverlay {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_templates: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub custom_entity_types: Vec<String>,
+    pub custom_entity_types: Vec<EntityTypeDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_fields: Vec<FieldDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -274,7 +277,7 @@ pub fn validate_module_overlay(
     let package_types: BTreeSet<&str> = package_schema
         .entity_types
         .iter()
-        .map(String::as_str)
+        .map(|entity_type| entity_type.id.as_str())
         .collect();
     let package_fields: BTreeSet<&str> = package_schema
         .fields
@@ -316,17 +319,26 @@ pub fn validate_module_overlay(
         return Err("disabledTemplates must be unique".into());
     }
 
-    for name in &overlay.custom_entity_types {
-        if !is_entity_type_id(name) {
-            return Err(format!("invalid custom entity type: {name}"));
+    for entity_type in &overlay.custom_entity_types {
+        if !is_entity_type_id(&entity_type.id) || entity_type.name.trim().is_empty() {
+            return Err(format!("invalid custom entity type: {}", entity_type.id));
         }
-        if package_types.contains(name.as_str()) {
+        validate_icon_ref(&entity_type.icon).map_err(|error| error.0)?;
+        if package_types.contains(entity_type.id.as_str()) {
             return Err(format!(
-                "custom entity type collides with builtin type: {name}"
+                "custom entity type collides with builtin type: {}",
+                entity_type.id
             ));
         }
     }
-    if unique_len(&overlay.custom_entity_types) != overlay.custom_entity_types.len() {
+    if overlay
+        .custom_entity_types
+        .iter()
+        .map(|entity_type| entity_type.id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        != overlay.custom_entity_types.len()
+    {
         return Err("customEntityTypes must be unique".into());
     }
 
@@ -339,7 +351,12 @@ pub fn validate_module_overlay(
                 .iter()
                 .any(|disabled| disabled == name)
         })
-        .chain(overlay.custom_entity_types.iter().map(String::as_str))
+        .chain(
+            overlay
+                .custom_entity_types
+                .iter()
+                .map(|entity_type| entity_type.id.as_str()),
+        )
         .collect();
 
     let mut field_scope_keys = BTreeSet::new();
@@ -633,6 +650,9 @@ pub fn validate_module_overlay(
         if !custom_template_ids.insert(template.id.as_str()) {
             return Err(format!("duplicate custom template id: {}", template.id));
         }
+        if let Some(icon) = &template.icon {
+            validate_icon_ref(icon).map_err(|error| error.0)?;
+        }
         if !effective_types.contains(template.entity_type.as_str()) {
             return Err(format!(
                 "custom template {} references unknown entity type: {}",
@@ -761,19 +781,27 @@ pub fn merge_module_manifest(
         return Err(format!("packaged schema is missing for {}", package.id));
     };
 
-    schema.entity_types.retain(|name| {
+    schema.entity_types.retain(|entity_type| {
         !overlay
             .disabled_entity_types
             .iter()
-            .any(|disabled| disabled == name)
+            .any(|disabled| disabled == &entity_type.id)
     });
-    for name in &overlay.custom_entity_types {
-        if !schema.entity_types.iter().any(|existing| existing == name) {
-            schema.entity_types.push(name.clone());
+    for entity_type in &overlay.custom_entity_types {
+        if !schema
+            .entity_types
+            .iter()
+            .any(|existing| existing.id == entity_type.id)
+        {
+            schema.entity_types.push(entity_type.clone());
         }
     }
-    schema.entity_types.sort();
-    schema.entity_types.dedup();
+    schema
+        .entity_types
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    schema
+        .entity_types
+        .dedup_by(|left, right| left.id == right.id);
 
     schema.fields.retain(|field| {
         !overlay
@@ -820,7 +848,7 @@ pub fn merge_module_manifest(
             && schema
                 .entity_types
                 .iter()
-                .any(|entity_type| entity_type == &template.entity_type)
+                .any(|entity_type| entity_type.id == template.entity_type)
     });
     for template in &mut merged.templates {
         if let Some(fields) = template.fields.as_object_mut() {
@@ -1006,7 +1034,13 @@ mod tests {
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
             disabled_templates: vec!["concept".into()],
-            custom_entity_types: vec!["species".into()],
+            custom_entity_types: vec![EntityTypeDefinition {
+                id: "species".into(),
+                name: "Species".into(),
+                icon: crate::IconRef::UserSvg {
+                    svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#.into(),
+                },
+            }],
             custom_fields: vec![FieldDefinition {
                 key: "lifespan".into(),
                 label: "Lifespan".into(),
@@ -1028,7 +1062,7 @@ mod tests {
                 name: "Species".into(),
                 entity_type: "species".into(),
                 description: Some("A kind of being.".into()),
-                icon: Some("S".into()),
+                icon: None,
                 fields: serde_json::json!({ "summary": "", "lifespan": "" }),
                 required_fields: None,
                 document: None,
@@ -1041,7 +1075,7 @@ mod tests {
             .iter()
             .find(|schema| schema.namespace == "lore")
             .unwrap();
-        assert!(schema.entity_types.iter().any(|name| name == "species"));
+        assert!(schema.entity_types.iter().any(|kind| kind.id == "species"));
         assert!(schema.fields.iter().any(|field| field.key == "lifespan"));
         assert!(!merged
             .templates
@@ -1156,7 +1190,13 @@ mod tests {
         let package = writing_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
-            custom_entity_types: vec!["chapter".into()],
+            custom_entity_types: vec![EntityTypeDefinition {
+                id: "chapter".into(),
+                name: "Chapter".into(),
+                icon: crate::IconRef::Catalog {
+                    id: "manuscript".into(),
+                },
+            }],
             custom_fields: vec![FieldDefinition {
                 key: "wordCount".into(),
                 label: "Word count".into(),
@@ -1178,7 +1218,7 @@ mod tests {
                 name: "Chapter".into(),
                 entity_type: "chapter".into(),
                 description: Some("A chapter draft.".into()),
-                icon: Some("C".into()),
+                icon: None,
                 fields: serde_json::json!({ "wordCount": 0 }),
                 required_fields: None,
                 document: Some("".into()),
@@ -1191,7 +1231,7 @@ mod tests {
             .iter()
             .find(|schema| schema.namespace == "writing")
             .unwrap();
-        assert!(schema.entity_types.iter().any(|name| name == "chapter"));
+        assert!(schema.entity_types.iter().any(|kind| kind.id == "chapter"));
         assert!(merged
             .templates
             .iter()
@@ -1218,8 +1258,16 @@ mod tests {
         };
         assert!(validate_module_overlay(&package, &overlay).is_ok());
         let merged = merge_module_manifest(&package, &overlay).expect("merge");
-        let schema = merged.schemas.iter().find(|s| s.namespace == "lore").unwrap();
-        let affiliation = schema.fields.iter().find(|f| f.key == "affiliation").unwrap();
+        let schema = merged
+            .schemas
+            .iter()
+            .find(|s| s.namespace == "lore")
+            .unwrap();
+        let affiliation = schema
+            .fields
+            .iter()
+            .find(|f| f.key == "affiliation")
+            .unwrap();
         let meta = affiliation.metadata_fields.as_ref().unwrap();
         assert!(meta.iter().any(|m| m.key == "role"));
         assert!(meta.iter().any(|m| m.key == "start"));

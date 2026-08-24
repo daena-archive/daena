@@ -163,7 +163,11 @@ Schemas declare entity types and fields in an owned namespace:
   "namespaces": ["weather"],
   "schemas": [{
     "namespace": "weather",
-    "entityTypes": ["forecast"],
+    "entityTypes": [{
+      "id": "forecast",
+      "name": "Forecast",
+      "icon": { "kind": "catalog", "id": "storm" }
+    }],
     "fields": [
       { "key": "summary", "label": "Summary", "type": "text" },
       { "key": "temperature", "label": "Temperature", "type": "number" },
@@ -177,13 +181,24 @@ Supported field types are `text`, `number`, `boolean`, `date`, `enum`,
 `entity-ref`, and `relationship`. Relationship fields must declare a
 `relationshipType` and non-empty `targetEntityTypes`.
 
-`entityTypes` identify the entity types owned or presented by the plugin.
+Each `entityTypes` entry identifies an entity type owned or presented by the
+plugin and provides its display name and icon. Icons are either a stable Daena
+catalog reference (`{"kind":"catalog","id":"storm"}`) or a package-relative
+SVG (`{"kind":"plugin-svg","path":"icons/forecast.svg"}`). Catalog IDs are a
+closed contract generated in the SDK as `CATALOG_ICON_IDS`. Packaged SVGs must
+be UTF-8, no larger than 32 KiB, include a bounded `viewBox`, and use only
+passive geometry and paint attributes; scripts, styles, text, links, external
+resources, animation, and embedded media are rejected during installation.
+The host serves accepted SVGs through its project-scoped icon protocol and the
+UI renders them as theme-colored masks.
+
 Relationship `targetEntityTypes` may reference entity types owned by another
 plugin; they describe valid cross-plugin targets and do not transfer ownership.
 
 Templates provide initial values for declared fields and may include an
-opening document. They cannot introduce fields or entity types that the
-schema does not declare.
+opening document. They cannot introduce fields or entity types that the schema
+does not declare. A template may provide its own `icon` using the same icon
+reference; otherwise it inherits the entity type icon.
 
 ### Host-rendered views
 

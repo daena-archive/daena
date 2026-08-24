@@ -179,7 +179,7 @@ function schemaForField(manifest: ModuleManifest, key: string, entityType?: stri
     .find(
       ({ schema, field }) =>
         field.key === key &&
-        (entityType === undefined || schema.entityTypes.includes(entityType)) &&
+        (entityType === undefined || schema.entityTypes.some((definition) => definition.id === entityType)) &&
         (!field.entityTypes || entityType === undefined || field.entityTypes.includes(entityType)),
     );
 }

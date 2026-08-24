@@ -1,6 +1,6 @@
 <script lang="ts">
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
-import type { EntityTemplate, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
+import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
 import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers, Sparkles } from "@lucide/svelte";
 
@@ -12,7 +12,7 @@ export type SchemaPluginCandidate = {
 type PackageManifestSlice = {
   schemas: Array<{
     namespace: string;
-    entityTypes: string[];
+    entityTypes: EntityTypeDefinition[];
     fields: FieldDefinition[];
   }>;
   templates: EntityTemplate[];

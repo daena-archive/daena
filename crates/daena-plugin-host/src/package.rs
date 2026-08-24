@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
 const SIGNATURE_FILE: &str = "signature.json";
+pub const MAX_PLUGIN_ICON_SVG_BYTES: usize = 32 * 1024;
 type PackageFiles = Vec<(String, Vec<u8>)>;
 type PackageTree = (PackageFiles, BTreeSet<String>);
 
@@ -379,7 +380,7 @@ fn verify_and_extract(
             "package is incompatible with the current host API".into(),
         ));
     }
-    validate_references(&manifest, &names)?;
+    validate_references(&manifest, &names, &files)?;
     let digest = archive_digest(&files)?;
     let signed = verify_signature(
         signature.as_ref(),
@@ -457,7 +458,7 @@ fn verify_installed(
             "installed package is incompatible with the current host API".into(),
         ));
     }
-    validate_references(&manifest, &names)?;
+    validate_references(&manifest, &names, &files)?;
     let signature = files
         .iter()
         .find(|(name, _)| name == SIGNATURE_FILE)
@@ -591,9 +592,155 @@ fn validate_archive_path(name: &str, max_len: usize) -> Result<(), PackageError>
     Ok(())
 }
 
+pub fn manifest_svg_icon_paths(manifest: &PluginManifest) -> BTreeSet<&str> {
+    manifest
+        .schemas
+        .iter()
+        .flat_map(|schema| {
+            schema
+                .entity_types
+                .iter()
+                .map(|entity_type| &entity_type.icon)
+        })
+        .chain(
+            manifest
+                .templates
+                .iter()
+                .filter_map(|template| template.icon.as_ref()),
+        )
+        .filter_map(|icon| icon.plugin_svg_path())
+        .collect()
+}
+
+/// Validate the deliberately small, passive SVG profile accepted for entity
+/// icons. Icons are rendered as CSS masks, so animation, styling, links,
+/// embedded media, and external resources are neither needed nor accepted.
+pub fn validate_icon_svg(bytes: &[u8]) -> Result<(), PackageError> {
+    if bytes.is_empty() || bytes.len() > MAX_PLUGIN_ICON_SVG_BYTES {
+        return Err(PackageError(format!(
+            "plugin SVG icon must be between 1 and {MAX_PLUGIN_ICON_SVG_BYTES} bytes"
+        )));
+    }
+    let source = std::str::from_utf8(bytes)
+        .map_err(|_| PackageError("plugin SVG icon must be UTF-8".into()))?;
+    let lower = source.to_ascii_lowercase();
+    for forbidden in ["<!doctype", "<!entity", "<?xml-stylesheet"] {
+        if lower.contains(forbidden) {
+            return Err(PackageError(format!(
+                "plugin SVG icon contains forbidden markup: {forbidden}"
+            )));
+        }
+    }
+    let document = roxmltree::Document::parse(source)
+        .map_err(|error| PackageError(format!("invalid plugin SVG icon: {error}")))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "svg"
+        || root.tag_name().namespace() != Some("http://www.w3.org/2000/svg")
+    {
+        return Err(PackageError(
+            "plugin SVG icon root must be an SVG namespace element".into(),
+        ));
+    }
+    let view_box = root
+        .attribute("viewBox")
+        .ok_or_else(|| PackageError("plugin SVG icon requires viewBox".into()))?;
+    let parts = view_box
+        .split(|character: char| character.is_ascii_whitespace() || character == ',')
+        .filter(|part| !part.is_empty())
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| PackageError("plugin SVG icon has an invalid viewBox".into()))?;
+    if parts.len() != 4
+        || parts.iter().any(|value| !value.is_finite())
+        || parts[2] <= 0.0
+        || parts[3] <= 0.0
+        || parts[2] > 4096.0
+        || parts[3] > 4096.0
+    {
+        return Err(PackageError("plugin SVG icon has an unsafe viewBox".into()));
+    }
+
+    const ELEMENTS: &[&str] = &[
+        "svg", "g", "path", "circle", "ellipse", "line", "polyline", "polygon", "rect",
+    ];
+    const ATTRIBUTES: &[&str] = &[
+        "viewBox",
+        "width",
+        "height",
+        "preserveAspectRatio",
+        "fill",
+        "fill-rule",
+        "clip-rule",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
+        "vector-effect",
+        "opacity",
+        "fill-opacity",
+        "stroke-opacity",
+        "transform",
+        "d",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "points",
+        "role",
+        "aria-hidden",
+        "focusable",
+    ];
+    for node in document.descendants() {
+        if node.is_text() && node.text().is_some_and(|text| !text.trim().is_empty()) {
+            return Err(PackageError("plugin SVG icons cannot contain text".into()));
+        }
+        if !node.is_element() {
+            continue;
+        }
+        if node.tag_name().namespace() != Some("http://www.w3.org/2000/svg")
+            || !ELEMENTS.contains(&node.tag_name().name())
+        {
+            return Err(PackageError(format!(
+                "plugin SVG icon contains forbidden element: {}",
+                node.tag_name().name()
+            )));
+        }
+        for attribute in node.attributes() {
+            if attribute.namespace().is_some() || !ATTRIBUTES.contains(&attribute.name()) {
+                return Err(PackageError(format!(
+                    "plugin SVG icon contains forbidden attribute: {}",
+                    attribute.name()
+                )));
+            }
+            let value = attribute.value().to_ascii_lowercase();
+            if ["url(", "javascript:", "data:", "http:", "https:"]
+                .iter()
+                .any(|forbidden| value.contains(forbidden))
+            {
+                return Err(PackageError(format!(
+                    "plugin SVG icon attribute {} contains an external or active value",
+                    attribute.name()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_references(
     manifest: &PluginManifest,
     names: &BTreeSet<String>,
+    files: &PackageFiles,
 ) -> Result<(), PackageError> {
     for path in [
         manifest.entrypoints.ui.as_ref(),
@@ -607,6 +754,19 @@ fn validate_references(
                 "manifest entrypoint is missing: {path}"
             )));
         }
+    }
+    for path in manifest_svg_icon_paths(manifest) {
+        if !names.contains(path) {
+            return Err(PackageError(format!(
+                "manifest SVG icon is missing: {path}"
+            )));
+        }
+        let bytes = files
+            .iter()
+            .find_map(|(name, bytes)| (name == path).then_some(bytes.as_slice()))
+            .ok_or_else(|| PackageError(format!("manifest SVG icon is missing: {path}")))?;
+        validate_icon_svg(bytes)
+            .map_err(|error| PackageError(format!("invalid manifest SVG icon {path}: {error}")))?;
     }
     Ok(())
 }

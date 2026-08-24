@@ -24,8 +24,10 @@ import {
   type ModuleSchemaOverlay,
 } from "$lib/project/client";
 import type {
+  EntityTypeDefinition,
   EntityTemplate,
   FieldDefinition,
+  IconRef,
   ModuleContext,
   ModuleId,
   UUID,
@@ -91,6 +93,8 @@ import "$lib/shell/controls.css";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import QuickOpen from "$lib/shell/QuickOpen.svelte";
+import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
 import ModuleMount from "$lib/ModuleMount.svelte";
@@ -335,7 +339,7 @@ let projectSection = $state<ProjectSection>("overview");
 let statusCenterOpen = $state(false);
 let moduleSchemaOverlay = $state<ModuleSchemaOverlay>({ version: 1 });
 let moduleSchemaPackage = $state<{
-  schemas: Array<{ namespace: string; entityTypes: string[]; fields: FieldDefinition[] }>;
+  schemas: Array<{ namespace: string; entityTypes: EntityTypeDefinition[]; fields: FieldDefinition[] }>;
   templates: EntityTemplate[];
 } | null>(null);
 let moduleSchemaBusy = $state(false);
@@ -640,10 +644,30 @@ function workspaceDescription(target: WorkspaceSection) {
           ? "Sounds, writing systems, vocabulary, and grammar."
           : "Maps, world surfaces, locations, and geographic links.";
 }
+function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
+  return schema.entityTypes.map((entityType) => entityType.id);
+}
+function entityTypePresentation(entityType: string | null): {
+  definition: EntityTypeDefinition;
+  pluginId: string;
+} | null {
+  if (!entityType) return null;
+  for (const module of modules) {
+    for (const schema of module.schemas) {
+      const definition = schema.entityTypes.find((candidate) => candidate.id === entityType);
+      if (definition) return { definition, pluginId: module.id };
+    }
+  }
+  return null;
+}
+function iconForEntityType(entityType: string | null): { icon: IconRef; pluginId: string | null } {
+  const presentation = entityTypePresentation(entityType);
+  return presentation
+    ? { icon: presentation.definition.icon, pluginId: presentation.pluginId }
+    : { icon: FALLBACK_ICON, pluginId: null };
+}
 function workspaceEntityCount(target: WorkspaceSection) {
-  const entityTypes = new Set(
-    manifestForWorkspaceSection(target)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
-  );
+  const entityTypes = new Set(manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? []);
   return entities.filter((entity) => !entity.deleted && entityTypes.has(entity.entity_type ?? "")).length;
 }
 function recentlyUpdatedEntities() {
@@ -698,9 +722,7 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
 }
 function enabledEntityTypes() {
   return new Set(
-    modules
-      .filter((module) => module.enabled)
-      .flatMap((module) => module.schemas.flatMap((schema) => schema.entityTypes)),
+    modules.filter((module) => module.enabled).flatMap((module) => module.schemas.flatMap(schemaEntityTypeIds)),
   );
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null, moduleId = activeModuleId()) {
@@ -715,13 +737,13 @@ function availableEditTypes(): string[] {
   const types = new Set<string>();
   for (const mod of modules) {
     if (!mod.enabled) continue;
-    for (const schema of mod.schemas) for (const t of schema.entityTypes) types.add(t);
+    for (const schema of mod.schemas) for (const t of schema.entityTypes) types.add(t.id);
   }
   // Keep current selection visible even if its type is disabled/custom or from maps
   if (selected?.entity_type) types.add(selected.entity_type);
   if (entityEditDialog?.entity.entity_type) types.add(entityEditDialog.entity.entity_type);
   // Ensure map type is selectable if maps module exists in any state
-  const hasMapDecl = modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map")));
+  const hasMapDecl = modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:map")));
   if (hasMapDecl) types.add("daena.maps:map");
   return [...types].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
 }
@@ -729,17 +751,17 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
   const enabled = new Set<string>();
   for (const mod of modules) {
     if (!mod.enabled) continue;
-    for (const schema of mod.schemas) for (const t of schema.entityTypes) enabled.add(t);
+    for (const schema of mod.schemas) for (const t of schema.entityTypes) enabled.add(t.id);
   }
   if (selected?.entity_type) enabled.add(selected.entity_type);
   if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
-  if (modules.some((m) => m.schemas.some((s) => s.entityTypes.includes("daena.maps:map"))))
+  if (modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:map"))))
     enabled.add("daena.maps:map");
   const groups: Array<{ heading: string; types: string[] }> = [];
   for (const sec of workspaceSectionOrder) {
     const manifest = manifestForWorkspaceSection(sec);
     if (!manifest) continue;
-    const secTypes = manifest.schemas.flatMap((s) => s.entityTypes).filter((t) => enabled.has(t));
+    const secTypes = manifest.schemas.flatMap(schemaEntityTypeIds).filter((t) => enabled.has(t));
     if (secTypes.length === 0) continue;
     secTypes.sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
     groups.push({ heading: workspaceSectionLabel(sec), types: secTypes });
@@ -754,7 +776,7 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
 function sectionForEntityType(entityType: string | null): WorkspaceSection | null {
   if (!entityType) return null;
   for (const target of workspaceSectionOrder) {
-    const types = manifestForWorkspaceSection(target)?.schemas.flatMap((s) => s.entityTypes) ?? [];
+    const types = manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
     if (types.includes(entityType)) return target;
   }
   // Custom type not mapped to a known section - keep current section
@@ -794,7 +816,7 @@ const definitions = () => {
         : undefined);
   return (
     activeManifest()
-      ?.schemas.filter((schema) => !entityType || schema.entityTypes.includes(entityType))
+      ?.schemas.filter((schema) => !entityType || schemaEntityTypeIds(schema).includes(entityType))
       .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? []
   );
 };
@@ -802,7 +824,7 @@ function namespaceForField(definition: FieldDefinition): string {
   const manifest = activeManifest();
   const schema = manifest?.schemas.find(
     (candidate) =>
-      (!selected?.entity_type || candidate.entityTypes.includes(selected.entity_type)) &&
+      (!selected?.entity_type || schemaEntityTypeIds(candidate).includes(selected.entity_type)) &&
       candidate.fields.some((field) => field.key === definition.key),
   );
   return schema?.namespace ?? manifest?.schemas[0]?.namespace ?? activeModuleId();
@@ -938,6 +960,12 @@ function createGroups(): CreateGroup[] {
   }
   return [...groups.values()];
 }
+function iconForCreateOption(option: CreateOption): { icon: IconRef; pluginId: string } {
+  const entityTypeIcon = option.module.schemas
+    .flatMap((schema) => schema.entityTypes)
+    .find((entityType) => entityType.id === option.template.entityType)?.icon;
+  return { icon: option.template.icon ?? entityTypeIcon ?? FALLBACK_ICON, pluginId: option.module.id };
+}
 function selectedCreateOption() {
   return createOptions().find((option) => option.key === selectedCreateKey) ?? null;
 }
@@ -967,7 +995,7 @@ function defaultCreateOption(options: CreateOption[]) {
 function createFieldsFor(option: CreateOption | null = selectedCreateOption()): CreateField[] {
   if (!option) return [];
   return option.module.schemas
-    .filter((schema) => schema.entityTypes.includes(option.template.entityType))
+    .filter((schema) => schemaEntityTypeIds(schema).includes(option.template.entityType))
     .flatMap((schema) =>
       schema.fields
         .filter((field) => fieldAppliesToEntity(field, option.template.entityType, option.module.id))
@@ -1832,7 +1860,7 @@ function mapConflictDetail(detail: unknown): { path?: string } {
 }
 
 function sectionEntityTypes(): string[] {
-  return manifestForWorkspaceSection(section)?.schemas.flatMap((schema) => schema.entityTypes) ?? [];
+  return manifestForWorkspaceSection(section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
 }
 
 $effect(() => {
@@ -1953,32 +1981,8 @@ function toggleGroup(type: string) {
   expandedGroups = next;
 }
 
-function entityGlyphClassForType(type: string) {
-  return `entity-glyph-${type === "__uncategorized" ? "unknown" : type}`;
-}
-
-function glyphForType(type: string) {
-  return entityGlyph({ entity_type: type === "__uncategorized" ? null : type });
-}
-
 function collectionResult(): CollectionResult {
   return presentCollectionPage(collectionPage, collectionQuery.viewMode, entityTypeLabel);
-}
-
-function entityGlyph(entity: Pick<Entity, "entity_type">) {
-  if (entity.entity_type === "daena.maps:map") return "";
-  if (!entity.entity_type) return "?";
-  for (const target of workspaceSectionOrder) {
-    const template = manifestForWorkspaceSection(target)?.templates.find(
-      (candidate) => candidate.entityType === entity.entity_type,
-    );
-    if (template?.icon) return template.icon;
-  }
-  return "?";
-}
-
-function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
-  return `entity-glyph-${entity.entity_type ?? "unknown"}`;
 }
 
 async function selectSearchResult(entity: Entity) {
@@ -1988,7 +1992,7 @@ async function selectSearchResult(entity: Entity) {
   recordShellDeparture(departure);
   const owner = workspaceSectionOrder.find((target) =>
     manifestForWorkspaceSection(target)?.schemas.some((schema) =>
-      schema.entityTypes.includes(entity.entity_type ?? ""),
+      schemaEntityTypeIds(schema).includes(entity.entity_type ?? ""),
     ),
   );
   section = owner && owner !== "maps" ? owner : "lore";
@@ -2183,23 +2187,8 @@ function createLabel() {
 }
 
 function entityTypeLabel(entityType: string | null) {
-  return entityType === "daena.maps:map"
-    ? "Map"
-    : entityType === "reference-page"
-      ? "Reference page"
-      : entityType === "manuscript"
-        ? "Manuscript"
-        : entityType === "language"
-          ? "Language"
-          : entityType === "era"
-            ? "Era"
-            : entityType === "calendar"
-              ? "Calendar"
-              : entityType === "encounter"
-                ? "Encounter"
-                : entityType === "event"
-                  ? "Event"
-                  : (entityType ?? "Uncategorized");
+  if (!entityType) return "Uncategorized";
+  return entityTypePresentation(entityType)?.definition.name ?? entityType;
 }
 
 async function openProjection() {
@@ -2248,7 +2237,7 @@ async function openLoreWiki() {
 }
 
 function allEntityTypesForSection(target: WorkspaceSection) {
-  return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap((s) => s.entityTypes) ?? []);
+  return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap(schemaEntityTypeIds) ?? []);
 }
 
 async function closeLoreWiki() {
@@ -3603,7 +3592,7 @@ async function loadSelectedState(entity: Entity) {
     if (!isCurrent()) return;
     const activeNamespaces = new Set(
       activeManifest()
-        ?.schemas.filter((schema) => !entity.entity_type || schema.entityTypes.includes(entity.entity_type))
+        ?.schemas.filter((schema) => !entity.entity_type || schemaEntityTypeIds(schema).includes(entity.entity_type))
         .map((schema) => schema.namespace) ?? [],
     );
     const relevantFields = storedFields.filter(
@@ -4014,7 +4003,7 @@ async function createWithOption(
     section =
       workspaceSectionOrder.find((target) =>
         manifestForWorkspaceSection(target)?.schemas.some((schema) =>
-          schema.entityTypes.includes(option.template.entityType),
+          schemaEntityTypeIds(schema).includes(option.template.entityType),
         ),
       ) ?? section;
     if (option.template.entityType === "manuscript") writingView = "manuscripts";
@@ -4173,14 +4162,19 @@ function quickOpenShortcutLabel() {
 function quickOpenItems(): QuickOpenItem[] {
   const query = globalQuery.trim();
   const entityItems: QuickOpenItem[] = (query ? (searchMatches ?? []) : recentlyUpdatedEntities().slice(0, 7)).map(
-    (entity) => ({
-      id: `entity:${entity.id}`,
-      category: query ? "Results" : "Recent",
-      label: entity.name,
-      description: entityTypeLabel(entity.entity_type),
-      keywords: [entity.entity_type ?? ""],
-      action: { kind: "entity", entityId: entity.id },
-    }),
+    (entity) => {
+      const presentation = iconForEntityType(entity.entity_type);
+      return {
+        id: `entity:${entity.id}`,
+        category: query ? "Results" : "Recent",
+        label: entity.name,
+        description: entityTypeLabel(entity.entity_type),
+        keywords: [entity.entity_type ?? ""],
+        icon: presentation.icon,
+        pluginId: presentation.pluginId,
+        action: { kind: "entity", entityId: entity.id },
+      };
+    },
   );
   const destinations: QuickOpenItem[] = [
     {
@@ -4208,14 +4202,19 @@ function quickOpenItems(): QuickOpenItem[] {
       action: { kind: "destination", destination: `navigation:${item.key}` },
     })),
   ];
-  const creation: QuickOpenItem[] = createOptions().map((option) => ({
-    id: `create:${option.key}`,
-    category: "Create",
-    label: `Create ${option.template.name}`,
-    description: `${option.module.name} · open focused creation`,
-    keywords: [option.module.name, option.template.entityType, option.template.description ?? ""],
-    action: { kind: "create", templateKey: option.key },
-  }));
+  const creation: QuickOpenItem[] = createOptions().map((option) => {
+    const presentation = iconForCreateOption(option);
+    return {
+      id: `create:${option.key}`,
+      category: "Create",
+      label: `Create ${option.template.name}`,
+      description: `${option.module.name} · open focused creation`,
+      keywords: [option.module.name, option.template.entityType, option.template.description ?? ""],
+      icon: presentation.icon,
+      pluginId: presentation.pluginId,
+      action: { kind: "create", templateKey: option.key },
+    };
+  });
   const commands: QuickOpenItem[] = [
     {
       id: "command:template-gallery",
@@ -5723,15 +5722,15 @@ onMount(() => {
                         >{group.options.length} {group.options.length === 1 ? "template" : "templates"}</small>
                     </div>
                     <div class="create-template-tiles">
-                      {#each group.options as option}<button
+                      {#each group.options as option}{@const optionIcon = iconForCreateOption(option)}<button
                           type="button"
                           data-template-index={option.key}
                           class="create-template-card"
                           disabled={createBusy}
                           onclick={() => openFocusedCreate(option.key)}
-                          ><span class="create-template-icon"
-                            >{option.template.icon ?? option.template.name.slice(0, 1)}</span
-                          ><span class="create-template-copy"
+                          ><span class="create-template-icon">
+                            <EntityIcon icon={optionIcon.icon} pluginId={optionIcon.pluginId} size={19} />
+                          </span><span class="create-template-copy"
                             ><strong>{option.template.name}</strong><small
                               >{option.template.description ?? option.template.entityType}</small
                             ></span
@@ -6474,13 +6473,16 @@ onMount(() => {
           description: workspaceDescription(target),
           count: workspaceEntityCount(target),
         }))}
-        recents={recentlyUpdatedEntities().map((entity) => ({
-          entity,
-          glyph: entityGlyph(entity),
-          glyphClass: entityGlyphClass(entity),
-          typeLabel: entityTypeLabel(entity.entity_type),
-          updatedLabel: updatedDateLabel(entity.updated_at),
-        }))}
+        recents={recentlyUpdatedEntities().map((entity) => {
+          const presentation = iconForEntityType(entity.entity_type);
+          return {
+            entity,
+            icon: presentation.icon,
+            pluginId: presentation.pluginId,
+            typeLabel: entityTypeLabel(entity.entity_type),
+            updatedLabel: updatedDateLabel(entity.updated_at),
+          };
+        })}
         onNewEntry={toggleCreateForm}
         onSnapshots={() => void openProjectCenter("snapshots")}
         onProjectCenter={() => void openProjectCenter()}
@@ -6724,8 +6726,9 @@ onMount(() => {
                     ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
                   Create {createLabel()}</button
                 >{/if}
-            </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}<div
-                class="collection-group">
+            </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
+                iconForEntityType(group.type === "__uncategorized" ? null : group.type)}
+              <div class="collection-group">
                 <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
                   ><span class="group-chevron"
                     >{#if expandedGroups.has(group.type)}<ChevronDown
@@ -6735,37 +6738,31 @@ onMount(() => {
                         size={12}
                         strokeWidth={1.8}
                         aria-hidden="true" />{/if}</span
-                  ><span class={`entity-glyph ${entityGlyphClassForType(group.type)}`}
-                    >{#if group.type === "daena.maps:map"}<MapIcon
-                        size={14}
-                        strokeWidth={1.8}
-                        aria-hidden="true" />{:else}{glyphForType(group.type)}{/if}</span
-                  ><strong>{group.label}</strong><small>{group.count}</small></button
-                >{#if expandedGroups.has(group.type)}{#each group.entities as entity}<button
+                  ><span class="entity-glyph">
+                    <EntityIcon icon={groupIcon.icon} pluginId={groupIcon.pluginId} size={14} />
+                  </span><strong>{group.label}</strong><small>{group.count}</small></button
+                >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
+                      iconForEntityType(entity.entity_type)}<button
                       class:selected={selected?.id === entity.id}
                       class="collection-item"
                       onclick={() => selectEntity(entity)}
-                      ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
-                        >{#if entity.entity_type === "daena.maps:map"}<MapIcon
-                            size={14}
-                            strokeWidth={1.8}
-                            aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
-                      ><span class="item-copy"
+                      ><span class="entity-glyph">
+                        <EntityIcon icon={rowIcon.icon} pluginId={rowIcon.pluginId} size={14} />
+                      </span><span class="item-copy"
                         ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                       ><span class="item-arrow" aria-hidden="true"
                         ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
                       ></button
                     >{/each}{/if}
-              </div>{/each}{:else}{#each collectionResult().entities as entity}<button
+              </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
+                entity.entity_type,
+              )}<button
                 class:selected={selected?.id === entity.id}
                 class="collection-item"
                 onclick={() => selectEntity(entity)}
-                ><span class={`entity-glyph ${entityGlyphClass(entity)}`}
-                  >{#if entity.entity_type === "daena.maps:map"}<MapIcon
-                      size={14}
-                      strokeWidth={1.8}
-                      aria-hidden="true" />{:else}{entityGlyph(entity)}{/if}</span
-                ><span class="item-copy"
+                ><span class="entity-glyph">
+                  <EntityIcon icon={rowIcon.icon} pluginId={rowIcon.pluginId} size={14} />
+                </span><span class="item-copy"
                   ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                 ><span class="item-arrow" aria-hidden="true"
                   ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
@@ -8470,8 +8467,8 @@ onMount(() => {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   font-size: 23px;
 }
 .inspector-heading-actions {
@@ -9506,46 +9503,11 @@ onMount(() => {
   border: 0;
   border-radius: 50%;
   background: var(--theme-warning-bg, #f0ece5);
+  color: var(--accent);
   font-size: 13px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.02em;
-}
-.entity-glyph-person {
-  color: var(--theme-warning-text, #9b6847);
-  background: var(--theme-warning-bg, #f8eadf) !important;
-}
-.entity-glyph-place {
-  color: var(--success);
-  background: var(--theme-success-bg, #e8f0e8) !important;
-}
-.entity-glyph-faction {
-  color: var(--theme-info-text, #7b638e);
-  background: var(--theme-info-bg, #eee8f3) !important;
-}
-.entity-glyph-artifact {
-  color: var(--theme-warning-text, #a2783c);
-  background: var(--theme-warning-bg, #f7eed8) !important;
-}
-.entity-glyph-culture {
-  color: var(--theme-info-text, #4e7890);
-  background: var(--theme-info-bg, #e4eff3) !important;
-}
-.entity-glyph-event {
-  color: var(--theme-danger-text, #ae6a56);
-  background: var(--theme-danger-bg, #f8e8e2) !important;
-}
-.entity-glyph-manuscript {
-  color: var(--theme-warning-text, #7c6548);
-  background: var(--theme-warning-bg, #f4eadb) !important;
-}
-.entity-glyph-reference-page {
-  color: var(--theme-info-text, #597a84);
-  background: var(--theme-info-bg, #e5eff0) !important;
-}
-.entity-glyph-unknown {
-  color: var(--theme-neutral-text-soft, #837d73);
-  background: var(--theme-warning-bg, #eeeae3) !important;
 }
 .collection-item .item-copy {
   display: grid;
@@ -9971,8 +9933,8 @@ onMount(() => {
   width: 38px;
   height: 38px;
   border-radius: 10px;
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   font-size: 14px;
   font-weight: 800;
 }
@@ -10312,8 +10274,8 @@ onMount(() => {
   height: 42px;
   margin-bottom: 18px;
   border-radius: 13px;
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   font-size: 19px;
 }
 .list-empty strong {

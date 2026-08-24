@@ -145,7 +145,8 @@ function defToDeclaration(name, schema) {
     return `export type ${name} = ${schemaToTs(schema)};`;
   }
   if (t === "object" || t === undefined) {
-    return `export interface ${name} ${interfaceBody(schema)}`;
+    const body = interfaceBody(schema);
+    return body.startsWith("{") ? `export interface ${name} ${body}` : `export type ${name} = ${body};`;
   }
   return `export type ${name} = ${schemaToTs(schema)};`;
 }
@@ -168,6 +169,8 @@ const MANIFEST_DEF_ORDER = [
   "TimelineFieldRole",
   "TimelineFieldLayer",
   "TimelineFieldContribution",
+  "IconRef",
+  "EntityTypeDefinition",
   "FieldDefinition",
   "SchemaContribution",
   "EntityTemplate",
@@ -198,6 +201,13 @@ const SKIP_DEFS = new Set([
 const manifestLines = [];
 manifestLines.push(`export type PluginKind = ${schemaToTs(manifestDefs.PluginKind)};`);
 manifestLines.push(`export type FieldType = ${fieldTypeUnion};`);
+const catalogIconVariant = manifestDefs.IconRef.oneOf.find(
+  (variant) => variant.properties?.kind?.enum?.[0] === "catalog",
+);
+const catalogIconIds = catalogIconVariant?.properties?.id?.enum;
+if (!Array.isArray(catalogIconIds) || catalogIconIds.length === 0)
+  throw new Error("manifest schema IconRef catalog variant must declare icon IDs");
+manifestLines.push(`export const CATALOG_ICON_IDS = ${JSON.stringify(catalogIconIds)} as const;`);
 
 for (const name of MANIFEST_DEF_ORDER) {
   if (SKIP_DEFS.has(name)) continue;

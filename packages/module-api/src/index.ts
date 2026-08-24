@@ -5,6 +5,8 @@ export type {
   TimelineFieldContribution,
   TimelineFieldLayer,
   TimelineFieldRole,
+  IconRef,
+  EntityTypeDefinition,
   SchemaContribution,
   EntityTemplate,
   Migration,

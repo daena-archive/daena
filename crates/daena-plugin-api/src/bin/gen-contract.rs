@@ -12,8 +12,8 @@
 //! path, so the emitted `$ref`s already point at `#/$defs/<Name>`.
 
 use daena_plugin_api::rpc::{
-    AiRequestIdPayload, AiRequestStartPayload, AppVersionPayload, AssetDeletePayload, AssetListPayload,
-    AssetMetadataUpdatePayload, AssetReadBeginPayload, AssetRegisterPayload,
+    AiRequestIdPayload, AiRequestStartPayload, AppVersionPayload, AssetDeletePayload,
+    AssetListPayload, AssetMetadataUpdatePayload, AssetReadBeginPayload, AssetRegisterPayload,
     AssetReplaceBeginPayload, AssetReplaceCommitPayload, AssetTransferCancelPayload,
     DocumentListPayload, DocumentSavePayload, EntityCreateDocument, EntityCreateField,
     EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload, EntityGetPayload,
@@ -32,8 +32,8 @@ use daena_plugin_api::rpc::{
     RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
-    PluginManifest, RpcError, CAPABILITY_REGISTRY, DENIED_BY_DEFAULT_CAPABILITIES,
-    RPC_METHOD_CATALOG,
+    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS,
+    DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG,
 };
 use schemars::gen::{SchemaGenerator, SchemaSettings};
 use serde_json::{json, Map, Value};
@@ -188,8 +188,45 @@ fn manifest_schema() -> Value {
         &mut root,
         "SchemaContribution",
         "entityTypes",
-        json!({"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}),
+        json!({"type": "array", "items": ref_to("EntityTypeDefinition"), "uniqueItems": true}),
     );
+    for prop in ["id", "name"] {
+        rule_on_prop(&mut root, "EntityTypeDefinition", prop, "minLength", 1);
+    }
+    {
+        let variants = defs_entry(&mut root, "IconRef")
+            .get_mut("oneOf")
+            .and_then(Value::as_array_mut)
+            .expect("IconRef oneOf");
+        for variant in variants {
+            let properties = variant
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+                .expect("IconRef properties");
+            let kind = properties
+                .get("kind")
+                .and_then(|schema| schema.get("enum"))
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str);
+            if kind == Some("catalog") {
+                properties.insert(
+                    "id".into(),
+                    json!({"enum": CATALOG_ICON_IDS, "type": "string"}),
+                );
+            } else if kind == Some("plugin-svg") {
+                properties.insert(
+                    "path".into(),
+                    json!({"type": "string", "minLength": 5, "pattern": r"^[^\\/](?:[^\\]*\/)*[^\\/]+\.[sS][vV][gG]$"}),
+                );
+            } else if kind == Some("user-svg") {
+                properties.insert(
+                    "svg".into(),
+                    json!({"type": "string", "minLength": 1, "maxLength": 32768}),
+                );
+            }
+        }
+    }
 
     // FieldDefinition.
     set_prop(

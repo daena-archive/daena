@@ -32,13 +32,12 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
   const relationships = new Map<string, ImportFieldChoice>();
 
   for (const module of enabled) {
-    const templateNames = new Map(module.templates.map((template) => [template.entityType, template.name] as const));
     for (const schema of module.schemas) {
       for (const entityType of schema.entityTypes) {
-        if (!entityTypes.has(entityType)) {
-          entityTypes.set(entityType, {
-            id: entityType,
-            label: templateNames.get(entityType) ?? humanize(entityType),
+        if (!entityTypes.has(entityType.id)) {
+          entityTypes.set(entityType.id, {
+            id: entityType.id,
+            label: entityType.name,
             moduleId: module.id,
             moduleName: module.name,
           });
@@ -92,7 +91,7 @@ export function buildExternalImportMappingCatalog(modules: ProjectModuleManifest
     .map((module) => ({
       id: module.id,
       version: module.version,
-      entityTypes: module.schemas.flatMap((schema) => schema.entityTypes).sort(),
+      entityTypes: module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)).sort(),
       fields: module.schemas
         .flatMap((schema) => schema.fields.map((field) => `${schema.namespace}:${field.key}`))
         .sort(),

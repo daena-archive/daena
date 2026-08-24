@@ -310,6 +310,98 @@ pub struct TimelineFieldContribution {
     pub layer: Option<TimelineFieldLayer>,
 }
 
+/// Stable, renderer-neutral icon references used by entity types and templates.
+/// Catalog IDs are owned by Daena; plugin SVG paths are resolved relative to the
+/// verified package that declares them; user SVGs are stored in project overlays.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum IconRef {
+    Catalog { id: String },
+    PluginSvg { path: String },
+    UserSvg { svg: String },
+}
+
+impl IconRef {
+    pub fn plugin_svg_path(&self) -> Option<&str> {
+        match self {
+            Self::PluginSvg { path } => Some(path),
+            Self::Catalog { .. } | Self::UserSvg { .. } => None,
+        }
+    }
+}
+
+pub const MAX_ICON_SVG_BYTES: usize = 32 * 1024;
+
+pub const CATALOG_ICON_IDS: &[&str] = &[
+    "agriculture",
+    "anchor",
+    "animal",
+    "art",
+    "artifact",
+    "bird",
+    "calendar",
+    "camp",
+    "castle",
+    "collection",
+    "compass",
+    "concept",
+    "craft",
+    "crown",
+    "culture",
+    "danger",
+    "encounter",
+    "era",
+    "event",
+    "faction",
+    "fire",
+    "fish",
+    "flower",
+    "forest",
+    "group",
+    "heart",
+    "home",
+    "ice",
+    "insect",
+    "key",
+    "language",
+    "library",
+    "lock",
+    "magic",
+    "manuscript",
+    "map",
+    "mine",
+    "moon",
+    "mountain",
+    "music",
+    "object",
+    "person",
+    "place",
+    "plant",
+    "reference",
+    "science",
+    "scroll",
+    "settlement",
+    "ship",
+    "spirit",
+    "star",
+    "storm",
+    "sun",
+    "theatre",
+    "unknown",
+    "wand",
+    "wealth",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EntityTypeDefinition {
+    pub id: String,
+    pub name: String,
+    pub icon: IconRef,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -350,7 +442,7 @@ pub struct FieldDefinition {
 pub struct SchemaContribution {
     pub namespace: String,
     #[serde(rename = "entityTypes")]
-    pub entity_types: Vec<String>,
+    pub entity_types: Vec<EntityTypeDefinition>,
     pub fields: Vec<FieldDefinition>,
 }
 
@@ -363,7 +455,7 @@ pub struct EntityTemplate {
     #[serde(rename = "entityType")]
     pub entity_type: String,
     pub description: Option<String>,
-    pub icon: Option<String>,
+    pub icon: Option<IconRef>,
     pub fields: serde_json::Value,
     #[serde(rename = "requiredFields")]
     pub required_fields: Option<Vec<String>>,
@@ -721,6 +813,154 @@ pub fn validate_command_value(
     Ok(())
 }
 
+fn validate_entity_type_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('a'..='z'))
+        && chars.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | ':'))
+}
+
+pub(crate) fn validate_icon_ref(icon: &IconRef) -> Result<(), ContractError> {
+    match icon {
+        IconRef::Catalog { id } => {
+            if !CATALOG_ICON_IDS.contains(&id.as_str()) {
+                return Err(ContractError(format!("unknown catalog icon: {id}")));
+            }
+        }
+        IconRef::PluginSvg { path } => {
+            if !is_package_path(path) || !path.to_ascii_lowercase().ends_with(".svg") {
+                return Err(ContractError(format!(
+                    "plugin SVG icon must be a package-relative .svg path: {path}"
+                )));
+            }
+        }
+        IconRef::UserSvg { svg } => validate_passive_svg(svg.as_bytes())?,
+    }
+    Ok(())
+}
+
+fn validate_manifest_icon_ref(icon: &IconRef) -> Result<(), ContractError> {
+    if matches!(icon, IconRef::UserSvg { .. }) {
+        return Err(ContractError(
+            "user SVG icons are project-owned and cannot appear in plugin manifests".into(),
+        ));
+    }
+    validate_icon_ref(icon)
+}
+
+pub fn validate_passive_svg(bytes: &[u8]) -> Result<(), ContractError> {
+    if bytes.is_empty() || bytes.len() > MAX_ICON_SVG_BYTES {
+        return Err(ContractError(format!(
+            "SVG icon must be between 1 and {MAX_ICON_SVG_BYTES} bytes"
+        )));
+    }
+    let source =
+        std::str::from_utf8(bytes).map_err(|_| ContractError("SVG icon must be UTF-8".into()))?;
+    let lower = source.to_ascii_lowercase();
+    if ["<!doctype", "<!entity", "<?xml-stylesheet"]
+        .iter()
+        .any(|value| lower.contains(value))
+    {
+        return Err(ContractError("SVG icon contains forbidden markup".into()));
+    }
+    let document = roxmltree::Document::parse(source)
+        .map_err(|error| ContractError(format!("invalid SVG icon: {error}")))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "svg"
+        || root.tag_name().namespace() != Some("http://www.w3.org/2000/svg")
+    {
+        return Err(ContractError(
+            "SVG icon requires an SVG namespace root".into(),
+        ));
+    }
+    let values = root
+        .attribute("viewBox")
+        .ok_or_else(|| ContractError("SVG icon requires viewBox".into()))?
+        .split(|character: char| character.is_ascii_whitespace() || character == ',')
+        .filter(|part| !part.is_empty())
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ContractError("SVG icon has an invalid viewBox".into()))?;
+    if values.len() != 4
+        || values.iter().any(|value| !value.is_finite())
+        || values[2] <= 0.0
+        || values[3] <= 0.0
+        || values[2] > 4096.0
+        || values[3] > 4096.0
+    {
+        return Err(ContractError("SVG icon has an unsafe viewBox".into()));
+    }
+    const ELEMENTS: &[&str] = &[
+        "svg", "g", "path", "circle", "ellipse", "line", "polyline", "polygon", "rect",
+    ];
+    const ATTRIBUTES: &[&str] = &[
+        "viewBox",
+        "width",
+        "height",
+        "preserveAspectRatio",
+        "fill",
+        "fill-rule",
+        "clip-rule",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-dasharray",
+        "stroke-dashoffset",
+        "vector-effect",
+        "opacity",
+        "fill-opacity",
+        "stroke-opacity",
+        "transform",
+        "d",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "points",
+        "role",
+        "aria-hidden",
+        "focusable",
+    ];
+    for node in document.descendants() {
+        if node.is_text() && node.text().is_some_and(|text| !text.trim().is_empty()) {
+            return Err(ContractError("SVG icons cannot contain text".into()));
+        }
+        if !node.is_element() {
+            continue;
+        }
+        if node.tag_name().namespace() != Some("http://www.w3.org/2000/svg")
+            || !ELEMENTS.contains(&node.tag_name().name())
+        {
+            return Err(ContractError(
+                "SVG icon contains a forbidden element".into(),
+            ));
+        }
+        for attribute in node.attributes() {
+            if attribute.namespace().is_some() || !ATTRIBUTES.contains(&attribute.name()) {
+                return Err(ContractError(
+                    "SVG icon contains a forbidden attribute".into(),
+                ));
+            }
+            let value = attribute.value().to_ascii_lowercase();
+            if ["url(", "javascript:", "data:", "http:", "https:"]
+                .iter()
+                .any(|forbidden| value.contains(forbidden))
+            {
+                return Err(ContractError("SVG icon contains an active value".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError> {
     if manifest.manifest_version != MANIFEST_VERSION {
         return Err(ContractError("unsupported manifest version".into()));
@@ -775,11 +1015,21 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             "schema namespace is not owned by plugin".into(),
         ));
     }
-    let entity_types = manifest
-        .schemas
-        .iter()
-        .flat_map(|schema| schema.entity_types.iter())
-        .collect::<BTreeSet<_>>();
+    let mut entity_types = BTreeSet::new();
+    for schema in &manifest.schemas {
+        for entity_type in &schema.entity_types {
+            if !validate_entity_type_id(&entity_type.id)
+                || entity_type.name.trim().is_empty()
+                || !entity_types.insert(&entity_type.id)
+            {
+                return Err(ContractError(format!(
+                    "invalid or duplicate entity type: {}",
+                    entity_type.id
+                )));
+            }
+            validate_manifest_icon_ref(&entity_type.icon)?;
+        }
+    }
     let mut fields = BTreeMap::new();
     for schema in &manifest.schemas {
         for field in &schema.fields {
@@ -934,6 +1184,9 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 "template uses undeclared entity type: {}",
                 template.entity_type
             )));
+        }
+        if let Some(icon) = &template.icon {
+            validate_manifest_icon_ref(icon)?;
         }
         if let Some(required_fields) = &template.required_fields {
             let mut required_field_ids = BTreeSet::new();

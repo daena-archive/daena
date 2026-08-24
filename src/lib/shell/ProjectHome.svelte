@@ -1,6 +1,7 @@
 <script lang="ts">
-import type { Entity } from "$lib/project/client";
+import type { Entity, IconRef } from "$lib/project/client";
 import type { WorkspaceSection } from "$lib/modules/workspace";
+import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
 import {
   CalendarRange,
   Boxes,
@@ -23,8 +24,8 @@ export interface ProjectHomeWorkspace {
 
 export interface ProjectHomeRecent {
   entity: Entity;
-  glyph: string;
-  glyphClass: string;
+  icon: IconRef;
+  pluginId: string | null;
   typeLabel: string;
   updatedLabel: string;
 }
@@ -147,11 +148,9 @@ function sectionIcon(section: WorkspaceSection) {
       <div class="project-home-recents">
         {#each recents as recent}
           <button type="button" class="project-home-recent" onclick={() => onOpenEntity(recent.entity)}>
-            <span class={`entity-glyph ${recent.glyphClass}`}
-              >{#if recent.entity.entity_type === "daena.maps:map"}<MapIcon
-                  size={14}
-                  strokeWidth={1.8}
-                  aria-hidden="true" />{:else}{recent.glyph}{/if}</span>
+            <span class="entity-glyph">
+              <EntityIcon icon={recent.icon} pluginId={recent.pluginId} size={14} />
+            </span>
             <span>
               <strong>{recent.entity.name}</strong>
               <small>{recent.typeLabel} · {recent.updatedLabel}</small>
@@ -341,8 +340,8 @@ function sectionIcon(section: WorkspaceSection) {
   width: 38px;
   height: 38px;
   border-radius: 10px;
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .project-home-workspace-copy,
 .project-home-recent > span:nth-child(2) {
@@ -380,7 +379,7 @@ function sectionIcon(section: WorkspaceSection) {
   font-weight: 800;
   text-align: center;
 }
-.project-home-card-icon {
+:global(.project-home-card-icon) {
   flex: 0 0 auto;
   color: var(--ink-faint);
 }
@@ -392,32 +391,9 @@ function sectionIcon(section: WorkspaceSection) {
   place-items: center;
   border-radius: 50%;
   background: var(--surface-muted);
+  color: var(--accent);
   font-size: 10px;
   font-weight: 800;
-}
-.project-home-recent :global(.entity-glyph-person) {
-  color: var(--theme-warning-text, #9b6847);
-  background: var(--theme-warning-bg, #f8eadf);
-}
-.project-home-recent :global(.entity-glyph-place) {
-  color: var(--success);
-  background: var(--theme-success-bg, #e8f0e8);
-}
-.project-home-recent :global(.entity-glyph-faction),
-.project-home-recent :global(.entity-glyph-culture),
-.project-home-recent :global(.entity-glyph-reference-page) {
-  color: var(--theme-info-text, #597a84);
-  background: var(--theme-info-bg, #e5eff0);
-}
-.project-home-recent :global(.entity-glyph-event) {
-  color: var(--theme-danger-text, #ae6a56);
-  background: var(--theme-danger-bg, #f8e8e2);
-}
-.project-home-recent :global(.entity-glyph-artifact),
-.project-home-recent :global(.entity-glyph-manuscript),
-.project-home-recent :global(.entity-glyph-unknown) {
-  color: var(--theme-warning-text, #7c6548);
-  background: var(--theme-warning-bg, #f4eadb);
 }
 .project-home-empty {
   padding: 22px;

@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
 import type {
+  EntityTypeDefinition,
   EntityTemplate,
   FieldDefinition,
+  IconRef,
   MetadataFieldDefinition,
 } from "../../../packages/plugin-sdk/src/generated";
 
-export type { EntityTemplate, FieldDefinition, MetadataFieldDefinition };
+export type { EntityTypeDefinition, EntityTemplate, FieldDefinition, IconRef, MetadataFieldDefinition };
 
 export interface FieldScopeOverride {
   fieldKey: string;
@@ -29,7 +31,7 @@ export interface ModuleSchemaOverlay {
   disabledEntityTypes?: string[];
   disabledFields?: string[];
   disabledTemplates?: string[];
-  customEntityTypes?: string[];
+  customEntityTypes?: EntityTypeDefinition[];
   customFields?: FieldDefinition[];
   customTemplates?: EntityTemplate[];
   fieldScopeOverrides?: FieldScopeOverride[];
@@ -42,7 +44,7 @@ export interface ModuleSchemaEditorState {
   name: string;
   schemas: Array<{
     namespace: string;
-    entityTypes: string[];
+    entityTypes: EntityTypeDefinition[];
     fields: FieldDefinition[];
   }>;
   templates: EntityTemplate[];

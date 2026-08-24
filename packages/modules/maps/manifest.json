@@ -31,7 +31,14 @@
   "schemas": [
     {
       "namespace": "maps",
-      "entityTypes": ["daena.maps:map", "daena.maps:physical-natural-event"],
+      "entityTypes": [
+        { "id": "daena.maps:map", "name": "Map", "icon": { "kind": "catalog", "id": "map" } },
+        {
+          "id": "daena.maps:physical-natural-event",
+          "name": "Physical natural event",
+          "icon": { "kind": "catalog", "id": "storm" }
+        }
+      ],
       "fields": [
         { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
         { "key": "locations", "label": "Location references", "type": "text", "shared": true },

@@ -1,12 +1,17 @@
 <script lang="ts">
 import type {
+  EntityTypeDefinition,
   EntityTemplate,
   FieldDefinition,
+  IconRef,
   ModuleSchemaOverlay,
   FieldMetadataOverride,
   MetadataFieldDefinition,
 } from "$lib/project/client";
 import FieldPicker from "$lib/FieldPicker.svelte";
+import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
+import IconPicker from "$lib/entity-icons/IconPicker.svelte";
+import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
@@ -35,7 +40,7 @@ import {
 type PackageManifest = {
   schemas: Array<{
     namespace: string;
-    entityTypes: string[];
+    entityTypes: EntityTypeDefinition[];
     fields: FieldDefinition[];
   }>;
   templates: EntityTemplate[];
@@ -75,7 +80,10 @@ let {
 } = $props();
 
 const packageSchema = $derived(packageManifest.schemas[0]);
-const packageTypes = $derived([...(packageSchema?.entityTypes ?? [])].sort());
+const packageTypeDefinitions = $derived(
+  [...(packageSchema?.entityTypes ?? [])].sort((left, right) => left.name.localeCompare(right.name)),
+);
+const packageTypes = $derived(packageTypeDefinitions.map((entityType) => entityType.id));
 const packageFields = $derived([...(packageSchema?.fields ?? [])]);
 const packageTemplates = $derived([...(packageManifest.templates ?? [])]);
 
@@ -237,9 +245,14 @@ function draftsFromMetadataFields(fields: unknown): MetadataFieldDraft[] {
 }
 
 function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
-  const customEntityTypes = [
-    ...new Set((value.customEntityTypes ?? []).map((name) => ensureTypeId(name, "type")).filter(Boolean)),
-  ].sort();
+  const customEntityTypes = cloneJson(value.customEntityTypes ?? [])
+    .map((entityType) => ({
+      id: ensureTypeId(entityType.id, "type"),
+      name: entityType.name.trim() || humanizeId(entityType.id),
+      icon: entityType.icon ?? FALLBACK_ICON,
+    }))
+    .filter((entityType, index, all) => all.findIndex((candidate) => candidate.id === entityType.id) === index)
+    .sort((left, right) => left.id.localeCompare(right.id));
   const customFields = cloneJson(value.customFields ?? []).map((field) => {
     const f = field as unknown as Record<string, unknown>;
     const next: Record<string, unknown> = {
@@ -398,9 +411,11 @@ let builtinFieldsCollapsed = $state(false);
 let builtinTemplatesCollapsed = $state(false);
 
 let newType = $state("");
+let newTypeIcon = $state<IconRef>({ kind: "catalog", id: "concept" });
 let newTypeFieldKeys = $state<string[]>([]);
 let editingTypeId = $state<string | null>(null);
 let editTypeValue = $state("");
+let editTypeIcon = $state<IconRef>(FALLBACK_ICON);
 let editTypeFieldKeys = $state<string[]>([]);
 
 let newFieldLabel = $state("");
@@ -539,7 +554,7 @@ function toggleDisabled(listKey: "disabledEntityTypes" | "disabledFields" | "dis
 function effectiveTypes() {
   return [
     ...packageTypes.filter((type) => !isDisabled(draft.disabledEntityTypes, type)),
-    ...(draft.customEntityTypes ?? []),
+    ...(draft.customEntityTypes ?? []).map((entityType) => entityType.id),
   ];
 }
 
@@ -847,6 +862,7 @@ async function discardChanges() {
 function cancelTypeEdit() {
   editingTypeId = null;
   editTypeValue = "";
+  editTypeIcon = FALLBACK_ICON;
   editTypeFieldKeys = [];
 }
 
@@ -854,7 +870,9 @@ function startTypeEdit(type: string) {
   editingFieldKey = null;
   editingTemplateId = null;
   editingTypeId = type;
-  editTypeValue = humanizeId(type);
+  const definition = (draft.customEntityTypes ?? []).find((candidate) => candidate.id === type);
+  editTypeValue = definition?.name ?? humanizeId(type);
+  editTypeIcon = definition?.icon ?? FALLBACK_ICON;
   editTypeFieldKeys = effectiveFieldsForType(type)
     .map((field) => field.key)
     .sort();
@@ -864,13 +882,16 @@ function addCustomType() {
   const name = newType.trim();
   if (!name) return;
   const id = ensureTypeId(name, "type");
-  if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).includes(id)) return;
+  if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === id)) return;
   setDraft({
     ...draft,
-    customEntityTypes: [...(draft.customEntityTypes ?? []), id].sort(),
+    customEntityTypes: [...(draft.customEntityTypes ?? []), { id, name, icon: newTypeIcon }].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    ),
   });
   if (newTypeFieldKeys.length > 0) applyTypeFieldSelection(id, newTypeFieldKeys);
   newType = "";
+  newTypeIcon = { kind: "catalog", id: "concept" };
   newTypeFieldKeys = [];
 }
 
@@ -882,21 +903,29 @@ function commitTypeEdit() {
     cancelTypeEdit();
     return;
   }
-  if (to !== from && (packageTypes.includes(to) || (draft.customEntityTypes ?? []).includes(to))) return;
-  if (to !== from) {
-    setDraft({
-      ...draft,
-      customEntityTypes: (draft.customEntityTypes ?? []).map((item) => (item === from ? to : item)).sort(),
-      customFields: (draft.customFields ?? []).map((field) => ({
-        ...field,
-        entityTypes: field.entityTypes?.map((type) => (type === from ? to : type)),
-      })),
-      customTemplates: (draft.customTemplates ?? []).map((template) => ({
-        ...template,
-        entityType: template.entityType === from ? to : template.entityType,
-      })),
-    });
-  }
+  if (
+    to !== from &&
+    (packageTypes.includes(to) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === to))
+  )
+    return;
+  setDraft({
+    ...draft,
+    customEntityTypes: (draft.customEntityTypes ?? [])
+      .map((item) => (item.id === from ? { ...item, id: to, name: editTypeValue.trim(), icon: editTypeIcon } : item))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    ...(to !== from
+      ? {
+          customFields: (draft.customFields ?? []).map((field) => ({
+            ...field,
+            entityTypes: field.entityTypes?.map((type) => (type === from ? to : type)),
+          })),
+          customTemplates: (draft.customTemplates ?? []).map((template) => ({
+            ...template,
+            entityType: template.entityType === from ? to : template.entityType,
+          })),
+        }
+      : {}),
+  });
   applyTypeFieldSelection(to, editTypeFieldKeys);
   cancelTypeEdit();
 }
@@ -905,7 +934,7 @@ function removeCustomType(name: string) {
   if (editingTypeId === name) cancelTypeEdit();
   setDraft({
     ...draft,
-    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item !== name),
+    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item.id !== name),
     customFields: (draft.customFields ?? []).map((field) => ({
       ...field,
       entityTypes: field.entityTypes?.filter((type) => type !== name),
@@ -975,7 +1004,7 @@ function confirmTypeRemoval() {
   );
   setDraft({
     ...draft,
-    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item !== typeId),
+    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item.id !== typeId),
     customFields: (draft.customFields ?? [])
       .filter((field) => !fieldsToRemove.has(field.key))
       .map((field) => ({
@@ -1507,7 +1536,6 @@ function addCustomTemplate() {
     name,
     entityType,
     description: description || null,
-    icon: name.slice(0, 1).toUpperCase(),
     fields: finalFields,
     requiredFields: finalRequired,
   };
@@ -1661,7 +1689,7 @@ function removeCustomTemplate(id: string) {
           <div class="heading-left">
             <span class="heading-icon"><Layers size={14} strokeWidth={1.8} aria-hidden="true" /></span>
             <h4>Builtin entity types</h4>
-            <span class="count-badge">{packageTypes.length}</span>
+            <span class="count-badge">{packageTypeDefinitions.length}</span>
           </div>
           <span class="block-hint"
             ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Click to enable or disable</span>
@@ -1672,20 +1700,21 @@ function removeCustomTemplate(id: string) {
         </button>
         {#if !builtinTypesCollapsed}
           <div class="chip-row">
-            {#each packageTypes as type}
-              {@const disabled = isDisabled(draft.disabledEntityTypes, type)}
+            {#each packageTypeDefinitions as type}
+              {@const disabled = isDisabled(draft.disabledEntityTypes, type.id)}
               <button
                 type="button"
                 class="chip"
                 class:is-hidden={disabled}
                 aria-pressed={!disabled}
-                title={type}
-                onclick={() => toggleDisabled("disabledEntityTypes", type)}>
+                title={type.id}
+                onclick={() => toggleDisabled("disabledEntityTypes", type.id)}>
                 {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff
                     size={11}
                     strokeWidth={1.8}
                     aria-hidden="true" />{/if}
-                {humanizeId(type)}
+                <EntityIcon icon={type.icon} size={13} />
+                {type.name}
               </button>
             {/each}
           </div>
@@ -1717,13 +1746,14 @@ function removeCustomTemplate(id: string) {
           <ul class="list">
             {#each draft.customEntityTypes ?? [] as type}
               <li class="list-item">
-                {#if editingTypeId === type}
+                {#if editingTypeId === type.id}
                   <div class="edit-form">
                     <label>
                       <span>Name</span>
                       <input bind:value={editTypeValue} placeholder="Species" />
                     </label>
-                    <div class="type-select" role="group" aria-label={`Fields for ${editTypeValue || type}`}>
+                    <IconPicker value={editTypeIcon} onChange={(icon) => (editTypeIcon = icon)} />
+                    <div class="type-select" role="group" aria-label={`Fields for ${editTypeValue || type.name}`}>
                       <span class="type-select-label">Fields</span>
                       <FieldPicker
                         options={selectableFieldOptions()}
@@ -1739,21 +1769,21 @@ function removeCustomTemplate(id: string) {
                   </div>
                 {:else}
                   <div class="item-main">
-                    <strong>{humanizeId(type)}</strong>
-                    <code>{type}</code>
+                    <strong><EntityIcon icon={type.icon} size={15} /> {type.name}</strong>
+                    <code>{type.id}</code>
                   </div>
                   <div class="item-actions">
                     <button
                       type="button"
                       class="quiet icon"
-                      aria-label="Edit {type}"
-                      onclick={() => startTypeEdit(type)}
+                      aria-label="Edit {type.name}"
+                      onclick={() => startTypeEdit(type.id)}
                       ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                     <button
                       type="button"
                       class="danger icon"
-                      aria-label="Remove {type}"
-                      onclick={() => requestRemoveCustomType(type)}
+                      aria-label="Remove {type.name}"
+                      onclick={() => requestRemoveCustomType(type.id)}
                       ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
                   </div>
                 {/if}
@@ -1770,6 +1800,7 @@ function removeCustomTemplate(id: string) {
                 placeholder="Species"
                 onkeydown={(event) => event.key === "Enter" && addCustomType()} />
             </label>
+            <IconPicker value={newTypeIcon} onChange={(icon) => (newTypeIcon = icon)} />
             <button type="button" class="action primary-action" onclick={addCustomType}
               ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
           </div>

@@ -12,6 +12,8 @@ export interface QuickOpenItem {
   label: string;
   description: string;
   keywords?: string[];
+  icon?: IconRef;
+  pluginId?: string | null;
   action: QuickOpenAction;
 }
 
@@ -62,3 +64,4 @@ export function groupQuickOpenItems(items: QuickOpenItem[]) {
     .map((category) => ({ category, items: items.filter((item) => item.category === category) }))
     .filter((group) => group.items.length > 0);
 }
+import type { IconRef } from "../../../packages/plugin-sdk/src/generated";

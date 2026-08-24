@@ -1522,6 +1522,103 @@ fn plugin_asset_response(
         .unwrap()
 }
 
+fn plugin_icon_response(
+    webview_label: &str,
+    request: &tauri::http::Request<Vec<u8>>,
+    core: &SharedCore,
+    plugins: &SharedPluginHost,
+) -> tauri::http::Response<Vec<u8>> {
+    if webview_label != "main" || request.method() != tauri::http::Method::GET {
+        return tauri::http::Response::builder()
+            .status(403)
+            .body(Vec::new())
+            .unwrap();
+    }
+    let plugin_id = request.uri().host().unwrap_or_default();
+    let Some(relative) = request.uri().path().strip_prefix('/') else {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    };
+    if plugin_id.is_empty()
+        || relative.is_empty()
+        || Path::new(relative).components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir
+                    | Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+            )
+        })
+    {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    }
+    let project_id = current_info(core).ok().flatten().map(|info| info.root);
+    let entry = project_id.and_then(|project_id| {
+        plugins
+            .lock()
+            .ok()
+            .and_then(|host| host.runtime_entry(&project_id, plugin_id))
+    });
+    let Some(entry) = entry else {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    };
+    if entry.package_root.as_os_str().is_empty()
+        || !daena_plugin_host::manifest_svg_icon_paths(&entry.manifest).contains(relative)
+    {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    }
+    let Ok(canonical_root) = entry.package_root.canonicalize() else {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    };
+    let Ok(canonical_icon) = entry.package_root.join(relative).canonicalize() else {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    };
+    if !canonical_icon.starts_with(canonical_root) || !canonical_icon.is_file() {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    }
+    let Ok(bytes) = std::fs::read(canonical_icon) else {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    };
+    if daena_plugin_host::validate_icon_svg(&bytes).is_err() {
+        return tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap();
+    }
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", "image/svg+xml")
+        .header("Content-Security-Policy", "default-src 'none'")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .body(bytes)
+        .unwrap()
+}
+
 fn binary_asset_response(
     plugin_id: &str,
     request: &tauri::http::Request<Vec<u8>>,
@@ -9486,6 +9583,8 @@ pub fn run() {
     ));
     let protocol_core = core.clone();
     let protocol_plugins = plugins.clone();
+    let icon_protocol_core = core.clone();
+    let icon_protocol_plugins = plugins.clone();
     let transfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
     let protocol_transfers = transfers.clone();
     let physical_jobs = Arc::new(Mutex::new(PhysicalJobManager::default()));
@@ -9565,6 +9664,14 @@ pub fn run() {
                 &protocol_plugins,
                 &protocol_transfers,
                 &protocol_ai_runtime,
+            )
+        })
+        .register_uri_scheme_protocol("plugin-icon", move |ctx, request| {
+            plugin_icon_response(
+                ctx.webview_label(),
+                &request,
+                &icon_protocol_core,
+                &icon_protocol_plugins,
             )
         })
         .register_asynchronous_uri_scheme_protocol(

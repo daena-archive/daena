@@ -80,14 +80,15 @@ let entityLoadRequest = 0;
 let imageGenerationOpen = $state(false);
 
 const schemas = $derived(manifest.schemas ?? []);
-const allEntityTypes = $derived(schemas.flatMap((schema: any) => schema.entityTypes));
+const allEntityTypeDefinitions = $derived(schemas.flatMap((schema: any) => schema.entityTypes));
+const allEntityTypes = $derived(allEntityTypeDefinitions.map((entityType: any) => entityType.id));
 const allFields = $derived(schemas.flatMap((schema: any) => schema.fields));
 const articleOutline = $derived(documentBody ? headingOutline(documentBody) : []);
 
 function labelForType(type: string | null) {
   if (!type) return "Uncategorized";
-  const template = manifest.templates.find((candidate: any) => candidate.entityType === type);
-  return template?.name ?? humanizeType(type);
+  const definition = allEntityTypeDefinitions.find((candidate: any) => candidate.id === type);
+  return definition?.name ?? humanizeType(type);
 }
 
 function fieldsForType(entityType: string | null) {
@@ -846,7 +847,7 @@ function handleEdit() {
   padding: 7px 11px;
   border: 1px solid var(--theme-neutral-border, #dce3db);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--surface);
   color: var(--theme-neutral-text-soft, #707870);
   font-size: 10px;
 }

@@ -3208,9 +3208,7 @@ impl ProjectStore {
             .map(|manifest| manifest.ai_enabled)
     }
 
-    fn runtime_project_manifest(
-        &self,
-    ) -> Result<crate::storage::ProjectManifest, CoreError> {
+    fn runtime_project_manifest(&self) -> Result<crate::storage::ProjectManifest, CoreError> {
         let root = self
             .root
             .as_ref()
@@ -9221,7 +9219,12 @@ impl ProjectStore {
         let allowed_types = manifest
             .schemas
             .iter()
-            .flat_map(|schema| schema.entity_types.iter())
+            .flat_map(|schema| {
+                schema
+                    .entity_types
+                    .iter()
+                    .map(|entity_type| &entity_type.id)
+            })
             .collect::<BTreeSet<_>>();
         if entity
             .entity_type

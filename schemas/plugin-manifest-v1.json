@@ -180,9 +180,13 @@
           "type": "object"
         },
         "icon": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IconRef"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "id": {
@@ -206,6 +210,28 @@
       "required": [
         "entityType",
         "fields",
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "EntityTypeDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "icon": {
+          "$ref": "#/$defs/IconRef"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "icon",
         "id",
         "name"
       ],
@@ -363,6 +389,131 @@
         "type"
       ],
       "type": "object"
+    },
+    "IconRef": {
+      "description": "Stable, renderer-neutral icon references used by entity types and templates. Catalog IDs are owned by Daena; plugin SVG paths are resolved relative to the verified package that declares them; user SVGs are stored in project overlays.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "enum": [
+                "agriculture",
+                "anchor",
+                "animal",
+                "art",
+                "artifact",
+                "bird",
+                "calendar",
+                "camp",
+                "castle",
+                "collection",
+                "compass",
+                "concept",
+                "craft",
+                "crown",
+                "culture",
+                "danger",
+                "encounter",
+                "era",
+                "event",
+                "faction",
+                "fire",
+                "fish",
+                "flower",
+                "forest",
+                "group",
+                "heart",
+                "home",
+                "ice",
+                "insect",
+                "key",
+                "language",
+                "library",
+                "lock",
+                "magic",
+                "manuscript",
+                "map",
+                "mine",
+                "moon",
+                "mountain",
+                "music",
+                "object",
+                "person",
+                "place",
+                "plant",
+                "reference",
+                "science",
+                "scroll",
+                "settlement",
+                "ship",
+                "spirit",
+                "star",
+                "storm",
+                "sun",
+                "theatre",
+                "unknown",
+                "wand",
+                "wealth"
+              ],
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "catalog"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "plugin-svg"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "minLength": 5,
+              "pattern": "^[^\\\\/](?:[^\\\\]*\\/)*[^\\\\/]+\\.[sS][vV][gG]$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "user-svg"
+              ],
+              "type": "string"
+            },
+            "svg": {
+              "maxLength": 32768,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "svg"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "MetadataFieldDefinition": {
       "additionalProperties": false,
@@ -754,8 +905,7 @@
       "properties": {
         "entityTypes": {
           "items": {
-            "minLength": 1,
-            "type": "string"
+            "$ref": "#/$defs/EntityTypeDefinition"
           },
           "type": "array",
           "uniqueItems": true

@@ -2,6 +2,7 @@
 import { onMount, tick } from "svelte";
 import { Clock3, Command, Compass, FileText, Plus, Search, X } from "@lucide/svelte";
 import { groupQuickOpenItems, moveQuickOpenIndex, type QuickOpenItem } from "$lib/quick-open/model";
+import EntityIcon from "$lib/entity-icons/EntityIcon.svelte";
 import { trapModalTab } from "./modalFocus";
 
 interface Props {
@@ -120,7 +121,12 @@ function handleKeydown(event: KeyboardEvent) {
               class="quick-open-item"
               onmousemove={() => (activeIndex = index)}
               onclick={() => onSelect(item)}>
-              <span class="quick-open-icon"><Icon size={16} strokeWidth={1.8} aria-hidden="true" /></span>
+              <span class="quick-open-icon">
+                {#if item.icon}<EntityIcon icon={item.icon} pluginId={item.pluginId} size={16} />{:else}<Icon
+                    size={16}
+                    strokeWidth={1.8}
+                    aria-hidden="true" />{/if}
+              </span>
               <span><strong>{item.label}</strong><small>{item.description}</small></span>
               {#if index === activeIndex}<kbd>↵</kbd>{/if}
             </button>

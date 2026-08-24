@@ -12,7 +12,7 @@
   "namespaces": ["ink-tools"],
   "schemas": [{
     "namespace": "ink-tools",
-    "entityTypes": ["scratch-note"],
+    "entityTypes": [{ "id": "scratch-note", "name": "Scratch note", "icon": { "kind": "catalog", "id": "reference" } }],
     "fields": [
       { "key": "body", "label": "Note", "type": "text" },
       { "key": "motif", "label": "Motif", "type": "enum", "options": ["amber", "moss", "ink", "rose"] }

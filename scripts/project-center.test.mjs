@@ -27,7 +27,11 @@ for (const operation of [
 ])
   assert.match(projectCenter, new RegExp(operation), `${operation} has one discoverable Project home`);
 assert.match(projectCenter, /Project diagnostics/, "project diagnostics are available in Project Advanced");
-assert.match(projectCenter, /Developer fixtures/, "raw and developer controls are collapsed under Advanced");
+assert.doesNotMatch(
+  projectCenter,
+  /Developer fixtures|Add example world/,
+  "beta developer fixtures stay out of author surfaces",
+);
 assert.doesNotMatch(
   projectSwitcher,
   /Export Markdown|Import external material|Rebuild index|Seed example/,

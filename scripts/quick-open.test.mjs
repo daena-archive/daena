@@ -58,9 +58,17 @@ assert.match(shell, /handleCreateDialogKeydown/, "the template gallery supports 
 assert.match(shell, /"ArrowLeft", "ArrowRight"/, "tile navigation supports both axes");
 assert.match(shell, /requiredCreateFields/, "focused creation derives required fields from the template");
 assert.match(shell, /optionalCreateFields/, "focused creation derives optional details separately");
-assert.match(shell, /aria-expanded=\{createMoreDetailsOpen\}/, "optional fields use an accessible collapsed disclosure");
+assert.match(
+  shell,
+  /aria-expanded=\{createMoreDetailsOpen\}/,
+  "optional fields use an accessible collapsed disclosure",
+);
 assert.match(shell, /openFocusedCreate\(option\.key\)/, "template tiles open focused creation directly");
-assert.doesNotMatch(shell, /showQuickCreate|requiresGuidedCreation/, "creation no longer branches into quick and guided modes");
+assert.doesNotMatch(
+  shell,
+  /showQuickCreate|requiresGuidedCreation/,
+  "creation no longer branches into quick and guided modes",
+);
 assert.match(shell, /createWithOption/, "all creation routes share one commit path");
 assert.match(shell, /context\.entities\.create/, "creation retains the module context atomic write boundary");
 assert.match(shell, /returnFocus\?\.focus\(\)/, "creation restores focus when it closes");

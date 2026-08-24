@@ -87,6 +87,7 @@ import InspectorSection from "$lib/shell/InspectorSection.svelte";
 import PaneResizeHandle from "$lib/shell/PaneResizeHandle.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
 import StatusCenter, { type StatusCenterItem, type StatusCenterTone } from "$lib/shell/StatusCenter.svelte";
+import "$lib/shell/controls.css";
 import SpecializedSurface from "$lib/shell/SpecializedSurface.svelte";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import QuickOpen from "$lib/shell/QuickOpen.svelte";
@@ -5324,18 +5325,6 @@ async function openExternalImport() {
   if (!(await flushAutoSave())) return;
   showExternalImport = true;
 }
-async function seedExample() {
-  try {
-    if (!(await flushAutoSave())) return;
-    await project.seedExample();
-    clearSelection();
-    await loadEntities();
-    modules = await project.listModuleManifests();
-    error = "Example world seeded.";
-  } catch (cause) {
-    throw new Error(friendlyError(cause));
-  }
-}
 async function rebuildSearchIndex() {
   const request = ++searchRequest;
   try {
@@ -5666,7 +5655,6 @@ onMount(() => {
     onCreate={toggleCreateForm}
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
-    onOpenSnapshots={() => void openProjectCenter("snapshots")}
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
@@ -6126,7 +6114,7 @@ onMount(() => {
       <div class="modal-backdrop">
         <div class="dialog" role="alertdialog" aria-modal="true">
           <div class="new-form-heading">
-            <div><span class="panel-kicker">DATA DELETED</span><strong>Plugin data deleted</strong></div>
+            <div><span class="panel-kicker">DATA DELETED</span><strong>Extension data deleted</strong></div>
             <button type="button" class="new-form-close" onclick={() => (deleteBackupPath = "")}
               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
           </div>
@@ -6193,7 +6181,6 @@ onMount(() => {
         onRestoreRecoveryBackup={restoreRecoveryBackup}
         onImportCheckpoint={importPortableCheckpoint}
         onRebuildIndex={rebuildSearchIndex}
-        onSeedExample={seedExample}
         onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
         onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
         onAiIndexRefresh={() => void refreshAiIndexStatus()}
@@ -6206,9 +6193,10 @@ onMount(() => {
             </div>
             <div class="hero-copy">
               <span class="kicker">EXTENSIONS</span>
-              <strong>Plugins</strong>
+              <strong>Extensions</strong>
               <p>
-                Extensions that power this project. Every install, upgrade, and rollback is verified and reversible.
+                Add and manage the tools that power this project. Installs, updates, and rollbacks are verified and
+                reversible.
               </p>
             </div>
             <div class="hero-stats">
@@ -6225,7 +6213,7 @@ onMount(() => {
               type="button"
               class="primary-button"
               disabled={installing || adminBusy}
-              onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install package…"}</button>
+              onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install extension…"}</button>
             <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
           </div>
           {#if installSummary}
@@ -6238,9 +6226,9 @@ onMount(() => {
           {/if}
           <div class="plugins-list">
             {#if adminPlugins === null}
-              <p class="search-state">Loading plugins…</p>
+              <p class="search-state">Loading extensions…</p>
             {:else if adminPlugins.length === 0}
-              <p class="search-state">No plugins installed. Install a .wbplugin package to get started.</p>
+              <p class="search-state">No extensions installed. Choose an extension package to get started.</p>
             {:else}
               {#each adminPlugins as plugin (plugin.id)}
                 <article class="plugin-card">
@@ -6254,8 +6242,8 @@ onMount(() => {
                       <span
                         class="plugin-badge"
                         title={plugin.distribution.management === "app"
-                          ? "This plugin is included with Daena and managed by the application."
-                          : "This plugin was installed separately from the application."}
+                          ? "This extension is included with Daena and managed by the application."
+                          : "This extension was installed separately from the application."}
                         >{plugin.distribution.origin === "bundled" ? "Included with Daena" : "Installed"}</span>
                       {#if plugin.stability === "beta"}<span
                           class="plugin-badge beta"
@@ -6264,7 +6252,6 @@ onMount(() => {
                           class="plugin-badge experimental"
                           title="Experimental release: behavior may change">Experimental</span
                         >{/if}
-                      <span class="plugin-badge">{plugin.kind}</span>
                       {#if plugin.lifecycle.failures > 0}<span
                           class="plugin-badge danger"
                           title={plugin.lifecycle.lastError ?? ""}
@@ -6274,8 +6261,6 @@ onMount(() => {
                   </header>
                   <div class="plugin-card-meta">
                     <span>v{plugin.selectedVersion ?? plugin.version} · {plugin.publisher}</span>
-                    <span>host API {plugin.hostApi}</span>
-                    <span>data v{plugin.dataVersion}</span>
                   </div>
                   {#if !plugin.dependencyState.resolved}
                     <p class="plugin-warning">
@@ -6309,8 +6294,8 @@ onMount(() => {
                         onclick={() => confirmUninstall(plugin, selectedUninstallableVersion(plugin)!.version)}
                         disabled={adminBusy || plugin.enabled}
                         title={plugin.enabled
-                          ? "Disable the plugin before uninstalling its selected code."
-                          : "Remove the selected plugin code while preserving project data."}
+                          ? "Disable the extension before uninstalling its selected code."
+                          : "Remove the selected extension code while preserving project data."}
                         >{plugin.enabled ? "Disable to uninstall" : "Uninstall code"}</button>
                     {/if}
                     {#if plugin.lifecycle.state === "quarantined"}<button
@@ -6365,6 +6350,9 @@ onMount(() => {
                   {/if}
                   <details class="plugin-details">
                     <summary>Capabilities, namespaces, services &amp; migrations</summary>
+                    <p class="plugin-muted">
+                      {plugin.kind} · Host API {plugin.hostApi} · Data format {plugin.dataVersion}
+                    </p>
                     <div class="plugin-details-grid">
                       <section class="plugin-detail-section">
                         <h4>Capabilities</h4>
@@ -7744,7 +7732,47 @@ onMount(() => {
   --warning: #8a5f24;
   --warning-bg: #fff8ed;
   --warning-line: #ead7bc;
+  --info: #4e6f7c;
+  --info-bg: #e8f1f3;
+  --info-line: #bfd3d9;
+  --theme-surface-bg: var(--surface);
+  --theme-muted-bg: var(--surface-muted);
+  --theme-neutral-border: var(--line);
+  --theme-neutral-border-strong: var(--line-strong);
+  --theme-neutral-text: var(--ink);
+  --theme-neutral-text-soft: var(--ink-soft);
+  --theme-neutral-text-muted: var(--ink-faint);
+  --theme-danger-bg: var(--danger-bg);
+  --theme-danger-border: var(--danger-line);
+  --theme-danger-text: var(--danger);
+  --theme-success-bg: var(--success-bg);
+  --theme-success-border: var(--success-line);
+  --theme-success-text: var(--success);
+  --theme-warning-bg: var(--warning-bg);
+  --theme-warning-border: var(--warning-line);
+  --theme-warning-text: var(--warning);
+  --theme-info-bg: var(--info-bg);
+  --theme-info-border: var(--info-line);
+  --theme-info-text: var(--info);
+  --focus-ring: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  --focus-ring-strong: var(--accent-soft);
+  --control-min-height: 36px;
+  --touch-target-min: 44px;
+  --rail-bg: #283a30;
+  --rail-surface: #3b5243;
+  --rail-surface-strong: #486052;
+  --rail-popover: #2f4a38;
+  --rail-text: #eef0e9;
+  --rail-text-soft: #b9c8bc;
+  --rail-text-muted: #aab9ad;
+  --rail-text-faint: #91a397;
+  --rail-accent: #d5ab6c;
+  --rail-accent-hover: #e1bc82;
+  --rail-online: #88c18e;
+  --rail-offline: #777f78;
+  --rail-border: #486052;
   --shadow-sm: 0 2px 8px rgba(38, 42, 33, 0.05);
+  --shadow-md: 0 8px 24px rgba(38, 42, 33, 0.12);
   --shadow-lg: 0 18px 50px rgba(38, 42, 33, 0.08);
   --font-display: Georgia, serif;
   color-scheme: light;
@@ -7779,26 +7807,11 @@ onMount(() => {
   --warning: #e4c786;
   --warning-bg: #3c3525;
   --warning-line: #6c5830;
-  --theme-surface-bg: var(--surface);
-  --theme-muted-bg: var(--surface-muted);
-  --theme-neutral-border: var(--line);
-  --theme-neutral-border-strong: var(--line-strong);
-  --theme-neutral-text: var(--ink);
-  --theme-neutral-text-soft: var(--ink-soft);
-  --theme-neutral-text-muted: var(--ink-faint);
-  --theme-danger-bg: var(--danger-bg);
-  --theme-danger-border: var(--danger-line);
-  --theme-danger-text: var(--danger);
-  --theme-success-bg: var(--success-bg);
-  --theme-success-border: var(--success-line);
-  --theme-success-text: var(--success);
-  --theme-warning-bg: var(--warning-bg);
-  --theme-warning-border: var(--warning-line);
-  --theme-warning-text: var(--warning);
-  --theme-info-bg: #1d2930;
-  --theme-info-border: #3f5662;
-  --theme-info-text: #91a4ae;
+  --info: #91a4ae;
+  --info-bg: #1d2930;
+  --info-line: #3f5662;
   --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 22px 70px rgba(0, 0, 0, 0.34);
   color-scheme: dark;
 }

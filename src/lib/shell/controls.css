@@ -1,0 +1,47 @@
+:where(button, input, select, textarea, a, summary, [tabindex]) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:where(button, a, summary, [tabindex]):focus-visible,
+:where(input, select, textarea):focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+:where(.primary-button, .quiet-button, .danger-button, .rail-button, .settings-nav-button) {
+  min-height: var(--control-min-height);
+}
+
+:where(button, input, select, textarea) {
+  accent-color: var(--accent-dark);
+}
+
+:where(button:disabled, input:disabled, select:disabled, textarea:disabled) {
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  :where(button, [role="button"], summary, input, select) {
+    min-height: var(--touch-target-min);
+  }
+
+  :where(button[aria-label], [role="button"][aria-label]) {
+    min-width: var(--touch-target-min);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(*, *::before, *::after) {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :where(button, a, summary, [tabindex], input, select, textarea):focus-visible {
+    outline: 3px solid Highlight;
+  }
+}

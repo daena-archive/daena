@@ -33,6 +33,23 @@ let {
   onOpenProjectCenter,
   onCloseProject,
 }: Props = $props();
+
+let projectButton = $state<HTMLButtonElement | null>(null);
+
+$effect(() => {
+  if (!menuOpen) return;
+
+  const handleEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    onMenuChange(false);
+    projectButton?.focus();
+  };
+
+  window.addEventListener("keydown", handleEscape, true);
+  return () => window.removeEventListener("keydown", handleEscape, true);
+});
 </script>
 
 {#if !ready}
@@ -62,6 +79,7 @@ let {
 {:else}
   <div class="project-switcher">
     <button
+      bind:this={projectButton}
       type="button"
       aria-expanded={menuOpen}
       aria-haspopup="menu"

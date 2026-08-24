@@ -90,6 +90,9 @@ function handleKeydown(event: KeyboardEvent) {
         bind:this={searchInput}
         id="quick-open-query"
         value={query}
+        role="combobox"
+        aria-expanded="true"
+        aria-autocomplete="list"
         aria-controls="quick-open-results"
         aria-activedescendant={activeIndex >= 0 ? `quick-open-item-${activeIndex}` : undefined}
         autocomplete="off"
@@ -165,6 +168,9 @@ function handleKeydown(event: KeyboardEvent) {
   border-bottom: 1px solid var(--line);
   color: var(--ink-faint);
 }
+.quick-open-search:focus-within {
+  box-shadow: inset 0 -3px 0 var(--focus-ring);
+}
 .quick-open-search input {
   min-width: 0;
   flex: 1;
@@ -176,8 +182,8 @@ function handleKeydown(event: KeyboardEvent) {
 }
 .clear-query {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   place-items: center;
   border: 0;
@@ -219,6 +225,7 @@ kbd {
   display: grid;
   width: 100%;
   min-width: 0;
+  min-height: 44px;
   grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;

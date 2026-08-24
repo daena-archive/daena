@@ -12,6 +12,8 @@ let {
   onSelect: (view: WorkspaceLocationView) => void;
 } = $props();
 
+let nav = $state<HTMLElement | null>(null);
+
 const views = $derived.by(() => {
   if (section === "lore")
     return [
@@ -33,14 +35,29 @@ const views = $derived.by(() => {
     ] satisfies { id: WorkspaceLocationView; label: string }[];
   return [];
 });
+
+function handleKeydown(event: KeyboardEvent, index: number) {
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight") nextIndex = (index + 1) % views.length;
+  if (event.key === "ArrowLeft") nextIndex = (index - 1 + views.length) % views.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = views.length - 1;
+  if (nextIndex === null || !views[nextIndex]) return;
+
+  event.preventDefault();
+  onSelect(views[nextIndex].id);
+  nav?.querySelectorAll<HTMLButtonElement>("button")[nextIndex]?.focus();
+}
 </script>
 
-<nav class="workspace-view-nav" aria-label={`${section} views`}>
-  {#each views as view}
+<nav bind:this={nav} class="workspace-view-nav" aria-label={`${section} views`}>
+  {#each views as view, index}
     <button
       type="button"
       class:active={activeView === view.id}
       aria-current={activeView === view.id ? "page" : undefined}
+      tabindex={activeView === view.id ? 0 : -1}
+      onkeydown={(event) => handleKeydown(event, index)}
       onclick={() => onSelect(view.id)}>{view.label}</button>
   {/each}
 </nav>
@@ -59,6 +76,7 @@ const views = $derived.by(() => {
   backdrop-filter: blur(14px);
 }
 .workspace-view-nav button {
+  min-height: var(--control-min-height);
   padding: 7px 11px;
   border: 1px solid transparent;
   border-radius: 7px;

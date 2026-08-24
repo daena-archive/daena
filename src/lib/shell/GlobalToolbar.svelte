@@ -95,8 +95,8 @@ let {
 }
 .history-actions button {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
@@ -159,7 +159,6 @@ let {
 .global-search:hover,
 .global-search:focus-visible {
   border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
 .global-search-label {
   min-width: 0;
@@ -185,7 +184,7 @@ let {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #72a97a;
+  background: var(--success);
 }
 .startup-topbar {
   display: none;

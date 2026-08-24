@@ -18,7 +18,11 @@ assert.match(resizeHandle, /onpointerdown/, "pane resizing supports direct manip
 assert.match(shell, />Article<\/button/, "the compact entity header exposes Article mode");
 assert.match(shell, />Edit<\/button/, "the compact entity header exposes Edit mode");
 assert.match(shell, /setDocumentMode/, "document modes use an explicit transition");
-assert.match(shell, /documentMode === "edit" && !\(await flushAutoSave\(\)\)/, "leaving Edit preserves autosave guards");
+assert.match(
+  shell,
+  /documentMode === "edit" && !\(await flushAutoSave\(\)\)/,
+  "leaving Edit preserves autosave guards",
+);
 
 for (const title of ["Details", "Relationships", "Assets", "Backlinks"])
   assert.match(shell, new RegExp(`title="${title}"`), `the inspector includes the ${title} group`);
@@ -33,7 +37,11 @@ assert.match(shell, /kind="error"/, "content uses the shared failure state");
 assert.match(shell, /kind="conflict"/, "content uses the shared conflict state");
 assert.match(shell, /kind="empty"/, "content uses the shared empty state");
 assert.match(workbenchState, /aria-busy=\{kind === "loading"\}/, "loading state is exposed accessibly");
-assert.match(shell, /context\.relationships\.list/, "the inspector retains the module-authorized relationship boundary");
+assert.match(
+  shell,
+  /context\.relationships\.list/,
+  "the inspector retains the module-authorized relationship boundary",
+);
 assert.match(shell, /fieldAppliesToEntity/, "the workbench retains manifest-driven field visibility");
 
 console.log("common entity workbench contracts passed");

@@ -10,14 +10,12 @@ import {
   DatabaseBackup,
   DatabaseZap,
   Download,
-  FileCog,
   FolderOpen,
   GitBranch,
   Import as ImportIcon,
   Puzzle,
   RefreshCw,
   SlidersHorizontal,
-  Sparkles,
   Wrench,
   X,
 } from "@lucide/svelte";
@@ -57,7 +55,6 @@ let {
   onRestoreRecoveryBackup,
   onImportCheckpoint,
   onRebuildIndex,
-  onSeedExample,
   onToggleAi,
   onAiRemoteConsent,
   onAiIndexRefresh,
@@ -86,7 +83,6 @@ let {
   onRestoreRecoveryBackup: (path: string) => Promise<void>;
   onImportCheckpoint: () => Promise<void>;
   onRebuildIndex: () => Promise<void>;
-  onSeedExample: () => Promise<void>;
   onToggleAi: (enabled: boolean) => void;
   onAiRemoteConsent: (allowed: boolean) => void;
   onAiIndexRefresh: () => void;
@@ -173,15 +169,6 @@ async function restoreRecoveryBackup() {
   });
   if (!confirmed) return;
   await runAction(async () => onRestoreRecoveryBackup(recoveryPath.trim()), "Recovery backup restored.");
-}
-
-async function seedExampleProject() {
-  const confirmed = await confirmDialog({
-    title: "Add example world?",
-    message: "This adds Daena's example entries to the current project.",
-    confirmLabel: "Add example world",
-  });
-  if (confirmed) await runAction(onSeedExample, "Example world added.");
 }
 </script>
 
@@ -423,14 +410,6 @@ async function seedExampleProject() {
               </div>
             </div>{/if}
         </section>
-        <details class="raw-controls">
-          <summary><FileCog size={15} /> Developer fixtures</summary>
-          <div>
-            <p>Add Daena's example content to this project. This is intended for testing authoring flows.</p>
-            <button type="button" class="quiet-button" disabled={actionBusy} onclick={() => void seedExampleProject()}
-              ><Sparkles size={14} /> Add example world</button>
-          </div>
-        </details>
       {/if}
 
       {#if actionError}<div class="action-feedback error" role="alert">
@@ -472,10 +451,6 @@ async function seedExampleProject() {
 .healthy-copy,
 .action-feedback,
 .path-field div,
-.raw-controls summary {
-  display: flex;
-  align-items: center;
-}
 .header-left {
   gap: 14px;
   align-items: flex-start;
@@ -507,12 +482,6 @@ async function seedExampleProject() {
 .hero-copy p,
 .section-heading p,
 .operation-card p,
-.raw-controls p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12.5px;
-  line-height: 1.5;
-}
 .header-back {
   border-radius: 999px;
 }
@@ -753,9 +722,8 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
-button:focus-visible,
-summary:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+button:focus-visible {
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .path-field {
@@ -812,24 +780,6 @@ summary:focus-visible {
   gap: 10px;
   padding-top: 13px;
   border-top: 1px solid var(--line);
-}
-.raw-controls {
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface-subtle);
-}
-.raw-controls summary {
-  gap: 8px;
-  padding: 13px 15px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.raw-controls > div {
-  display: grid;
-  gap: 10px;
-  padding: 0 15px 15px;
 }
 .action-feedback {
   position: sticky;

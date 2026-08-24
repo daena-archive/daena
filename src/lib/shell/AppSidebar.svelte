@@ -4,7 +4,6 @@ import ProjectSwitcher from "./ProjectSwitcher.svelte";
 import {
   CalendarRange,
   Boxes,
-  GitBranch,
   Home,
   Languages,
   Library,
@@ -63,7 +62,6 @@ let {
   onCreate,
   onOpenWorkspace,
   onOpenTool,
-  onOpenSnapshots,
   onOpenSettings,
   onCollapsedChange,
 }: {
@@ -91,7 +89,6 @@ let {
   onCreate: () => void;
   onOpenWorkspace: (key: string) => void;
   onOpenTool: (key: string) => void;
-  onOpenSnapshots: () => void;
   onOpenSettings: () => void;
   onCollapsedChange: (collapsed: boolean) => void;
 } = $props();
@@ -188,13 +185,10 @@ function workspaceIcon(section: WorkspaceSection) {
     <button
       aria-current={projectCenterActive ? "page" : undefined}
       class:active={projectCenterActive}
-      class="rail-button muted-button"
-      title="Project"
+      class="rail-button muted-button rail-git-button"
+      title={snapshotsTitle || "Project"}
       onclick={onOpenProjectCenter}>
       <span class="rail-icon"><Boxes size={16} strokeWidth={1.8} /></span><span>Project</span>
-    </button>
-    <button class="rail-button muted-button rail-git-button" title={snapshotsTitle} onclick={onOpenSnapshots}>
-      <span class="rail-icon"><GitBranch size={16} strokeWidth={1.8} /></span><span>Snapshots</span>
       {#if snapshotChangeCount > 0}<small class="rail-git-count">{snapshotChangeCount}</small>{/if}
     </button>
   {/if}

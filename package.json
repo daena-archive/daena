@@ -37,7 +37,7 @@
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
     "test:markdown": "node --experimental-strip-types scripts/markdown-fixtures.test.mjs && node --experimental-strip-types scripts/editor-roundtrip.test.mjs && node --experimental-strip-types scripts/git-diff-display.test.mjs",
     "test:git-ui": "node scripts/git-settings-ux.test.mjs",
-    "test:beta-ux": "node --experimental-strip-types scripts/navigation-history.test.mjs && node scripts/beta-ux-foundation.test.mjs && node --experimental-strip-types scripts/quick-open.test.mjs && node scripts/workbench.test.mjs && node scripts/project-center.test.mjs",
+    "test:beta-ux": "node --experimental-strip-types scripts/navigation-history.test.mjs && node scripts/beta-ux-foundation.test.mjs && node --experimental-strip-types scripts/quick-open.test.mjs && node scripts/workbench.test.mjs && node scripts/project-center.test.mjs && node scripts/beta-polish.test.mjs",
     "test:ai-stream": "node --experimental-strip-types scripts/ai-stream-state.test.mjs",
     "test:theme": "node --experimental-strip-types scripts/theme.test.mjs",
     "tauri": "tauri"

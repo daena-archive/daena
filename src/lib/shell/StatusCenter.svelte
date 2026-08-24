@@ -25,18 +25,37 @@ let {
   onOpenChange?: (open: boolean) => void;
 } = $props();
 
-function setOpen(next: boolean) {
+let trigger = $state<HTMLButtonElement | null>(null);
+
+function setOpen(next: boolean, restoreFocus = false) {
   open = next;
   onOpenChange?.(next);
+  if (!next && restoreFocus) trigger?.focus();
 }
+
+$effect(() => {
+  if (!open) return;
+
+  const handleEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false, true);
+  };
+
+  window.addEventListener("keydown", handleEscape, true);
+  return () => window.removeEventListener("keydown", handleEscape, true);
+});
 </script>
 
 <div class="status-center">
   <button
+    bind:this={trigger}
     type="button"
     class={`status-trigger ${tone}`}
     aria-expanded={open}
     aria-haspopup="dialog"
+    aria-controls="status-center-popover"
     title="Project status"
     onclick={() => setOpen(!open)}>
     {#if tone === "busy"}<LoaderCircle
@@ -50,11 +69,16 @@ function setOpen(next: boolean) {
     <span>{summary}</span>
   </button>
   {#if open}
-    <button class="status-backdrop" aria-label="Close project status" onclick={() => setOpen(false)}></button>
-    <div class="status-popover" role="dialog" aria-modal="false" aria-labelledby="status-center-title">
+    <button class="status-backdrop" aria-label="Close project status" onclick={() => setOpen(false, true)}></button>
+    <div
+      id="status-center-popover"
+      class="status-popover"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="status-center-title">
       <header>
         <div><span>PROJECT STATUS</span><strong id="status-center-title">What Daena is doing</strong></div>
-        <button aria-label="Close project status" onclick={() => setOpen(false)}><X size={15} /></button>
+        <button aria-label="Close project status" onclick={() => setOpen(false, true)}><X size={15} /></button>
       </header>
       <div class="status-items" aria-live="polite">
         {#each items as item (item.id)}
@@ -94,6 +118,7 @@ function setOpen(next: boolean) {
   color: var(--ink-soft);
   font-size: 10px;
   cursor: pointer;
+  min-height: var(--control-min-height);
 }
 .status-trigger span {
   overflow: hidden;
@@ -116,7 +141,7 @@ function setOpen(next: boolean) {
 }
 .status-trigger:focus-visible,
 .status-popover button:focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .status-backdrop {
@@ -164,8 +189,8 @@ function setOpen(next: boolean) {
 .status-popover header button {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -225,6 +250,7 @@ function setOpen(next: boolean) {
   align-items: center;
   gap: 2px;
   align-self: center;
+  min-height: var(--control-min-height);
   padding: 6px 4px;
   border: 0;
   background: transparent;

@@ -3,6 +3,7 @@ import type { Entity, EntityPage } from "$lib/project/client";
 export type WritingView = "manuscripts" | "reference";
 export type TimelineView = "events" | "eras" | "calendars";
 export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
+export type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 export type SortField = "name" | "created_at" | "updated_at";
 export type SortDirection = "asc" | "desc";
 export type CollectionViewMode = "flat" | "grouped";

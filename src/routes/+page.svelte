@@ -35,11 +35,22 @@ import type {
 import { buildModuleContext } from "$lib/modules/context";
 import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
 import {
+  emptyShellNavigationHistory,
+  recordShellLocation,
+  sameShellLocation,
+  shellHistoryBack,
+  shellHistoryForward,
+  type ShellLocation,
+  type ShellNavigationHistory,
+  type WorkspaceLocationView,
+} from "$lib/navigation/history";
+import {
   collectionEntityTypes,
   presentCollectionPage,
   DEFAULT_COLLECTION_QUERY,
   type TimelineView,
   type WorkspaceSection,
+  type SettingsSection,
   type CollectionQuery,
   type CollectionResult,
   type WritingView,
@@ -60,6 +71,8 @@ import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
 import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
+import ProjectHome from "$lib/shell/ProjectHome.svelte";
+import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
@@ -79,6 +92,7 @@ import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import {
   Library,
+  Home,
   CalendarRange,
   Pencil,
   Languages,
@@ -100,7 +114,8 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
-  ArrowUpRight,
+  ArrowLeft,
+  ArrowRight,
   UsersRound,
   Sword,
   TreePine,
@@ -135,7 +150,6 @@ import {
 } from "$lib/fields/persistence";
 
 type InstalledModule = ProjectModuleManifest;
-type SettingsSection = "general" | "ai" | "plugins" | "schema" | "git";
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
 type RecentProject = { name: string; root: string };
 type CreateOption = { key: string; module: InstalledModule; template: EntityTemplate };
@@ -172,6 +186,10 @@ let ready = $state(false);
 let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
+let projectHomeOpen = $state(true);
+let shellNavigationHistory = $state<ShellNavigationHistory>(emptyShellNavigationHistory());
+let shellNavigationBusy = $state(false);
+let shellNavigationRestoring = false;
 let section = $state<WorkspaceSection>("lore");
 let writingView = $state<WritingView>("manuscripts");
 let timelineView = $state<TimelineView>("events");
@@ -577,6 +595,35 @@ function workspaceSectionLabel(target: WorkspaceSection) {
         : target === "language"
           ? "Languages"
           : "Maps";
+}
+function workspaceDescription(target: WorkspaceSection) {
+  return target === "lore"
+    ? "People, places, factions, cultures, and the ideas that connect them."
+    : target === "timeline"
+      ? "Events, eras, calendars, and the chronology of your world."
+      : target === "writing"
+        ? "Manuscripts and reference pages beside the world they draw from."
+        : target === "language"
+          ? "Sounds, writing systems, vocabulary, and grammar."
+          : "Maps, world surfaces, locations, and geographic links.";
+}
+function workspaceEntityCount(target: WorkspaceSection) {
+  const entityTypes = new Set(
+    manifestForWorkspaceSection(target)?.schemas.flatMap((schema) => schema.entityTypes) ?? [],
+  );
+  return entities.filter((entity) => !entity.deleted && entityTypes.has(entity.entity_type ?? "")).length;
+}
+function recentlyUpdatedEntities() {
+  return [...entities]
+    .filter((entity) => !entity.deleted)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+    .slice(0, 6);
+}
+function updatedDateLabel(timestamp: string) {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime())
+    ? "Recently updated"
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }
 function viewRenderer(
   plugin: PluginAdminEntry,
@@ -1187,6 +1234,7 @@ function pluginViewLabel(item: PluginNavigationItem) {
 }
 
 function workspaceNavigationActive(target: WorkspaceSection) {
+  if (projectHomeOpen) return false;
   if (target === "maps") {
     return (
       section === "maps" &&
@@ -1209,9 +1257,68 @@ function navigationActive(item: NavigationItem) {
   return item.kind === "workspace" ? workspaceNavigationActive(item.section) : pluginNavigationActive(item);
 }
 
-async function openHostView(plugin: PluginAdminEntry, view: PluginAdminEntry["views"][number]) {
+function currentWorkspaceLocationView(): WorkspaceLocationView {
+  if (section === "lore") {
+    if (loreWikiOpen) return "wiki";
+    if (projectionView?.kind === "graph") return "graph";
+    return "library";
+  }
+  if (section === "timeline") {
+    if (projectionView?.kind === "timeline") return "timeline";
+    return timelineView;
+  }
+  if (section === "writing") return writingView;
+  return "default";
+}
+
+function currentShellLocation(): ShellLocation {
+  if (showSettings) return { kind: "settings", section: settingsSection };
+  if (projectHomeOpen) return { kind: "home" };
+  if (hostView) {
+    return {
+      kind: "plugin",
+      key: `${hostView.plugin.id}:${hostView.view.id}`,
+      section,
+      entityId: selected?.id ?? null,
+    };
+  }
+  if (sandboxView?.view) {
+    return {
+      kind: "plugin",
+      key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
+      section,
+      entityId: selected?.id ?? null,
+    };
+  }
+  return {
+    kind: "workspace",
+    section,
+    view: currentWorkspaceLocationView(),
+    entityId: selected?.id ?? null,
+    writingView,
+    timelineView,
+  };
+}
+
+function recordCurrentShellLocation() {
+  if (!ready || shellNavigationRestoring) return;
+  shellNavigationHistory = recordShellLocation(shellNavigationHistory, currentShellLocation());
+}
+
+function recordShellDeparture(location: ShellLocation) {
+  if (!ready || shellNavigationRestoring) return;
+  shellNavigationHistory = recordShellLocation(shellNavigationHistory, location);
+}
+
+async function openHostView(
+  plugin: PluginAdminEntry,
+  view: PluginAdminEntry["views"][number],
+  departure = currentShellLocation(),
+) {
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   hostView = { plugin, view };
 }
 
@@ -1257,6 +1364,12 @@ function mapsNavigationItem(): PluginNavigationItem | null {
   return pluginViews().find((item) => item.renderer === "maps") ?? null;
 }
 
+function pluginNavigationItemByKey(key: string): PluginNavigationItem | null {
+  const maps = mapsNavigationItem();
+  if (maps?.key === key) return maps;
+  return pluginViews().find((item) => item.key === key) ?? null;
+}
+
 function activeMapsPluginId() {
   return sandboxView?.renderer === "maps" ? sandboxView.plugin.id : mapsNavigationItem()?.plugin.id;
 }
@@ -1269,7 +1382,7 @@ async function openNavigationItem(item: NavigationItem) {
   await openPluginView(item);
 }
 
-async function openPluginView(item: PluginNavigationItem) {
+async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
   if (!(await flushAutoSave())) return;
   if (item.renderer === "maps") {
     if (!(await dismissSettings())) return;
@@ -1292,6 +1405,8 @@ async function openPluginView(item: PluginNavigationItem) {
     }
     mapFocusLinkId = null;
     if (!(await leavePluginView())) return;
+    recordShellDeparture(departure);
+    projectHomeOpen = false;
     sandboxView = mapId
       ? { plugin: item.plugin, view: item.view, renderer: "maps" }
       : { plugin: item.plugin, view: null, renderer: "maps" };
@@ -1300,11 +1415,13 @@ async function openPluginView(item: PluginNavigationItem) {
     return;
   }
   if (item.renderer === "host") {
-    await openHostView(item.plugin, item.view);
+    await openHostView(item.plugin, item.view, departure);
     return;
   }
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
@@ -1316,17 +1433,20 @@ async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "ph
   if (projectDiagnostics.length > 0) return;
   try {
     if (!(await flushAutoSave())) return;
+    const departure = currentShellLocation();
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
     if (!mapView) throw new Error("The Maps plugin view is not available");
+    if (!(await dismissSettings())) return;
+    if (!(await leavePluginView())) return;
+    recordShellDeparture(departure);
     selected = null;
     fields = {};
     relationships = [];
     assets = [];
     mapLocations = [];
     mapFocusLinkId = null;
-    if (!(await dismissSettings())) return;
-    if (!(await leavePluginView())) return;
+    projectHomeOpen = false;
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
     mapsEditorMode = provider === "fmg" ? "fmg" : provider === "physical" ? "physical" : "vector";
     mapsVectorStart = provider === "image" || provider === "vector" ? "import" : "generate";
@@ -1441,7 +1561,7 @@ $effect(() => {
     .catch(() => {
       // Keep the current list on transient failures; retry on next visit.
     });
-  if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0]);
+  if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0], false);
 });
 
 function savedMaps() {
@@ -1621,7 +1741,9 @@ function entityGlyphClass(entity: Pick<Entity, "entity_type">) {
 
 async function selectSearchResult(entity: Entity) {
   if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
   const owner = workspaceSectionOrder.find((target) =>
     manifestForWorkspaceSection(target)?.schemas.some((schema) =>
       schema.entityTypes.includes(entity.entity_type ?? ""),
@@ -1633,19 +1755,38 @@ async function selectSearchResult(entity: Entity) {
   if (entity.entity_type === "era") timelineView = "eras";
   if (entity.entity_type === "calendar") timelineView = "calendars";
   if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
+  projectHomeOpen = false;
   globalQuery = "";
   collectionQuery.textSearch = "";
-  await selectEntity(entity);
+  await selectEntity(entity, false);
 }
 
 async function switchSection(next: WorkspaceSection) {
   if (!(await flushAutoSave())) return;
-  if (section === next && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings) return;
+  if (section === next && !projectHomeOpen && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings)
+    return;
+  const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  const sectionChanged = section !== next;
   section = next;
-  clearSelection();
-  collectionQuery.textSearch = "";
+  projectHomeOpen = false;
+  if (sectionChanged) {
+    clearSelection();
+    collectionQuery.textSearch = "";
+  }
+}
+
+async function openProjectHome() {
+  if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView && !projectionView)) return;
+  if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
+  if (!(await dismissSettings())) return;
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = true;
+  globalQuery = "";
 }
 
 async function reconcileWorkspaceSection() {
@@ -1660,8 +1801,11 @@ async function reconcileWorkspaceSection() {
 
 async function switchWritingView(next: WritingView) {
   if (!(await flushAutoSave())) return;
+  if (writingView === next && !projectHomeOpen) return;
+  const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
-  if (writingView === next) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   writingView = next;
   clearSelection();
   collectionQuery.textSearch = "";
@@ -1669,8 +1813,11 @@ async function switchWritingView(next: WritingView) {
 
 async function switchTimelineView(next: TimelineView) {
   if (!(await flushAutoSave())) return;
+  if (timelineView === next && !projectHomeOpen && !projectionView) return;
+  const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
-  if (timelineView === next) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   timelineView = next;
   clearSelection();
   collectionQuery.textSearch = "";
@@ -1683,6 +1830,7 @@ function sectionLabel() {
     if (settingsSection === "git") return "Settings · Snapshots";
     return "Settings";
   }
+  if (projectHomeOpen) return "Home";
   return section === "lore"
     ? "Lore library"
     : section === "timeline"
@@ -1752,7 +1900,12 @@ function entityTypeLabel(entityType: string | null) {
 
 async function openProjection() {
   if (!(await flushAutoSave())) return;
+  const expectedKind = section === "lore" ? "graph" : "timeline";
+  if (!projectHomeOpen && !showSettings && projectionView?.kind === expectedKind) return;
+  const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   loreWikiOpen = false;
   loreWikiEntityId = null;
   const projection = projectionModule(section === "lore" ? "lore" : "timeline");
@@ -1765,9 +1918,25 @@ async function openProjection() {
   };
 }
 
+async function openLoreLibrary() {
+  if (!(await flushAutoSave())) return;
+  if (!projectHomeOpen && !showSettings && !loreWikiOpen && !projectionView && !hostView && !sandboxView) return;
+  const departure = currentShellLocation();
+  if (!(await dismissSettings())) return;
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
+  loreWikiOpen = false;
+  loreWikiEntityId = null;
+}
+
 async function openLoreWiki() {
   if (!(await flushAutoSave())) return;
+  if (!projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView) return;
+  const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
   loreWikiEntityId =
     selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
   loreWikiOpen = true;
@@ -1778,9 +1947,108 @@ function allEntityTypesForSection(target: WorkspaceSection) {
   return new Set(manifestForWorkspaceSection(target)?.schemas.flatMap((s) => s.entityTypes) ?? []);
 }
 
-function closeLoreWiki() {
+async function closeLoreWiki() {
+  if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
+  recordShellDeparture(departure);
   loreWikiOpen = false;
   loreWikiEntityId = null;
+}
+
+async function closeProjectionView() {
+  if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
+  recordShellDeparture(departure);
+  projectionView = null;
+}
+
+async function closePluginView() {
+  if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+}
+
+async function openWorkspaceView(view: WorkspaceLocationView) {
+  if (view === "library") return openLoreLibrary();
+  if (view === "wiki") return openLoreWiki();
+  if (view === "graph" || view === "timeline") return openProjection();
+  if (view === "events" || view === "eras" || view === "calendars") return switchTimelineView(view);
+  if (view === "manuscripts" || view === "reference") return switchWritingView(view);
+}
+
+async function restoreShellEntity(entityId: string | null) {
+  if (!entityId) {
+    if (selected) clearSelection();
+    return null;
+  }
+  let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
+  if (!entity) {
+    try {
+      const loaded = await project.getEntity(entityId);
+      entity = loaded;
+      if (loaded && !entities.some((candidate) => candidate.id === loaded.id)) entities = [...entities, loaded];
+    } catch {
+      entity = null;
+    }
+  }
+  if (!entity || entity.deleted) {
+    if (selected) clearSelection();
+    return null;
+  }
+  await selectEntity(entity, false);
+  return entity;
+}
+
+async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
+  const pluginItem = target.kind === "plugin" ? pluginNavigationItemByKey(target.key) : null;
+  if (target.kind === "plugin" && !pluginItem) return false;
+  shellNavigationRestoring = true;
+  try {
+    if (target.kind === "home") {
+      await openProjectHome();
+    } else if (target.kind === "settings") {
+      await openSettings(target.section);
+    } else if (target.kind === "plugin") {
+      await switchSection(target.section);
+      await restoreShellEntity(target.entityId);
+      await openPluginView(pluginItem!);
+    } else {
+      await switchSection(target.section);
+      if (target.section === "lore") {
+        await openLoreLibrary();
+      } else if (target.section === "timeline") {
+        await switchTimelineView(target.timelineView);
+      } else if (target.section === "writing") {
+        await switchWritingView(target.writingView);
+      }
+      const restoredEntity = await restoreShellEntity(target.entityId);
+      if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
+        await openWorkspaceView(target.view);
+      }
+      const expected = restoredEntity || !target.entityId ? target : { ...target, entityId: null };
+      return sameShellLocation(currentShellLocation(), expected);
+    }
+    return sameShellLocation(currentShellLocation(), target);
+  } finally {
+    shellNavigationRestoring = false;
+  }
+}
+
+async function navigateShellHistory(direction: "back" | "forward") {
+  if (shellNavigationBusy) return;
+  const current = currentShellLocation();
+  const transition =
+    direction === "back"
+      ? shellHistoryBack(shellNavigationHistory, current)
+      : shellHistoryForward(shellNavigationHistory, current);
+  if (!transition) return;
+  shellNavigationBusy = true;
+  try {
+    if (await restoreShellLocation(transition.target)) shellNavigationHistory = transition.history;
+  } finally {
+    shellNavigationBusy = false;
+  }
 }
 
 $effect(() => {
@@ -2736,6 +3004,8 @@ async function finishOpening(info?: ProjectInfo) {
   await loadEntities();
   await refreshGit();
   await refreshAdmin();
+  shellNavigationHistory = emptyShellNavigationHistory();
+  projectHomeOpen = true;
   ready = true;
 }
 
@@ -2932,6 +3202,7 @@ async function openMapLocation(location: MapLocation) {
 }
 
 async function ensureMapEditorOpen(mapEntityId: string) {
+  const departure = currentShellLocation();
   const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
   if (!map) throw new Error("map-unavailable: choose a saved map first");
   if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
@@ -2939,7 +3210,7 @@ async function ensureMapEditorOpen(mapEntityId: string) {
   selected = map;
   mapsEditorKey = map.id;
   await loadSelectedState(map);
-  if (mapsView) await openPluginView(mapsView);
+  if (mapsView) await openPluginView(mapsView, departure);
 }
 
 async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
@@ -2979,7 +3250,9 @@ async function applyMapPick(anchor: unknown) {
       await project.upsertMapLocation(entity.id, location);
       if (mapsEditorMode === "fmg")
         await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
+      const departure = currentShellLocation();
       if (!(await leavePluginView())) return;
+      recordShellDeparture(departure);
       section =
         entity.entity_type === "event" ||
         entity.entity_type === "encounter" ||
@@ -2987,7 +3260,7 @@ async function applyMapPick(anchor: unknown) {
         entity.entity_type === "calendar"
           ? "timeline"
           : "lore";
-      await selectEntity(entity);
+      await selectEntity(entity, false);
       mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
@@ -2996,7 +3269,9 @@ async function applyMapPick(anchor: unknown) {
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (entity) {
+        const departure = currentShellLocation();
         if (!(await leavePluginView())) return;
+        recordShellDeparture(departure);
         section =
           entity.entity_type === "event" ||
           entity.entity_type === "encounter" ||
@@ -3004,7 +3279,7 @@ async function applyMapPick(anchor: unknown) {
           entity.entity_type === "calendar"
             ? "timeline"
             : "lore";
-        await selectEntity(entity);
+        await selectEntity(entity, false);
         mapLocations = await project.listMapLocations(entity.id);
       }
     }
@@ -3032,9 +3307,11 @@ async function openMapEntityFromLink(entityId: string) {
             entity.entity_type === "calendar"
           ? "timeline"
           : "lore";
+    const departure = currentShellLocation();
     if (!(await leavePluginView())) return;
+    recordShellDeparture(departure);
     section = target;
-    await selectEntity(entity);
+    await selectEntity(entity, false);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -3088,10 +3365,12 @@ async function rebindMapLocation(location: MapLocation) {
   }
 }
 
-async function selectEntity(entity: Entity) {
+async function selectEntity(entity: Entity, recordHistory = true) {
   if (selected?.id === entity.id) return;
   if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
   if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
+  if (recordHistory) recordShellDeparture(departure);
   editorFullscreen = false;
   selected = entity;
   if (entity.entity_type === "era") timelineView = "eras";
@@ -3193,6 +3472,7 @@ async function createEntity(event: SubmitEvent) {
   if (projectDiagnostics.length > 0) return;
   const option = selectedCreateOption();
   if (!name.trim() || !option || !option.module.enabled) return;
+  const departure = currentShellLocation();
   try {
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
@@ -3232,6 +3512,7 @@ async function createEntity(event: SubmitEvent) {
       relationships: relationshipsForCreate,
       document: createDocumentBody.trim() ? { body: createDocumentBody.trim(), format: "markdown" } : undefined,
     });
+    recordShellDeparture(departure);
     section =
       option.template.entityType === "event" ||
       option.template.entityType === "encounter" ||
@@ -3248,19 +3529,23 @@ async function createEntity(event: SubmitEvent) {
     if (option.template.entityType === "era") timelineView = "eras";
     if (option.template.entityType === "calendar") timelineView = "calendars";
     if (option.template.entityType === "event" || option.template.entityType === "encounter") timelineView = "events";
+    projectHomeOpen = false;
     name = "";
     showCreateForm = false;
     resetCreateFields(null);
     await loadEntities();
-    await selectEntity({
-      id: created.id,
-      name: created.name,
-      entity_type: created.type,
-      deleted: created.deleted,
-      created_at: created.createdAt,
-      updated_at: created.updatedAt,
-      revision: "",
-    });
+    await selectEntity(
+      {
+        id: created.id,
+        name: created.name,
+        entity_type: created.type,
+        deleted: created.deleted,
+        created_at: created.createdAt,
+        updated_at: created.updatedAt,
+        revision: "",
+      },
+      false,
+    );
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -3827,11 +4112,14 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
 }
 async function openSettings(section: SettingsSection = "general") {
   if (!(await flushAutoSave())) return;
+  if (showSettings && settingsSection === section) return;
+  const departure = currentShellLocation();
   const wasEditingSchema = showSettings && settingsSection === "schema" && !!schemaPluginId;
   if (showSettings) {
     if (!(await beforeSettingsNavigate(section))) return;
   }
   if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
   showSettings = true;
   settingsSection = section;
   projectionView = null;
@@ -3859,6 +4147,7 @@ async function openSettings(section: SettingsSection = "general") {
   }
 }
 function closeSettings() {
+  recordCurrentShellLocation();
   showSettings = false;
 }
 function setSchemaEditorDirty(dirty: boolean) {
@@ -3873,6 +4162,11 @@ async function beforeSettingsNavigate(next: SettingsSection | null): Promise<boo
     if (!(await allowLeaveSchemaEditor())) return false;
     schemaEditorDirty = false;
   }
+  return true;
+}
+async function beforeVisibleSettingsNavigate(next: SettingsSection | null): Promise<boolean> {
+  if (!(await beforeSettingsNavigate(next))) return false;
+  if (next && next !== settingsSection) recordCurrentShellLocation();
   return true;
 }
 /** Close settings from outside SettingsView (rail, plugin open, etc.). */
@@ -4219,6 +4513,9 @@ function resetProjectSessionState() {
   closeAiFieldFill();
   closeAiRewrite();
   clearSelection();
+  shellNavigationHistory = emptyShellNavigationHistory();
+  shellNavigationBusy = false;
+  projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
   modules = [];
@@ -4355,7 +4652,14 @@ onMount(() => {
     event.preventDefault();
     event.returnValue = "";
   };
+  const handleHistoryKey = (event: KeyboardEvent) => {
+    if (!ready || !event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    void navigateShellHistory(event.key === "ArrowLeft" ? "back" : "forward");
+  };
   window.addEventListener("beforeunload", handleBeforeUnload);
+  window.addEventListener("keydown", handleHistoryKey);
   let closeListenerDisposed = false;
   let unlistenWindowClose: (() => void) | undefined;
   void getCurrentWindow()
@@ -4388,11 +4692,12 @@ onMount(() => {
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       if (!(await flushAutoSave())) return;
+      const departure = currentShellLocation();
       if (!(await leavePluginView())) return;
       selected = map;
       mapsEditorKey = map.id;
       await loadSelectedState(map);
-      await openPluginView(item);
+      await openPluginView(item, departure);
       const linkId = event.payload.linkId ?? null;
       mapFocusLinkId = linkId;
       if (linkId && sandboxView?.renderer === "maps" && mapsEditorMode === "fmg") {
@@ -4418,7 +4723,7 @@ onMount(() => {
     }
     if (status === "back") {
       editorFullscreen = false;
-      void leavePluginView();
+      void closePluginView();
       return;
     }
     if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
@@ -4495,6 +4800,7 @@ onMount(() => {
     closeListenerDisposed = true;
     unlistenWindowClose?.();
     window.removeEventListener("beforeunload", handleBeforeUnload);
+    window.removeEventListener("keydown", handleHistoryKey);
     cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
@@ -4600,6 +4906,14 @@ onMount(() => {
           </div>
         {/if}
       </div>
+      <button
+        type="button"
+        aria-current={projectHomeOpen && !showSettings ? "page" : undefined}
+        class:active={projectHomeOpen && !showSettings}
+        class="rail-button rail-home-button"
+        onclick={() => void openProjectHome()}>
+        <span class="rail-icon"><Home size={16} strokeWidth={1.8} aria-hidden="true" /></span><span>Home</span>
+      </button>
       {#if enabledWorkspaceSections().length > 0}<button
           aria-expanded={showCreateForm}
           class="rail-create-button"
@@ -4637,7 +4951,7 @@ onMount(() => {
         </nav>
       {/if}
       {#if pluginViews().length > 0}
-        <div class="rail-label plugin-views-label">PLUGIN VIEWS</div>
+        <div class="rail-label plugin-views-label">TOOLS</div>
         <nav class="workspace-nav" aria-label="Plugin views">
           {#each pluginViews() as item (item.key)}
             <div class="plugin-nav-row">
@@ -4694,12 +5008,33 @@ onMount(() => {
 
   <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
     <header class:startup-topbar={!ready} class="topbar">
-      <div class="breadcrumbs" aria-label="Breadcrumb">
-        <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong>{#if section === "writing"}<i>/</i><span
-            >{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span
-          >{/if}{#if section === "timeline"}<i>/</i><span
-            >{timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events"}</span
-          >{/if}{#if selected}<i>/</i><span>{selected.name}</span>{/if}
+      <div class="topbar-leading">
+        {#if ready}
+          <div class="history-actions" aria-label="Navigation history">
+            <button
+              type="button"
+              aria-label="Go back"
+              title="Go back"
+              disabled={shellNavigationBusy || shellNavigationHistory.back.length === 0}
+              onclick={() => void navigateShellHistory("back")}
+              ><ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+            <button
+              type="button"
+              aria-label="Go forward"
+              title="Go forward"
+              disabled={shellNavigationBusy || shellNavigationHistory.forward.length === 0}
+              onclick={() => void navigateShellHistory("forward")}
+              ><ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+          </div>
+        {/if}
+        <div class="breadcrumbs" aria-label="Breadcrumb">
+          <span>Private studio</span><i>/</i><strong>{sectionLabel()}</strong
+          >{#if section === "writing" && !projectHomeOpen}<i>/</i><span
+              >{writingView === "manuscripts" ? "Manuscripts" : "Reference pages"}</span
+            >{/if}{#if section === "timeline" && !projectHomeOpen}<i>/</i><span
+              >{timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events"}</span
+            >{/if}{#if selected && !projectHomeOpen && !showSettings}<i>/</i><span>{selected.name}</span>{/if}
+        </div>
       </div>
       <div class="top-actions">
         {#if ready}<label class="global-search"
@@ -5124,6 +5459,12 @@ onMount(() => {
         </div>
       </div>
     {/if}
+    {#if ready && !showSettings && !projectHomeOpen && !hostView && !sandboxView && (section === "lore" || section === "timeline" || section === "writing")}
+      <WorkspaceViewNav
+        {section}
+        activeView={currentWorkspaceLocationView()}
+        onSelect={(view) => void openWorkspaceView(view)} />
+    {/if}
     {#if showSettings}
       <SettingsView
         bind:section={settingsSection}
@@ -5133,7 +5474,7 @@ onMount(() => {
         projectOpen={ready}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
-        onBeforeNavigate={beforeSettingsNavigate}
+        onBeforeNavigate={beforeVisibleSettingsNavigate}
         {aiSettings}
         {aiStatus}
         {aiModels}
@@ -5435,6 +5776,29 @@ onMount(() => {
             >Fragments · 12</small>
         </div>
       </section>
+    {:else if projectHomeOpen}
+      <ProjectHome
+        projectName={projectInfo?.name ?? "Your world"}
+        activeEntityCount={entities.filter((entity) => !entity.deleted).length}
+        snapshotChangeCount={gitStatus?.canonical_changes.length ?? 0}
+        workspaces={enabledWorkspaceSections().map((target) => ({
+          section: target,
+          title: workspaceSectionLabel(target),
+          description: workspaceDescription(target),
+          count: workspaceEntityCount(target),
+        }))}
+        recents={recentlyUpdatedEntities().map((entity) => ({
+          entity,
+          glyph: entityGlyph(entity),
+          glyphClass: entityGlyphClass(entity),
+          typeLabel: entityTypeLabel(entity.entity_type),
+          updatedLabel: updatedDateLabel(entity.updated_at),
+        }))}
+        onNewEntry={toggleCreateForm}
+        onSnapshots={() => void openSettings("git")}
+        onExtensions={() => void openSettings("plugins")}
+        onOpenWorkspace={(target) => void switchSection(target)}
+        onOpenEntity={(entity) => void selectSearchResult(entity)} />
     {:else if projectionView}
       {#key projectionView.title}
         <ProjectionView
@@ -5446,11 +5810,11 @@ onMount(() => {
             focusEntityId: selected?.id as UUID | undefined,
             availableServices: enabledServices(),
           })}
-          onClose={() => (projectionView = null)} />
+          onClose={() => void closeProjectionView()} />
       {/key}
     {:else if hostView}
       <div class="host-view-shell">
-        <button class="quiet-button host-view-back" onclick={() => void leavePluginView()}>Back to workspace</button
+        <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
         ><HostView plugin={hostView.plugin} view={hostView.view} />
       </div>
     {:else if loreWikiOpen}
@@ -5461,7 +5825,7 @@ onMount(() => {
         aiEnabled={projectInfo?.aiEnabled ?? false}
         imageProvider={aiSettings.imageProvider}
         textProvider={aiSettings.provider}
-        onClose={closeLoreWiki}
+        onClose={() => void closeLoreWiki()}
         onSelectEntity={(id) => {
           const ent = entities.find((e) => e.id === id);
           if (ent) void selectEntity(ent);
@@ -5535,16 +5899,6 @@ onMount(() => {
               </div>{/if}
             {#if section === "language"}<button class="primary-button" type="button" onclick={toggleCreateForm}
                 >Create language</button
-              >{/if}
-            {#if section === "lore"}
-              <button class="quiet-button" type="button" onclick={openLoreWiki}
-                >Open wiki <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-              <button class="quiet-button" type="button" onclick={openProjection}
-                >Open graph <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-            {:else if section !== "writing" && section !== "maps" && section !== "language"}<button
-                class="quiet-button"
-                onclick={openProjection}
-                >Open timeline <ArrowUpRight size={14} strokeWidth={1.8} aria-hidden="true" /></button
               >{/if}
           </div>
         </div>
@@ -7056,6 +7410,41 @@ onMount(() => {
   padding: 0 40px 0;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+.topbar-leading,
+.history-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+.topbar-leading {
+  gap: 12px;
+}
+.history-actions {
+  flex: 0 0 auto;
+  gap: 3px;
+}
+.history-actions button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.history-actions button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.history-actions button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+  opacity: 0.42;
 }
 .breadcrumbs,
 .top-actions {
@@ -9510,12 +9899,8 @@ onMount(() => {
     max-width: 38ch;
     line-height: 1.5;
   }
-  .heading-actions,
-  .heading-actions .quiet-button {
+  .heading-actions {
     width: 100%;
-  }
-  .heading-actions .quiet-button {
-    text-align: left;
   }
   .projection-bar {
     margin: 0 17px 12px;

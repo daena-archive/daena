@@ -421,7 +421,7 @@ onMount(() => {
 .physical-map-editor .primary-button:focus-visible,
 .physical-map-editor .layer-toggle:focus-visible,
 .physical-map-help button:focus-visible {
-  outline: 2px solid #f3d39a;
+  outline: 2px solid var(--theme-warning-border, #f3d39a);
   outline-offset: 2px;
 }
 
@@ -440,10 +440,10 @@ onMount(() => {
 
 .physical-map-editor .primary-button {
   padding: 0.5rem 0.95rem;
-  border: 1px solid #d4b57a;
+  border: 1px solid var(--theme-warning-border, #d4b57a);
   border-radius: 0.45rem;
   background: #c9a96e;
-  color: #0d1b2a;
+  color: var(--brass-ink);
   font-weight: 700;
 }
 
@@ -471,9 +471,9 @@ onMount(() => {
 }
 
 .physical-map-editor .layer-toggle[aria-pressed="true"] {
-  border-color: #c9a96e;
+  border-color: var(--theme-warning-border, #c9a96e);
   background: #c9a96e;
-  color: #0d1b2a;
+  color: var(--brass-ink);
   font-weight: 600;
 }
 
@@ -609,7 +609,7 @@ onMount(() => {
   padding: 0.55rem 1rem;
   border-radius: 0.45rem;
   background: rgb(13 27 42 / 55%);
-  color: #c9a96e;
+  color: var(--theme-warning-text, #c9a96e);
   font-size: 0.82rem;
   line-height: 1.5;
 }

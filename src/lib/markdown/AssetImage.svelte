@@ -118,10 +118,10 @@ onDestroy(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px dashed var(--line, #e4e1d8);
+  border: 1px dashed var(--line);
   border-radius: 6px;
-  background: var(--surface-muted, #f4f2ec);
-  color: var(--ink-faint, #aaa79d);
+  background: var(--surface-muted);
+  color: var(--ink-faint);
   font-size: 11px;
 }
 .asset-image-error {
@@ -129,10 +129,10 @@ onDestroy(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #e8c0b8;
+  border: 1px solid var(--theme-danger-border, #e8c0b8);
   border-radius: 6px;
-  background: #fdf0ed;
-  color: #8a3a2f;
+  background: var(--theme-danger-bg, #fdf0ed);
+  color: var(--theme-danger-text, #8a3a2f);
   font-size: 11px;
   word-break: break-all;
 }
@@ -140,7 +140,7 @@ img {
   max-width: 100%;
   height: auto;
   border-radius: 6px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   display: block;
   margin: 0.6em 0;
 }

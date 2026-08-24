@@ -23,6 +23,24 @@ pub struct RecentProject {
 pub struct GeneralSettings {
     #[serde(default)]
     pub recent_projects: Vec<RecentProject>,
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    Light,
+    Dark,
+    #[default]
+    System,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearanceSettings {
+    #[serde(default)]
+    pub theme: ThemePreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -166,6 +184,13 @@ impl Default for AppSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeneralSettingsUpdate {
     pub recent_projects: Option<Vec<RecentProject>>,
+    pub appearance: Option<AppearanceSettingsUpdate>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearanceSettingsUpdate {
+    pub theme: Option<ThemePreference>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -258,6 +283,11 @@ impl SettingsStore {
         if let Some(general) = update.general {
             if let Some(recent_projects) = general.recent_projects {
                 settings.general.recent_projects = recent_projects;
+            }
+            if let Some(appearance) = general.appearance {
+                if let Some(theme) = appearance.theme {
+                    settings.general.appearance.theme = theme;
+                }
             }
         }
         if let Some(ai) = update.ai {
@@ -386,6 +416,9 @@ mod tests {
                     name: "Atlas".into(),
                     root: "/tmp/atlas".into(),
                 }],
+                appearance: AppearanceSettings {
+                    theme: ThemePreference::Dark,
+                },
             },
             ai: AiSettings::default(),
         };
@@ -408,6 +441,7 @@ mod tests {
                         name: "One".into(),
                         root: "/one".into(),
                     }]),
+                    appearance: None,
                 }),
                 ai: None,
             })
@@ -415,6 +449,43 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.general.recent_projects.len(), 1);
         assert_eq!(loaded.general.recent_projects[0].name, "One");
+        assert_eq!(loaded.general.appearance.theme, ThemePreference::System);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn update_merges_theme_without_replacing_recent_projects() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-theme-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: Some(vec![RecentProject {
+                        name: "One".into(),
+                        root: "/one".into(),
+                    }]),
+                    appearance: None,
+                }),
+                ai: None,
+            })
+            .unwrap();
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: None,
+                    appearance: Some(AppearanceSettingsUpdate {
+                        theme: Some(ThemePreference::Dark),
+                    }),
+                }),
+                ai: None,
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.general.recent_projects.len(), 1);
+        assert_eq!(loaded.general.appearance.theme, ThemePreference::Dark);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -504,6 +575,7 @@ mod tests {
         let loaded = SettingsStore::new(&directory).load().unwrap();
         assert_eq!(loaded.ai.provider.model, "writer");
         assert_eq!(loaded.ai.image_provider, ImageProviderSettings::default());
+        assert_eq!(loaded.general.appearance.theme, ThemePreference::System);
         let _ = fs::remove_dir_all(directory);
     }
 

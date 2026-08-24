@@ -1580,7 +1580,7 @@ button {
 button.active,
 button.save {
   background: #d5ab6c;
-  color: #243126;
+  color: var(--brass-ink);
 }
 button:disabled {
   opacity: 0.45;
@@ -1619,7 +1619,7 @@ button:disabled {
   gap: 6px 8px;
   max-width: min(28rem, calc(100% - 20px));
   padding: 6px 8px;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
   background: rgb(27 40 34 / 92%);
   color: #d8e3d9;
@@ -1632,7 +1632,7 @@ button:disabled {
 }
 .epoch-year {
   width: 5.4em;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 4px 5px;
   background: #0f1a16;
@@ -1655,13 +1655,13 @@ button:disabled {
 .event-control label {
   display: grid;
   gap: 4px;
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
   font-size: 11px;
 }
 .event-control input,
 .event-control select {
   min-width: 0;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 6px 7px;
   background: #0f1a16;
@@ -1669,7 +1669,7 @@ button:disabled {
   font: 12px system-ui;
 }
 .event-control small {
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
 }
 aside {
   display: flex;
@@ -1677,12 +1677,12 @@ aside {
   gap: 8px;
   padding: 14px;
   overflow: auto;
-  border-right: 1px solid #405047;
+  border-right: 1px solid var(--theme-neutral-border-strong, #405047);
   background: #202c27;
 }
 .hazard-legend {
   margin: 0;
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
   font-size: 11px;
   line-height: 1.4;
 }
@@ -1700,7 +1700,7 @@ aside {
   background: #18241f;
 }
 .layer.active {
-  outline: 1px solid #d5ab6c;
+  outline: 1px solid var(--theme-warning-border, #d5ab6c);
 }
 .layer-name {
   text-align: left;
@@ -1749,7 +1749,7 @@ aside {
   height: 100%;
 }
 .canvas.picking {
-  outline: 2px solid #d5ab6c;
+  outline: 2px solid var(--theme-warning-border, #d5ab6c);
   outline-offset: -2px;
 }
 .map-busy {
@@ -1778,7 +1778,7 @@ aside {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid #4d6358;
+  border: 1px solid var(--theme-neutral-border-strong, #4d6358);
   background: transparent;
 }
 .layer-row {
@@ -1800,7 +1800,7 @@ aside {
   color: #f5a49c;
 }
 button:focus-visible {
-  outline: 2px solid #f3d39a;
+  outline: 2px solid var(--theme-warning-border, #f3d39a);
   outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {

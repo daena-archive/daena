@@ -876,8 +876,8 @@ function soundLabel(phoneme: PhonemeOption) {
   filter: none;
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
 }
 .language-actions {
   display: flex;
@@ -904,7 +904,7 @@ function soundLabel(phoneme: PhonemeOption) {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-loading {
   margin-top: 16px;
@@ -1027,7 +1027,7 @@ function soundLabel(phoneme: PhonemeOption) {
 }
 .character-card:hover,
 .character-card:focus-within {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
   box-shadow: 0 8px 24px rgba(38, 42, 33, 0.075);
 }
 .character-card-head {
@@ -1133,18 +1133,18 @@ function soundLabel(phoneme: PhonemeOption) {
 }
 .row-action-buttons button:hover,
 .sample-head button:hover {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
   background: var(--surface-muted);
   color: var(--ink);
 }
 .row-action-buttons button.remove,
 .sample-head button.remove {
-  border-color: #e2b7af;
-  color: #a14f42;
+  border-color: var(--theme-danger-border, #e2b7af);
+  color: var(--danger);
 }
 .row-action-buttons button.remove:hover,
 .sample-head button.remove:hover {
-  background: #fff5f2;
+  background: var(--theme-danger-bg, #fff5f2);
 }
 .row-action-buttons button:disabled,
 .sample-head button:disabled {

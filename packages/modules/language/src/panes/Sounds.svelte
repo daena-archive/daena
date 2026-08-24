@@ -920,7 +920,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   align-items: baseline;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #ebe7de;
+  border: 1px solid var(--theme-warning-border, #ebe7de);
   border-radius: 10px;
   background: var(--surface);
   color: inherit;
@@ -929,7 +929,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
 }
 .language-item:hover {
-  border-color: #e5d8c6;
+  border-color: var(--theme-warning-border, #e5d8c6);
   background: var(--surface-muted);
 }
 .language-item strong {
@@ -984,7 +984,7 @@ function handleNotesSubmit(event: SubmitEvent) {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-loading {
   display: flex;
@@ -1046,8 +1046,8 @@ function handleNotesSubmit(event: SubmitEvent) {
   flex-wrap: wrap;
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 .language-group {
@@ -1092,9 +1092,9 @@ function handleNotesSubmit(event: SubmitEvent) {
   display: grid;
   gap: 16px;
   padding: 22px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
   overflow: auto;
 }

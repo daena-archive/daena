@@ -38,14 +38,14 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 }
 .markdown-toc {
   padding: 12px 14px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--surface-soft, #f7f4ee);
+  background: var(--surface-soft);
 }
 .markdown-toc strong {
   display: block;
   margin-bottom: 8px;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -68,7 +68,7 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
   padding-left: 20px;
 }
 .markdown-toc a {
-  color: var(--accent-dark, #365342);
+  color: var(--accent-dark);
   font-size: 12px;
   text-decoration: none;
 }
@@ -82,25 +82,25 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 .markdown-body :global(h1),
 .markdown-body :global(h2),
 .markdown-body :global(h3) {
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font-family: var(--font-display, Georgia, serif);
   line-height: 1.25;
 }
 .markdown-body :global(a.entity-reference) {
-  border-bottom: 1px solid #b4773f;
-  color: var(--accent-dark, #365342);
+  border-bottom: 1px solid var(--accent);
+  color: var(--accent-dark);
   cursor: pointer;
   text-decoration: none;
 }
 .markdown-body :global(a.entity-reference-missing) {
   border-bottom-style: dashed;
-  color: var(--danger, #8a3b2a);
+  color: var(--danger);
 }
 .markdown-body :global(blockquote) {
   margin: 0 0 1em;
   padding-left: 12px;
-  border-left: 3px solid var(--line, #e4e1d8);
-  color: var(--ink-soft, #77766d);
+  border-left: 3px solid var(--line);
+  color: var(--ink-soft);
 }
 .markdown-body :global(span.spoiler) {
   background: #2b2b2b;
@@ -115,17 +115,17 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 }
 .markdown-body :global(span.spoiler.revealed) {
   background: #3a3a3a;
-  color: var(--canvas, #f7f6f2);
+  color: var(--canvas);
 }
 .markdown-body :global(span.spoiler:focus-visible) {
-  outline: 2px solid var(--accent, #b4773f);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .markdown-body :global(pre) {
   overflow: auto;
   padding: 10px 12px;
   border-radius: 6px;
-  background: #f4efe6;
+  background: var(--theme-warning-bg, #f4efe6);
 }
 .markdown-body :global(table) {
   width: 100%;
@@ -136,6 +136,6 @@ $: entityIds = new Set(entities.filter((entity) => !entity.deleted).map((entity)
 .markdown-body :global(td),
 .markdown-body :global(th) {
   padding: 6px 8px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
 }
 </style>

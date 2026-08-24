@@ -962,7 +962,7 @@ aside {
   overflow: auto;
   padding: 10px;
   background: #1b2822;
-  border-right: 1px solid #405047;
+  border-right: 1px solid var(--theme-neutral-border-strong, #405047);
   font: 12px/1.4 system-ui;
 }
 aside label {
@@ -971,7 +971,7 @@ aside label {
 }
 aside select,
 aside input[type="number"] {
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 6px;
   background: #0f1a16;
@@ -990,7 +990,7 @@ aside input[type="range"] {
 }
 .epoch-year {
   width: 5.4em;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 4px 5px;
   background: #0f1a16;
@@ -1017,9 +1017,9 @@ aside input[type="range"] {
   background: rgb(255 255 255 / 10%);
 }
 .layer-toggle[aria-pressed="true"] {
-  border-color: #c9a96e;
+  border-color: var(--theme-warning-border, #c9a96e);
   background: #c9a96e;
-  color: #0d1b2a;
+  color: var(--brass-ink);
 }
 .place {
   display: grid;
@@ -1036,7 +1036,7 @@ aside input[type="range"] {
   align-items: baseline;
 }
 .place dt {
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
   font-weight: 500;
 }
 .place dd {
@@ -1044,7 +1044,7 @@ aside input[type="range"] {
   font-variant-numeric: tabular-nums;
 }
 .place p {
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
 }
 .inspect p {
   margin: 0;
@@ -1107,7 +1107,7 @@ button {
   color: #f5a49c;
 }
 .stale {
-  color: #d5ab6c;
+  color: var(--theme-warning-text, #d5ab6c);
 }
 .error code,
 .stale code {
@@ -1137,7 +1137,7 @@ button {
   display: grid;
   gap: 6px;
   padding: 8px;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
 }
 .help li,
@@ -1150,13 +1150,13 @@ button {
   padding-left: 1.2em;
 }
 aside small {
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
 }
 button:focus-visible,
 select:focus-visible,
 input:focus-visible,
 .viewport:focus-visible {
-  outline: 2px solid #edf2ec;
+  outline: 2px solid var(--theme-success-border, #edf2ec);
   outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {

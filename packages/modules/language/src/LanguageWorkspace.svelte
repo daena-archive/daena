@@ -528,7 +528,7 @@ function dismissWelcomeTour() {
   cursor: pointer;
 }
 .language-tabs button:hover {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
   color: var(--ink);
   background: var(--surface-muted);
 }
@@ -552,7 +552,7 @@ function dismissWelcomeTour() {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  background: #f2e4d2;
+  background: var(--accent-bg);
   color: var(--accent);
   font-size: 23px;
 }
@@ -639,8 +639,8 @@ function dismissWelcomeTour() {
   outline-offset: 2px;
 }
 :global(.language-danger) {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 :global(.language-group) {
@@ -695,7 +695,7 @@ function dismissWelcomeTour() {
 :global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover),
 :global(.language-panel textarea:hover),
 :global(.language-panel select:hover) {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
 }
 :global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus-visible),
 :global(.language-panel textarea:focus-visible),
@@ -733,7 +733,7 @@ function dismissWelcomeTour() {
   line-height: 1.6;
 }
 :global(.language-status.error) {
-  color: #a14f42;
+  color: var(--danger);
 }
 :global(.language-form-section) {
   display: flex;

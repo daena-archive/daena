@@ -852,7 +852,7 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .form-provenance.is-authored {
   color: var(--accent-dark);
-  background: #eef3ef;
+  background: var(--theme-success-bg, #eef3ef);
 }
 .form-provenance.is-missing {
   color: var(--ink-faint);
@@ -871,7 +871,7 @@ async function handleSubmit(event: SubmitEvent) {
   align-items: baseline;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid #ebe7de;
+  border: 1px solid var(--theme-warning-border, #ebe7de);
   border-radius: 10px;
   background: var(--surface);
   color: inherit;
@@ -880,7 +880,7 @@ async function handleSubmit(event: SubmitEvent) {
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
 }
 .language-item:hover {
-  border-color: #e5d8c6;
+  border-color: var(--theme-warning-border, #e5d8c6);
   background: var(--surface-muted);
 }
 .language-item strong {
@@ -935,11 +935,11 @@ async function handleSubmit(event: SubmitEvent) {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-error-card {
-  border-color: #e2b7af;
-  background: #fff5f2;
+  border-color: var(--theme-danger-border, #e2b7af);
+  background: var(--theme-danger-bg, #fff5f2);
 }
 .language-loading {
   display: flex;
@@ -1001,8 +1001,8 @@ async function handleSubmit(event: SubmitEvent) {
   flex-wrap: wrap;
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 .language-group {
@@ -1060,7 +1060,7 @@ async function handleSubmit(event: SubmitEvent) {
   height: 24px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-bright-accent);
   font-size: 12px;
   font-weight: 600;
 }
@@ -1080,7 +1080,7 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .forms-slot-remove:hover {
   background: var(--surface-muted);
-  color: #a14f42;
+  color: var(--danger);
 }
 .forms-rules-list {
   display: flex;
@@ -1141,7 +1141,7 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .forms-rule-remove:hover {
   background: var(--surface-muted);
-  color: #a14f42;
+  color: var(--danger);
 }
 .forms-rule-content {
   display: flex;
@@ -1203,7 +1203,7 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .forms-operation-remove:hover {
   background: var(--surface-muted);
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-form-section-header {
   display: flex;

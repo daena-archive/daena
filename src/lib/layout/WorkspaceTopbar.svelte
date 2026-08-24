@@ -53,9 +53,9 @@ const actionContent = $derived(actions ?? children);
   align-items: center;
   gap: 16px;
   padding: 10px 18px;
-  border-bottom: 1px solid #dde1da;
-  background: rgba(255, 255, 255, 0.96);
-  color: #252b26;
+  border-bottom: 1px solid var(--theme-neutral-border, #dde1da);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  color: var(--theme-neutral-text, #252b26);
   box-shadow: 0 1px 8px rgba(30, 37, 31, 0.03);
   font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
@@ -80,12 +80,12 @@ const actionContent = $derived(actions ?? children);
   white-space: nowrap;
 }
 .workspace-topbar-copy strong {
-  color: #252b26;
+  color: var(--theme-neutral-text, #252b26);
   font-size: 12px;
   line-height: 1.2;
 }
 .workspace-topbar-copy small {
-  color: #899088;
+  color: var(--theme-neutral-text-muted, #899088);
   font-size: 9px;
   line-height: 1.2;
 }
@@ -96,8 +96,8 @@ const actionContent = $derived(actions ?? children);
   flex: 0 0 31px;
   place-items: center;
   border-radius: 8px;
-  background: #e4ece4;
-  color: #416047;
+  background: var(--theme-success-bg, #e4ece4);
+  color: var(--theme-success-text, #416047);
 }
 .workspace-topbar-back,
 :global(.workspace-topbar-action),
@@ -107,10 +107,10 @@ const actionContent = $derived(actions ?? children);
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid #d9ddd6;
+  border: 1px solid var(--theme-neutral-border, #d9ddd6);
   border-radius: 8px;
-  background: #fff;
-  color: #4d584f;
+  background: var(--theme-surface-bg, #fff);
+  color: var(--theme-neutral-text-soft, #4d584f);
   font: 650 11px/1 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
   cursor: pointer;
 }
@@ -141,9 +141,9 @@ const actionContent = $derived(actions ?? children);
 :global(.workspace-topbar-action:focus-visible),
 :global([data-workspace-topbar-actions] > button:hover),
 :global([data-workspace-topbar-actions] > button:focus-visible) {
-  border-color: #b9c4ba;
-  background: #f2f6f2;
-  color: #2f4e35;
+  border-color: var(--theme-neutral-border-strong, #b9c4ba);
+  background: var(--theme-success-bg, #f2f6f2);
+  color: var(--theme-success-text, #2f4e35);
   outline: 0;
 }
 :global(.workspace-topbar-action.active),
@@ -152,9 +152,9 @@ const actionContent = $derived(actions ?? children);
 :global([data-workspace-topbar-actions] > button.active),
 :global([data-workspace-topbar-actions] > button[aria-pressed="true"]),
 :global([data-workspace-topbar-actions] > button.primary) {
-  border-color: #b8c9ba;
-  background: #e4ece4;
-  color: #2f4e35;
+  border-color: var(--theme-neutral-border-strong, #b8c9ba);
+  background: var(--theme-success-bg, #e4ece4);
+  color: var(--theme-success-text, #2f4e35);
 }
 :global(.workspace-topbar-action:disabled),
 :global([data-workspace-topbar-actions] > button:disabled) {

@@ -131,22 +131,22 @@ function labelFor(key: string): string {
   gap: 8px;
   min-height: 36px;
   padding: 0 11px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 9px;
-  background: #fff;
+  background: var(--theme-surface-bg, #fff);
   transition:
     border-color 0.14s ease,
     box-shadow 0.14s ease;
 }
 .picker-control:focus-within,
 .picker-control.open {
-  border-color: #b4773f;
+  border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.12);
 }
 .picker-search-icon {
   display: grid;
   place-items: center;
-  color: #b0a89c;
+  color: var(--ink-faint);
 }
 .picker-control input {
   flex: 1;
@@ -156,7 +156,7 @@ function labelFor(key: string): string {
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--ink, #302c26);
+  color: var(--ink);
   font:
     400 13px Inter,
     ui-sans-serif,
@@ -164,7 +164,7 @@ function labelFor(key: string): string {
     sans-serif;
 }
 .picker-control input::placeholder {
-  color: #b0a89c;
+  color: var(--ink-faint);
 }
 .picker-count {
   display: inline-grid;
@@ -173,9 +173,9 @@ function labelFor(key: string): string {
   height: 20px;
   padding: 0 6px;
   border-radius: 999px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
   font:
     700 11px Inter,
     sans-serif;
@@ -188,9 +188,9 @@ function labelFor(key: string): string {
   max-height: 224px;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
-  background: #fffefa;
+  background: var(--surface);
   box-shadow: 0 14px 34px rgba(48, 44, 38, 0.16);
   display: grid;
   gap: 2px;
@@ -205,7 +205,7 @@ function labelFor(key: string): string {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: #62594e;
+  color: var(--ink-muted);
   text-align: left;
   cursor: pointer;
   font:
@@ -216,8 +216,8 @@ function labelFor(key: string): string {
 }
 .picker-menu button:hover,
 .picker-menu button.selected {
-  background: #f4eee4;
-  color: #3f3830;
+  background: var(--surface-warm);
+  color: var(--theme-neutral-text, #3f3830);
 }
 .option-copy {
   display: grid;
@@ -230,16 +230,16 @@ function labelFor(key: string): string {
   white-space: nowrap;
   font-weight: 600;
   font-size: 12.5px;
-  color: var(--ink, #302c26);
+  color: var(--ink);
 }
 .option-copy small {
-  color: #b0a89c;
+  color: var(--ink-faint);
   font-size: 10.5px;
 }
 .picker-empty {
   display: block;
   padding: 10px;
-  color: #b0a89c;
+  color: var(--ink-faint);
   font-size: 11.5px;
 }
 .picker-chips {
@@ -252,10 +252,10 @@ function labelFor(key: string): string {
   align-items: center;
   gap: 6px;
   padding: 4px 9px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: #f7f1e7;
-  color: #62594e;
+  background: var(--theme-warning-bg, #f7f1e7);
+  color: var(--ink-muted);
   cursor: pointer;
   font:
     600 11px Inter,
@@ -264,8 +264,8 @@ function labelFor(key: string): string {
     sans-serif;
 }
 .picker-chip:hover {
-  border-color: #b7a88f;
-  background: #f4eee4;
-  color: #3f3830;
+  border-color: var(--theme-warning-border, #b7a88f);
+  background: var(--surface-warm);
+  color: var(--theme-neutral-text, #3f3830);
 }
 </style>

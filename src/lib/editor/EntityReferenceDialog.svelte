@@ -241,9 +241,9 @@ $: if (!open && lastFocused) {
   gap: 14px;
   max-height: min(700px, calc(100vh - 36px));
   padding: 20px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: 0 24px 64px rgba(38, 42, 33, 0.24);
 }
 header,
@@ -256,7 +256,7 @@ footer {
 header span,
 label > span {
   display: block;
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -264,7 +264,7 @@ label > span {
 }
 h2 {
   margin: 3px 0 0;
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font: 700 20px/1.2 var(--font-display, Georgia, serif);
 }
 header button,
@@ -272,7 +272,7 @@ footer button {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   cursor: pointer;
 }
 header button {
@@ -282,8 +282,8 @@ header button {
 }
 header button:hover,
 header button:focus-visible {
-  background: var(--surface-muted, #f4f2ec);
-  color: var(--ink, #25251f);
+  background: var(--surface-muted);
+  color: var(--ink);
   outline: 0;
 }
 .entity-reference-search,
@@ -296,16 +296,16 @@ header button:focus-visible {
   width: 100%;
   height: 38px;
   padding: 0 10px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--canvas, #f7f6f2);
-  color: var(--ink, #25251f);
+  background: var(--canvas);
+  color: var(--ink);
   font: 500 13px/1 var(--font-body, system-ui, sans-serif);
   outline: 0;
 }
 .entity-reference-search input:focus,
 .entity-reference-label input:focus {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
 .entity-reference-custom-toggle {
@@ -314,9 +314,9 @@ header button:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--canvas, #f7f6f2);
+  background: var(--canvas);
 }
 .custom-checkbox {
   display: inline-flex;
@@ -328,10 +328,10 @@ header button:focus-visible {
 .custom-checkbox input {
   width: 16px;
   height: 16px;
-  accent-color: var(--accent-dark, #365342);
+  accent-color: var(--accent-dark);
 }
 .custom-checkbox span {
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font: 600 12px/1 var(--font-body, system-ui, sans-serif);
   text-transform: none;
   letter-spacing: 0;
@@ -347,17 +347,17 @@ header button:focus-visible {
   width: 20px;
   height: 20px;
   padding: 0;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 50%;
-  background: var(--surface, #fffefa);
-  color: var(--ink-soft, #77766d);
+  background: var(--surface);
+  color: var(--ink-soft);
   font: 700 11px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
 }
 .hint-button:hover,
 .hint-button:focus-visible {
-  border-color: var(--accent, #b4773f);
-  color: var(--accent-dark, #365342);
+  border-color: var(--accent);
+  color: var(--accent-dark);
   outline: 0;
 }
 .hint-tooltip {
@@ -367,8 +367,8 @@ header button:focus-visible {
   width: 260px;
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--ink, #25251f);
-  color: var(--surface, #fffefa);
+  background: var(--ink);
+  color: var(--surface);
   font: 400 11px/1.4 var(--font-body, system-ui, sans-serif);
   box-shadow: 0 8px 20px rgba(38, 42, 33, 0.18);
   opacity: 0;
@@ -388,7 +388,7 @@ header button:focus-visible {
   right: 6px;
   width: 10px;
   height: 10px;
-  background: var(--ink, #25251f);
+  background: var(--ink);
   transform: rotate(45deg);
 }
 .hint-wrapper:hover .hint-tooltip,
@@ -402,7 +402,7 @@ header button:focus-visible {
 .entity-reference-label input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-  background: var(--surface-muted, #f4f2ec);
+  background: var(--surface-muted);
 }
 .entity-reference-results {
   display: grid;
@@ -412,9 +412,9 @@ header button:focus-visible {
   max-height: 260px;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--canvas, #f7f6f2);
+  background: var(--canvas);
 }
 .entity-reference-results button {
   display: grid;
@@ -424,13 +424,13 @@ header button:focus-visible {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--ink, #25251f);
+  color: var(--ink);
   text-align: left;
   cursor: pointer;
 }
 .entity-reference-results button:hover,
 .entity-reference-results button.selected {
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));
 }
 .entity-reference-results strong {
@@ -438,7 +438,7 @@ header button:focus-visible {
 }
 .entity-reference-results small,
 .entity-reference-results p {
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   font-size: 11px;
 }
 .entity-reference-results p {
@@ -457,12 +457,12 @@ footer button {
 }
 footer .quiet:hover,
 footer .quiet:focus-visible {
-  background: var(--surface-muted, #f4f2ec);
-  color: var(--ink, #25251f);
+  background: var(--surface-muted);
+  color: var(--ink);
   outline: 0;
 }
 footer .primary {
-  background: var(--accent-dark, #365342);
+  background: var(--accent-dark);
   color: white;
 }
 footer .primary:disabled {

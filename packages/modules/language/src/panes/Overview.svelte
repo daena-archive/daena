@@ -511,21 +511,21 @@ let status = $derived.by(() => {
   background: currentColor;
 }
 .language-overview-status[data-state="saved"] {
-  border-color: #c6d8cb;
-  background: #eef3ef;
+  border-color: var(--theme-success-border, #c6d8cb);
+  background: var(--theme-success-bg, #eef3ef);
   color: var(--accent-dark);
 }
 .language-overview-status[data-state="saving"] {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
   color: var(--accent-dark);
 }
 .language-overview-status[data-state="saving"]::before {
   animation: language-pulse 1.2s ease-in-out infinite;
 }
 .language-overview-status[data-state="error"] {
-  border-color: #e2b7af;
-  background: #fff5f2;
-  color: #a14f42;
+  border-color: var(--theme-danger-border, #e2b7af);
+  background: var(--theme-danger-bg, #fff5f2);
+  color: var(--danger);
 }
 .language-overview {
   display: flex;
@@ -612,7 +612,7 @@ let status = $derived.by(() => {
   cursor: pointer;
 }
 .language-studio-area:hover {
-  border-color: #d8c3a5;
+  border-color: var(--theme-warning-border, #d8c3a5);
   background: var(--surface);
 }
 .language-studio-area:focus-visible {
@@ -690,7 +690,7 @@ let status = $derived.by(() => {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-loading {
   display: flex;
@@ -734,8 +734,8 @@ let status = $derived.by(() => {
   background: var(--surface-muted);
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 @media (max-width: 760px) {

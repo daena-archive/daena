@@ -71,9 +71,9 @@ function settle(value: boolean) {
 .language-modal {
   width: min(400px, 100%);
   padding: 22px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
 }
 .language-modal h3 {
@@ -82,7 +82,7 @@ function settle(value: boolean) {
 }
 .language-modal p {
   margin: 0 0 18px;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   font-size: 13px;
   line-height: 1.55;
 }
@@ -93,9 +93,9 @@ function settle(value: boolean) {
 }
 .language-button {
   padding: 8px 12px;
-  border: 1px solid var(--accent-dark, #365342);
+  border: 1px solid var(--accent-dark);
   border-radius: 8px;
-  background: var(--accent-dark, #365342);
+  background: var(--accent-dark);
   color: #fff;
   cursor: pointer;
 }
@@ -104,10 +104,10 @@ function settle(value: boolean) {
 }
 .language-button.secondary {
   background: transparent;
-  color: var(--accent-dark, #365342);
+  color: var(--accent-dark);
 }
 .language-button.secondary:hover {
-  background: var(--surface-muted, #f4f2ec);
+  background: var(--surface-muted);
 }
 .language-button:disabled {
   opacity: 0.45;
@@ -115,8 +115,8 @@ function settle(value: boolean) {
   filter: none;
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 </style>

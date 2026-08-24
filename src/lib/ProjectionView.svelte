@@ -60,7 +60,7 @@ onMount(() => {
   background: var(--canvas);
 }
 .projection-view-error {
-  color: #a14f42;
+  color: var(--danger);
   font-size: 12px;
 }
 @media (max-width: 760px) {

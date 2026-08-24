@@ -1553,9 +1553,9 @@ onDestroy(() => {
   display: grid;
   gap: 10px;
   padding: 14px;
-  border: 1px solid #e5d8c6;
+  border: 1px solid var(--theme-warning-border, #e5d8c6);
   border-radius: 10px;
-  background: #fcf8f1;
+  background: var(--theme-warning-bg, #fcf8f1);
 }
 .git-remote-list,
 .git-path-list,
@@ -1603,10 +1603,10 @@ onDestroy(() => {
   justify-content: space-between;
   gap: 12px;
   padding: 11px 13px;
-  border: 1px solid #e5c4b4;
+  border: 1px solid var(--theme-danger-border, #e5c4b4);
   border-radius: 9px;
-  background: #fff4ee;
-  color: #7a4a36;
+  background: var(--theme-danger-bg, #fff4ee);
+  color: var(--theme-danger-text, #7a4a36);
   font-size: 12px;
 }
 .inline-retry {
@@ -1614,15 +1614,15 @@ onDestroy(() => {
   margin-top: 10px;
 }
 .load-error {
-  border-color: #e5c4b4;
-  background: #fff4ee;
+  border-color: var(--theme-danger-border, #e5c4b4);
+  background: var(--theme-danger-bg, #fff4ee);
 }
 .git-diagnostics {
   padding: 11px 13px;
-  border: 1px solid #e5c4b4;
+  border: 1px solid var(--theme-danger-border, #e5c4b4);
   border-radius: 9px;
-  background: #fff4ee;
-  color: #7a4a36;
+  background: var(--theme-danger-bg, #fff4ee);
+  color: var(--theme-danger-text, #7a4a36);
   font-size: 12px;
 }
 .git-diagnostics strong {
@@ -1651,11 +1651,11 @@ onDestroy(() => {
   padding: 9px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
-  background: var(--canvas, #f7f4ee);
+  background: var(--canvas);
 }
 .git-change-list li.selected {
-  border-color: #d8c3a5;
-  background: #fffaf2;
+  border-color: var(--theme-warning-border, #d8c3a5);
+  background: var(--theme-warning-bg, #fffaf2);
 }
 .git-change-list strong {
   font-size: 13px;
@@ -1688,14 +1688,14 @@ onDestroy(() => {
   text-align: center;
 }
 .git-change-status.change-added {
-  color: #3f8b4d;
+  color: var(--theme-success-text, #3f8b4d);
 }
 .git-change-status.change-deleted {
-  color: #a44d42;
+  color: var(--theme-danger-text, #a44d42);
 }
 .git-log-list li.active,
 .git-file-button.active {
-  color: var(--accent-dark, #365342);
+  color: var(--accent-dark);
 }
 .git-snapshot-dialog {
   width: calc(100vw - 64px);
@@ -1767,19 +1767,19 @@ onDestroy(() => {
   cursor: pointer;
 }
 .git-change-category.change-added .git-change-category-toggle {
-  border-left-color: #5b9b68;
-  background: #edf7ec;
-  color: #3f7449;
+  border-left-color: var(--theme-success-border, #5b9b68);
+  background: var(--theme-success-bg, #edf7ec);
+  color: var(--theme-success-text, #3f7449);
 }
 .git-change-category.change-modified .git-change-category-toggle {
-  border-left-color: #c9973e;
-  background: #fff7e5;
-  color: #946c24;
+  border-left-color: var(--theme-warning-border, #c9973e);
+  background: var(--theme-warning-bg, #fff7e5);
+  color: var(--theme-warning-text, #946c24);
 }
 .git-change-category.change-deleted .git-change-category-toggle {
-  border-left-color: #b85b4e;
-  background: #fbecea;
-  color: #98443a;
+  border-left-color: var(--theme-danger-border, #b85b4e);
+  background: var(--theme-danger-bg, #fbecea);
+  color: var(--theme-danger-text, #98443a);
 }
 .git-change-kind {
   flex: 0 0 auto;
@@ -1846,7 +1846,7 @@ onDestroy(() => {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #f7f4ee;
+  background: var(--theme-warning-bg, #f7f4ee);
   font-size: 11px;
   white-space: pre-wrap;
 }
@@ -1856,7 +1856,7 @@ onDestroy(() => {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #f7f4ee;
+  background: var(--theme-warning-bg, #f7f4ee);
   color: var(--ink);
   font:
     11px/1.55 ui-monospace,
@@ -1875,16 +1875,16 @@ onDestroy(() => {
   padding: 0 10px;
 }
 .git-diff-view .diff-added {
-  background: #e7f3e5;
-  color: #2f6b3b;
+  background: var(--theme-success-bg, #e7f3e5);
+  color: var(--theme-success-text, #2f6b3b);
 }
 .git-diff-view .diff-removed {
-  background: #f7e5e1;
-  color: #9b4438;
+  background: var(--theme-danger-bg, #f7e5e1);
+  color: var(--theme-danger-text, #9b4438);
 }
 .git-diff-view .diff-hunk {
-  background: #e8edf6;
-  color: #4a638c;
+  background: var(--theme-info-bg, #e8edf6);
+  color: var(--theme-info-text, #4a638c);
 }
 .git-diff-view .diff-file-header {
   color: var(--ink-soft);
@@ -1904,13 +1904,13 @@ onDestroy(() => {
 }
 .git-recovery {
   padding: 14px;
-  border: 1px solid #e5c4b4;
+  border: 1px solid var(--theme-danger-border, #e5c4b4);
   border-radius: 10px;
-  background: #fff4ee;
+  background: var(--theme-danger-bg, #fff4ee);
 }
 .git-recovery p {
   margin: 8px 0 12px;
-  color: #7a4a36;
+  color: var(--theme-danger-text, #7a4a36);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1930,7 +1930,7 @@ onDestroy(() => {
 }
 .primary-button {
   border: 1px solid rgba(255, 255, 255, 0.08);
-  background: var(--accent-dark, #365342);
+  background: var(--accent-dark);
   color: #fff;
   box-shadow:
     0 2px 0 #263d30,
@@ -1958,9 +1958,9 @@ onDestroy(() => {
   outline-offset: 2px;
 }
 .quiet-button {
-  border: 1px solid #ded8cd;
-  background: var(--surface, #fffefa);
-  color: var(--ink-soft, #6f6a60);
+  border: 1px solid var(--theme-warning-border, #ded8cd);
+  background: var(--surface);
+  color: var(--ink-soft);
   box-shadow: 0 1px 2px rgba(48, 45, 38, 0.05);
   transition:
     background 0.16s ease,
@@ -1970,9 +1970,9 @@ onDestroy(() => {
     transform 0.16s ease;
 }
 .quiet-button:hover {
-  border-color: #cbbda9;
-  background: #f7f3eb;
-  color: var(--ink, #2b2a24);
+  border-color: var(--theme-warning-border, #cbbda9);
+  background: var(--theme-warning-bg, #f7f3eb);
+  color: var(--ink);
   box-shadow: 0 3px 8px rgba(48, 45, 38, 0.08);
   transform: translateY(-1px);
 }
@@ -2001,7 +2001,7 @@ onDestroy(() => {
   font-size: 12px;
 }
 .create-input-field > span {
-  color: var(--ink-soft, #6f6a60);
+  color: var(--ink-soft);
   font-size: 10px;
   font-weight: 700;
 }
@@ -2010,11 +2010,11 @@ onDestroy(() => {
   width: 100%;
   box-sizing: border-box;
   padding: 10px 11px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   outline: 0;
-  background: var(--canvas, #f7f4ee);
-  color: var(--ink, #2b2a24);
+  background: var(--canvas);
+  color: var(--ink);
   font: inherit;
   font-size: 12px;
 }
@@ -2025,7 +2025,7 @@ onDestroy(() => {
 }
 .create-input-field > input:focus,
 .create-input-field > textarea:focus {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
 .git-message-field {
@@ -2045,13 +2045,13 @@ onDestroy(() => {
   padding: 0;
   border: 0;
   border-radius: 6px;
-  background: #f2e4d2;
+  background: var(--accent-bg);
   color: var(--accent);
   font-size: 13px;
   cursor: pointer;
 }
 .git-ai-message-button:hover {
-  background: #ead7bc;
+  background: var(--warning-line);
 }
 .git-ai-message-button:disabled {
   opacity: 0.55;
@@ -2070,7 +2070,7 @@ onDestroy(() => {
   width: min(520px, 100%);
   padding: 18px;
   border-radius: 12px;
-  background: var(--surface, #fffdf8);
+  background: var(--surface);
   box-shadow: var(--shadow-lg, 0 18px 40px rgb(40 40 20 / 18%));
 }
 .new-form-heading {
@@ -2114,7 +2114,7 @@ onDestroy(() => {
 }
 .plugin-warning {
   margin: 0 0 10px;
-  color: #a1482f;
+  color: var(--theme-danger-text, #a1482f);
   font-size: 12px;
 }
 @media (max-width: 620px) {
@@ -2149,9 +2149,9 @@ onDestroy(() => {
   grid-template-columns: 40px 1fr;
   gap: 14px;
   padding: 16px 16px 14px;
-  border: 1px solid var(--line, #e9e1d4);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
 }
 .hero-icon {
   width: 40px;
@@ -2160,10 +2160,10 @@ onDestroy(() => {
   place-items: center;
   border-radius: 11px;
   background: var(--accent-dark);
-  color: #fffefa;
+  color: var(--on-accent);
 }
 .hero-copy .kicker {
-  color: #b4773f;
+  color: var(--accent);
   font:
     700 10px/1 Inter,
     ui-sans-serif,
@@ -2181,7 +2181,7 @@ onDestroy(() => {
 .hero-copy p {
   margin: 6px 0 0;
   max-width: 640px;
-  color: var(--ink-soft, #8f897e);
+  color: var(--ink-soft);
   font:
     400 12.5px/1.5 Inter,
     ui-sans-serif,
@@ -2201,9 +2201,9 @@ onDestroy(() => {
   gap: 6px;
   padding: 5px 9px;
   border-radius: 999px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
   font:
     600 11px Inter,
     ui-sans-serif,
@@ -2217,7 +2217,7 @@ onDestroy(() => {
   justify-content: space-between;
   gap: 10px 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #f0e8d9;
+  border-bottom: 1px solid var(--theme-warning-border, #f0e8d9);
 }
 .heading-left {
   display: inline-flex;
@@ -2230,9 +2230,9 @@ onDestroy(() => {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
 }
 .count-badge {
   display: inline-grid;
@@ -2241,9 +2241,9 @@ onDestroy(() => {
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
   font:
     700 11px Inter,
     sans-serif;
@@ -2252,7 +2252,7 @@ onDestroy(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--ink-faint, #b0a89c);
+  color: var(--ink-faint);
   font:
     500 11.5px Inter,
     ui-sans-serif,
@@ -2264,10 +2264,10 @@ onDestroy(() => {
   gap: 12px;
   align-items: flex-start;
   padding: 14px 14px;
-  border: 1px dashed #d9cdbd;
+  border: 1px dashed var(--line-strong);
   border-radius: 11px;
-  background: #fffcf7;
-  color: #8f897e;
+  background: var(--surface-quiet);
+  color: var(--ink-muted);
 }
 .empty-inline strong {
   display: block;

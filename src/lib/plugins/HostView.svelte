@@ -247,7 +247,7 @@ function inputValue(key: string): string | number | boolean {
 }
 .host-view-badge {
   padding: 6px 9px;
-  border: 1px solid #d8c3a5;
+  border: 1px solid var(--theme-warning-border, #d8c3a5);
   border-radius: 999px;
   color: var(--accent-dark);
   font-size: 10px;
@@ -387,7 +387,7 @@ function inputValue(key: string): string | number | boolean {
   font-size: 12px;
 }
 .host-view-state.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 @media (max-width: 760px) {
   .host-view {

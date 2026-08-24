@@ -149,7 +149,7 @@ function select(id: string) {
   cursor: pointer;
 }
 .calendar-picker-trigger:focus-visible {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
   outline: none;
 }

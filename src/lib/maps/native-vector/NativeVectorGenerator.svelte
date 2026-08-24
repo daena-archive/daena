@@ -399,7 +399,7 @@ onDestroy(() => {
   gap: 12px;
   padding: 14px;
   overflow: auto;
-  border-right: 1px solid #405047;
+  border-right: 1px solid var(--theme-neutral-border-strong, #405047);
   background: #202c27;
 }
 .controls-resizer {
@@ -466,11 +466,11 @@ button {
 }
 .primary {
   background: #d5ab6c;
-  color: #17211d;
+  color: var(--brass-ink);
 }
 .quiet {
   background: transparent;
-  border: 1px solid #4b5a51;
+  border: 1px solid var(--theme-neutral-border-strong, #4b5a51);
 }
 .candidates {
   display: grid;
@@ -484,12 +484,12 @@ button {
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px solid #4b5a51;
+  border: 1px solid var(--theme-neutral-border-strong, #4b5a51);
   border-radius: 8px;
   background: #111a16;
 }
 .card.selected {
-  border-color: #d5ab6c;
+  border-color: var(--theme-warning-border, #d5ab6c);
 }
 .card :global(svg) {
   width: 100%;
@@ -511,7 +511,7 @@ button {
   margin: 0;
   padding: 10px 16px;
   color: #f5a49c;
-  border-top: 1px solid #405047;
+  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
 }
 .icon-button {
   display: grid;
@@ -519,12 +519,12 @@ button {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid #4d6358;
+  border: 1px solid var(--theme-neutral-border-strong, #4d6358);
   background: transparent;
 }
 .icon-button.active {
   background: #d5ab6c;
-  color: #17211d;
+  color: var(--brass-ink);
 }
 .visually-hidden {
   position: absolute;
@@ -537,7 +537,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 .card:focus-within {
-  outline: 2px solid #f3d39a;
+  outline: 2px solid var(--theme-warning-border, #f3d39a);
   outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -555,7 +555,7 @@ select:focus-visible,
   .controls {
     max-height: 52vh;
     border-right: 0;
-    border-bottom: 1px solid #405047;
+    border-bottom: 1px solid var(--theme-neutral-border-strong, #405047);
   }
   .controls-resizer {
     display: none;

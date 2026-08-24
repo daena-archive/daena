@@ -117,15 +117,15 @@ onMount(() => {
   z-index: 70;
   width: min(300px, calc(100vw - 24px));
   padding: 12px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: 0 14px 34px rgba(38, 42, 33, 0.16);
 }
 .entity-hover-card > span {
   display: block;
   margin-bottom: 4px;
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -133,14 +133,14 @@ onMount(() => {
 }
 .entity-hover-card strong {
   display: block;
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font: 700 15px/1.2 var(--font-display, Georgia, serif);
 }
 .entity-hover-card p {
   display: -webkit-box;
   margin: 7px 0 10px;
   overflow: hidden;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   font-size: 11px;
   line-height: 1.45;
   -webkit-box-orient: vertical;
@@ -148,19 +148,19 @@ onMount(() => {
   line-clamp: 3;
 }
 .entity-hover-card p.entity-hover-empty {
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint);
 }
 .entity-hover-card button {
   border: 0;
   padding: 0;
   background: transparent;
-  color: var(--accent-dark, #365342);
+  color: var(--accent-dark);
   font: 700 11px/1.2 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
 }
 .entity-hover-card button:hover,
 .entity-hover-card button:focus-visible {
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   outline: 0;
   text-decoration: underline;
 }

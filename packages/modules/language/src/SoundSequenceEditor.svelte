@@ -129,7 +129,7 @@ function move(index: number, offset: -1 | 1) {
   background: var(--surface);
 }
 .sound-sequence li.missing {
-  border-color: #c98779;
+  border-color: var(--theme-danger-border, #c98779);
 }
 .sound-kind {
   color: var(--ink-faint);
@@ -142,7 +142,7 @@ function move(index: number, offset: -1 | 1) {
   font-size: 13px;
 }
 .sound-sequence small {
-  color: #a14f42;
+  color: var(--danger);
   font-size: 9px;
 }
 .sound-actions {
@@ -160,7 +160,7 @@ function move(index: number, offset: -1 | 1) {
   cursor: pointer;
 }
 .sound-actions button.remove {
-  color: #a14f42;
+  color: var(--danger);
 }
 .sound-actions button:disabled {
   opacity: 0.35;

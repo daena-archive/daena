@@ -179,9 +179,9 @@ function pluginInitial(name: string) {
   gap: 14px;
   align-items: flex-start;
   padding: 16px 16px 14px;
-  border: 1px solid var(--line, #e9e1d4);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
 }
 .heading-icon {
   flex: 0 0 36px;
@@ -191,7 +191,7 @@ function pluginInitial(name: string) {
   place-items: center;
   border-radius: 10px;
   background: var(--accent-dark);
-  color: #fffefa;
+  color: var(--on-accent);
   box-shadow: 0 1px 0 rgba(48, 44, 38, 0.16);
 }
 .heading-copy {
@@ -199,7 +199,7 @@ function pluginInitial(name: string) {
 }
 .kicker {
   display: inline-block;
-  color: #b4773f;
+  color: var(--accent);
   font:
     700 10px/1 Inter,
     ui-sans-serif,
@@ -217,7 +217,7 @@ function pluginInitial(name: string) {
 }
 .settings-section-heading p {
   margin: 7px 0 0;
-  color: var(--ink-soft, #8f897e);
+  color: var(--ink-soft);
   font:
     400 12.5px/1.55 Inter,
     ui-sans-serif,
@@ -229,9 +229,9 @@ function pluginInitial(name: string) {
   gap: 10px;
   justify-items: start;
   padding: 22px 18px;
-  border: 1px dashed #d9cdbd;
+  border: 1px dashed var(--line-strong);
   border-radius: 14px;
-  background: #fffcf7;
+  background: var(--surface-quiet);
 }
 .empty-icon {
   width: 36px;
@@ -239,9 +239,9 @@ function pluginInitial(name: string) {
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: #f4eee3;
-  color: #8f897e;
-  border: 1px solid #e9e1d4;
+  background: var(--surface-warm);
+  color: var(--ink-muted);
+  border: 1px solid var(--line-soft);
 }
 .empty-state strong {
   color: var(--ink);
@@ -250,7 +250,7 @@ function pluginInitial(name: string) {
 .empty-state p {
   margin: 0;
   max-width: 560px;
-  color: var(--ink-soft, #8f897e);
+  color: var(--ink-soft);
   font:
     400 12.5px/1.5 Inter,
     ui-sans-serif,
@@ -260,9 +260,9 @@ function pluginInitial(name: string) {
 .empty-state code {
   padding: 1px 6px;
   border-radius: 6px;
-  background: #f1ebe1;
-  border: 1px solid #e9e1d4;
-  color: #6f675c;
+  background: var(--theme-warning-bg, #f1ebe1);
+  border: 1px solid var(--line-soft);
+  color: var(--theme-neutral-text-soft, #6f675c);
   font:
     500 11px ui-monospace,
     SFMono-Regular,
@@ -283,9 +283,9 @@ function pluginInitial(name: string) {
   gap: 6px;
   padding: 5px 9px;
   border-radius: 999px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
   font:
     600 11px Inter,
     ui-sans-serif,
@@ -305,9 +305,9 @@ function pluginInitial(name: string) {
   align-items: center;
   gap: 14px;
   padding: 14px 14px 14px 16px;
-  border: 1px solid var(--line, #e9e1d4);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: #fffefa;
+  background: var(--surface);
   text-align: left;
   cursor: pointer;
   transition:
@@ -318,8 +318,8 @@ function pluginInitial(name: string) {
 }
 .schema-plugin-card:hover,
 .schema-plugin-card:focus-visible {
-  border-color: #cbbda9;
-  background: #fffcf7;
+  border-color: var(--theme-warning-border, #cbbda9);
+  background: var(--surface-quiet);
   box-shadow: 0 8px 24px rgba(48, 44, 38, 0.08);
   transform: translateY(-1px);
   outline: none;
@@ -335,9 +335,9 @@ function pluginInitial(name: string) {
   display: grid;
   place-items: center;
   border-radius: 11px;
-  background: #f4eee3;
-  border: 1px solid #e9e1d4;
-  color: #62594e;
+  background: var(--surface-warm);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
   font: 700 14px var(--font-display, Georgia, serif);
 }
 .card-copy {
@@ -351,7 +351,7 @@ function pluginInitial(name: string) {
   font: 600 14.5px/1.15 var(--font-display, Georgia, serif);
 }
 .card-desc {
-  color: var(--ink-soft, #8f897e);
+  color: var(--ink-soft);
   font:
     400 12px/1.45 Inter,
     ui-sans-serif,
@@ -364,7 +364,7 @@ function pluginInitial(name: string) {
   overflow: hidden;
 }
 .card-id {
-  color: var(--ink-faint, #b0a89c);
+  color: var(--ink-faint);
   font:
     500 11px ui-monospace,
     SFMono-Regular,
@@ -378,14 +378,14 @@ function pluginInitial(name: string) {
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: #fff;
-  border: 1px solid #e9e1d4;
-  color: #b0a89c;
+  background: var(--theme-surface-bg, #fff);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-faint);
 }
 .schema-plugin-card:hover .card-arrow {
-  border-color: #cbbda9;
-  color: #62594e;
-  background: #f7f1e7;
+  border-color: var(--theme-warning-border, #cbbda9);
+  color: var(--ink-muted);
+  background: var(--theme-warning-bg, #f7f1e7);
 }
 .schema-plugin-toolbar {
   position: sticky;
@@ -397,7 +397,7 @@ function pluginInitial(name: string) {
   gap: 10px;
   margin: -6px -4px 0;
   padding: 10px 12px;
-  border: 1px solid var(--line, #e9e1d4);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: rgba(255, 254, 250, 0.92);
   backdrop-filter: blur(10px);
@@ -409,10 +409,10 @@ function pluginInitial(name: string) {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: #fffefa;
-  color: #62594e;
+  background: var(--surface);
+  color: var(--ink-muted);
   font:
     600 11.5px Inter,
     ui-sans-serif,
@@ -422,8 +422,8 @@ function pluginInitial(name: string) {
 }
 .crumb-button:hover,
 .crumb-button:focus-visible {
-  border-color: #b7a88f;
-  background: #f4eee4;
+  border-color: var(--theme-warning-border, #b7a88f);
+  background: var(--surface-warm);
   outline: none;
 }
 .crumb-divider {
@@ -446,7 +446,7 @@ function pluginInitial(name: string) {
   place-items: center;
   border-radius: 999px;
   background: var(--accent-dark);
-  color: #fffefa;
+  color: var(--on-accent);
   font: 700 11px var(--font-display, Georgia, serif);
 }
 .schema-dirty-hint,
@@ -465,9 +465,9 @@ function pluginInitial(name: string) {
     sans-serif;
 }
 .schema-dirty-hint {
-  background: #f8ece8;
-  border-color: #e7c4bc;
-  color: #9a4d3f;
+  background: var(--theme-danger-bg, #f8ece8);
+  border-color: var(--danger-line);
+  color: var(--danger);
 }
 .dirty-dot {
   width: 7px;
@@ -477,9 +477,9 @@ function pluginInitial(name: string) {
   box-shadow: 0 0 0 4px rgba(195, 90, 70, 0.14);
 }
 .schema-clean-hint {
-  background: #f4eee3;
-  border-color: #e9e1d4;
-  color: #8f897e;
+  background: var(--surface-warm);
+  border-color: var(--line-soft);
+  color: var(--ink-muted);
 }
 @media (max-width: 640px) {
   .settings-section-heading {

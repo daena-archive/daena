@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
-import type { EntityTemplate, FieldDefinition, MetadataFieldDefinition } from "../../../packages/plugin-sdk/src/generated";
+import type {
+  EntityTemplate,
+  FieldDefinition,
+  MetadataFieldDefinition,
+} from "../../../packages/plugin-sdk/src/generated";
 
 export type { EntityTemplate, FieldDefinition, MetadataFieldDefinition };
 
@@ -678,6 +682,11 @@ export interface RecentProjectSetting {
 }
 export interface GeneralSettings {
   recentProjects: RecentProjectSetting[];
+  appearance: AppearanceSettings;
+}
+export type ThemePreference = "light" | "dark" | "system";
+export interface AppearanceSettings {
+  theme: ThemePreference;
 }
 export interface AppSettings {
   formatVersion: number;
@@ -711,7 +720,10 @@ export interface RemoteCredentialStatus {
   configured: boolean;
 }
 export interface AppSettingsUpdate {
-  general?: { recentProjects?: RecentProjectSetting[] };
+  general?: {
+    recentProjects?: RecentProjectSetting[];
+    appearance?: Partial<AppearanceSettings>;
+  };
   ai?: {
     provider?: Partial<AiProviderSettings>;
     imageProvider?: Partial<ImageProviderSettings>;

@@ -1125,11 +1125,11 @@ function removeLink(index: number) {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-error-card {
-  border-color: #e2b7af;
-  background: #fff5f2;
+  border-color: var(--theme-danger-border, #e2b7af);
+  background: var(--theme-danger-bg, #fff5f2);
 }
 .language-loading {
   display: flex;
@@ -1228,7 +1228,7 @@ function removeLink(index: number) {
   gap: 6px;
   width: 100%;
   padding: 12px;
-  border: 1px solid #ebe7de;
+  border: 1px solid var(--theme-warning-border, #ebe7de);
   border-radius: 10px;
   background: var(--surface);
   color: inherit;
@@ -1237,7 +1237,7 @@ function removeLink(index: number) {
 }
 .grammar-card:hover,
 .grammar-system:hover {
-  border-color: #e5d8c6;
+  border-color: var(--theme-warning-border, #e5d8c6);
   background: var(--surface-muted);
 }
 .grammar-card-header {

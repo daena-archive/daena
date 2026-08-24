@@ -108,17 +108,17 @@ async function printPage() {
   gap: 7px;
   min-height: 36px;
   padding: 0 11px;
-  border: 1px solid #d5d8d0;
+  border: 1px solid var(--theme-neutral-border, #d5d8d0);
   border-radius: 9px;
-  background: #fff;
-  color: #38443a;
+  background: var(--theme-surface-bg, #fff);
+  color: var(--theme-neutral-text, #38443a);
   font: 650 12px/1 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
   cursor: pointer;
 }
 .export-trigger:hover,
 .export-trigger:focus-visible {
-  border-color: #aeb9af;
-  background: #f7faf7;
+  border-color: var(--theme-neutral-border-strong, #aeb9af);
+  background: var(--theme-success-bg, #f7faf7);
 }
 .export-trigger:disabled {
   opacity: 0.65;
@@ -132,9 +132,9 @@ async function printPage() {
   display: grid;
   width: min(330px, calc(100vw - 32px));
   padding: 6px;
-  border: 1px solid #dce0d8;
+  border: 1px solid var(--theme-neutral-border, #dce0d8);
   border-radius: 12px;
-  background: #fff;
+  background: var(--theme-surface-bg, #fff);
   box-shadow: 0 18px 48px rgba(34, 40, 34, 0.16);
 }
 .export-menu button {
@@ -146,13 +146,13 @@ async function printPage() {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #272d28;
+  color: var(--theme-neutral-text, #272d28);
   text-align: left;
   cursor: pointer;
 }
 .export-menu button:hover,
 .export-menu button:focus-visible {
-  background: #f3f6f2;
+  background: var(--theme-success-bg, #f3f6f2);
 }
 .format-icon {
   display: grid;
@@ -160,8 +160,8 @@ async function printPage() {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #e9f0e8;
-  color: #49634e;
+  background: var(--theme-success-bg, #e9f0e8);
+  color: var(--theme-success-text, #49634e);
 }
 .export-menu strong,
 .export-menu small {
@@ -172,7 +172,7 @@ async function printPage() {
 }
 .export-menu small {
   margin-top: 3px;
-  color: #7d847d;
+  color: var(--theme-neutral-text-muted, #7d847d);
   font-size: 10px;
   line-height: 1.35;
 }
@@ -184,18 +184,18 @@ async function printPage() {
   max-width: min(520px, calc(100vw - 44px));
   margin: 0;
   padding: 10px 13px;
-  border: 1px solid #c9dacb;
+  border: 1px solid var(--theme-success-border, #c9dacb);
   border-radius: 9px;
-  background: #edf7ee;
-  color: #35563c;
+  background: var(--theme-success-bg, #edf7ee);
+  color: var(--theme-success-text, #35563c);
   box-shadow: 0 10px 32px rgba(34, 40, 34, 0.13);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
 .export-status.error {
-  border-color: #eccbc4;
-  background: #fff1ee;
-  color: #984b3b;
+  border-color: var(--theme-danger-border, #eccbc4);
+  background: var(--theme-danger-bg, #fff1ee);
+  color: var(--theme-danger-text, #984b3b);
 }
 :global(.spinner) {
   animation: spin 0.8s linear infinite;

@@ -112,7 +112,7 @@ onMount(() => {
   font-size: 12px;
 }
 .sandbox-view-error {
-  color: #a14f42;
+  color: var(--danger);
 }
 @media (max-width: 760px) {
   .sandbox-view-loading,

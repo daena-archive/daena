@@ -113,7 +113,7 @@ function submitPrompt() {
   width: min(440px, 100%);
   margin: 0;
   padding: 22px;
-  border: 1px solid #e3d9ca;
+  border: 1px solid var(--theme-warning-border, #e3d9ca);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
@@ -144,7 +144,7 @@ function submitPrompt() {
   cursor: pointer;
 }
 .dialog-close:hover {
-  background: #ebe6dd;
+  background: var(--theme-warning-bg, #ebe6dd);
   color: var(--ink);
 }
 .dialog-message {
@@ -158,14 +158,14 @@ function submitPrompt() {
   box-sizing: border-box;
   margin-top: 14px;
   padding: 9px 11px;
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
   font-size: 13px;
 }
 .dialog-input:focus-visible {
-  outline: 2px solid var(--accent, #365342);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .dialog-actions {
@@ -198,8 +198,9 @@ function submitPrompt() {
   filter: brightness(1.06);
 }
 .dialog-confirm.dialog-danger {
-  border-color: #a14f42;
-  background: #a14f42;
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-bright-accent);
 }
 .dialog-confirm:focus-visible,
 .dialog-cancel:focus-visible {

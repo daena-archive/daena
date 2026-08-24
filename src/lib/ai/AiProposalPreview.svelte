@@ -61,7 +61,7 @@ let {
 <style>
 .quiet-button {
   padding: 10px 12px;
-  border: 1px solid #ded8cd;
+  border: 1px solid var(--theme-warning-border, #ded8cd);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink-soft);
@@ -77,7 +77,7 @@ let {
 }
 
 .quiet-button:hover {
-  border-color: #cbbda9;
+  border-color: var(--theme-warning-border, #cbbda9);
   background: var(--surface-muted);
   color: var(--ink);
   box-shadow: 0 3px 8px rgba(48, 45, 38, 0.08);
@@ -133,13 +133,13 @@ let {
 }
 
 .ai-diff-original {
-  border-color: #d9d2c7;
-  background: #f7f4ef;
+  border-color: var(--theme-warning-border, #d9d2c7);
+  background: var(--theme-warning-bg, #f7f4ef);
 }
 
 .ai-diff-proposal {
-  border-color: #c9d8ca;
-  background: #f5faf5;
+  border-color: var(--theme-success-border, #c9d8ca);
+  background: var(--theme-success-bg, #f5faf5);
 }
 
 .ai-diff-card-header {
@@ -177,7 +177,7 @@ let {
 }
 
 .ai-diff-proposal .ai-diff-badge {
-  color: #46704d;
+  color: var(--theme-success-text, #46704d);
 }
 
 .ai-diff-card pre,
@@ -196,8 +196,8 @@ let {
 }
 
 .ai-proposal-output {
-  border-color: #b9d0bb !important;
-  background: #fff !important;
+  border-color: var(--theme-success-border, #b9d0bb) !important;
+  background: var(--theme-surface-bg, #fff) !important;
 }
 
 .ai-proposal-editor {

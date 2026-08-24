@@ -602,11 +602,11 @@ async function handleSubmit(event: SubmitEvent) {
   line-height: 1.6;
 }
 .language-status.error {
-  color: #a14f42;
+  color: var(--danger);
 }
 .language-error-card {
-  border-color: #e2b7af;
-  background: #fff5f2;
+  border-color: var(--theme-danger-border, #e2b7af);
+  background: var(--theme-danger-bg, #fff5f2);
 }
 .language-actions {
   display: flex;
@@ -626,8 +626,8 @@ async function handleSubmit(event: SubmitEvent) {
   flex-wrap: wrap;
 }
 .language-danger {
-  border-color: #a14f42 !important;
-  color: #a14f42 !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
   background: transparent;
 }
 .language-loading {
@@ -883,7 +883,7 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .samples-token-remove:hover {
   background: var(--surface-muted);
-  color: #a14f42;
+  color: var(--danger);
 }
 .samples-preview {
   padding: 16px;

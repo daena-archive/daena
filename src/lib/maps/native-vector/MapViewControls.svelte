@@ -62,7 +62,7 @@ function zoomOut() {
   grid-template-rows: 1.45rem 1.45rem 1.45rem;
   gap: 1px;
   padding: 3px;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
   background: rgb(27 40 34 / 92%);
 }
@@ -93,7 +93,7 @@ function zoomOut() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
   background: rgb(27 40 34 / 92%);
 }
@@ -106,7 +106,7 @@ function zoomOut() {
   line-height: 1;
 }
 .zoom-stack button + button {
-  border-top: 1px solid #405047;
+  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
 }
 button {
   border: 0;
@@ -125,7 +125,7 @@ button:disabled {
   cursor: not-allowed;
 }
 button:focus-visible {
-  outline: 2px solid #f3d39a;
+  outline: 2px solid var(--theme-warning-border, #f3d39a);
   outline-offset: 2px;
 }
 </style>

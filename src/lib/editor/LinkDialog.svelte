@@ -191,9 +191,9 @@ function trapFocus(event: KeyboardEvent) {
   display: grid;
   gap: 14px;
   padding: 20px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--surface, #fffefa);
+  background: var(--surface);
   box-shadow: 0 24px 64px rgba(38, 42, 33, 0.24);
 }
 header {
@@ -204,7 +204,7 @@ header {
 }
 .panel-kicker {
   display: block;
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -212,7 +212,7 @@ header {
 }
 h2 {
   margin: 3px 0 0;
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font: 700 18px/1.2 var(--font-display, Georgia, serif);
 }
 header button {
@@ -221,25 +221,25 @@ header button {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
   cursor: pointer;
 }
 header button:hover,
 header button:focus-visible {
-  background: var(--surface-muted, #f4f2ec);
-  color: var(--ink, #25251f);
+  background: var(--surface-muted);
+  color: var(--ink);
   outline: 0;
 }
 .link-preview {
   display: grid;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--canvas, #f7f6f2);
+  background: var(--canvas);
 }
 .link-preview span {
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -247,7 +247,7 @@ header button:focus-visible {
 }
 .link-preview p {
   margin: 0;
-  color: var(--ink, #25251f);
+  color: var(--ink);
   font: 500 13px/1.4 var(--font-body, system-ui, sans-serif);
   word-break: break-word;
   font-style: italic;
@@ -257,7 +257,7 @@ header button:focus-visible {
   gap: 6px;
 }
 .link-field span {
-  color: var(--accent, #b4773f);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -267,23 +267,23 @@ header button:focus-visible {
   width: 100%;
   height: 38px;
   padding: 0 10px;
-  border: 1px solid var(--line, #e4e1d8);
+  border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--canvas, #f7f6f2);
-  color: var(--ink, #25251f);
+  background: var(--canvas);
+  color: var(--ink);
   font: 500 13px/1 var(--font-body, system-ui, sans-serif);
   outline: 0;
 }
 .link-field input:focus {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
 .link-field input[aria-invalid="true"] {
-  border-color: #b65b4b;
+  border-color: var(--theme-danger-border, #b65b4b);
 }
 .link-error {
   margin: -6px 0 0;
-  color: #9b4538;
+  color: var(--theme-danger-text, #9b4538);
   font: 500 11px/1.4 var(--font-body, system-ui, sans-serif);
 }
 footer {
@@ -303,23 +303,23 @@ footer button {
 }
 footer .quiet {
   background: transparent;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft);
 }
 footer .quiet:hover,
 footer .quiet:focus-visible {
-  background: var(--surface-muted, #f4f2ec);
-  color: var(--ink, #25251f);
+  background: var(--surface-muted);
+  color: var(--ink);
   outline: 0;
 }
 footer .quiet.danger {
-  color: #a14f42;
+  color: var(--danger);
 }
 footer .quiet.danger:hover {
-  background: #fdf0ed;
-  color: #8a3a2f;
+  background: var(--theme-danger-bg, #fdf0ed);
+  color: var(--theme-danger-text, #8a3a2f);
 }
 footer .primary {
-  background: var(--accent-dark, #365342);
+  background: var(--accent-dark);
   color: white;
 }
 footer .primary:disabled {

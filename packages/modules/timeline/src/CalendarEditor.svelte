@@ -538,7 +538,7 @@ $effect(() => {
 .calendar-summary h3,
 .calendar-modal-body h4 {
   margin: 0;
-  color: #302c26;
+  color: var(--theme-neutral-text, #302c26);
   font:
     650 12px Inter,
     ui-sans-serif,
@@ -549,7 +549,7 @@ $effect(() => {
 .calendar-note,
 .calendar-modal-heading p {
   margin: 0;
-  color: #8f897e;
+  color: var(--ink-muted);
   font:
     12px/1.45 Inter,
     ui-sans-serif,
@@ -558,7 +558,7 @@ $effect(() => {
 }
 .calendar-error {
   margin: 0;
-  color: #a14f42;
+  color: var(--danger);
   font:
     12px/1.45 Inter,
     ui-sans-serif,
@@ -580,18 +580,18 @@ $effect(() => {
   width: min(860px, 100%);
   max-height: min(760px, calc(100vh - 32px));
   overflow: hidden;
-  border: 1px solid #e3d9ca;
+  border: 1px solid var(--theme-warning-border, #e3d9ca);
   border-radius: 14px;
-  background: #fffefa;
+  background: var(--surface);
   box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
 }
 .calendar-modal-heading {
   align-items: flex-start;
   padding: 22px 24px 16px;
-  border-bottom: 1px solid #efe7db;
+  border-bottom: 1px solid var(--theme-warning-border, #efe7db);
 }
 .calendar-modal-heading span {
-  color: #8f897e;
+  color: var(--ink-muted);
   font:
     700 10px Inter,
     ui-sans-serif,
@@ -628,10 +628,10 @@ $effect(() => {
 }
 .calendar-presets button.selected,
 .calendar-presets button:hover {
-  border-color: #b4773f;
+  border-color: var(--accent);
 }
 .calendar-presets small {
-  color: #8f897e;
+  color: var(--ink-muted);
   font-weight: 500;
 }
 .calendar-grid {
@@ -644,7 +644,7 @@ $effect(() => {
 .calendar-season label {
   display: grid;
   gap: 4px;
-  color: #62594e;
+  color: var(--ink-muted);
   font:
     600 10px Inter,
     ui-sans-serif,
@@ -672,11 +672,11 @@ $effect(() => {
   z-index: 5;
   width: min(340px, calc(100vw - 80px));
   padding: 12px 14px;
-  border: 1px solid #e3d9ca;
+  border: 1px solid var(--theme-warning-border, #e3d9ca);
   border-radius: 10px;
-  background: #fffefa;
+  background: var(--surface);
   box-shadow: 0 12px 32px rgba(37, 37, 31, 0.16);
-  color: #302c26;
+  color: var(--theme-neutral-text, #302c26);
   font:
     12px/1.45 Inter,
     ui-sans-serif,
@@ -690,7 +690,7 @@ $effect(() => {
 }
 .calendar-help-box p {
   margin: 0;
-  color: #62594e;
+  color: var(--ink-muted);
 }
 .calendar-help-box dl {
   display: grid;
@@ -707,7 +707,7 @@ $effect(() => {
   margin: 0;
 }
 .calendar-help-box code {
-  color: #b4773f;
+  color: var(--accent);
   font:
     650 12px ui-monospace,
     SFMono-Regular,
@@ -716,15 +716,15 @@ $effect(() => {
 }
 .calendar-help-box dd {
   margin: 0;
-  color: #302c26;
+  color: var(--theme-neutral-text, #302c26);
 }
 .calendar-preview {
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid #efe7db;
+  border: 1px solid var(--theme-warning-border, #efe7db);
   border-radius: 8px;
-  background: #fcf8f1;
-  color: #302c26;
+  background: var(--theme-warning-bg, #fcf8f1);
+  color: var(--theme-neutral-text, #302c26);
   font:
     500 13px Georgia,
     serif;
@@ -732,7 +732,7 @@ $effect(() => {
 .calendar-preview span {
   display: block;
   margin-bottom: 4px;
-  color: #8f897e;
+  color: var(--ink-muted);
   font:
     700 10px Inter,
     ui-sans-serif,
@@ -760,10 +760,10 @@ $effect(() => {
 .calendar-modal input,
 .calendar-modal button,
 .calendar-summary button {
-  border: 1px solid #d9cdbd;
+  border: 1px solid var(--line-strong);
   border-radius: 7px;
-  background: #fffefa;
-  color: #55351f;
+  background: var(--surface);
+  color: var(--theme-warning-text, #55351f);
   font:
     600 11px Inter,
     ui-sans-serif,
@@ -787,17 +787,17 @@ $effect(() => {
   width: 30px;
   height: 30px;
   border: 0;
-  background: #f4eee3;
+  background: var(--surface-warm);
   font-size: 20px;
 }
 .calendar-modal-actions {
   justify-content: flex-end;
   padding: 14px 24px 18px;
-  border-top: 1px solid #efe7db;
+  border-top: 1px solid var(--theme-warning-border, #efe7db);
 }
 .calendar-modal-actions .primary {
-  border-color: #365342;
-  background: #365342;
+  border-color: var(--accent-dark);
+  background: var(--accent-dark);
   color: #fff;
 }
 @media (max-width: 720px) {

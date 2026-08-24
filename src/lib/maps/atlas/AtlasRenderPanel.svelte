@@ -559,7 +559,7 @@ onDestroy(() => {
   max-height: calc(100vh - 3rem);
   overflow: auto;
   padding: 12px 16px;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 12px;
   background: #1b2822;
   color: #edf2ec;
@@ -601,7 +601,7 @@ img,
 }
 .preview-note {
   margin: 0;
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
   font-size: 12px;
 }
 .map-busy {
@@ -635,7 +635,7 @@ img,
 }
 .epoch-year {
   width: 5.4em;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 4px 5px;
   background: #0f1a16;
@@ -665,7 +665,7 @@ img,
 .output-row input[type="number"] {
   box-sizing: border-box;
   height: 2.25rem;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 0 8px;
   background: #0f1a16;
@@ -673,11 +673,11 @@ img,
   font: 12px system-ui;
 }
 .output-row small {
-  color: #aebdb1;
+  color: var(--theme-neutral-text-muted, #aebdb1);
 }
 .style-row input {
   min-width: 10rem;
-  border: 1px solid #405047;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 8px 10px;
   background: #0f1a16;
@@ -725,14 +725,14 @@ button {
   background: rgb(255 255 255 / 10%);
 }
 .layer-toggle[aria-pressed="true"] {
-  border-color: #c9a96e;
+  border-color: var(--theme-warning-border, #c9a96e);
   background: #c9a96e;
-  color: #0d1b2a;
+  color: var(--brass-ink);
 }
 button.primary,
 button:disabled {
   background: #d5ab6c;
-  color: #243126;
+  color: var(--brass-ink);
 }
 button:disabled {
   opacity: 0.45;

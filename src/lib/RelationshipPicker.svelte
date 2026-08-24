@@ -159,7 +159,7 @@ function entityFor(id: string) {
   cursor: pointer;
 }
 .relationship-chip:hover {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   color: var(--ink);
 }
 .relationship-chip b {
@@ -178,7 +178,7 @@ function entityFor(id: string) {
   color: var(--ink-faint);
 }
 .relationship-search:focus-within {
-  border-color: #c99965;
+  border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
 .relationship-search input {

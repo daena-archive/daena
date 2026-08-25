@@ -1775,7 +1775,7 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
 }
 
 let mapsEditorMode = $state<"fmg" | "vector" | "physical">("fmg");
-let mapsVectorStart = $state<"generate" | "import">("generate");
+let mapsVectorStart = $state<"import" | "geojson">("geojson");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
 const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view));
 async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
@@ -1798,7 +1798,7 @@ async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "ph
     projectHomeOpen = false;
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
     mapsEditorMode = provider === "fmg" ? "fmg" : provider === "physical" ? "physical" : "vector";
-    mapsVectorStart = provider === "image" || provider === "vector" ? "import" : "generate";
+    mapsVectorStart = provider === "image" ? "import" : "geojson";
     mapsEditorKey = `draft-${Date.now()}`;
     sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
   } catch (cause) {
@@ -6738,8 +6738,10 @@ onMount(() => {
                   <button type="button" role="menuitem" onclick={() => void createMap("physical")}
                     >Create physical world</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
-                  <button type="button" role="menuitem" disabled>Import image</button>
-                  <button type="button" role="menuitem" disabled>Import vector map</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                    >Import vector map</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                    >Import image</button>
                 </div>{/if}
             </div>{/if}
         {/snippet}
@@ -6876,8 +6878,10 @@ onMount(() => {
                         >Create physical world</button>
                       <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
                         >Create with FMG</button>
-                      <button type="button" role="menuitem" disabled>Import image</button>
-                      <button type="button" role="menuitem" disabled>Import vector map</button>
+                      <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                        >Import vector map</button>
+                      <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                        >Import image</button>
                     </div>{/if}
                 </div>
               {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
@@ -7041,7 +7045,7 @@ onMount(() => {
                       <NativeVectorMapEditor
                         mapId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
                         picking={Boolean(mapPickPending)}
-                        start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "generate"}
+                        start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "geojson"}
                         focusLinkId={mapFocusLinkId ?? undefined}
                         onpick={(anchor) => void applyMapPick(anchor)}
                         onopen={(entityId) => void openMapEntityFromLink(entityId)}

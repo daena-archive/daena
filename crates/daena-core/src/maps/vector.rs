@@ -1016,6 +1016,77 @@ pub fn canonicalize_candidate(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
     Ok(serialize_features(&features))
 }
 
+/// Import polygonal GeoJSON as read-only base land. Feature ids and properties are ignored;
+/// only Point/Line geometries are rejected. Editing base land is deferred.
+pub fn canonicalize_imported_base(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
+    let value = parse_strict_json(bytes)?;
+    let object = object_keys(&value, "$", &["type", "features"])?;
+    require_type(object, "$", "FeatureCollection")?;
+    let features = object
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, "$.features", "must be an array"))?;
+    if features.len() > VECTOR_MAX_FEATURES {
+        return Err(fail(
+            CODE_LIMIT,
+            "$.features",
+            format!("exceeds {VECTOR_MAX_FEATURES} features"),
+        ));
+    }
+    let mut parsed = Vec::with_capacity(features.len());
+    let mut positions = 0usize;
+    for (index, feature) in features.iter().enumerate() {
+        let path = format!("$.features[{index}]");
+        let object = object_keys(feature, &path, &["type", "id", "geometry", "properties", "bbox"])?;
+        require_type(object, &path, "Feature")?;
+        let geometry = parse_geometry(
+            object.get("geometry").ok_or_else(|| {
+                fail(
+                    CODE_SOURCE_INVALID,
+                    &format!("{path}.geometry"),
+                    "is required",
+                )
+            })?,
+            &format!("{path}.geometry"),
+        )?;
+        if !matches!(
+            geometry,
+            Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
+        ) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.geometry"),
+                "imported base features must be polygonal",
+            ));
+        }
+        let count = count_positions(&geometry);
+        if count > VECTOR_MAX_FEATURE_POSITIONS {
+            return Err(fail(
+                CODE_LIMIT,
+                &path,
+                format!("feature exceeds {VECTOR_MAX_FEATURE_POSITIONS} positions"),
+            ));
+        }
+        positions += count;
+        if positions > VECTOR_MAX_POSITIONS {
+            return Err(fail(
+                CODE_LIMIT,
+                "$.features",
+                format!("exceeds {VECTOR_MAX_POSITIONS} positions"),
+            ));
+        }
+        parsed.push(Feature {
+            id: Uuid::new_v4().to_string(),
+            layer_id: "base".into(),
+            kind: "land".into(),
+            name: None,
+            geometry,
+        });
+    }
+    parsed.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(serialize_features(&parsed))
+}
+
 pub fn require_canonical_bytes(
     fs_path: &Path,
     bytes: &[u8],
@@ -1381,6 +1452,45 @@ mod tests {
         assert_eq!(feature["properties"]["daenaLayerId"], "base");
         assert_eq!(feature["properties"]["kind"], "land");
         assert!(Uuid::parse_str(feature["id"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn imported_base_strips_ids_and_properties() {
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "id": "018f89ec-25fc-7816-8b47-6f80905f2869",
+                "properties": {"name": "Continent"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0.0,0.0],[2.0,0.0],[2.0,2.0],[0.0,2.0],[0.0,0.0]]]
+                }
+            }]
+        });
+        let bytes = canonicalize_imported_base(&serde_json::to_vec(&input).unwrap()).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let feature = &value["features"][0];
+        assert_eq!(feature["properties"]["daenaLayerId"], "base");
+        assert_eq!(feature["properties"]["kind"], "land");
+        assert_eq!(feature["properties"]["name"], Value::Null);
+        assert_ne!(feature["id"], "018f89ec-25fc-7816-8b47-6f80905f2869");
+        assert!(
+            canonicalize_imported_base(
+                &serde_json::to_vec(&serde_json::json!({
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}
+                    }]
+                }))
+                .unwrap()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("polygonal")
+        );
     }
 
     #[test]

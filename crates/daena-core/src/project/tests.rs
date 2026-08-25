@@ -6335,6 +6335,75 @@ fn vector_candidate() -> Vec<u8> {
 }
 
 #[test]
+fn vector_map_import_geojson_as_readonly_base() {
+    let root = std::env::temp_dir().join(format!("daena-vector-import-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let geojson = serde_json::to_vec(&serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "id": "018f89ec-25fc-7816-8b47-6f80905f2869",
+            "properties": {"name": "Continent"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [0.0, 0.0]]]
+            }
+        }]
+    }))
+    .unwrap();
+    let request_id = Uuid::new_v4().to_string();
+    let imported = store
+        .import_vector_map("Imported".into(), geojson.clone(), Some(&request_id))
+        .unwrap();
+    let retried = store
+        .import_vector_map("Imported".into(), geojson, Some(&request_id))
+        .unwrap();
+    assert_eq!(imported.entity.id, retried.entity.id);
+    let descriptor = store
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(
+        descriptor.value["provider"]["id"],
+        crate::maps::VECTOR_PROVIDER
+    );
+    assert!(descriptor.value.get("generation").is_none());
+    let canonical = store.asset_bytes(imported.source.id.clone()).unwrap();
+    crate::maps::vector::require_canonical_bytes(
+        std::path::Path::new("assets/maps/map.geojson"),
+        &canonical,
+        &std::collections::BTreeSet::new(),
+    )
+    .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    assert_eq!(stored["features"][0]["properties"]["daenaLayerId"], "base");
+    assert_eq!(stored["features"][0]["properties"]["kind"], "land");
+    assert_ne!(
+        stored["features"][0]["id"],
+        "018f89ec-25fc-7816-8b47-6f80905f2869"
+    );
+    assert!(store
+        .import_vector_map(
+            "Bad".into(),
+            serde_json::to_vec(&serde_json::json!({
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}
+                }]
+            }))
+            .unwrap(),
+            None,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("polygonal"));
+}
+
+#[test]
 fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
     let root = std::env::temp_dir().join(format!("daena-vector-map-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

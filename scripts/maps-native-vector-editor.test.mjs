@@ -18,6 +18,11 @@ const editor = readFileSync(
   new URL("../src/lib/maps/native-vector/NativeVectorMapEditor.svelte", import.meta.url),
   "utf8",
 );
+const importer = readFileSync(
+  new URL("../src/lib/maps/native-vector/NativeVectorImporter.svelte", import.meta.url),
+  "utf8",
+);
+const client = readFileSync(new URL("../src/lib/project/client.ts", import.meta.url), "utf8");
 
 for (const required of [
   "parseVectorCollection",
@@ -64,7 +69,18 @@ assert.equal(raster.includes("classifyPhysicalWater"), true);
 assert.equal(raster.includes("MIN_VISIBLE_INLAND_WATER_CELLS"), true);
 assert.equal(runtime.includes("whenStyleReady"), true);
 assert.equal(runtime.includes("style is not done loading"), true);
-assert.equal(editor.includes("importImageMapFile") || editor.includes('start?: "generate" | "import"'), true);
+assert.equal(editor.includes("NativeVectorImporter"), true);
+assert.equal(editor.includes('start?: "import" | "geojson"'), true);
+assert.equal(importer.includes("pickImageMapFile"), true);
+assert.equal(importer.includes("pickVectorMapFile"), true);
+assert.equal(importer.includes("importVectorMapFile"), true);
+assert.equal(importer.includes('mode: "image" | "geojson"'), true);
+assert.equal(client.includes("pickImageMapFile"), true);
+assert.equal(client.includes("pickVectorMapFile"), true);
+assert.equal(client.includes("importVectorMapFile"), true);
+assert.equal(client.includes('"png", "jpg", "jpeg", "svg"'), true);
+assert.equal(client.includes('"geojson", "json"'), true);
+assert.equal(client.includes("acceptVectorMap"), false);
 assert.equal(runtime.includes('delete: "Delete"'), true);
 assert.equal(runtime.includes("flush()"), true);
 assert.equal(editor.includes("mapsRecoveryExport"), true);
@@ -72,7 +88,7 @@ assert.equal(editor.includes("deleteVectorLayer"), true);
 assert.equal(editor.includes("Reload canonical source"), true);
 assert.equal(editor.includes("Selected feature"), true);
 assert.equal(editor.includes("reduceVectorEditor"), true);
-assert.equal(editor.includes("Close"), true);
+assert.equal(editor.includes("onBack") || editor.includes("requestBack"), true);
 assert.equal(editor.includes("Full screen"), true);
 assert.equal(runtime.includes("applyView"), true);
 assert.equal(runtime.includes("setZoom"), true);
@@ -81,6 +97,10 @@ assert.equal(runtime.includes("panBy"), true);
 assert.equal(worldView.includes("onpan"), true);
 assert.equal(worldView.includes("min={0}"), true);
 assert.equal(worldView.includes("max={8}"), true);
+assert.equal(editor.includes("onpan"), true);
+assert.equal(editor.includes("min={0}"), true);
+assert.equal(editor.includes("max={8}"), true);
+assert.equal(editor.includes("lonLatToNormalized"), true);
 assert.equal(runtime.includes("resetView"), true);
 assert.equal(runtime.includes("initialView"), true);
 assert.equal(runtime.includes("onViewChange"), true);

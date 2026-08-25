@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+import type { Component, Snippet } from "svelte";
 import { ArrowLeft } from "@lucide/svelte";
 
 let {
@@ -14,7 +14,7 @@ let {
 }: {
   title: string;
   subtitle?: string;
-  icon?: any;
+  icon?: Component | null;
   backLabel?: string;
   actionsLabel?: string;
   onBack: () => void;
@@ -27,10 +27,10 @@ const actionContent = $derived(actions ?? children);
 <header class="workspace-topbar">
   <div class="workspace-topbar-brand">
     <button class="workspace-topbar-back" type="button" onclick={onBack} aria-label={backLabel} title={backLabel}>
-      <ArrowLeft size={15} strokeWidth={1.8} />
+      <ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" />
     </button>
     {#if Icon}
-      <span class="workspace-topbar-mark"><Icon size={16} strokeWidth={1.8} /></span>
+      <span class="workspace-topbar-mark"><Icon size={16} strokeWidth={1.8} aria-hidden="true" /></span>
     {/if}
     <div class="workspace-topbar-copy">
       <strong>{title}</strong>

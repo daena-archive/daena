@@ -6093,6 +6093,137 @@ impl ProjectStore {
         Ok(accepted)
     }
 
+    /// Imports polygonal GeoJSON as a native vector map with read-only base land.
+    /// Does not record generator provenance; editing base land is deferred.
+    pub fn import_vector_map(
+        &self,
+        name: String,
+        bytes: Vec<u8>,
+        request_id: Option<&str>,
+    ) -> Result<AcceptedVectorMap, CoreError> {
+        let upload_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "name": name,
+                "uploadHash": upload_hash,
+                "kind": "import-vector-geojson",
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(accepted) = self.committed_mutation_with_fingerprint::<AcceptedVectorMap>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(accepted);
+        }
+        if bytes.len() > crate::maps::VECTOR_MAX_BYTES {
+            return Err(crate::maps::vector::fail(
+                crate::maps::vector::CODE_LIMIT,
+                "$",
+                "source asset exceeds 16 MiB",
+            ));
+        }
+        let canonical = crate::maps::vector::canonicalize_imported_base(&bytes)?;
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&canonical));
+        let size = canonical.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, canonical.as_slice(), Some(&content_hash))?;
+        }
+        let entity_id = Uuid::new_v4().to_string();
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{}-map.geojson", Uuid::new_v4());
+        let descriptor = serde_json::json!({
+            "schemaVersion": 1,
+            "provider": {
+                "id": crate::maps::VECTOR_PROVIDER,
+                "adapterVersion": 1,
+                "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
+            },
+            "sourceAssetId": asset_id,
+            "previewAssetId": null,
+            "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+        });
+        let layers = serde_json::json!({"schemaVersion": 1, "layers": []});
+        let entity = Entity {
+            id: entity_id.clone(),
+            name: name.trim().into(),
+            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: crate::maps::VECTOR_FILENAME.into(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: crate::maps::VECTOR_MIME.into(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
+            revision: String::new(),
+        };
+        let accepted = AcceptedVectorMap {
+            entity: entity.clone(),
+            source: asset.clone(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&accepted)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO entities(id,name,entity_type,created_at,updated_at) VALUES (?1,?2,?3,?4,?4)",
+            params![entity_id, entity.name, crate::maps::MAP_ENTITY_TYPE, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, entity_id, crate::maps::MAP_NAMESPACE, crate::maps::VECTOR_FILENAME, content_hash, size, crate::maps::VECTOR_MIME, relative_path, now],
+        )?;
+        crate::maps::validate_field(&transaction, &entity_id, "map", &descriptor)?;
+        crate::maps::validate_field(&transaction, &entity_id, "layers", &layers)?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "map",
+                encode_field_value(&descriptor)?
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4)",
+            params![
+                entity_id,
+                crate::maps::MAP_NAMESPACE,
+                "layers",
+                encode_field_value(&layers)?
+            ],
+        )?;
+        transaction.commit()?;
+        self.refresh_maps_projection_for_entities(std::slice::from_ref(&accepted.entity.id))?;
+        self.notify_export_worker()?;
+        let mut accepted = accepted;
+        accepted.entity.revision = self.revision_for_entity(&accepted.entity.id)?;
+        accepted.source.revision = self.revision_for_asset(&accepted.source.id)?;
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&accepted)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(accepted)
+    }
+
     pub fn replay_accepted_vector_map(
         &self,
         request_id: Option<&str>,

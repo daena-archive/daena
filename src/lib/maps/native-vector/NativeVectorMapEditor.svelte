@@ -1,7 +1,33 @@
 <script lang="ts">
-import { onMount, tick } from "svelte";
+import { onMount, tick, type Component } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { Map as MapIcon } from "@lucide/svelte";
+import {
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  CircleHelp,
+  Download,
+  Eye,
+  EyeOff,
+  Hexagon,
+  Lock,
+  LockOpen,
+  Map as MapIcon,
+  Maximize2,
+  Minimize2,
+  Mountain,
+  MousePointer2,
+  Move,
+  Pencil,
+  Redo2,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Slash,
+  SquarePlus,
+  Trash2,
+  Undo2,
+} from "@lucide/svelte";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   project,
@@ -14,7 +40,7 @@ import {
   type AtlasRenderRequest,
 } from "$lib/project/client";
 import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
-import NativeVectorGenerator from "./NativeVectorGenerator.svelte";
+import NativeVectorImporter from "./NativeVectorImporter.svelte";
 import {
   createNativeVectorEditor,
   liveNativeVectorEditorCount,
@@ -43,7 +69,11 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
-import { physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from "./coordinates";
+import {
+  lonLatToNormalized,
+  physicalWorldOverlayCoordinates,
+  type ImageOverlayCoordinates,
+} from "./coordinates";
 import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
@@ -53,7 +83,7 @@ import MapViewControls from "./MapViewControls.svelte";
 let {
   mapId,
   picking = false,
-  start = "generate",
+  start = "geojson",
   focusLinkId,
   oncreated,
   oncancel,
@@ -63,7 +93,7 @@ let {
 }: {
   mapId?: string;
   picking?: boolean;
-  start?: "generate" | "import";
+  start?: "import" | "geojson";
   focusLinkId?: string;
   oncreated?: (map: Entity) => void;
   oncancel?: () => void;
@@ -153,35 +183,9 @@ const EPOCH_STEP = 10;
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
 );
+const brandIcon = $derived((physicalMap ? Mountain : MapIcon) as Component);
+const iconProps = { size: 15, strokeWidth: 1.8, "aria-hidden": true } as const;
 
-const icons = {
-  back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
-  pan: '<path d="M12 2v20"/><path d="m15 19-3 3-3-3"/><path d="m19 9 3 3-3 3"/><path d="M2 12h20"/><path d="m5 9-3 3 3 3"/><path d="m9 5 3-3 3 3"/>',
-  select: '<path d="M4 4 16 9.5 10.5 11 9.5 16Z"/>',
-  point: '<circle cx="12" cy="12" r="3.5"/>',
-  line: '<path d="M5 19 19 5"/>',
-  polygon: '<path d="M12 3 20 8.5v7L12 21 4 15.5v-7Z"/>',
-  freehand: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
-  undo: '<path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.3L3 13"/>',
-  redo: '<path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.3L21 13"/>',
-  addLayer: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M8 12h8"/><path d="M12 8v8"/>',
-  save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7H7v7"/><path d="M7 3v4h8"/>',
-  fullscreen:
-    '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
-  exitFullscreen:
-    '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
-  show: '<path d="M2.06 12a10.94 10.94 0 0 1 20 0"/><path d="M2.06 12a10.94 10.94 0 0 0 20 0"/><circle cx="12" cy="12" r="3"/>',
-  hide: '<path d="M10.7 5.1A11 11 0 0 1 12 5c5 0 9.3 3.1 11 7-.5 1.2-1.2 2.3-2.1 3.2"/><path d="M17.9 17.9A11 11 0 0 1 12 19c-5 0-9.3-3.1-11-7 1-2.3 2.6-4.2 4.6-5.5"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
-  lock: '<rect width="14" height="10" x="5" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
-  unlock: '<rect width="14" height="10" x="5" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
-  rename: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
-  up: '<path d="m18 15-6-6-6 6"/>',
-  down: '<path d="m6 9 6 6 6-6"/>',
-  remove:
-    '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
-  exportAtlas: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
-  chevron: '<path d="m6 9 6 6 6-6"/>',
-} as const;
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(
   Boolean(activeLayer) && !activeLayer?.locked && !picking && !immutablePhysicalLayerIds.has(activeLayer?.id ?? ""),
@@ -538,7 +542,10 @@ function mountEditor() {
       return background;
     },
     onViewChange(next) {
-      defaultView = { ...defaultView, zoom: next.zoom };
+      defaultView = {
+        center: lonLatToNormalized(next.center[0], next.center[1]),
+        zoom: next.zoom,
+      };
     },
   });
   if ("error" in created) {
@@ -1033,24 +1040,11 @@ onMount(() => {
 });
 </script>
 
-{#snippet glyph(markup: string)}
-  <svg
-    aria-hidden="true"
-    width="15"
-    height="15"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round">{@html markup}</svg>
-{/snippet}
-
 {#if !mapId}
-  <NativeVectorGenerator
+  <NativeVectorImporter
+    mode={start === "import" ? "image" : "geojson"}
     {oncreated}
     {oncancel}
-    autostartImport={start === "import"}
     onfullscreen={(enabled) => void setFullscreen(enabled)}
     {fullscreen} />
 {:else}
@@ -1064,7 +1058,7 @@ onMount(() => {
           : physicalMap
             ? "Generated world map"
             : "Map editor"}
-      icon={MapIcon}
+      icon={brandIcon}
       onBack={() => void requestBack()}
       actionsLabel={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
       <div class="header-actions" data-workspace-topbar-actions>
@@ -1076,7 +1070,7 @@ onMount(() => {
             aria-pressed={tool === "static"}
             aria-label="Pan"
             title="Pan"
-            onclick={() => setTool("static")}>{@render glyph(icons.pan)}</button>
+            onclick={() => setTool("static")}><Move {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1084,7 +1078,7 @@ onMount(() => {
             aria-pressed={tool === "select"}
             aria-label="Select"
             title="Select"
-            onclick={() => setTool("select")}>{@render glyph(icons.select)}</button>
+            onclick={() => setTool("select")}><MousePointer2 {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1093,7 +1087,7 @@ onMount(() => {
             aria-label="Point"
             title="Point"
             disabled={!canDraw}
-            onclick={() => setTool("point")}>{@render glyph(icons.point)}</button>
+            onclick={() => setTool("point")}><Circle {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1102,7 +1096,7 @@ onMount(() => {
             aria-label="Line"
             title="Line"
             disabled={!canDraw}
-            onclick={() => setTool("linestring")}>{@render glyph(icons.line)}</button>
+            onclick={() => setTool("linestring")}><Slash {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1111,7 +1105,7 @@ onMount(() => {
             aria-label="Polygon"
             title="Polygon"
             disabled={!canDraw}
-            onclick={() => setTool("polygon")}>{@render glyph(icons.polygon)}</button>
+            onclick={() => setTool("polygon")}><Hexagon {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1120,32 +1114,46 @@ onMount(() => {
             aria-label="Freehand"
             title="Freehand"
             disabled={!canDraw}
-            onclick={() => setTool("freehand")}>{@render glyph(icons.freehand)}</button>
+            onclick={() => setTool("freehand")}><Pencil {...iconProps} /></button>
           <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
-            >{@render glyph(icons.undo)}</button>
+            ><Undo2 {...iconProps} /></button>
           <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
-            >{@render glyph(icons.redo)}</button>
+            ><Redo2 {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
             aria-label="Add layer"
             title="Add layer"
             disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
-            onclick={() => void addLayer()}>{@render glyph(icons.addLayer)}</button>
+            onclick={() => void addLayer()}><SquarePlus {...iconProps} /></button>
           <button
             type="button"
             class="icon-button save"
             aria-label={busy ? "Saving…" : dirty ? "Save" : "Saved"}
             title={busy ? "Saving…" : dirty ? "Save" : "Saved"}
             disabled={busy || !dirty}
-            onclick={() => void save()}>{@render glyph(icons.save)}</button>
+            onclick={() => void save()}><Save {...iconProps} /></button>
         {/if}
         {#if studioOpen}
           <button type="button" class="text-button" onclick={() => (studioOpen = false)}>Open Physical Map</button>
-          <button type="button" class="text-button" onclick={() => studioApi?.refresh()}>Refresh Atlas</button>
-          <button type="button" class="text-button" onclick={() => studioApi?.requestRegenerate()}
-            >Regenerate cache</button>
-          <button type="button" class="text-button" onclick={() => studioApi?.toggleHelp()}>Keyboard help</button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Refresh Atlas"
+            title="Refresh Atlas"
+            onclick={() => studioApi?.refresh()}><RefreshCw {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Regenerate cache"
+            title="Regenerate cache"
+            onclick={() => studioApi?.requestRegenerate()}><RotateCcw {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Keyboard help"
+            title="Keyboard help"
+            onclick={() => studioApi?.toggleHelp()}><CircleHelp {...iconProps} /></button>
         {/if}
         {#if atlasSupported}
           <button
@@ -1161,7 +1169,7 @@ onMount(() => {
                 if (request) studioExport = request;
               }
               atlasOpen = !atlasOpen;
-            }}>{@render glyph(icons.exportAtlas)}</button>
+            }}><Download {...iconProps} /></button>
         {/if}
         <button
           type="button"
@@ -1170,7 +1178,7 @@ onMount(() => {
           aria-label={fullscreen ? "Exit full screen" : "Full screen"}
           aria-pressed={fullscreen}
           title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
-          onclick={toggleFullscreen}>{@render glyph(fullscreen ? icons.exitFullscreen : icons.fullscreen)}</button>
+          onclick={toggleFullscreen}>{#if fullscreen}<Minimize2 {...iconProps} />{:else}<Maximize2 {...iconProps} />{/if}</button>
       </div>
     </WorkspaceTopbar>
     {#if conflict}
@@ -1213,7 +1221,7 @@ onMount(() => {
             aria-expanded={!layersCollapsed}
             onclick={() => (layersCollapsed = !layersCollapsed)}>
             <strong id="vector-layers-heading">Vector layers</strong>
-            <span class="aside-chevron" class:collapsed={layersCollapsed}>{@render glyph(icons.chevron)}</span>
+            <span class="aside-chevron" class:collapsed={layersCollapsed}><ChevronDown {...iconProps} /></span>
           </button>
           {#if !layersCollapsed}
             {#if physicalMap}
@@ -1251,7 +1259,7 @@ onMount(() => {
                       aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
                       title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
                       onclick={() => void toggleVisible(layer)}
-                      >{@render glyph(layer.defaultVisible ? icons.show : icons.hide)}</button>
+                      >{#if layer.defaultVisible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
                     {#if !immutablePhysicalLayerIds.has(layer.id)}
                       <button
                         type="button"
@@ -1260,31 +1268,31 @@ onMount(() => {
                         aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
                         title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
                         onclick={() => void toggleLock(layer)}
-                        >{@render glyph(layer.locked ? icons.lock : icons.unlock)}</button>
+                        >{#if layer.locked}<Lock {...iconProps} />{:else}<LockOpen {...iconProps} />{/if}</button>
                       <button
                         type="button"
                         class="icon-button"
                         aria-label={`Rename ${layer.name}`}
                         title="Rename"
-                        onclick={() => (renamingId = layer.id)}>{@render glyph(icons.rename)}</button>
+                        onclick={() => (renamingId = layer.id)}><Pencil {...iconProps} /></button>
                       <button
                         type="button"
                         class="icon-button"
                         aria-label={`Move ${layer.name} up`}
                         title="Up"
-                        onclick={() => void moveLayer(layer, -1)}>{@render glyph(icons.up)}</button>
+                        onclick={() => void moveLayer(layer, -1)}><ChevronUp {...iconProps} /></button>
                       <button
                         type="button"
                         class="icon-button"
                         aria-label={`Move ${layer.name} down`}
                         title="Down"
-                        onclick={() => void moveLayer(layer, 1)}>{@render glyph(icons.down)}</button>
+                        onclick={() => void moveLayer(layer, 1)}><ChevronDown {...iconProps} /></button>
                       <button
                         type="button"
                         class="icon-button"
                         aria-label={`Delete ${layer.name}`}
                         title="Delete"
-                        onclick={() => void removeLayer(layer)}>{@render glyph(icons.remove)}</button>
+                        onclick={() => void removeLayer(layer)}><Trash2 {...iconProps} /></button>
                     {/if}
                   </div>
                   {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
@@ -1354,7 +1362,7 @@ onMount(() => {
               aria-expanded={!historyCollapsed}
               onclick={() => (historyCollapsed = !historyCollapsed)}>
               <strong>Natural history</strong>
-              <span class="aside-chevron" class:collapsed={historyCollapsed}>{@render glyph(icons.chevron)}</span>
+              <span class="aside-chevron" class:collapsed={historyCollapsed}><ChevronDown {...iconProps} /></span>
             </button>
             {#if !historyCollapsed}
               <div class="event-control" aria-label="Materialize natural history">
@@ -1510,10 +1518,13 @@ onMount(() => {
           {#if editor}
             <MapViewControls
               zoom={defaultView.zoom}
+              min={0}
+              max={8}
               onzoom={(zoom) => {
                 defaultView = { ...defaultView, zoom };
                 editor?.setZoom(zoom);
-              }} />
+              }}
+              onpan={(longitude, latitude) => editor?.panBy(longitude, latitude)} />
           {/if}
           {#if busy}
             <div class="map-busy" role="status"><strong>Loading…</strong></div>
@@ -1678,7 +1689,7 @@ aside {
   padding: 14px;
   overflow: auto;
   border-right: 1px solid var(--theme-neutral-border-strong, #405047);
-  background: #202c27;
+  background: #1b2822;
 }
 .hazard-legend {
   margin: 0;

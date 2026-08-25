@@ -1,5 +1,5 @@
 <script lang="ts">
-import { ChevronDown } from "@lucide/svelte";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, Plus } from "@lucide/svelte";
 
 let {
   zoom,
@@ -16,6 +16,7 @@ let {
 } = $props();
 
 const ZOOM_STEP = 1;
+const iconProps = { size: 14, strokeWidth: 1.8, "aria-hidden": true } as const;
 
 function zoomIn() {
   onzoom(Math.min(max, zoom + ZOOM_STEP));
@@ -30,16 +31,20 @@ function zoomOut() {
   {#if onpan}
     <div class="pan-pad" role="group" aria-label="Pan map">
       <button type="button" class="north" aria-label="Pan north" title="Pan north" onclick={() => onpan(0, 15)}
-        >⌃</button>
-      <button type="button" class="west" aria-label="Pan west" title="Pan west" onclick={() => onpan(-30, 0)}>‹</button>
-      <button type="button" class="east" aria-label="Pan east" title="Pan east" onclick={() => onpan(30, 0)}>›</button>
+        ><ChevronUp {...iconProps} /></button>
+      <button type="button" class="west" aria-label="Pan west" title="Pan west" onclick={() => onpan(-30, 0)}
+        ><ChevronLeft {...iconProps} /></button>
+      <button type="button" class="east" aria-label="Pan east" title="Pan east" onclick={() => onpan(30, 0)}
+        ><ChevronRight {...iconProps} /></button>
       <button type="button" class="south" aria-label="Pan south" title="Pan south" onclick={() => onpan(0, -15)}
-        ><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>
+        ><ChevronDown {...iconProps} /></button>
     </div>
   {/if}
   <div class="zoom-stack" role="group" aria-label="Zoom">
-    <button type="button" aria-label="Zoom in" title="Zoom in" disabled={zoom >= max} onclick={zoomIn}>+</button>
-    <button type="button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= min} onclick={zoomOut}>−</button>
+    <button type="button" aria-label="Zoom in" title="Zoom in" disabled={zoom >= max} onclick={zoomIn}
+      ><Plus {...iconProps} /></button>
+    <button type="button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= min} onclick={zoomOut}
+      ><Minus {...iconProps} /></button>
   </div>
 </div>
 
@@ -70,7 +75,6 @@ function zoomOut() {
   display: grid;
   place-items: center;
   padding: 0;
-  font-size: 11px;
   line-height: 1;
 }
 .north {
@@ -98,11 +102,12 @@ function zoomOut() {
   background: rgb(27 40 34 / 92%);
 }
 .zoom-stack button {
+  display: grid;
+  place-items: center;
   width: 2.25rem;
   height: 2.25rem;
   padding: 0;
   border-radius: 0;
-  font-size: 1.15rem;
   line-height: 1;
 }
 .zoom-stack button + button {

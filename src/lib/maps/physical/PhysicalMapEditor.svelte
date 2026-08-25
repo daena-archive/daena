@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { Mountain } from "@lucide/svelte";
+import { CircleHelp, Mountain } from "@lucide/svelte";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   project,
@@ -329,7 +329,7 @@ onMount(() => {
           }}
           onfocus={() => {
             helpSeen = true;
-          }}>?</button>
+          }}><CircleHelp size={14} strokeWidth={1.8} aria-hidden="true" /></button>
         <p id="physical-map-hint" role="tooltip">
           This preview locks the world’s physical shape—coasts, climate, ice, rivers, and the rest. The accepted,
           exportable map is a high-resolution render with far more detail and quality.

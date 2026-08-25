@@ -1154,6 +1154,22 @@ export const project = {
   openDirectory: (path: string) => invoke<ProjectInfo>("project_open_directory", { path }),
   pickDirectory: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: true, multiple: false } }),
   pickFile: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: false, multiple: false } }),
+  pickImageMapFile: () =>
+    invoke<DialogSelection>("plugin:dialog|open", {
+      options: {
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Map image", extensions: ["png", "jpg", "jpeg", "svg"] }],
+      },
+    }),
+  pickVectorMapFile: () =>
+    invoke<DialogSelection>("plugin:dialog|open", {
+      options: {
+        directory: false,
+        multiple: false,
+        filters: [{ name: "GeoJSON", extensions: ["geojson", "json"] }],
+      },
+    }),
   create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
@@ -1382,13 +1398,8 @@ export const project = {
   listSharedAssets: () => invoke<Asset[]>("project_list_shared_assets"),
   importImageMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset; preview: Asset }>("project_import_image_map_file", { sourcePath }),
-  acceptVectorMap: (name: string, candidateJson: string, generation: unknown, options?: MutationOptions) =>
-    invoke<{ entity: Entity; source: Asset }>("project_accept_vector_map", {
-      name,
-      candidateJson,
-      generation,
-      requestId: requestId(options),
-    }),
+  importVectorMapFile: (sourcePath: string) =>
+    invoke<{ entity: Entity; source: Asset }>("project_import_vector_map_file", { sourcePath }),
   generatePhysicalMap: (input: PhysicalGenerationInput, requestId = crypto.randomUUID()) =>
     invoke<PhysicalJobStatus>("project_physical_generate", { input, requestId }),
   physicalMapStatus: (jobId: string) => invoke<PhysicalJobStatus>("project_physical_status", { jobId }),

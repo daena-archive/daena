@@ -7699,6 +7699,34 @@ async fn project_import_image_map_file(
 }
 
 #[tauri::command]
+async fn project_import_vector_map_file(
+    state: tauri::State<'_, SharedCore>,
+    source_path: String,
+) -> Result<daena_core::AcceptedVectorMap, String> {
+    let path = PathBuf::from(&source_path);
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Vector map")
+        .to_string();
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("geojson" | "json") => {}
+        _ => return Err("Choose a GeoJSON (.geojson or .json) file".into()),
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("read GeoJSON: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .import_vector_map(name, bytes, None)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_accept_vector_map(
     state: tauri::State<'_, SharedCore>,
     name: String,
@@ -9871,6 +9899,7 @@ pub fn run() {
             project_list_assets,
             project_list_shared_assets,
             project_import_image_map_file,
+            project_import_vector_map_file,
             project_accept_vector_map,
             project_physical_generate,
             project_physical_status,

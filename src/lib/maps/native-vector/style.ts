@@ -32,7 +32,10 @@ export function layerFilter(layerId: string): FilterSpecification {
 
 export function nativeBaseLayerVisibility(layers: readonly VectorLayerDefinition[]): "visible" | "none" {
   const base = layers.find((layer) => layer.id === BASE_LAYER_ID);
-  return base?.defaultVisible ? "visible" : "none";
+  // Imported/accepted vector maps omit a base row in maps:layers; show GeoJSON base
+  // unless an explicit base layer definition hides it (physical maps).
+  if (!base) return "visible";
+  return base.defaultVisible ? "visible" : "none";
 }
 
 export function nativeVectorStyle(layers: readonly VectorLayerDefinition[]): StyleSpecification {

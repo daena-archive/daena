@@ -52,8 +52,8 @@ for (const required of [
 assert.ok(source.includes("PhysicalWorldView"), "generate preview must use PhysicalWorldView");
 assert.ok(native.includes("PhysicalWorldView"), "saved physical maps must use PhysicalWorldView");
 assert.ok(
-  readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes("openlayers-runtime"),
-  "physical world view must use the OpenLayers runtime",
+  readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes("openlayers/MapAdapter"),
+  "physical world view must use the OpenLayers MapAdapter",
 );
 assert.ok(
   readFileSync(resolve(root, "src/lib/maps/physical/PhysicalWorldView.svelte"), "utf8").includes("setBackground"),

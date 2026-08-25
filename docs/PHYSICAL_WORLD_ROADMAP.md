@@ -10,7 +10,7 @@ This roadmap builds on the current physical-map product boundaries defined by:
 
 - `NATIVE_MAP_GENERATOR.md`
 - `ATLAS_MAP_RENDERING.md`
-- `MAP_INTEGRATION_PLAN.md`
+- `OPENLAYERS_MAPS.md`
 - `PLUGIN_PLATFORM_PLAN.md`
 - `AI_INTEGRATION.md`
 

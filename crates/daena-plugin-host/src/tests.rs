@@ -919,50 +919,6 @@ fn asset_list_is_authorized_for_read_capability() {
     );
 }
 #[test]
-fn maps_asset_create_is_authorized_for_write_capability() {
-    let mut host = host();
-    let session = host
-        .bootstrap("com.example.one", "project", "plugin://one")
-        .unwrap();
-    let denied = RpcRequest {
-        rpc_version: 1,
-        session_id: session.id,
-        request_id: "maps-create".into(),
-        method: "maps.asset.create.begin".into(),
-        payload: serde_json::json!({"mapEntityId": "map-1", "size": 42}),
-    };
-    assert_eq!(
-        host.rpc("plugin://one", &denied).error.unwrap().code,
-        "capability.denied"
-    );
-    host.grants
-        .set(
-            "project",
-            "com.example.one",
-            &["asset.write:self".into()],
-            ["asset.write:self".into()]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<String>>(),
-        )
-        .unwrap();
-    let session = host
-        .bootstrap("com.example.one", "project", "plugin://one")
-        .unwrap();
-    let granted = RpcRequest {
-        session_id: session.id,
-        method: "maps.asset.create.commit".into(),
-        payload: serde_json::json!({"handle": "handle-1", "contentHash": "sha256:abc"}),
-        ..denied
-    };
-    let response = host.rpc("plugin://one", &granted);
-    assert!(
-        response.ok,
-        "expected authorization to succeed, got: {:?}",
-        response.error.as_ref().map(|error| error.code.clone())
-    );
-    assert_eq!(response.error, None);
-}
-#[test]
 fn maps_locations_and_reconcile_are_authorized_for_read_capability() {
     let mut host = host();
     let session = host
@@ -1876,8 +1832,6 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("search.query", &empty, &["search.query"]),
         ("asset.replace.commit", &empty, &["asset.write:self"]),
         ("asset.transfer.cancel", &empty, &[]),
-        ("maps.asset.create.begin", &empty, &["asset.write:self"]),
-        ("maps.asset.create.commit", &empty, &["asset.write:self"]),
         (
             "maps.image.import.begin",
             &empty,

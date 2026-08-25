@@ -4,16 +4,21 @@
 - Date: 2026-08-15
 - Scope: contract decisions for the disposable spike; production provider
   registration remains deferred
+- Note (2026-08-26): The former `azgaar-fmg` provider and Fantasy Map Generator
+  webview integration have been removed from the product. Live map providers are
+  `daena-openlayers` and `daena-physical`. Historical wording below that still
+  names FMG or `daena-vector` describes the spike-era baseline only.
 
 ## Context
 
 Daena already stores maps as ordinary `daena.maps:map` entities. The map
 descriptor, content-addressed assets, `maps:layers`, normalized anchors,
 revisions, request IDs, checkpoint export, and provider dispatch are existing
-contracts. FMG remains the `azgaar-fmg` provider and Native Vector Maps remain
-the `daena-vector` GeoJSON provider. The physical spike must prove its numeric
-and source boundaries without adding a third production descriptor branch,
-RPC method, SQLite table, or frontend mutation path.
+contracts. At the time of this ADR, FMG was still the `azgaar-fmg` provider and
+Native Vector Maps used the then-named `daena-vector` GeoJSON provider. The
+physical spike must prove its numeric and source boundaries without adding a
+third production descriptor branch, RPC method, SQLite table, or frontend
+mutation path.
 
 The current Native Vector provenance contract is generator version `1` in the
 TypeScript generator and Rust validator. The SDK declaration and one Tauri
@@ -60,7 +65,7 @@ identity and asset ownership model:
 }
 ```
 
-This JSON is a reserved contract, not a production schema change in iteration 0. Existing FMG and vector descriptors remain byte- and behavior-compatible.
+This JSON is a reserved contract, not a production schema change in iteration 0. Existing vector descriptors remain byte- and behavior-compatible with the then-current provider.
 
 ### 2. Canonical source container
 

@@ -1343,7 +1343,7 @@ fn core_migration(manifest: &PluginManifest) -> Result<Option<Migration>, String
 
 #[test]
 fn sanitize_mutation_request_id_keeps_only_uuids() {
-    assert_eq!(sanitize_mutation_request_id("maps-fmg-1"), None);
+    assert_eq!(sanitize_mutation_request_id("maps-request-1"), None);
     assert_eq!(sanitize_mutation_request_id(""), None);
     assert_eq!(sanitize_mutation_request_id("not-a-uuid"), None);
     let uuid = "f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11";
@@ -1411,7 +1411,12 @@ fn physical_events_survive_module_lifecycle_and_clean_rebuild() {
         .is_empty());
     assert!(project.is_module_enabled("daena.maps").unwrap());
 
-    let map = project.create_map("Materialization map".into()).unwrap();
+    let map = project
+        .create_entity(CreateEntity {
+            name: "Materialization map".into(),
+            entity_type: Some(daena_core::maps::MAP_ENTITY_TYPE.into()),
+        })
+        .unwrap();
     let event = project
         .create_entries_with_request(
             vec![daena_core::CreateEntry {
@@ -1550,7 +1555,8 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
     let query = url.query().unwrap();
     assert!(query.contains("width=800"));
     assert!(query.contains("height=600"));
-    assert!(query.contains("daena=1"));
+    assert!(query.contains("hostSurface=daena.maps%2Feditor"));
+    assert!(!query.contains("daena=1"));
 
     let map_url = plugin_webview_url(
         &policy,
@@ -2003,146 +2009,6 @@ fn bundled_plugin_protocol_serves_only_embedded_assets() {
 }
 
 #[test]
-fn bundled_maps_shell_is_deterministic_and_provider_fail_closed() {
-    let request = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/index.html")
-        .body(Vec::new())
-        .unwrap();
-    let response = plugin_asset_response("daena.maps", &request, None, None);
-    let body = String::from_utf8(response.body().clone()).unwrap();
-    assert_eq!(response.status(), 200);
-    assert!(body.contains("Azgaar's Fantasy Map Generator"));
-    assert!(body.contains("daena-bridge.js"));
-    assert!(!body.contains("daena-inline.css"));
-    assert!(!body.contains("googletagmanager.com"));
-    assert!(!body.contains("dataLayer"));
-    assert!(
-        body.find("<script defer src=\"daena-bridge.js\">").unwrap()
-            < body
-                .find("<script defer src=\"daena-inline-bootstrap.js\">")
-                .unwrap()
-    );
-    assert!(
-        body.find("<script defer src=\"daena-inline-bootstrap.js\">")
-            .unwrap()
-            < body.find("<script type=\"module\"").unwrap()
-    );
-    assert!(
-        body.find("<base href=\"/dist/ui/fmg/").unwrap()
-            < body.find("<script defer src=\"daena-bridge.js\">").unwrap()
-    );
-    assert!(body.contains("rel=\"stylesheet\"\n      href=\"index.css?v=1.113.1\""));
-    assert!(!body.contains("rel=\"preload\""));
-    assert_eq!(response.headers().get("Content-Security-Policy").unwrap(), "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'");
-
-    let bridge = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/fmg/daena-bridge.js")
-        .body(Vec::new())
-        .unwrap();
-    let bridge_response = plugin_asset_response("daena.maps", &bridge, None, None);
-    assert_eq!(bridge_response.status(), 200);
-    let bridge_body = String::from_utf8_lossy(bridge_response.body());
-    assert!(bridge_body.contains("asset.replace.begin"));
-    assert!(bridge_body.contains("requestedMapEntityId"));
-    assert!(bridge_body.contains("requested map is unavailable"));
-    assert!(bridge_body.contains("metadata.size === 0"));
-    assert!(bridge_body.contains("daena-map-diagnostic"));
-    assert!(bridge_body.contains("asset.replace.commit"));
-    assert!(bridge_body.contains("waitForUploadedPack"));
-    assert!(bridge_body.contains(r#"asset.list", { entityId: map.id, namespace: "maps" }"#));
-    assert!(bridge_body.contains("Daena Maps provider startup failed"));
-    assert!(bridge_body.contains("document.body.appendChild(overlayRoot)"));
-    assert!(bridge_body.contains("position:fixed;inset:0"));
-    assert!(!bridge_body.contains("host.style.position"));
-    assert!(bridge_body.contains("daena-save-chrome"));
-    assert!(bridge_body.contains("commitFirstSave"));
-    assert!(bridge_body.contains("data-daena-link-open"));
-    assert!(bridge_body.contains("data-daena-fullscreen"));
-    assert!(bridge_body.contains("publishUiState(\"fullscreen\""));
-    assert!(bridge_body.contains("data-daena-back"));
-    assert!(bridge_body.contains("publishUiState(\"back\""));
-    assert!(bridge_body.contains("data-daena-back-confirm"));
-    assert!(bridge_body.contains("Discard unsaved progress?"));
-    assert!(bridge_body.contains(">Discard</button>"));
-    assert!(bridge_body.contains(">Cancel</button>"));
-    assert!(bridge_body.contains("linkArming"));
-    assert!(bridge_body.contains("data-daena-link-x"));
-    assert!(bridge_body.contains("daena-link-chrome"));
-    assert!(bridge_body.contains("maps.locations.upsert"));
-    assert!(bridge_body.contains("maps.locations.create_and_link"));
-    assert!(bridge_body.contains("startPick"));
-    assert!(bridge_body.contains("showNameForm"));
-    assert!(bridge_body.contains("data-daena-name-form"));
-    assert!(!bridge_body.contains("promptMapName"));
-    assert!(bridge_body.contains(r#"rpc("entity.create""#));
-    assert!(!bridge_body.contains(r#"fields: [{ namespace: "maps", key: "map""#));
-    assert!(!bridge_body.contains("if (!mapAsset) { await window.generateMapOnLoad?.(); return; }"));
-
-    let bootstrap = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/fmg/daena-inline-bootstrap.js")
-        .body(Vec::new())
-        .unwrap();
-    let bootstrap_response = plugin_asset_response("daena.maps", &bootstrap, None, None);
-    assert_eq!(bootstrap_response.status(), 200);
-    let bootstrap_body = String::from_utf8_lossy(bootstrap_response.body());
-    assert!(bootstrap_body.contains("element.style.cssText"));
-    assert!(bootstrap_body.contains("data-daena-event"));
-    assert!(bootstrap_body.contains("element.addEventListener"));
-    assert!(bootstrap_body.contains("decodeURIComponent(element.dataset.daenaStyle)"));
-    assert!(bootstrap_body.contains("querySelectorAll(\"[data-daena-style]\")"));
-
-    let main = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/fmg/main.js")
-        .body(Vec::new())
-        .unwrap();
-    let main_response = plugin_asset_response("daena.maps", &main, None, None);
-    assert_eq!(main_response.status(), 200);
-    let main_body = String::from_utf8_lossy(main_response.body());
-    assert!(main_body.contains("function toggleAssistant()"));
-    assert!(main_body.contains("if (DAENA_HOST) return;"));
-    assert!(main_body.contains(r#"!window.DAENA_HOST && "serviceWorker""#));
-    assert!(main_body.contains("hideLoading();\n    await checkLoadParameters();"));
-    assert!(main_body.contains("!location.hostname && !window.DAENA_HOST"));
-    assert!(!main_body.contains("openwidget.min.js"));
-    assert!(!main_body.contains("if (!window.DAENA_HOST) hideLoading();"));
-
-    let missing = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/fmg/not-present.js")
-        .body(Vec::new())
-        .unwrap();
-    assert_eq!(
-        plugin_asset_response("daena.maps", &missing, None, None).status(),
-        404
-    );
-
-    for path in [
-        "/dist/ui/index.css",
-        "/dist/ui/manifest.webmanifest",
-        "/Fantasy-Map-Generator/index-B5l1uyn4.js",
-    ] {
-        let request = tauri::http::Request::builder()
-            .uri(format!("plugin://daena.maps{path}"))
-            .body(Vec::new())
-            .unwrap();
-        assert_eq!(
-            plugin_asset_response("daena.maps", &request, None, None).status(),
-            200,
-            "{path}"
-        );
-    }
-
-    let module = tauri::http::Request::builder()
-        .uri("plugin://daena.maps/dist/ui/fmg/index-B5l1uyn4.js")
-        .body(Vec::new())
-        .unwrap();
-    let module_response = plugin_asset_response("daena.maps", &module, None, None);
-    let module_body = String::from_utf8_lossy(module_response.body());
-    assert!(!module_body.contains("fonts.gstatic.com"));
-    assert!(module_body
-        .contains("if(window.DAENA_HOST)return;throw new Error(\"Pack cells not found\")"));
-}
-
-#[test]
 fn installed_plugin_assets_are_served_from_the_verified_ui_root() {
     let root = std::env::temp_dir().join(format!("daena-protocol-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -2249,7 +2115,25 @@ fn show_results_navigation_emits_event_payload() {
     core.open_directory(trusted_shell(), &root).unwrap();
     let (map_id, place_id) = {
         let project = core.project(trusted_shell()).unwrap();
-        let map = project.create_map("Test Map".into()).unwrap();
+        let map = project
+            .accept_vector_map(
+                "Test Map".into(),
+                daena_core::maps::empty_canonical_bytes(),
+                serde_json::json!({
+                    "id": "daena-landmass",
+                    "version": 1,
+                    "seed": 1,
+                    "settings": {
+                        "landPercent": 40,
+                        "continentCount": 3,
+                        "coastlineRoughness": "medium",
+                        "islandFrequency": "medium"
+                    }
+                }),
+                None,
+            )
+            .unwrap()
+            .entity;
         let place = project
             .create_entity(daena_core::CreateEntity {
                 name: "Place".into(),
@@ -2288,136 +2172,6 @@ fn show_results_navigation_emits_event_payload() {
     let outcome = resolve_maps_navigation(&mut core, &request).unwrap();
     assert_eq!(outcome.emit, Some((map_id, None)));
     assert!(outcome.result.is_ok());
-
-    std::fs::remove_dir_all(root).ok();
-}
-
-#[test]
-fn maps_asset_create_rpc_round_trips_source_asset() {
-    let root = std::env::temp_dir().join(format!("daena-map-create-rpc-{}", uuid::Uuid::new_v4()));
-    let core: SharedCore = new_shared_core();
-    current_session(&core)
-        .unwrap()
-        .core
-        .lock()
-        .unwrap()
-        .open_directory(trusted_shell(), &root)
-        .unwrap();
-    let map_id = {
-        let core = current_session(&core).unwrap();
-        let core = core.core.lock().unwrap();
-        let project = core.project(trusted_shell()).unwrap();
-        project.create_map("Test Map".into()).unwrap().id
-    };
-    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
-    let session = Session {
-        id: "session".into(),
-        plugin_id: "daena.maps".into(),
-        package_digest: "digest".into(),
-        plugin_version: "0.1.0".into(),
-        host_api: ">=1.0.0 <2.0.0".into(),
-        project_id: "project".into(),
-        origin: "plugin:daena.maps".into(),
-        grants: std::collections::BTreeSet::new(),
-        generation: 1,
-        expires_at: std::time::SystemTime::now() + ASSET_TRANSFER_TTL,
-        revoked: false,
-    };
-    let place_id = {
-        let core = current_session(&core).unwrap();
-        let core = core.core.lock().unwrap();
-        let project = core.project(trusted_shell()).unwrap();
-        project
-            .create_entity(CreateEntity {
-                name: "Place".into(),
-                entity_type: Some("place".into()),
-            })
-            .unwrap()
-            .id
-    };
-    assert!(
-        dispatch_binary_asset_rpc(
-            &core,
-            &transfers,
-            &session,
-            "maps.asset.create.begin",
-            serde_json::json!({"mapEntityId": place_id, "size": 5}),
-            None,
-        )
-        .is_err(),
-        "a non-map entity must be rejected"
-    );
-
-    let begin = dispatch_binary_asset_rpc(
-        &core,
-        &transfers,
-        &session,
-        "maps.asset.create.begin",
-        serde_json::json!({"mapEntityId": map_id, "size": 5}),
-        None,
-    )
-    .unwrap();
-    let handle = begin["handle"].as_str().unwrap().to_string();
-    assert!(begin["url"]
-        .as_str()
-        .unwrap()
-        .starts_with(&format!("/__asset/{handle}/0?sessionId=session")));
-    {
-        let mut manager = transfers.lock().unwrap();
-        assert_eq!(
-            manager
-                .append_upload(&handle, "daena.maps", "session", 0, b"fmg-!")
-                .unwrap(),
-            5
-        );
-    }
-
-    let saved = dispatch_binary_asset_rpc(
-            &core,
-            &transfers,
-            &session,
-            "maps.asset.create.commit",
-            serde_json::json!({"handle": handle, "contentHash": format!("sha256:{:x}", Sha256::digest(b"fmg-!"))}),
-            None,
-        )
-        .unwrap();
-    flush_checkpoint_for_shared_core(&core, "maps asset create").unwrap();
-    let saved_asset: Asset = serde_json::from_value(saved).unwrap();
-    assert_eq!(saved_asset.namespace, daena_core::maps::MAP_NAMESPACE);
-    assert_eq!(saved_asset.size, 5);
-
-    {
-        let core = current_session(&core).unwrap();
-        let core = core.core.lock().unwrap();
-        let project = core.project(trusted_shell()).unwrap();
-        let asset = project.asset(saved_asset.id.clone()).unwrap();
-        assert_eq!(asset.size, 5);
-        let info = project.info().unwrap();
-        let path = daena_core::normalized_project_path(Path::new(&info.root), &asset.path).unwrap();
-        assert_eq!(std::fs::read(path).unwrap(), b"fmg-!");
-        let descriptor = project
-            .list_fields(map_id.clone())
-            .unwrap()
-            .into_iter()
-            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
-            .unwrap();
-        assert_eq!(
-            descriptor.value["sourceAssetId"],
-            serde_json::Value::String(saved_asset.id.clone()),
-            "first-save commit must link sourceAssetId so the map appears in Saved Maps"
-        );
-    }
-
-    let read = dispatch_binary_asset_rpc(
-        &core,
-        &transfers,
-        &session,
-        "asset.read.begin",
-        serde_json::json!({"assetId": saved_asset.id, "namespace": "maps"}),
-        None,
-    )
-    .unwrap();
-    assert_eq!(read["size"], 5);
 
     std::fs::remove_dir_all(root).ok();
 }

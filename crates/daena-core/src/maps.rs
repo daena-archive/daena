@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
-pub const FMG_PROVIDER: &str = "azgaar-fmg";
 pub const VECTOR_PROVIDER: &str = "daena-openlayers";
 pub const PHYSICAL_PROVIDER: &str = "daena-physical";
 pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v2";
@@ -588,7 +587,6 @@ fn invalid(message: impl Into<String>) -> CoreError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderKind {
-    Fmg,
     Vector,
     Physical,
 }
@@ -629,17 +627,6 @@ fn validate_authored_center(center: &Point) -> Result<(), CoreError> {
 }
 
 const PROVIDER_REGISTRY: &[ProviderSpec] = &[
-    ProviderSpec {
-        kind: ProviderKind::Fmg,
-        id: FMG_PROVIDER,
-        adapter_version: 1,
-        source_format: "fmg-map",
-        requires_source_asset: false,
-        source_mime: None,
-        generation_validator: None,
-        preview_mime_validator: None,
-        validate_center: validate_normalized_center,
-    },
     ProviderSpec {
         kind: ProviderKind::Vector,
         id: VECTOR_PROVIDER,
@@ -882,12 +869,6 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
             fallback_point,
         } => {
             let supported = match provider.as_str() {
-                FMG_PROVIDER => {
-                    matches!(
-                        feature_kind.as_str(),
-                        "burg" | "state" | "province" | "river" | "marker"
-                    ) && !feature_id.is_empty()
-                }
                 VECTOR_PROVIDER => {
                     feature_kind == "geojson-feature"
                         && Uuid::parse_str(feature_id)
@@ -1198,11 +1179,11 @@ pub fn validate_field(
             .optional()?
             .flatten();
         let physical_map = map_provider.as_deref() == Some(PHYSICAL_PROVIDER);
-        let expected_schema = 2;
-        if object.get("schemaVersion").and_then(Value::as_i64) != Some(expected_schema) {
-            return Err(invalid(format!(
-                "layers.schemaVersion must be {expected_schema} for this map provider"
-            )));
+        // Vector and physical maps both use layers schemaVersion 2.
+        if object.get("schemaVersion").and_then(Value::as_i64) != Some(2) {
+            return Err(invalid(
+                "layers.schemaVersion must be 2 for this map provider",
+            ));
         }
         let physical_layers = if physical_map {
             physical::initial_layers_value()
@@ -1429,7 +1410,6 @@ pub fn validate_image_map_content(
                     source_dimensions.insert(entity_id, (source.width, source.height));
                 }
             }
-            ProviderKind::Fmg => {}
         }
     }
     let mut layers = connection.prepare(

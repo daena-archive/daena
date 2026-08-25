@@ -23,7 +23,9 @@ for (const removed of ["maplibre-gl", "terra-draw"]) {
 for (const path of [
   "src/lib/maps/native-vector/NativeVectorMapEditor.svelte",
   "src/lib/maps/native-vector/NativeVectorImporter.svelte",
-  "src/lib/maps/native-vector/openlayers-runtime.ts",
+  "src/lib/maps/openlayers/MapAdapter.ts",
+  "src/lib/maps/openlayers/interaction-manager.ts",
+  "src/lib/maps/editor/command-stack.ts",
   "src/lib/maps/native-vector/openlayers-style.ts",
   "src/lib/maps/atlas/AtlasStudioView.svelte",
 ]) {
@@ -33,31 +35,42 @@ for (const path of [
   "src/lib/maps/native-vector/runtime.ts",
   "src/lib/maps/native-vector/style.ts",
   "src/lib/maps/native-vector/maplibre-csp.d.ts",
+  "src/lib/maps/native-vector/openlayers-runtime.ts",
 ]) {
   if (existsSync(new URL(`../${path}`, import.meta.url))) fail(`obsolete renderer file remains: ${path}`);
 }
 
-const runtime = read("src/lib/maps/native-vector/openlayers-runtime.ts");
+const adapter = read("src/lib/maps/openlayers/MapAdapter.ts");
 for (const required of [
   'from "ol/Map.js"',
   'from "ol/View.js"',
+  "createMapAdapter",
+  "map.dispose()",
+  "vector.renderer.unavailable",
+  "onCommand",
+  "syncDocument",
+]) {
+  if (!adapter.includes(required)) fail(`MapAdapter missing ${required}`);
+}
+for (const forbidden of ["maplibre", "terra-draw", "webgl2", "workerUrl", "UNDO_STACK_SIZE"]) {
+  if (adapter.toLowerCase().includes(forbidden.toLowerCase())) fail(`MapAdapter still contains ${forbidden}`);
+}
+
+const interactions = read("src/lib/maps/openlayers/interaction-manager.ts");
+for (const required of [
   'from "ol/interaction/Draw.js"',
   'from "ol/interaction/Modify.js"',
   'from "ol/interaction/Select.js"',
   'from "ol/interaction/Snap.js"',
   'from "ol/interaction/Translate.js"',
-  'from "ol/source/ImageStatic.js"',
   "traceSource",
   "intersection: true",
-  "UNDO_STACK_SIZE",
-  "map.dispose()",
-  "vector.renderer.unavailable",
 ]) {
-  if (!runtime.includes(required)) fail(`runtime missing ${required}`);
+  if (!interactions.includes(required)) fail(`interaction-manager missing ${required}`);
 }
-for (const forbidden of ["maplibre", "terra-draw", "webgl2", "workerUrl"]) {
-  if (runtime.toLowerCase().includes(forbidden.toLowerCase())) fail(`runtime still contains ${forbidden}`);
-}
+
+const background = read("src/lib/maps/openlayers/background-registry.ts");
+if (!background.includes('from "ol/source/ImageStatic.js"')) fail("background-registry missing ImageStatic");
 
 const style = read("src/lib/maps/native-vector/openlayers-style.ts");
 for (const required of ["nativeFeatureStyle", "visibleUnlockedFeatures", "new Style", "new Fill", "new Stroke"]) {
@@ -66,12 +79,18 @@ for (const required of ["nativeFeatureStyle", "visibleUnlockedFeatures", "new St
 if (/https?:\/\//i.test(style)) fail("style boundary must not embed remote resources");
 
 const editor = read("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
-if (!editor.includes("openlayers-runtime") || !editor.includes('renderer: "openlayers"')) {
-  fail("native editor is not wired to OpenLayers");
+if (!editor.includes("createMapAdapter") || !editor.includes('renderer: "openlayers"')) {
+  fail("native editor is not wired to OpenLayers MapAdapter");
+}
+if (!editor.includes("CommandStack") || !editor.includes("dispatchCommand")) {
+  fail("native editor must use the command stack");
+}
+if (editor.includes("createVectorLayer") || editor.includes("deleteVectorLayer")) {
+  fail("layer mutations must go through the command stack, not immediate RPCs");
 }
 const physical = read("src/lib/maps/physical/PhysicalWorldView.svelte");
-if (!physical.includes("openlayers-runtime") || physical.includes('projection: "globe"')) {
-  fail("physical world view is not on the OpenLayers 2D runtime");
+if (!physical.includes("createMapAdapter") || physical.includes('projection: "globe"')) {
+  fail("physical world view is not on the OpenLayers MapAdapter");
 }
 const atlas = read("src/lib/maps/atlas/AtlasStudioView.svelte");
 for (const required of ['from "ol/Map.js"', 'from "ol/source/XYZ.js"', "configureTileSource", "tileUrlAllowed"]) {

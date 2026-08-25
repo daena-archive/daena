@@ -86,10 +86,9 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
         protocol,
         url: format!("{origin}/{entrypoint}"),
         origin,
-        // FMG uses inline style attributes and data-backed icon fonts. Permit
-        // those local resources while keeping scripts, network, frames,
-        // objects, forms, and parent access denied. All source I/O remains
-        // brokered.
+        // Permit local inline styles and data-backed fonts for maps while keeping
+        // scripts, network, frames, objects, forms, and parent access denied.
+        // All source I/O remains brokered.
         csp: if manifest.id == "daena.maps" {
             "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
         } else {

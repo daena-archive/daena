@@ -12,17 +12,16 @@ It is subordinate to:
   plugin boundaries;
 - [`STORAGE.md`](./STORAGE.md), which defines SQLite runtime authority,
   content-addressed assets, portable checkpoints, and rebuild behavior;
-- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md), which defines shared
-  map entities, anchors, navigation, hierarchy, and semantic overlays; and
-- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md), which defines the
-  existing editable `daena-vector` provider.
+- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md), which defines shared
+  map entities, anchors, navigation, hierarchy, semantic overlays, and the
+  editable `daena-openlayers` provider.
 
 If this plan conflicts with one of those authorities, stop the active
 iteration and reconcile the contract before writing more code.
 
 The physical generator is additive. It does not migrate, reinterpret, or
-silently regenerate existing `azgaar-fmg`, `daena-vector`, or image maps.
-Existing accepted Native Vector Map sources remain canonical GeoJSON and remain
+silently regenerate existing `daena-openlayers` or image maps.
+Existing accepted OpenLayers Map sources remain canonical GeoJSON and remain
 editable under their current provider contract.
 
 ## How agents must execute this plan
@@ -85,14 +84,14 @@ The full plan is complete when:
 
 ## Current checkout baseline
 
-The current checkout already has two distinct map-generation/editing paths:
+The current checkout already has one distinct map-generation/editing path for
+authored geometry:
 
-- FMG is an isolated provider-owned child webview.
-- `daena-vector` is a trusted, in-window OpenLayers editor whose
-  canonical source is GeoJSON. Its current TypeScript landmass generator
-  creates six candidates and accepts one as editable base polygons.
+- `daena-openlayers` is a trusted, in-window OpenLayers editor whose
+  canonical source is GeoJSON. Its TypeScript landmass generator
+  creates candidates and accepts one as editable base polygons.
 
-The physical generator must not be fitted into the `daena-vector` GeoJSON
+The physical generator must not be fitted into the `daena-openlayers` GeoJSON
 source format. That would make a derived coastline authoritative and discard
 the numeric terrain, bathymetry, tectonic, and water state required here.
 

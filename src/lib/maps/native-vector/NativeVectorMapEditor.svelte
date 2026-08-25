@@ -46,16 +46,15 @@ import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-s
 import NativeVectorImporter from "./NativeVectorImporter.svelte";
 import MapLocationLinkPanel from "./MapLocationLinkPanel.svelte";
 import {
-  createNativeVectorEditor,
-  liveNativeVectorEditorCount,
+  createMapAdapter,
+  liveMapAdapterCount,
   RENDERER_UNAVAILABLE,
-  type NativeVectorEditor,
-} from "./openlayers-runtime";
+  type MapAdapter,
+} from "../openlayers/MapAdapter";
 import { registerNativeVectorSession } from "./session";
 import {
   collectionBytes,
   featureCountForLayer,
-  layerFromField,
   parseVectorCollection,
   parseVectorLayers,
   sha256Hex,
@@ -67,7 +66,6 @@ import {
   type VectorEditorState,
 } from "./editor-state";
 import {
-  DEFAULT_VECTOR_LAYER_STYLE,
   VECTOR_PROVIDER,
   featureLayerId,
   featureName,
@@ -83,6 +81,27 @@ import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 import MapViewControls from "./MapViewControls.svelte";
+import {
+  CommandStack,
+  buildCreateLayer,
+  buildDuplicateLayer,
+  buildRecoveryPackage,
+  captureDeleteFeatures,
+  captureReplaceCollection,
+  createMapDocument,
+  deleteLayerCommand,
+  duplicateFeaturesCommand,
+  encodeLayersField,
+  moveFeaturesToLayerCommand,
+  recoveryPackageBytes,
+  renameLayerCommand,
+  reorderLayerCommand,
+  setFeatureMetadataCommand,
+  setLayerLockedCommand,
+  setLayerStyleCommand,
+  setLayerVisibilityCommand,
+  type MapCommand,
+} from "../editor";
 
 let {
   mapId,
@@ -107,7 +126,10 @@ let {
 } = $props();
 
 let host = $state<HTMLDivElement | null>(null);
-let editor = $state.raw<NativeVectorEditor | null>(null);
+let editor = $state.raw<MapAdapter | null>(null);
+let commandStack = $state.raw<CommandStack | null>(null);
+let canUndo = $state(false);
+let canRedo = $state(false);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([]);
@@ -176,12 +198,11 @@ const objectUrls: string[] = [];
 let featureLinks = $state(new Map<string, { entityId: string; locationId: string; label: string | null }>());
 let linkAnchors = $state(new Map<string, MapAnchor>());
 let layersFieldRevision = "";
-let layerMutationChain: Promise<void> = Promise.resolve();
 let linkPanelOpen = $state(false);
 let linkArming = $state(false);
 let linkAnchor = $state<MapAnchor | null>(null);
 let pinsReady = $state(false);
-let physicalEditor = $state<NativeVectorEditor | null>(null);
+let physicalEditor = $state<MapAdapter | null>(null);
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
@@ -405,6 +426,128 @@ function cloneCollection(collection: VectorFeatureCollection): VectorFeatureColl
   return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
 }
 
+function syncUiFromStack() {
+  if (!commandStack) return;
+  const snap = commandStack.snapshot();
+  draft = snap.document.collection;
+  layers = withPhysicalVisibility(snap.document.layers);
+  if (mapField) {
+    mapField = { ...mapField, value: snap.document.descriptor as FieldValue["value"] };
+  }
+  canUndo = snap.canUndo;
+  canRedo = snap.canRedo;
+  editor?.syncDocument(draft, layers);
+  if (snap.dirty) applyEditorEvent({ type: "document-changed" });
+  else applyEditorEvent({ type: "loaded" });
+}
+
+function dispatchCommand(command: MapCommand) {
+  if (!commandStack) return;
+  commandStack.apply(command);
+  syncUiFromStack();
+}
+
+function resetCommandStack(documentInput: {
+  descriptor: unknown;
+  layers: VectorLayerDefinition[];
+  collection: VectorFeatureCollection;
+}) {
+  const document = createMapDocument(documentInput);
+  commandStack = new CommandStack(document);
+  draft = document.collection;
+  layers = withPhysicalVisibility(document.layers);
+  loaded = cloneCollection(document.collection);
+  canUndo = false;
+  canRedo = false;
+  applyEditorEvent({ type: "loaded" });
+}
+
+function undoEdit() {
+  if (!commandStack?.canUndo()) return;
+  commandStack.undo();
+  syncUiFromStack();
+}
+
+function redoEdit() {
+  if (!commandStack?.canRedo()) return;
+  commandStack.redo();
+  syncUiFromStack();
+}
+
+function deleteSelectedFeatures() {
+  if (!commandStack) return;
+  const ids = editor?.selectedFeatureIds() ?? (selectedFeature ? [selectedFeature.id] : []);
+  const command = captureDeleteFeatures(commandStack.document, ids);
+  if (!command) return;
+  dispatchCommand(command);
+  selectedFeature = null;
+}
+
+function offsetGeometry(
+  geometry: VectorFeature["geometry"],
+  dx: number,
+  dy: number,
+): VectorFeature["geometry"] {
+  const shift = (coords: number[]): number[] => [coords[0] + dx, coords[1] + dy, ...coords.slice(2)];
+  const walk = (value: unknown, depth: number): unknown => {
+    if (depth === 0) return shift(value as number[]);
+    return (value as unknown[]).map((item) => walk(item, depth - 1));
+  };
+  switch (geometry.type) {
+    case "Point":
+      return { type: "Point", coordinates: shift(geometry.coordinates) };
+    case "MultiPoint":
+      return { type: "MultiPoint", coordinates: walk(geometry.coordinates, 1) as number[][] };
+    case "LineString":
+      return { type: "LineString", coordinates: walk(geometry.coordinates, 1) as number[][] };
+    case "MultiLineString":
+      return { type: "MultiLineString", coordinates: walk(geometry.coordinates, 2) as number[][][] };
+    case "Polygon":
+      return { type: "Polygon", coordinates: walk(geometry.coordinates, 2) as number[][][] };
+    case "MultiPolygon":
+      return { type: "MultiPolygon", coordinates: walk(geometry.coordinates, 3) as number[][][][] };
+  }
+}
+
+function duplicateSelectedFeatures() {
+  if (!commandStack || !editor) return;
+  const ids = editor.selectedFeatureIds();
+  const selected = commandStack.document.collection.features.filter((feature) => ids.includes(feature.id));
+  if (selected.length === 0) return;
+  const offset = 0.15;
+  const copies = selected.map((feature) => {
+    const clone = cloneCollection({ type: "FeatureCollection", features: [feature] }).features[0];
+    clone.id = crypto.randomUUID();
+    clone.geometry = offsetGeometry(clone.geometry, offset, -offset);
+    return clone;
+  });
+  dispatchCommand(duplicateFeaturesCommand(copies));
+}
+
+function renameSelectedFeature(name: string | null) {
+  if (!commandStack || !selectedFeature) return;
+  const previous = featureName(selectedFeature);
+  if (previous === name) return;
+  dispatchCommand(setFeatureMetadataCommand(selectedFeature.id, name, previous));
+  selectedFeature = {
+    ...selectedFeature,
+    properties: { daena: { ...selectedFeature.properties.daena, name } },
+  };
+}
+
+function moveSelectedToLayer(layerId: string) {
+  if (!commandStack || !editor) return;
+  const ids = editor.selectedFeatureIds();
+  if (ids.length === 0) return;
+  const previousLayerIds: Record<string, string> = {};
+  for (const feature of commandStack.document.collection.features) {
+    if (ids.includes(feature.id)) previousLayerIds[feature.id] = featureLayerId(feature);
+  }
+  dispatchCommand(moveFeaturesToLayerCommand(ids, layerId, previousLayerIds));
+  activeLayerId = layerId;
+  editor.switchLayer(layerId);
+}
+
 function persistedCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
   if (!physicalMap) return collection;
   return {
@@ -428,7 +571,15 @@ function physicalHillshadeCanvas(products: {
 function applyLayersField(field: FieldValue) {
   layersField = field;
   layersFieldRevision = field.revision;
-  layers = withPhysicalVisibility(parseVectorLayers(field.value));
+  const parsed = withPhysicalVisibility(parseVectorLayers(field.value));
+  layers = parsed;
+  if (commandStack) {
+    commandStack.replaceDocument({
+      ...commandStack.document,
+      layers: parsed,
+      descriptor: mapField?.value ?? commandStack.document.descriptor,
+    });
+  }
 }
 
 function withPhysicalVisibility(next: VectorLayerDefinition[]) {
@@ -509,12 +660,16 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   const authoredDraft = draft.features.filter(
     (feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)),
   );
-  const authoredLoaded = loaded.features.filter(
-    (feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)),
-  );
   const physical = parseDerivedCollection(products.geojson);
-  draft = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredDraft] });
-  loaded = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredLoaded] });
+  const combined = {
+    type: "FeatureCollection" as const,
+    features: [...physical.features, ...authoredDraft],
+  };
+  resetCommandStack({
+    descriptor: mapField?.value ?? commandStack?.document.descriptor ?? {},
+    layers,
+    collection: combined,
+  });
   if (background?.url) URL.revokeObjectURL(background.url);
   background = {
     url: "",
@@ -610,12 +765,12 @@ function scheduleEpoch(offset: number) {
 function mountEditor() {
   if (physicalMap) {
     destroyEditor();
-    publish("ready", { liveEditors: liveNativeVectorEditorCount(), renderer: "openlayers" });
+    publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
     return;
   }
   if (!host) return;
   destroyEditor();
-  const created = createNativeVectorEditor(host, {
+  const created = createMapAdapter(host, {
     get draft() {
       return draft;
     },
@@ -631,14 +786,18 @@ function mountEditor() {
     get zoom() {
       return defaultView.zoom;
     },
-    setDraft(next) {
-      draft = next;
-    },
     setActiveLayerId(id) {
       activeLayerId = id;
     },
-    onDirty() {
-      applyEditorEvent({ type: "geometry-changed" });
+    onCommand(payload) {
+      if (!commandStack || payload.type !== "replace-collection") return;
+      const command = captureReplaceCollection(
+        commandStack.document,
+        payload.collection,
+        payload.label,
+        payload.coalesceKey,
+      );
+      if (command) dispatchCommand(command);
     },
     onDiagnostic(code, detail) {
       applyEditorEvent({ type: "save-failed", message: `${code}: ${detail}` });
@@ -684,7 +843,7 @@ function mountEditor() {
   editor = created;
   if (!canDraw) editor.setMode("static");
   else editor.setMode(tool);
-  publish("ready", { liveEditors: liveNativeVectorEditorCount(), renderer: "openlayers" });
+  publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
 }
 
 async function load() {
@@ -773,8 +932,11 @@ async function load() {
       if (generation !== loadGeneration) return;
       const physical = parseDerivedCollection(historical.geojson);
       const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
-      draft = cloneCollection(combined);
-      loaded = cloneCollection(combined);
+      resetCommandStack({
+        descriptor: mapField?.value ?? {},
+        layers,
+        collection: combined,
+      });
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       background = {
         url: "",
@@ -790,8 +952,11 @@ async function load() {
       immutablePhysicalLayerIds = new Set();
       physicalLayerVisibility = new Map();
       epochNotice = "";
-      draft = cloneCollection(collection);
-      loaded = cloneCollection(collection);
+      resetCommandStack({
+        descriptor: mapField?.value ?? {},
+        layers,
+        collection,
+      });
     }
     const previewId = (descriptorField?.value as { previewAssetId?: string | null } | undefined)?.previewAssetId;
     const preview = previewId ? assets.find((asset) => asset.id === previewId) : null;
@@ -864,7 +1029,7 @@ async function load() {
 }
 
 async function save() {
-  if (!mapId || !sourceAsset || !mapField || !layersField || busy) return;
+  if (!mapId || !sourceAsset || !mapField || !layersField || !commandStack || busy) return;
   if (!dirty) {
     applyEditorEvent({ type: "save-succeeded" });
     return;
@@ -874,13 +1039,19 @@ async function save() {
   applyEditorEvent({ type: "save-started" });
   try {
     editor?.flush();
-    const snapshot = cloneCollection(persistedCollection(draft));
+    const document = commandStack.document;
+    const snapshot = cloneCollection(persistedCollection(document.collection));
     const bytes = collectionBytes(snapshot);
     const hash = await sha256Hex(bytes);
+    const layersValue = encodeLayersField({
+      ...document,
+      collection: snapshot,
+      layers: document.layers,
+    });
     const applied = await project.applyMapEdit({
       mapEntityId: mapId,
-      descriptor: mapField.value,
-      layers: layersField.value,
+      descriptor: document.descriptor,
+      layers: layersValue,
       bytes,
       uploadContentHash: hash,
       expectedMapRevision: mapField.revision,
@@ -893,13 +1064,20 @@ async function save() {
     layersField = applied.layers;
     layersFieldRevision = applied.layers.revision;
     sourceAsset = applied.source;
+    commandStack.setBaseline(
+      createMapDocument({
+        descriptor: applied.map.value,
+        layers: parseVectorLayers(applied.layers.value),
+        collection: snapshot,
+      }),
+    );
+    draft = snapshot;
     loaded = cloneCollection(snapshot);
+    layers = withPhysicalVisibility(parseVectorLayers(applied.layers.value));
+    canUndo = false;
+    canRedo = false;
     recoveryPath = "";
-    if (JSON.stringify(persistedCollection(draft)) === JSON.stringify(snapshot)) {
-      applyEditorEvent({ type: "save-succeeded" });
-    } else {
-      applyEditorEvent({ type: "geometry-changed" });
-    }
+    applyEditorEvent({ type: "save-succeeded" });
   } catch (cause) {
     if (generation !== saveGeneration) return;
     const text = cause instanceof Error ? cause.message : String(cause);
@@ -915,19 +1093,9 @@ async function save() {
 }
 
 async function exportDraft() {
-  if (!mapId || !mapField || !layersField) return;
+  if (!mapId || !commandStack) return;
   try {
-    const packageBytes = new TextEncoder().encode(
-      JSON.stringify({
-        schemaVersion: 1,
-        kind: "daena-map-edit-draft",
-        mapEntityId: mapId,
-        descriptor: mapField.value,
-        layers: layersField.value,
-        geojson: new TextDecoder().decode(collectionBytes(persistedCollection(draft))),
-        linkMutations: [],
-      }),
-    );
+    const packageBytes = recoveryPackageBytes(buildRecoveryPackage(mapId, commandStack.document));
     recoveryPath = await project.mapsRecoveryExport(mapId, packageBytes);
     notice = `Draft exported to ${recoveryPath}`;
   } catch (cause) {
@@ -954,144 +1122,75 @@ function switchLayer(layerId: string) {
   editor?.setMode(tool);
 }
 
-async function addLayer() {
-  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
-  layerMutationChain = layerMutationChain.then(() => runAddLayer()).catch(() => {});
-  await layerMutationChain;
+function addLayer() {
+  if (!commandStack || layers.length >= VECTOR_MAX_LAYERS) return;
+  const built = buildCreateLayer(commandStack.document, `Layer ${layers.length + 1}`);
+  dispatchCommand(built.command);
+  switchLayer(built.layer.id);
+  tool = "select";
+  editor?.setMode("select");
 }
 
-async function runAddLayer() {
-  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
-  busy = true;
-  try {
-    const change = await project.createVectorLayer(mapId, `Layer ${layers.length + 1}`, layersFieldRevision, {
-      style: { ...DEFAULT_VECTOR_LAYER_STYLE },
-    });
-    applyLayersField(change.layers);
-    const created = layerFromField(change.layers.value as { layers?: Array<Record<string, unknown>> }, change.layer_id);
-    if (created) switchLayer(created.id);
-    else activeLayerId = change.layer_id;
-    editor?.syncLayers(layers);
-    tool = "select";
-    editor?.setMode("select");
-  } catch (cause) {
-    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
-  } finally {
-    busy = false;
-  }
+function duplicateLayer(layer: VectorLayerDefinition) {
+  if (!commandStack || layers.length >= VECTOR_MAX_LAYERS) return;
+  const built = buildDuplicateLayer(commandStack.document, layer);
+  if (!built) return;
+  dispatchCommand(built.command);
+  switchLayer(built.layer.id);
 }
 
-async function duplicateLayer(layer: VectorLayerDefinition) {
-  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
-  layerMutationChain = layerMutationChain.then(() => runDuplicateLayer(layer)).catch(() => {});
-  await layerMutationChain;
-}
-
-async function runDuplicateLayer(layer: VectorLayerDefinition) {
-  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
-  busy = true;
-  try {
-    const change = await project.createVectorLayer(mapId, `${layer.name} copy`, layersFieldRevision, {
-      style: { ...layer.style },
-    });
-    applyLayersField(change.layers);
-    editor?.syncLayers(layers);
-    editor?.duplicateLayerFeatures(layer.id, change.layer_id);
-    switchLayer(change.layer_id);
-  } catch (cause) {
-    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
-  } finally {
-    busy = false;
-  }
-}
-
-function mutateLayer(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
-  layerMutationChain = layerMutationChain.then(() => runLayerMutation(layer, update)).catch(() => {});
-  return layerMutationChain;
-}
-
-async function runLayerMutation(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
-  if (!mapId || !layersField) return;
-  try {
-    const change = await project.updateMapLayer(mapId, layer.id, layersFieldRevision, update);
-    applyLayersField(change.layers);
-    editor?.syncLayers(layers);
-  } catch (cause) {
-    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
-    await refreshLayersField();
-  }
-}
-
-async function refreshLayersField() {
-  if (!mapId) return;
-  try {
-    const fields = await project.listFields(mapId);
-    const next = fields.find((item) => item.namespace === "maps" && item.key === "layers") ?? null;
-    if (next) applyLayersField(next);
-  } catch {
-    // Keep the current field; the next mutation retries with the same revision.
-  }
-}
-
-async function toggleVisible(layer: VectorLayerDefinition) {
+function toggleVisible(layer: VectorLayerDefinition) {
   const nextVisible = !layer.defaultVisible;
   if (physicalLayerVisibility.has(layer.id)) {
     physicalLayerVisibility.set(layer.id, nextVisible);
     physicalLayerVisibility = new Map(physicalLayerVisibility);
     layers = layers.map((item) => (item.id === layer.id ? { ...item, defaultVisible: nextVisible } : item));
     editor?.syncLayers(layers);
+    physicalEditor?.syncLayers(layers);
     return;
   }
-  layer.defaultVisible = nextVisible;
-  layers = [...layers];
-  editor?.syncLayers(layers);
-  await mutateLayer(layer, { defaultVisible: nextVisible });
+  if (!commandStack) return;
+  dispatchCommand(setLayerVisibilityCommand(layer.id, nextVisible, layer.defaultVisible));
 }
 
-async function toggleLock(layer: VectorLayerDefinition) {
+function toggleLock(layer: VectorLayerDefinition) {
   if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
-  layer.locked = !layer.locked;
-  layers = [...layers];
+  if (!commandStack) return;
+  const nextLocked = !layer.locked;
+  dispatchCommand(setLayerLockedCommand(layer.id, nextLocked, layer.locked));
   if (layer.id === activeLayerId) {
-    tool = layer.locked ? "static" : "select";
+    tool = nextLocked ? "static" : "select";
     editor?.switchLayer(layer.id);
     editor?.setMode(tool);
   }
-  await mutateLayer(layer, { locked: layer.locked });
 }
 
-async function renameLayer(layer: VectorLayerDefinition, name: string) {
+function renameLayer(layer: VectorLayerDefinition, name: string) {
   if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   const trimmed = name.trim();
   renamingId = null;
-  if (!trimmed || trimmed === layer.name) return;
-  layer.name = trimmed;
-  layers = [...layers];
-  await mutateLayer(layer, { name: trimmed });
+  if (!trimmed || trimmed === layer.name || !commandStack) return;
+  dispatchCommand(renameLayerCommand(layer.id, trimmed, layer.name));
 }
 
-async function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
-  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
+function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
+  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
   const index = listedLayers.findIndex((item) => item.id === layer.id);
   const neighbor = listedLayers[index + direction];
   if (!neighbor) return;
-  const layerOrder = layer.order;
-  await mutateLayer(layer, { order: neighbor.order });
-  await mutateLayer(neighbor, { order: layerOrder });
+  dispatchCommand(
+    reorderLayerCommand(layer.id, neighbor.order, layer.order, neighbor.id, layer.order, neighbor.order),
+  );
 }
 
-async function updateStyle(layer: VectorLayerDefinition, patch: Partial<VectorLayerDefinition["style"]>) {
-  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
+function updateStyle(layer: VectorLayerDefinition, patch: Partial<VectorLayerDefinition["style"]>) {
+  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
   const style = { ...layer.style, ...patch };
-  layer.style = style;
-  layers = [...layers];
-  editor?.syncLayers(layers);
-  await mutateLayer(layer, { style });
+  dispatchCommand(setLayerStyleCommand(layer.id, style, { ...layer.style }));
 }
 
-async function removeLayer(layer: VectorLayerDefinition) {
-  if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
-  if (!mapId || !layersField || !sourceAsset) return;
+function removeLayer(layer: VectorLayerDefinition) {
+  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
   const savedCount = featureCountForLayer(loaded, layer.id);
   const draftCount = featureCountForLayer(draft, layer.id);
   const extra =
@@ -1103,47 +1202,13 @@ async function removeLayer(layer: VectorLayerDefinition) {
   ) {
     return;
   }
-  layerMutationChain = layerMutationChain.then(() => runRemoveLayer(layer, savedCount)).catch(() => {});
-  await layerMutationChain;
-}
-
-async function runRemoveLayer(layer: VectorLayerDefinition, savedCount: number) {
-  if (!mapId || !layersField || !sourceAsset) return;
-  busy = true;
-  try {
-    const change = await project.deleteVectorLayer(
-      mapId,
-      layer.id,
-      layersFieldRevision,
-      sourceAsset.revision,
-      savedCount,
-    );
-    applyLayersField(change.layers);
-    sourceAsset = change.source;
-    draft = {
-      type: "FeatureCollection",
-      features: draft.features.filter((feature) => featureLayerId(feature) !== layer.id),
-    };
-    loaded = {
-      type: "FeatureCollection",
-      features: loaded.features.filter((feature) => featureLayerId(feature) !== layer.id),
-    };
-    const remaining = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
-    activeLayerId = remaining[0]?.id ?? null;
-    await tick();
-    mountEditor();
-  } catch (cause) {
-    const text = cause instanceof Error ? cause.message : String(cause);
-    const parsed = parseVectorDiagnostic(text);
-    if (parsed.code === "asset.revision-conflict" || parsed.code === "vector.layer.in-use") {
-      applyEditorEvent({ type: "save-conflict", message: text });
-    } else {
-      applyEditorEvent({ type: "save-failed", message: text });
-    }
-    await refreshLayersField();
-  } finally {
-    busy = false;
-  }
+  const removedFeatures = commandStack.document.collection.features.filter(
+    (feature) => featureLayerId(feature) === layer.id,
+  );
+  dispatchCommand(deleteLayerCommand(layer.id, layer, removedFeatures));
+  const remaining = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
+  activeLayerId = remaining[0]?.id ?? null;
+  if (activeLayerId) editor?.switchLayer(activeLayerId);
 }
 
 $effect(() => {
@@ -1181,12 +1246,12 @@ function onKey(event: KeyboardEvent) {
     void save();
   } else if (meta && event.key.toLowerCase() === "z") {
     event.preventDefault();
-    if (event.shiftKey) editor?.redo();
-    else editor?.undo();
+    if (event.shiftKey) redoEdit();
+    else undoEdit();
   } else if (!meta && !renamingId && !picking) {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
-      editor?.deleteSelection();
+      deleteSelectedFeatures();
     } else if (event.key === "v" || event.key === "h") setTool("static");
     if (event.key === "s") setTool("select");
     if (event.key === "p") setTool("point");
@@ -1328,17 +1393,27 @@ onMount(() => {
             title="Freehand"
             disabled={!canDraw}
             onclick={() => setTool("freehand")}><Pencil {...iconProps} /></button>
-          <button type="button" class="icon-button" aria-label="Undo" title="Undo" onclick={() => editor?.undo()}
-            ><Undo2 {...iconProps} /></button>
-          <button type="button" class="icon-button" aria-label="Redo" title="Redo" onclick={() => editor?.redo()}
-            ><Redo2 {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Undo"
+            title="Undo"
+            disabled={!canUndo}
+            onclick={() => undoEdit()}><Undo2 {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="Redo"
+            title="Redo"
+            disabled={!canRedo}
+            onclick={() => redoEdit()}><Redo2 {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
             aria-label="Add layer"
             title="Add layer"
             disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
-            onclick={() => void addLayer()}><SquarePlus {...iconProps} /></button>
+            onclick={() => addLayer()}><SquarePlus {...iconProps} /></button>
           <button
             type="button"
             class="icon-button save"
@@ -1655,7 +1730,7 @@ onMount(() => {
                   disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
                   onchange={(event) => {
                     const next = event.currentTarget.value.trim() || null;
-                    editor?.updateSelectedName(next);
+                    renameSelectedFeature(next);
                   }} />
               </label>
               <label>
@@ -1664,7 +1739,7 @@ onMount(() => {
                   value={featureLayerId(selectedFeature)}
                   aria-label="Feature layer"
                   disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
-                  onchange={(event) => editor?.moveSelectionToLayer(event.currentTarget.value)}>
+                  onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
                   {#each listedLayers.filter((layer) => layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
                     <option value={layer.id}>{layer.name}</option>
                   {/each}
@@ -1673,7 +1748,7 @@ onMount(() => {
               <button
                 type="button"
                 disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
-                onclick={() => editor?.duplicateSelection()}>Duplicate feature</button>
+                onclick={() => duplicateSelectedFeatures()}>Duplicate feature</button>
             </div>
           {/if}
           {#if !physicalMap}

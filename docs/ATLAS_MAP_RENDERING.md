@@ -18,7 +18,7 @@ This guide is subordinate to:
   boundaries;
 - [`STORAGE.md`](./STORAGE.md) for SQLite runtime authority, content-addressed
   assets, checkpoints, recovery, and disposable derived state;
-- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) for shared map
+- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md) for shared map
   identity, layer, anchor, hierarchy, and navigation contracts;
 - [`NATIVE_MAP_GENERATOR.md`](./NATIVE_MAP_GENERATOR.md) for the accepted
   physical source, historical derivation, deterministic numeric policy, and

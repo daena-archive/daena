@@ -458,26 +458,6 @@ pub struct SearchQueryPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-pub struct MapsAssetCreateBeginPayload {
-    #[serde(rename = "mapEntityId")]
-    pub map_entity_id: String,
-    pub size: i64,
-    #[serde(rename = "mimeType")]
-    pub mime_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct MapsAssetCreateCommitPayload {
-    pub handle: String,
-    #[serde(rename = "contentHash")]
-    pub content_hash: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
 pub struct MapsImageImportBeginPayload {
     pub name: String,
     pub size: i64,

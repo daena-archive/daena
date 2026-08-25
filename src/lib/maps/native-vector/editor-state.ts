@@ -27,6 +27,7 @@ export type VectorEditorState = {
 export type VectorEditorEvent =
   | { type: "loaded" }
   | { type: "geometry-changed" }
+  | { type: "document-changed" }
   | { type: "save-started" }
   | { type: "save-succeeded" }
   | { type: "save-conflict"; message: string }
@@ -79,6 +80,7 @@ export function reduceVectorEditor(state: VectorEditorState, event: VectorEditor
     case "reload":
       return { ...INITIAL };
     case "geometry-changed":
+    case "document-changed":
       if (state.conflict) return { ...state, dirty: true, status: "conflict" };
       return { ...state, dirty: true, status: "dirty", diagnostic: "", diagnosticCode: "" };
     case "save-started":

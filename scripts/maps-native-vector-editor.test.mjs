@@ -13,7 +13,15 @@ import { lonLatToEquirectangular } from "../src/lib/maps/physical/equirectangula
 
 const source = readFileSync(new URL("../src/lib/maps/native-vector/source.ts", import.meta.url), "utf8");
 const style = readFileSync(new URL("../src/lib/maps/native-vector/openlayers-style.ts", import.meta.url), "utf8");
-const runtime = readFileSync(new URL("../src/lib/maps/native-vector/openlayers-runtime.ts", import.meta.url), "utf8");
+const adapter = readFileSync(new URL("../src/lib/maps/openlayers/MapAdapter.ts", import.meta.url), "utf8");
+const interactions = readFileSync(
+  new URL("../src/lib/maps/openlayers/interaction-manager.ts", import.meta.url),
+  "utf8",
+);
+const background = readFileSync(
+  new URL("../src/lib/maps/openlayers/background-registry.ts", import.meta.url),
+  "utf8",
+);
 const editor = readFileSync(
   new URL("../src/lib/maps/native-vector/NativeVectorMapEditor.svelte", import.meta.url),
   "utf8",
@@ -23,6 +31,7 @@ const importer = readFileSync(
   "utf8",
 );
 const client = readFileSync(new URL("../src/lib/project/client.ts", import.meta.url), "utf8");
+const commandStack = readFileSync(new URL("../src/lib/maps/editor/command-stack.ts", import.meta.url), "utf8");
 
 for (const required of [
   "parseVectorCollection",
@@ -44,14 +53,14 @@ assert.equal(style.includes("new CircleStyle"), true);
 assert.equal(style.includes("https://"), false);
 assert.equal(editor.includes("JSON.parse(JSON.stringify(collection))"), true);
 assert.equal(editor.includes("return structuredClone(collection)"), false);
-assert.equal(runtime.includes('from "ol/source/ImageStatic.js"'), true);
-assert.equal(runtime.includes("view.fit"), true);
-assert.equal(runtime.includes("imageOverlayCoordinates"), true);
+assert.equal(background.includes('from "ol/source/ImageStatic.js"'), true);
+assert.equal(adapter.includes("view.fit") || interactions.includes("view.fit") || background.includes("extentFromCoordinates"), true);
+assert.equal(adapter.includes("imageOverlayCoordinates") || background.includes("imageOverlayCoordinates"), true);
 const raster = readFileSync(new URL("../src/lib/maps/physical/raster.ts", import.meta.url), "utf8");
 const worldView = readFileSync(new URL("../src/lib/maps/physical/PhysicalWorldView.svelte", import.meta.url), "utf8");
 assert.equal(raster.includes("physicalGridRowForRasterRow"), true);
-assert.equal(worldView.includes("createNativeVectorEditor"), true);
-assert.equal(worldView.includes("openlayers-runtime"), true);
+assert.equal(worldView.includes("createMapAdapter"), true);
+assert.equal(worldView.includes("openlayers/MapAdapter"), true);
 assert.equal(worldView.includes('projection: "globe"'), false);
 assert.equal(worldView.includes("physicalWorldOverlayCoordinates"), true);
 assert.deepEqual(physicalWorldOverlayCoordinates(), [
@@ -67,20 +76,20 @@ assert.equal(physicalGridRowForRasterRow(0, 256, 32), 31);
 assert.equal(physicalGridRowForRasterRow(255, 256, 32), 0);
 assert.equal(raster.includes("classifyPhysicalWater"), true);
 assert.equal(raster.includes("MIN_VISIBLE_INLAND_WATER_CELLS"), true);
-assert.equal(runtime.includes('from "ol/interaction/Draw.js"'), true);
-assert.equal(runtime.includes('from "ol/interaction/Modify.js"'), true);
-assert.equal(runtime.includes('from "ol/interaction/Snap.js"'), true);
-assert.equal(runtime.includes('from "ol/interaction/Translate.js"'), true);
+assert.equal(interactions.includes('from "ol/interaction/Draw.js"'), true);
+assert.equal(interactions.includes('from "ol/interaction/Modify.js"'), true);
+assert.equal(interactions.includes('from "ol/interaction/Snap.js"'), true);
+assert.equal(interactions.includes('from "ol/interaction/Translate.js"'), true);
 assert.equal(editor.includes("NativeVectorImporter"), true);
 assert.equal(editor.includes('start?: "import" | "geojson"'), true);
 assert.equal(editor.includes("focusLinkedLocation"), true);
 assert.equal(editor.includes("pinsReady"), true);
-assert.equal(runtime.includes("focusPoint"), true);
-assert.equal(runtime.includes("onMapPick"), true);
-assert.equal(runtime.includes("pickArmed"), true);
-assert.equal(runtime.includes("lonLatToNormalized"), true);
-assert.equal(runtime.includes("activeEditableLayer"), true);
-assert.equal(runtime.includes("singleclick"), true);
+assert.equal(adapter.includes("focusPoint"), true);
+assert.equal(adapter.includes("onMapPick"), true);
+assert.equal(adapter.includes("pickArmed"), true);
+assert.equal(adapter.includes("lonLatToNormalized"), true);
+assert.equal(interactions.includes("activeEditableLayer"), true);
+assert.equal(adapter.includes("singleclick"), true);
 assert.equal(worldView.includes("pickArmed"), true);
 assert.equal(importer.includes("pickImageMapFile"), true);
 assert.equal(importer.includes("pickVectorMapFile"), true);
@@ -92,19 +101,22 @@ assert.equal(client.includes("importVectorMapFile"), true);
 assert.equal(client.includes('"png", "jpg", "jpeg", "svg"'), true);
 assert.equal(client.includes('"geojson", "json"'), true);
 assert.equal(client.includes("acceptVectorMap"), false);
-assert.equal(runtime.includes('event.key !== "Delete"'), true);
-assert.equal(runtime.includes("flush()"), true);
+assert.equal(adapter.includes('event.key !== "Delete"'), true);
+assert.equal(adapter.includes("flush()"), true);
 assert.equal(editor.includes("mapsRecoveryExport"), true);
-assert.equal(editor.includes("deleteVectorLayer"), true);
+assert.equal(editor.includes("CommandStack"), true);
+assert.equal(editor.includes("deleteLayerCommand"), true);
+assert.equal(editor.includes("createVectorLayer"), false);
+assert.equal(editor.includes("deleteVectorLayer"), false);
 assert.equal(editor.includes("Reload canonical source"), true);
 assert.equal(editor.includes("Selected feature"), true);
 assert.equal(editor.includes("reduceVectorEditor"), true);
 assert.equal(editor.includes("onBack") || editor.includes("requestBack"), true);
 assert.equal(editor.includes("Full screen"), true);
-assert.equal(runtime.includes("applyView"), true);
-assert.equal(runtime.includes("setZoom"), true);
-assert.equal(runtime.includes("view.setCenter"), true);
-assert.equal(runtime.includes("panBy"), true);
+assert.equal(adapter.includes("applyView"), true);
+assert.equal(adapter.includes("setZoom"), true);
+assert.equal(adapter.includes("view.setCenter"), true);
+assert.equal(adapter.includes("panBy"), true);
 assert.equal(worldView.includes("onpan"), true);
 assert.equal(worldView.includes("min={0}"), true);
 assert.equal(worldView.includes("max={8}"), true);
@@ -112,19 +124,25 @@ assert.equal(editor.includes("onpan"), true);
 assert.equal(editor.includes("min={0}"), true);
 assert.equal(editor.includes("max={8}"), true);
 assert.equal(editor.includes("lonLatToNormalized"), true);
-assert.equal(runtime.includes("resetView"), true);
-assert.equal(runtime.includes("initialView"), true);
-assert.equal(runtime.includes("onViewChange"), true);
+assert.equal(adapter.includes("resetView"), true);
+assert.equal(adapter.includes("initialView"), true);
+assert.equal(adapter.includes("onViewChange"), true);
 assert.equal(worldView.includes("setBackground"), true);
 assert.equal(worldView.includes("MapViewControls"), true);
 assert.equal(worldView.includes("initialView"), true);
 assert.equal(editor.includes("applyHistoricalProducts(products);\n    mountEditor()"), false);
+assert.equal(commandStack.includes("setBaseline"), true);
+assert.equal(commandStack.includes("coalesceKey"), true);
+assert.equal(adapter.includes("undo("), false);
+assert.equal(adapter.includes("redo("), false);
 
 let state = initialVectorEditorState();
 state = reduceVectorEditor(state, { type: "loaded" });
 state = reduceVectorEditor(state, { type: "geometry-changed" });
 assert.equal(state.dirty, true);
 assert.equal(state.status, "dirty");
+state = reduceVectorEditor(state, { type: "document-changed" });
+assert.equal(state.dirty, true);
 state = reduceVectorEditor(state, { type: "save-started" });
 assert.equal(state.status, "saving");
 state = reduceVectorEditor(state, { type: "save-conflict", message: "asset revision conflict: expected a, current b" });

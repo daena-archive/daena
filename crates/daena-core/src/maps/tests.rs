@@ -42,16 +42,6 @@ fn insert_asset(connection: &Connection, id: &str, entity_id: &str, mime_type: &
         .unwrap();
 }
 
-fn fmg_descriptor(source_asset_id: Option<String>) -> Value {
-    serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": FMG_PROVIDER, "adapterVersion": 1, "sourceFormat": "fmg-map"},
-        "sourceAssetId": source_asset_id,
-        "previewAssetId": null,
-        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
-    })
-}
-
 fn vector_descriptor(source_asset_id: &str, preview_asset_id: Option<&str>) -> Value {
     serde_json::json!({
         "schemaVersion": 2,
@@ -74,14 +64,6 @@ fn vector_descriptor(source_asset_id: &str, preview_asset_id: Option<&str>) -> V
 #[test]
 fn provider_registry_dispatches_all_descriptor_variants() {
     let cases = [
-        (
-            ProviderDescriptor {
-                id: FMG_PROVIDER.into(),
-                adapter_version: 1,
-                source_format: "fmg-map".into(),
-            },
-            ProviderKind::Fmg,
-        ),
         (
             ProviderDescriptor {
                 id: VECTOR_PROVIDER.into(),
@@ -141,6 +123,18 @@ fn validates_layers_only_on_map_entities() {
     let place_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     insert_entity(&connection, &place_id, "place");
+    let source_id = Uuid::new_v4().to_string();
+    insert_asset(&connection, &source_id, &map_id, VECTOR_MIME);
+    connection
+        .execute(
+            "INSERT INTO entity_fields(entity_id, namespace, key, value) VALUES (?1, ?2, 'map', ?3)",
+            rusqlite::params![
+                map_id,
+                MAP_NAMESPACE,
+                vector_descriptor(&source_id, None).to_string()
+            ],
+        )
+        .unwrap();
     let layers = serde_json::json!({
         "schemaVersion": 2,
         "layers": [{
@@ -172,44 +166,6 @@ fn validates_layers_only_on_map_entities() {
         source_format: VECTOR_SOURCE_FORMAT.into(),
     })
     .is_err());
-}
-
-#[test]
-fn validates_descriptor_with_null_source_until_first_save() {
-    let connection = maps_tables();
-    let map_id = Uuid::new_v4().to_string();
-    let other_id = Uuid::new_v4().to_string();
-    insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
-    insert_entity(&connection, &other_id, "place");
-    assert!(validate_field(&connection, &map_id, "map", &fmg_descriptor(None)).is_ok());
-
-    let foreign_asset = Uuid::new_v4().to_string();
-    insert_asset(
-        &connection,
-        &foreign_asset,
-        &other_id,
-        "application/x-fmg-map",
-    );
-    assert!(
-        validate_field(
-            &connection,
-            &map_id,
-            "map",
-            &fmg_descriptor(Some(foreign_asset.clone()))
-        )
-        .is_err(),
-        "an asset owned by another entity must be rejected"
-    );
-
-    let owned_asset = Uuid::new_v4().to_string();
-    insert_asset(&connection, &owned_asset, &map_id, "application/x-fmg-map");
-    assert!(validate_field(
-        &connection,
-        &map_id,
-        "map",
-        &fmg_descriptor(Some(owned_asset))
-    )
-    .is_ok());
 }
 
 #[test]
@@ -392,7 +348,7 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
     assert!(anchor(&serde_json::json!({
         "kind": "provider-feature",
         "provider": VECTOR_PROVIDER,
-        "featureKind": "burg",
+        "featureKind": "unknown-kind",
         "featureId": feature_id,
         "fallbackPoint": [0.5, 0.5]
     }))
@@ -446,14 +402,23 @@ fn rejects_unknown_provider_tuples() {
     let map_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     let asset_id = Uuid::new_v4().to_string();
-    insert_asset(&connection, &asset_id, &map_id, "image/png");
+    insert_asset(&connection, &asset_id, &map_id, VECTOR_MIME);
 
     let mixed = serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": FMG_PROVIDER, "adapterVersion": 1, "sourceFormat": "png"},
+        "schemaVersion": 2,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 2, "sourceFormat": "png"},
         "sourceAssetId": asset_id,
         "previewAssetId": null,
-        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+        "coordinateSpace": {
+            "kind": "world",
+            "extent": [-180, -90, 180, 90],
+            "origin": "bottom-left",
+            "units": {"id": "world-unit", "label": "World units", "metresPerUnit": null},
+            "wrapX": false
+        },
+        "backgrounds": [],
+        "defaultView": {"center": [0.0, 0.0], "zoom": 1, "rotation": 0},
+        "settings": {"snapEnabled": true, "grid": null}
     });
     assert!(validate_field(&connection, &map_id, "map", &mixed)
         .unwrap_err()
@@ -461,7 +426,7 @@ fn rejects_unknown_provider_tuples() {
         .contains("unsupported map provider"));
 
     let unknown = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "provider": {"id": "unknown-provider", "adapterVersion": 1, "sourceFormat": "png"},
         "sourceAssetId": asset_id,
         "previewAssetId": null,

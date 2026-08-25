@@ -374,18 +374,6 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&["search.query"]),
     },
     RpcMethodDef {
-        name: "maps.asset.create.begin",
-        payload_schema: "MapsAssetCreateBeginPayload",
-        requires_revision: false,
-        capability: RpcCapability::Static(&["asset.write:self"]),
-    },
-    RpcMethodDef {
-        name: "maps.asset.create.commit",
-        payload_schema: "MapsAssetCreateCommitPayload",
-        requires_revision: false,
-        capability: RpcCapability::Static(&["asset.write:self"]),
-    },
-    RpcMethodDef {
         name: "maps.image.import.begin",
         payload_schema: "MapsImageImportBeginPayload",
         requires_revision: false,

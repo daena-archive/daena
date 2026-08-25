@@ -5801,30 +5801,6 @@ impl ProjectStore {
         Ok(entity)
     }
 
-    /// Creates the minimum canonical shape required before the map provider opens.
-    /// No source asset exists until the first save; the descriptor carries a null
-    /// sourceAssetId and the provider generates its first map on load.
-    pub fn create_map(&self, name: String) -> Result<Entity, CoreError> {
-        let entity = self.create_entity(CreateEntity {
-            name,
-            entity_type: Some(crate::maps::MAP_ENTITY_TYPE.into()),
-        })?;
-        self.set_field(FieldValue {
-            entity_id: entity.id.clone(),
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            key: "map".into(),
-            value: serde_json::json!({
-                "schemaVersion": 1,
-                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
-                "sourceAssetId": null,
-                "previewAssetId": null,
-                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
-            }),
-            revision: String::new(),
-        })?;
-        Ok(entity)
-    }
-
     pub fn import_image_map(
         &self,
         name: String,
@@ -10452,6 +10428,9 @@ impl ProjectStore {
         let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else {
             return "resolved";
         };
+        if feature_kind != "geojson-feature" {
+            return "unresolved";
+        }
         let source: Option<(String, String)> = self.connection.query_row(
             "SELECT a.path,a.content_hash FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
             rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| Ok((row.get(0)?, row.get(1)?))).optional().ok().flatten();
@@ -10466,23 +10445,7 @@ impl ProjectStore {
         let Ok(bytes) = std::fs::read(source_path) else {
             return "unresolved";
         };
-        if feature_kind == "geojson-feature" {
-            return if crate::maps::vector::contains_feature_id(&bytes, feature_id) {
-                "resolved"
-            } else {
-                "unresolved"
-            };
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return "resolved";
-        };
-        let Some(features) = value.get("features").and_then(serde_json::Value::as_array) else {
-            return "unresolved";
-        };
-        if features.iter().any(|feature| {
-            feature.get("kind").and_then(serde_json::Value::as_str) == Some(feature_kind)
-                && feature.get("id").and_then(serde_json::Value::as_str) == Some(feature_id)
-        }) {
+        if crate::maps::vector::contains_feature_id(&bytes, feature_id) {
             "resolved"
         } else {
             "unresolved"
@@ -10695,8 +10658,8 @@ impl ProjectStore {
     /// Rebuilds the disposable map projections so provider-feature resolution
     /// reflects the current source asset bytes, then returns per-location
     /// resolution results for the given map. Called after every source save so
-    /// removed or renumbered FMG features surface as `unresolved` immediately
-    /// rather than on the next full index build.
+    /// removed GeoJSON features surface as `unresolved` immediately rather than
+    /// on the next full index build.
     pub fn reconcile_map_links(
         &self,
         map_entity_id: String,

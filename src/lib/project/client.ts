@@ -1285,7 +1285,6 @@ export const project = {
       input: { name, entity_type: entityType || null },
       request_id: requestId(options),
     }),
-  createMap: (name = "Untitled map") => invoke<Entity>("project_create_map", { name }),
   updateEntity: (id: string, name?: string | null, entityType?: string | null, options?: MutationOptions) =>
     invoke<Entity>("project_update_entity", {
       id,
@@ -1366,16 +1365,6 @@ export const project = {
       date: input.date ?? null,
       entityIds: input.entityIds ?? null,
     }),
-  mapsEditorSave: (pluginId?: string) => invoke<void>("maps_editor_save", { pluginId: pluginId ?? null }),
-  mapsEditorCaptureAnchor: (pluginId?: string) =>
-    invoke<void>("maps_editor_capture_anchor", { pluginId: pluginId ?? null }),
-  mapsEditorStartPick: (pluginId?: string) => invoke<void>("maps_editor_start_pick", { pluginId: pluginId ?? null }),
-  mapsEditorSetOverlay: (frame: unknown, pluginId?: string) =>
-    invoke<void>("maps_editor_set_overlay", { pluginId: pluginId ?? null, frame }),
-  mapsEditorSetDate: (date: unknown, pluginId?: string) =>
-    invoke<void>("maps_editor_set_date", { pluginId: pluginId ?? null, date }),
-  mapsEditorFocusLink: (linkId: string, pluginId?: string) =>
-    invoke<void>("maps_editor_focus_link", { pluginId: pluginId ?? null, linkId }),
   mapsRecoveryList: (entityId: string) => invoke<MapRecoveryCopy[]>("maps_recovery_list", { entityId }),
   mapsRecoveryRestore: (entityId: string, fileName: string) =>
     invoke<MapEditApply>("maps_recovery_restore", { entityId, fileName }),

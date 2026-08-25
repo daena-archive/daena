@@ -1342,19 +1342,8 @@ async function resolveDirtyMapSession(): Promise<boolean> {
     })
   ) {
     try {
-      if (mapsEditorMode === "vector") {
-        await nativeVectorSession()?.save();
-        return nativeVectorSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
-      }
-      await project.mapsEditorSave(activeMapsPluginId());
-      for (let waited = 0; waited < 100; waited += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 50));
-        const status: string | undefined = mapSaveStates[mapId]?.status;
-        if (status === "saved" || status === "clean") return true;
-        if (status === "error" || status === "conflict") return false;
-      }
-      error = "Map save did not finish. The editor remains open.";
-      return false;
+      await nativeVectorSession()?.save();
+      return nativeVectorSession()?.isDirty() !== true && mapSaveStates[mapId]?.status !== "dirty";
     } catch (cause) {
       error = friendlyError(cause);
       return false;
@@ -1709,10 +1698,6 @@ function pluginNavigationItemByKey(key: string): PluginNavigationItem | null {
   return pluginViews().find((item) => item.key === key) ?? null;
 }
 
-function activeMapsPluginId() {
-  return sandboxView?.renderer === "maps" ? sandboxView.plugin.id : mapsNavigationItem()?.plugin.id;
-}
-
 async function openNavigationItem(item: NavigationItem) {
   if (item.kind === "workspace") {
     await switchSection(item.section);
@@ -1745,12 +1730,7 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
         (field) => field.namespace === "maps" && field.key === "map",
       );
       const descriptor = mapField?.value as { provider?: { id?: string } } | undefined;
-      mapsEditorMode =
-        descriptor?.provider?.id === "daena-physical"
-          ? "vector"
-          : descriptor?.provider?.id === "daena-openlayers"
-            ? "vector"
-            : "fmg";
+      mapsEditorMode = "vector";
     }
     mapFocusLinkId = null;
     if (!(await leavePluginView())) return;
@@ -1776,11 +1756,11 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
   sandboxView = { plugin: item.plugin, view: item.view, renderer: "webview" };
 }
 
-let mapsEditorMode = $state<"fmg" | "vector" | "physical">("fmg");
+let mapsEditorMode = $state<"vector" | "physical">("vector");
 let mapsVectorStart = $state<"import" | "geojson">("geojson");
 let mapProviderMenuOpen = $state<"header" | "empty" | null>(null);
 const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView?.view));
-async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "physical") {
+async function createMap(provider: "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
     if (!(await flushAutoSave())) return;
@@ -1800,8 +1780,8 @@ async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "ph
     projectHomeOpen = false;
     loreWikiOpen = false;
     section = "maps";
-    // Draft editor: no map entity until the in-FMG Save overlay commits one.
-    mapsEditorMode = provider === "fmg" ? "fmg" : provider === "physical" ? "physical" : "vector";
+    // Draft editor: no map entity until the native editor accepts/creates one.
+    mapsEditorMode = provider === "physical" ? "physical" : "vector";
     mapsVectorStart = provider === "image" ? "import" : "geojson";
     mapsEditorKey = `draft-${Date.now()}`;
     sandboxView = { plugin: mapView.plugin, view: mapView.view, renderer: "maps" };
@@ -1857,33 +1837,13 @@ $effect(() => {
           .filter((asset) => asset.namespace === "maps" && asset.size > 0)
           .sort((left, right) => right.created_at.localeCompare(left.created_at));
         let sourceId = descriptor?.sourceAssetId ?? null;
-        // Repair orphan first-saves: bytes landed under assets/maps but the
-        // descriptor never received sourceAssetId, so Saved Maps stayed empty.
-        if (!sourceId && mapAssets.length > 0) {
-          const orphan = mapAssets[0];
-          const repaired = {
-            schemaVersion: 1,
-            provider: descriptor?.provider ?? { id: "azgaar-fmg", adapterVersion: 1, sourceFormat: "fmg-map" },
-            sourceAssetId: orphan.id,
-            previewAssetId: descriptor?.previewAssetId ?? null,
-            defaultView: descriptor?.defaultView ?? { center: [0.5, 0.5] as [number, number], zoom: 1 },
-          };
-          await project.setField({
-            entity_id: map.id,
-            namespace: "maps",
-            key: "map",
-            value: repaired,
-            revision: "",
-          });
-          descriptor = repaired;
-          sourceId = orphan.id;
-        }
-        // Legacy create-first drafts left entities with no source; remove them quietly.
-        if (!sourceId && mapAssets.length === 0) {
-          await project.deleteEntity(map.id).catch(() => undefined);
+        // Legacy drafts without a source asset are not openable; drop them quietly.
+        if (!sourceId || mapAssets.length === 0) {
+          if (!sourceId && mapAssets.length === 0) {
+            await project.deleteEntity(map.id).catch(() => undefined);
+          }
           continue;
         }
-        if (!sourceId) continue;
         const source = mapAssets.find((asset) => asset.id === sourceId);
         if (!source) continue;
         entries.push({ ...map, size: source.size });
@@ -1924,11 +1884,7 @@ function savedMaps() {
 async function saveCurrentMap() {
   try {
     if (mapsEditorMode === "physical") return;
-    if (mapsEditorMode === "vector") {
-      await nativeVectorSession()?.save();
-      return;
-    }
-    await project.mapsEditorSave(activeMapsPluginId());
+    await nativeVectorSession()?.save();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -3843,12 +3799,6 @@ async function beginMapPick(pending: NonNullable<typeof mapPickPending>) {
       : "Click for a point, or use Path/Area to draw a route or region.";
   await ensureMapEditorOpen(pending.mapEntityId);
   if (mapsEditorMode === "vector") return;
-  // Webview remounts when the map key changes; give the bridge a moment to boot.
-  window.setTimeout(() => {
-    void project.mapsEditorStartPick(activeMapsPluginId()).catch((cause) => {
-      error = friendlyError(cause);
-    });
-  }, 450);
 }
 
 async function applyMapPick(anchor: unknown) {
@@ -3870,8 +3820,6 @@ async function applyMapPick(anchor: unknown) {
         validity: { from: null, to: null },
       };
       await project.upsertMapLocation(entity.id, location);
-      if (mapsEditorMode === "fmg")
-        await project.mapsEditorFocusLink(location.id, activeMapsPluginId()).catch(() => {});
       const departure = currentShellLocation();
       if (!(await leavePluginView())) return;
       recordShellDeparture(departure);
@@ -3886,8 +3834,6 @@ async function applyMapPick(anchor: unknown) {
       mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
-      if (mapsEditorMode === "fmg")
-        await project.mapsEditorFocusLink(pending.location.id, activeMapsPluginId()).catch(() => {});
       const entity =
         entities.find((candidate) => candidate.id === pending.entityId) ?? (await project.getEntity(pending.entityId));
       if (entity) {
@@ -5648,11 +5594,6 @@ onMount(() => {
       mapFocusLinkId = null;
       await tick();
       mapFocusLinkId = linkId;
-      if (linkId && sandboxView?.renderer === "maps" && mapsEditorMode === "fmg") {
-        setTimeout(() => {
-          void project.mapsEditorFocusLink(linkId, activeMapsPluginId()).catch(() => {});
-        }, 400);
-      }
     } catch (cause) {
       error = friendlyError(cause);
     }
@@ -6745,7 +6686,6 @@ onMount(() => {
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
                   <button type="button" role="menuitem" onclick={() => void createMap("physical")}
                     >Create physical world</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("fmg")}>Create with FMG</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("vector")}
                     >Import vector map</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("image")}
@@ -6884,8 +6824,6 @@ onMount(() => {
                       role="menu">
                       <button type="button" role="menuitem" onclick={() => void createMap("physical")}
                         >Create physical world</button>
-                      <button type="button" role="menuitem" onclick={() => void createMap("fmg")}
-                        >Create with FMG</button>
                       <button type="button" role="menuitem" onclick={() => void createMap("vector")}
                         >Import vector map</button>
                       <button type="button" role="menuitem" onclick={() => void createMap("image")}
@@ -7085,13 +7023,6 @@ onMount(() => {
                           void leavePluginView();
                         }} />
                     {/key}
-                  {:else}
-                    <SandboxView
-                      pluginId={sandboxView.plugin.id}
-                      viewId={sandboxView.view.id}
-                      title={sandboxView.plugin.name}
-                      mapEntityId={mapsEditorKey.startsWith("draft-") ? undefined : (mapId ?? undefined)}
-                      linkId={mapFocusLinkId ?? undefined} />
                   {/if}
                 </div>
               </div>

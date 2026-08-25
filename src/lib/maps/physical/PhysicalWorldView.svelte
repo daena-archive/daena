@@ -3,10 +3,10 @@ import { untrack } from "svelte";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import {
   RENDERER_UNAVAILABLE,
-  createNativeVectorEditor,
-  type NativeVectorEditor,
-  type NativeVectorView,
-} from "../native-vector/openlayers-runtime";
+  createMapAdapter,
+  type MapAdapter,
+  type MapAdapterView,
+} from "../openlayers/MapAdapter";
 import { physicalWorldOverlayCoordinates } from "../native-vector/coordinates";
 import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
@@ -26,13 +26,13 @@ let {
   showRaster?: boolean;
   pickArmed?: boolean;
   onMapPick?: (anchor: MapAnchor) => void;
-  onready?: (editor: NativeVectorEditor | null) => void;
+  onready?: (editor: MapAdapter | null) => void;
 } = $props();
 
 let host = $state<HTMLDivElement | null>(null);
 let notice = $state("");
-let editor = $state<NativeVectorEditor | null>(null);
-let view = $state<NativeVectorView | null>(null);
+let editor = $state<MapAdapter | null>(null);
+let view = $state<MapAdapterView | null>(null);
 
 function backgroundFrom(canvas: HTMLCanvasElement | null) {
   return canvas
@@ -50,7 +50,7 @@ $effect(() => {
   const container = host;
   if (!container) return;
   const created = untrack(() =>
-    createNativeVectorEditor(container, {
+    createMapAdapter(container, {
       get draft() {
         return collection;
       },
@@ -60,7 +60,6 @@ $effect(() => {
       activeLayerId: null,
       center: [0.5, 0.5],
       zoom: 0,
-      setDraft() {},
       setActiveLayerId() {},
       onDiagnostic(code, detail) {
         if (code === RENDERER_UNAVAILABLE) notice = detail;
@@ -76,6 +75,7 @@ $effect(() => {
       onViewChange(next) {
         view = next;
       },
+      readOnly: true,
     }),
   );
   if ("error" in created) {
@@ -98,7 +98,7 @@ $effect(() => {
   if (!current) return;
   layers;
   collection;
-  current.syncLayers(layers);
+  current.syncDocument(collection, layers);
 });
 
 $effect(() => {

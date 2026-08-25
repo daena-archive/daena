@@ -20,8 +20,15 @@ export function geometryToSvg(feature: VectorFeature): { kind: "path" | "point";
     const [x, y] = lonLatToEquirectangular(geometry.coordinates[0] ?? 0, geometry.coordinates[1] ?? 0);
     return { kind: "point", x, y };
   }
+  if (geometry.type === "MultiPoint") {
+    const [x, y] = lonLatToEquirectangular(geometry.coordinates[0]?.[0] ?? 0, geometry.coordinates[0]?.[1] ?? 0);
+    return { kind: "point", x, y };
+  }
   if (geometry.type === "LineString") {
     return { kind: "path", d: projectRing(geometry.coordinates) };
+  }
+  if (geometry.type === "MultiLineString") {
+    return { kind: "path", d: geometry.coordinates.map((line) => projectRing(line)).join(" ") };
   }
   if (geometry.type === "Polygon") {
     return { kind: "path", d: geometry.coordinates.map((ring) => `${projectRing(ring)} Z`).join(" ") };

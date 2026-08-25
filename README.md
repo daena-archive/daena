@@ -73,9 +73,9 @@ Maps are connected to your notes instead of being isolated images. Attach
 places, characters, events, and other entries to map locations, then move
 between the map and the related information.
 
-The Maps workspace currently supports creating physical worlds and working with
-Fantasy Map Generator integrations. Maps are still a beta feature and are being
-actively improved.
+The Maps workspace currently supports creating physical worlds and editing
+OpenLayers vector maps (including image import). Maps are still a beta feature
+and are being actively improved.
 
 ### Optional AI assistance
 

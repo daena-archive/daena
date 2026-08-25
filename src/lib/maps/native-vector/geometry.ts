@@ -9,8 +9,12 @@ export function geometryPositionCount(geometry: VectorFeature["geometry"]): numb
   switch (geometry.type) {
     case "Point":
       return 1;
+    case "MultiPoint":
+      return geometry.coordinates.length;
     case "LineString":
       return geometry.coordinates.length;
+    case "MultiLineString":
+      return geometry.coordinates.reduce((sum, line) => sum + line.length, 0);
     case "Polygon":
       return geometry.coordinates.reduce((sum, ring) => sum + ring.length, 0);
     case "MultiPolygon":

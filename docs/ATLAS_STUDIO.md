@@ -13,7 +13,7 @@ This document is subordinate to:
   boundaries;
 - [`STORAGE.md`](./STORAGE.md) for canonical project files and disposable local
   state;
-- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) for shared map, layer,
+- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md) for shared map, layer,
   anchor, hierarchy, and navigation contracts;
 - [`NATIVE_MAP_GENERATOR.md`](./NATIVE_MAP_GENERATOR.md) and its accepted ADRs
   for physical-world identity, epochs, numeric policy, and invariants;

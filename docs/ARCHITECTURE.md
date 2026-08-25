@@ -17,10 +17,9 @@ contracts remain in the focused plans below:
 - [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
 - [`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) defines the optional built-in Git
   integration.
-- [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) defines provider-backed
-  maps and map/entity integration.
 - [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md) defines Daena-owned
-  map rendering, vector editing, raster backgrounds, and Atlas interaction.
+  map rendering, vector editing, raster backgrounds, Atlas interaction, and
+  map/entity integration.
 - [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
 - [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
 - [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the

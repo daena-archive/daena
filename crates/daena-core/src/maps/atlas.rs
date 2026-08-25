@@ -465,7 +465,7 @@ pub fn capabilities_for_map(
     let descriptor = field_value(&fields, "map")
         .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
     let layers = field_value(&fields, "layers")
-        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 1, "layers": []}));
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
     let mut capabilities = capabilities_for_descriptor(&descriptor, &layers);
     if !capabilities.supported {
         return Ok(capabilities);
@@ -541,7 +541,7 @@ pub fn capture_snapshot(
     let descriptor_value = field_value(&fields, "map")
         .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
     let layers_value = field_value(&fields, "layers")
-        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 1, "layers": []}));
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
     let capabilities = capabilities_for_descriptor(&descriptor_value, &layers_value);
     if !capabilities.supported {
         return Err(CoreError::Validation(format!(

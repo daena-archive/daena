@@ -23,10 +23,12 @@ pub const VECTOR_CENTER_Y_MAX: f64 = 1.0;
 const SCALE: i32 = 1_000_000;
 const LAT_LIMIT: i32 = 90_000_000;
 const LON_LIMIT: i32 = 180_000_000;
+const ANTIMERIDIAN: i32 = 180_000_000;
 
 pub const CODE_SOURCE_INVALID: &str = "vector.source.invalid";
 pub const CODE_UNSUPPORTED_VERSION: &str = "vector.source.unsupported-version";
 pub const CODE_GEOMETRY_INVALID: &str = "vector.geometry.invalid";
+pub const CODE_ANTIMERIDIAN: &str = "vector.geometry.antimeridian";
 pub const CODE_LIMIT: &str = "vector.limit.exceeded";
 pub const CODE_LAYER_MISSING: &str = "vector.layer.missing";
 pub const CODE_GENERATOR: &str = "vector.generator.invalid-settings";
@@ -383,6 +385,10 @@ fn segments_intersect(a: Micro, b: Micro, c: Micro, d: Micro) -> bool {
         || (o4 == 0 && on_segment(c, d, b))
 }
 
+fn crosses_antimeridian(a: Micro, b: Micro) -> bool {
+    (i64::from(a.0) - i64::from(b.0)).abs() > i64::from(ANTIMERIDIAN)
+}
+
 fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
     if line.len() < 2 {
         return Err(fail(
@@ -390,6 +396,15 @@ fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
             path,
             "line requires at least two distinct positions",
         ));
+    }
+    for pair in line.windows(2) {
+        if crosses_antimeridian(pair[0], pair[1]) {
+            return Err(fail(
+                CODE_ANTIMERIDIAN,
+                path,
+                "segment crosses the antimeridian",
+            ));
+        }
     }
     Ok(())
 }
@@ -409,6 +424,24 @@ fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Mi
             CODE_GEOMETRY_INVALID,
             path,
             "ring requires at least three distinct positions",
+        ));
+    }
+    for pair in ring.windows(2) {
+        if crosses_antimeridian(pair[0], pair[1]) {
+            return Err(fail(
+                CODE_ANTIMERIDIAN,
+                path,
+                "segment crosses the antimeridian",
+            ));
+        }
+    }
+    let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
+    let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
+    if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
+        return Err(fail(
+            CODE_ANTIMERIDIAN,
+            path,
+            "ring longitude span exceeds 180 degrees",
         ));
     }
     let n = open.len();
@@ -1990,6 +2023,62 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("polygonal"));
+    }
+
+    #[test]
+    fn rejects_antimeridian_crossing_line_and_ring() {
+        let known = BTreeSet::new();
+        let line = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "id": "018f89ec-25fc-7816-8b47-6f80905f2802",
+                "properties": {
+                    "daena": {
+                        "layerId": "base",
+                        "semanticType": "route",
+                        "name": null,
+                        "style": null,
+                        "label": null,
+                        "custom": {}
+                    }
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[170.0, 0.0], [-170.0, 0.0]]
+                }
+            }]
+        });
+        assert!(canonicalize_committed(&serde_json::to_vec(&line).unwrap(), &known)
+            .unwrap_err()
+            .to_string()
+            .contains(CODE_ANTIMERIDIAN));
+
+        let polygon = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "id": "018f89ec-25fc-7816-8b47-6f80905f2803",
+                "properties": {
+                    "daena": {
+                        "layerId": "base",
+                        "semanticType": "region",
+                        "name": null,
+                        "style": null,
+                        "label": null,
+                        "custom": {}
+                    }
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[170.0, -10.0], [-170.0, -10.0], [-170.0, 10.0], [170.0, 10.0], [170.0, -10.0]]]
+                }
+            }]
+        });
+        assert!(canonicalize_committed(&serde_json::to_vec(&polygon).unwrap(), &known)
+            .unwrap_err()
+            .to_string()
+            .contains(CODE_ANTIMERIDIAN));
     }
 
     #[test]

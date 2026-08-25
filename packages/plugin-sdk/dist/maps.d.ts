@@ -2,7 +2,6 @@
 export type NormalizedPoint = readonly [number, number];
 export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
-export declare const FMG_PROVIDER: "azgaar-fmg";
 export declare const VECTOR_PROVIDER: "daena-openlayers";
 export declare const PHYSICAL_PROVIDER: "daena-physical";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
@@ -117,19 +116,6 @@ export type DaenaFeaturePropertiesV2 = {
     };
 };
 export type MapDescriptor = {
-    schemaVersion: 1;
-    provider: {
-        id: typeof FMG_PROVIDER;
-        adapterVersion: 1;
-        sourceFormat: "fmg-map";
-    };
-    sourceAssetId: string | null;
-    previewAssetId: string | null;
-    defaultView: {
-        center: NormalizedPoint;
-        zoom: number;
-    };
-} | {
     schemaVersion: 2;
     provider: {
         id: typeof VECTOR_PROVIDER;

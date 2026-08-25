@@ -1,6 +1,5 @@
 export const MAP_ENTITY_TYPE = "daena.maps:map";
 export const MAP_NAMESPACE = "maps";
-export const FMG_PROVIDER = "azgaar-fmg";
 export const VECTOR_PROVIDER = "daena-openlayers";
 export const PHYSICAL_PROVIDER = "daena-physical";
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"];

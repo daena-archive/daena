@@ -44,6 +44,8 @@ export type VectorLayerStyle = {
   pointRadius: number;
 };
 
+export type MapBlendMode = "normal" | "multiply" | "screen" | "overlay";
+
 export type VectorLayerDefinition = {
   id: string;
   kind: "vector";
@@ -51,9 +53,27 @@ export type VectorLayerDefinition = {
   order: number;
   defaultVisible: boolean;
   locked: boolean;
+  opacity: number;
+  blendMode: MapBlendMode;
   selector: Record<string, never>;
   style: VectorLayerStyle;
 };
+
+export type RasterLayerDefinition = {
+  id: string;
+  kind: "raster";
+  name: string;
+  order: number;
+  defaultVisible: boolean;
+  locked: boolean;
+  opacity: number;
+  blendMode: MapBlendMode;
+  rasterAssetId: string;
+  selector: Record<string, never>;
+  style: Record<string, never>;
+};
+
+export type MapLayerDefinition = VectorLayerDefinition | RasterLayerDefinition;
 
 export const DEFAULT_VECTOR_LAYER_STYLE: VectorLayerStyle = {
   fill: "#8f6fd1",
@@ -73,6 +93,28 @@ export function featureSemanticType(feature: { properties: VectorFeatureProperti
 
 export function featureName(feature: { properties: VectorFeatureProperties }): string | null {
   return feature.properties.daena.name;
+}
+
+export function isVectorLayer(layer: MapLayerDefinition): layer is VectorLayerDefinition {
+  return layer.kind === "vector";
+}
+
+export function isRasterLayer(layer: MapLayerDefinition): layer is RasterLayerDefinition {
+  return layer.kind === "raster";
+}
+
+export function vectorLayers(layers: readonly MapLayerDefinition[]): VectorLayerDefinition[] {
+  return layers.filter(isVectorLayer);
+}
+
+export function layerAcceptsEdits(layer: MapLayerDefinition | undefined): layer is VectorLayerDefinition {
+  return Boolean(
+    layer &&
+      layer.kind === "vector" &&
+      layer.defaultVisible &&
+      !layer.locked &&
+      layer.id !== BASE_LAYER_ID,
+  );
 }
 
 export function daenaProperties(

@@ -636,7 +636,9 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
             let mut points = values
                 .iter()
                 .enumerate()
-                .map(|(index, value)| parse_position(value, &format!("{path}.coordinates[{index}]")))
+                .map(|(index, value)| {
+                    parse_position(value, &format!("{path}.coordinates[{index}]"))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             points.sort();
             Ok(Geometry::MultiPoint(points))
@@ -677,8 +679,10 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                         "must be an array",
                     )
                 })?;
-                let line =
-                    dedup_adjacent(parse_line(positions, &format!("{path}.coordinates[{index}]"))?);
+                let line = dedup_adjacent(parse_line(
+                    positions,
+                    &format!("{path}.coordinates[{index}]"),
+                )?);
                 validate_line(&line, &format!("{path}.coordinates[{index}]"))?;
                 lines.push(line);
             }
@@ -778,8 +782,10 @@ fn geometry_matches_kind(kind: &str, geometry: &Geometry) -> bool {
         (
             "land" | "lake" | "region",
             Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
-        ) | ("route", Geometry::LineString(_) | Geometry::MultiLineString(_))
-            | ("marker", Geometry::Point(_) | Geometry::MultiPoint(_))
+        ) | (
+            "route",
+            Geometry::LineString(_) | Geometry::MultiLineString(_)
+        ) | ("marker", Geometry::Point(_) | Geometry::MultiPoint(_))
             | ("custom", _)
     )
 }
@@ -936,25 +942,18 @@ fn parse_feature(
                 })?,
                 &format!("{path}.id"),
             )?;
-            if properties
-                .as_object()
-                .is_some_and(|object| {
-                    object.contains_key("daenaLayerId")
-                        || object.contains_key("kind")
-                        || (object.contains_key("name") && !object.contains_key("daena"))
-                })
-            {
+            if properties.as_object().is_some_and(|object| {
+                object.contains_key("daenaLayerId")
+                    || object.contains_key("kind")
+                    || (object.contains_key("name") && !object.contains_key("daena"))
+            }) {
                 return Err(fail(
                     CODE_UNSUPPORTED_VERSION,
                     &format!("{path}.properties"),
                     "flat feature properties are unsupported; use properties.daena",
                 ));
             }
-            let properties = object_keys(
-                properties,
-                &format!("{path}.properties"),
-                &["daena"],
-            )?;
+            let properties = object_keys(properties, &format!("{path}.properties"), &["daena"])?;
             let daena = properties.get("daena").ok_or_else(|| {
                 fail(
                     CODE_SOURCE_INVALID,
@@ -989,10 +988,7 @@ fn parse_feature(
                 daena.get("semanticType"),
                 &format!("{path}.properties.daena.semanticType"),
             )?;
-            let name = parse_name(
-                daena.get("name"),
-                &format!("{path}.properties.daena.name"),
-            )?;
+            let name = parse_name(daena.get("name"), &format!("{path}.properties.daena.name"))?;
             let style = parse_optional_style(
                 daena.get("style"),
                 &format!("{path}.properties.daena.style"),
@@ -1261,6 +1257,50 @@ pub fn canonicalize_committed(
     let value = parse_strict_json(bytes)?;
     let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
     Ok(serialize_features(&features))
+}
+
+/// Compare feature sets for layers that were locked in the previous revision and remain locked.
+/// Newly locked, unlocked, or removed layers are not checked here.
+pub fn assert_locked_layer_features_unchanged(
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+    known_previous: &BTreeSet<String>,
+    known_next: &BTreeSet<String>,
+    locked_layer_ids: &BTreeSet<String>,
+) -> Result<(), CoreError> {
+    if locked_layer_ids.is_empty() {
+        return Ok(());
+    }
+    let previous = parse_collection(
+        &parse_strict_json(previous_bytes)?,
+        SourceProfile::Committed,
+        known_previous,
+    )?;
+    let next = parse_collection(
+        &parse_strict_json(next_bytes)?,
+        SourceProfile::Committed,
+        known_next,
+    )?;
+    for layer_id in locked_layer_ids {
+        let mut before: Vec<&Feature> = previous
+            .iter()
+            .filter(|feature| feature.layer_id == *layer_id)
+            .collect();
+        let mut after: Vec<&Feature> = next
+            .iter()
+            .filter(|feature| feature.layer_id == *layer_id)
+            .collect();
+        before.sort_by(|left, right| left.id.cmp(&right.id));
+        after.sort_by(|left, right| left.id.cmp(&right.id));
+        if before != after {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "$",
+                format!("locked layer {layer_id} features cannot be changed"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn canonicalize_candidate(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
@@ -1567,11 +1607,7 @@ fn validate_opacity(value: &Value, path: &str) -> Result<(), CoreError> {
         .as_f64()
         .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "must be a finite number"))?;
     if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
-        return Err(fail(
-            CODE_SOURCE_INVALID,
-            path,
-            "must be finite in [0, 1]",
-        ));
+        return Err(fail(CODE_SOURCE_INVALID, path, "must be finite in [0, 1]"));
     }
     Ok(())
 }
@@ -1622,10 +1658,13 @@ fn validate_label(label: &Value, path: &str) -> Result<(), CoreError> {
         ("haloWidth", 0.0, 16.0),
         ("rotation", -360.0, 360.0),
     ] {
-        let value = label
-            .get(key)
-            .and_then(Value::as_f64)
-            .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.{key}"), "must be a finite number"))?;
+        let value = label.get(key).and_then(Value::as_f64).ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.{key}"),
+                "must be a finite number",
+            )
+        })?;
         if !value.is_finite() || !(min..=max).contains(&value) {
             return Err(fail(
                 CODE_SOURCE_INVALID,
@@ -1636,19 +1675,22 @@ fn validate_label(label: &Value, path: &str) -> Result<(), CoreError> {
     }
     for key in ["color", "haloColor"] {
         validate_hex_color(
-            label
-                .get(key)
-                .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.{key}"), "is required"))?,
+            label.get(key).ok_or_else(|| {
+                fail(CODE_SOURCE_INVALID, &format!("{path}.{key}"), "is required")
+            })?,
             &format!("{path}.{key}"),
         )?;
     }
-    let offset = label.get("offset").and_then(Value::as_array).ok_or_else(|| {
-        fail(
-            CODE_SOURCE_INVALID,
-            &format!("{path}.offset"),
-            "must contain two numbers",
-        )
-    })?;
+    let offset = label
+        .get("offset")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.offset"),
+                "must contain two numbers",
+            )
+        })?;
     if offset.len() != 2
         || offset.iter().any(|value| {
             value
@@ -1904,10 +1946,12 @@ mod tests {
                 }
             }]
         });
-        assert!(canonicalize_committed(&serde_json::to_vec(&input).unwrap(), &BTreeSet::new())
-            .unwrap_err()
-            .to_string()
-            .contains(CODE_UNSUPPORTED_VERSION));
+        assert!(
+            canonicalize_committed(&serde_json::to_vec(&input).unwrap(), &BTreeSet::new())
+                .unwrap_err()
+                .to_string()
+                .contains(CODE_UNSUPPORTED_VERSION)
+        );
     }
 
     #[test]
@@ -1964,7 +2008,10 @@ mod tests {
             value["features"][1]["geometry"]["coordinates"],
             serde_json::json!([[[0, 0], [1, 1]], [[4, 4], [5, 5]]])
         );
-        assert_eq!(value["features"][1]["properties"]["daena"]["custom"]["difficulty"], 2);
+        assert_eq!(
+            value["features"][1]["properties"]["daena"]["custom"]["difficulty"],
+            2
+        );
     }
 
     #[test]
@@ -2049,10 +2096,12 @@ mod tests {
                 }
             }]
         });
-        assert!(canonicalize_committed(&serde_json::to_vec(&line).unwrap(), &known)
-            .unwrap_err()
-            .to_string()
-            .contains(CODE_ANTIMERIDIAN));
+        assert!(
+            canonicalize_committed(&serde_json::to_vec(&line).unwrap(), &known)
+                .unwrap_err()
+                .to_string()
+                .contains(CODE_ANTIMERIDIAN)
+        );
 
         let polygon = serde_json::json!({
             "type": "FeatureCollection",
@@ -2075,10 +2124,12 @@ mod tests {
                 }
             }]
         });
-        assert!(canonicalize_committed(&serde_json::to_vec(&polygon).unwrap(), &known)
-            .unwrap_err()
-            .to_string()
-            .contains(CODE_ANTIMERIDIAN));
+        assert!(
+            canonicalize_committed(&serde_json::to_vec(&polygon).unwrap(), &known)
+                .unwrap_err()
+                .to_string()
+                .contains(CODE_ANTIMERIDIAN)
+        );
     }
 
     #[test]

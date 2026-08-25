@@ -27,6 +27,7 @@ for (const required of [
   "ReorderLayer",
   "SetLayerVisibility",
   "SetLayerLocked",
+  "SetLayerOpacity",
   "SetLayerStyle",
   "AddBackground",
   "SetDefaultView",
@@ -119,5 +120,15 @@ assert.equal(stack.isDirty(), true);
 stack.setBaseline(stack.document);
 assert.equal(stack.isDirty(), false);
 assert.equal(stack.canUndo(), false);
+
+assert.ok(files.commands.includes("buildCreateRasterLayer"));
+assert.ok(files.commands.includes("buildDuplicateLayer"));
+assert.ok(files.commands.includes("protectedLayerIds") || files.commands.includes("layerAcceptsEdits"));
+assert.ok(files.commands.includes("SetLayerOpacity"));
+assert.ok(files.commands.includes("reorderLayersByIdsCommand"));
+assert.ok(files.adapter.includes("fitSelection"));
+assert.ok(files.adapter.includes("clearSelection"));
+assert.equal(files.adapter.includes("event.key !== \"Delete\""), false);
+assert.equal(files.adapter.includes("registry.source.removeFeature"), false);
 
 console.log("map editor command stack checks passed");

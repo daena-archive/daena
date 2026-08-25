@@ -59,6 +59,14 @@ for (const forbidden of ["maplibre", "terra-draw", "webgl2", "workerUrl", "UNDO_
   if (adapter.toLowerCase().includes(forbidden.toLowerCase())) fail(`MapAdapter still contains ${forbidden}`);
 }
 
+const registry = read("src/lib/maps/openlayers/layer-registry.ts");
+if (registry.includes("Single-source registry")) fail("layer-registry must not remain a single-source registry");
+if (!registry.includes("sourceFor") || !registry.includes("vectorOlLayers") || !registry.includes("ImageStatic")) {
+  fail("layer-registry must own one OL layer per Daena layer including rasters");
+}
+if (!registry.includes("featureLayerId") || !registry.includes("featuresForLayer") || !registry.includes("collectionFromSources")) {
+  fail("layer-registry must partition GeoJSON by daena.layerId and merge sources on commit");
+}
 const interactions = read("src/lib/maps/openlayers/interaction-manager.ts");
 for (const required of [
   'from "ol/interaction/Draw.js"',
@@ -70,6 +78,18 @@ for (const required of [
   "intersection: true",
 ]) {
   if (!interactions.includes(required)) fail(`interaction-manager missing ${required}`);
+}
+if (interactions.includes("layer.id === activeLayerId && !layer.locked")) {
+  fail("Select must not be limited to the active layer");
+}
+if (!interactions.includes("deleteCondition") || !interactions.includes("altKeyOnly")) {
+  fail("Modify must expose Alt-click vertex deletion");
+}
+if (!interactions.includes("pruneSelection") || !interactions.includes("filter(feature)")) {
+  fail("hidden and locked features must be pruned from selection and excluded from Modify");
+}
+if (!adapter.includes("fitSelection") || adapter.includes("event.key !== \"Delete\"")) {
+  fail("MapAdapter must fit selection and must not mutate features on Delete");
 }
 
 const projection = read("src/lib/maps/openlayers/projection.ts");

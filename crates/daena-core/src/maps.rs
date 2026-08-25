@@ -497,6 +497,27 @@ impl LayerDefinition {
             Self::Semantic(layer) => (layer.order, layer.id.as_str()),
         }
     }
+
+    fn locked(&self) -> bool {
+        match self {
+            Self::Raster(layer) => layer.locked,
+            Self::Vector(layer) => layer.locked,
+            Self::Semantic(_) => false,
+        }
+    }
+}
+
+pub fn locked_layer_ids(layers_value: &Value) -> BTreeSet<String> {
+    layers_value
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| {
+            let parsed: LayerDefinition = serde_json::from_value(layer.clone()).ok()?;
+            parsed.locked().then(|| parsed.id().to_owned())
+        })
+        .collect()
 }
 
 fn validate_semantic_style(style: &Value) -> Result<(), CoreError> {

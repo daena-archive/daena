@@ -2,13 +2,17 @@ import {
   DEFAULT_VECTOR_LAYER_STYLE,
   daenaProperties,
   featureLayerId,
+  isVectorLayer,
+  type MapBlendMode,
+  type MapLayerDefinition,
+  type RasterLayerDefinition,
   type VectorFeature,
   type VectorFeatureCollection,
   type VectorFeatureProperties,
   type VectorKind,
   type VectorLayerDefinition,
   type VectorLayerStyle,
-} from "./types";
+} from "./types.ts";
 
 const KINDS: readonly VectorKind[] = ["land", "lake", "region", "route", "marker", "custom"];
 
@@ -193,23 +197,61 @@ function asStyle(value: unknown): VectorLayerStyle {
   };
 }
 
-export function parseVectorLayers(value: unknown): VectorLayerDefinition[] {
+function asBlendMode(value: unknown): MapBlendMode {
+  return value === "multiply" || value === "screen" || value === "overlay" ? value : "normal";
+}
+
+function asOpacity(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+}
+
+function parseVectorLayer(layer: Record<string, unknown>): VectorLayerDefinition | null {
+  if (typeof layer.id !== "string") return null;
+  return {
+    id: layer.id,
+    kind: "vector",
+    name: String(layer.name ?? "Layer"),
+    order: Number(layer.order ?? 0),
+    defaultVisible: layer.defaultVisible !== false,
+    locked: layer.locked === true,
+    opacity: asOpacity(layer.opacity),
+    blendMode: asBlendMode(layer.blendMode),
+    selector: {},
+    style: asStyle(layer.style),
+  };
+}
+
+function parseRasterLayer(layer: Record<string, unknown>): RasterLayerDefinition | null {
+  if (typeof layer.id !== "string" || typeof layer.rasterAssetId !== "string") return null;
+  return {
+    id: layer.id,
+    kind: "raster",
+    name: String(layer.name ?? "Raster"),
+    order: Number(layer.order ?? 0),
+    defaultVisible: layer.defaultVisible !== false,
+    locked: layer.locked === true,
+    opacity: asOpacity(layer.opacity),
+    blendMode: asBlendMode(layer.blendMode),
+    rasterAssetId: layer.rasterAssetId,
+    selector: {},
+    style: {},
+  };
+}
+
+export function parseVectorLayers(value: unknown): MapLayerDefinition[] {
   const layers = Array.isArray((value as { layers?: unknown[] } | undefined)?.layers)
     ? ((value as { layers: Array<Record<string, unknown>> }).layers ?? [])
     : [];
-  const parsed: VectorLayerDefinition[] = [];
+  const parsed: MapLayerDefinition[] = [];
   for (const layer of layers) {
-    if (layer.kind !== "vector" || typeof layer.id !== "string") continue;
-    parsed.push({
-      id: layer.id,
-      kind: "vector",
-      name: String(layer.name ?? "Layer"),
-      order: Number(layer.order ?? 0),
-      defaultVisible: layer.defaultVisible !== false,
-      locked: layer.locked === true,
-      selector: {},
-      style: asStyle(layer.style),
-    });
+    if (layer.kind === "raster") {
+      const raster = parseRasterLayer(layer);
+      if (raster) parsed.push(raster);
+      continue;
+    }
+    if (layer.kind !== "vector") continue;
+    const vector = parseVectorLayer(layer);
+    if (vector) parsed.push(vector);
   }
   return parsed;
 }
@@ -218,9 +260,8 @@ export function layerFromField(
   layers: { layers?: Array<Record<string, unknown>> } | undefined,
   layerId: string,
 ): VectorLayerDefinition | null {
-  const found = (layers?.layers ?? []).find((layer) => layer.id === layerId);
-  if (!found || found.kind !== "vector" || typeof found.id !== "string") return null;
-  return parseVectorLayers({ layers: [found] })[0] ?? null;
+  const found = parseVectorLayers(layers).find((layer) => layer.id === layerId);
+  return found && isVectorLayer(found) ? found : null;
 }
 
 export { daenaProperties };

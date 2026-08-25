@@ -7324,6 +7324,19 @@ async fn project_attach_map_raster_asset(
 }
 
 #[tauri::command]
+async fn project_duplicate_map_raster_asset(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    asset_id: String,
+) -> Result<daena_core::AttachedMapRaster, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .duplicate_map_raster_asset(map_entity_id, asset_id, None)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_import_vector_map_file(
     state: tauri::State<'_, SharedCore>,
     source_path: String,
@@ -9550,6 +9563,7 @@ pub fn run() {
             project_list_shared_assets,
             project_import_image_map_file,
             project_attach_map_raster_asset,
+            project_duplicate_map_raster_asset,
             project_import_vector_map_file,
             project_accept_vector_map,
             project_physical_generate,

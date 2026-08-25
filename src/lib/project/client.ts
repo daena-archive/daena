@@ -1403,6 +1403,11 @@ export const project = {
       mapEntityId,
       sourcePath,
     }),
+  duplicateMapRasterAsset: (mapEntityId: string, assetId: string) =>
+    invoke<{ asset: Asset; width: number; height: number }>("project_duplicate_map_raster_asset", {
+      mapEntityId,
+      assetId,
+    }),
   importVectorMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset }>("project_import_vector_map_file", { sourcePath }),
   generatePhysicalMap: (input: PhysicalGenerationInput, requestId = crypto.randomUUID()) =>

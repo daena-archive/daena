@@ -9,7 +9,7 @@ import {
 } from "../openlayers/MapAdapter";
 import type { RuntimeBackground } from "../openlayers/background-registry";
 import { PHYSICAL_COORDINATE_SPACE, extentOf } from "../editor/coordinate-space";
-import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
+import type { MapLayerDefinition, VectorFeatureCollection } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 
 let {
@@ -22,7 +22,7 @@ let {
   onready,
 }: {
   collection: VectorFeatureCollection;
-  layers: VectorLayerDefinition[];
+  layers: MapLayerDefinition[];
   raster: HTMLCanvasElement | null;
   showRaster?: boolean;
   pickArmed?: boolean;

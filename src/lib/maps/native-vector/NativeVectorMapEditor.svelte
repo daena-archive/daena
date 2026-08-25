@@ -59,6 +59,7 @@ import {
   type MapAdapter,
 } from "../openlayers/MapAdapter";
 import type { RuntimeBackground } from "../openlayers/background-registry";
+import type { RasterLayerSource } from "../openlayers/layer-registry";
 import { maxZoomForCoordinateSpace } from "../openlayers/projection";
 import { registerNativeVectorSession } from "./session";
 import {
@@ -79,6 +80,9 @@ import {
   featureLayerId,
   featureName,
   featureSemanticType,
+  isRasterLayer,
+  isVectorLayer,
+  type MapLayerDefinition,
   type VectorDrawMode,
   type VectorFeature,
   type VectorFeatureCollection,
@@ -96,6 +100,7 @@ import {
   authoredToNormalized,
   backgroundsFromDescriptor,
   buildCreateLayer,
+  buildCreateRasterLayer,
   buildDuplicateLayer,
   buildRecoveryPackage,
   calibrateImageToWorld,
@@ -121,12 +126,14 @@ import {
   renameLayerCommand,
   reorderBackgroundCommand,
   reorderLayerCommand,
+  reorderLayersByIdsCommand,
   replaceBackgroundCommand,
   setBackgroundOpacityCommand,
   setBackgroundVisibilityCommand,
   setDefaultViewCommand,
   setFeatureMetadataCommand,
   setLayerLockedCommand,
+  setLayerOpacityCommand,
   setLayerStyleCommand,
   setLayerVisibilityCommand,
   type MapCommand,
@@ -161,7 +168,7 @@ let canUndo = $state(false);
 let canRedo = $state(false);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
-let layers = $state<VectorLayerDefinition[]>([]);
+let layers = $state<MapLayerDefinition[]>([]);
 let layersField = $state<FieldValue | null>(null);
 let mapField = $state<FieldValue | null>(null);
 let sourceAsset = $state<Asset | null>(null);
@@ -173,6 +180,8 @@ let recoveryPath = $state("");
 let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
+let selectedFeatureIds = $state<string[]>([]);
+let draggingLayerId = $state<string | null>(null);
 let defaultView = $state({ center: [0, 0] as [number, number], zoom: 1, rotation: 0 });
 let coordinateSpace = $state<MapCoordinateSpace>(PHYSICAL_COORDINATE_SPACE);
 let rasterAssets = $state(new Map<string, { url: string; width: number; height: number; canvas: HTMLCanvasElement }>());
@@ -251,12 +260,12 @@ const iconProps = { size: 15, strokeWidth: 1.8, "aria-hidden": true } as const;
 
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(
-  Boolean(activeLayer) &&
-    !activeLayer?.locked &&
+  Boolean(activeLayer && isVectorLayer(activeLayer) && !activeLayer.locked && activeLayer.defaultVisible) &&
     !picking &&
     !linkArming &&
     !immutablePhysicalLayerIds.has(activeLayer?.id ?? ""),
 );
+const rasterLayerCount = $derived(layers.filter(isRasterLayer).length);
 const pickArmed = $derived(Boolean(picking || linkArming));
 const dirty = $derived(editorState.dirty);
 const diagnostic = $derived(editorState.diagnostic);
@@ -300,6 +309,17 @@ function runtimeBackgrounds(): RuntimeBackground[] {
       },
     ];
   });
+}
+
+function runtimeLayerRasters(): Map<string, RasterLayerSource> {
+  const next = new Map<string, RasterLayerSource>();
+  for (const layer of layers) {
+    if (!isRasterLayer(layer)) continue;
+    const loaded = rasterAssets.get(layer.rasterAssetId);
+    if (!loaded) continue;
+    next.set(layer.rasterAssetId, { url: loaded.url, canvas: loaded.canvas });
+  }
+  return next;
 }
 
 function applyCoordinateSpaceFromDescriptor(descriptor: unknown, options?: { restoreView?: boolean }) {
@@ -555,7 +575,7 @@ function syncUiFromStack(restoreView = false) {
   if (editor && nextKey !== mountedSpaceKey) {
     mountEditor();
   } else {
-    editor?.syncDocument(draft, layers);
+    editor?.syncDocument(draft, layers, runtimeLayerRasters());
     editor?.syncBackgrounds(runtimeBackgrounds());
     if (restoreView) editor?.applyView(defaultView.center, defaultView.zoom, defaultView.rotation);
   }
@@ -571,7 +591,7 @@ function dispatchCommand(command: MapCommand) {
 
 function resetCommandStack(documentInput: {
   descriptor: unknown;
-  layers: VectorLayerDefinition[];
+  layers: MapLayerDefinition[];
   collection: VectorFeatureCollection;
 }) {
   const document = createMapDocument(documentInput);
@@ -603,6 +623,8 @@ function deleteSelectedFeatures() {
   if (!command) return;
   dispatchCommand(command);
   selectedFeature = null;
+  selectedFeatureIds = [];
+  editor?.clearSelection();
 }
 
 function offsetGeometry(
@@ -704,7 +726,7 @@ function applyLayersField(field: FieldValue) {
   }
 }
 
-function withPhysicalVisibility(next: VectorLayerDefinition[]) {
+function withPhysicalVisibility(next: MapLayerDefinition[]) {
   if (physicalLayerVisibility.size === 0) return next;
   return next.map((layer) => {
     const visible = physicalLayerVisibility.get(layer.id);
@@ -896,6 +918,9 @@ function mountEditor() {
     get layers() {
       return layers;
     },
+    get rasters() {
+      return runtimeLayerRasters();
+    },
     get activeLayerId() {
       return activeLayerId;
     },
@@ -940,6 +965,10 @@ function mountEditor() {
         const linked = featureLinks.get(feature.id);
         if (linked && onopen) onopen(linked.entityId);
       }
+    },
+    onSelectionChange(ids) {
+      selectedFeatureIds = ids;
+      if (ids.length === 0) selectedFeature = null;
     },
     onDoubleClick(featureId) {
       const linked = featureLinks.get(featureId);
@@ -1095,6 +1124,16 @@ async function load() {
       if (generation !== loadGeneration) return;
       if (decoded) nextRasters.set(asset.id, decoded);
     }
+    for (const layer of layers) {
+      if (!isRasterLayer(layer) || nextRasters.has(layer.rasterAssetId)) continue;
+      const asset = assets.find((item) => item.id === layer.rasterAssetId);
+      if (!asset) continue;
+      const previewBytes = await project.readAssetBytes(asset.id);
+      if (generation !== loadGeneration) return;
+      const decoded = await decodeRasterBytes(previewBytes, asset.mime_type, generation);
+      if (generation !== loadGeneration) return;
+      if (decoded) nextRasters.set(asset.id, decoded);
+    }
     rasterAssets = nextRasters;
     {
       const pins = await project.listMapPins(mapId).catch(() => []);
@@ -1226,29 +1265,82 @@ function switchLayer(layerId: string) {
 }
 
 function addLayer() {
-  if (!commandStack || layers.length >= VECTOR_MAX_LAYERS) return;
-  const built = buildCreateLayer(commandStack.document, `Layer ${layers.length + 1}`);
+  if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
+  const built = buildCreateLayer(commandStack.document, `Layer ${layers.filter(isVectorLayer).length + 1}`);
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
   tool = "select";
   editor?.setMode("select");
 }
 
-function duplicateLayer(layer: VectorLayerDefinition) {
-  if (!commandStack || layers.length >= VECTOR_MAX_LAYERS) return;
+async function addRasterLayer() {
+  if (!mapId || !commandStack || physicalMap) return;
+  if (rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS) {
+    notice = `Raster layer count exceeds the budget of ${IMAGE_MAX_RASTER_LAYERS}.`;
+    return;
+  }
+  const source = await project.pickImageMapFile();
+  if (typeof source !== "string") return;
+  if (!source.toLowerCase().endsWith(".png")) {
+    notice = "Raster layers require a PNG asset. Use Rasters for JPEG or SVG overlays.";
+    return;
+  }
+  try {
+    busy = true;
+    const attached = await project.attachMapRasterAsset(mapId, source);
+    if (attached.asset.mime_type !== "image/png") {
+      notice = "Raster layers require a PNG asset.";
+      return;
+    }
+    await rememberRasterAsset(attached.asset.id, attached.asset.mime_type);
+    const built = buildCreateRasterLayer(
+      commandStack.document,
+      attached.asset.filename.replace(/\.[^.]+$/, "") || "Raster layer",
+      attached.asset.id,
+    );
+    dispatchCommand(built.command);
+    switchLayer(built.layer.id);
+  } catch (cause) {
+    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
+  } finally {
+    busy = false;
+  }
+}
+
+async function duplicateLayer(layer: MapLayerDefinition) {
+  if (!commandStack || (physicalMap && immutablePhysicalLayerIds.has(layer.id))) return;
+  if (isVectorLayer(layer) && layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
+  if (isRasterLayer(layer) && rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS) return;
+  if (isRasterLayer(layer)) {
+    if (!mapId) return;
+    try {
+      busy = true;
+      const attached = await project.duplicateMapRasterAsset(mapId, layer.rasterAssetId);
+      await rememberRasterAsset(attached.asset.id, attached.asset.mime_type);
+      const built = buildDuplicateLayer(commandStack.document, layer, attached.asset.id);
+      if (!built) return;
+      dispatchCommand(built.command);
+      switchLayer(built.layer.id);
+    } catch (cause) {
+      applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      busy = false;
+    }
+    return;
+  }
   const built = buildDuplicateLayer(commandStack.document, layer);
   if (!built) return;
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
 }
 
-function toggleVisible(layer: VectorLayerDefinition) {
+function toggleVisible(layer: MapLayerDefinition) {
   const nextVisible = !layer.defaultVisible;
   if (physicalLayerVisibility.has(layer.id)) {
     physicalLayerVisibility.set(layer.id, nextVisible);
     physicalLayerVisibility = new Map(physicalLayerVisibility);
     layers = layers.map((item) => (item.id === layer.id ? { ...item, defaultVisible: nextVisible } : item));
-    editor?.syncLayers(layers);
+    editor?.syncLayers(layers, runtimeLayerRasters());
     physicalEditor?.syncLayers(layers);
     return;
   }
@@ -1256,19 +1348,19 @@ function toggleVisible(layer: VectorLayerDefinition) {
   dispatchCommand(setLayerVisibilityCommand(layer.id, nextVisible, layer.defaultVisible));
 }
 
-function toggleLock(layer: VectorLayerDefinition) {
+function toggleLock(layer: MapLayerDefinition) {
   if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   if (!commandStack) return;
   const nextLocked = !layer.locked;
   dispatchCommand(setLayerLockedCommand(layer.id, nextLocked, layer.locked));
   if (layer.id === activeLayerId) {
-    tool = nextLocked ? "static" : "select";
+    tool = nextLocked || !isVectorLayer(layer) ? "static" : "select";
     editor?.switchLayer(layer.id);
     editor?.setMode(tool);
   }
 }
 
-function renameLayer(layer: VectorLayerDefinition, name: string) {
+function renameLayer(layer: MapLayerDefinition, name: string) {
   if (physicalMap && immutablePhysicalLayerIds.has(layer.id)) return;
   const trimmed = name.trim();
   renamingId = null;
@@ -1276,7 +1368,7 @@ function renameLayer(layer: VectorLayerDefinition, name: string) {
   dispatchCommand(renameLayerCommand(layer.id, trimmed, layer.name));
 }
 
-function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
+function moveLayer(layer: MapLayerDefinition, direction: -1 | 1) {
   if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
   const index = listedLayers.findIndex((item) => item.id === layer.id);
   const neighbor = listedLayers[index + direction];
@@ -1286,25 +1378,55 @@ function moveLayer(layer: VectorLayerDefinition, direction: -1 | 1) {
   );
 }
 
-function updateStyle(layer: VectorLayerDefinition, patch: Partial<VectorLayerDefinition["style"]>) {
-  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
+function dropLayer(sourceId: string, targetId: string) {
+  if (!commandStack || sourceId === targetId) return;
+  const display = [...listedLayers];
+  const from = display.findIndex((item) => item.id === sourceId);
+  const to = display.findIndex((item) => item.id === targetId);
+  if (from < 0 || to < 0) return;
+  const [moved] = display.splice(from, 1);
+  display.splice(to, 0, moved);
+  const nextIds = [...display].reverse().map((item) => item.id);
+  const previousIds = [...layers].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)).map((item) => item.id);
+  dispatchCommand(reorderLayersByIdsCommand(nextIds, previousIds));
+}
+
+function onLayerKey(event: KeyboardEvent, layer: MapLayerDefinition) {
+  if (!event.altKey) return;
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveLayer(layer, -1);
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveLayer(layer, 1);
+  }
+}
+
+function updateStyle(layer: MapLayerDefinition, patch: Partial<VectorLayerDefinition["style"]>) {
+  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack || !isVectorLayer(layer)) return;
   const style = { ...layer.style, ...patch };
   dispatchCommand(setLayerStyleCommand(layer.id, style, { ...layer.style }));
 }
 
-function removeLayer(layer: VectorLayerDefinition) {
+function setLayerOpacity(layer: MapLayerDefinition, opacity: number) {
   if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
+  dispatchCommand(setLayerOpacityCommand(layer.id, opacity, layer.opacity));
+}
+
+function removeLayer(layer: MapLayerDefinition) {
+  if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack || layer.locked) return;
   const savedCount = featureCountForLayer(loaded, layer.id);
   const draftCount = featureCountForLayer(draft, layer.id);
   const extra =
-    draftCount === savedCount ? "" : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
-  if (
-    !confirm(
-      `Delete ${layer.name}? This removes ${savedCount} saved feature${savedCount === 1 ? "" : "s"} from the map.${extra}`,
-    )
-  ) {
-    return;
-  }
+    isRasterLayer(layer)
+      ? " The raster asset stays in the project."
+      : draftCount === savedCount
+        ? ""
+        : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
+  const countLabel = isRasterLayer(layer)
+    ? "this raster layer"
+    : `${savedCount} saved feature${savedCount === 1 ? "" : "s"} from the map`;
+  if (!confirm(`Delete ${layer.name}? This removes ${countLabel}.${extra}`)) return;
   const removedFeatures = commandStack.document.collection.features.filter(
     (feature) => featureLayerId(feature) === layer.id,
   );
@@ -1445,6 +1567,13 @@ function onKey(event: KeyboardEvent) {
   if (event.key === "Escape" && fullscreen) {
     event.preventDefault();
     void setFullscreen(false);
+    return;
+  }
+  if (event.key === "Escape" && selectedFeatureIds.length > 0) {
+    event.preventDefault();
+    editor?.clearSelection();
+    selectedFeature = null;
+    selectedFeatureIds = [];
     return;
   }
   if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable=true]")) {
@@ -1719,7 +1848,7 @@ onMount(() => {
             class="aside-toggle"
             aria-expanded={!layersCollapsed}
             onclick={() => (layersCollapsed = !layersCollapsed)}>
-            <strong id="vector-layers-heading">Vector layers</strong>
+            <strong id="vector-layers-heading">Layers</strong>
             <span class="aside-chevron" class:collapsed={layersCollapsed}><ChevronDown {...iconProps} /></span>
           </button>
           {#if !layersCollapsed}
@@ -1731,9 +1860,32 @@ onMount(() => {
             {#if listedLayers.length === 0}
               <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
             {/if}
+            {#if !physicalMap}
+              <div class="layer-row">
+                <button type="button" class="text-button" disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS} onclick={() => addLayer()}>
+                  Add vector
+                </button>
+                <button type="button" class="text-button" disabled={busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRasterLayer()}>
+                  Add raster layer
+                </button>
+              </div>
+            {/if}
             <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
               {#each listedLayers as layer (layer.id)}
-                <div class="layer" class:active={layer.id === activeLayerId} role="listitem">
+                <div
+                  class="layer"
+                  class:active={layer.id === activeLayerId}
+                  role="listitem"
+                  tabindex="0"
+                  draggable={!immutablePhysicalLayerIds.has(layer.id)}
+                  ondragstart={() => (draggingLayerId = layer.id)}
+                  ondragover={(event) => event.preventDefault()}
+                  ondrop={(event) => {
+                    event.preventDefault();
+                    if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
+                    draggingLayerId = null;
+                  }}
+                  onkeydown={(event) => onLayerKey(event, layer)}>
                   <button
                     class="layer-name"
                     type="button"
@@ -1749,6 +1901,7 @@ onMount(() => {
                           if (event.key === "Escape") renamingId = null;
                         }} />
                     {:else}{layer.name}{/if}
+                    <small class="layer-meta">{layer.kind} · {isRasterLayer(layer) ? "raster" : featureCountForLayer(draft, layer.id)}</small>
                   </button>
                   <div class="layer-row">
                     <button
@@ -1779,7 +1932,7 @@ onMount(() => {
                         class="icon-button"
                         aria-label={`Duplicate ${layer.name}`}
                         title="Duplicate"
-                        disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
+                        disabled={busy || (isRasterLayer(layer) ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
                         onclick={() => void duplicateLayer(layer)}><Copy {...iconProps} /></button>
                       <button
                         type="button"
@@ -1804,6 +1957,18 @@ onMount(() => {
                   {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
                     <div class="style-row">
                       <label>
+                        Layer opacity
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={layer.opacity}
+                          aria-label={`${layer.name} opacity`}
+                          oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
+                      </label>
+                      {#if isVectorLayer(layer)}
+                      <label>
                         Fill
                         <input
                           type="color"
@@ -1818,18 +1983,6 @@ onMount(() => {
                           value={layer.style.stroke}
                           aria-label={`${layer.name} stroke`}
                           onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                      </label>
-                      <label>
-                        Layer opacity
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={layer.style.fillOpacity}
-                          aria-label={`${layer.name} opacity`}
-                          oninput={(event) =>
-                            void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
                       </label>
                       <label>
                         Stroke width
@@ -1855,6 +2008,7 @@ onMount(() => {
                           onchange={(event) =>
                             void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
                       </label>
+                      {/if}
                     </div>
                   {/if}
                 </div>
@@ -1996,7 +2150,25 @@ onMount(() => {
               </div>
             {/if}
           {/if}
-          {#if selectedFeature && !physicalMap}
+          {#if selectedFeatureIds.length > 1 && !physicalMap}
+            <div class="inspector" aria-label="Selected features">
+              <strong>{selectedFeatureIds.length} features selected</strong>
+              <p class="hint">Shift-click adds to the selection. Modifier-drag boxes select across visible unlocked layers.</p>
+              <label>
+                Move to layer
+                <select
+                  aria-label="Feature layer"
+                  onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
+                  {#each listedLayers.filter((layer) => isVectorLayer(layer) && layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
+                    <option value={layer.id}>{layer.name}</option>
+                  {/each}
+                </select>
+              </label>
+              <button type="button" onclick={() => duplicateSelectedFeatures()}>Duplicate features</button>
+              <button type="button" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit selection</button>
+              <button type="button" onclick={() => deleteSelectedFeatures()}>Delete</button>
+            </div>
+          {:else if selectedFeature && !physicalMap}
             <div class="inspector" aria-label="Selected feature">
               <strong>Selected feature</strong>
               <p class="hint">
@@ -2021,17 +2193,19 @@ onMount(() => {
                 <select
                   value={featureLayerId(selectedFeature)}
                   aria-label="Feature layer"
-                  disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
+                  disabled={featureLayerId(selectedFeature) === "base" || Boolean(activeLayer?.locked)}
                   onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
-                  {#each listedLayers.filter((layer) => layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
+                  {#each listedLayers.filter((layer) => isVectorLayer(layer) && layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
                     <option value={layer.id}>{layer.name}</option>
                   {/each}
                 </select>
               </label>
               <button
                 type="button"
-                disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
+                disabled={featureLayerId(selectedFeature) === "base" || Boolean(activeLayer?.locked)}
                 onclick={() => duplicateSelectedFeatures()}>Duplicate feature</button>
+              <button type="button" onclick={() => editor?.fitSelection([selectedFeature.id])}>Fit selection</button>
+              <p class="hint">Alt-click a vertex to delete it.</p>
             </div>
           {/if}
           {#if !physicalMap}
@@ -2359,11 +2533,20 @@ aside {
   outline: 1px solid var(--theme-warning-border, #d5ab6c);
 }
 .layer-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
   text-align: left;
   width: 100%;
   padding: 4px 6px;
   background: transparent;
   font-weight: 600;
+}
+.layer-meta {
+  color: var(--theme-neutral-text-muted, #aebdb1);
+  font-size: 10px;
+  font-weight: 500;
 }
 .style-row {
   grid-column: 1 / -1;

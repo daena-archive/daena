@@ -1,14 +1,14 @@
 import type {
+  MapLayerDefinition,
   VectorFeature,
   VectorFeatureCollection,
-  VectorLayerDefinition,
 } from "../native-vector/types.ts";
 import type { OpenLayersMapDescriptor } from "./coordinate-space.ts";
 
 /** Plain Daena map authoring state — no OpenLayers objects. */
 export type MapDocument = {
   descriptor: OpenLayersMapDescriptor | Record<string, unknown>;
-  layers: VectorLayerDefinition[];
+  layers: MapLayerDefinition[];
   collection: VectorFeatureCollection;
 };
 
@@ -24,8 +24,8 @@ export function cloneCollection(collection: VectorFeatureCollection): VectorFeat
   return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
 }
 
-export function cloneLayers(layers: readonly VectorLayerDefinition[]): VectorLayerDefinition[] {
-  return JSON.parse(JSON.stringify(layers)) as VectorLayerDefinition[];
+export function cloneLayers(layers: readonly MapLayerDefinition[]): MapLayerDefinition[] {
+  return JSON.parse(JSON.stringify(layers)) as MapLayerDefinition[];
 }
 
 export function documentHash(document: MapDocument): string {
@@ -42,7 +42,7 @@ export function documentByteSize(document: MapDocument): number {
 
 export function createMapDocument(input: {
   descriptor: unknown;
-  layers: readonly VectorLayerDefinition[];
+  layers: readonly MapLayerDefinition[];
   collection: VectorFeatureCollection;
 }): MapDocument {
   return {
@@ -84,13 +84,13 @@ export function findFeature(
 }
 
 export function findLayer(
-  layers: readonly VectorLayerDefinition[],
+  layers: readonly MapLayerDefinition[],
   id: string,
-): VectorLayerDefinition | undefined {
+): MapLayerDefinition | undefined {
   return layers.find((layer) => layer.id === id);
 }
 
-export function nextLayerOrder(layers: readonly VectorLayerDefinition[]): number {
+export function nextLayerOrder(layers: readonly MapLayerDefinition[]): number {
   if (layers.length === 0) return 0;
   return Math.max(...layers.map((layer) => layer.order)) + 1;
 }

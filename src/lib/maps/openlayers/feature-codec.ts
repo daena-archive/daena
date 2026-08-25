@@ -18,6 +18,7 @@ export type FeatureCodec = {
   readOlFeatures: (collection: VectorFeatureCollection) => Feature<Geometry>[];
   toVectorFeature: (feature: Feature<Geometry>, fallbackLayerId: string) => VectorFeature | null;
   collectionFromSource: (source: VectorSource<Feature<Geometry>>, fallbackLayerId: string) => VectorFeatureCollection;
+  collectionFromSources: (sources: readonly VectorSource<Feature<Geometry>>[]) => VectorFeatureCollection;
   collectionBounds: (collection: VectorFeatureCollection) => [number, number, number, number] | null;
   readGeometry: (geometry: VectorFeature["geometry"]) => Geometry;
 };
@@ -137,6 +138,18 @@ export function createFeatureCodec(space: MapCoordinateSpace, projection: Projec
           .map((feature) => toVectorFeature(feature, fallbackLayerId))
           .filter((feature): feature is VectorFeature => feature !== null)
           .sort((left, right) => left.id.localeCompare(right.id)),
+      };
+    },
+    collectionFromSources(sources) {
+      const features = sources.flatMap((source) =>
+        source
+          .getFeatures()
+          .map((feature) => toVectorFeature(feature, BASE_LAYER_ID))
+          .filter((feature): feature is VectorFeature => feature !== null),
+      );
+      return {
+        type: "FeatureCollection",
+        features: features.sort((left, right) => left.id.localeCompare(right.id)),
       };
     },
     collectionBounds(collection) {

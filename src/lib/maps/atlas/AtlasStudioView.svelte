@@ -18,7 +18,7 @@ import {
   type AtlasStudioSessionStatus,
   type AtlasStudioSurfaceSample,
 } from "$lib/project/client";
-import type { VectorLayerDefinition } from "../native-vector/types";
+import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 
@@ -46,7 +46,7 @@ let {
   onready,
 }: {
   mapId: string;
-  viewerLayers?: Pick<VectorLayerDefinition, "id" | "name" | "defaultVisible">[];
+  viewerLayers?: Pick<MapLayerDefinition, "id" | "name" | "defaultVisible">[];
   stage?: string;
   onexport?: (request: AtlasRenderRequest) => void;
   onready?: (api: {

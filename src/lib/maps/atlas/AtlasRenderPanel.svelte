@@ -9,7 +9,7 @@ import {
   type AtlasRenderCapabilities,
   type AtlasRenderRequest,
 } from "$lib/project/client";
-import type { VectorLayerDefinition } from "../native-vector/types";
+import type { MapLayerDefinition } from "../native-vector/types";
 
 let {
   mapId,
@@ -21,7 +21,7 @@ let {
   mapId: string;
   epochOffsetYears?: number;
   seed?: AtlasRenderRequest | null;
-  viewerLayers?: Pick<VectorLayerDefinition, "id" | "name" | "defaultVisible">[];
+  viewerLayers?: Pick<MapLayerDefinition, "id" | "name" | "defaultVisible">[];
   onclose?: () => void;
 } = $props();
 

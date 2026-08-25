@@ -1,8 +1,6 @@
-import type Feature from "ol/Feature.js";
-import type Geometry from "ol/geom/Geometry.js";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
-import { getCenter } from "ol/extent.js";
+import { createEmpty, extend, getCenter } from "ol/extent.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import "ol/ol.css";
 import type { MapAnchor, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
@@ -12,16 +10,16 @@ import {
 } from "../editor/coordinate-space";
 import {
   BASE_LAYER_ID,
+  type MapLayerDefinition,
   type VectorDrawMode,
   type VectorFeature,
   type VectorFeatureCollection,
-  type VectorLayerDefinition,
 } from "../native-vector/types";
 import { createBackgroundRegistry, type RuntimeBackground } from "./background-registry";
 import { collectionSignature, createFeatureCodec } from "./feature-codec";
 import { anchorForFeature, featureAtPixel } from "./hit-testing";
 import { createInteractionManager } from "./interaction-manager";
-import { createLayerRegistry } from "./layer-registry";
+import { createLayerRegistry, type RasterLayerSource } from "./layer-registry";
 import { bindMapLifecycle } from "./lifecycle";
 import {
   maxZoomForCoordinateSpace,
@@ -53,8 +51,12 @@ export type MapAdapterCommandPayload =
 export type MapAdapter = {
   setMode: (mode: VectorDrawMode) => void;
   switchLayer: (layerId: string) => void;
-  syncDocument: (collection: VectorFeatureCollection, layers: readonly VectorLayerDefinition[]) => void;
-  syncLayers: (layers: readonly VectorLayerDefinition[]) => void;
+  syncDocument: (
+    collection: VectorFeatureCollection,
+    layers: readonly MapLayerDefinition[],
+    rasters?: ReadonlyMap<string, RasterLayerSource>,
+  ) => void;
+  syncLayers: (layers: readonly MapLayerDefinition[], rasters?: ReadonlyMap<string, RasterLayerSource>) => void;
   syncBackgrounds: (backgrounds: readonly RuntimeBackground[]) => void;
   setBackground: (background: RuntimeBackground | null) => void;
   setBackgroundVisible: (visible: boolean) => void;
@@ -64,9 +66,11 @@ export type MapAdapter = {
   panCardinal: (x: number, y: number) => void;
   resetView: () => void;
   fitExtent: () => void;
+  fitSelection: (ids?: readonly string[]) => void;
   actualPixels: () => void;
   focusFeature: (featureId: string) => boolean;
   focusPoint: (authored: [number, number], zoom?: number) => void;
+  clearSelection: () => void;
   flush: () => void;
   selectedFeatureIds: () => string[];
   selectedFeature: () => VectorFeature | null;
@@ -78,7 +82,7 @@ export function createMapAdapter(
   container: HTMLElement,
   session: {
     draft: VectorFeatureCollection;
-    layers: readonly VectorLayerDefinition[];
+    layers: readonly MapLayerDefinition[];
     activeLayerId: string | null;
     coordinateSpace: MapCoordinateSpace;
     setActiveLayerId: (id: string) => void;
@@ -91,6 +95,7 @@ export function createMapAdapter(
     onMapPick?: (anchor: MapAnchor) => void;
     backgrounds?: readonly RuntimeBackground[];
     background?: RuntimeBackground | null;
+    rasters?: ReadonlyMap<string, RasterLayerSource>;
     initialView?: MapAdapterView | null;
     onViewChange?: (view: MapAdapterView) => void;
     readOnly?: boolean;
@@ -107,7 +112,7 @@ export function createMapAdapter(
   const extent = viewExtentForCoordinateSpace(space);
   const maxZoom = maxZoomForCoordinateSpace(space);
 
-  const registry = createLayerRegistry(session.draft, session.layers, codec);
+  const registry = createLayerRegistry(session.draft, session.layers, codec, space, projection);
   const backgrounds = createBackgroundRegistry((detail) => {
     session.onDiagnostic?.(RENDERER_UNAVAILABLE, detail);
   });
@@ -130,7 +135,7 @@ export function createMapAdapter(
   try {
     map = new Map({
       target: container,
-      layers: [backgrounds.group, registry.vectorLayer],
+      layers: [backgrounds.group, registry.group],
       view,
       controls: [],
       interactions: defaultInteractions({ altShiftDragRotate: false, pinchRotate: false }),
@@ -157,7 +162,7 @@ export function createMapAdapter(
   };
 
   const commitSource = (label?: string, coalesceKey?: string) => {
-    const collection = codec.collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID);
+    const collection = registry.collectionFromLayers();
     const nextSignature = collectionSignature(collection);
     if (nextSignature === registry.lastSignature) return;
     registry.lastSignature = nextSignature;
@@ -233,7 +238,7 @@ export function createMapAdapter(
 
   map.on("pointermove", (event) => {
     if (disposed || event.dragging || session.pickArmed) return;
-    const next = featureAtPixel(map, registry.vectorLayer, event.pixel);
+    const next = featureAtPixel(map, registry, event.pixel);
     const id = next ? String(next.getId() ?? "") : null;
     if (id !== registry.hoveredId) registry.setHovered(id);
   });
@@ -241,7 +246,7 @@ export function createMapAdapter(
     if (session.pickArmed) {
       session.onMapPick?.(
         anchorForFeature(
-          featureAtPixel(map, registry.vectorLayer, event.pixel),
+          featureAtPixel(map, registry, event.pixel),
           event.coordinate,
           activeLayerId ?? BASE_LAYER_ID,
           space,
@@ -252,7 +257,7 @@ export function createMapAdapter(
   });
   map.on("dblclick", (event) => {
     if (session.pickArmed || interactions.currentMode() !== "static") return;
-    const feature = featureAtPixel(map, registry.vectorLayer, event.pixel);
+    const feature = featureAtPixel(map, registry, event.pixel);
     if (feature?.getId() !== undefined) session.onDoubleClick?.(String(feature.getId()));
   });
   map.on("moveend", () => {
@@ -274,7 +279,7 @@ export function createMapAdapter(
   });
 
   backgrounds.sync(currentBackgrounds(), space, projection);
-  registry.syncSnap(session.draft);
+  registry.sync(session.layers, session.draft, session.rasters);
   applyingView = true;
   if (!session.initialView) fitContent();
   else releaseViewGuard();
@@ -284,47 +289,52 @@ export function createMapAdapter(
     });
   });
 
-  let adapter: MapAdapter;
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (readOnly) return;
-    if (event.key !== "Delete" && event.key !== "Backspace") return;
-    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-    event.preventDefault();
-    const ids = adapter.selectedFeatureIds();
-    if (ids.length === 0) return;
-    for (const feature of [...interactions.select.getFeatures().getArray()]) {
-      registry.source.removeFeature(feature);
+  const fitSelection = (ids?: readonly string[]) => {
+    const wanted = ids && ids.length > 0 ? new Set(ids) : registry.selectedIds;
+    const extentToFit = createEmpty();
+    let found = false;
+    registry.forEachVectorFeature((feature) => {
+      const id = String(feature.getId() ?? "");
+      if (wanted.size > 0 && !wanted.has(id)) return;
+      const geometry = feature.getGeometry();
+      if (!geometry) return;
+      extend(extentToFit, geometry.getExtent());
+      found = true;
+    });
+    if (!found) {
+      fitContent();
+      return;
     }
-    interactions.select.getFeatures().clear();
-    emitSelection();
-    commitSource("Delete features");
+    applyingView = true;
+    if (extentToFit[0] === extentToFit[2] && extentToFit[1] === extentToFit[3]) {
+      view.setCenter(getCenter(extentToFit));
+      view.setZoom(Math.min(6, maxZoom));
+    } else view.fit(extentToFit, { padding: [48, 48, 48, 48], maxZoom: Math.min(8, maxZoom), duration: 0 });
+    releaseViewGuard();
   };
-  container.addEventListener("keydown", onKeyDown);
 
+  let adapter: MapAdapter;
   adapter = {
     setMode: interactions.configureMode,
     switchLayer(layerId) {
-      interactions.select.getFeatures().clear();
-      emitSelection();
       activeLayerId = layerId;
       interactions.setActiveLayerId(layerId);
       session.setActiveLayerId(layerId);
-      interactions.configureMode("select");
+      interactions.configureMode(interactions.currentMode() === "static" ? "static" : "select");
     },
-    syncDocument(collection, layers) {
-      registry.syncLayers(layers);
-      if (collectionSignature(collection) !== registry.lastSignature) {
-        interactions.select.getFeatures().clear();
-        registry.replaceCollection(collection);
-        emitSelection();
-      } else {
-        registry.syncSnap(collection);
+    syncDocument(collection, layers, rasters) {
+      const previousIds = [...registry.selectedIds];
+      registry.sync(layers, collection, rasters ?? session.rasters);
+      interactions.select.getFeatures().clear();
+      for (const id of previousIds) {
+        const feature = registry.getFeatureById(id);
+        if (feature) interactions.select.getFeatures().push(feature);
       }
+      emitSelection();
       interactions.configureMode(interactions.currentMode());
     },
-    syncLayers(layers) {
-      registry.syncLayers(layers);
-      registry.syncSnap(codec.collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID));
+    syncLayers(layers, rasters) {
+      registry.sync(layers, registry.collectionFromLayers(), rasters ?? session.rasters);
       interactions.configureMode(interactions.currentMode());
     },
     syncBackgrounds(next) {
@@ -355,13 +365,14 @@ export function createMapAdapter(
     },
     resetView: fitContent,
     fitExtent: fitContent,
+    fitSelection,
     actualPixels() {
       applyingView = true;
       view.setResolution(1);
       releaseViewGuard();
     },
     focusFeature(featureId) {
-      const feature = registry.source.getFeatureById(featureId) as Feature<Geometry> | null;
+      const feature = registry.getFeatureById(featureId);
       const geometry = feature?.getGeometry();
       if (!feature || !geometry) return false;
       const featureExtent = geometry.getExtent();
@@ -378,6 +389,9 @@ export function createMapAdapter(
       view.setCenter(authoredToView(authored, space));
       view.setZoom(Math.max(2, zoom));
     },
+    clearSelection() {
+      interactions.clearSelection();
+    },
     flush() {
       commitSource();
     },
@@ -392,8 +406,8 @@ export function createMapAdapter(
     dispose() {
       if (disposed) return;
       disposed = true;
-      container.removeEventListener("keydown", onKeyDown);
       interactions.dispose();
+      registry.dispose();
       backgrounds.dispose();
       lifecycle.dispose();
       liveAdapters.delete(adapter);

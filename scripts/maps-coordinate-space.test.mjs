@@ -12,14 +12,25 @@ import {
 } from "../src/lib/maps/editor/coordinate-space.ts";
 import {
   addBackgroundCommand,
+  buildCreateLayer,
+  buildCreateRasterLayer,
+  buildDuplicateLayer,
   calibrateImageToWorld,
+  captureDeleteFeatures,
+  createFeatureCommand,
+  layersFieldValue,
   listedBackgrounds,
+  reorderLayersByIdsCommand,
   setBackgroundOpacityCommand,
   setDefaultViewCommand,
+  setLayerLockedCommand,
+  setLayerOpacityCommand,
+  setLayerVisibilityCommand,
 } from "../src/lib/maps/editor/commands.ts";
 import { CommandStack } from "../src/lib/maps/editor/command-stack.ts";
 import { createMapDocument } from "../src/lib/maps/editor/model.ts";
 import { measurementSummary, pathLength, polygonArea, unitsForCoordinateSpace } from "../src/lib/maps/editor/measurement.ts";
+import { parseVectorLayers } from "../src/lib/maps/native-vector/source.ts";
 
 const imageSpace = {
   kind: "image",
@@ -145,5 +156,113 @@ assert.equal(stack.isDirty(), true);
 
 const flipped = flipYCollection(document.collection, imageSpace);
 assert.deepEqual(flipped.features[0].geometry.coordinates, [0, 400]);
+
+const vectorLayer = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  kind: "vector",
+  name: "Countries",
+  order: 0,
+  defaultVisible: true,
+  locked: false,
+  opacity: 1,
+  blendMode: "normal",
+  selector: {},
+  style: { fill: "#8f6fd1", fillOpacity: 0.35, stroke: "#5e4893", strokeWidth: 1.5, pointRadius: 5 },
+};
+const rasterParsed = parseVectorLayers({
+  layers: [
+    vectorLayer,
+    {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      name: "Overlay",
+      order: 1,
+      defaultVisible: true,
+      style: {},
+      selector: {},
+      kind: "raster",
+      rasterAssetId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      opacity: 0.8,
+      locked: false,
+      blendMode: "normal",
+    },
+  ],
+});
+assert.equal(rasterParsed.length, 2);
+assert.equal(rasterParsed[1].kind, "raster");
+assert.equal(layersFieldValue(rasterParsed).layers[1].kind, "raster");
+
+const layerDoc = createMapDocument({
+  descriptor,
+  layers: rasterParsed,
+  collection: { type: "FeatureCollection", features: [] },
+});
+const created = buildCreateRasterLayer(layerDoc, "Hillshade", "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+assert.equal(created.layer.kind, "raster");
+const layerStack = new CommandStack(layerDoc);
+layerStack.apply(created.command);
+assert.equal(layerStack.document.layers.some((layer) => layer.id === created.layer.id), true);
+layerStack.apply(setLayerOpacityCommand(created.layer.id, 0.25, 1));
+assert.equal(layerStack.document.layers.find((layer) => layer.id === created.layer.id)?.opacity, 0.25);
+layerStack.undo();
+assert.equal(layerStack.document.layers.find((layer) => layer.id === created.layer.id)?.opacity, 1);
+
+const feature = {
+  type: "Feature",
+  id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  properties: {
+    daena: {
+      layerId: vectorLayer.id,
+      semanticType: "region",
+      name: "West",
+      style: null,
+      label: null,
+      custom: {},
+    },
+  },
+  geometry: { type: "Point", coordinates: [1, 2] },
+};
+layerStack.apply(createFeatureCommand(feature));
+layerStack.apply(setLayerLockedCommand(vectorLayer.id, true, false));
+const blocked = captureDeleteFeatures(layerStack.document, [feature.id]);
+assert.equal(blocked, null);
+layerStack.apply(createFeatureCommand({ ...feature, id: "ffffffff-ffff-4fff-8fff-ffffffffffff" }));
+assert.equal(layerStack.document.collection.features.length, 1);
+
+const builtVector = buildCreateLayer(layerStack.document, "Cities");
+assert.equal(builtVector.layer.kind, "vector");
+assert.equal(builtVector.layer.opacity, 1);
+
+const rasterSource = layerStack.document.layers.find((layer) => layer.id === created.layer.id);
+assert.equal(rasterSource?.kind, "raster");
+const duplicatedAssetId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const duplicatedRaster = buildDuplicateLayer(layerStack.document, rasterSource, duplicatedAssetId);
+assert.ok(duplicatedRaster);
+assert.equal(duplicatedRaster.layer.kind, "raster");
+assert.notEqual(duplicatedRaster.layer.rasterAssetId, rasterSource.rasterAssetId);
+assert.equal(duplicatedRaster.layer.rasterAssetId, duplicatedAssetId);
+layerStack.apply(duplicatedRaster.command);
+assert.equal(
+  new Set(layerStack.document.layers.filter((layer) => layer.kind === "raster").map((layer) => layer.rasterAssetId)).size,
+  layerStack.document.layers.filter((layer) => layer.kind === "raster").length,
+);
+
+const previousIds = layerStack.document.layers.map((layer) => layer.id);
+const reversedIds = [...previousIds].reverse();
+layerStack.apply(reorderLayersByIdsCommand(reversedIds, previousIds));
+assert.deepEqual(
+  [...layerStack.document.layers].sort((left, right) => left.order - right.order).map((layer) => layer.id),
+  reversedIds,
+);
+layerStack.undo();
+assert.deepEqual(
+  [...layerStack.document.layers].sort((left, right) => left.order - right.order).map((layer) => layer.id),
+  previousIds,
+);
+
+layerStack.apply(setLayerLockedCommand(vectorLayer.id, false, true));
+layerStack.apply(setLayerVisibilityCommand(vectorLayer.id, false, true));
+assert.equal(captureDeleteFeatures(layerStack.document, [feature.id]), null);
+layerStack.apply(createFeatureCommand({ ...feature, id: "99999999-9999-4999-8999-999999999999" }));
+assert.equal(layerStack.document.collection.features.length, 1);
 
 console.log("coordinate-space, measurement units, and raster commands passed");

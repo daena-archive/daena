@@ -2548,8 +2548,9 @@ impl ProjectStore {
         let upload_content_hash = format!("sha256:{:x}", Sha256::digest(&geojson_bytes));
         let mut link_mutations = Vec::with_capacity(package.link_mutations.len());
         for value in package.link_mutations {
-            let mutation: MapLinkMutation = serde_json::from_value(value)
-                .map_err(|error| CoreError::Validation(format!("invalid link mutation: {error}")))?;
+            let mutation: MapLinkMutation = serde_json::from_value(value).map_err(|error| {
+                CoreError::Validation(format!("invalid link mutation: {error}"))
+            })?;
             let current = self
                 .list_fields_unchecked(mutation.entity_id.clone())?
                 .into_iter()
@@ -6013,7 +6014,9 @@ impl ProjectStore {
             )
             .optional()?;
         if entity_type.as_deref() != Some(crate::maps::MAP_ENTITY_TYPE) {
-            return Err(CoreError::Validation("maps: raster assets belong only on a map entity".into()));
+            return Err(CoreError::Validation(
+                "maps: raster assets belong only on a map entity".into(),
+            ));
         }
         let provider: Option<String> = self
             .connection
@@ -6105,6 +6108,33 @@ impl ProjectStore {
                 .map_err(|error| CoreError::Serialization(error.to_string()))?,
         )?;
         Ok(attached)
+    }
+
+    pub fn duplicate_map_raster_asset(
+        &self,
+        map_entity_id: String,
+        asset_id: String,
+        request_id: Option<&str>,
+    ) -> Result<AttachedMapRaster, CoreError> {
+        let asset = self.asset_unchecked(&asset_id)?;
+        if asset.entity_id != map_entity_id {
+            return Err(CoreError::Validation(
+                "maps: raster assets can only be duplicated on their owning map".into(),
+            ));
+        }
+        if asset.mime_type != "image/png" {
+            return Err(CoreError::Validation(
+                "maps: rasterAssetId must name a PNG asset".into(),
+            ));
+        }
+        let bytes = self.asset_bytes(asset_id)?;
+        self.attach_map_raster_asset(
+            map_entity_id,
+            bytes,
+            asset.mime_type,
+            asset.filename,
+            request_id,
+        )
     }
 
     pub fn replay_imported_image_map(
@@ -6734,7 +6764,9 @@ impl ProjectStore {
             source.revision.clone(),
             "asset",
         )?;
-        if source.namespace != crate::maps::MAP_NAMESPACE || source.mime_type != crate::maps::VECTOR_MIME {
+        if source.namespace != crate::maps::MAP_NAMESPACE
+            || source.mime_type != crate::maps::VECTOR_MIME
+        {
             return Err(crate::maps::vector::fail(
                 crate::maps::vector::CODE_SOURCE_INVALID,
                 "$",
@@ -6788,6 +6820,21 @@ impl ProjectStore {
         }
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
         let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
+        let previous_source_bytes = self.asset_bytes(source_id.clone())?;
+        let previous_known = crate::maps::vector::layer_ids_from_layers_field(&layers_field.value);
+        let previous_locked = crate::maps::locked_layer_ids(&layers_field.value);
+        let next_locked = crate::maps::locked_layer_ids(&layers_value);
+        let still_locked = previous_locked
+            .intersection(&next_locked)
+            .cloned()
+            .collect();
+        crate::maps::vector::assert_locked_layer_features_unchanged(
+            &previous_source_bytes,
+            &canonical,
+            &previous_known,
+            &known,
+            &still_locked,
+        )?;
         if descriptor
             .pointer("/provider/id")
             .and_then(serde_json::Value::as_str)
@@ -6846,7 +6893,11 @@ impl ProjectStore {
         )?;
         transaction.execute(
             "UPDATE entity_fields SET value=?1 WHERE entity_id=?2 AND namespace=?3 AND key='map'",
-            params![encode_field_value(&descriptor)?, map_entity_id, crate::maps::MAP_NAMESPACE],
+            params![
+                encode_field_value(&descriptor)?,
+                map_entity_id,
+                crate::maps::MAP_NAMESPACE
+            ],
         )?;
         transaction.execute(
             "UPDATE entity_fields SET value=?1 WHERE entity_id=?2 AND namespace=?3 AND key='layers'",

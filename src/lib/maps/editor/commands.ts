@@ -1,5 +1,17 @@
 import type { MapBackgroundRef, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
-import { BASE_LAYER_ID, daenaProperties, featureLayerId, type VectorFeature, type VectorLayerDefinition, type VectorLayerStyle } from "../native-vector/types.ts";
+import {
+  BASE_LAYER_ID,
+  daenaProperties,
+  featureLayerId,
+  isRasterLayer,
+  isVectorLayer,
+  layerAcceptsEdits,
+  type MapLayerDefinition,
+  type RasterLayerDefinition,
+  type VectorFeature,
+  type VectorLayerDefinition,
+  type VectorLayerStyle,
+} from "../native-vector/types.ts";
 import {
   backgroundsFromDescriptor,
   flipYBackgrounds,
@@ -34,6 +46,7 @@ export type MapCommandKind =
   | "ReorderLayer"
   | "SetLayerVisibility"
   | "SetLayerLocked"
+  | "SetLayerOpacity"
   | "SetLayerStyle"
   | "AddBackground"
   | "ReplaceBackground"
@@ -57,8 +70,25 @@ function withCollection(document: MapDocument, collection: MapDocument["collecti
   return { ...document, collection };
 }
 
-function withLayers(document: MapDocument, layers: VectorLayerDefinition[]): MapDocument {
+function withLayers(document: MapDocument, layers: MapLayerDefinition[]): MapDocument {
   return { ...document, layers };
+}
+
+function protectedLayerIds(layers: readonly MapLayerDefinition[]): Set<string> {
+  return new Set(layers.filter((layer) => !layerAcceptsEdits(layer)).map((layer) => layer.id));
+}
+
+function mergeProtectedCollection(
+  current: MapDocument["collection"],
+  next: MapDocument["collection"],
+  protectedIds: ReadonlySet<string>,
+): MapDocument["collection"] {
+  const kept = current.features.filter((feature) => protectedIds.has(featureLayerId(feature)));
+  const incoming = next.features.filter((feature) => !protectedIds.has(featureLayerId(feature)));
+  return {
+    type: "FeatureCollection",
+    features: [...kept, ...incoming].sort((left, right) => left.id.localeCompare(right.id)),
+  };
 }
 
 function withDescriptor(document: MapDocument, descriptor: MapDocument["descriptor"]): MapDocument {
@@ -74,6 +104,7 @@ export function createFeatureCommand(feature: VectorFeature): MapCommand {
     kind: "CreateFeature",
     label: "Create feature",
     apply(document) {
+      if (!layerAcceptsEdits(findLayer(document.layers, featureLayerId(feature)))) return document;
       return withCollection(document, replaceFeature(document.collection, feature));
     },
     invert(before) {
@@ -88,7 +119,13 @@ export function deleteFeaturesCommand(ids: string[], removed: VectorFeature[]): 
     kind: "DeleteFeatures",
     label: ids.length === 1 ? "Delete feature" : `Delete ${ids.length} features`,
     apply(document) {
-      return withCollection(document, removeFeatures(document.collection, idSet));
+      const blocked = protectedLayerIds(document.layers);
+      const removable = new Set(
+        document.collection.features
+          .filter((feature) => idSet.has(feature.id) && !blocked.has(featureLayerId(feature)))
+          .map((feature) => feature.id),
+      );
+      return withCollection(document, removeFeatures(document.collection, removable));
     },
     invert() {
       return {
@@ -120,6 +157,7 @@ export function replaceGeometryCommand(
     label: "Edit geometry",
     coalesceKey: `replace-geometry:${featureId}`,
     apply(document) {
+      if (!layerAcceptsEdits(findLayer(document.layers, featureLayerId(nextFeature)))) return document;
       return withCollection(document, replaceFeature(document.collection, nextFeature));
     },
     invert() {
@@ -140,7 +178,10 @@ export function replaceCollectionCommand(
     label,
     coalesceKey,
     apply(document) {
-      return withCollection(document, cloneCollection(next));
+      return withCollection(
+        document,
+        mergeProtectedCollection(document.collection, cloneCollection(next), protectedLayerIds(document.layers)),
+      );
     },
     invert() {
       return replaceCollectionCommand(previous, next, label, coalesceKey);
@@ -153,8 +194,12 @@ export function duplicateFeaturesCommand(copies: VectorFeature[]): MapCommand {
     kind: "DuplicateFeatures",
     label: copies.length === 1 ? "Duplicate feature" : `Duplicate ${copies.length} features`,
     apply(document) {
+      const blocked = protectedLayerIds(document.layers);
       let next = document.collection;
-      for (const feature of copies) next = replaceFeature(next, feature);
+      for (const feature of copies) {
+        if (blocked.has(featureLayerId(feature))) continue;
+        next = replaceFeature(next, feature);
+      }
       return withCollection(document, next);
     },
     invert() {
@@ -175,8 +220,11 @@ export function moveFeaturesToLayerCommand(
     kind: "MoveFeaturesToLayer",
     label: "Move features to layer",
     apply(document) {
+      const target = findLayer(document.layers, targetLayerId);
+      if (!layerAcceptsEdits(target)) return document;
+      const blocked = protectedLayerIds(document.layers);
       const features = document.collection.features.map((feature) => {
-        if (!ids.includes(feature.id)) return feature;
+        if (!ids.includes(feature.id) || blocked.has(featureLayerId(feature))) return feature;
         return {
           ...feature,
           properties: {
@@ -234,7 +282,7 @@ export function setFeatureMetadataCommand(
     coalesceKey: `feature-name:${featureId}`,
     apply(document) {
       const feature = findFeature(document.collection, featureId);
-      if (!feature) return document;
+      if (!feature || !layerAcceptsEdits(findLayer(document.layers, featureLayerId(feature)))) return document;
       return withCollection(
         document,
         replaceFeature(document.collection, {
@@ -254,7 +302,7 @@ export function setFeatureMetadataCommand(
   };
 }
 
-export function createLayerCommand(layer: VectorLayerDefinition): MapCommand {
+export function createLayerCommand(layer: MapLayerDefinition): MapCommand {
   return {
     kind: "CreateLayer",
     label: "Create layer",
@@ -270,7 +318,7 @@ export function createLayerCommand(layer: VectorLayerDefinition): MapCommand {
 
 export function duplicateLayerCommand(
   sourceLayerId: string,
-  newLayer: VectorLayerDefinition,
+  newLayer: MapLayerDefinition,
   featureCopies: VectorFeature[],
 ): MapCommand {
   return {
@@ -305,13 +353,15 @@ export function duplicateLayerCommand(
 
 export function deleteLayerCommand(
   layerId: string,
-  removedLayer: VectorLayerDefinition,
+  removedLayer: MapLayerDefinition,
   removedFeatures: VectorFeature[],
 ): MapCommand {
   return {
     kind: "DeleteLayer",
     label: "Delete layer",
     apply(document) {
+      const existing = findLayer(document.layers, layerId);
+      if (!existing || existing.locked || existing.id === BASE_LAYER_ID) return document;
       return withCollection(
         withLayers(
           document,
@@ -393,6 +443,26 @@ export function reorderLayerCommand(
   };
 }
 
+export function reorderLayersByIdsCommand(orderedIds: readonly string[], previousIds: readonly string[]): MapCommand {
+  return {
+    kind: "ReorderLayer",
+    label: "Reorder layer",
+    apply(document) {
+      const index = new Map(orderedIds.map((id, order) => [id, order]));
+      return withLayers(
+        document,
+        document.layers.map((layer) => {
+          const order = index.get(layer.id);
+          return order === undefined ? layer : { ...layer, order };
+        }),
+      );
+    },
+    invert() {
+      return reorderLayersByIdsCommand(previousIds, orderedIds);
+    },
+  };
+}
+
 export function setLayerVisibilityCommand(
   layerId: string,
   defaultVisible: boolean,
@@ -441,11 +511,31 @@ export function setLayerStyleCommand(
     apply(document) {
       return withLayers(
         document,
-        document.layers.map((layer) => (layer.id === layerId ? { ...layer, style } : layer)),
+        document.layers.map((layer) =>
+          layer.id === layerId && isVectorLayer(layer) ? { ...layer, style } : layer,
+        ),
       );
     },
     invert() {
       return setLayerStyleCommand(layerId, previous, style);
+    },
+  };
+}
+
+export function setLayerOpacityCommand(layerId: string, opacity: number, previous: number): MapCommand {
+  const next = Math.min(1, Math.max(0, opacity));
+  return {
+    kind: "SetLayerOpacity",
+    label: "Layer opacity",
+    coalesceKey: `layer-opacity:${layerId}`,
+    apply(document) {
+      return withLayers(
+        document,
+        document.layers.map((layer) => (layer.id === layerId ? { ...layer, opacity: next } : layer)),
+      );
+    },
+    invert() {
+      return setLayerOpacityCommand(layerId, previous, next);
     },
   };
 }
@@ -458,6 +548,8 @@ export function newVectorLayer(name: string, style?: VectorLayerStyle, order?: n
     order: order ?? 0,
     defaultVisible: true,
     locked: false,
+    opacity: 1,
+    blendMode: "normal",
     selector: {},
     style: style ?? {
       fill: "#8f6fd1",
@@ -466,6 +558,26 @@ export function newVectorLayer(name: string, style?: VectorLayerStyle, order?: n
       strokeWidth: 1.5,
       pointRadius: 5,
     },
+  };
+}
+
+export function newRasterLayer(
+  name: string,
+  rasterAssetId: string,
+  order?: number,
+): RasterLayerDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "raster",
+    name,
+    order: order ?? 0,
+    defaultVisible: true,
+    locked: false,
+    opacity: 1,
+    blendMode: "normal",
+    rasterAssetId,
+    selector: {},
+    style: {},
   };
 }
 
@@ -488,18 +600,36 @@ export function buildCreateLayer(document: MapDocument, name: string): { command
   return { command: createLayerCommand(layer), layer };
 }
 
+export function buildCreateRasterLayer(
+  document: MapDocument,
+  name: string,
+  rasterAssetId: string,
+): { command: MapCommand; layer: RasterLayerDefinition } {
+  const layer = newRasterLayer(name, rasterAssetId, nextLayerOrder(document.layers));
+  return { command: createLayerCommand(layer), layer };
+}
+
 export function buildDuplicateLayer(
   document: MapDocument,
-  source: VectorLayerDefinition,
-): { command: MapCommand; layer: VectorLayerDefinition } | null {
+  source: MapLayerDefinition,
+  rasterAssetId?: string,
+): { command: MapCommand; layer: MapLayerDefinition } | null {
   if (source.id === BASE_LAYER_ID) return null;
+  if (isRasterLayer(source)) {
+    if (!rasterAssetId) return null;
+    const layer = newRasterLayer(`${source.name} copy`, rasterAssetId, nextLayerOrder(document.layers));
+    return { command: duplicateLayerCommand(source.id, layer, []), layer };
+  }
+  if (!isVectorLayer(source)) return null;
   const layer = newVectorLayer(`${source.name} copy`, { ...source.style }, nextLayerOrder(document.layers));
   const copies = duplicateFeaturesOntoLayer(document, source.id, layer.id);
   return { command: duplicateLayerCommand(source.id, layer, copies), layer };
 }
 
 export function captureDeleteFeatures(document: MapDocument, ids: string[]): MapCommand | null {
-  const removed = document.collection.features.filter((feature) => ids.includes(feature.id));
+  const removed = document.collection.features.filter(
+    (feature) => ids.includes(feature.id) && layerAcceptsEdits(findLayer(document.layers, featureLayerId(feature))),
+  );
   if (removed.length === 0) return null;
   return deleteFeaturesCommand(
     removed.map((feature) => feature.id),
@@ -522,9 +652,9 @@ export function applyCommand(document: MapDocument, command: MapCommand): MapDoc
   return command.apply(cloneDocument(document));
 }
 
-export function layersFieldValue(layers: readonly VectorLayerDefinition[]): {
+export function layersFieldValue(layers: readonly MapLayerDefinition[]): {
   schemaVersion: 2;
-  layers: VectorLayerDefinition[];
+  layers: MapLayerDefinition[];
 } {
   return {
     schemaVersion: 2,

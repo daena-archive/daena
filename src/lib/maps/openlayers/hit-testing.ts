@@ -1,17 +1,17 @@
 import type Feature from "ol/Feature.js";
 import type Geometry from "ol/geom/Geometry.js";
 import type Map from "ol/Map.js";
-import type VectorLayer from "ol/layer/Vector.js";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
 import { authoredToNormalized, viewToAuthored } from "../editor/coordinate-space";
 import type { FeatureCodec } from "./feature-codec";
+import type { LayerRegistry } from "./layer-registry";
 
-export function featureAtPixel(map: Map, vectorLayer: VectorLayer, pixel: number[]): Feature<Geometry> | undefined {
+export function featureAtPixel(map: Map, registry: LayerRegistry, pixel: number[]): Feature<Geometry> | undefined {
   return map.forEachFeatureAtPixel(
     pixel,
-    (feature, layer) => (layer === vectorLayer ? (feature as Feature<Geometry>) : undefined),
-    { hitTolerance: 6, layerFilter: (layer) => layer === vectorLayer },
+    (feature, layer) => (registry.isSelectableVectorLayer(layer) ? (feature as Feature<Geometry>) : undefined),
+    { hitTolerance: 6, layerFilter: (layer) => registry.isSelectableVectorLayer(layer) },
   );
 }
 

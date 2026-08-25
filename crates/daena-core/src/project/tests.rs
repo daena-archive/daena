@@ -4937,12 +4937,7 @@ fn map_recovery_copies_require_map_entities_and_reject_traversal() {
         })
         .unwrap();
     let accepted = store
-        .accept_vector_map(
-            "Map".into(),
-            vector_candidate(),
-            vector_generation(),
-            None,
-        )
+        .accept_vector_map("Map".into(), vector_candidate(), vector_generation(), None)
         .unwrap();
     let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
     let map_field = fields.iter().find(|field| field.key == "map").unwrap();
@@ -6093,7 +6088,10 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
         .into_iter()
         .find(|field| field.key == "layers")
         .unwrap();
-    assert_eq!(layers_unchanged.value["layers"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        layers_unchanged.value["layers"].as_array().unwrap().len(),
+        0
+    );
     let unsafe_overlay = b"<svg viewBox=\"0 0 10 10\"><script>alert(1)</script></svg>".to_vec();
     assert!(store
         .attach_map_raster_asset(
@@ -6367,8 +6365,14 @@ fn vector_map_import_geojson_as_readonly_base() {
     )
     .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(stored["features"][0]["properties"]["daena"]["layerId"], "base");
-    assert_eq!(stored["features"][0]["properties"]["daena"]["semanticType"], "land");
+    assert_eq!(
+        stored["features"][0]["properties"]["daena"]["layerId"],
+        "base"
+    );
+    assert_eq!(
+        stored["features"][0]["properties"]["daena"]["semanticType"],
+        "land"
+    );
     assert_ne!(
         stored["features"][0]["id"],
         "018f89ec-25fc-7816-8b47-6f80905f2869"
@@ -6438,8 +6442,14 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
     )
     .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(stored["features"][0]["properties"]["daena"]["layerId"], "base");
-    assert_eq!(stored["features"][0]["properties"]["daena"]["semanticType"], "land");
+    assert_eq!(
+        stored["features"][0]["properties"]["daena"]["layerId"],
+        "base"
+    );
+    assert_eq!(
+        stored["features"][0]["properties"]["daena"]["semanticType"],
+        "land"
+    );
 
     let layers_revision = store
         .list_fields(accepted.entity.id.clone())
@@ -6668,7 +6678,11 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         )
         .unwrap();
     let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
-    let map_field = fields.iter().find(|field| field.key == "map").cloned().unwrap();
+    let map_field = fields
+        .iter()
+        .find(|field| field.key == "map")
+        .cloned()
+        .unwrap();
     let layers_field = fields
         .iter()
         .find(|field| field.key == "layers")
@@ -6759,8 +6773,14 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         )
         .unwrap();
     assert_eq!(applied.map.value["defaultView"]["zoom"], 2.5);
-    assert_eq!(applied.source.content_hash, format!("sha256:{:x}", Sha256::digest(&canonical)));
-    assert_eq!(store.asset_bytes(accepted.source.id.clone()).unwrap(), canonical);
+    assert_eq!(
+        applied.source.content_hash,
+        format!("sha256:{:x}", Sha256::digest(&canonical))
+    );
+    assert_eq!(
+        store.asset_bytes(accepted.source.id.clone()).unwrap(),
+        canonical
+    );
     assert_eq!(
         store.map_locations(place.id.clone()).unwrap()[0].id,
         location_id
@@ -6785,7 +6805,10 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         .unwrap();
     assert_eq!(replayed.map.revision, applied.map.revision);
     assert_eq!(replayed.source.revision, applied.source.revision);
-    let before_hash = store.asset(accepted.source.id.clone()).unwrap().content_hash;
+    let before_hash = store
+        .asset(accepted.source.id.clone())
+        .unwrap()
+        .content_hash;
     let stale = store.apply_map_edit(
         accepted.entity.id.clone(),
         next_descriptor,
@@ -6798,14 +6821,209 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         Vec::new(),
         None,
     );
-    assert!(stale
-        .unwrap_err()
-        .to_string()
-        .contains("revision conflict"));
+    assert!(stale.unwrap_err().to_string().contains("revision conflict"));
     assert_eq!(
-        store.asset(accepted.source.id.clone()).unwrap().content_hash,
+        store
+            .asset(accepted.source.id.clone())
+            .unwrap()
+            .content_hash,
         before_hash
     );
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn apply_map_edit_rejects_locked_layer_geometry_changes_and_keeps_raster_rows() {
+    let root = std::env::temp_dir().join(format!("daena-map-edit-locked-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let accepted = store
+        .accept_vector_map(
+            "Locked".into(),
+            vector_candidate(),
+            vector_generation(),
+            None,
+        )
+        .unwrap();
+    let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
+    let map_field = fields
+        .iter()
+        .find(|field| field.key == "map")
+        .cloned()
+        .unwrap();
+    let layers_field = fields
+        .iter()
+        .find(|field| field.key == "layers")
+        .cloned()
+        .unwrap();
+    let created = store
+        .create_vector_layer(
+            accepted.entity.id.clone(),
+            "Countries".into(),
+            &layers_field.revision,
+            None,
+            None,
+        )
+        .unwrap();
+    let png = crate::maps::encode_transparent_png(8, 6).unwrap();
+    let attached = store
+        .attach_map_raster_asset(
+            accepted.entity.id.clone(),
+            png,
+            "image/png".into(),
+            "shade.png".into(),
+            None,
+        )
+        .unwrap();
+    let mut layers_with_raster = created.layers.value.clone();
+    let raster_order = layers_with_raster["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|layer| layer.get("order").and_then(|value| value.as_i64()))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    layers_with_raster["layers"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "name": "Shade",
+            "order": raster_order,
+            "defaultVisible": true,
+            "style": {},
+            "selector": {},
+            "kind": "raster",
+            "rasterAssetId": attached.asset.id,
+            "opacity": 1.0,
+            "locked": false,
+            "blendMode": "normal"
+        }));
+    let layer_id = created.layer_id.clone();
+    let feature_id = Uuid::new_v4().to_string();
+    let authored = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "id": feature_id,
+            "properties": {
+                "daena": {
+                    "layerId": layer_id,
+                    "semanticType": "region",
+                    "name": "West",
+                    "style": null,
+                    "label": null,
+                    "custom": {}
+                }
+            },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0], [4.0, 4.0]]]
+            }
+        }]
+    });
+    let authored_bytes = serde_json::to_vec(&authored).unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&authored_bytes));
+    let applied = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            map_field.value.clone(),
+            layers_with_raster.clone(),
+            authored_bytes.clone(),
+            upload_hash.clone(),
+            &map_field.revision,
+            &created.layers.revision,
+            &accepted.source.revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    assert!(applied.layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|layer| layer.get("kind").and_then(|value| value.as_str()) == Some("raster")));
+
+    let mut lock_and_change = applied.layers.value.clone();
+    for layer in lock_and_change["layers"].as_array_mut().unwrap() {
+        if layer.get("id").and_then(|value| value.as_str()) == Some(layer_id.as_str()) {
+            layer["locked"] = serde_json::json!(true);
+        }
+    }
+    let mut changed = authored.clone();
+    changed["features"][0]["geometry"]["coordinates"] =
+        serde_json::json!([[[4.0, 4.0], [7.0, 4.0], [7.0, 7.0], [4.0, 7.0], [4.0, 4.0]]]);
+    let changed_bytes = serde_json::to_vec(&changed).unwrap();
+    let changed_hash = format!("sha256:{:x}", Sha256::digest(&changed_bytes));
+    let locked_with_geometry = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            applied.map.value.clone(),
+            lock_and_change.clone(),
+            changed_bytes.clone(),
+            changed_hash.clone(),
+            &applied.map.revision,
+            &applied.layers.revision,
+            &applied.source.revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+    let mut changed_again = changed.clone();
+    changed_again["features"][0]["geometry"]["coordinates"] =
+        serde_json::json!([[[4.0, 4.0], [8.0, 4.0], [8.0, 8.0], [4.0, 8.0], [4.0, 4.0]]]);
+    let changed_again_bytes = serde_json::to_vec(&changed_again).unwrap();
+    let changed_again_hash = format!("sha256:{:x}", Sha256::digest(&changed_again_bytes));
+    let rejected = store.apply_map_edit(
+        accepted.entity.id.clone(),
+        locked_with_geometry.map.value.clone(),
+        lock_and_change.clone(),
+        changed_again_bytes,
+        changed_again_hash,
+        &locked_with_geometry.map.revision,
+        &locked_with_geometry.layers.revision,
+        &locked_with_geometry.source.revision,
+        Vec::new(),
+        None,
+    );
+    assert!(rejected.unwrap_err().to_string().contains("locked layer"));
+
+    let mut without_locked_layer = locked_with_geometry.layers.value.clone();
+    without_locked_layer["layers"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|layer| {
+            layer.get("id").and_then(|value| value.as_str()) != Some(layer_id.as_str())
+        });
+    assert!(without_locked_layer["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|layer| layer.get("kind").and_then(|value| value.as_str()) == Some("raster")));
+    let emptied = serde_json::json!({"type": "FeatureCollection", "features": []});
+    let emptied_bytes = serde_json::to_vec(&emptied).unwrap();
+    let emptied_hash = format!("sha256:{:x}", Sha256::digest(&emptied_bytes));
+    let deleted = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            locked_with_geometry.map.value.clone(),
+            without_locked_layer,
+            emptied_bytes,
+            emptied_hash,
+            &locked_with_geometry.map.revision,
+            &locked_with_geometry.layers.revision,
+            &locked_with_geometry.source.revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    assert!(deleted.layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|layer| layer.get("id").and_then(|value| value.as_str()) != Some(layer_id.as_str())));
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }

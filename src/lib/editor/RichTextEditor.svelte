@@ -72,7 +72,8 @@ import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRo
 import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
 import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
-import { openUrl } from "@tauri-apps/plugin-opener";const EntityReference = Mark.create({
+import { openUrl } from "@tauri-apps/plugin-opener";
+const EntityReference = Mark.create({
   name: "entityReference",
   inclusive: false,
   addAttributes() {
@@ -493,8 +494,7 @@ function toggleFullscreen() {
 function handleFullscreenKeydown(event: KeyboardEvent) {
   const activeElement = document.activeElement as HTMLElement | null;
   if (!activeElement?.closest(".editor-shell")) return;
-  const blockingDialogOpen =
-    entityReferenceDialogOpen || linkDialogOpen || insertAssetOpen || tableInsertOpen;
+  const blockingDialogOpen = entityReferenceDialogOpen || linkDialogOpen || insertAssetOpen || tableInsertOpen;
   if (blockingDialogOpen && event.key !== "Escape") return;
   const isMod = event.metaKey || event.ctrlKey;
   if (isMod && event.key.toLowerCase() === "s") {
@@ -2388,40 +2388,35 @@ $: inTable = editorState?.isActive("table") ?? false;
             title="Add row below"
             aria-label="Add row below"
             disabled={!editable || !editorState?.can().addRowAfter()}
-            onclick={() =>
-              runTableCommand((currentEditor) => currentEditor.chain().focus().addRowAfter().run())}
+            onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().addRowAfter().run())}
             ><BetweenHorizontalEnd size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
             title="Delete row"
             aria-label="Delete row"
             disabled={!editable || !editorState?.can().deleteRow()}
-            onclick={() =>
-              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteRow().run())}
+            onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteRow().run())}
             ><BetweenHorizontalStart size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
             title="Add column after"
             aria-label="Add column after"
             disabled={!editable || !editorState?.can().addColumnAfter()}
-            onclick={() =>
-              runTableCommand((currentEditor) => currentEditor.chain().focus().addColumnAfter().run())}
+            onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().addColumnAfter().run())}
             ><BetweenVerticalEnd size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
             title="Delete column"
             aria-label="Delete column"
             disabled={!editable || !editorState?.can().deleteColumn()}
-            onclick={() =>
-              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteColumn().run())}
+            onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteColumn().run())}
             ><BetweenVerticalStart size={14} strokeWidth={1.8} /></button>
           <button
             type="button"
             title="Delete table"
             aria-label="Delete table"
             disabled={!editable || !editorState?.can().deleteTable()}
-            onclick={() =>
-              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteTable().run())}
+            onclick={() => runTableCommand((currentEditor) => currentEditor.chain().focus().deleteTable().run())}
             ><Trash2 size={14} strokeWidth={1.8} /></button>
         </div>
       {/if}

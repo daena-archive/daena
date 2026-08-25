@@ -11,11 +11,7 @@ import TaskList from "@tiptap/extension-task-list";
 import Text from "@tiptap/extension-text";
 import { htmlToMarkdown, markdownToHtml, parseMarkdown } from "../src/lib/markdown/index.ts";
 import { taskListsForEditor, taskListsForMarkdown } from "../src/lib/editor/markdownRoundTrip.ts";
-import {
-  AlignedTableCell,
-  AlignedTableHeader,
-  tableHasHeaderRow,
-} from "../src/lib/editor/editorTable.ts";
+import { AlignedTableCell, AlignedTableHeader, tableHasHeaderRow } from "../src/lib/editor/editorTable.ts";
 import { LanguageCodeBlock } from "../src/lib/editor/editorCodeBlock.ts";
 import { readFile } from "node:fs/promises";
 
@@ -93,10 +89,7 @@ assert.equal(
 editor.destroy();
 
 const insertEditor = createEditor();
-assert.equal(
-  insertEditor.commands.insertTable({ rows: 2, cols: 3, withHeaderRow: true }),
-  true,
-);
+assert.equal(insertEditor.commands.insertTable({ rows: 2, cols: 3, withHeaderRow: true }), true);
 assert.equal(insertEditor.isActive("table"), true);
 assert.equal(tableHasHeaderRow(insertEditor), true);
 assert.equal(insertEditor.commands.addRowAfter(), true);

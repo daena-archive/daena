@@ -1516,17 +1516,15 @@ type CheckpointExportStatusListener = Arc<dyn Fn() + Send + Sync + 'static>;
 static CHECKPOINT_EXPORT_STATUS_LISTENER: OnceLock<Mutex<Option<CheckpointExportStatusListener>>> =
     OnceLock::new();
 
-fn checkpoint_export_status_listener_slot()
--> &'static Mutex<Option<CheckpointExportStatusListener>> {
+fn checkpoint_export_status_listener_slot() -> &'static Mutex<Option<CheckpointExportStatusListener>>
+{
     CHECKPOINT_EXPORT_STATUS_LISTENER.get_or_init(|| Mutex::new(None))
 }
 
 /// Register a listener invoked after the background export worker finishes an
 /// export attempt (success, skip-when-clean, or failure). Used by the shell to
 /// refresh checkpoint status without polling.
-pub fn set_checkpoint_export_status_listener(
-    listener: Option<CheckpointExportStatusListener>,
-) {
+pub fn set_checkpoint_export_status_listener(listener: Option<CheckpointExportStatusListener>) {
     if let Ok(mut slot) = checkpoint_export_status_listener_slot().lock() {
         *slot = listener;
     }

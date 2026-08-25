@@ -20,6 +20,7 @@ import {
 } from "$lib/project/client";
 import type { VectorLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
+import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -77,9 +78,9 @@ let worldMinZoom = $state(0);
 let unlisten: UnlistenFn | undefined;
 let map: Map | null = null;
 let tileSource: XYZ | null = null;
+let mapLifecycle: MapLifecycle | undefined;
 let opening = false;
 let reopenPending = false;
-let resizeObserver: ResizeObserver | undefined;
 let debounce: ReturnType<typeof setTimeout> | undefined;
 let inspectHover: ReturnType<typeof setTimeout> | undefined;
 let inspectSeq = 0;
@@ -335,8 +336,8 @@ async function openSession() {
       tileSource.refresh();
     } else {
       stage = "Mounting map…";
-      map?.setTarget(undefined);
-      map?.dispose();
+      mapLifecycle?.dispose();
+      mapLifecycle = undefined;
       map = null;
       tileSource = null;
       const overview = applyWorldConstraints();
@@ -429,12 +430,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     if (stage !== "Ready") stage = "Ready";
     schedulePrefetch(status);
   });
-  resizeObserver?.disconnect();
-  resizeObserver = new ResizeObserver(() => {
-    applyWorldConstraints();
-    map?.updateSize();
-  });
-  resizeObserver.observe(container);
+  mapLifecycle = bindMapLifecycle(map, container, () => applyWorldConstraints());
 }
 
 function schedulePrefetch(status: AtlasStudioSessionStatus) {
@@ -727,10 +723,8 @@ onDestroy(() => {
   if (inspectHover) clearTimeout(inspectHover);
   if (statusTimer) clearInterval(statusTimer);
   if (prefetchTimer) clearTimeout(prefetchTimer);
-  resizeObserver?.disconnect();
-  resizeObserver = undefined;
-  map?.setTarget(undefined);
-  map?.dispose();
+  mapLifecycle?.dispose();
+  mapLifecycle = undefined;
   map = null;
   tileSource = null;
   if (session) {

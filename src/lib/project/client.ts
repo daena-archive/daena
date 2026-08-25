@@ -1398,6 +1398,11 @@ export const project = {
   listSharedAssets: () => invoke<Asset[]>("project_list_shared_assets"),
   importImageMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset; preview: Asset }>("project_import_image_map_file", { sourcePath }),
+  attachMapRasterAsset: (mapEntityId: string, sourcePath: string) =>
+    invoke<{ asset: Asset; width: number; height: number }>("project_attach_map_raster_asset", {
+      mapEntityId,
+      sourcePath,
+    }),
   importVectorMapFile: (sourcePath: string) =>
     invoke<{ entity: Entity; source: Asset }>("project_import_vector_map_file", { sourcePath }),
   generatePhysicalMap: (input: PhysicalGenerationInput, requestId = crypto.randomUUID()) =>

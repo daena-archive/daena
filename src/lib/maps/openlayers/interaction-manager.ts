@@ -12,7 +12,7 @@ import type View from "ol/View.js";
 import { platformModifierKeyOnly } from "ol/events/condition.js";
 import { kindForDrawMode, simplifyFreehandGeometry } from "../native-vector/geometry";
 import { BASE_LAYER_ID, type VectorDrawMode, type VectorLayerDefinition } from "../native-vector/types";
-import { geoJsonFormat, toVectorFeature } from "./feature-codec";
+import type { FeatureCodec } from "./feature-codec";
 import type { LayerRegistry } from "./layer-registry";
 
 export type InteractionManager = {
@@ -27,6 +27,7 @@ export function createInteractionManager(options: {
   map: Map;
   view: View;
   registry: LayerRegistry;
+  codec: FeatureCodec;
   getActiveLayerId: () => string | null;
   getPickArmed: () => boolean;
   readOnly: boolean;
@@ -34,7 +35,7 @@ export function createInteractionManager(options: {
   onSelectionChange: () => void;
   onDiagnostic?: (code: string, detail: string) => void;
 }): InteractionManager {
-  const { map, view, registry } = options;
+  const { map, view, registry, codec } = options;
   let currentMode: VectorDrawMode = options.readOnly ? "static" : "select";
   let activeLayerId = options.getActiveLayerId();
   let draw: Draw | null = null;
@@ -125,7 +126,7 @@ export function createInteractionManager(options: {
         name: null,
       });
       if (drawMode === "freehand") {
-        const converted = toVectorFeature(feature, editable.id);
+        const converted = codec.toVectorFeature(feature, editable.id);
         if (!converted) {
           queueMicrotask(() => registry.source.removeFeature(feature));
           options.onDiagnostic?.("vector.geometry.invalid", "Freehand geometry could not be represented.");
@@ -137,7 +138,7 @@ export function createInteractionManager(options: {
           options.onDiagnostic?.(simplified.error, "Freehand geometry exceeded the editor budget or was invalid.");
           return;
         }
-        feature.setGeometry(geoJsonFormat.readGeometry(simplified as Parameters<typeof geoJsonFormat.readGeometry>[0]));
+        feature.setGeometry(codec.readGeometry(simplified));
       }
       queueMicrotask(() => options.onSourceCommitted());
     });

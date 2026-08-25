@@ -2,14 +2,19 @@ import type {
   VectorFeature,
   VectorFeatureCollection,
   VectorLayerDefinition,
-} from "../native-vector/types";
+} from "../native-vector/types.ts";
+import type { OpenLayersMapDescriptor } from "./coordinate-space.ts";
 
 /** Plain Daena map authoring state — no OpenLayers objects. */
 export type MapDocument = {
-  descriptor: unknown;
+  descriptor: OpenLayersMapDescriptor | Record<string, unknown>;
   layers: VectorLayerDefinition[];
   collection: VectorFeatureCollection;
 };
+
+export function cloneDescriptor<T>(descriptor: T): T {
+  return JSON.parse(JSON.stringify(descriptor)) as T;
+}
 
 export function cloneDocument(document: MapDocument): MapDocument {
   return JSON.parse(JSON.stringify(document)) as MapDocument;
@@ -41,7 +46,9 @@ export function createMapDocument(input: {
   collection: VectorFeatureCollection;
 }): MapDocument {
   return {
-    descriptor: input.descriptor,
+    descriptor: (input.descriptor && typeof input.descriptor === "object"
+      ? input.descriptor
+      : {}) as MapDocument["descriptor"],
     layers: cloneLayers(input.layers),
     collection: cloneCollection(input.collection),
   };

@@ -7287,6 +7287,43 @@ async fn project_import_image_map_file(
 }
 
 #[tauri::command]
+async fn project_attach_map_raster_asset(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    source_path: String,
+) -> Result<daena_core::AttachedMapRaster, String> {
+    let path = PathBuf::from(&source_path);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("image filename is invalid")?
+        .to_string();
+    let mime = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        _ => return Err("Choose a PNG, JPEG, or SVG image".into()),
+    }
+    .to_string();
+    let bytes = std::fs::read(&path).map_err(|error| format!("read image: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.attach_map_raster_asset(
+            map_entity_id,
+            bytes,
+            mime,
+            filename,
+            None,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_import_vector_map_file(
     state: tauri::State<'_, SharedCore>,
     source_path: String,
@@ -9512,6 +9549,7 @@ pub fn run() {
             project_list_assets,
             project_list_shared_assets,
             project_import_image_map_file,
+            project_attach_map_raster_asset,
             project_import_vector_map_file,
             project_accept_vector_map,
             project_physical_generate,

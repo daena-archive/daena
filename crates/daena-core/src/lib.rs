@@ -34,7 +34,7 @@ pub use migrations::{FieldDefinition, Migration, Operation};
 pub use project::{
     set_checkpoint_export_status_listener, AcceptedPhysicalMap, AcceptedVectorMap, Asset,
     AssetFileInput, AssetFileReplaceInput, AssetInput, AssetMetadataUpdate, AssetReplaceInput,
-    CheckpointHandle, CreateEntity, CreateEntry, CreateEntryDocument, CreateEntryField,
+    AttachedMapRaster, CheckpointHandle, CreateEntity, CreateEntry, CreateEntryDocument, CreateEntryField,
     CreateEntryRelationship, Document, Entity, EntityListQuery, EntityPage, EntitySortDirection,
     EntitySortField, EntityTypeCount, ExternalChangeReport, FieldValue, Generation, GitChange,
     GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,

@@ -5,8 +5,11 @@ import View from "ol/View.js";
 import { getCenter } from "ol/extent.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import "ol/ol.css";
-import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
-import { lonLatToNormalized, normalizedToLonLat } from "../native-vector/coordinates";
+import type { MapAnchor, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
+import {
+  authoredToView,
+  viewToAuthored,
+} from "../editor/coordinate-space";
 import {
   BASE_LAYER_ID,
   type VectorDrawMode,
@@ -14,14 +17,18 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "../native-vector/types";
-import { createBackgroundRegistry, extentFromCoordinates, type MapBackground } from "./background-registry";
-import { collectionFromSource, collectionSignature, toVectorFeature } from "./feature-codec";
+import { createBackgroundRegistry, type RuntimeBackground } from "./background-registry";
+import { collectionSignature, createFeatureCodec } from "./feature-codec";
 import { anchorForFeature, featureAtPixel } from "./hit-testing";
 import { createInteractionManager } from "./interaction-manager";
 import { createLayerRegistry } from "./layer-registry";
-import { WORLD_EXTENT, WORLD_RESOLUTIONS, worldProjection } from "./projection";
-import { imageOverlayCoordinates } from "../native-vector/coordinates";
-import { collectionBounds } from "./feature-codec";
+import { bindMapLifecycle } from "./lifecycle";
+import {
+  maxZoomForCoordinateSpace,
+  projectionFromCoordinateSpace,
+  resolutionsForCoordinateSpace,
+  viewExtentForCoordinateSpace,
+} from "./projection";
 
 export const RENDERER_UNAVAILABLE = "vector.renderer.unavailable";
 
@@ -36,25 +43,30 @@ export function liveNativeVectorEditorCount() {
   return liveMapAdapterCount();
 }
 
-export type MapAdapterView = { center: [number, number]; zoom: number };
+export type MapAdapterView = { center: [number, number]; zoom: number; rotation: number };
 
 export type MapAdapterCommandPayload =
   | { type: "replace-collection"; collection: VectorFeatureCollection; label?: string; coalesceKey?: string }
-  | { type: "selection-ids"; ids: string[] };
+  | { type: "selection-ids"; ids: string[] }
+  | { type: "set-view"; center: [number, number]; zoom: number; rotation: number };
 
 export type MapAdapter = {
   setMode: (mode: VectorDrawMode) => void;
   switchLayer: (layerId: string) => void;
   syncDocument: (collection: VectorFeatureCollection, layers: readonly VectorLayerDefinition[]) => void;
   syncLayers: (layers: readonly VectorLayerDefinition[]) => void;
-  setBackground: (background: MapBackground | null) => void;
+  syncBackgrounds: (backgrounds: readonly RuntimeBackground[]) => void;
+  setBackground: (background: RuntimeBackground | null) => void;
   setBackgroundVisible: (visible: boolean) => void;
-  applyView: (center: [number, number], zoom: number) => void;
+  applyView: (center: [number, number], zoom: number, rotation?: number) => void;
   setZoom: (zoom: number) => void;
-  panBy: (longitudeDegrees: number, latitudeDegrees: number) => void;
+  panBy: (dx: number, dy: number) => void;
+  panCardinal: (x: number, y: number) => void;
   resetView: () => void;
+  fitExtent: () => void;
+  actualPixels: () => void;
   focusFeature: (featureId: string) => boolean;
-  focusPoint: (normalized: [number, number], zoom?: number) => void;
+  focusPoint: (authored: [number, number], zoom?: number) => void;
   flush: () => void;
   selectedFeatureIds: () => string[];
   selectedFeature: () => VectorFeature | null;
@@ -62,19 +74,13 @@ export type MapAdapter = {
   dispose: () => void;
 };
 
-function normalizedViewCenter(center: [number, number]): [number, number] {
-  const [longitude, latitude] = normalizedToLonLat(center[0], center[1]);
-  return [Math.max(-180, Math.min(180, longitude)), Math.max(-90, Math.min(90, latitude))];
-}
-
 export function createMapAdapter(
   container: HTMLElement,
   session: {
     draft: VectorFeatureCollection;
     layers: readonly VectorLayerDefinition[];
     activeLayerId: string | null;
-    center: [number, number];
-    zoom: number;
+    coordinateSpace: MapCoordinateSpace;
     setActiveLayerId: (id: string) => void;
     onCommand?: (payload: MapAdapterCommandPayload) => void;
     onDiagnostic?: (code: string, detail: string) => void;
@@ -83,30 +89,39 @@ export function createMapAdapter(
     onDoubleClick?: (featureId: string) => void;
     pickArmed?: boolean;
     onMapPick?: (anchor: MapAnchor) => void;
-    background?: MapBackground | null;
+    backgrounds?: readonly RuntimeBackground[];
+    background?: RuntimeBackground | null;
     initialView?: MapAdapterView | null;
     onViewChange?: (view: MapAdapterView) => void;
-    /** When true, drawing/edit interactions are disabled (PhysicalWorldView). */
     readOnly?: boolean;
   },
 ): MapAdapter | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   let disposed = false;
+  let applyingView = false;
+  let ignoreNextMoveEnd = true;
   let activeLayerId = session.activeLayerId;
   const readOnly = session.readOnly === true;
+  const space = session.coordinateSpace;
+  const projection = projectionFromCoordinateSpace(space);
+  const codec = createFeatureCodec(space, projection);
+  const extent = viewExtentForCoordinateSpace(space);
+  const maxZoom = maxZoomForCoordinateSpace(space);
 
-  const registry = createLayerRegistry(session.draft, session.layers);
+  const registry = createLayerRegistry(session.draft, session.layers, codec);
   const backgrounds = createBackgroundRegistry((detail) => {
     session.onDiagnostic?.(RENDERER_UNAVAILABLE, detail);
   });
 
+  const initialCenter = session.initialView?.center ?? [(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2];
   const view = new View({
-    projection: worldProjection,
-    center: session.initialView?.center ?? normalizedViewCenter(session.center),
-    zoom: session.initialView?.zoom ?? session.zoom,
+    projection,
+    center: authoredToView(initialCenter, space),
+    zoom: session.initialView?.zoom ?? 1,
+    rotation: session.initialView?.rotation ?? 0,
     minZoom: 0,
-    maxZoom: 12,
-    resolutions: WORLD_RESOLUTIONS,
-    extent: WORLD_EXTENT,
+    maxZoom,
+    resolutions: resolutionsForCoordinateSpace(space, maxZoom + 1),
+    extent,
     showFullExtent: true,
     constrainOnlyCenter: true,
   });
@@ -115,7 +130,7 @@ export function createMapAdapter(
   try {
     map = new Map({
       target: container,
-      layers: [backgrounds.layer, registry.vectorLayer],
+      layers: [backgrounds.group, registry.vectorLayer],
       view,
       controls: [],
       interactions: defaultInteractions({ altShiftDragRotate: false, pinchRotate: false }),
@@ -127,6 +142,8 @@ export function createMapAdapter(
     };
   }
 
+  const lifecycle = bindMapLifecycle(map, container);
+
   const emitSelection = () => {
     registry.selectedIds.clear();
     for (const feature of interactions.select.getFeatures().getArray()) {
@@ -136,11 +153,11 @@ export function createMapAdapter(
     const ids = [...registry.selectedIds];
     session.onSelectionChange?.(ids);
     const selected = interactions.select.getFeatures().item(0);
-    session.onSelect?.(selected ? toVectorFeature(selected, activeLayerId ?? BASE_LAYER_ID) : null);
+    session.onSelect?.(selected ? codec.toVectorFeature(selected, activeLayerId ?? BASE_LAYER_ID) : null);
   };
 
   const commitSource = (label?: string, coalesceKey?: string) => {
-    const collection = collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID);
+    const collection = codec.collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID);
     const nextSignature = collectionSignature(collection);
     if (nextSignature === registry.lastSignature) return;
     registry.lastSignature = nextSignature;
@@ -152,6 +169,7 @@ export function createMapAdapter(
     map,
     view,
     registry,
+    codec,
     getActiveLayerId: () => activeLayerId,
     getPickArmed: () => Boolean(session.pickArmed),
     readOnly,
@@ -160,21 +178,57 @@ export function createMapAdapter(
     onDiagnostic: session.onDiagnostic,
   });
 
+  const currentBackgrounds = (): readonly RuntimeBackground[] => {
+    if (session.backgrounds) return session.backgrounds;
+    return session.background ? [session.background] : [];
+  };
+
+  const releaseViewGuard = () => {
+    requestAnimationFrame(() => {
+      applyingView = false;
+    });
+  };
+
   const fitContent = () => {
-    if (session.initialView) {
-      view.setCenter(session.initialView.center);
+    applyingView = true;
+    if (session.initialView && currentBackgrounds().length === 0 && session.draft.features.length === 0) {
+      view.setCenter(authoredToView(session.initialView.center, space));
       view.setZoom(session.initialView.zoom);
+      view.setRotation(session.initialView.rotation ?? 0);
+      releaseViewGuard();
       return;
     }
-    if (backgrounds.current) {
-      const coordinates =
-        backgrounds.current.coordinates ??
-        imageOverlayCoordinates(backgrounds.current.width, backgrounds.current.height);
-      view.fit(extentFromCoordinates(coordinates), { padding: [28, 28, 28, 28], maxZoom: 4, duration: 0 });
+    const rasters = currentBackgrounds();
+    if (rasters.length > 0) {
+      const xs = rasters.flatMap((item) => [item.extent[0], item.extent[2]]);
+      const ys = rasters.flatMap((item) => [item.extent[1], item.extent[3]]);
+      const authored: [number, number, number, number] = [
+        Math.min(...xs),
+        Math.min(...ys),
+        Math.max(...xs),
+        Math.max(...ys),
+      ];
+      const viewExtent = [
+        ...authoredToView([authored[0], authored[1]], space),
+        ...authoredToView([authored[2], authored[3]], space),
+      ];
+      const fitted: [number, number, number, number] = [
+        Math.min(viewExtent[0], viewExtent[2]),
+        Math.min(viewExtent[1], viewExtent[3]),
+        Math.max(viewExtent[0], viewExtent[2]),
+        Math.max(viewExtent[1], viewExtent[3]),
+      ];
+      view.fit(fitted, { padding: [28, 28, 28, 28], maxZoom, duration: 0 });
+      releaseViewGuard();
       return;
     }
-    const extent = collectionBounds(session.draft);
-    if (extent) view.fit(extent, { padding: [28, 28, 28, 28], maxZoom: 4, duration: 0 });
+    const bounds = codec.collectionBounds(session.draft);
+    if (bounds) view.fit(bounds, { padding: [28, 28, 28, 28], maxZoom: Math.min(8, maxZoom), duration: 0 });
+    else {
+      view.setCenter(authoredToView(initialCenter, space));
+      view.setZoom(session.initialView?.zoom ?? 1);
+    }
+    releaseViewGuard();
   };
 
   map.on("pointermove", (event) => {
@@ -186,7 +240,13 @@ export function createMapAdapter(
   map.on("singleclick", (event) => {
     if (session.pickArmed) {
       session.onMapPick?.(
-        anchorForFeature(featureAtPixel(map, registry.vectorLayer, event.pixel), event.coordinate, activeLayerId ?? BASE_LAYER_ID),
+        anchorForFeature(
+          featureAtPixel(map, registry.vectorLayer, event.pixel),
+          event.coordinate,
+          activeLayerId ?? BASE_LAYER_ID,
+          space,
+          codec,
+        ),
       );
     }
   });
@@ -196,18 +256,33 @@ export function createMapAdapter(
     if (feature?.getId() !== undefined) session.onDoubleClick?.(String(feature.getId()));
   });
   map.on("moveend", () => {
+    if (applyingView || ignoreNextMoveEnd) return;
     const center = view.getCenter();
-    if (center) session.onViewChange?.({ center: [center[0], center[1]], zoom: view.getZoom() ?? 0 });
+    if (!center) return;
+    const authored = viewToAuthored(center, space);
+    session.onViewChange?.({
+      center: authored,
+      zoom: view.getZoom() ?? 0,
+      rotation: view.getRotation() ?? 0,
+    });
+    session.onCommand?.({
+      type: "set-view",
+      center: authored,
+      zoom: view.getZoom() ?? 0,
+      rotation: view.getRotation() ?? 0,
+    });
   });
 
-  backgrounds.setBackground(session.background ?? null);
+  backgrounds.sync(currentBackgrounds(), space, projection);
   registry.syncSnap(session.draft);
-
-  const resizeObserver = new ResizeObserver(() => {
-    if (!disposed && container.clientWidth > 0 && container.clientHeight > 0) map.updateSize();
+  applyingView = true;
+  if (!session.initialView) fitContent();
+  else releaseViewGuard();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      ignoreNextMoveEnd = false;
+    });
   });
-  resizeObserver.observe(container);
-  requestAnimationFrame(() => !disposed && map.updateSize());
 
   let adapter: MapAdapter;
   const onKeyDown = (event: KeyboardEvent) => {
@@ -217,7 +292,6 @@ export function createMapAdapter(
     event.preventDefault();
     const ids = adapter.selectedFeatureIds();
     if (ids.length === 0) return;
-    // Host deletes via command stack; adapter only signals by removing and committing.
     for (const feature of [...interactions.select.getFeatures().getArray()]) {
       registry.source.removeFeature(feature);
     }
@@ -250,46 +324,58 @@ export function createMapAdapter(
     },
     syncLayers(layers) {
       registry.syncLayers(layers);
-      registry.syncSnap(
-        collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID),
-      );
+      registry.syncSnap(codec.collectionFromSource(registry.source, activeLayerId ?? BASE_LAYER_ID));
       interactions.configureMode(interactions.currentMode());
     },
+    syncBackgrounds(next) {
+      backgrounds.sync(next, space, projection);
+    },
     setBackground(background) {
-      backgrounds.setBackground(background);
+      backgrounds.sync(background ? [background] : [], space, projection);
     },
     setBackgroundVisible(visible) {
-      backgrounds.setVisible(visible);
+      backgrounds.group.setVisible(visible);
     },
-    applyView(center, zoom) {
-      view.setCenter(normalizedViewCenter(center));
+    applyView(center, zoom, rotation = 0) {
+      applyingView = true;
+      view.setCenter(authoredToView(center, space));
       view.setZoom(zoom);
+      view.setRotation(rotation);
+      releaseViewGuard();
     },
     setZoom: (zoom) => view.setZoom(zoom),
-    panBy(longitudeDegrees, latitudeDegrees) {
-      const center = view.getCenter() ?? [0, 0];
-      view.setCenter([
-        Math.max(-180, Math.min(180, center[0] + longitudeDegrees)),
-        Math.max(-90, Math.min(90, center[1] + latitudeDegrees)),
-      ]);
+    panBy(dx, dy) {
+      const center = view.getCenter() ?? authoredToView([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2], space);
+      const next = [center[0] + dx, center[1] + dy] as [number, number];
+      view.setCenter(next);
+    },
+    panCardinal(x, y) {
+      const [minX, minY, maxX, maxY] = extent;
+      adapter.panBy(((maxX - minX) / 8) * x, ((maxY - minY) / 8) * y);
     },
     resetView: fitContent,
+    fitExtent: fitContent,
+    actualPixels() {
+      applyingView = true;
+      view.setResolution(1);
+      releaseViewGuard();
+    },
     focusFeature(featureId) {
       const feature = registry.source.getFeatureById(featureId) as Feature<Geometry> | null;
       const geometry = feature?.getGeometry();
       if (!feature || !geometry) return false;
-      const extent = geometry.getExtent();
-      if (extent[0] === extent[2] && extent[1] === extent[3]) {
-        view.setCenter(getCenter(extent));
-        view.setZoom(6);
-      } else view.fit(extent, { padding: [48, 48, 48, 48], maxZoom: 8, duration: 0 });
+      const featureExtent = geometry.getExtent();
+      if (featureExtent[0] === featureExtent[2] && featureExtent[1] === featureExtent[3]) {
+        view.setCenter(getCenter(featureExtent));
+        view.setZoom(Math.min(6, maxZoom));
+      } else view.fit(featureExtent, { padding: [48, 48, 48, 48], maxZoom: Math.min(8, maxZoom), duration: 0 });
       interactions.select.getFeatures().clear();
       interactions.select.getFeatures().push(feature);
       emitSelection();
       return true;
     },
-    focusPoint(normalized, zoom = 4) {
-      view.setCenter(normalizedViewCenter(normalized));
+    focusPoint(authored, zoom = 4) {
+      view.setCenter(authoredToView(authored, space));
       view.setZoom(Math.max(2, zoom));
     },
     flush() {
@@ -300,17 +386,16 @@ export function createMapAdapter(
     },
     selectedFeature() {
       const selected = interactions.select.getFeatures().item(0);
-      return selected ? toVectorFeature(selected, activeLayerId ?? BASE_LAYER_ID) : null;
+      return selected ? codec.toVectorFeature(selected, activeLayerId ?? BASE_LAYER_ID) : null;
     },
-    resize: () => map.updateSize(),
+    resize: () => lifecycle.resize(),
     dispose() {
       if (disposed) return;
       disposed = true;
-      resizeObserver.disconnect();
       container.removeEventListener("keydown", onKeyDown);
       interactions.dispose();
-      map.setTarget(undefined);
-      map.dispose();
+      backgrounds.dispose();
+      lifecycle.dispose();
       liveAdapters.delete(adapter);
     },
   };
@@ -322,5 +407,5 @@ export function createMapAdapter(
 /** Compatibility alias while callers migrate. */
 export const createNativeVectorEditor = createMapAdapter;
 export type NativeVectorEditor = MapAdapter;
-export type NativeVectorBackground = MapBackground;
+export type NativeVectorBackground = RuntimeBackground;
 export type NativeVectorView = MapAdapterView;

@@ -6042,6 +6042,11 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
     );
     assert_eq!(descriptor.value["sourceAssetId"], imported.source.id);
     assert_eq!(descriptor.value["previewAssetId"], imported.preview.id);
+    assert_eq!(descriptor.value["coordinateSpace"]["kind"], "image");
+    assert_eq!(
+        descriptor.value["coordinateSpace"]["extent"],
+        serde_json::json!([0, 0, 8, 6])
+    );
     assert_eq!(imported.source.mime_type, crate::maps::VECTOR_MIME);
     assert_eq!(imported.preview.mime_type, "image/png");
 
@@ -6068,6 +6073,50 @@ fn image_map_import_layer_mutations_and_checkpoint_rebuild() {
         .unwrap_err()
         .to_string()
         .contains("unsupported active"));
+
+    let overlay = crate::maps::encode_transparent_png(4, 3).unwrap();
+    let attached = store
+        .attach_map_raster_asset(
+            imported.entity.id.clone(),
+            overlay,
+            "image/png".into(),
+            "overlay.png".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(attached.width, 4);
+    assert_eq!(attached.height, 3);
+    assert_eq!(attached.asset.entity_id, imported.entity.id);
+    let layers_unchanged = store
+        .list_fields(imported.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(layers_unchanged.value["layers"].as_array().unwrap().len(), 0);
+    let unsafe_overlay = b"<svg viewBox=\"0 0 10 10\"><script>alert(1)</script></svg>".to_vec();
+    assert!(store
+        .attach_map_raster_asset(
+            imported.entity.id.clone(),
+            unsafe_overlay,
+            "image/svg+xml".into(),
+            "bad.svg".into(),
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported active"));
+    assert!(store
+        .attach_map_raster_asset(
+            imported.entity.id.clone(),
+            vec![0_u8; crate::maps::image::IMAGE_MAX_ENCODED_BYTES + 1],
+            "image/png".into(),
+            "huge.png".into(),
+            None
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("encoded-byte budget"));
 
     let request_id = Uuid::new_v4().to_string();
     let layers_revision = store

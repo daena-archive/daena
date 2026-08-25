@@ -1,7 +1,7 @@
-import { UNDO_STACK_SIZE } from "../native-vector/types";
-import type { MapCommand } from "./commands";
-import { applyCommand } from "./commands";
-import { cloneDocument, documentByteSize, documentHash, type MapDocument } from "./model";
+import { UNDO_STACK_SIZE } from "../native-vector/types.ts";
+import type { MapCommand } from "./commands.ts";
+import { applyCommand } from "./commands.ts";
+import { cloneDocument, documentByteSize, documentHash, type MapDocument } from "./model.ts";
 
 const DEFAULT_BYTE_BUDGET = 8 * 1024 * 1024;
 

@@ -1,75 +1,93 @@
+import Collection from "ol/Collection.js";
 import ImageLayer from "ol/layer/Image.js";
+import LayerGroup from "ol/layer/Group.js";
 import ImageStatic from "ol/source/ImageStatic.js";
-import {
-  imageOverlayCoordinates,
-  type ImageOverlayCoordinates,
-} from "../native-vector/coordinates";
-import { worldProjection } from "./projection";
+import type Projection from "ol/proj/Projection.js";
+import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
+import { authoredExtentToViewExtent } from "../editor/coordinate-space";
 
-export type MapBackground = {
+export type RuntimeBackground = {
+  id: string;
   url: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
   canvas?: HTMLCanvasElement;
-  coordinates?: ImageOverlayCoordinates;
+  extent: readonly [number, number, number, number];
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
+  order: number;
 };
-
-export function extentFromCoordinates(coordinates: ImageOverlayCoordinates): [number, number, number, number] {
-  const xs = coordinates.map((coordinate) => coordinate[0]);
-  const ys = coordinates.map((coordinate) => coordinate[1]);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-}
 
 export type BackgroundRegistry = {
-  layer: ImageLayer<any>;
-  current: MapBackground | null;
-  setBackground: (background: MapBackground | null) => void;
-  setVisible: (visible: boolean) => void;
+  group: LayerGroup;
+  sync: (backgrounds: readonly RuntimeBackground[], space: MapCoordinateSpace, projection: Projection) => void;
+  dispose: () => void;
 };
 
-export function createBackgroundRegistry(onError?: (detail: string) => void): BackgroundRegistry {
-  const layer = new ImageLayer<any>({ visible: true });
-  let current: MapBackground | null = null;
+function sourceUrl(background: RuntimeBackground, onError?: (detail: string) => void): string | null {
+  if (background.canvas) {
+    try {
+      return background.canvas.toDataURL("image/png");
+    } catch (cause) {
+      onError?.(cause instanceof Error ? cause.message : "OpenLayers could not read the raster canvas.");
+      return null;
+    }
+  }
+  return background.url || null;
+}
 
-  const update = () => {
-    if (!current) {
+export function createBackgroundRegistry(onError?: (detail: string) => void): BackgroundRegistry {
+  const group = new LayerGroup({ layers: [] });
+  const layers = new Map<string, ImageLayer<any>>();
+
+  const disposeLayers = () => {
+    for (const layer of layers.values()) {
       layer.setSource(null);
-      return;
+      group.getLayers().remove(layer);
     }
-    const coordinates = current.coordinates ?? imageOverlayCoordinates(current.width, current.height);
-    let url = current.url;
-    if (current.canvas) {
-      try {
-        url = current.canvas.toDataURL("image/png");
-      } catch (cause) {
-        onError?.(cause instanceof Error ? cause.message : "OpenLayers could not read the raster canvas.");
-        return;
-      }
-    }
-    layer.setSource(
-      new ImageStatic({
-        url,
-        projection: worldProjection,
-        imageExtent: extentFromCoordinates(coordinates),
-        interpolate: true,
-      }),
-    );
+    layers.clear();
   };
 
   return {
-    layer,
-    get current() {
-      return current;
+    group,
+    sync(backgrounds, space, projection) {
+      const ordered = [...backgrounds].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+      const keep = new Set(ordered.map((background) => background.id));
+      for (const [id, layer] of layers) {
+        if (!keep.has(id)) {
+          layer.setSource(null);
+          group.getLayers().remove(layer);
+          layers.delete(id);
+        }
+      }
+      const nextLayers = ordered.flatMap((background, index) => {
+        const url = sourceUrl(background, onError);
+        if (!url) return [];
+        let layer = layers.get(background.id);
+        if (!layer) {
+          layer = new ImageLayer({ visible: background.visible });
+          layers.set(background.id, layer);
+          group.getLayers().push(layer);
+        }
+        layer.setVisible(background.visible);
+        layer.setOpacity(Math.max(0, Math.min(1, background.opacity)));
+        layer.setZIndex(index);
+        layer.set("locked", background.locked);
+        layer.setSource(
+          new ImageStatic({
+            url,
+            projection,
+            imageExtent: authoredExtentToViewExtent(background.extent, space),
+            interpolate: true,
+          }),
+        );
+        return [layer];
+      });
+      group.setLayers(new Collection(nextLayers));
     },
-    set current(value) {
-      current = value;
-    },
-    setBackground(background) {
-      current = background;
-      update();
-    },
-    setVisible(visible) {
-      layer.setVisible(visible);
+    dispose() {
+      disposeLayers();
     },
   };
 }

@@ -354,6 +354,14 @@ pub struct ImportedImageMap {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachedMapRaster {
+    pub asset: Asset,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptedVectorMap {
     pub entity: Entity,
     pub source: Asset,
@@ -5986,6 +5994,117 @@ impl ProjectStore {
                 .map_err(|error| CoreError::Serialization(error.to_string()))?,
         )?;
         Ok(imported)
+    }
+
+    pub fn attach_map_raster_asset(
+        &self,
+        map_entity_id: String,
+        bytes: Vec<u8>,
+        mime_type: String,
+        filename: String,
+        request_id: Option<&str>,
+    ) -> Result<AttachedMapRaster, CoreError> {
+        let entity_type: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT entity_type FROM entities WHERE id=?1 AND deleted=0",
+                params![map_entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if entity_type.as_deref() != Some(crate::maps::MAP_ENTITY_TYPE) {
+            return Err(CoreError::Validation("maps: raster assets belong only on a map entity".into()));
+        }
+        let provider: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT json_extract(value, '$.provider.id') FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'",
+                params![map_entity_id, crate::maps::MAP_NAMESPACE],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if provider.as_deref() != Some(crate::maps::VECTOR_PROVIDER) {
+            return Err(CoreError::Validation(
+                "maps: raster assets can only be attached to daena-openlayers maps".into(),
+            ));
+        }
+        let source = crate::maps::validate_image_source(&bytes, &mime_type)?;
+        let filename = Path::new(&filename)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && *value != "." && *value != "..")
+            .unwrap_or(match source.source_format {
+                "jpeg" => "overlay.jpeg",
+                "svg" => "overlay.svg",
+                _ => "overlay.png",
+            })
+            .to_owned();
+        let content_hash = crate::maps::image::content_hash(&bytes);
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&serde_json::json!({
+                "mapEntityId": map_entity_id,
+                "mimeType": mime_type,
+                "filename": filename,
+                "contentHash": content_hash,
+            }))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(attached) = self.committed_mutation_with_fingerprint::<AttachedMapRaster>(
+            request_id,
+            Some(&input_fingerprint),
+        )? {
+            return Ok(attached);
+        }
+        let size = bytes.len() as i64;
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
+        }
+        let asset_id = Uuid::new_v4().to_string();
+        let now = chrono_like_now();
+        let relative_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
+        let asset = Asset {
+            id: asset_id.clone(),
+            entity_id: map_entity_id.clone(),
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            filename: filename.clone(),
+            content_hash: content_hash.clone(),
+            size,
+            mime_type: mime_type.clone(),
+            path: relative_path.clone(),
+            created_at: now.clone(),
+            role: ASSET_ROLE_ATTACHMENT.into(),
+            reference_scope: ASSET_REFERENCE_SCOPE_ENTITY.into(),
+            provenance: None,
+            revision: String::new(),
+        };
+        let attached = AttachedMapRaster {
+            asset: asset.clone(),
+            width: source.width,
+            height: source.height,
+        };
+        let request_id = self.request_id(request_id)?;
+        let result = serde_json::to_value(&attached)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&result),
+            &[format!("entities/{map_entity_id}/"), relative_path.clone()],
+            &input_fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO assets(id,entity_id,namespace,filename,content_hash,size,mime_type,path,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![asset_id, map_entity_id, crate::maps::MAP_NAMESPACE, filename, content_hash, size, mime_type, relative_path, now],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let mut attached = attached;
+        attached.asset.revision = self.revision_for_asset(&attached.asset.id)?;
+        self.write_mutation_result(
+            &request_id,
+            &serde_json::to_value(&attached)
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        )?;
+        Ok(attached)
     }
 
     pub fn replay_imported_image_map(

@@ -28,6 +28,9 @@ for (const required of [
   "SetLayerVisibility",
   "SetLayerLocked",
   "SetLayerStyle",
+  "AddBackground",
+  "SetDefaultView",
+  "SetCoordinateSpace",
   "coalesceKey",
   "invert",
 ]) {

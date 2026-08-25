@@ -1,6 +1,7 @@
 export type { MapDocument } from "./model";
 export {
   cloneCollection,
+  cloneDescriptor,
   cloneDocument,
   cloneLayers,
   createMapDocument,
@@ -15,9 +16,12 @@ export {
 export { CommandStack, type CommandStackSnapshot } from "./command-stack";
 export type { MapCommand, MapCommandKind } from "./commands";
 export {
+  addBackgroundCommand,
   applyCommand,
   buildCreateLayer,
   buildDuplicateLayer,
+  calibrateImageToWorld,
+  calibrateWorldUnits,
   captureDeleteFeatures,
   captureReplaceCollection,
   createFeatureCommand,
@@ -27,17 +31,40 @@ export {
   duplicateFeaturesCommand,
   duplicateLayerCommand,
   layersFieldValue,
+  listedBackgrounds,
   moveFeaturesToLayerCommand,
   newVectorLayer,
+  nextBackgroundOrder,
+  removeBackgroundCommand,
   renameLayerCommand,
+  reorderBackgroundCommand,
   reorderLayerCommand,
+  replaceBackgroundCommand,
   replaceCollectionCommand,
   replaceGeometryCommand,
+  setBackgroundOpacityCommand,
+  setBackgroundVisibilityCommand,
+  setCoordinateSpaceCommand,
+  setDefaultViewCommand,
   setFeatureMetadataCommand,
   setLayerLockedCommand,
   setLayerStyleCommand,
   setLayerVisibilityCommand,
 } from "./commands";
+export {
+  DEFAULT_WORLD_SPACE,
+  PHYSICAL_COORDINATE_SPACE,
+  authoredToNormalized,
+  backgroundsFromDescriptor,
+  coordinateSpaceFromDescriptor,
+  coordinateSpaceKey,
+  defaultViewFromDescriptor,
+  duplicateOffset,
+  extentOf,
+  isOpenLayersDescriptor,
+  normalizedToAuthored,
+} from "./coordinate-space";
+export { measurementSummary, unitsForCoordinateSpace } from "./measurement";
 export {
   emptySelection,
   selectionFromIds,

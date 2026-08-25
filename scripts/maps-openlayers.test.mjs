@@ -23,7 +23,9 @@ for (const removed of ["maplibre-gl", "terra-draw"]) {
 for (const path of [
   "src/lib/maps/native-vector/NativeVectorMapEditor.svelte",
   "src/lib/maps/native-vector/NativeVectorImporter.svelte",
-  "src/lib/maps/openlayers/MapAdapter.ts",
+  "src/lib/maps/openlayers/projection.ts",
+  "src/lib/maps/openlayers/background-registry.ts",
+  "src/lib/maps/openlayers/lifecycle.ts",
   "src/lib/maps/openlayers/interaction-manager.ts",
   "src/lib/maps/editor/command-stack.ts",
   "src/lib/maps/native-vector/openlayers-style.ts",
@@ -45,14 +47,15 @@ for (const required of [
   'from "ol/Map.js"',
   'from "ol/View.js"',
   "createMapAdapter",
-  "map.dispose()",
+  "bindMapLifecycle",
   "vector.renderer.unavailable",
   "onCommand",
   "syncDocument",
+  "projectionFromCoordinateSpace",
 ]) {
   if (!adapter.includes(required)) fail(`MapAdapter missing ${required}`);
 }
-for (const forbidden of ["maplibre", "terra-draw", "webgl2", "workerUrl", "UNDO_STACK_SIZE"]) {
+for (const forbidden of ["maplibre", "terra-draw", "webgl2", "workerUrl", "UNDO_STACK_SIZE", "imageOverlayCoordinates"]) {
   if (adapter.toLowerCase().includes(forbidden.toLowerCase())) fail(`MapAdapter still contains ${forbidden}`);
 }
 
@@ -69,8 +72,17 @@ for (const required of [
   if (!interactions.includes(required)) fail(`interaction-manager missing ${required}`);
 }
 
+const projection = read("src/lib/maps/openlayers/projection.ts");
+if (!projection.includes("projectionFromCoordinateSpace")) fail("projection missing projectionFromCoordinateSpace");
+if (!projection.includes('kind === "image"') && !projection.includes("space.kind === \"image\"")) {
+  fail("projection factory must handle image coordinate spaces");
+}
+
 const background = read("src/lib/maps/openlayers/background-registry.ts");
 if (!background.includes('from "ol/source/ImageStatic.js"')) fail("background-registry missing ImageStatic");
+if (!background.includes("sync(") && !background.includes("sync(backgrounds")) {
+  fail("background-registry must sync multiple rasters");
+}
 
 const style = read("src/lib/maps/native-vector/openlayers-style.ts");
 for (const required of ["nativeFeatureStyle", "visibleUnlockedFeatures", "new Style", "new Fill", "new Stroke"]) {
@@ -92,10 +104,18 @@ const physical = read("src/lib/maps/physical/PhysicalWorldView.svelte");
 if (!physical.includes("createMapAdapter") || physical.includes('projection: "globe"')) {
   fail("physical world view is not on the OpenLayers MapAdapter");
 }
+if (!physical.includes("PHYSICAL_COORDINATE_SPACE") && !physical.includes("coordinateSpace")) {
+  fail("physical world view must pass an explicit coordinate space");
+}
 const atlas = read("src/lib/maps/atlas/AtlasStudioView.svelte");
 for (const required of ['from "ol/Map.js"', 'from "ol/source/XYZ.js"', "configureTileSource", "tileUrlAllowed"]) {
   if (!atlas.includes(required)) fail(`Atlas Studio missing ${required}`);
 }
+const lifecycle = read("src/lib/maps/openlayers/lifecycle.ts");
+if (!lifecycle.includes("map.dispose()") || !lifecycle.includes("ResizeObserver")) {
+  fail("openlayers lifecycle helper must dispose maps and observe size");
+}
+if (!atlas.includes("bindMapLifecycle")) fail("Atlas Studio must reuse bindMapLifecycle");
 
 const resolved = require("ol/package.json");
 if (!String(resolved.version).startsWith("10.")) fail(`resolved OpenLayers must be 10.x, got ${resolved.version}`);

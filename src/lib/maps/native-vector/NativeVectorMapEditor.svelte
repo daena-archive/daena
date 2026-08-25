@@ -11,6 +11,7 @@ import {
   Eye,
   EyeOff,
   Hexagon,
+  Image as ImageIcon,
   Link2,
   Lock,
   LockOpen,
@@ -42,7 +43,13 @@ import {
   type PhysicalHistoricalProducts,
   type AtlasRenderRequest,
 } from "$lib/project/client";
-import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import {
+  IMAGE_MAX_RASTER_LAYERS,
+  VECTOR_MAX_LAYERS,
+  type MapAnchor,
+  type MapBackgroundRef,
+  type MapCoordinateSpace,
+} from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorImporter from "./NativeVectorImporter.svelte";
 import MapLocationLinkPanel from "./MapLocationLinkPanel.svelte";
 import {
@@ -51,6 +58,8 @@ import {
   RENDERER_UNAVAILABLE,
   type MapAdapter,
 } from "../openlayers/MapAdapter";
+import type { RuntimeBackground } from "../openlayers/background-registry";
+import { maxZoomForCoordinateSpace } from "../openlayers/projection";
 import { registerNativeVectorSession } from "./session";
 import {
   collectionBytes,
@@ -75,7 +84,6 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
-import { lonLatToNormalized, physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from "./coordinates";
 import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
@@ -83,19 +91,40 @@ import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 import MapViewControls from "./MapViewControls.svelte";
 import {
   CommandStack,
+  PHYSICAL_COORDINATE_SPACE,
+  addBackgroundCommand,
+  authoredToNormalized,
+  backgroundsFromDescriptor,
   buildCreateLayer,
   buildDuplicateLayer,
   buildRecoveryPackage,
+  calibrateImageToWorld,
+  calibrateWorldUnits,
   captureDeleteFeatures,
   captureReplaceCollection,
+  coordinateSpaceFromDescriptor,
+  coordinateSpaceKey,
   createMapDocument,
+  defaultViewFromDescriptor,
   deleteLayerCommand,
   duplicateFeaturesCommand,
+  duplicateOffset,
   encodeLayersField,
+  extentOf,
+  listedBackgrounds,
+  measurementSummary,
   moveFeaturesToLayerCommand,
+  nextBackgroundOrder,
+  normalizedToAuthored,
   recoveryPackageBytes,
+  removeBackgroundCommand,
   renameLayerCommand,
+  reorderBackgroundCommand,
   reorderLayerCommand,
+  replaceBackgroundCommand,
+  setBackgroundOpacityCommand,
+  setBackgroundVisibilityCommand,
+  setDefaultViewCommand,
   setFeatureMetadataCommand,
   setLayerLockedCommand,
   setLayerStyleCommand,
@@ -144,14 +173,12 @@ let recoveryPath = $state("");
 let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
-let defaultView = $state({ center: [0.5, 0.5] as [number, number], zoom: 1 });
-let background = $state<{
-  url: string;
-  width: number;
-  height: number;
-  canvas: HTMLCanvasElement;
-  coordinates?: ImageOverlayCoordinates;
-} | null>(null);
+let defaultView = $state({ center: [0, 0] as [number, number], zoom: 1, rotation: 0 });
+let coordinateSpace = $state<MapCoordinateSpace>(PHYSICAL_COORDINATE_SPACE);
+let rasterAssets = $state(new Map<string, { url: string; width: number; height: number; canvas: HTMLCanvasElement }>());
+let rastersCollapsed = $state(false);
+let calibrateMetres = $state("");
+let mountedSpaceKey = $state("");
 let fullscreen = $state(false);
 let physicalMap = $state(false);
 let immutablePhysicalLayerIds = $state<Set<string>>(new Set());
@@ -214,6 +241,11 @@ const EPOCH_STEP = 10;
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
 );
+const listedRasters = $derived(
+  commandStack ? listedBackgrounds(commandStack.document) : backgroundsFromDescriptor(mapField?.value),
+);
+const unitsLabel = $derived(measurementSummary(coordinateSpace));
+const viewMaxZoom = $derived(maxZoomForCoordinateSpace(coordinateSpace));
 const brandIcon = $derived((physicalMap ? Mountain : MapIcon) as Component);
 const iconProps = { size: 15, strokeWidth: 1.8, "aria-hidden": true } as const;
 
@@ -231,15 +263,93 @@ const diagnostic = $derived(editorState.diagnostic);
 const diagnosticCode = $derived(editorState.diagnosticCode);
 const conflict = $derived(editorState.conflict);
 
-function publish(status: string, detail: unknown = null) {
-  onstate?.(status, detail);
+function runtimeBackgrounds(): RuntimeBackground[] {
+  if (physicalMap) {
+    const physical = rasterAssets.get("physical");
+    if (!physical) return [];
+    return [
+      {
+        id: "physical",
+        url: physical.url,
+        canvas: physical.canvas,
+        width: physical.width,
+        height: physical.height,
+        extent: extentOf(PHYSICAL_COORDINATE_SPACE),
+        visible: true,
+        locked: true,
+        opacity: 1,
+        order: 0,
+      },
+    ];
+  }
+  return listedRasters.flatMap((ref) => {
+    const loaded = rasterAssets.get(ref.assetId);
+    if (!loaded) return [];
+    return [
+      {
+        id: ref.id,
+        url: loaded.url,
+        canvas: loaded.canvas,
+        width: loaded.width,
+        height: loaded.height,
+        extent: [ref.extent[0], ref.extent[1], ref.extent[2], ref.extent[3]] as [number, number, number, number],
+        visible: ref.visible,
+        locked: ref.locked,
+        opacity: ref.opacity,
+        order: ref.order,
+      },
+    ];
+  });
+}
+
+function applyCoordinateSpaceFromDescriptor(descriptor: unknown, options?: { restoreView?: boolean }) {
+  coordinateSpace = physicalMap ? PHYSICAL_COORDINATE_SPACE : coordinateSpaceFromDescriptor(descriptor);
+  if (options?.restoreView !== false) {
+    defaultView = defaultViewFromDescriptor(descriptor, coordinateSpace);
+  }
+}
+
+async function decodeRasterBytes(
+  bytes: number[] | Uint8Array,
+  mimeType: string,
+  generation: number,
+): Promise<{ url: string; width: number; height: number; canvas: HTMLCanvasElement } | null> {
+  const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mimeType }));
+  objectUrls.push(url);
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      if (generation !== loadGeneration) {
+        resolve(null);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        reject(new Error("Could not decode the imported map image"));
+        return;
+      }
+      context.drawImage(image, 0, 0);
+      resolve({ url, width: image.naturalWidth, height: image.naturalHeight, canvas });
+    };
+    image.onerror = () => reject(new Error("Could not decode the imported map image"));
+    image.src = url;
+  });
+}
+
+function clearRasterAssets() {
+  for (const url of objectUrls) URL.revokeObjectURL(url);
+  objectUrls.length = 0;
+  rasterAssets = new Map();
 }
 
 function featureFallbackPoint(feature: VectorFeature | null): [number, number] {
-  if (!feature) return [0.5, 0.5];
+  if (!feature) return authoredToNormalized(defaultView.center[0], defaultView.center[1], coordinateSpace);
   const positions = feature.geometry.coordinates.flat(Infinity) as number[];
-  if (positions.length < 2) return [0.5, 0.5];
-  return lonLatToNormalized(positions[0], positions[1]);
+  if (positions.length < 2) return authoredToNormalized(defaultView.center[0], defaultView.center[1], coordinateSpace);
+  return authoredToNormalized(positions[0], positions[1], coordinateSpace);
 }
 
 function pickAnchorFor(feature: VectorFeature): MapAnchor {
@@ -375,10 +485,14 @@ function focusLinkedLocation(linkId: string | null | undefined) {
   if (!anchor) return false;
   if (anchor.kind === "provider-feature") return target.focusFeature(anchor.featureId);
   if (anchor.kind === "point") {
-    target.focusPoint([anchor.point[0], anchor.point[1]]);
+    target.focusPoint(normalizedToAuthored(anchor.point[0], anchor.point[1], coordinateSpace));
     return true;
   }
   return false;
+}
+
+function publish(status: string, detail: unknown = null) {
+  onstate?.(status, detail);
 }
 
 async function requestBack() {
@@ -426,7 +540,7 @@ function cloneCollection(collection: VectorFeatureCollection): VectorFeatureColl
   return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
 }
 
-function syncUiFromStack() {
+function syncUiFromStack(restoreView = false) {
   if (!commandStack) return;
   const snap = commandStack.snapshot();
   draft = snap.document.collection;
@@ -434,9 +548,17 @@ function syncUiFromStack() {
   if (mapField) {
     mapField = { ...mapField, value: snap.document.descriptor as FieldValue["value"] };
   }
+  applyCoordinateSpaceFromDescriptor(snap.document.descriptor, { restoreView });
   canUndo = snap.canUndo;
   canRedo = snap.canRedo;
-  editor?.syncDocument(draft, layers);
+  const nextKey = coordinateSpaceKey(coordinateSpace);
+  if (editor && nextKey !== mountedSpaceKey) {
+    mountEditor();
+  } else {
+    editor?.syncDocument(draft, layers);
+    editor?.syncBackgrounds(runtimeBackgrounds());
+    if (restoreView) editor?.applyView(defaultView.center, defaultView.zoom, defaultView.rotation);
+  }
   if (snap.dirty) applyEditorEvent({ type: "document-changed" });
   else applyEditorEvent({ type: "loaded" });
 }
@@ -444,7 +566,7 @@ function syncUiFromStack() {
 function dispatchCommand(command: MapCommand) {
   if (!commandStack) return;
   commandStack.apply(command);
-  syncUiFromStack();
+  syncUiFromStack(command.kind === "SetCoordinateSpace");
 }
 
 function resetCommandStack(documentInput: {
@@ -465,13 +587,13 @@ function resetCommandStack(documentInput: {
 function undoEdit() {
   if (!commandStack?.canUndo()) return;
   commandStack.undo();
-  syncUiFromStack();
+  syncUiFromStack(true);
 }
 
 function redoEdit() {
   if (!commandStack?.canRedo()) return;
   commandStack.redo();
-  syncUiFromStack();
+  syncUiFromStack(true);
 }
 
 function deleteSelectedFeatures() {
@@ -514,7 +636,7 @@ function duplicateSelectedFeatures() {
   const ids = editor.selectedFeatureIds();
   const selected = commandStack.document.collection.features.filter((feature) => ids.includes(feature.id));
   if (selected.length === 0) return;
-  const offset = 0.15;
+  const offset = duplicateOffset(coordinateSpace);
   const copies = selected.map((feature) => {
     const clone = cloneCollection({ type: "FeatureCollection", features: [feature] }).features[0];
     clone.id = crypto.randomUUID();
@@ -670,14 +792,10 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
     layers,
     collection: combined,
   });
-  if (background?.url) URL.revokeObjectURL(background.url);
-  background = {
-    url: "",
-    canvas: physicalHillshadeCanvas(products.hydrology),
-    width: products.hydrology.width,
-    height: products.hydrology.height,
-    coordinates: physicalWorldOverlayCoordinates(),
-  };
+  const canvas = physicalHillshadeCanvas(products.hydrology);
+  rasterAssets = new Map([
+    ["physical", { url: "", width: products.hydrology.width, height: products.hydrology.height, canvas }],
+  ]);
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
   syncEpochFields(products.epochOffsetYears);
@@ -770,6 +888,7 @@ function mountEditor() {
   }
   if (!host) return;
   destroyEditor();
+  mountedSpaceKey = coordinateSpaceKey(coordinateSpace);
   const created = createMapAdapter(host, {
     get draft() {
       return draft;
@@ -780,24 +899,35 @@ function mountEditor() {
     get activeLayerId() {
       return activeLayerId;
     },
-    get center() {
-      return defaultView.center;
-    },
-    get zoom() {
-      return defaultView.zoom;
-    },
+    coordinateSpace,
     setActiveLayerId(id) {
       activeLayerId = id;
     },
     onCommand(payload) {
-      if (!commandStack || payload.type !== "replace-collection") return;
-      const command = captureReplaceCollection(
-        commandStack.document,
-        payload.collection,
-        payload.label,
-        payload.coalesceKey,
-      );
-      if (command) dispatchCommand(command);
+      if (!commandStack) return;
+      if (payload.type === "replace-collection") {
+        const command = captureReplaceCollection(
+          commandStack.document,
+          payload.collection,
+          payload.label,
+          payload.coalesceKey,
+        );
+        if (command) dispatchCommand(command);
+        return;
+      }
+      if (payload.type === "set-view") {
+        const previous = defaultViewFromDescriptor(commandStack.document.descriptor, coordinateSpace);
+        if (
+          previous.center[0] === payload.center[0] &&
+          previous.center[1] === payload.center[1] &&
+          previous.zoom === payload.zoom &&
+          previous.rotation === payload.rotation
+        ) {
+          return;
+        }
+        defaultView = payload;
+        dispatchCommand(setDefaultViewCommand(payload, previous));
+      }
     },
     onDiagnostic(code, detail) {
       applyEditorEvent({ type: "save-failed", message: `${code}: ${detail}` });
@@ -825,14 +955,12 @@ function mountEditor() {
       }
       if (linkArming || linkPanelOpen) openLinkPanel(anchor);
     },
-    get background() {
-      return background;
+    get backgrounds() {
+      return runtimeBackgrounds();
     },
+    initialView: defaultView,
     onViewChange(next) {
-      defaultView = {
-        center: lonLatToNormalized(next.center[0], next.center[1]),
-        zoom: next.zoom,
-      };
+      defaultView = next;
     },
   });
   if ("error" in created) {
@@ -882,9 +1010,7 @@ async function load() {
     }
     if (generation !== loadGeneration) return;
     studioOpen = studioSupported;
-    if (descriptor?.defaultView?.center) defaultView = { ...defaultView, center: descriptor.defaultView.center };
-    if (typeof descriptor?.defaultView?.zoom === "number")
-      defaultView = { ...defaultView, zoom: descriptor.defaultView.zoom };
+    applyCoordinateSpaceFromDescriptor(descriptorField?.value);
     const nextLayersField = fields.find((item) => item.namespace === "maps" && item.key === "layers") ?? null;
     if (!nextLayersField) throw new Error("maps:layers is missing");
     applyLayersField(nextLayersField);
@@ -894,8 +1020,7 @@ async function load() {
     const source = assets.find((asset) => asset.id === sourceId);
     if (!source) throw new Error("The vector source asset is missing");
     sourceAsset = source;
-    if (background?.url) URL.revokeObjectURL(background.url);
-    background = null;
+    clearRasterAssets();
     const bytes = await project.readAssetBytes(source.id);
     if (generation !== loadGeneration) return;
     const collection = parseVectorCollection(bytes);
@@ -938,13 +1063,13 @@ async function load() {
         collection: combined,
       });
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
-      background = {
-        url: "",
-        canvas: physicalHillshadeCanvas(historical.hydrology),
-        width: historical.hydrology.width,
-        height: historical.hydrology.height,
-        coordinates: physicalWorldOverlayCoordinates(),
-      };
+      const canvas = physicalHillshadeCanvas(historical.hydrology);
+      rasterAssets = new Map([
+        [
+          "physical",
+          { url: "", width: historical.hydrology.width, height: historical.hydrology.height, canvas },
+        ],
+      ]);
       epochBusy = false;
       epochPhase = "";
       epochProgress = null;
@@ -958,41 +1083,19 @@ async function load() {
         collection,
       });
     }
-    const previewId = (descriptorField?.value as { previewAssetId?: string | null } | undefined)?.previewAssetId;
-    const preview = previewId ? assets.find((asset) => asset.id === previewId) : null;
-    if (preview) {
-      const previewBytes = await project.readAssetBytes(preview.id);
+    applyCoordinateSpaceFromDescriptor(mapField?.value);
+    const backgroundRefs = backgroundsFromDescriptor(mapField?.value);
+    const nextRasters = new Map(rasterAssets);
+    for (const ref of backgroundRefs) {
+      const asset = assets.find((item) => item.id === ref.assetId);
+      if (!asset || nextRasters.has(asset.id)) continue;
+      const previewBytes = await project.readAssetBytes(asset.id);
       if (generation !== loadGeneration) return;
-      const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: preview.mime_type }));
-      objectUrls.push(url);
-      background = await new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => {
-          if (generation !== loadGeneration) {
-            URL.revokeObjectURL(url);
-            resolve(null);
-            return;
-          }
-          const canvas = document.createElement("canvas");
-          canvas.width = image.naturalWidth;
-          canvas.height = image.naturalHeight;
-          const context = canvas.getContext("2d");
-          if (!context) {
-            URL.revokeObjectURL(url);
-            reject(new Error("Could not decode the imported map image"));
-            return;
-          }
-          context.drawImage(image, 0, 0);
-          resolve({ url, width: image.naturalWidth, height: image.naturalHeight, canvas });
-        };
-        image.onerror = () => {
-          URL.revokeObjectURL(url);
-          reject(new Error("Could not decode the imported map image"));
-        };
-        image.src = url;
-      });
+      const decoded = await decodeRasterBytes(previewBytes, asset.mime_type, generation);
       if (generation !== loadGeneration) return;
+      if (decoded) nextRasters.set(asset.id, decoded);
     }
+    rasterAssets = nextRasters;
     {
       const pins = await project.listMapPins(mapId).catch(() => []);
       if (generation !== loadGeneration) return;
@@ -1211,6 +1314,113 @@ function removeLayer(layer: VectorLayerDefinition) {
   if (activeLayerId) editor?.switchLayer(activeLayerId);
 }
 
+async function rememberRasterAsset(assetId: string, mimeType: string) {
+  const bytes = await project.readAssetBytes(assetId);
+  const decoded = await decodeRasterBytes(bytes, mimeType, loadGeneration);
+  if (!decoded) return;
+  const next = new Map(rasterAssets);
+  next.set(assetId, decoded);
+  rasterAssets = next;
+}
+
+function backgroundExtentForRaster(width: number, height: number): [number, number, number, number] {
+  if (coordinateSpace.kind === "image") return extentOf(coordinateSpace);
+  if (coordinateSpace.kind === "world" || coordinateSpace.kind === "geographic") return extentOf(coordinateSpace);
+  return [0, 0, width, height];
+}
+
+async function addRaster() {
+  if (!mapId || !commandStack || physicalMap) return;
+  if (listedRasters.length >= IMAGE_MAX_RASTER_LAYERS) {
+    notice = `Raster count exceeds the budget of ${IMAGE_MAX_RASTER_LAYERS}.`;
+    return;
+  }
+  const source = await project.pickImageMapFile();
+  if (typeof source !== "string") return;
+  try {
+    busy = true;
+    const attached = await project.attachMapRasterAsset(mapId, source);
+    await rememberRasterAsset(attached.asset.id, attached.asset.mime_type);
+    const background: MapBackgroundRef = {
+      id: crypto.randomUUID(),
+      assetId: attached.asset.id,
+      name: attached.asset.filename.replace(/\.[^.]+$/, "") || "Raster",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      order: nextBackgroundOrder(listedRasters),
+      extent: backgroundExtentForRaster(attached.width, attached.height),
+    };
+    dispatchCommand(addBackgroundCommand(background));
+  } catch (cause) {
+    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
+  } finally {
+    busy = false;
+  }
+}
+
+async function replaceRaster(current: MapBackgroundRef) {
+  if (!mapId || !commandStack || physicalMap) return;
+  const source = await project.pickImageMapFile();
+  if (typeof source !== "string") return;
+  try {
+    busy = true;
+    const attached = await project.attachMapRasterAsset(mapId, source);
+    await rememberRasterAsset(attached.asset.id, attached.asset.mime_type);
+    dispatchCommand(
+      replaceBackgroundCommand(
+        current.id,
+        {
+          ...current,
+          assetId: attached.asset.id,
+          name: attached.asset.filename.replace(/\.[^.]+$/, "") || current.name,
+          extent: backgroundExtentForRaster(attached.width, attached.height),
+        },
+        current,
+      ),
+    );
+  } catch (cause) {
+    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
+  } finally {
+    busy = false;
+  }
+}
+
+function removeRaster(current: MapBackgroundRef) {
+  if (!commandStack) return;
+  if (!confirm(`Remove ${current.name}? The raster overlay is removed from this map.`)) return;
+  dispatchCommand(removeBackgroundCommand(current.id, current));
+}
+
+function moveRaster(current: MapBackgroundRef, direction: -1 | 1) {
+  if (!commandStack) return;
+  const index = listedRasters.findIndex((item) => item.id === current.id);
+  const neighbor = listedRasters[index + direction];
+  if (!neighbor) return;
+  dispatchCommand(
+    reorderBackgroundCommand(current.id, neighbor.order, current.order, neighbor.id, current.order, neighbor.order),
+  );
+}
+
+function applyCalibration() {
+  if (!commandStack) return;
+  const raw = calibrateMetres.trim();
+  const metres = raw === "" ? null : Number(raw);
+  if (raw !== "" && (!Number.isFinite(metres) || (metres ?? 0) <= 0)) {
+    notice = "Calibration requires a positive metres-per-unit value, or leave it empty for arbitrary units.";
+    return;
+  }
+  const command =
+    coordinateSpace.kind === "image"
+      ? calibrateImageToWorld(commandStack.document, metres)
+      : calibrateWorldUnits(commandStack.document, metres);
+  if (!command) {
+    notice = "Geographic maps are not calibrated this way.";
+    return;
+  }
+  dispatchCommand(command);
+}
+
 $effect(() => {
   focusLinkId;
   editor;
@@ -1290,9 +1500,9 @@ onMount(() => {
     destroyEditor();
     epochRequest += 1;
     if (epochTimer) clearTimeout(epochTimer);
-    if (background?.url) URL.revokeObjectURL(background.url);
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.length = 0;
+    rasterAssets = new Map();
     registerNativeVectorSession(null);
   };
 });
@@ -1312,10 +1522,10 @@ onMount(() => {
       subtitle={studioOpen && studioStage
         ? studioStage
         : !physicalMap && dirty
-          ? "Unsaved changes"
+          ? `Unsaved changes · ${unitsLabel}`
           : physicalMap
             ? "Generated world map"
-            : "Map editor"}
+            : unitsLabel}
       icon={brandIcon}
       onBack={() => void requestBack()}
       actionsLabel={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
@@ -1651,6 +1861,79 @@ onMount(() => {
               {/each}
             </div>
           {/if}
+          {#if !physicalMap}
+            <button
+              type="button"
+              class="aside-toggle"
+              aria-expanded={!rastersCollapsed}
+              onclick={() => (rastersCollapsed = !rastersCollapsed)}>
+              <strong id="raster-layers-heading">Rasters</strong>
+              <span class="aside-chevron" class:collapsed={rastersCollapsed}><ChevronDown {...iconProps} /></span>
+            </button>
+            {#if !rastersCollapsed}
+              <p class="hint" role="status">{unitsLabel}</p>
+              <div class="layer-row">
+                <button type="button" class="text-button" disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRaster()}>
+                  Add raster
+                </button>
+                <button type="button" class="text-button" onclick={() => editor?.fitExtent()}>Fit</button>
+                <button type="button" class="text-button" onclick={() => editor?.actualPixels()}>Actual pixels</button>
+              </div>
+              <label class="calibrate">
+                Metres per unit
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  bind:value={calibrateMetres}
+                  placeholder={coordinateSpace.kind === "image" ? "pixels until calibrated" : "optional"}
+                  aria-label="Metres per unit" />
+                <button type="button" onclick={() => applyCalibration()}>Calibrate</button>
+              </label>
+              {#if listedRasters.length === 0}
+                <p class="hint">Add PNG, JPEG, or SVG overlays. Image maps open at exact pixel extent.</p>
+              {/if}
+              <div class="layer-list" role="list" aria-labelledby="raster-layers-heading">
+                {#each listedRasters as raster (raster.id)}
+                  <div class="layer" role="listitem">
+                    <span class="layer-name">{raster.name}</span>
+                    <div class="layer-row">
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-pressed={raster.visible}
+                        aria-label={raster.visible ? `Hide ${raster.name}` : `Show ${raster.name}`}
+                        onclick={() =>
+                          dispatchCommand(setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible))}
+                        >{#if raster.visible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
+                      <button type="button" class="icon-button" aria-label={`Move ${raster.name} up`} onclick={() => moveRaster(raster, -1)}
+                        ><ChevronUp {...iconProps} /></button>
+                      <button type="button" class="icon-button" aria-label={`Move ${raster.name} down`} onclick={() => moveRaster(raster, 1)}
+                        ><ChevronDown {...iconProps} /></button>
+                      <button type="button" class="icon-button" aria-label={`Replace ${raster.name}`} onclick={() => void replaceRaster(raster)}
+                        ><ImageIcon {...iconProps} /></button>
+                      <button type="button" class="icon-button" aria-label={`Remove ${raster.name}`} onclick={() => removeRaster(raster)}
+                        ><Trash2 {...iconProps} /></button>
+                    </div>
+                    <label>
+                      Opacity
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={raster.opacity}
+                        aria-label={`${raster.name} opacity`}
+                        oninput={(event) =>
+                          dispatchCommand(
+                            setBackgroundOpacityCommand(raster.id, Number(event.currentTarget.value), raster.opacity),
+                          )} />
+                    </label>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          {/if}
           {#if physicalMap}
             <button
               type="button"
@@ -1771,7 +2054,7 @@ onMount(() => {
             <PhysicalWorldView
               collection={draft}
               {layers}
-              raster={background?.canvas ?? null}
+              raster={rasterAssets.get("physical")?.canvas ?? null}
               {pickArmed}
               onready={(next) => {
                 physicalEditor = next;
@@ -1861,12 +2144,11 @@ onMount(() => {
               <MapViewControls
                 zoom={defaultView.zoom}
                 min={0}
-                max={8}
+                max={viewMaxZoom}
                 onzoom={(zoom) => {
-                  defaultView = { ...defaultView, zoom };
                   editor?.setZoom(zoom);
                 }}
-                onpan={(longitude, latitude) => editor?.panBy(longitude, latitude)} />
+                onpan={(x, y) => editor?.panCardinal(x > 0 ? 1 : x < 0 ? -1 : 0, y > 0 ? 1 : y < 0 ? -1 : 0)} />
             {/if}
             {#if busy}
               <div class="map-busy" role="status"><strong>Loading…</strong></div>
@@ -1910,8 +2192,14 @@ onMount(() => {
   gap: 6px;
   align-items: center;
 }
-.text-button {
-  padding: 6px 12px;
+.calibrate {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  font: 12px system-ui;
+}
+.calibrate input {
+  width: 100%;
 }
 .studio-open {
   width: 100%;

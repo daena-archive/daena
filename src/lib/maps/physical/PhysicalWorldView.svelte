@@ -7,7 +7,8 @@ import {
   type MapAdapter,
   type MapAdapterView,
 } from "../openlayers/MapAdapter";
-import { physicalWorldOverlayCoordinates } from "../native-vector/coordinates";
+import type { RuntimeBackground } from "../openlayers/background-registry";
+import { PHYSICAL_COORDINATE_SPACE, extentOf } from "../editor/coordinate-space";
 import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 
@@ -34,14 +35,19 @@ let notice = $state("");
 let editor = $state<MapAdapter | null>(null);
 let view = $state<MapAdapterView | null>(null);
 
-function backgroundFrom(canvas: HTMLCanvasElement | null) {
+function backgroundFrom(canvas: HTMLCanvasElement | null): RuntimeBackground | null {
   return canvas
     ? {
+        id: "physical",
         url: "",
         canvas,
         width: canvas.width,
         height: canvas.height,
-        coordinates: physicalWorldOverlayCoordinates(),
+        extent: extentOf(PHYSICAL_COORDINATE_SPACE),
+        visible: true,
+        locked: true,
+        opacity: 1,
+        order: 0,
       }
     : null;
 }
@@ -58,8 +64,7 @@ $effect(() => {
         return layers;
       },
       activeLayerId: null,
-      center: [0.5, 0.5],
-      zoom: 0,
+      coordinateSpace: PHYSICAL_COORDINATE_SPACE,
       setActiveLayerId() {},
       onDiagnostic(code, detail) {
         if (code === RENDERER_UNAVAILABLE) notice = detail;
@@ -70,8 +75,11 @@ $effect(() => {
       onMapPick(anchor) {
         onMapPick?.(anchor);
       },
-      background: backgroundFrom(raster),
-      initialView: view,
+      get backgrounds() {
+        const next = backgroundFrom(raster);
+        return next ? [next] : [];
+      },
+      initialView: view ?? { center: [0, 0], zoom: 0, rotation: 0 },
       onViewChange(next) {
         view = next;
       },
@@ -102,7 +110,8 @@ $effect(() => {
 });
 
 $effect(() => {
-  editor?.setBackground(backgroundFrom(raster));
+  const next = backgroundFrom(raster);
+  editor?.syncBackgrounds(next ? [next] : []);
 });
 
 $effect(() => {
@@ -148,3 +157,4 @@ $effect(() => {
   padding: 0.55rem 1rem;
 }
 </style>
+

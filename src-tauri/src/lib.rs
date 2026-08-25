@@ -10,13 +10,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use daena_core::{
-    read_json, validate_checkpoint, Asset, AssetFileInput, AssetFileReplaceInput, AssetInput,
-    AssetMetadataUpdate, AssetReplaceInput, AuthorityContext, CheckpointHandle, CheckpointManifest,
-    CoreError, CoreService, CreateEntity, CreateEntry, CreateEntryField, CreateEntryRelationship,
-    Entity, EntityListQuery, EntityPage, EntitySortDirection, EntitySortField,
-    ExternalChangeReport, FieldValue, GitLogEntry, GitPreflight, GitRemote, GitResetResult,
-    GitStatus, GitToolInfo, Migration, Operation, ProjectInfo, ProjectStore, Relationship,
-    RelationshipInput, SaveDocument, SaveEntry, WikiPageExportFormat,
+    read_json, set_checkpoint_export_status_listener, validate_checkpoint, Asset, AssetFileInput,
+    AssetFileReplaceInput, AssetInput, AssetMetadataUpdate, AssetReplaceInput, AuthorityContext,
+    CheckpointHandle, CheckpointManifest, CoreError, CoreService, CreateEntity, CreateEntry,
+    CreateEntryField, CreateEntryRelationship, Entity, EntityListQuery, EntityPage,
+    EntitySortDirection, EntitySortField, ExternalChangeReport, FieldValue, GitLogEntry,
+    GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, Migration, Operation,
+    ProjectInfo, ProjectStore, Relationship, RelationshipInput, SaveDocument, SaveEntry,
+    WikiPageExportFormat,
 };
 use daena_plugin_api::{
     merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
@@ -9649,6 +9650,11 @@ pub fn run() {
     tauri::Builder::default()
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
+            set_checkpoint_export_status_listener(Some(Arc::new(|| {
+                if let Some(app) = APP_HANDLE.get() {
+                    let _ = app.emit("project-checkpoint-export-status", ());
+                }
+            })));
             let app_data = app
                 .path()
                 .app_data_dir()

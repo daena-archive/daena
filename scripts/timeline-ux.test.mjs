@@ -23,6 +23,15 @@ assert.match(
 assert.match(source, /search\.placeholder = "Name, type, place…"/, "timeline exposes contextual search");
 assert.match(source, /timeline-details timeline-inspector/, "selected items render in a dedicated inspector");
 assert.match(source, /timeline-lifeline \.vis-item-content::before/, "lifeline ranges expose distinct endpoints");
-assert.match(source, /timeline-calendar-badge/, "the active display calendar remains visible outside the filter");
+assert.match(
+  source,
+  /reportSurfaceMeta\?\.\(\{[\s\S]*calendarName/,
+  "the active display calendar remains visible in the workspace topbar",
+);
+assert.match(
+  source,
+  /listLocations\(\{ entityId \}\)[\s\S]*Show on map/,
+  "Show on map appears only when the event has map locations",
+);
 
 console.log("timeline UX contracts passed");

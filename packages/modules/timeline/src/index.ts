@@ -288,8 +288,6 @@ function createTimelineStyles(): HTMLStyleElement {
   const style = document.createElement("style");
   style.textContent = `
     .timeline-shell { display: grid; gap: 0; background: var(--surface); }
-    .timeline-header-meta { display: inline-flex; align-items: center; gap: 7px; }
-    .timeline-calendar-badge { border: 1px solid var(--theme-warning-border, #e2d7c7); border-radius: 999px; padding: 3px 7px; background: var(--theme-warning-bg, #f7f1e7); color: var(--theme-warning-text, #6f5841); font: 600 9px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em; }
     .timeline-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); background: var(--surface); }
     .timeline-toolbar-controls { display: flex; align-items: flex-end; flex: 1; flex-wrap: wrap; gap: 8px; }
     .timeline-toolbar-actions { display: flex; align-items: center; gap: 5px; }
@@ -448,6 +446,27 @@ async function showOnMap(context: ModuleContext, entityId: string) {
   }
 }
 
+async function appendShowOnMapButton(
+  details: HTMLElement,
+  context: ModuleContext,
+  entityId: string,
+  selectionKey: string,
+) {
+  if (!context.services.isAvailable("daena.maps/navigation", 1)) return;
+  try {
+    const locations = await context.maps.listLocations({ entityId });
+    if (locations.length === 0 || details.dataset.selectionKey !== selectionKey) return;
+    const mapButton = document.createElement("button");
+    mapButton.type = "button";
+    mapButton.className = "timeline-map-button";
+    mapButton.textContent = "Show on map";
+    mapButton.onclick = () => void showOnMap(context, entityId);
+    details.append(mapButton);
+  } catch {
+    // A project without map locations still shows the inspector without the action.
+  }
+}
+
 function renderSelection(
   details: HTMLElement,
   event: TimelineEvent,
@@ -455,6 +474,8 @@ function renderSelection(
   definitions: ReadonlyMap<string, CalendarDefinition>,
   displayCalendarName: string,
 ) {
+  const selectionKey = event.id;
+  details.dataset.selectionKey = selectionKey;
   details.replaceChildren();
   const kicker = document.createElement("small");
   kicker.className = "timeline-inspector-kicker";
@@ -477,17 +498,12 @@ function renderSelection(
     contextLine.textContent = contextText;
     details.append(contextLine);
   }
-  if (context.services.isAvailable("daena.maps/navigation", 1)) {
-    const mapButton = document.createElement("button");
-    mapButton.type = "button";
-    mapButton.className = "timeline-map-button";
-    mapButton.textContent = "Show on map";
-    mapButton.onclick = () => void showOnMap(context, event.entity.id);
-    details.append(mapButton);
-  }
+  void appendShowOnMapButton(details, context, event.entity.id, selectionKey);
 }
 
 function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
+  const selectionKey = event.entity.id;
+  details.dataset.selectionKey = selectionKey;
   details.replaceChildren();
   const kicker = document.createElement("small");
   kicker.className = "timeline-inspector-kicker";
@@ -506,14 +522,7 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
     contextLine.textContent = contextText;
     details.append(contextLine);
   }
-  if (context.services.isAvailable("daena.maps/navigation", 1)) {
-    const mapButton = document.createElement("button");
-    mapButton.type = "button";
-    mapButton.className = "timeline-map-button";
-    mapButton.textContent = "Show on map";
-    mapButton.onclick = () => void showOnMap(context, event.entity.id);
-    details.append(mapButton);
-  }
+  void appendShowOnMapButton(details, context, event.entity.id, selectionKey);
 }
 
 function renderOutline(
@@ -831,21 +840,14 @@ export const timeline: DaenaModule = {
             element.className = "timeline-projection";
             const shell = document.createElement("div");
             shell.className = "timeline-shell";
-            const header = document.createElement("div");
-            header.className = "projection-contextbar";
-            const headerMeta = document.createElement("div");
-            headerMeta.className = "timeline-header-meta";
-            const summary = document.createElement("small");
-            summary.textContent =
-              undated.length > 0
-                ? `${plotted.length} placed · ${undated.length} unplaced or relative`
-                : `${plotted.length} items`;
-            const calendarBadge = document.createElement("span");
-            calendarBadge.className = "timeline-calendar-badge";
-            calendarBadge.textContent = selectedCalendarOption?.name ?? "Gregorian";
-            headerMeta.append(summary, calendarBadge);
-            header.append(headerMeta);
-            shell.append(style, header);
+            const calendarName = selectedCalendarOption?.name ?? "Gregorian";
+            context.reportSurfaceMeta?.({
+              subtitle:
+                undated.length > 0
+                  ? `${plotted.length} placed · ${undated.length} unplaced or relative · ${calendarName}`
+                  : `${plotted.length} items · ${calendarName}`,
+            });
+            shell.append(style);
             let details: HTMLElement | null = null;
 
             if (allEvents.length === 0 && undated.length === 0) {

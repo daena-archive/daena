@@ -53,6 +53,12 @@ import {
   Replace as ReplaceIcon,
   Image as ImageIcon,
   Paperclip,
+  Table as TableIcon,
+  BetweenHorizontalEnd,
+  BetweenVerticalEnd,
+  BetweenHorizontalStart,
+  BetweenVerticalStart,
+  Trash2,
 } from "@lucide/svelte";
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
@@ -60,14 +66,13 @@ import type { Asset, Entity } from "$lib/project/client";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
 import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";
+import TableInsertDialog from "$lib/editor/TableInsertDialog.svelte";
 import { AssetImage } from "$lib/editor/AssetImageExtension";
 import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
 import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
 import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
-import { openUrl } from "@tauri-apps/plugin-opener";
-
-const EntityReference = Mark.create({
+import { openUrl } from "@tauri-apps/plugin-opener";const EntityReference = Mark.create({
   name: "entityReference",
   inclusive: false,
   addAttributes() {
@@ -341,6 +346,7 @@ let linkPopoverEl: HTMLDivElement | null = null;
 let insertAssetOpen = false;
 let insertAssetRange: { from: number; to: number } | null = null;
 let insertAssetInitialAlign: "" | "left" | "center" | "right" = "";
+let tableInsertOpen = false;
 let imagePopover: {
   from: number;
   to: number;
@@ -487,7 +493,8 @@ function toggleFullscreen() {
 function handleFullscreenKeydown(event: KeyboardEvent) {
   const activeElement = document.activeElement as HTMLElement | null;
   if (!activeElement?.closest(".editor-shell")) return;
-  const blockingDialogOpen = entityReferenceDialogOpen || linkDialogOpen || insertAssetOpen;
+  const blockingDialogOpen =
+    entityReferenceDialogOpen || linkDialogOpen || insertAssetOpen || tableInsertOpen;
   if (blockingDialogOpen && event.key !== "Escape") return;
   const isMod = event.metaKey || event.ctrlKey;
   if (isMod && event.key.toLowerCase() === "s") {
@@ -547,6 +554,11 @@ function handleFullscreenKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" && insertAssetOpen) {
     event.preventDefault();
     cancelInsertAsset();
+    return;
+  }
+  if (event.key === "Escape" && tableInsertOpen) {
+    event.preventDefault();
+    cancelInsertTable();
     return;
   }
   if (event.key === "Escape" && isFullscreen) {
@@ -1836,6 +1848,35 @@ function cancelInsertAsset() {
   editor?.commands.focus();
 }
 
+function openInsertTable() {
+  if (!editable || !editorState) return;
+  tableInsertOpen = true;
+}
+
+function cancelInsertTable() {
+  tableInsertOpen = false;
+  editor?.commands.focus();
+}
+
+function confirmInsertTable(options: { rows: number; cols: number }) {
+  tableInsertOpen = false;
+  if (!editorState) return;
+  editorState
+    .chain()
+    .focus()
+    .insertTable({
+      rows: options.rows,
+      cols: options.cols,
+      withHeaderRow: true,
+    })
+    .run();
+}
+
+function runTableCommand(command: (currentEditor: Editor) => boolean) {
+  if (!editorState?.isActive("table")) return;
+  command(editorState);
+}
+
 onMount(() => {
   try {
     const savedAspect = localStorage.getItem("daena:imagePreserveAspect");
@@ -2134,6 +2175,7 @@ $: if (editor && entities) {
   });
 }
 $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
+$: inTable = editorState?.isActive("table") ?? false;
 </script>
 
 <div class="editor-shell">
@@ -2217,7 +2259,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
           ><EyeOff size={14} strokeWidth={1.8} /></button>
       </div>
-      <div class="toolbar-group" aria-label="Links and references">
+      <div class="toolbar-group" aria-label="Links and media">
         <button
           type="button"
           title="Link (⌘/Ctrl + K)"
@@ -2233,32 +2275,12 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
             if (!editorState) return;
             editorState.chain().focus().insertContent("@").run();
           }}><AtSign size={14} strokeWidth={1.8} /></button>
-      </div>
-      <div class="toolbar-group" aria-label="Text alignment">
         <button
           type="button"
-          title="Align left"
-          aria-label="Align left"
-          aria-pressed={isAligned("left")}
-          class:active={isAligned("left")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
-          ><TextAlignStart size={14} strokeWidth={1.8} /></button>
-        <button
-          type="button"
-          title="Align center"
-          aria-label="Align center"
-          aria-pressed={isAligned("center")}
-          class:active={isAligned("center")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
-          ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
-        <button
-          type="button"
-          title="Align right"
-          aria-label="Align right"
-          aria-pressed={isAligned("right")}
-          class:active={isAligned("right")}
-          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
-          ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
+          title="Insert image or file"
+          aria-label="Insert image or file"
+          disabled={!editable}
+          onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
       </div>
       <div class="toolbar-group" aria-label="Text direction">
         <button
@@ -2285,6 +2307,32 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
                 ? (currentEditor.chain().focus() as any).unsetTextDirection().run()
                 : (currentEditor.chain().focus() as any).setTextDirection("rtl").run(),
             )}><ArrowLeftToLine size={14} strokeWidth={1.8} /></button>
+      </div>
+      <div class="toolbar-group" aria-label="Text alignment">
+        <button
+          type="button"
+          title="Align left"
+          aria-label="Align left"
+          aria-pressed={isAligned("left")}
+          class:active={isAligned("left")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("left").run())}
+          ><TextAlignStart size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align center"
+          aria-label="Align center"
+          aria-pressed={isAligned("center")}
+          class:active={isAligned("center")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("center").run())}
+          ><TextAlignCenter size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
+          title="Align right"
+          aria-label="Align right"
+          aria-pressed={isAligned("right")}
+          class:active={isAligned("right")}
+          onclick={() => run((currentEditor) => currentEditor.chain().focus().setTextAlign("right").run())}
+          ><TextAlignEnd size={14} strokeWidth={1.8} /></button>
       </div>
 
       <div class="toolbar-group" aria-label="Lists and blocks">
@@ -2320,19 +2368,63 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
           ><SeparatorHorizontal size={14} strokeWidth={1.8} /></button>
         <button
           type="button"
+          title="Insert table"
+          aria-label="Insert table"
+          aria-pressed={inTable}
+          class:active={inTable}
+          disabled={!editable}
+          onclick={openInsertTable}><TableIcon size={14} strokeWidth={1.8} /></button>
+        <button
+          type="button"
           title="Clear formatting"
           aria-label="Clear formatting"
           onclick={() => run((currentEditor) => currentEditor.chain().focus().clearNodes().unsetAllMarks().run())}
           ><Eraser size={14} strokeWidth={1.8} /></button>
       </div>
-      <div class="toolbar-group" aria-label="Insert">
-        <button
-          type="button"
-          title="Insert image or file"
-          aria-label="Insert image or file"
-          disabled={!editable}
-          onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
-      </div>
+      {#if inTable}
+        <div class="toolbar-group" aria-label="Table">
+          <button
+            type="button"
+            title="Add row below"
+            aria-label="Add row below"
+            disabled={!editable || !editorState?.can().addRowAfter()}
+            onclick={() =>
+              runTableCommand((currentEditor) => currentEditor.chain().focus().addRowAfter().run())}
+            ><BetweenHorizontalEnd size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Delete row"
+            aria-label="Delete row"
+            disabled={!editable || !editorState?.can().deleteRow()}
+            onclick={() =>
+              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteRow().run())}
+            ><BetweenHorizontalStart size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Add column after"
+            aria-label="Add column after"
+            disabled={!editable || !editorState?.can().addColumnAfter()}
+            onclick={() =>
+              runTableCommand((currentEditor) => currentEditor.chain().focus().addColumnAfter().run())}
+            ><BetweenVerticalEnd size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Delete column"
+            aria-label="Delete column"
+            disabled={!editable || !editorState?.can().deleteColumn()}
+            onclick={() =>
+              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteColumn().run())}
+            ><BetweenVerticalStart size={14} strokeWidth={1.8} /></button>
+          <button
+            type="button"
+            title="Delete table"
+            aria-label="Delete table"
+            disabled={!editable || !editorState?.can().deleteTable()}
+            onclick={() =>
+              runTableCommand((currentEditor) => currentEditor.chain().focus().deleteTable().run())}
+            ><Trash2 size={14} strokeWidth={1.8} /></button>
+        </div>
+      {/if}
     </div>
     <div class="editor-toolbar-actions">
       {#if aiEnabled}
@@ -2683,6 +2775,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
     initialAlign={insertAssetInitialAlign}
     onInsert={handleInsertAsset}
     onCancel={cancelInsertAsset} />
+  <TableInsertDialog open={tableInsertOpen} onConfirm={confirmInsertTable} onCancel={cancelInsertTable} />
 </div>
 
 <style>
@@ -3310,10 +3403,7 @@ $: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
   border: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
-}
-.editor-content :global(th) {
-  background: var(--surface-muted);
-  font-weight: 600;
+  font-weight: inherit;
 }
 .editor-content :global(ul[data-type="taskList"]) {
   list-style: none;

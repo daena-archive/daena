@@ -19,7 +19,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1511,6 +1511,39 @@ const EXPORTER_CONTRACT_VERSION: &str = "2";
 const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
 const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
 
+type CheckpointExportStatusListener = Arc<dyn Fn() + Send + Sync + 'static>;
+
+static CHECKPOINT_EXPORT_STATUS_LISTENER: OnceLock<Mutex<Option<CheckpointExportStatusListener>>> =
+    OnceLock::new();
+
+fn checkpoint_export_status_listener_slot()
+-> &'static Mutex<Option<CheckpointExportStatusListener>> {
+    CHECKPOINT_EXPORT_STATUS_LISTENER.get_or_init(|| Mutex::new(None))
+}
+
+/// Register a listener invoked after the background export worker finishes an
+/// export attempt (success, skip-when-clean, or failure). Used by the shell to
+/// refresh checkpoint status without polling.
+pub fn set_checkpoint_export_status_listener(
+    listener: Option<CheckpointExportStatusListener>,
+) {
+    if let Ok(mut slot) = checkpoint_export_status_listener_slot().lock() {
+        *slot = listener;
+    }
+}
+
+fn notify_checkpoint_export_status() {
+    let listener = {
+        let Ok(slot) = checkpoint_export_status_listener_slot().lock() else {
+            return;
+        };
+        slot.clone()
+    };
+    if let Some(listener) = listener {
+        listener();
+    }
+}
+
 fn reset_required_error() -> CoreError {
     CoreError::ResetRequired(
         "unsupported Daena runtime storage; close Daena and remove .daena/ before reopening this project".into(),
@@ -1555,18 +1588,22 @@ impl ExportWorker {
             .spawn(move || {
                 while let Ok(command) = receiver.recv() {
                     let export = |reason: &str, force: bool| {
-                        let worker_store = ProjectStore::open_database(
-                            &database,
-                            Some(root.clone()),
-                            None,
-                            false,
-                            false,
-                        )?;
-                        if force {
-                            worker_store.flush_checkpoint(reason)
-                        } else {
-                            worker_store.flush_checkpoint_if_dirty(reason)
-                        }
+                        let result = (|| {
+                            let worker_store = ProjectStore::open_database(
+                                &database,
+                                Some(root.clone()),
+                                None,
+                                false,
+                                false,
+                            )?;
+                            if force {
+                                worker_store.flush_checkpoint(reason)
+                            } else {
+                                worker_store.flush_checkpoint_if_dirty(reason)
+                            }
+                        })();
+                        notify_checkpoint_export_status();
+                        result
                     };
                     match command {
                         ExportWorkerCommand::Wake => {

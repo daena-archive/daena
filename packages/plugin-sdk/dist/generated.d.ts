@@ -6,7 +6,8 @@
  */
 export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
-export declare const CATALOG_ICON_IDS: readonly ["agriculture", "anchor", "animal", "art", "artifact", "bird", "calendar", "camp", "castle", "collection", "compass", "concept", "craft", "crown", "culture", "danger", "encounter", "era", "event", "faction", "fire", "fish", "flower", "forest", "group", "heart", "home", "ice", "insect", "key", "language", "library", "lock", "magic", "manuscript", "map", "mine", "moon", "mountain", "music", "object", "person", "place", "plant", "reference", "science", "scroll", "settlement", "ship", "spirit", "star", "storm", "sun", "theatre", "unknown", "wand", "wealth"];
+export declare const CATALOG_ICON_IDS: readonly ["agriculture", "anchor", "animal", "art", "artifact", "bird", "calendar", "camp", "castle", "collection", "compass", "concept", "craft", "crown", "culture", "danger", "encounter", "era", "event", "faction", "fire", "fish", "flower", "forest", "group", "heart", "home", "ice", "insect", "journey", "key", "language", "law", "library", "lock", "magic", "manuscript", "map", "mine", "moon", "mountain", "music", "object", "person", "place", "plant", "reference", "religion", "science", "scroll", "settlement", "ship", "spirit", "star", "storm", "sun", "theatre", "unknown", "vision", "wand", "water", "wealth", "world"];
+export declare const TYPE_COLOR_PRESET_IDS: readonly ["brass", "copper", "ember", "moss", "pine", "ocean", "sky", "frost", "amber", "gold", "sand", "rose", "plum", "violet", "slate", "ink"];
 export interface Entrypoints {
     ui?: string;
     wasm?: string;
@@ -37,7 +38,7 @@ export interface TimelineFieldContribution {
     role: TimelineFieldRole;
 }
 export type IconRef = {
-    id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "key" | "language" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "wand" | "wealth";
+    id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "journey" | "key" | "language" | "law" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "religion" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "vision" | "wand" | "water" | "wealth" | "world";
     kind: "catalog";
 } | {
     kind: "plugin-svg";
@@ -46,8 +47,17 @@ export type IconRef = {
     kind: "user-svg";
     svg: string;
 };
+export type EntityTypeColor = {
+    id: "brass" | "copper" | "ember" | "moss" | "pine" | "ocean" | "sky" | "frost" | "amber" | "gold" | "sand" | "rose" | "plum" | "violet" | "slate" | "ink";
+    kind: "preset";
+} | {
+    dark: string;
+    kind: "custom";
+    light: string;
+};
 export interface EntityTypeDefinition {
     icon: IconRef;
+    iconColor: EntityTypeColor;
     id: string;
     name: string;
 }

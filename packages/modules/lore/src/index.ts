@@ -309,12 +309,10 @@ export const lore: DaenaModule = {
           element.className = "projection-graph";
           const shell = document.createElement("div");
           shell.className = "lore-graph-shell";
-          const header = document.createElement("div");
-          header.className = "projection-contextbar";
-          const summary = document.createElement("small");
-          summary.textContent = `${entities.length} entities · ${relationships.length} links`;
-          header.append(summary);
-          shell.append(style, header);
+          context.reportSurfaceMeta?.({
+            subtitle: `${entities.length} entities · ${relationships.length} links`,
+          });
+          shell.append(style);
 
           if (entities.length === 0) {
             const empty = document.createElement("p");

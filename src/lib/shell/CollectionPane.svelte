@@ -113,9 +113,13 @@ let {
   color: var(--accent);
 }
 .collection-list {
+  display: grid;
   min-height: 0;
   flex: 1;
+  align-content: start;
+  gap: 8px;
   overflow-y: auto;
+  padding: 4px 12px 14px;
 }
 @media (max-width: 760px) {
   .collection-panel {

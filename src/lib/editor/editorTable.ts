@@ -1,3 +1,4 @@
+import type { Editor } from "@tiptap/core";
 import { TableCell, TableHeader } from "@tiptap/extension-table";
 
 function tableAlignment(element: HTMLElement): "left" | "center" | "right" | null {
@@ -25,3 +26,17 @@ export const AlignedTableCell = TableCell.extend({
     return { ...this.parent?.(), align: alignmentAttribute };
   },
 });
+
+/** True when the selection is inside a table whose first row uses header cells. */
+export function tableHasHeaderRow(editor: Editor | null | undefined): boolean {
+  if (!editor) return false;
+  const { $from } = editor.state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (node.type.name !== "table") continue;
+    const firstRow = node.firstChild;
+    if (!firstRow || firstRow.childCount === 0) return false;
+    return firstRow.firstChild?.type.name === "tableHeader";
+  }
+  return false;
+}

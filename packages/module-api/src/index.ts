@@ -281,6 +281,8 @@ export interface ModuleContext {
    * that owns entity selection and creation, so the module should not draw
    * its own entity list. */
   readonly embedded?: boolean;
+  /** Optional host chrome hook for projection surfaces under WorkspaceTopbar. */
+  reportSurfaceMeta?(meta: { subtitle: string }): void;
   readonly services: {
     isAvailable(name: string, major: number): boolean;
   };

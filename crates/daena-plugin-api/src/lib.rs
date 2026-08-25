@@ -407,8 +407,10 @@ pub const CATALOG_ICON_IDS: &[&str] = &[
     "home",
     "ice",
     "insect",
+    "journey",
     "key",
     "language",
+    "law",
     "library",
     "lock",
     "magic",
@@ -423,6 +425,7 @@ pub const CATALOG_ICON_IDS: &[&str] = &[
     "place",
     "plant",
     "reference",
+    "religion",
     "science",
     "scroll",
     "settlement",
@@ -433,8 +436,11 @@ pub const CATALOG_ICON_IDS: &[&str] = &[
     "sun",
     "theatre",
     "unknown",
+    "vision",
     "wand",
+    "water",
     "wealth",
+    "world",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

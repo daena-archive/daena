@@ -498,8 +498,10 @@
                 "home",
                 "ice",
                 "insect",
+                "journey",
                 "key",
                 "language",
+                "law",
                 "library",
                 "lock",
                 "magic",
@@ -514,6 +516,7 @@
                 "place",
                 "plant",
                 "reference",
+                "religion",
                 "science",
                 "scroll",
                 "settlement",
@@ -524,8 +527,11 @@
                 "sun",
                 "theatre",
                 "unknown",
+                "vision",
                 "wand",
-                "wealth"
+                "water",
+                "wealth",
+                "world"
               ],
               "type": "string"
             },

@@ -23,12 +23,23 @@ let {
 
 let container = $state<HTMLElement | null>(null);
 let error = $state("");
+let liveSubtitle = $state(subtitle);
 const topbarIcon = $derived(kind === "graph" ? Network : kind === "timeline" ? CalendarRange : Languages);
+
+$effect(() => {
+  liveSubtitle = subtitle;
+});
 
 onMount(() => {
   if (!container) return;
   try {
-    const cleanup = view.mount(container, context);
+    const projectionContext: ModuleContext = {
+      ...context,
+      reportSurfaceMeta: (meta) => {
+        liveSubtitle = meta.subtitle;
+      },
+    };
+    const cleanup = view.mount(container, projectionContext);
     return () => cleanup?.();
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -37,7 +48,7 @@ onMount(() => {
 </script>
 
 <section class="projection-view-shell" aria-label={title}>
-  <WorkspaceTopbar {title} {subtitle} icon={topbarIcon} onBack={onClose} />
+  <WorkspaceTopbar {title} subtitle={liveSubtitle} icon={topbarIcon} onBack={onClose} />
   <div bind:this={container} class="projection-view-container">
     {#if error}<p class="projection-view-error">{error}</p>{/if}
   </div>

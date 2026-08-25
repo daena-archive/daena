@@ -583,6 +583,7 @@ let deleteInput = $state("");
 let deleteBusy = $state(false);
 let deleteBackupPath = $state("");
 let projectInfo = $state<ProjectInfo | null>(null);
+let projectStatusEpoch = 0;
 let gitStatus = $state<GitStatus | null>(null);
 let gitMessage = $state("");
 let showProjectMenu = $state(false);
@@ -3416,24 +3417,39 @@ async function refreshCalendarDefinitions() {
   calendarDefinitions = next;
 }
 
-async function refreshGit() {
+async function refreshGit(epoch = projectStatusEpoch) {
   gitMessage = "";
   try {
-    gitStatus = await project.gitStatus();
+    const status = await project.gitStatus();
+    if (epoch !== projectStatusEpoch) return;
+    gitStatus = status;
   } catch (cause) {
+    if (epoch !== projectStatusEpoch) return;
     gitMessage = friendlyError(cause);
   }
 }
 
-async function refreshProjectStatus() {
+async function applyProjectInfo(info: ProjectInfo | null, epoch: number) {
+  if (epoch !== projectStatusEpoch) return;
+  if (info) projectInfo = info;
+}
+
+async function loadProjectStatus(includeGit: boolean) {
   if (!ready) return;
+  const epoch = ++projectStatusEpoch;
   try {
     const info = await project.info();
-    if (info) projectInfo = info;
+    applyProjectInfo(info, epoch);
   } catch (cause) {
+    if (epoch !== projectStatusEpoch) return;
     error = friendlyError(cause);
   }
-  await refreshGit();
+  if (!includeGit || epoch !== projectStatusEpoch) return;
+  await refreshGit(epoch);
+}
+
+async function refreshProjectStatus() {
+  await loadProjectStatus(true);
 }
 
 function openStatusDestination(section: ProjectSection) {
@@ -4508,12 +4524,7 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       autoSaveFailureCount = 0;
       saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      void project
-        .info()
-        .then((info) => {
-          if (info) projectInfo = info;
-        })
-        .catch(() => {});
+      void loadProjectStatus(false);
     }
     return true;
   } catch (cause) {
@@ -5403,6 +5414,7 @@ function resetProjectSessionState() {
   projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
+  projectStatusEpoch += 1;
   modules = [];
   adminPlugins = null;
   hostView = null;
@@ -5604,6 +5616,14 @@ onMount(() => {
       unlisten = cleanup;
     })
     .catch(() => {});
+  let unlistenCheckpointExport: (() => void) | undefined;
+  void listen("project-checkpoint-export-status", () => {
+    void refreshProjectStatus();
+  })
+    .then((cleanup) => {
+      unlistenCheckpointExport = cleanup;
+    })
+    .catch(() => {});
   let unlistenMaps: (() => void) | undefined;
   void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
     try {
@@ -5726,6 +5746,7 @@ onMount(() => {
     cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
+    unlistenCheckpointExport?.();
     if (aiRequestId) void project.aiCancelText(aiRequestId).catch(() => {});
     if (aiFieldFillRequestId) void project.aiCancelText(aiFieldFillRequestId).catch(() => {});
     clearAiStreamListener();
@@ -9347,19 +9368,6 @@ onMount(() => {
   background: var(--surface);
   box-shadow: var(--shadow-sm);
 }
-:global(.projection-contextbar) {
-  display: flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 7px 14px;
-  border-bottom: 1px solid var(--line);
-  background: var(--theme-success-bg, #fbfcfa);
-}
-:global(.projection-contextbar small) {
-  color: var(--ink-faint);
-  font-size: 10px;
-}
 :global(.projection-graph svg) {
   display: block;
   width: 100%;
@@ -9507,8 +9515,8 @@ onMount(() => {
   align-items: center;
   gap: 8px;
   width: 100%;
-  margin: 6px 0 2px;
-  padding: 6px 4px;
+  margin: 4px 0 0;
+  padding: 8px 6px;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -9543,10 +9551,13 @@ onMount(() => {
 .collection-group {
   display: grid;
   align-content: start;
-  gap: 5px;
+  gap: 6px;
+}
+.collection-group + .collection-group {
+  margin-top: 6px;
 }
 .collection-group .collection-item {
-  margin-left: 4px;
+  margin-left: 6px;
 }
 .collection-item {
   appearance: none;
@@ -9562,12 +9573,6 @@ onMount(() => {
   box-shadow:
     inset 3px 0 var(--accent),
     var(--shadow-sm);
-}
-.collection-list {
-  display: grid;
-  align-content: start;
-  gap: 5px;
-  padding: 0 10px 10px;
 }
 .collection-loading,
 .collection-error {
@@ -10378,9 +10383,6 @@ onMount(() => {
 
 .host-view-back {
   margin: 24px 40px 0;
-}
-.collection-list {
-  flex: 1;
 }
 .list-empty {
   display: grid;

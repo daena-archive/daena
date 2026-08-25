@@ -55,6 +55,16 @@ assert.match(
   /projectTransitionBusy\s*\|\|\s*aiIndexBusy\s*\|\|\s*moduleSchemaBusy/,
   "background operations feed the status center",
 );
+assert.match(
+  shell,
+  /project-checkpoint-export-status[\s\S]*refreshProjectStatus/,
+  "checkpoint export completion refreshes project status without polling",
+);
+assert.match(
+  shell,
+  /projectStatusEpoch/,
+  "project status reads ignore stale replies after a newer refresh",
+);
 assert.match(statusCenter, /aria-live="polite"/, "status changes are announced without interrupting authors");
 assert.match(statusCenter, /prefers-reduced-motion/, "status animation respects reduced-motion preferences");
 

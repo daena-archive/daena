@@ -121,7 +121,7 @@ function workspaceIcon(section: WorkspaceSection) {
     {onOpenRecent}
     {onRemoveRecent}
     onMenuChange={onProjectMenuChange}
-    onCloseProject={onCloseProject} />
+    {onCloseProject} />
 
   {#if ready}
     <button

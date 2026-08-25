@@ -952,9 +952,7 @@ fn unique_len(values: &[String]) -> usize {
 }
 
 fn default_entity_type_color() -> EntityTypeColor {
-    EntityTypeColor::Preset {
-        id: "brass".into(),
-    }
+    EntityTypeColor::Preset { id: "brass".into() }
 }
 
 fn migrate_overlay_custom_entity_type_colors(value: &mut serde_json::Value) {
@@ -1292,9 +1290,7 @@ mod tests {
                 icon: crate::IconRef::Catalog {
                     id: "manuscript".into(),
                 },
-                icon_color: EntityTypeColor::Preset {
-                    id: "ink".into(),
-                },
+                icon_color: EntityTypeColor::Preset { id: "ink".into() },
             }],
             custom_fields: vec![FieldDefinition {
                 key: "wordCount".into(),
@@ -1446,9 +1442,7 @@ mod tests {
         assert_eq!(overlay.custom_entity_types.len(), 1);
         assert_eq!(
             overlay.custom_entity_types[0].icon_color,
-            EntityTypeColor::Preset {
-                id: "brass".into()
-            }
+            EntityTypeColor::Preset { id: "brass".into() }
         );
     }
 

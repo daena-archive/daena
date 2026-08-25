@@ -123,17 +123,9 @@ onMount(() => {
           <small>{typeLabel(entry.entity_type)} · Archived {formatRuntimeTimestampLabel(entry.updated_at)}</small>
         </div>
         <div class="action-row">
-          <button
-            type="button"
-            class="quiet-button"
-            disabled={busyId !== null}
-            onclick={() => void restoreEntry(entry)}
+          <button type="button" class="quiet-button" disabled={busyId !== null} onclick={() => void restoreEntry(entry)}
             ><RotateCcw size={14} /> Restore</button>
-          <button
-            type="button"
-            class="danger-button"
-            disabled={busyId !== null}
-            onclick={() => void purgeEntry(entry)}
+          <button type="button" class="danger-button" disabled={busyId !== null} onclick={() => void purgeEntry(entry)}
             ><Trash2 size={14} /> Delete permanently</button>
         </div>
       </article>

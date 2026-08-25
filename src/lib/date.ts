@@ -146,7 +146,5 @@ export function formatRuntimeTimestampLabel(
     }
   }
   const date = new Date(trimmed);
-  return Number.isNaN(date.getTime())
-    ? "Unknown"
-    : new Intl.DateTimeFormat(undefined, options).format(date);
+  return Number.isNaN(date.getTime()) ? "Unknown" : new Intl.DateTimeFormat(undefined, options).format(date);
 }

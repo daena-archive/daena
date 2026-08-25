@@ -149,7 +149,12 @@ function sectionIcon(section: WorkspaceSection) {
       <div class="project-home-recents">
         {#each recents as recent}
           <button type="button" class="project-home-recent" onclick={() => onOpenEntity(recent.entity)}>
-            <EntityGlyph icon={recent.icon} iconColor={recent.iconColor} pluginId={recent.pluginId} size={14} box={30} />
+            <EntityGlyph
+              icon={recent.icon}
+              iconColor={recent.iconColor}
+              pluginId={recent.pluginId}
+              size={14}
+              box={30} />
             <span>
               <strong>{recent.entity.name}</strong>
               <small>{recent.typeLabel} · {recent.updatedLabel}</small>

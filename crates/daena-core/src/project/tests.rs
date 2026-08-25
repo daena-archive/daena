@@ -2909,7 +2909,9 @@ fn purge_removes_relationships_to_archived_entity() {
         .is_err());
     store.purge_entity(target.id.clone()).unwrap();
     let relationships = store.list_relationships(source.id).unwrap();
-    assert!(relationships.iter().all(|entry| entry.id != relationship.id));
+    assert!(relationships
+        .iter()
+        .all(|entry| entry.id != relationship.id));
 }
 
 #[test]
@@ -3032,7 +3034,13 @@ fn purge_refreshes_entities_with_locations_on_purged_map() {
         })
         .unwrap();
 
-    assert_eq!(store.map_locations_for_entity(place.id.clone()).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .map_locations_for_entity(place.id.clone())
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         store.map_location_projection(map.id.clone()).unwrap().len(),
         1
@@ -3043,7 +3051,10 @@ fn purge_refreshes_entities_with_locations_on_purged_map() {
 
     assert!(store.get_entity(&map.id).unwrap().is_none());
     assert_eq!(
-        store.map_locations_for_entity(place.id.clone()).unwrap().len(),
+        store
+            .map_locations_for_entity(place.id.clone())
+            .unwrap()
+            .len(),
         1,
         "location owners should be refreshed after purging a referenced map"
     );

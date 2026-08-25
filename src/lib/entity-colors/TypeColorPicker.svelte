@@ -31,13 +31,9 @@ let popover = $state<HTMLDivElement>();
 let pickerRoot = $state<HTMLDivElement>();
 let popoverStyle = $state("");
 
-const selectedLabel = $derived(
-  value.kind === "preset" ? (TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : "Custom",
-);
+const selectedLabel = $derived(value.kind === "preset" ? (TYPE_COLOR_PRESETS[value.id]?.label ?? value.id) : "Custom");
 
-const draftLabel = $derived(
-  draft.kind === "preset" ? (TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : "Custom",
-);
+const draftLabel = $derived(draft.kind === "preset" ? (TYPE_COLOR_PRESETS[draft.id]?.label ?? draft.id) : "Custom");
 
 const triggerStyle = $derived.by(() => {
   if (value.kind === "preset") {

@@ -9,7 +9,14 @@ import type {
   MetadataFieldDefinition,
 } from "../../../packages/plugin-sdk/src/generated";
 
-export type { EntityTypeColor, EntityTypeDefinition, EntityTemplate, FieldDefinition, IconRef, MetadataFieldDefinition };
+export type {
+  EntityTypeColor,
+  EntityTypeDefinition,
+  EntityTemplate,
+  FieldDefinition,
+  IconRef,
+  MetadataFieldDefinition,
+};
 
 export interface EntityTypeAppearanceOverride {
   entityTypeId: string;

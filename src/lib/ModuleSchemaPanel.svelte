@@ -137,7 +137,9 @@ function setPackageAppearanceOverride(
 }
 
 function clearPackageAppearanceOverride(typeId: string) {
-  const overrides = (draft.entityTypeAppearanceOverrides ?? []).filter((candidate) => candidate.entityTypeId !== typeId);
+  const overrides = (draft.entityTypeAppearanceOverrides ?? []).filter(
+    (candidate) => candidate.entityTypeId !== typeId,
+  );
   setDraft({ ...draft, entityTypeAppearanceOverrides: overrides.length > 0 ? overrides : undefined });
 }
 

@@ -372,10 +372,7 @@ async function seedExampleProject() {
       {:else if section === "snapshots"}
         {@render snapshots()}
       {:else if section === "archive"}
-        <ArchivedDocumentsPanel
-          {typeLabel}
-          onChanged={onArchiveChanged}
-          onToast={onArchiveToast} />
+        <ArchivedDocumentsPanel {typeLabel} onChanged={onArchiveChanged} onToast={onArchiveToast} />
       {:else}
         <div class="section-heading">
           <span class="heading-icon"><Wrench size={17} /></span>

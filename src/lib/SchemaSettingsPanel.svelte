@@ -70,7 +70,6 @@ function handleDirtyChange(next: boolean) {
   editorDirty = next;
   onDirtyChange?.(next);
 }
-
 </script>
 
 <section class="schema-settings">

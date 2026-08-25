@@ -7572,7 +7572,10 @@ impl ProjectStore {
             params![id],
         )?;
         transaction.execute("DELETE FROM world_search WHERE entity_id=?1", params![id])?;
-        if transaction.execute("DELETE FROM entities WHERE id=?1 AND deleted=1", params![id])? == 0
+        if transaction.execute(
+            "DELETE FROM entities WHERE id=?1 AND deleted=1",
+            params![id],
+        )? == 0
         {
             return Err(CoreError::NotFound("archived entity not found".into()));
         }

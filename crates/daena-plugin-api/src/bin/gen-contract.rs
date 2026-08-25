@@ -32,8 +32,8 @@ use daena_plugin_api::rpc::{
     RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
-    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS,
-    DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG,
+    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS,
+    DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG, TYPE_COLOR_PRESET_IDS,
 };
 use schemars::gen::{SchemaGenerator, SchemaSettings};
 use serde_json::{json, Map, Value};

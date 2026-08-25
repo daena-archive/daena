@@ -37,9 +37,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 icon: daena_plugin_api::IconRef::Catalog {
                     id: "person".into(),
                 },
-                icon_color: daena_plugin_api::EntityTypeColor::Preset {
-                    id: "rose".into(),
-                },
+                icon_color: daena_plugin_api::EntityTypeColor::Preset { id: "rose".into() },
             }],
             fields: vec![daena_plugin_api::FieldDefinition {
                 key: "summary".into(),

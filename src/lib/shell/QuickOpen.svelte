@@ -128,10 +128,7 @@ function handleKeydown(event: KeyboardEvent) {
                     iconColor={item.iconColor ?? DEFAULT_TYPE_COLOR}
                     pluginId={item.pluginId}
                     size={16}
-                    box={28} />{:else}<Icon
-                    size={16}
-                    strokeWidth={1.8}
-                    aria-hidden="true" />{/if}
+                    box={28} />{:else}<Icon size={16} strokeWidth={1.8} aria-hidden="true" />{/if}
               </span>
               <span><strong>{item.label}</strong><small>{item.description}</small></span>
               {#if index === activeIndex}<kbd>↵</kbd>{/if}

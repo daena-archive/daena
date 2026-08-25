@@ -8696,6 +8696,36 @@ async fn project_replace_vector_source(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn project_apply_map_edit(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    descriptor: serde_json::Value,
+    layers: serde_json::Value,
+    bytes: Vec<u8>,
+    upload_content_hash: String,
+    expected_map_revision: String,
+    expected_layers_revision: String,
+    expected_source_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::MapEditApply, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.apply_map_edit(
+            map_entity_id,
+            descriptor,
+            layers,
+            bytes,
+            upload_content_hash,
+            &expected_map_revision,
+            &expected_layers_revision,
+            &expected_source_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_create_vector_layer(
     state: tauri::State<'_, SharedCore>,
     map_entity_id: String,
@@ -9910,6 +9940,7 @@ pub fn run() {
             project_physical_hydrology,
             project_physical_accept,
             project_replace_vector_source,
+            project_apply_map_edit,
             project_create_vector_layer,
             project_delete_vector_layer,
             maps_recovery_export,

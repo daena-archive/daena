@@ -6,6 +6,7 @@ import {
   ChevronUp,
   Circle,
   CircleHelp,
+  Copy,
   Download,
   Eye,
   EyeOff,
@@ -25,6 +26,7 @@ import {
   RotateCcw,
   Save,
   Slash,
+  Square,
   SquarePlus,
   Trash2,
   Undo2,
@@ -48,7 +50,7 @@ import {
   liveNativeVectorEditorCount,
   RENDERER_UNAVAILABLE,
   type NativeVectorEditor,
-} from "./runtime";
+} from "./openlayers-runtime";
 import { registerNativeVectorSession } from "./session";
 import {
   collectionBytes,
@@ -71,11 +73,7 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
-import {
-  lonLatToNormalized,
-  physicalWorldOverlayCoordinates,
-  type ImageOverlayCoordinates,
-} from "./coordinates";
+import { lonLatToNormalized, physicalWorldOverlayCoordinates, type ImageOverlayCoordinates } from "./coordinates";
 import { paintPhysicalSurface } from "../physical/raster";
 import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
@@ -302,11 +300,7 @@ function applyFeatureLinks(
       const candidate = raw as MapAnchor;
       if (candidate.kind === "provider-feature" && typeof candidate.featureId === "string") {
         anchor = candidate;
-      } else if (
-        candidate.kind === "point" &&
-        Array.isArray(candidate.point) &&
-        candidate.point.length >= 2
-      ) {
+      } else if (candidate.kind === "point" && Array.isArray(candidate.point) && candidate.point.length >= 2) {
         anchor = {
           kind: "point",
           point: [Number(candidate.point[0]), Number(candidate.point[1])],
@@ -319,10 +313,7 @@ function applyFeatureLinks(
       const maxX = pin.bounds?.[2];
       const maxY = pin.bounds?.[3];
       const fallbackPoint: [number, number] =
-        typeof minX === "number" &&
-        typeof minY === "number" &&
-        typeof maxX === "number" &&
-        typeof maxY === "number"
+        typeof minX === "number" && typeof minY === "number" && typeof maxX === "number" && typeof maxY === "number"
           ? [(minX + maxX) / 2, (minY + maxY) / 2]
           : [0.5, 0.5];
       anchor = {
@@ -623,7 +614,7 @@ function scheduleEpoch(offset: number) {
 function mountEditor() {
   if (physicalMap) {
     destroyEditor();
-    publish("ready", { liveEditors: liveNativeVectorEditorCount(), workerUrl: "" });
+    publish("ready", { liveEditors: liveNativeVectorEditorCount(), renderer: "openlayers" });
     return;
   }
   if (!host) return;
@@ -697,7 +688,7 @@ function mountEditor() {
   editor = created;
   if (!canDraw) editor.setMode("static");
   else editor.setMode(tool);
-  publish("ready", { liveEditors: liveNativeVectorEditorCount(), workerUrl: created.workerUrl });
+  publish("ready", { liveEditors: liveNativeVectorEditorCount(), renderer: "openlayers" });
 }
 
 async function load() {
@@ -969,6 +960,30 @@ async function runAddLayer() {
   }
 }
 
+async function duplicateLayer(layer: VectorLayerDefinition) {
+  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
+  layerMutationChain = layerMutationChain.then(() => runDuplicateLayer(layer)).catch(() => {});
+  await layerMutationChain;
+}
+
+async function runDuplicateLayer(layer: VectorLayerDefinition) {
+  if (!mapId || !layersField || layers.length >= VECTOR_MAX_LAYERS) return;
+  busy = true;
+  try {
+    const change = await project.createVectorLayer(mapId, `${layer.name} copy`, layersFieldRevision, {
+      style: { ...layer.style },
+    });
+    applyLayersField(change.layers);
+    editor?.syncLayers(layers);
+    editor?.duplicateLayerFeatures(layer.id, change.layer_id);
+    switchLayer(change.layer_id);
+  } catch (cause) {
+    applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
+  } finally {
+    busy = false;
+  }
+}
+
 function mutateLayer(layer: VectorLayerDefinition, update: Parameters<typeof project.updateMapLayer>[3]) {
   layerMutationChain = layerMutationChain.then(() => runLayerMutation(layer, update)).catch(() => {});
   return layerMutationChain;
@@ -1156,6 +1171,7 @@ function onKey(event: KeyboardEvent) {
     if (event.key === "p") setTool("point");
     if (event.key === "l") setTool("linestring");
     if (event.key === "g") setTool("polygon");
+    if (event.key === "r") setTool("rectangle");
     if (event.key === "f") setTool("freehand");
   }
 }
@@ -1276,6 +1292,15 @@ onMount(() => {
           <button
             type="button"
             class="icon-button"
+            class:active={tool === "rectangle"}
+            aria-pressed={tool === "rectangle"}
+            aria-label="Rectangle"
+            title="Rectangle"
+            disabled={!canDraw}
+            onclick={() => setTool("rectangle")}><Square {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
             class:active={tool === "freehand"}
             aria-pressed={tool === "freehand"}
             aria-label="Freehand"
@@ -1345,7 +1370,8 @@ onMount(() => {
           aria-label={fullscreen ? "Exit full screen" : "Full screen"}
           aria-pressed={fullscreen}
           title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
-          onclick={toggleFullscreen}>{#if fullscreen}<Minimize2 {...iconProps} />{:else}<Maximize2 {...iconProps} />{/if}</button>
+          onclick={toggleFullscreen}
+          >{#if fullscreen}<Minimize2 {...iconProps} />{:else}<Maximize2 {...iconProps} />{/if}</button>
       </div>
     </WorkspaceTopbar>
     {#if conflict}
@@ -1445,6 +1471,13 @@ onMount(() => {
                       <button
                         type="button"
                         class="icon-button"
+                        aria-label={`Duplicate ${layer.name}`}
+                        title="Duplicate"
+                        disabled={busy || layers.length >= VECTOR_MAX_LAYERS}
+                        onclick={() => void duplicateLayer(layer)}><Copy {...iconProps} /></button>
+                      <button
+                        type="button"
+                        class="icon-button"
                         aria-label={`Move ${layer.name} up`}
                         title="Up"
                         onclick={() => void moveLayer(layer, -1)}><ChevronUp {...iconProps} /></button>
@@ -1481,14 +1514,14 @@ onMount(() => {
                           onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
                       </label>
                       <label>
-                        Fill opacity
+                        Layer opacity
                         <input
                           type="range"
                           min="0"
                           max="1"
                           step="0.05"
                           value={layer.style.fillOpacity}
-                          aria-label={`${layer.name} fill opacity`}
+                          aria-label={`${layer.name} opacity`}
                           oninput={(event) =>
                             void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
                       </label>
@@ -1604,12 +1637,28 @@ onMount(() => {
                     editor?.updateSelectedName(next);
                   }} />
               </label>
+              <label>
+                Layer
+                <select
+                  value={selectedFeature.properties.daenaLayerId}
+                  aria-label="Feature layer"
+                  disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                  onchange={(event) => editor?.moveSelectionToLayer(event.currentTarget.value)}>
+                  {#each listedLayers.filter((layer) => layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
+                    <option value={layer.id}>{layer.name}</option>
+                  {/each}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                onclick={() => editor?.duplicateSelection()}>Duplicate feature</button>
             </div>
           {/if}
           {#if !physicalMap}
             <p class="hint">
-              Base geography is read-only. Point, line, polygon, and freehand edits save through the canonical GeoJSON
-              source. Delete removes the selected feature.
+              Base geography is read-only. Point, line, polygon, rectangle, and freehand edits save through the
+              canonical GeoJSON source. Delete removes the selected feature.
             </p>
           {/if}
         </aside>
@@ -1627,7 +1676,7 @@ onMount(() => {
               collection={draft}
               {layers}
               raster={background?.canvas ?? null}
-              pickArmed={pickArmed}
+              {pickArmed}
               onready={(next) => {
                 physicalEditor = next;
               }}
@@ -1943,6 +1992,7 @@ aside {
   background: #18241f;
 }
 .inspector input,
+.inspector select,
 .layer-name input,
 .style-row input[type="number"] {
   width: 100%;
@@ -1975,7 +2025,7 @@ aside {
   min-width: 0;
   min-height: 0;
 }
-.canvas :global(.maplibregl-map) {
+.canvas :global(.ol-viewport) {
   width: 100%;
   height: 100%;
 }

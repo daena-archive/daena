@@ -55,7 +55,7 @@ jump randomly between years.
 
 The feature is complete when:
 
-- no export path depends on the low-resolution interactive canvas or a MapLibre
+- no export path depends on the low-resolution interactive canvas or an OpenLayers
   screenshot;
 - high-resolution detail is derived from validated physical data and cannot
   alter canonical source bytes;
@@ -88,7 +88,7 @@ versions and file locations may advance:
   derives a requested integer physical offset year, returns GeoJSON plus climate
   and hydrology products, reports progress, supersedes stale requests, and uses
   a derived cache.
-- `PhysicalWorldView.svelte` renders an interactive MapLibre globe. Its
+- `PhysicalWorldView.svelte` renders an interactive OpenLayers world view. Its
   `paintPhysicalSurface` background is a browser canvas derived from the source
   grid. It is intentionally suitable for responsive interaction, not print or
   atlas export.
@@ -172,7 +172,7 @@ not a disabled button based on frontend name checks.
 ### The Rust CPU pipeline owns export rendering
 
 The export renderer must be a pure Rust crate, provisionally
-`crates/daena-atlas`, with no Tauri, SQLite, DOM, MapLibre, plugin-host, or
+`crates/daena-atlas`, with no Tauri, SQLite, DOM, OpenLayers, plugin-host, or
 ambient filesystem dependency. It receives validated immutable inputs and an
 explicit progress/cancellation sink, then writes through a bounded output
 abstraction.
@@ -715,7 +715,7 @@ order unless that order is itself a stored contract, or worker completion order.
 ### Physical layers
 
 Map existing physical layer roles to atlas renderer roles in Rust. Keep the
-mapping versioned and validated. Interactive MapLibre styles are not a print
+mapping versioned and validated. Interactive OpenLayers styles are not a print
 style specification and should not be parsed as one.
 
 The first release should include at least:
@@ -1025,7 +1025,7 @@ safely, and save through the native host.
 5. Bundle and validate the relief and antique styles plus fonts/licenses.
 6. Add the bounded Tauri job registry, progress, supersession, cancellation,
    temp artifact lifecycle, and host-owned save flow.
-7. Add the in-app panel and CPU-rendered preview. Do not use a MapLibre
+7. Add the in-app panel and CPU-rendered preview. Do not use an OpenLayers
    screenshot for preview or export.
 8. Embed provenance and expose a compact render summary after completion.
 9. Add a focused `check:maps:atlas` command covering Rust tests, contract drift,
@@ -1311,7 +1311,7 @@ Do not:
 - increase canonical physical resolution merely to make exports larger;
 - persist high-resolution elevation, hillshade, PNG tiles, or GeoJSON as a
   second physical authority;
-- use MapLibre/browser screenshots as final output;
+- use OpenLayers/browser screenshots as final output;
 - run generative image super-resolution over the map;
 - let style choice or output resolution change geographic seeds;
 - create new islands, lakes, rivers, borders, or settlements as incidental noise

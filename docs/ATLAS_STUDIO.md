@@ -419,7 +419,7 @@ accepted physical source + requested epoch + captured project generation
           bounded Studio tiles             existing static export
                     |
                     v
-           MapLibre interactive viewport
+           OpenLayers interactive viewport
 ```
 
 Ownership is fixed as follows:
@@ -488,7 +488,7 @@ close, database replacement, or app exit.
 ### 4. Geographic Addressing and Tile Semantics
 
 The initial Studio uses one locked tile scheme. Prefer Web Mercator XYZ for the
-interactive viewport because MapLibre consumes it directly; keep whole-world
+interactive viewport because OpenLayers consumes it directly; keep whole-world
 equirectangular for export and for any later explicitly designed globe mode.
 
 The tile adapter must:
@@ -594,7 +594,7 @@ tiles, and cancel queued work that leaves that set.
 
 **Export** converts the current geographic view and selected scene settings into
 the existing Atlas render request and opens/reuses the existing export workflow.
-It never screenshots MapLibre. A current-view export records geographic extent,
+It never screenshots OpenLayers. A current-view export records geographic extent,
 projection, layers, epoch, style, and detail settings; browser pixel coordinates
 and session tokens never enter the request or preset.
 
@@ -664,7 +664,7 @@ Required work:
    channel.
 3. Add the Studio entry beside Physical Map only when capability and module
    state allow it.
-4. Mount the MapLibre viewport with relief style, reference epoch, physical
+4. Mount the OpenLayers viewport with relief style, reference epoch, physical
    layers, loading/progress/error UI, cancellation, and cache regeneration.
 5. Keep the existing Atlas export panel available and route **Export** through
    it.

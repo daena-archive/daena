@@ -4,7 +4,7 @@
 - Date: 2026-08-15
 - Scope: provider-neutral Studio capability, runtime session wrapper,
   bounded session registry, application-controlled PNG tile protocol,
-  capability-gated MapLibre viewport, cache regeneration, and Export
+  capability-gated OpenLayers viewport, cache regeneration, and Export
   reuse. Epoch switching, extra styles, overlays/labels, prefetch, and
   current-view regional export remain deferred to iteration 2 in
   `docs/ATLAS_STUDIO.md`.
@@ -49,8 +49,8 @@ IDs never enter geographic seeds or tile bytes.
 | Sessions per project/map | 1 live session |
 | Tile workers | 1 (global mutex) |
 | Waiting tile queue | 24 |
-| Visible prefetch ring | MapLibre default only; no extra ring |
-| MapLibre parallel image requests | 8 (UI cap under the wait queue) |
+| Visible prefetch ring | OpenLayers default only; no extra ring |
+| OpenLayers image requests | Browser-managed under the native wait queue |
 
 Per-tile CPU time is measured in `docs/maps/atlas/budgets.md`. A full
 queue returns `503` / `atlas.studio.resource-limit`; that is retryable
@@ -94,12 +94,12 @@ Refresh or close.
 
 ### 5. UI slice
 
-Atlas Studio is a full-size MapLibre XYZ viewport beside the Physical
+Atlas Studio is a full-size OpenLayers XYZ viewport beside the Physical
 Map when `supportsStudio` is true. Iteration 1 shows relief, reference
 epoch, physical relief layers, loading/progress/error, cancellation on
 close, Refresh Atlas (new session), Regenerate cache, cursor
 coordinates, and Export. Export opens the existing `AtlasRenderPanel`
-and existing Atlas Rendering jobs. It never screenshots MapLibre.
+and existing Atlas Rendering jobs. It never screenshots OpenLayers.
 
 Halo remains `0`. Authored/semantic overlays, labels, and style/epoch
 controls wait for iteration 2.

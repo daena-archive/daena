@@ -5,7 +5,7 @@
 - Scope: runtime-only Studio session/tile schemas, Web Mercator XYZ
   addressing, north-origin row orientation, tile size and device-scale
   limits, halo/metatile policy, protocol shape, and resource proposals.
-  Tauri session registry, custom protocol serving, MapLibre UI, and
+  Tauri session registry, custom protocol serving, OpenLayers UI, and
   persisted presets remain deferred to later iterations in
   `docs/ATLAS_STUDIO.md`.
 
@@ -17,7 +17,7 @@ scene interactively without becoming a second terrain generator or
 reinterpreting `AtlasRenderRequest` as a pan-and-zoom contract.
 
 Export addressing is south-increasing (row 0 is south), including regional
-Web Mercator. MapLibre XYZ tiles are north-origin (row 0 is north). The
+Web Mercator. OpenLayers XYZ tiles are north-origin (row 0 is north). The
 Studio adapter must perform that transform without flipping or versioning
 the export renderer.
 
@@ -146,7 +146,7 @@ world-space sample.
 
 - Iteration 0 can render XYZ tiles from the physical golden source without
   mutating a project, database, checkpoint, or export fixture.
-- MapLibre, Tauri byte delivery, and capability-gated UI wait for
+- OpenLayers, Tauri byte delivery, and capability-gated UI wait for
   iteration 1.
 - Adding overlay strokes or labels requires a new halo/metatile decision
   and a renderer or tile-schema version if tile bytes change.

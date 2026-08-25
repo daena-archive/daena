@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost atlas-studio: http://atlas-studio.localhost https://atlas-studio.localhost plugin-icon: http://plugin-icon.localhost https://plugin-icon.localhost; font-src 'self' data:; connect-src 'self' blob: ipc: http://ipc.localhost atlas-studio: http://atlas-studio.localhost https://atlas-studio.localhost; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost atlas-studio: http://atlas-studio.localhost https://atlas-studio.localhost plugin-icon: http://plugin-icon.localhost https://plugin-icon.localhost; font-src 'self' data:; connect-src 'self' blob: ipc: http://ipc.localhost atlas-studio: http://atlas-studio.localhost https://atlas-studio.localhost; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPCACHE/daena-atlas/**"]
@@ -32,12 +32,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
   }
 }

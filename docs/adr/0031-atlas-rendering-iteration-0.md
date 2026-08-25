@@ -11,7 +11,7 @@
 Daena already has an accepted `daena-physical` provider, adapter version `2`,
 source format `physical-world-v2`, and generator version `11`. Historical,
 climate, hydrology, and hazard products are derived from that immutable source.
-The interactive MapLibre globe is a preview, not an export renderer.
+The interactive OpenLayers world view is a preview, not an export renderer.
 
 Atlas Rendering must produce high-resolution static maps without creating a
 second world model, increasing the canonical grid, or treating exported pixels
@@ -24,7 +24,7 @@ and PNG path on the existing physical golden fixture.
 
 Export rendering lives in a pure crate, `crates/daena-atlas` (`daena-atlas`).
 It may depend on `daena-physical` for source decode and epoch derivation. It
-must not depend on Tauri, SQLite, `daena-core`, plugin-host, DOM, MapLibre, or
+must not depend on Tauri, SQLite, `daena-core`, plugin-host, DOM, OpenLayers, or
 ambient filesystem discovery. The spike CLI may write a caller-supplied output
 path; that path is operational, not project content.
 

@@ -7,7 +7,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 pub const VECTOR_PROVIDER: &str = "daena-vector";
-pub const VECTOR_SOURCE_FORMAT: &str = "geojson";
+pub const VECTOR_SOURCE_FORMAT: &str = "daena-geojson";
 pub const VECTOR_MIME: &str = "application/geo+json";
 pub const VECTOR_FILENAME: &str = "map.geojson";
 pub const VECTOR_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -17,18 +17,15 @@ pub const VECTOR_MAX_FEATURE_POSITIONS: usize = 20_000;
 pub const VECTOR_MAX_RINGS: usize = 256;
 pub const VECTOR_MAX_LAYERS: usize = 64;
 pub const VECTOR_MAX_PROPERTY_BYTES: usize = 2 * 1024;
-pub const WEB_MERCATOR_MAX_LAT: f64 = 85.05112878;
-pub const VECTOR_CENTER_Y_MIN: f64 = 0.027493729;
-pub const VECTOR_CENTER_Y_MAX: f64 = 0.972506271;
+pub const VECTOR_CENTER_Y_MIN: f64 = 0.0;
+pub const VECTOR_CENTER_Y_MAX: f64 = 1.0;
 const SCALE: i32 = 1_000_000;
-const LAT_LIMIT: i32 = 85_051_129;
+const LAT_LIMIT: i32 = 90_000_000;
 const LON_LIMIT: i32 = 180_000_000;
-const ANTIMERIDIAN: i32 = 180_000_000;
 
 pub const CODE_SOURCE_INVALID: &str = "vector.source.invalid";
 pub const CODE_UNSUPPORTED_VERSION: &str = "vector.source.unsupported-version";
 pub const CODE_GEOMETRY_INVALID: &str = "vector.geometry.invalid";
-pub const CODE_ANTIMERIDIAN: &str = "vector.geometry.antimeridian";
 pub const CODE_LIMIT: &str = "vector.limit.exceeded";
 pub const CODE_LAYER_MISSING: &str = "vector.layer.missing";
 pub const CODE_GENERATOR: &str = "vector.generator.invalid-settings";
@@ -283,7 +280,7 @@ fn parse_position(value: &Value, path: &str) -> Result<Micro, CoreError> {
         return Err(fail(
             CODE_GEOMETRY_INVALID,
             path,
-            "latitude exceeds the Web Mercator limit",
+            "latitude is outside the Daena world extent",
         ));
     }
     Ok(coord)
@@ -380,10 +377,6 @@ fn segments_intersect(a: Micro, b: Micro, c: Micro, d: Micro) -> bool {
         || (o4 == 0 && on_segment(c, d, b))
 }
 
-fn crosses_antimeridian(a: Micro, b: Micro) -> bool {
-    (i64::from(a.0) - i64::from(b.0)).abs() > i64::from(ANTIMERIDIAN)
-}
-
 fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
     if line.len() < 2 {
         return Err(fail(
@@ -391,15 +384,6 @@ fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
             path,
             "line requires at least two distinct positions",
         ));
-    }
-    for pair in line.windows(2) {
-        if crosses_antimeridian(pair[0], pair[1]) {
-            return Err(fail(
-                CODE_ANTIMERIDIAN,
-                path,
-                "segment crosses the antimeridian",
-            ));
-        }
     }
     Ok(())
 }
@@ -419,24 +403,6 @@ fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Mi
             CODE_GEOMETRY_INVALID,
             path,
             "ring requires at least three distinct positions",
-        ));
-    }
-    for pair in ring.windows(2) {
-        if crosses_antimeridian(pair[0], pair[1]) {
-            return Err(fail(
-                CODE_ANTIMERIDIAN,
-                path,
-                "segment crosses the antimeridian",
-            ));
-        }
-    }
-    let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
-    let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
-    if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
-        return Err(fail(
-            CODE_ANTIMERIDIAN,
-            path,
-            "ring longitude span exceeds 180 degrees",
         ));
     }
     let n = open.len();
@@ -1037,7 +1003,11 @@ pub fn canonicalize_imported_base(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
     let mut positions = 0usize;
     for (index, feature) in features.iter().enumerate() {
         let path = format!("$.features[{index}]");
-        let object = object_keys(feature, &path, &["type", "id", "geometry", "properties", "bbox"])?;
+        let object = object_keys(
+            feature,
+            &path,
+            &["type", "id", "geometry", "properties", "bbox"],
+        )?;
         require_type(object, &path, "Feature")?;
         let geometry = parse_geometry(
             object.get("geometry").ok_or_else(|| {
@@ -1300,7 +1270,21 @@ pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
         "strokeWidth",
         "pointRadius",
     ];
-    if object.len() != required.len() || required.iter().any(|key| !object.contains_key(*key)) {
+    let allowed = BTreeSet::from([
+        "fill",
+        "fillOpacity",
+        "stroke",
+        "strokeOpacity",
+        "strokeWidth",
+        "strokeDash",
+        "pointRadius",
+        "icon",
+        "iconSize",
+        "label",
+    ]);
+    if required.iter().any(|key| !object.contains_key(*key))
+        || object.keys().any(|key| !allowed.contains(key.as_str()))
+    {
         return Err(fail(
             CODE_SOURCE_INVALID,
             "style",
@@ -1336,6 +1320,18 @@ pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
             "must be finite in [0, 1]",
         ));
     }
+    if let Some(stroke_opacity) = object.get("strokeOpacity") {
+        let stroke_opacity = stroke_opacity.as_f64().ok_or_else(|| {
+            fail(CODE_SOURCE_INVALID, "strokeOpacity", "must be a finite number")
+        })?;
+        if !stroke_opacity.is_finite() || !(0.0..=1.0).contains(&stroke_opacity) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "strokeOpacity",
+                "must be finite in [0, 1]",
+            ));
+        }
+    }
     let stroke_width = object
         .get("strokeWidth")
         .and_then(Value::as_f64)
@@ -1369,6 +1365,115 @@ pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
             "pointRadius",
             "must be finite in [1, 64]",
         ));
+    }
+    if let Some(dash) = object.get("strokeDash") {
+        let dash = dash.as_array().ok_or_else(|| {
+            fail(CODE_SOURCE_INVALID, "strokeDash", "must be an array")
+        })?;
+        if dash.len() > 16
+            || dash.iter().any(|value| {
+                value
+                    .as_f64()
+                    .is_none_or(|value| !value.is_finite() || value < 0.0 || value > 128.0)
+            })
+        {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "strokeDash",
+                "must contain at most 16 finite values in [0, 128]",
+            ));
+        }
+    }
+    if let Some(icon) = object.get("icon") {
+        if !icon.is_null()
+            && icon
+                .as_str()
+                .is_none_or(|value| value.is_empty() || value.len() > 256)
+        {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "icon",
+                "must be null or a Daena icon reference up to 256 bytes",
+            ));
+        }
+    }
+    if let Some(icon_size) = object.get("iconSize") {
+        let icon_size = icon_size
+            .as_f64()
+            .ok_or_else(|| fail(CODE_SOURCE_INVALID, "iconSize", "must be a finite number"))?;
+        if !icon_size.is_finite() || !(4.0..=256.0).contains(&icon_size) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "iconSize",
+                "must be finite in [4, 256]",
+            ));
+        }
+    }
+    if let Some(label) = object.get("label") {
+        let label = label
+            .as_object()
+            .ok_or_else(|| fail(CODE_SOURCE_INVALID, "label", "must be an object"))?;
+        let allowed = BTreeSet::from([
+            "source",
+            "text",
+            "size",
+            "color",
+            "haloColor",
+            "haloWidth",
+            "placement",
+            "offset",
+            "rotation",
+            "minZoom",
+            "maxZoom",
+        ]);
+        if label.keys().any(|key| !allowed.contains(key.as_str()))
+            || !matches!(label.get("source").and_then(Value::as_str), Some("name" | "explicit"))
+            || !matches!(
+                label.get("placement").and_then(Value::as_str),
+                Some("point" | "line" | "interior")
+            )
+        {
+            return Err(fail(CODE_SOURCE_INVALID, "label", "contains invalid fields"));
+        }
+        if label
+            .get("text")
+            .is_some_and(|value| !value.is_null() && value.as_str().is_none_or(|text| text.len() > 512))
+        {
+            return Err(fail(CODE_SOURCE_INVALID, "label.text", "exceeds 512 bytes"));
+        }
+        for (key, min, max) in [
+            ("size", 6.0, 96.0),
+            ("haloWidth", 0.0, 16.0),
+            ("rotation", -360.0, 360.0),
+        ] {
+            let value = label
+                .get(key)
+                .and_then(Value::as_f64)
+                .ok_or_else(|| fail(CODE_SOURCE_INVALID, key, "must be a finite number"))?;
+            if !value.is_finite() || !(min..=max).contains(&value) {
+                return Err(fail(CODE_SOURCE_INVALID, key, "is outside the supported range"));
+            }
+        }
+        for key in ["color", "haloColor"] {
+            let value = label.get(key).and_then(Value::as_str).unwrap_or_default();
+            if value.len() != 7 || !value.starts_with('#') || !value[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+                return Err(fail(CODE_SOURCE_INVALID, key, "must match #RRGGBB"));
+            }
+        }
+        let offset = label.get("offset").and_then(Value::as_array).ok_or_else(|| {
+            fail(CODE_SOURCE_INVALID, "label.offset", "must contain two numbers")
+        })?;
+        if offset.len() != 2
+            || offset
+                .iter()
+                .any(|value| value.as_f64().is_none_or(|value| !value.is_finite() || value.abs() > 512.0))
+        {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                "label.offset",
+                "must contain two finite values in [-512, 512]",
+            ));
+        }
     }
     Ok(())
 }
@@ -1411,26 +1516,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_keys_and_antimeridian() {
+    fn rejects_duplicate_keys() {
         let duplicate = br#"{"type":"FeatureCollection","type":"FeatureCollection","features":[]}"#;
         assert!(parse_strict_json(duplicate)
             .unwrap_err()
             .to_string()
             .contains(CODE_SOURCE_INVALID));
-        let crossing = serde_json::json!({
-            "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "id": "018f89ec-25fc-7816-8b47-6f80905f2801",
-                "properties": {"daenaLayerId": "base", "kind": "land", "name": null},
-                "geometry": {"type":"Polygon","coordinates":[[[170.0,-1.0],[-170.0,-1.0],[-170.0,1.0],[170.0,1.0],[170.0,-1.0]]]}
-            }]
-        });
-        let error =
-            canonicalize_committed(&serde_json::to_vec(&crossing).unwrap(), &BTreeSet::new())
-                .unwrap_err()
-                .to_string();
-        assert!(error.contains(CODE_ANTIMERIDIAN), "{error}");
     }
 
     #[test]
@@ -1475,22 +1566,20 @@ mod tests {
         assert_eq!(feature["properties"]["kind"], "land");
         assert_eq!(feature["properties"]["name"], Value::Null);
         assert_ne!(feature["id"], "018f89ec-25fc-7816-8b47-6f80905f2869");
-        assert!(
-            canonicalize_imported_base(
-                &serde_json::to_vec(&serde_json::json!({
-                    "type": "FeatureCollection",
-                    "features": [{
-                        "type": "Feature",
-                        "properties": {},
-                        "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}
-                    }]
-                }))
-                .unwrap()
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("polygonal")
-        );
+        assert!(canonicalize_imported_base(
+            &serde_json::to_vec(&serde_json::json!({
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {"type": "Point", "coordinates": [1.0, 2.0]}
+                }]
+            }))
+            .unwrap()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("polygonal"));
     }
 
     #[test]

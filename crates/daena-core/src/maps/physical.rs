@@ -194,7 +194,7 @@ pub fn is_reserved_layer_id(id: &str) -> bool {
 #[must_use]
 pub fn initial_layers_value() -> Value {
     serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [
             {"id":"base","name":"Physical base","order":0,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#c9a96e","fillOpacity":0.92,"stroke":"#8a7048","strokeWidth":1.25,"pointRadius":2},"kind":"vector"},
             {"id":"ocean","name":"Ocean","order":1,"defaultVisible":false,"locked":true,"selector":{},"style":{"fill":"#245c80","fillOpacity":0.58,"stroke":"#397da5","strokeWidth":0.3,"pointRadius":2},"kind":"vector"},

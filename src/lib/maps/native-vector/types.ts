@@ -5,7 +5,7 @@ export const FREEHAND_SIMPLIFIED_POSITION_LIMIT = 2048;
 export const UNDO_STACK_SIZE = 50;
 
 export type VectorKind = "land" | "lake" | "region" | "route" | "marker" | "custom";
-export type VectorDrawMode = "static" | "select" | "point" | "linestring" | "polygon" | "freehand";
+export type VectorDrawMode = "static" | "select" | "point" | "linestring" | "polygon" | "rectangle" | "freehand";
 
 export type VectorFeatureProperties = {
   daenaLayerId: string;

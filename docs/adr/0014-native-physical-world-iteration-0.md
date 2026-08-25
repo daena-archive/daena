@@ -113,7 +113,7 @@ Longitude wraps modulo the grid width. The first and last latitude rows are
 polar bands: their outer edge terminates at one north or south pole, and all
 cells in a polar row are point-adjacent through that pole. Coastline output
 uses integer microdegrees in `[-180, 180]` / `[-90, 90]`. Display conversion
-for the later MapLibre host uses the existing normalized-anchor boundary and a
+for the later OpenLayers host uses the existing normalized-anchor boundary and a
 local, offline projection; it never changes source bytes.
 
 ### 4. Authority and derived data
@@ -168,6 +168,6 @@ current Native Vector version drift testable before the physical descriptor
 union is extended. Later iterations may add richer canonical physical causes,
 but an incompatible encoding or interpretation requires a new version.
 
-Packaged Tauri rendering, WebGL failure behavior, worker teardown, cross-target
+Packaged Tauri rendering, renderer failure behavior, map teardown, cross-target
 golden execution, and release-mode maximum-grid measurements remain exit-gate
 evidence; they are not inferred from the pure Rust tests.

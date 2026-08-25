@@ -313,10 +313,7 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "previewAssetId": null,
         "defaultView": {"center": [0.5, 0.01], "zoom": 1}
     });
-    assert!(validate_field(&connection, &map_id, "map", &polar)
-        .unwrap_err()
-        .to_string()
-        .contains("center"));
+    validate_field(&connection, &map_id, "map", &polar).unwrap();
 
     let layer = serde_json::json!({
         "id": "018f89ec-25fc-7816-8b47-6f80905f2868",

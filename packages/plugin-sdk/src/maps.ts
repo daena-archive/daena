@@ -4,7 +4,7 @@ export type NormalizedPoint = readonly [number, number];
 export const MAP_ENTITY_TYPE = "daena.maps:map" as const;
 export const MAP_NAMESPACE = "maps" as const;
 export const FMG_PROVIDER = "azgaar-fmg" as const;
-export const VECTOR_PROVIDER = "daena-vector" as const;
+export const VECTOR_PROVIDER = "daena-openlayers" as const;
 export const PHYSICAL_PROVIDER = "daena-physical" as const;
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"] as const;
 
@@ -48,6 +48,44 @@ export type MapAnchor =
 
 export type ImageSourceFormat = (typeof IMAGE_SOURCE_FORMATS)[number];
 
+export type MapCoordinateSpace =
+  | {
+      kind: "image";
+      extent: readonly [number, number, number, number];
+      origin: "top-left";
+      units: "pixels";
+    }
+  | {
+      kind: "world";
+      extent: readonly [number, number, number, number];
+      origin: "bottom-left";
+      units: { id: string; label: string; metresPerUnit: number | null };
+      wrapX: boolean;
+    }
+  | {
+      kind: "geographic";
+      projection: "EPSG:4326";
+      extent: readonly [number, number, number, number];
+      wrapX: boolean;
+    };
+
+export type MapBackgroundRef = {
+  id: string;
+  assetId: string;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
+  order: number;
+  extent: readonly [number, number, number, number];
+};
+
+export type MapGridSettings = {
+  visible: boolean;
+  snap: boolean;
+  spacing: readonly [number, number];
+};
+
 export type MapDescriptor =
   | {
       schemaVersion: 1;
@@ -57,11 +95,14 @@ export type MapDescriptor =
       defaultView: { center: NormalizedPoint; zoom: number };
     }
   | {
-      schemaVersion: 1;
-      provider: { id: typeof VECTOR_PROVIDER; adapterVersion: 1; sourceFormat: "geojson" };
+      schemaVersion: 2;
+      provider: { id: typeof VECTOR_PROVIDER; adapterVersion: 2; sourceFormat: "daena-geojson" };
       sourceAssetId: string;
       previewAssetId: string | null;
-      defaultView: { center: NormalizedPoint; zoom: number };
+      coordinateSpace: MapCoordinateSpace;
+      backgrounds: readonly MapBackgroundRef[];
+      defaultView: { center: readonly [number, number]; zoom: number; rotation: number };
+      settings: { snapEnabled: boolean; grid: MapGridSettings | null };
       generation?: {
         id: "daena-landmass";
         version: 1;
@@ -143,6 +184,7 @@ export type MapLayerDefinition =
       rasterAssetId: string;
       opacity: number;
       locked: boolean;
+      blendMode?: "normal" | "multiply" | "screen" | "overlay";
     }
   | {
       id: string;
@@ -150,19 +192,38 @@ export type MapLayerDefinition =
       order: number;
       defaultVisible: boolean;
       locked: boolean;
+      opacity?: number;
+      blendMode?: "normal" | "multiply" | "screen" | "overlay";
       selector: Readonly<Record<string, never>>;
       style: {
         fill: string;
         fillOpacity: number;
         stroke: string;
+        strokeOpacity?: number;
         strokeWidth: number;
+        strokeDash?: readonly number[];
         pointRadius: number;
+        icon?: string | null;
+        iconSize?: number;
+        label?: {
+          source: "name" | "explicit";
+          text: string | null;
+          size: number;
+          color: string;
+          haloColor: string;
+          haloWidth: number;
+          placement: "point" | "line" | "interior";
+          offset: readonly [number, number];
+          rotation: number;
+          minZoom: number | null;
+          maxZoom: number | null;
+        };
       };
       kind: "vector";
     };
 
 export interface MapLayersField {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   layers: readonly MapLayerDefinition[];
 }
 

@@ -152,6 +152,11 @@ export interface RasterLayerChange {
 export interface VectorSourceReplace {
   source: Asset;
 }
+export interface MapEditApply {
+  map: FieldValue;
+  layers: FieldValue;
+  source: Asset;
+}
 export interface PhysicalJobStatus {
   jobId: string;
   requestId: string;
@@ -1427,6 +1432,22 @@ export const project = {
       uploadContentHash,
       expectedRevision,
       requestId: requestId(options),
+    }),
+  applyMapEdit: (input: {
+    mapEntityId: string;
+    descriptor: unknown;
+    layers: unknown;
+    bytes: Uint8Array;
+    uploadContentHash: string;
+    expectedMapRevision: string;
+    expectedLayersRevision: string;
+    expectedSourceRevision: string;
+    requestId?: string;
+  }) =>
+    invoke<MapEditApply>("project_apply_map_edit", {
+      ...input,
+      bytes: Array.from(input.bytes),
+      requestId: input.requestId ?? crypto.randomUUID(),
     }),
   createVectorLayer: (
     mapEntityId: string,

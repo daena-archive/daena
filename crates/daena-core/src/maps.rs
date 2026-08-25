@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const FMG_PROVIDER: &str = "azgaar-fmg";
-pub const VECTOR_PROVIDER: &str = "daena-vector";
+pub const VECTOR_PROVIDER: &str = "daena-openlayers";
 pub const PHYSICAL_PROVIDER: &str = "daena-physical";
 pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v2";
 pub const PHYSICAL_ADAPTER_VERSION: u32 = 2;
@@ -110,6 +110,81 @@ pub struct ProviderDescriptor {
 pub struct DefaultView {
     pub center: Point,
     pub zoom: f64,
+    #[serde(default)]
+    pub rotation: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum MapCoordinateSpace {
+    #[serde(rename = "image")]
+    Image {
+        extent: [f64; 4],
+        origin: String,
+        units: String,
+    },
+    #[serde(rename = "world")]
+    World {
+        extent: [f64; 4],
+        origin: String,
+        units: MapWorldUnits,
+        #[serde(rename = "wrapX")]
+        wrap_x: bool,
+    },
+    #[serde(rename = "geographic")]
+    Geographic {
+        projection: String,
+        extent: [f64; 4],
+        #[serde(rename = "wrapX")]
+        wrap_x: bool,
+    },
+}
+
+impl MapCoordinateSpace {
+    fn extent(&self) -> &[f64; 4] {
+        match self {
+            Self::Image { extent, .. } | Self::World { extent, .. } | Self::Geographic { extent, .. } => extent,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapWorldUnits {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "metresPerUnit")]
+    pub metres_per_unit: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapBackgroundRef {
+    pub id: String,
+    #[serde(rename = "assetId")]
+    pub asset_id: String,
+    pub name: String,
+    pub visible: bool,
+    pub locked: bool,
+    pub opacity: f64,
+    pub order: i64,
+    pub extent: [f64; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapGridSettings {
+    pub visible: bool,
+    pub snap: bool,
+    pub spacing: [f64; 2],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapSettings {
+    #[serde(rename = "snapEnabled")]
+    pub snap_enabled: bool,
+    pub grid: Option<MapGridSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,6 +315,12 @@ pub struct MapDescriptor {
     pub preview_asset_id: Option<String>,
     #[serde(rename = "defaultView")]
     pub default_view: DefaultView,
+    #[serde(rename = "coordinateSpace", default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_space: Option<MapCoordinateSpace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backgrounds: Vec<MapBackgroundRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<MapSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<MapGeneration>,
 }
@@ -291,6 +372,8 @@ pub struct RasterLayerDefinition {
     pub raster_asset_id: String,
     pub opacity: f64,
     pub locked: bool,
+    #[serde(rename = "blendMode", default = "default_blend_mode")]
+    pub blend_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -302,9 +385,21 @@ pub struct VectorLayerDefinition {
     #[serde(rename = "defaultVisible")]
     pub default_visible: bool,
     pub locked: bool,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
+    #[serde(rename = "blendMode", default = "default_blend_mode")]
+    pub blend_mode: String,
     pub selector: Value,
     pub style: Value,
     pub kind: VectorLayerKind,
+}
+
+fn default_opacity() -> f64 {
+    1.0
+}
+
+fn default_blend_mode() -> String {
+    "normal".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -478,12 +573,9 @@ fn validate_normalized_center(center: &Point) -> Result<(), CoreError> {
     point(center)
 }
 
-fn validate_web_mercator_center(center: &Point) -> Result<(), CoreError> {
-    point(center)?;
-    if !(VECTOR_CENTER_Y_MIN..=VECTOR_CENTER_Y_MAX).contains(&center.1) {
-        return Err(invalid(
-            "defaultView.center y is outside the Web Mercator latitude limit",
-        ));
+fn validate_authored_center(center: &Point) -> Result<(), CoreError> {
+    if !center.0.is_finite() || !center.1.is_finite() {
+        return Err(invalid("defaultView.center must contain finite numbers"));
     }
     Ok(())
 }
@@ -503,13 +595,13 @@ const PROVIDER_REGISTRY: &[ProviderSpec] = &[
     ProviderSpec {
         kind: ProviderKind::Vector,
         id: VECTOR_PROVIDER,
-        adapter_version: 1,
+        adapter_version: 2,
         source_format: VECTOR_SOURCE_FORMAT,
         requires_source_asset: true,
         source_mime: Some(VECTOR_MIME),
         generation_validator: Some(validate_vector_generation),
         preview_mime_validator: Some(source_format_for_mime),
-        validate_center: validate_web_mercator_center,
+        validate_center: validate_authored_center,
     },
     ProviderSpec {
         kind: ProviderKind::Physical,
@@ -584,6 +676,59 @@ fn point(point: &Point) -> Result<(), CoreError> {
         return Err(invalid(
             "invalid geometry: coordinates must be finite normalized values in [0, 1]",
         ));
+    }
+    Ok(())
+}
+
+fn validate_extent(extent: &[f64; 4], label: &str) -> Result<(), CoreError> {
+    if extent.iter().any(|value| !value.is_finite())
+        || extent[0] >= extent[2]
+        || extent[1] >= extent[3]
+    {
+        return Err(invalid(format!(
+            "{label} must be four finite values with positive width and height"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_coordinate_space(space: &MapCoordinateSpace) -> Result<(), CoreError> {
+    validate_extent(space.extent(), "coordinateSpace.extent")?;
+    match space {
+        MapCoordinateSpace::Image { origin, units, .. } => {
+            if origin != "top-left" || units != "pixels" {
+                return Err(invalid(
+                    "image coordinate spaces require top-left origin and pixel units",
+                ));
+            }
+        }
+        MapCoordinateSpace::World { origin, units, .. } => {
+            if origin != "bottom-left"
+                || units.id.trim().is_empty()
+                || units.id.len() > 64
+                || units.label.trim().is_empty()
+                || units.label.len() > 64
+                || units
+                    .metres_per_unit
+                    .is_some_and(|value| !value.is_finite() || value <= 0.0)
+            {
+                return Err(invalid("world coordinate-space units are invalid"));
+            }
+        }
+        MapCoordinateSpace::Geographic {
+            projection, extent, ..
+        } => {
+            if projection != "EPSG:4326"
+                || extent[0] < -180.0
+                || extent[2] > 180.0
+                || extent[1] < -90.0
+                || extent[3] > 90.0
+            {
+                return Err(invalid(
+                    "geographic coordinate spaces require EPSG:4326 within longitude/latitude bounds",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -770,10 +915,11 @@ pub fn validate_field(
         }
         let descriptor: MapDescriptor = serde_json::from_value(value.clone())
             .map_err(|e| invalid(format!("invalid map descriptor: {e}")))?;
-        if descriptor.schema_version != 1 {
+        let provider = provider_spec(&descriptor.provider)?;
+        let expected_schema = if provider.kind == ProviderKind::Vector { 2 } else { 1 };
+        if descriptor.schema_version != expected_schema {
             return Err(invalid("unsupported map provider or descriptor version"));
         }
-        let provider = provider_spec(&descriptor.provider)?;
         if provider.requires_source_asset && descriptor.source_asset_id.is_none() {
             return Err(invalid(format!(
                 "{} maps require sourceAssetId",
@@ -824,7 +970,66 @@ pub fn validate_field(
         if descriptor.default_view.zoom <= 0.0 || !descriptor.default_view.zoom.is_finite() {
             return Err(invalid("defaultView.zoom must be finite and positive"));
         }
+        if !descriptor.default_view.rotation.is_finite() {
+            return Err(invalid("defaultView.rotation must be finite"));
+        }
         (provider.validate_center)(&descriptor.default_view.center)?;
+        if provider.kind == ProviderKind::Vector {
+            let coordinate_space = descriptor
+                .coordinate_space
+                .as_ref()
+                .ok_or_else(|| invalid("daena-openlayers maps require coordinateSpace"))?;
+            validate_coordinate_space(coordinate_space)?;
+            let extent = coordinate_space.extent();
+            if descriptor.default_view.center.0 < extent[0]
+                || descriptor.default_view.center.0 > extent[2]
+                || descriptor.default_view.center.1 < extent[1]
+                || descriptor.default_view.center.1 > extent[3]
+            {
+                return Err(invalid("defaultView.center must be inside coordinateSpace.extent"));
+            }
+            let settings = descriptor
+                .settings
+                .as_ref()
+                .ok_or_else(|| invalid("daena-openlayers maps require settings"))?;
+            if let Some(grid) = &settings.grid {
+                if grid.spacing.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+                    return Err(invalid("settings.grid.spacing must contain positive finite values"));
+                }
+            }
+            let mut background_ids = BTreeSet::new();
+            let mut background_orders = BTreeSet::new();
+            for background in &descriptor.backgrounds {
+                uuid(&background.id, "background.id")?;
+                if !background_ids.insert(background.id.as_str()) {
+                    return Err(invalid("background IDs must be unique"));
+                }
+                if !background_orders.insert((background.order, background.id.as_str())) {
+                    return Err(invalid("background order is not deterministic"));
+                }
+                if background.name.trim().is_empty() || background.name.len() > 128 {
+                    return Err(invalid("background name has invalid length"));
+                }
+                if !background.opacity.is_finite() || !(0.0..=1.0).contains(&background.opacity) {
+                    return Err(invalid("background opacity must be finite in [0, 1]"));
+                }
+                validate_extent(&background.extent, "background.extent")?;
+                let (_, mime_type) = owned_map_asset(
+                    connection,
+                    entity_id,
+                    &background.asset_id,
+                    "background.assetId",
+                )?;
+                source_format_for_mime(&mime_type)?;
+            }
+        } else if descriptor.coordinate_space.is_some()
+            || !descriptor.backgrounds.is_empty()
+            || descriptor.settings.is_some()
+        {
+            return Err(invalid(
+                "coordinateSpace, backgrounds, and settings are only valid on daena-openlayers maps",
+            ));
+        }
         Ok(())
     } else if key == PHYSICAL_EVENT_CHRONOLOGY_KEY {
         if entity_type.as_deref() != Some(PHYSICAL_EVENT_ENTITY_TYPE) {
@@ -923,11 +1128,8 @@ pub fn validate_field(
         if object
             .keys()
             .any(|key| !matches!(key.as_str(), "schemaVersion" | "layers"))
-            || object.get("schemaVersion").and_then(Value::as_i64) != Some(1)
         {
-            return Err(invalid(
-                "layers must contain schemaVersion 1 and layers only",
-            ));
+            return Err(invalid("layers must contain schemaVersion and layers only"));
         }
         let layers = object
             .get("layers")
@@ -939,16 +1141,21 @@ pub fn validate_field(
         let mut raster_count = 0usize;
         let mut semantic_count = 0usize;
         let mut vector_count = 0usize;
-        let physical_map = connection
+        let map_provider = connection
             .query_row(
                 "SELECT json_extract(value, '$.provider.id') FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'",
                 [entity_id, MAP_NAMESPACE],
                 |row| row.get::<_, Option<String>>(0),
             )
             .optional()?
-            .flatten()
-            .as_deref()
-            == Some(PHYSICAL_PROVIDER);
+            .flatten();
+        let physical_map = map_provider.as_deref() == Some(PHYSICAL_PROVIDER);
+        let expected_schema = 2;
+        if object.get("schemaVersion").and_then(Value::as_i64) != Some(expected_schema) {
+            return Err(invalid(format!(
+                "layers.schemaVersion must be {expected_schema} for this map provider"
+            )));
+        }
         let physical_layers = if physical_map {
             physical::initial_layers_value()
                 .get("layers")
@@ -1008,6 +1215,9 @@ pub fn validate_field(
                 if !raster.opacity.is_finite() || !(0.0..=1.0).contains(&raster.opacity) {
                     return Err(invalid("raster layer opacity must be finite in [0, 1]"));
                 }
+                if !matches!(raster.blend_mode.as_str(), "normal" | "multiply" | "screen" | "overlay") {
+                    return Err(invalid("raster layer blendMode is unsupported"));
+                }
                 if !raster_assets.insert(raster.raster_asset_id.clone()) {
                     return Err(invalid("rasterAssetId must be unique"));
                 }
@@ -1031,6 +1241,15 @@ pub fn validate_field(
                     return Err(invalid("vector layers must have an empty selector"));
                 }
                 vector::validate_vector_style(&vector_layer.style)?;
+                if !vector_layer.opacity.is_finite()
+                    || !(0.0..=1.0).contains(&vector_layer.opacity)
+                    || !matches!(
+                        vector_layer.blend_mode.as_str(),
+                        "normal" | "multiply" | "screen" | "overlay"
+                    )
+                {
+                    return Err(invalid("vector layer opacity or blendMode is invalid"));
+                }
                 vector_count += 1;
                 if vector_count > VECTOR_MAX_LAYERS {
                     return Err(invalid(format!(

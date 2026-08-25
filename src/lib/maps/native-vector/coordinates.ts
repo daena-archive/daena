@@ -1,6 +1,3 @@
-/** MapLibre Web Mercator latitude limit used by adapter version 1. */
-export const WEB_MERCATOR_MAX_LAT = 85.05112878;
-
 export function lonLatToNormalized(longitude: number, latitude: number): [number, number] {
   return [(longitude + 180) / 360, (90 - latitude) / 180];
 }
@@ -10,7 +7,7 @@ export function normalizedToLonLat(x: number, y: number): [number, number] {
 }
 
 export type ImageOverlayCoordinates = [[number, number], [number, number], [number, number], [number, number]];
-export const PHYSICAL_RASTER_OVERSAMPLE = 8;
+export const PHYSICAL_RASTER_OVERSAMPLE = 1;
 
 /** Generation/image overlay extent used by adapter version 1. */
 export const IMAGE_OVERLAY_LON_SPAN = 340;
@@ -38,18 +35,16 @@ export function imageOverlayCoordinates(width: number, height: number): ImageOve
 /** Physical grids cover the complete world; keep their raster and GeoJSON extents identical. */
 export function physicalWorldOverlayCoordinates(): ImageOverlayCoordinates {
   return [
-    [-180, WEB_MERCATOR_MAX_LAT],
-    [180, WEB_MERCATOR_MAX_LAT],
-    [180, -WEB_MERCATOR_MAX_LAT],
-    [-180, -WEB_MERCATOR_MAX_LAT],
+    [-180, 90],
+    [180, 90],
+    [180, -90],
+    [-180, -90],
   ];
 }
 
-/** Convert a Web-Mercator canvas row to the source grid row at its pixel center. */
+/** Convert a north-origin canvas row to the generator's south-origin source grid. */
 export function physicalGridRowForRasterRow(canvasRow: number, canvasHeight: number, sourceHeight: number): number {
   if (sourceHeight <= 1 || canvasHeight <= 0) return 0;
-  const mercatorY = (canvasRow + 0.5) / canvasHeight;
-  const mercatorN = Math.PI * (1 - 2 * mercatorY);
-  const latitude = (Math.atan(Math.sinh(mercatorN)) * 180) / Math.PI;
-  return Math.max(0, Math.min(sourceHeight - 1, Math.floor(((latitude + 90) / 180) * sourceHeight)));
+  const row = Math.floor(((canvasRow + 0.5) / canvasHeight) * sourceHeight);
+  return Math.max(0, Math.min(sourceHeight - 1, sourceHeight - 1 - row));
 }

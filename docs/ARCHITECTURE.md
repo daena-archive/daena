@@ -19,8 +19,8 @@ contracts remain in the focused plans below:
   integration.
 - [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md) defines provider-backed
   maps and map/entity integration.
-- [`NATIVE_MAP_INTEGRATION.md`](./NATIVE_MAP_INTEGRATION.md) defines Daena-owned
-  vector maps, landmass generation, and image import.
+- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md) defines Daena-owned
+  map rendering, vector editing, raster backgrounds, and Atlas interaction.
 - [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
 - [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
 - [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the

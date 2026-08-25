@@ -37,7 +37,7 @@ focused:
 
 Form controls in the aside keep normal Tab order and do not receive
 those map shortcuts. A skip link moves focus to the map. `prefers-reduced-motion`
-disables pan/zoom animation (MapLibre `fadeDuration` stays `0`). Buttons
+disables pan/zoom animation. Buttons
 and fields use visible focus rings.
 
 ### 2. Diagnostics

@@ -99,7 +99,7 @@ export function simplifyFreehandGeometry(
   return { error: "vector.geometry.invalid" };
 }
 
-export function kindForDrawMode(mode: "point" | "linestring" | "polygon" | "freehand"): VectorKind {
+export function kindForDrawMode(mode: "point" | "linestring" | "polygon" | "rectangle" | "freehand"): VectorKind {
   if (mode === "point") return "marker";
   if (mode === "linestring") return "route";
   return "region";

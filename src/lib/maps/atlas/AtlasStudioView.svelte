@@ -1,10 +1,13 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import maplibregl from "maplibre-gl/dist/maplibre-gl-csp.js";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
-import "maplibre-gl/dist/maplibre-gl.css";
-import type { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
+import Map from "ol/Map.js";
+import View from "ol/View.js";
+import TileLayer from "ol/layer/Tile.js";
+import XYZ from "ol/source/XYZ.js";
+import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
+import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
+import "ol/ol.css";
 import {
   project,
   ATLAS_STUDIO_PROGRESS_EVENT,
@@ -17,9 +20,6 @@ import {
 } from "$lib/project/client";
 import type { VectorLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
-
-if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
-if (typeof maplibregl.setMaxParallelImageRequests === "function") maplibregl.setMaxParallelImageRequests(8);
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -75,14 +75,14 @@ let showHelp = $state(false);
 let viewZoom = $state(1);
 let worldMinZoom = $state(0);
 let unlisten: UnlistenFn | undefined;
-let map: MapLibreMap | null = null;
+let map: Map | null = null;
+let tileSource: XYZ | null = null;
 let opening = false;
 let reopenPending = false;
 let resizeObserver: ResizeObserver | undefined;
 let debounce: ReturnType<typeof setTimeout> | undefined;
 let inspectHover: ReturnType<typeof setTimeout> | undefined;
 let inspectSeq = 0;
-let syncingCopies = false;
 let statusTimer: ReturnType<typeof setInterval> | undefined;
 let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
 let mountedControls = false;
@@ -122,29 +122,34 @@ function overviewZoom(width: number, tileSize: number) {
   return Math.max(0, fillWidthZoom(width, tileSize) - 1);
 }
 
-function syncWorldCopies() {
-  if (!map || !host || !session || syncingCopies) return;
-  const worldPx = session.tileSize * 2 ** map.getZoom();
-  const center = map.getCenter();
-  const copies = worldPx >= host.clientWidth || Math.abs(center.lng) > 0.5;
-  if (map.getRenderWorldCopies() === copies) return;
-  syncingCopies = true;
-  try {
-    map.setRenderWorldCopies(copies);
-    map.setCenter(center);
-  } finally {
-    syncingCopies = false;
-  }
-}
-
 function applyWorldConstraints() {
   const container = host;
   const status = session;
   worldMinZoom = 0;
-  map?.setMinZoom(0);
-  syncWorldCopies();
+  map?.getView().setMinZoom(0);
   if (!container || !status) return 0;
   return overviewZoom(container.clientWidth, status.tileSize);
+}
+
+function mapCenterLonLat(): [number, number] {
+  const center = map?.getView().getCenter();
+  return center ? (toLonLat(center) as [number, number]) : [0, 20];
+}
+
+function mapZoom() {
+  return map?.getView().getZoom() ?? 0;
+}
+
+function mapLonLatExtent(): [number, number, number, number] {
+  if (!map) return [-180, -85, 180, 85];
+  const size = map.getSize();
+  if (!size) return [-180, -85, 180, 85];
+  return transformExtent(map.getView().calculateExtent(size), "EPSG:3857", "EPSG:4326") as [
+    number,
+    number,
+    number,
+    number,
+  ];
 }
 
 function viewerLayerName(atlasLayerId: string): string | null {
@@ -279,12 +284,6 @@ function tileUrlAllowed(url: string, token: string) {
   return url.includes(token) && (url.startsWith("atlas-studio:") || url.includes("atlas-studio.localhost"));
 }
 
-function isTransientTileError(message: string) {
-  return /AJAXError|Load failed|503|408|queue is full|resource-limit|Failed to fetch|access control|prefetch deferred/i.test(
-    message,
-  );
-}
-
 function toMicro(value: number) {
   return Math.round(value * 1_000_000);
 }
@@ -324,29 +323,30 @@ async function openSession() {
   try {
     if (!capabilities) await loadCapabilities();
     const previous = session;
-    const keepCenter = map?.getCenter();
-    const keepZoom = map?.getZoom();
+    const keepCenter = map ? mapCenterLonLat() : null;
+    const keepZoom = map?.getView().getZoom();
     const next = await project.atlasStudioOpen(studioRequest(), deviceScale());
     session = next;
     styleId = next.styleId;
     offsetYears = next.offsetYears;
-    const source = map?.getSource("atlas-studio") as { setTiles?: (tiles: string[]) => void } | undefined;
-    if (map && source?.setTiles) {
+    if (map && tileSource) {
       stage = "Updating map…";
-      source.setTiles([next.tileUrlTemplate]);
-      map.triggerRepaint();
+      configureTileSource(tileSource, next);
+      tileSource.refresh();
     } else {
       stage = "Mounting map…";
-      map?.remove();
+      map?.setTarget(undefined);
+      map?.dispose();
       map = null;
+      tileSource = null;
       const overview = applyWorldConstraints();
-      const center: [number, number] = keepCenter ? [keepCenter.lng, keepCenter.lat] : [0, 20];
+      const center: [number, number] = keepCenter ?? [0, 20];
       mountMap(next, { center, zoom: keepZoom ?? overview });
     }
     if (previous && previous.sessionToken !== next.sessionToken) {
       void project.atlasStudioClose(previous.sessionToken).catch(() => undefined);
     }
-    queueMicrotask(() => map?.resize());
+    queueMicrotask(() => map?.updateSize());
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
     loading = false;
@@ -362,86 +362,77 @@ function scheduleSession() {
   debounce = setTimeout(() => void openSession(), 300);
 }
 
-function mountMap(status: AtlasStudioSessionStatus, view?: { center: [number, number]; zoom: number }) {
+function configureTileSource(source: XYZ, status: AtlasStudioSessionStatus) {
+  source.setTileUrlFunction((tileCoordinate) => {
+    if (!tileCoordinate) return undefined;
+    const [z, x, y] = tileCoordinate;
+    const width = 2 ** z;
+    const wrappedX = ((x % width) + width) % width;
+    const url = status.tileUrlTemplate
+      .replace("{z}", String(z))
+      .replace("{x}", String(wrappedX))
+      .replace("{y}", String(y));
+    return tileUrlAllowed(url, status.sessionToken) ? url : undefined;
+  });
+}
+
+function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number, number]; zoom: number }) {
   const container = host;
   if (!container) return;
-  const style: StyleSpecification = {
-    version: 8,
-    sources: {
-      "atlas-studio": {
-        type: "raster",
-        tiles: [status.tileUrlTemplate],
-        tileSize: status.tileSize,
-        minzoom: 0,
-        maxzoom: status.maxZoom,
-        scheme: "xyz",
-      },
-    },
-    layers: [
-      { id: "atlas-background", type: "background", paint: { "background-color": "#0d1b2a" } },
-      { id: "atlas-relief", type: "raster", source: "atlas-studio" },
-    ],
-  };
+  tileSource = new XYZ({
+    projection: "EPSG:3857",
+    tileSize: status.tileSize,
+    minZoom: 0,
+    maxZoom: status.maxZoom,
+    wrapX: true,
+  });
+  configureTileSource(tileSource, status);
   try {
-    map = new maplibregl.Map({
-      container,
-      style,
-      center: view?.center ?? [0, 20],
-      zoom: view?.zoom ?? applyWorldConstraints(),
-      minZoom: 0,
-      maxZoom: status.maxZoom,
-      maxPitch: 0,
-      dragRotate: false,
-      pitchWithRotate: false,
-      renderWorldCopies: false,
-      attributionControl: false,
-      fadeDuration: 0,
-      keyboard: true,
-      transformRequest(url) {
-        if (!tileUrlAllowed(url, session?.sessionToken ?? status.sessionToken)) {
-          throw new Error("Atlas Studio rejects remote tile, glyph, sprite, and telemetry URLs");
-        }
-        return { url };
-      },
+    map = new Map({
+      target: container,
+      layers: [new TileLayer({ source: tileSource, preload: 1 })],
+      view: new View({
+        projection: "EPSG:3857",
+        center: fromLonLat(initial?.center ?? [0, 20]),
+        zoom: initial?.zoom ?? applyWorldConstraints(),
+        minZoom: 0,
+        maxZoom: status.maxZoom,
+        multiWorld: true,
+        constrainResolution: false,
+      }),
+      controls: [],
+      interactions: defaultInteractions({ altShiftDragRotate: false, pinchRotate: false }),
     });
   } catch (cause) {
-    error = cause instanceof Error ? cause.message : "MapLibre failed to create a WebGL2 context.";
+    error = cause instanceof Error ? cause.message : "OpenLayers failed to create the Atlas view.";
     loading = false;
     return;
   }
-  map.on("load", () => map?.resize());
-  map.on("mousemove", (event) => {
-    cursor = `${event.lngLat.lng.toFixed(4)}°, ${event.lngLat.lat.toFixed(4)}°`;
-    scheduleInspect(event.lngLat.lng, event.lngLat.lat);
+  map.on("pointermove", (event) => {
+    const [longitude, latitude] = toLonLat(event.coordinate);
+    cursor = `${longitude.toFixed(4)}°, ${latitude.toFixed(4)}°`;
+    scheduleInspect(longitude, latitude);
   });
-  map.on("click", (event) => {
+  map.on("singleclick", (event) => {
     if (inspectHover) clearTimeout(inspectHover);
-    inspectAt(event.lngLat.lng, event.lngLat.lat);
+    const [longitude, latitude] = toLonLat(event.coordinate);
+    inspectAt(longitude, latitude);
   });
-  map.on("move", () => {
-    if (!map || syncingCopies) return;
-    const zoom = map.getZoom();
+  map.on("moveend", () => {
+    if (!map) return;
+    const zoom = mapZoom();
     if (viewZoom !== zoom) viewZoom = zoom;
-    syncWorldCopies();
+    schedulePrefetch(status);
   });
-  map.on("moveend", () => schedulePrefetch(status));
-  map.on("idle", () => {
+  map.once("rendercomplete", () => {
     if (loading) loading = false;
     if (stage !== "Ready") stage = "Ready";
     schedulePrefetch(status);
   });
-  map.on("error", (event) => {
-    const message = event.error?.message ?? "";
-    if (isTransientTileError(message)) return;
-    if (message.includes("reject") || message.includes("WebGL")) {
-      error = message || "Atlas Studio failed to load a tile.";
-      loading = false;
-    }
-  });
   resizeObserver?.disconnect();
   resizeObserver = new ResizeObserver(() => {
     applyWorldConstraints();
-    map?.resize();
+    map?.updateSize();
   });
   resizeObserver.observe(container);
 }
@@ -453,8 +444,8 @@ function schedulePrefetch(status: AtlasStudioSessionStatus) {
 
 function prefetchRing(status: AtlasStudioSessionStatus) {
   if (!map || !session || session.sessionToken !== status.sessionToken) return;
-  const z = Math.min(status.maxZoom, Math.max(0, Math.floor(map.getZoom())));
-  const bounds = map.getBounds();
+  const z = Math.min(status.maxZoom, Math.max(0, Math.floor(mapZoom())));
+  const [west, south, east, north] = mapLonLatExtent();
   const n = 2 ** z;
   const lonToX = (lon: number) => Math.floor(((lon + 180) / 360) * n);
   const latToY = (lat: number) => {
@@ -462,10 +453,10 @@ function prefetchRing(status: AtlasStudioSessionStatus) {
     const y = 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI);
     return Math.floor(Math.min(n - 1, Math.max(0, y * n)));
   };
-  const visibleMinX = lonToX(bounds.getWest());
-  const visibleMaxX = lonToX(bounds.getEast());
-  const visibleMinY = Math.max(0, latToY(bounds.getNorth()));
-  const visibleMaxY = Math.min(n - 1, latToY(bounds.getSouth()));
+  const visibleMinX = lonToX(west);
+  const visibleMaxX = lonToX(east);
+  const visibleMinY = Math.max(0, latToY(north));
+  const visibleMaxY = Math.min(n - 1, latToY(south));
   const minX = visibleMinX - 1;
   const maxX = visibleMaxX + 1;
   const minY = Math.max(0, visibleMinY - 1);
@@ -486,11 +477,11 @@ function prefetchRing(status: AtlasStudioSessionStatus) {
 
 function currentViewExport(): AtlasRenderRequest | null {
   if (!map) return null;
-  const bounds = map.getBounds();
-  const west = toMicro(bounds.getWest());
-  const east = toMicro(bounds.getEast());
-  const south = Math.max(-85_051_129, toMicro(bounds.getSouth()));
-  const north = Math.min(85_051_129, toMicro(bounds.getNorth()));
+  const [westDegrees, southDegrees, eastDegrees, northDegrees] = mapLonLatExtent();
+  const west = toMicro(westDegrees);
+  const east = toMicro(eastDegrees);
+  const south = Math.max(-85_051_129, toMicro(southDegrees));
+  const north = Math.min(85_051_129, toMicro(northDegrees));
   const widthPx = 2048;
   const heightPx = currentViewExportHeight(west, south, east, north, widthPx);
   return {
@@ -535,31 +526,26 @@ function setViewZoom(next: number) {
   const zoom = Math.max(worldMinZoom, Math.min(session?.maxZoom ?? 8, next));
   viewZoom = zoom;
   if (!map) return;
-  const center = map.getCenter();
-  map.jumpTo({ center, zoom });
-  syncWorldCopies();
+  map.getView().setZoom(zoom);
 }
 
 function shiftMap(longitudeDegrees: number, latitudeDegrees = 0) {
   if (!map) return;
   const reduced = prefersReducedMotion();
-  const center = [
-    wrapLon(map.getCenter().lng + longitudeDegrees),
-    Math.max(-85, Math.min(85, map.getCenter().lat + latitudeDegrees)),
+  const current = mapCenterLonLat();
+  const center: [number, number] = [
+    wrapLon(current[0] + longitudeDegrees),
+    Math.max(-85, Math.min(85, current[1] + latitudeDegrees)),
   ] as [number, number];
-  map.setRenderWorldCopies(true);
-  map.easeTo({
-    center,
-    zoom: map.getZoom(),
-    duration: reduced ? 0 : 250,
-    animate: !reduced,
-  });
+  if (reduced) map.getView().setCenter(fromLonLat(center));
+  else map.getView().animate({ center: fromLonLat(center), duration: 250 });
 }
 
 function resetView() {
   const zoom = applyWorldConstraints();
   viewZoom = zoom;
-  map?.jumpTo({ center: [0, 20], zoom });
+  map?.getView().setCenter(fromLonLat([0, 20]));
+  map?.getView().setZoom(zoom);
 }
 
 function titleCase(value: string) {
@@ -591,7 +577,7 @@ function inspectAt(lng: number, lat: number) {
   if (!token || !map) return;
   const seq = ++inspectSeq;
   void project
-    .atlasStudioInspect(token, toMicro(lng), toMicro(lat), Math.floor(map.getZoom()))
+    .atlasStudioInspect(token, toMicro(lng), toMicro(lat), Math.floor(mapZoom()))
     .then((next) => {
       if (seq !== inspectSeq) return;
       hits = next.hits;
@@ -617,20 +603,25 @@ function onViewportKey(event: KeyboardEvent) {
     const step = event.shiftKey ? 120 : 48;
     const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
     const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
-    map.panBy([dx, dy], { animate, duration: reduced ? 0 : 200 });
+    const resolution = map.getView().getResolution() ?? 1;
+    const center = map.getView().getCenter() ?? [0, 0];
+    const next = [center[0] + dx * resolution, center[1] - dy * resolution];
+    if (animate) map.getView().animate({ center: next, duration: 200 });
+    else map.getView().setCenter(next);
   } else if (event.key === "+" || event.key === "=") {
     event.preventDefault();
-    map.zoomIn({ animate, duration: reduced ? 0 : 200 });
+    map.getView().animate({ zoom: mapZoom() + 1, duration: reduced ? 0 : 200 });
   } else if (event.key === "-" || event.key === "_") {
     event.preventDefault();
-    map.zoomOut({ animate, duration: reduced ? 0 : 200 });
+    map.getView().animate({ zoom: mapZoom() - 1, duration: reduced ? 0 : 200 });
   } else if (event.key === "0" || event.key === "Home") {
     event.preventDefault();
-    map.jumpTo({ center: [0, 20], zoom: applyWorldConstraints() });
+    map.getView().setCenter(fromLonLat([0, 20]));
+    map.getView().setZoom(applyWorldConstraints());
   } else if (event.key === "Enter") {
     event.preventDefault();
-    const center = map.getCenter();
-    inspectAt(center.lng, center.lat);
+    const center = mapCenterLonLat();
+    inspectAt(center[0], center[1]);
   } else if (event.key === "Escape") {
     event.preventDefault();
     hits = [];
@@ -719,7 +710,7 @@ $effect(() => {
   const status = session;
   if (!container || !status || map) return;
   mountMap(status);
-  queueMicrotask(() => map?.resize());
+  queueMicrotask(() => map?.updateSize());
 });
 
 $effect(() => {
@@ -738,8 +729,10 @@ onDestroy(() => {
   if (prefetchTimer) clearTimeout(prefetchTimer);
   resizeObserver?.disconnect();
   resizeObserver = undefined;
-  map?.remove();
+  map?.setTarget(undefined);
+  map?.dispose();
   map = null;
+  tileSource = null;
   if (session) {
     void project.atlasStudioClose(session.sessionToken).catch(() => undefined);
   }
@@ -1082,7 +1075,7 @@ button {
   min-height: 0;
   height: 100%;
 }
-.viewport :global(.maplibregl-map) {
+.viewport :global(.ol-viewport) {
   width: 100%;
   height: 100%;
 }

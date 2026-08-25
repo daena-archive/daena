@@ -10,7 +10,7 @@
 
 ## Context
 
-ADR 0038 shipped a relief-only MapLibre viewport at physical offset `0`.
+ADR 0038 shipped a relief-only OpenLayers viewport at physical offset `0`.
 Iteration 2 in `docs/ATLAS_STUDIO.md` must complete interactive
 composition without a second terrain generator, without persisting
 Studio sessions, and without changing renderer version `5` or static
@@ -74,7 +74,7 @@ generation.
 
 ### 5. Current-view export and presets
 
-**Export** converts the MapLibre geographic bounds plus the current
+**Export** converts the OpenLayers geographic bounds plus the current
 session style, epoch, and layers into an existing regional Web Mercator
 `AtlasRenderRequest` (`unlockAspect: true`) and opens `AtlasRenderPanel`.
 Browser pixels and session tokens never enter the job or a preset.

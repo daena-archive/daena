@@ -14,7 +14,7 @@ It is subordinate to:
   content-addressed assets, portable checkpoints, and rebuild behavior;
 - [`MAP_INTEGRATION_PLAN.md`](./MAP_INTEGRATION_PLAN.md), which defines shared
   map entities, anchors, navigation, hierarchy, and semantic overlays; and
-- [`NATIVE_MAP_INTEGRATION.md`](./NATIVE_MAP_INTEGRATION.md), which defines the
+- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md), which defines the
   existing editable `daena-vector` provider.
 
 If this plan conflicts with one of those authorities, stop the active
@@ -88,7 +88,7 @@ The full plan is complete when:
 The current checkout already has two distinct map-generation/editing paths:
 
 - FMG is an isolated provider-owned child webview.
-- `daena-vector` is a trusted, in-window MapLibre/Terra Draw editor whose
+- `daena-vector` is a trusted, in-window OpenLayers editor whose
   canonical source is GeoJSON. Its current TypeScript landmass generator
   creates six candidates and accepts one as editable base polygons.
 
@@ -177,7 +177,7 @@ All large numeric-field work runs in Rust:
 
 The Svelte/Tauri layer owns configuration, progress, cancellation, temporary
 result presentation, explicit acceptance/reroll, time selection, interaction,
-and MapLibre rendering. Frontend validation may improve feedback but never
+and OpenLayers rendering. Frontend validation may improve feedback but never
 bypasses Rust validation.
 
 Put the pure model in a Rust crate or module that has no Tauri, SQLite, UI, or
@@ -219,13 +219,14 @@ Derived output includes:
 - land-ice cells, water-equivalent thickness, and ice polygons; and
 - earthquake and volcanic hazard fields.
 
-MapLibre consumes derived GeoJSON and bounded derived raster products. These
+OpenLayers consumes derived GeoJSON and bounded derived raster products. These
 representations may be cached using the canonical source hash, derivation
 version, and epoch. They are never authoritative and must be safely deletable.
 No physical layer may exist only as a PNG or JPEG.
 
-Physical maps render in MapLibre with `projection: "globe"`. Authored
-`daena-vector` maps remain Web Mercator with `maxPitch: 0`. The physical
+Physical maps render in OpenLayers on the full plate-carree Daena world extent.
+Authored `daena-vector` maps use the same local, renderer-independent coordinate
+space. The physical
 hillshade raster classifies the largest connected below-sea-level component as
 ocean, hides inland water smaller than eight cells so continents do not
 speckle, and paints land ice over remaining land. Diagnostic vector layers,
@@ -670,7 +671,7 @@ minimum define:
 - maximum erosion, climate, water fixed-point, and root-finding iterations;
 - tolerances for land coverage, water balance, lake/sea-level convergence, and
   geometric simplification; and
-- MapLibre source/update and frame-time budgets for the default world.
+- OpenLayers source/update and frame-time budgets for the default world.
 
 Every iterative calculation defines timestep, convergence criterion, maximum
 iterations, acceptable error, finite-value checks, and failure behavior.
@@ -727,7 +728,7 @@ Every completed iteration adds or extends:
   checkpoint export, and clean rebuild;
 - contract drift tests across Rust schemas, RPC, SDK, test host, and frontend;
   and
-- rendered native-app checks for progress, cancellation, MapLibre behavior,
+- rendered native-app checks for progress, cancellation, OpenLayers behavior,
   reopen, teardown, and epoch changes.
 
 The focused repository gate should be exposed as one stable command, for
@@ -772,8 +773,8 @@ contracts or UI are added.
    canonical bytes, not only approximate metrics. Eliminate platform drift or
    explicitly block the unsupported target before accepting the ADR.
 5. Render the local derived output in the real Tauri host with network disabled.
-   Prove the selected MapLibre projection, antimeridian continuity, pole
-   behavior, worker/CSP setup, teardown, and WebGL failure diagnostic.
+   Prove the selected OpenLayers projection, antimeridian continuity, pole
+   behavior, resize/teardown lifecycle, and renderer failure diagnostic.
 6. Measure source size, derived size, wall time, peak memory, render load time,
    frame behavior, and cancellation latency at proposed default and maximum
    grids. Lock initial budgets and the fixture matrix in the ADR or a referenced
@@ -843,7 +844,7 @@ numeric, job, or rendering foundations are throwaway.
    immediately before commit. A retry with the same request ID returns the
    first result; reuse with different input conflicts.
 8. Add a physical-map host surface that reads the source, obtains/rebuilds the
-   coastline/land/ocean derivation, and renders through local MapLibre sources.
+   coastline/land/ocean derivation, and renders through local OpenLayers sources.
    Keep authored overlay support on the existing Maps contracts.
 9. Replace the six-candidate Create Map action with the single-result physical
    flow only after the new flow passes focused checks. Preserve image import
@@ -1410,7 +1411,7 @@ green feasibility fixture does not complete the feature.
    the ambiguous-cell rule, pole and antimeridian representation, ring winding,
    hole ownership, and bounded simplification. Validate closure,
    self-intersection, connectivity, straits, island/lake preservation, and
-   drainage outlets before MapLibre receives the result.
+   drainage outlets before OpenLayers receives the result.
 7. **Historical forcing.** Replace the triangle wave with a versioned smooth
    sum of bounded low-frequency components whose amplitudes, periods, and
    phases are persisted. Keep climate-driven cell land ice as the inventory
@@ -1437,7 +1438,7 @@ model changes into one unreviewable generator-version bump.
 
 1. Promote `crates/daena-physical-spike` to the production physical-model crate
    before adding more algorithms. The production crate must retain no Tauri,
-   SQLite, Svelte, MapLibre, project-store, or plugin-host dependency. Keep
+   SQLite, Svelte, OpenLayers, project-store, or plugin-host dependency. Keep
    Tauri command adaptation in `src-tauri`, acceptance and identity validation
    in `daena-core`, and all numeric generation/derivation in the pure crate.
 2. Implement `PhysicalIdentityManifestV1` and its sole encoder in
@@ -1482,7 +1483,7 @@ fixtures and the four/eight-sample gates in `resolution.rs` are unchanged.
    cannot satisfy this rule is preview-only.
 3. Select exactly one production default and one bounded maximum from measured
    results. Record source bytes, peak live bytes by stage, derived bytes, wall
-   time, cancellation latency, coastline load time, and MapLibre frame/update
+   time, cancellation latency, coastline load time, and OpenLayers frame/update
    time on each supported reference target. Do not retain the ADR 0014
    `128 x 64` maximum as a production maximum merely because it is fast.
 4. Generate canonical terrain once at the selected physical resolution.
@@ -1853,7 +1854,7 @@ Packet 5 (ADR 0028) replaced ADR 0019 per-cell-edge presentation geometry with
 seam-safe interpolated marching squares, an asymptotic saddle rule, polar
 triangles, antimeridian splitting, spherical hole ownership, and geodesic
 simplification. Remaining vector work is visual LOD of tectonic diagnostics
-and packaged-native MapLibre inspection, not a return to cell-edge coastlines.
+and packaged-native OpenLayers inspection, not a return to cell-edge coastlines.
 
 #### Packet 6 historical forcing is in place
 

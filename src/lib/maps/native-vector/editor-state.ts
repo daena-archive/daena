@@ -2,7 +2,6 @@ export const VECTOR_DIAGNOSTIC_CODES = [
   "vector.source.invalid",
   "vector.source.unsupported-version",
   "vector.geometry.invalid",
-  "vector.geometry.antimeridian",
   "vector.limit.exceeded",
   "vector.layer.missing",
   "vector.layer.in-use",

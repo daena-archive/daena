@@ -6,7 +6,7 @@ import {
   createNativeVectorEditor,
   type NativeVectorEditor,
   type NativeVectorView,
-} from "../native-vector/runtime";
+} from "../native-vector/openlayers-runtime";
 import { physicalWorldOverlayCoordinates } from "../native-vector/coordinates";
 import type { VectorFeatureCollection, VectorLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
@@ -72,7 +72,6 @@ $effect(() => {
         onMapPick?.(anchor);
       },
       background: backgroundFrom(raster),
-      projection: "globe",
       initialView: view,
       onViewChange(next) {
         view = next;
@@ -138,7 +137,7 @@ $effect(() => {
   min-width: 0;
   min-height: 0;
 }
-.viewport :global(.maplibregl-map) {
+.viewport :global(.ol-viewport) {
   width: 100%;
   height: 100%;
 }

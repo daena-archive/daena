@@ -300,10 +300,10 @@ try {
   assertSvelteCompiles("src/lib/maps/atlas/AtlasStudioView.svelte");
   assertSvelteCompiles("src/lib/maps/atlas/AtlasRenderPanel.svelte");
   assertSvelteCompiles("src/lib/maps/native-vector/NativeVectorMapEditor.svelte");
-  assert.match(studioView, /maplibre-gl/);
+  assert.match(studioView, /from "ol\/Map\.js"/);
+  assert.match(studioView, /from "ol\/source\/XYZ\.js"/);
   assert.match(studioView, /atlasStudioOpen/);
-  assert.match(studioView, /setMaxParallelImageRequests|maxParallelImageRequests/);
-  assert.match(studioView, /isTransientTileError/);
+  assert.match(studioView, /configureTileSource/);
   assert.match(studioView, /atlasStudioInspect/);
   assert.match(studioView, /scheduleInspect/);
   assert.match(studioView, />Place</);
@@ -326,9 +326,8 @@ try {
   assert.equal(studioView.includes("algorithmVersion: 5"), false);
   assert.equal(studioView.includes("tributary:v2"), false);
   assert.equal(studioView.includes("valley:v2"), false);
-  assert.match(studioView, /setRenderWorldCopies/);
-  assert.match(studioView, /getRenderWorldCopies/);
-  assert.match(studioView, /syncingCopies/);
+  assert.match(studioView, /wrapX: true/);
+  assert.match(studioView, /multiWorld: true/);
   assert.equal(studioView.includes('map.on("dataloading"'), false);
   assert.match(studioView, /overviewZoom/);
   assert.match(studioView, /aria-keyshortcuts/);

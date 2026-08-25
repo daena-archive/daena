@@ -1756,6 +1756,8 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
     if (!(await leavePluginView())) return;
     recordShellDeparture(departure);
     projectHomeOpen = false;
+    loreWikiOpen = false;
+    section = "maps";
     sandboxView = mapId
       ? { plugin: item.plugin, view: item.view, renderer: "maps" }
       : { plugin: item.plugin, view: null, renderer: "maps" };
@@ -1796,6 +1798,8 @@ async function createMap(provider: "fmg" | "image" | "vector" | "physical" = "ph
     mapLocations = [];
     mapFocusLinkId = null;
     projectHomeOpen = false;
+    loreWikiOpen = false;
+    section = "maps";
     // Draft editor: no map entity until the in-FMG Save overlay commits one.
     mapsEditorMode = provider === "fmg" ? "fmg" : provider === "physical" ? "physical" : "vector";
     mapsVectorStart = provider === "image" ? "import" : "geojson";
@@ -5639,6 +5643,10 @@ onMount(() => {
       await loadSelectedState(map);
       await openPluginView(item, departure);
       const linkId = event.payload.linkId ?? null;
+      // openPluginView clears focus; also re-assert when already on the same map so
+      // the vector editor retries focus after pins load.
+      mapFocusLinkId = null;
+      await tick();
       mapFocusLinkId = linkId;
       if (linkId && sandboxView?.renderer === "maps" && mapsEditorMode === "fmg") {
         setTimeout(() => {

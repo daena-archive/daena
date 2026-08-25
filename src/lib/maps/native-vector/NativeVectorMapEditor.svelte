@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   Hexagon,
+  Link2,
   Lock,
   LockOpen,
   Map as MapIcon,
@@ -41,6 +42,7 @@ import {
 } from "$lib/project/client";
 import { VECTOR_MAX_LAYERS, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorImporter from "./NativeVectorImporter.svelte";
+import MapLocationLinkPanel from "./MapLocationLinkPanel.svelte";
 import {
   createNativeVectorEditor,
   liveNativeVectorEditorCount,
@@ -168,10 +170,15 @@ let sidebarWidth = $state(260);
 let loadGeneration = 0;
 let saveGeneration = 0;
 const objectUrls: string[] = [];
-let featureLinks = new Map<string, { entityId: string; locationId: string; label: string | null }>();
-let linksByLocationId = new Map<string, string>();
+let featureLinks = $state(new Map<string, { entityId: string; locationId: string; label: string | null }>());
+let linkAnchors = $state(new Map<string, MapAnchor>());
 let layersFieldRevision = "";
 let layerMutationChain: Promise<void> = Promise.resolve();
+let linkPanelOpen = $state(false);
+let linkArming = $state(false);
+let linkAnchor = $state<MapAnchor | null>(null);
+let pinsReady = $state(false);
+let physicalEditor = $state<NativeVectorEditor | null>(null);
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
@@ -188,8 +195,13 @@ const iconProps = { size: 15, strokeWidth: 1.8, "aria-hidden": true } as const;
 
 const activeLayer = $derived(layers.find((layer) => layer.id === activeLayerId) ?? null);
 const canDraw = $derived(
-  Boolean(activeLayer) && !activeLayer?.locked && !picking && !immutablePhysicalLayerIds.has(activeLayer?.id ?? ""),
+  Boolean(activeLayer) &&
+    !activeLayer?.locked &&
+    !picking &&
+    !linkArming &&
+    !immutablePhysicalLayerIds.has(activeLayer?.id ?? ""),
 );
+const pickArmed = $derived(Boolean(picking || linkArming));
 const dirty = $derived(editorState.dirty);
 const diagnostic = $derived(editorState.diagnostic);
 const diagnosticCode = $derived(editorState.diagnosticCode);
@@ -200,10 +212,10 @@ function publish(status: string, detail: unknown = null) {
 }
 
 function featureFallbackPoint(feature: VectorFeature | null): [number, number] {
-  if (!feature) return [0, 0];
+  if (!feature) return [0.5, 0.5];
   const positions = feature.geometry.coordinates.flat(Infinity) as number[];
-  if (positions.length < 2) return [0, 0];
-  return [positions[0], positions[1]];
+  if (positions.length < 2) return [0.5, 0.5];
+  return lonLatToNormalized(positions[0], positions[1]);
 }
 
 function pickAnchorFor(feature: VectorFeature): MapAnchor {
@@ -225,21 +237,140 @@ function pickAnchorFor(feature: VectorFeature): MapAnchor {
   };
 }
 
-function applyFeatureLinks(pins: { id: string; entityId: string; anchor?: unknown }[]) {
-  featureLinks = new Map();
-  linksByLocationId = new Map();
-  for (const pin of pins) {
-    const anchor = pin.anchor;
-    if (!anchor || typeof anchor !== "object" || !("kind" in anchor)) continue;
-    const candidate = anchor as Partial<MapAnchor>;
-    if (candidate.kind !== "provider-feature" || typeof candidate.featureId !== "string") continue;
-    featureLinks.set(candidate.featureId, {
-      entityId: pin.entityId,
-      locationId: pin.id,
-      label: null,
-    });
-    linksByLocationId.set(pin.id, candidate.featureId);
+function closeLinkPanel() {
+  linkPanelOpen = false;
+  linkArming = false;
+  linkAnchor = null;
+  if (!picking && canDraw) editor?.setMode(tool);
+  else if (!picking) editor?.setMode("static");
+}
+
+function openLinkPanel(anchor: MapAnchor) {
+  linkAnchor = anchor;
+  linkArming = false;
+  linkPanelOpen = true;
+  editor?.setMode("static");
+}
+
+function requestLinkFromToolbar() {
+  if (!mapId || studioOpen) return;
+  if (linkArming) {
+    linkArming = false;
+    if (!linkAnchor) linkPanelOpen = false;
+    if (!picking && canDraw) editor?.setMode(tool);
+    return;
   }
+  if (selectedFeature) {
+    openLinkPanel(pickAnchorFor(selectedFeature));
+    return;
+  }
+  if (linkAnchor && linkPanelOpen) {
+    linkArming = true;
+    editor?.setMode("static");
+    return;
+  }
+  linkPanelOpen = true;
+  linkArming = true;
+  linkAnchor = null;
+  editor?.setMode("static");
+}
+
+async function refreshFeatureLinks() {
+  if (!mapId) return;
+  const pins = await project.listMapPins(mapId).catch(() => []);
+  applyFeatureLinks(pins);
+}
+
+function applyFeatureLinks(
+  pins: Array<{
+    id: string;
+    entityId: string;
+    anchor?: unknown;
+    anchorKind?: string;
+    provider?: string | null;
+    featureKind?: string | null;
+    featureId?: string | null;
+    bounds?: [number | null, number | null, number | null, number | null];
+  }>,
+) {
+  const nextFeatureLinks = new Map<string, { entityId: string; locationId: string; label: string | null }>();
+  const nextAnchors = new Map<string, MapAnchor>();
+  for (const pin of pins) {
+    let anchor: MapAnchor | null = null;
+    const raw = pin.anchor;
+    if (raw && typeof raw === "object" && "kind" in raw) {
+      const candidate = raw as MapAnchor;
+      if (candidate.kind === "provider-feature" && typeof candidate.featureId === "string") {
+        anchor = candidate;
+      } else if (
+        candidate.kind === "point" &&
+        Array.isArray(candidate.point) &&
+        candidate.point.length >= 2
+      ) {
+        anchor = {
+          kind: "point",
+          point: [Number(candidate.point[0]), Number(candidate.point[1])],
+        };
+      }
+    }
+    if (!anchor && pin.anchorKind === "provider-feature" && typeof pin.featureId === "string") {
+      const minX = pin.bounds?.[0];
+      const minY = pin.bounds?.[1];
+      const maxX = pin.bounds?.[2];
+      const maxY = pin.bounds?.[3];
+      const fallbackPoint: [number, number] =
+        typeof minX === "number" &&
+        typeof minY === "number" &&
+        typeof maxX === "number" &&
+        typeof maxY === "number"
+          ? [(minX + maxX) / 2, (minY + maxY) / 2]
+          : [0.5, 0.5];
+      anchor = {
+        kind: "provider-feature",
+        provider: pin.provider || "daena-vector",
+        featureKind: pin.featureKind || "feature",
+        featureId: pin.featureId,
+        fallbackPoint,
+      };
+    }
+    if (
+      !anchor &&
+      pin.anchorKind === "point" &&
+      typeof pin.bounds?.[0] === "number" &&
+      typeof pin.bounds?.[1] === "number"
+    ) {
+      anchor = {
+        kind: "point",
+        point: [pin.bounds[0] as number, pin.bounds[1] as number],
+      };
+    }
+    if (!anchor) continue;
+    nextAnchors.set(pin.id, anchor);
+    if (anchor.kind === "provider-feature") {
+      nextFeatureLinks.set(anchor.featureId, {
+        entityId: pin.entityId,
+        locationId: pin.id,
+        label: null,
+      });
+    }
+  }
+  featureLinks = nextFeatureLinks;
+  linkAnchors = nextAnchors;
+  pinsReady = true;
+}
+
+function focusLinkedLocation(linkId: string | null | undefined) {
+  if (!linkId || picking || linkArming || !pinsReady) return false;
+  const target = editor ?? physicalEditor;
+  if (!target) return false;
+  const anchor = linkAnchors.get(linkId);
+  if (!anchor) return false;
+  if (anchor.kind === "provider-feature") return target.focusFeature(anchor.featureId);
+  if (anchor.kind === "point") {
+    target.focusPoint([anchor.point[0], anchor.point[1]]);
+    return true;
+  }
+  return false;
 }
 
 async function requestBack() {
@@ -528,8 +659,8 @@ function mountEditor() {
     },
     onSelect(feature) {
       selectedFeature = feature;
-      if (picking && feature && onpick) onpick(pickAnchorFor(feature));
-      else if (feature) {
+      if (picking) return;
+      if (feature) {
         const linked = featureLinks.get(feature.id);
         if (linked && onopen) onopen(linked.entityId);
       }
@@ -537,6 +668,16 @@ function mountEditor() {
     onDoubleClick(featureId) {
       const linked = featureLinks.get(featureId);
       if (linked && onopen) onopen(linked.entityId);
+    },
+    get pickArmed() {
+      return pickArmed;
+    },
+    onMapPick(anchor) {
+      if (picking && onpick) {
+        onpick(anchor);
+        return;
+      }
+      if (linkArming || linkPanelOpen) openLinkPanel(anchor);
     },
     get background() {
       return background;
@@ -567,6 +708,9 @@ async function load() {
   epochPhase = "";
   epochProgress = null;
   busy = true;
+  pinsReady = false;
+  linkAnchors = new Map();
+  featureLinks = new Map();
   try {
     const fields = await project.listFields(mapId);
     if (generation !== loadGeneration) return;
@@ -711,6 +855,9 @@ async function load() {
     await tick();
     if (generation !== loadGeneration) return;
     mountEditor();
+    await tick();
+    if (generation !== loadGeneration) return;
+    focusLinkedLocation(focusLinkId);
   } catch (cause) {
     if (generation !== loadGeneration) return;
     applyEditorEvent({
@@ -964,17 +1111,26 @@ async function runRemoveLayer(layer: VectorLayerDefinition, savedCount: number) 
 }
 
 $effect(() => {
-  const linkId = focusLinkId;
-  if (!linkId || picking) return;
-  const featureId = linksByLocationId.get(linkId);
-  if (featureId && editor) editor.focusFeature(featureId);
+  focusLinkId;
+  editor;
+  physicalEditor;
+  pinsReady;
+  linkAnchors;
+  picking;
+  linkArming;
+  focusLinkedLocation(focusLinkId);
 });
 
 $effect(() => {
-  if (picking && editor) editor.setMode("static");
+  if ((picking || linkArming) && editor) editor.setMode("static");
 });
 
 function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape" && linkPanelOpen) {
+    event.preventDefault();
+    closeLinkPanel();
+    return;
+  }
   if (event.key === "Escape" && fullscreen) {
     event.preventDefault();
     void setFullscreen(false);
@@ -1062,6 +1218,17 @@ onMount(() => {
       onBack={() => void requestBack()}
       actionsLabel={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
       <div class="header-actions" data-workspace-topbar-actions>
+        {#if !studioOpen}
+          <button
+            type="button"
+            class="icon-button"
+            class:active={linkArming || linkPanelOpen}
+            aria-pressed={linkArming || linkPanelOpen}
+            aria-label={linkArming ? "Click map to choose a location" : "Link location"}
+            title={linkArming ? "Click map to choose a location" : "Link location"}
+            disabled={!mapId || picking}
+            onclick={() => requestLinkFromToolbar()}><Link2 {...iconProps} /></button>
+        {/if}
         {#if !physicalMap}
           <button
             type="button"
@@ -1454,44 +1621,73 @@ onMount(() => {
           onpointerdown={startSidebarResize}></button>
       {/if}
       {#if physicalMap && !studioOpen}
-        <div class="canvas" role="img" aria-label="Physical world map">
-          <PhysicalWorldView collection={draft} {layers} raster={background?.canvas ?? null} />
-          <div class="epoch-control" aria-label="World epoch">
-            <input
-              id="physical-epoch"
-              type="range"
-              min={EPOCH_MIN}
-              max={EPOCH_MAX}
-              step={EPOCH_STEP}
-              value={epochOffsetYears}
-              aria-label="Epoch offset"
-              disabled={busy}
-              oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
-            <input
-              class="epoch-year"
-              type="text"
-              inputmode="numeric"
-              autocomplete="off"
-              spellcheck="false"
-              value={epochYearsAbs.toLocaleString("en-US")}
-              aria-label="Years from epoch"
-              disabled={busy}
-              onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
-            <span>
-              {#if epochOffsetYears === 0}
-                at epoch
-              {:else if epochOffsetYears < 0}
-                years before epoch
-              {:else}
-                years after epoch
-              {/if}
-            </span>
-          </div>
-          {#if busy || epochBusy}
-            <div class="map-busy" role="status">
-              <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>
-              {#if epochProgress}<span>{epochProgress.completed} / {epochProgress.total}</span>{/if}
+        <div class="stage">
+          <div class="canvas" class:picking={picking || linkArming} role="img" aria-label="Physical world map">
+            <PhysicalWorldView
+              collection={draft}
+              {layers}
+              raster={background?.canvas ?? null}
+              pickArmed={pickArmed}
+              onready={(next) => {
+                physicalEditor = next;
+              }}
+              onMapPick={(anchor) => {
+                if (picking && onpick) {
+                  onpick(anchor);
+                  return;
+                }
+                if (linkArming || linkPanelOpen) openLinkPanel(anchor);
+              }} />
+            <div class="epoch-control" aria-label="World epoch">
+              <input
+                id="physical-epoch"
+                type="range"
+                min={EPOCH_MIN}
+                max={EPOCH_MAX}
+                step={EPOCH_STEP}
+                value={epochOffsetYears}
+                aria-label="Epoch offset"
+                disabled={busy}
+                oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+              <input
+                class="epoch-year"
+                type="text"
+                inputmode="numeric"
+                autocomplete="off"
+                spellcheck="false"
+                value={epochYearsAbs.toLocaleString("en-US")}
+                aria-label="Years from epoch"
+                disabled={busy}
+                onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
+              <span>
+                {#if epochOffsetYears === 0}
+                  at epoch
+                {:else if epochOffsetYears < 0}
+                  years before epoch
+                {:else}
+                  years after epoch
+                {/if}
+              </span>
             </div>
+            {#if busy || epochBusy}
+              <div class="map-busy" role="status">
+                <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>
+                {#if epochProgress}<span>{epochProgress.completed} / {epochProgress.total}</span>{/if}
+              </div>
+            {/if}
+          </div>
+          {#if linkPanelOpen && mapId}
+            <MapLocationLinkPanel
+              {mapId}
+              bind:anchor={linkAnchor}
+              arming={linkArming}
+              onclose={closeLinkPanel}
+              onresnap={() => {
+                linkArming = true;
+              }}
+              onlinked={() => {
+                void refreshFeatureLinks();
+              }} />
           {/if}
         </div>
       {:else if studioOpen && mapId}
@@ -1507,27 +1703,43 @@ onMount(() => {
             }} />
         </div>
       {:else}
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
-        <div
-          class="canvas"
-          class:picking
-          bind:this={host}
-          tabindex="0"
-          role="application"
-          aria-label="Native vector map canvas">
-          {#if editor}
-            <MapViewControls
-              zoom={defaultView.zoom}
-              min={0}
-              max={8}
-              onzoom={(zoom) => {
-                defaultView = { ...defaultView, zoom };
-                editor?.setZoom(zoom);
+        <div class="stage">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+          <div
+            class="canvas"
+            class:picking={picking || linkArming}
+            bind:this={host}
+            tabindex="0"
+            role="application"
+            aria-label="Native vector map canvas">
+            {#if editor}
+              <MapViewControls
+                zoom={defaultView.zoom}
+                min={0}
+                max={8}
+                onzoom={(zoom) => {
+                  defaultView = { ...defaultView, zoom };
+                  editor?.setZoom(zoom);
+                }}
+                onpan={(longitude, latitude) => editor?.panBy(longitude, latitude)} />
+            {/if}
+            {#if busy}
+              <div class="map-busy" role="status"><strong>Loading…</strong></div>
+            {/if}
+          </div>
+          {#if linkPanelOpen && mapId}
+            <MapLocationLinkPanel
+              {mapId}
+              bind:anchor={linkAnchor}
+              arming={linkArming}
+              onclose={closeLinkPanel}
+              onresnap={() => {
+                linkArming = true;
+                editor?.setMode("static");
               }}
-              onpan={(longitude, latitude) => editor?.panBy(longitude, latitude)} />
-          {/if}
-          {#if busy}
-            <div class="map-busy" role="status"><strong>Loading…</strong></div>
+              onlinked={() => {
+                void refreshFeatureLinks();
+              }} />
           {/if}
         </div>
       {/if}
@@ -1754,6 +1966,14 @@ aside {
   min-width: 0;
   min-height: 0;
   background: #0d1b2a;
+}
+.stage {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 .canvas :global(.maplibregl-map) {
   width: 100%;

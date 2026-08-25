@@ -31,7 +31,8 @@ import {
   styleContainsRemoteUrl,
 } from "./style";
 import { drawModeForGeometry, kindForDrawMode, simplifyFreehandGeometry } from "./geometry";
-import { imageOverlayCoordinates, normalizedToLonLat, type ImageOverlayCoordinates } from "./coordinates";
+import { imageOverlayCoordinates, lonLatToNormalized, normalizedToLonLat, type ImageOverlayCoordinates } from "./coordinates";
+import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 
 if (typeof maplibregl.setWorkerUrl === "function") maplibregl.setWorkerUrl(workerUrl);
 
@@ -72,6 +73,7 @@ export type NativeVectorEditor = {
   panBy: (longitudeDegrees: number, latitudeDegrees: number) => void;
   resetView: () => void;
   focusFeature: (featureId: string) => boolean;
+  focusPoint: (normalized: [number, number], zoom?: number) => void;
   flush: () => void;
   deleteSelection: () => void;
   updateSelectedName: (name: string | null) => void;
@@ -209,6 +211,9 @@ export function createNativeVectorEditor(
     onDiagnostic?: (code: string, detail: string) => void;
     onSelect?: (feature: VectorFeature | null) => void;
     onDoubleClick?: (featureId: string) => void;
+    /** When true, map clicks emit `onMapPick` instead of normal selection. */
+    pickArmed?: boolean;
+    onMapPick?: (anchor: MapAnchor) => void;
     background?: NativeVectorBackground | null;
     projection?: "mercator" | "globe";
     initialView?: NativeVectorView | null;
@@ -583,11 +588,63 @@ export function createNativeVectorEditor(
     });
   };
 
-  const onHover = (event: MapLayerMouseEvent) => {
-    if (disposed) return;
-    const layerIds = (map.getStyle()?.layers ?? [])
+  const pickableLayerIds = () =>
+    (map.getStyle()?.layers ?? [])
       .map((layer) => layer.id)
-      .filter((id) => id.startsWith("daena-vector-"));
+      .filter((id) => id === "daena-base-fill" || id.startsWith("daena-vector-"));
+
+  const featureKindFor = (feature: VectorFeature): string =>
+    feature.properties.kind === "land" ||
+    feature.properties.kind === "lake" ||
+    feature.properties.kind === "region" ||
+    feature.properties.kind === "route" ||
+    feature.properties.kind === "marker" ||
+    feature.properties.kind === "custom"
+      ? feature.properties.kind
+      : feature.geometry.type;
+
+  const fallbackPointFor = (feature: VectorFeature, lng: number, lat: number): [number, number] => {
+    const positions = feature.geometry.coordinates.flat(Infinity) as number[];
+    if (positions.length < 2) return lonLatToNormalized(lng, lat);
+    return lonLatToNormalized(positions[0], positions[1]);
+  };
+
+  const anchorFromClick = (point: maplibregl.Point, lng: number, lat: number): MapAnchor => {
+    const layerIds = pickableLayerIds();
+    const hit = layerIds.length ? map.queryRenderedFeatures(point, { layers: layerIds }) : [];
+    const id = hit[0]?.id;
+    if (id !== undefined) {
+      const feature = session.draft.features.find((item) => item.id === String(id));
+      if (feature) {
+        return {
+          kind: "provider-feature",
+          provider: "daena-vector",
+          featureKind: featureKindFor(feature),
+          featureId: feature.id,
+          fallbackPoint: fallbackPointFor(feature, lng, lat),
+        };
+      }
+    }
+    const normalized = lonLatToNormalized(lng, lat);
+    return {
+      kind: "point",
+      point: [Math.min(1, Math.max(0, normalized[0])), Math.min(1, Math.max(0, normalized[1]))],
+    };
+  };
+
+  let lastPickStamp = 0;
+  let pointerDown: { x: number; y: number } | null = null;
+  const emitMapPick = (anchor: MapAnchor) => {
+    if (!session.onMapPick) return;
+    const now = performance.now();
+    if (now - lastPickStamp < 250) return;
+    lastPickStamp = now;
+    session.onMapPick(anchor);
+  };
+
+  const onHover = (event: MapLayerMouseEvent) => {
+    if (disposed || session.pickArmed) return;
+    const layerIds = pickableLayerIds().filter((id) => id.startsWith("daena-vector-"));
     const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
     const id = hit[0]?.id ?? null;
     if (hoveredId !== null && hoveredId !== id) clearFeatureState(hoveredId, "hover");
@@ -602,10 +659,15 @@ export function createNativeVectorEditor(
   };
 
   const onMapClick = (event: MapLayerMouseEvent) => {
-    if (disposed || terraLayerId()) return;
-    const layerIds = (map.getStyle()?.layers ?? [])
-      .map((layer) => layer.id)
-      .filter((id) => id.startsWith("daena-vector-"));
+    if (disposed) return;
+    // Pick/link mode must win over Terra Draw's active-layer gate.
+    if (session.pickArmed) {
+      event.preventDefault();
+      emitMapPick(anchorFromClick(event.point, event.lngLat.lng, event.lngLat.lat));
+      return;
+    }
+    if (terraLayerId()) return;
+    const layerIds = pickableLayerIds().filter((id) => id.startsWith("daena-vector-"));
     const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
     const id = hit[0]?.id;
     if (id === undefined) {
@@ -619,12 +681,31 @@ export function createNativeVectorEditor(
   };
 
   const onMapDoubleClick = (event: MapLayerMouseEvent) => {
-    if (disposed || terraLayerId()) return;
-    const layerIds = (map.getStyle()?.layers ?? [])
-      .map((layer) => layer.id)
-      .filter((id) => id.startsWith("daena-vector-"));
+    if (disposed || session.pickArmed || terraLayerId()) return;
+    const layerIds = pickableLayerIds().filter((id) => id.startsWith("daena-vector-"));
     const hit = layerIds.length ? map.queryRenderedFeatures(event.point, { layers: layerIds }) : [];
     if (hit[0]?.id !== undefined) session.onDoubleClick?.(String(hit[0].id));
+  };
+
+  const onCanvasPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    pointerDown = { x: event.clientX, y: event.clientY };
+  };
+
+  /** Capture-phase fallback when Terra Draw swallows MapLibre's click. */
+  const onCanvasPointerUp = (event: PointerEvent) => {
+    if (disposed || !session.pickArmed) return;
+    if (event.button !== 0) return;
+    const origin = pointerDown;
+    pointerDown = null;
+    if (!origin) return;
+    if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 6) return;
+    const canvas = map.getCanvas();
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const point = new maplibregl.Point(event.clientX - rect.left, event.clientY - rect.top);
+    const lngLat = map.unproject(point);
+    emitMapPick(anchorFromClick(point, lngLat.lng, lngLat.lat));
   };
 
   const onStyleLoad = () => {
@@ -642,6 +723,8 @@ export function createNativeVectorEditor(
   map.on("mousemove", onHover);
   map.on("click", onMapClick);
   map.on("dblclick", onMapDoubleClick);
+  map.getCanvas().addEventListener("pointerdown", onCanvasPointerDown, true);
+  map.getCanvas().addEventListener("pointerup", onCanvasPointerUp, true);
   map.on("moveend", emitView);
   map.on("error", (event) => {
     const message = event.error?.message ?? "MapLibre renderer error";
@@ -786,6 +869,16 @@ export function createNativeVectorEditor(
       emitSelect(feature);
       return true;
     },
+    focusPoint(normalized, zoom = 4) {
+      const [lon, lat] = normalizedToLonLat(normalized[0], normalized[1]);
+      lookAt = { lng: wrapLon(lon), lat: clampLat(lat) };
+      map.jumpTo({
+        center: [lookAt.lng, lookAt.lat],
+        zoom: Math.max(typeof zoom === "number" ? zoom : 4, globe ? 0 : 2),
+        bearing: 0,
+        pitch: globe ? map.getPitch() : 0,
+      });
+    },
     flush() {
       mergeDrawIntoDraft();
     },
@@ -831,6 +924,8 @@ export function createNativeVectorEditor(
       map.off("click", onMapClick);
       map.off("dblclick", onMapDoubleClick);
       map.off("moveend", emitView);
+      map.getCanvas().removeEventListener("pointerdown", onCanvasPointerDown, true);
+      map.getCanvas().removeEventListener("pointerup", onCanvasPointerUp, true);
       clearFeatureState(hoveredId, "hover");
       clearFeatureState(mapSelectedId, "selected");
       try {

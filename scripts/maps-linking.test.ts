@@ -49,6 +49,26 @@ Deno.test("Maps bridge never renders unresolved or out-of-validity markers", asy
   }
 });
 
+Deno.test("Show on map switches the workspace section into Maps", async () => {
+  const page = await Deno.readTextFile(new URL("../src/routes/+page.svelte", import.meta.url));
+  if (!page.includes('section === "maps" && sandboxView?.renderer === "maps"')) {
+    throw new Error("map surface still requires the Maps workspace section");
+  }
+  const marker = "async function openPluginView";
+  const start = page.indexOf(marker);
+  if (start < 0) throw new Error("openPluginView is missing");
+  const openMaps = page.slice(start, start + 1800);
+  if (!openMaps.includes('item.renderer === "maps"')) {
+    throw new Error("openPluginView must handle the maps renderer");
+  }
+  if (!openMaps.includes('section = "maps"')) {
+    throw new Error("openPluginView must set section to maps when opening a map surface");
+  }
+  if (!openMaps.includes("loreWikiOpen = false")) {
+    throw new Error("opening a map must leave the Lore wiki surface");
+  }
+});
+
 Deno.test("Json adapter captures provider-feature selections in anchor form", async () => {
   const adapter = new JsonProviderAdapter();
   await adapter.open(

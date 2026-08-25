@@ -1,5 +1,6 @@
 <script lang="ts">
 import { untrack } from "svelte";
+import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import {
   RENDERER_UNAVAILABLE,
   createNativeVectorEditor,
@@ -15,11 +16,17 @@ let {
   layers,
   raster,
   showRaster = true,
+  pickArmed = false,
+  onMapPick,
+  onready,
 }: {
   collection: VectorFeatureCollection;
   layers: VectorLayerDefinition[];
   raster: HTMLCanvasElement | null;
   showRaster?: boolean;
+  pickArmed?: boolean;
+  onMapPick?: (anchor: MapAnchor) => void;
+  onready?: (editor: NativeVectorEditor | null) => void;
 } = $props();
 
 let host = $state<HTMLDivElement | null>(null);
@@ -58,6 +65,12 @@ $effect(() => {
       onDiagnostic(code, detail) {
         if (code === RENDERER_UNAVAILABLE) notice = detail;
       },
+      get pickArmed() {
+        return pickArmed;
+      },
+      onMapPick(anchor) {
+        onMapPick?.(anchor);
+      },
       background: backgroundFrom(raster),
       projection: "globe",
       initialView: view,
@@ -68,13 +81,16 @@ $effect(() => {
   );
   if ("error" in created) {
     notice = created.detail;
+    onready?.(null);
     return;
   }
   editor = created;
   created.setMode("static");
+  onready?.(created);
   return () => {
     created.dispose();
     if (editor === created) editor = null;
+    onready?.(null);
   };
 });
 

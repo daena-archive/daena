@@ -9,6 +9,7 @@ let {
   backLabel = "Back to workspace",
   actionsLabel = "View actions",
   onBack,
+  brandActions,
   actions,
   children,
 }: {
@@ -18,6 +19,7 @@ let {
   backLabel?: string;
   actionsLabel?: string;
   onBack: () => void;
+  brandActions?: Snippet;
   actions?: Snippet;
   children?: Snippet;
 } = $props();
@@ -29,6 +31,11 @@ const actionContent = $derived(actions ?? children);
     <button class="workspace-topbar-back" type="button" onclick={onBack} aria-label={backLabel} title={backLabel}>
       <ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" />
     </button>
+    {#if brandActions}
+      <div class="workspace-topbar-brand-actions" data-workspace-topbar-brand-actions>
+        {@render brandActions()}
+      </div>
+    {/if}
     {#if Icon}
       <span class="workspace-topbar-mark"><Icon size={16} strokeWidth={1.8} aria-hidden="true" /></span>
     {/if}
@@ -67,6 +74,49 @@ const actionContent = $derived(actions ?? children);
 }
 .workspace-topbar-brand {
   min-width: 0;
+}
+.workspace-topbar-brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.workspace-topbar-brand-actions :global(button),
+:global([data-workspace-topbar-brand-actions] > button) {
+  display: inline-flex;
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--theme-neutral-border, #d9ddd6);
+  border-radius: 8px;
+  background: var(--theme-surface-bg, #fff);
+  color: var(--theme-neutral-text-soft, #4d584f);
+  cursor: pointer;
+}
+.workspace-topbar-brand-actions :global(button:hover),
+.workspace-topbar-brand-actions :global(button:focus-visible),
+:global([data-workspace-topbar-brand-actions] > button:hover),
+:global([data-workspace-topbar-brand-actions] > button:focus-visible) {
+  border-color: var(--theme-neutral-border-strong, #b9c4ba);
+  background: var(--theme-success-bg, #f2f6f2);
+  color: var(--theme-success-text, #2f4e35);
+  outline: 0;
+}
+.workspace-topbar-brand-actions :global(button.active),
+.workspace-topbar-brand-actions :global(button[aria-pressed="true"]),
+:global([data-workspace-topbar-brand-actions] > button.active),
+:global([data-workspace-topbar-brand-actions] > button[aria-pressed="true"]) {
+  border-color: var(--theme-neutral-border-strong, #b8c9ba);
+  background: var(--theme-success-bg, #e4ece4);
+  color: var(--theme-success-text, #2f4e35);
+}
+.workspace-topbar-brand-actions :global(button:disabled),
+:global([data-workspace-topbar-brand-actions] > button:disabled) {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 .workspace-topbar-copy {
   display: grid;

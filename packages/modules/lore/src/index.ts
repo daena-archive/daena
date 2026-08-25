@@ -259,9 +259,13 @@ function applyTypeVisibility(graph: Core, hiddenTypes: Set<string>) {
 async function showOnMap(context: ModuleContext, entityId: string) {
   try {
     const result = await context.maps.focusEntity({ entityId });
-    if (result.status === "multiple-links" && result.locations.length > 0) {
-      const location = result.locations[0];
-      await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+    // focusEntity emits shell navigation for a single resolved link. Multiple links
+    // return choices without emitting; open the first so Lore still jumps to a map.
+    if (result?.status === "multiple-links" && Array.isArray(result.locations) && result.locations.length > 0) {
+      const location = result.locations[0] as { mapEntityId?: string; id?: string };
+      if (location.mapEntityId && location.id) {
+        await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+      }
     }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);

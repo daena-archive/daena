@@ -768,7 +768,8 @@ fn parse_geojson_overlays(
     };
     for feature in features {
         let layer_id = feature
-            .pointer("/properties/daenaLayerId")
+            .pointer("/properties/daena/layerId")
+            .or_else(|| feature.pointer("/properties/daenaLayerId"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
@@ -786,7 +787,8 @@ fn parse_geojson_overlays(
             })
             .unwrap_or_else(|| format!("feature-{}", overlays.len()));
         let label = feature
-            .pointer("/properties/name")
+            .pointer("/properties/daena/name")
+            .or_else(|| feature.pointer("/properties/name"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
         let mut path = Vec::new();
@@ -1004,7 +1006,7 @@ mod tests {
     fn unsupported_providers_are_reported_not_inferred_from_names() {
         let descriptor = serde_json::json!({
             "schemaVersion": 1,
-            "provider": {"id": "daena-vector", "adapterVersion": 1, "sourceFormat": "geojson"}
+            "provider": {"id": "daena-openlayers", "adapterVersion": 2, "sourceFormat": "daena-geojson"}
         });
         let capabilities =
             capabilities_for_descriptor(&descriptor, &serde_json::json!({"layers": []}));

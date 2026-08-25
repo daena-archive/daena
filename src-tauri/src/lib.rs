@@ -7601,7 +7601,7 @@ async fn maps_recovery_restore(
     entity_id: String,
     file_name: String,
     request_id: Option<String>,
-) -> Result<Asset, String> {
+) -> Result<daena_core::MapEditApply, String> {
     with_core(state, move |core| {
         core.project(trusted_shell())?.restore_map_recovery_copy(
             &entity_id,
@@ -8707,6 +8707,7 @@ async fn project_apply_map_edit(
     expected_map_revision: String,
     expected_layers_revision: String,
     expected_source_revision: String,
+    link_mutations: Option<Vec<daena_core::MapLinkMutation>>,
     request_id: Option<String>,
 ) -> Result<daena_core::MapEditApply, String> {
     with_core(state, move |core| {
@@ -8719,6 +8720,7 @@ async fn project_apply_map_edit(
             &expected_map_revision,
             &expected_layers_revision,
             &expected_source_revision,
+            link_mutations.unwrap_or_default(),
             request_id.as_deref(),
         )
     })

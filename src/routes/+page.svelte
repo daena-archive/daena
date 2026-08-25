@@ -1748,7 +1748,7 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
       mapsEditorMode =
         descriptor?.provider?.id === "daena-physical"
           ? "vector"
-          : descriptor?.provider?.id === "daena-vector"
+          : descriptor?.provider?.id === "daena-openlayers"
             ? "vector"
             : "fmg";
     }

@@ -54,11 +54,20 @@ fn fmg_descriptor(source_asset_id: Option<String>) -> Value {
 
 fn vector_descriptor(source_asset_id: &str, preview_asset_id: Option<&str>) -> Value {
     serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
+        "schemaVersion": 2,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 2, "sourceFormat": VECTOR_SOURCE_FORMAT},
         "sourceAssetId": source_asset_id,
         "previewAssetId": preview_asset_id,
-        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
+        "coordinateSpace": {
+            "kind": "world",
+            "extent": [-180, -90, 180, 90],
+            "origin": "bottom-left",
+            "units": {"id": "world-unit", "label": "World units", "metresPerUnit": null},
+            "wrapX": false
+        },
+        "backgrounds": [],
+        "defaultView": {"center": [0.0, 0.0], "zoom": 1, "rotation": 0},
+        "settings": {"snapEnabled": true, "grid": null}
     })
 }
 
@@ -76,7 +85,7 @@ fn provider_registry_dispatches_all_descriptor_variants() {
         (
             ProviderDescriptor {
                 id: VECTOR_PROVIDER.into(),
-                adapter_version: 1,
+                adapter_version: 2,
                 source_format: VECTOR_SOURCE_FORMAT.into(),
             },
             ProviderKind::Vector,
@@ -133,7 +142,7 @@ fn validates_layers_only_on_map_entities() {
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     insert_entity(&connection, &place_id, "place");
     let layers = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": Uuid::new_v4(),
             "name": "Political",
@@ -148,6 +157,21 @@ fn validates_layers_only_on_map_entities() {
         .unwrap_err()
         .to_string()
         .contains("layers belong only on a map entity"));
+    assert!(validate_field(
+        &connection,
+        &map_id,
+        "layers",
+        &serde_json::json!({"schemaVersion": 1, "layers": []})
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("layers.schemaVersion"));
+    assert!(provider_spec(&ProviderDescriptor {
+        id: VECTOR_PROVIDER.into(),
+        adapter_version: 1,
+        source_format: VECTOR_SOURCE_FORMAT.into(),
+    })
+    .is_err());
 }
 
 #[test]
@@ -212,13 +236,10 @@ fn rejects_inverted_validity_date_bounds() {
 
 #[test]
 fn image_descriptors_and_raster_layers_round_trip() {
-    let png = serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
-        "sourceAssetId": "018f89ec-25fc-7816-8b47-6f80905f2868",
-        "previewAssetId": "018f89ec-25fc-7816-8b47-6f80905f2869",
-        "defaultView": {"center": [0.5, 0.5], "zoom": 1}
-    });
+    let png = vector_descriptor(
+        "018f89ec-25fc-7816-8b47-6f80905f2868",
+        Some("018f89ec-25fc-7816-8b47-6f80905f2869"),
+    );
     let descriptor: MapDescriptor = serde_json::from_value(png.clone()).unwrap();
     assert_eq!(
         serde_json::from_value::<MapDescriptor>(serde_json::to_value(&descriptor).unwrap())
@@ -282,11 +303,20 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
     insert_asset(&connection, &asset_id, &map_id, VECTOR_MIME);
 
     let descriptor = serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
+        "schemaVersion": 2,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 2, "sourceFormat": VECTOR_SOURCE_FORMAT},
         "sourceAssetId": asset_id,
         "previewAssetId": null,
-        "defaultView": {"center": [0.5, 0.5], "zoom": 1},
+        "coordinateSpace": {
+            "kind": "world",
+            "extent": [-180, -90, 180, 90],
+            "origin": "bottom-left",
+            "units": {"id": "world-unit", "label": "World units", "metresPerUnit": null},
+            "wrapX": false
+        },
+        "backgrounds": [],
+        "defaultView": {"center": [0.0, 0.0], "zoom": 1, "rotation": 0},
+        "settings": {"snapEnabled": true, "grid": null},
         "generation": {
             "id": "daena-landmass",
             "version": 1,
@@ -307,11 +337,20 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
     );
 
     let polar = serde_json::json!({
-        "schemaVersion": 1,
-        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 1, "sourceFormat": VECTOR_SOURCE_FORMAT},
+        "schemaVersion": 2,
+        "provider": {"id": VECTOR_PROVIDER, "adapterVersion": 2, "sourceFormat": VECTOR_SOURCE_FORMAT},
         "sourceAssetId": asset_id,
         "previewAssetId": null,
-        "defaultView": {"center": [0.5, 0.01], "zoom": 1}
+        "coordinateSpace": {
+            "kind": "world",
+            "extent": [-180, -90, 180, 90],
+            "origin": "bottom-left",
+            "units": {"id": "world-unit", "label": "World units", "metresPerUnit": null},
+            "wrapX": false
+        },
+        "backgrounds": [],
+        "defaultView": {"center": [0.0, -80.0], "zoom": 1, "rotation": 0},
+        "settings": {"snapEnabled": true, "grid": null}
     });
     validate_field(&connection, &map_id, "map", &polar).unwrap();
 
@@ -337,7 +376,7 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         &connection,
         &map_id,
         "layers",
-        &serde_json::json!({"schemaVersion": 1, "layers": [layer]}),
+        &serde_json::json!({"schemaVersion": 2, "layers": [layer]}),
     )
     .unwrap();
 
@@ -366,7 +405,7 @@ fn rejects_invalid_semantic_style_and_selector() {
     let map_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
     let invalid_style = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": Uuid::new_v4(),
             "name": "Routes",
@@ -383,7 +422,7 @@ fn rejects_invalid_semantic_style_and_selector() {
             .contains("unsupported property")
     );
     let invalid_kind = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": Uuid::new_v4(),
             "name": "Routes",
@@ -540,7 +579,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
     insert_asset(&connection, &jpeg_id, &map_id, "image/jpeg");
 
     let valid = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [
             {
                 "id": "018f8a01-9c20-ae05-b442-46dd3de2446c",
@@ -567,7 +606,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
     assert!(validate_field(&connection, &map_id, "layers", &valid).is_ok());
 
     let dangling = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
             "name": "Countries",
@@ -587,7 +626,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
         .contains("rasterAssetId"));
 
     let cross_entity = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
             "name": "Countries",
@@ -604,7 +643,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
     assert!(validate_field(&connection, &map_id, "layers", &cross_entity).is_err());
 
     let bad_mime = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
             "name": "Countries",
@@ -624,7 +663,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
         .contains("PNG"));
 
     let bad_opacity = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
             "name": "Countries",
@@ -644,7 +683,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
         .contains("opacity"));
 
     let malformed = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "layers": [{
             "id": "018f89f7-69fd-7fa2-811f-13aa0abf1139",
             "name": "Countries",
@@ -677,7 +716,7 @@ fn validates_raster_layers_and_rejects_malformed_shapes() {
             "locked": false
         }));
     }
-    let overflow = serde_json::json!({"schemaVersion": 1, "layers": too_many});
+    let overflow = serde_json::json!({"schemaVersion": 2, "layers": too_many});
     assert!(validate_field(&connection, &map_id, "layers", &overflow)
         .unwrap_err()
         .to_string()

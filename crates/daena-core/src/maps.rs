@@ -197,6 +197,54 @@ pub struct MapRecoveryCopy {
     pub created_at: String,
 }
 
+pub const MAP_EDIT_DRAFT_KIND: &str = "daena-map-edit-draft";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MapEditDraftPackage {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub kind: String,
+    #[serde(rename = "mapEntityId")]
+    pub map_entity_id: String,
+    pub descriptor: Value,
+    pub layers: Value,
+    pub geojson: String,
+    #[serde(rename = "linkMutations", default)]
+    pub link_mutations: Vec<Value>,
+}
+
+impl MapEditDraftPackage {
+    pub fn encode(&self) -> Result<Vec<u8>, CoreError> {
+        if self.schema_version != 1 || self.kind != MAP_EDIT_DRAFT_KIND {
+            return Err(invalid("unsupported map edit draft package"));
+        }
+        let bytes = serde_json::to_vec(self).map_err(|error| invalid(error.to_string()))?;
+        if bytes.len() > MAP_RECOVERY_MAX_BYTES {
+            return Err(invalid("map recovery copy exceeds the host transfer limit"));
+        }
+        Ok(bytes)
+    }
+
+    pub fn parse(bytes: &[u8]) -> Result<Self, CoreError> {
+        if bytes.len() > MAP_RECOVERY_MAX_BYTES {
+            return Err(invalid("map recovery copy exceeds the host transfer limit"));
+        }
+        let package: Self =
+            serde_json::from_slice(bytes).map_err(|error| invalid(format!("invalid map edit draft: {error}")))?;
+        if package.schema_version != 1 || package.kind != MAP_EDIT_DRAFT_KIND {
+            return Err(invalid("unsupported map edit draft package"));
+        }
+        if package.map_entity_id.trim().is_empty() {
+            return Err(invalid("map edit draft mapEntityId is required"));
+        }
+        if package.geojson.len() > VECTOR_MAX_BYTES {
+            return Err(invalid("map edit draft geojson exceeds the vector byte budget"));
+        }
+        Ok(package)
+    }
+}
+
 /// Upper bound for a rejected map draft written to the recovery directory.
 /// Mirrors the host transfer ceiling; larger payloads cannot arrive here.
 pub const MAP_RECOVERY_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -1352,7 +1400,7 @@ pub fn validate_image_map_content(
                 let source_id = descriptor
                     .source_asset_id
                     .as_deref()
-                    .ok_or_else(|| invalid("daena-vector maps require sourceAssetId"))?;
+                    .ok_or_else(|| invalid("daena-openlayers maps require sourceAssetId"))?;
                 let bytes = load_asset(source_id)?;
                 let layers_value: Option<Value> = connection
                     .query_row(
@@ -1428,8 +1476,13 @@ pub fn validate_physical_authored_source_bytes(bytes: &[u8]) -> Result<(), CoreE
         .flatten()
         .filter_map(|feature| {
             feature
-                .pointer("/properties/daenaLayerId")
+                .pointer("/properties/daena/layerId")
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    feature
+                        .pointer("/properties/daenaLayerId")
+                        .and_then(Value::as_str)
+                })
         })
         .any(physical::is_reserved_layer_id);
     if reserved {

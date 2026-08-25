@@ -68,6 +68,10 @@ import {
 } from "./editor-state";
 import {
   DEFAULT_VECTOR_LAYER_STYLE,
+  VECTOR_PROVIDER,
+  featureLayerId,
+  featureName,
+  featureSemanticType,
   type VectorDrawMode,
   type VectorFeature,
   type VectorFeatureCollection,
@@ -108,6 +112,7 @@ let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", feature
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<VectorLayerDefinition[]>([]);
 let layersField = $state<FieldValue | null>(null);
+let mapField = $state<FieldValue | null>(null);
 let sourceAsset = $state<Asset | null>(null);
 let activeLayerId = $state<string | null>(null);
 let tool = $state<VectorDrawMode>("select");
@@ -217,19 +222,10 @@ function featureFallbackPoint(feature: VectorFeature | null): [number, number] {
 }
 
 function pickAnchorFor(feature: VectorFeature): MapAnchor {
-  const featureKind =
-    feature.properties.kind === "land" ||
-    feature.properties.kind === "lake" ||
-    feature.properties.kind === "region" ||
-    feature.properties.kind === "route" ||
-    feature.properties.kind === "marker" ||
-    feature.properties.kind === "custom"
-      ? feature.properties.kind
-      : feature.geometry.type;
   return {
     kind: "provider-feature",
-    provider: "daena-vector",
-    featureKind,
+    provider: VECTOR_PROVIDER,
+    featureKind: "geojson-feature",
     featureId: feature.id,
     fallbackPoint: featureFallbackPoint(feature),
   };
@@ -318,7 +314,7 @@ function applyFeatureLinks(
           : [0.5, 0.5];
       anchor = {
         kind: "provider-feature",
-        provider: pin.provider || "daena-vector",
+        provider: pin.provider || VECTOR_PROVIDER,
         featureKind: pin.featureKind || "feature",
         featureId: pin.featureId,
         fallbackPoint,
@@ -413,7 +409,7 @@ function persistedCollection(collection: VectorFeatureCollection): VectorFeature
   if (!physicalMap) return collection;
   return {
     type: "FeatureCollection",
-    features: collection.features.filter((feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId)),
+    features: collection.features.filter((feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature))),
   };
 }
 
@@ -511,10 +507,10 @@ function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
 
 function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   const authoredDraft = draft.features.filter(
-    (feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId),
+    (feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)),
   );
   const authoredLoaded = loaded.features.filter(
-    (feature) => !immutablePhysicalLayerIds.has(feature.properties.daenaLayerId),
+    (feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)),
   );
   const physical = parseDerivedCollection(products.geojson);
   draft = cloneCollection({ type: "FeatureCollection", features: [...physical.features, ...authoredDraft] });
@@ -706,6 +702,7 @@ async function load() {
     const fields = await project.listFields(mapId);
     if (generation !== loadGeneration) return;
     const descriptorField = fields.find((field) => field.namespace === "maps" && field.key === "map");
+    mapField = descriptorField ?? null;
     const descriptor = descriptorField?.value as {
       provider?: { id?: string };
       sourceAssetId?: string;
@@ -867,7 +864,7 @@ async function load() {
 }
 
 async function save() {
-  if (!mapId || !sourceAsset || busy) return;
+  if (!mapId || !sourceAsset || !mapField || !layersField || busy) return;
   if (!dirty) {
     applyEditorEvent({ type: "save-succeeded" });
     return;
@@ -880,9 +877,22 @@ async function save() {
     const snapshot = cloneCollection(persistedCollection(draft));
     const bytes = collectionBytes(snapshot);
     const hash = await sha256Hex(bytes);
-    const replaced = await project.replaceVectorSource(sourceAsset.id, bytes, hash, sourceAsset.revision);
+    const applied = await project.applyMapEdit({
+      mapEntityId: mapId,
+      descriptor: mapField.value,
+      layers: layersField.value,
+      bytes,
+      uploadContentHash: hash,
+      expectedMapRevision: mapField.revision,
+      expectedLayersRevision: layersField.revision,
+      expectedSourceRevision: sourceAsset.revision,
+      linkMutations: [],
+    });
     if (generation !== saveGeneration) return;
-    sourceAsset = replaced.source;
+    mapField = applied.map;
+    layersField = applied.layers;
+    layersFieldRevision = applied.layers.revision;
+    sourceAsset = applied.source;
     loaded = cloneCollection(snapshot);
     recoveryPath = "";
     if (JSON.stringify(persistedCollection(draft)) === JSON.stringify(snapshot)) {
@@ -894,7 +904,7 @@ async function save() {
     if (generation !== saveGeneration) return;
     const text = cause instanceof Error ? cause.message : String(cause);
     const parsed = parseVectorDiagnostic(text);
-    if (parsed.code === "asset.revision-conflict") {
+    if (parsed.code === "asset.revision-conflict" || text.toLowerCase().includes("revision conflict")) {
       applyEditorEvent({ type: "save-conflict", message: text });
     } else {
       applyEditorEvent({ type: "save-failed", message: text });
@@ -905,9 +915,20 @@ async function save() {
 }
 
 async function exportDraft() {
-  if (!mapId) return;
+  if (!mapId || !mapField || !layersField) return;
   try {
-    recoveryPath = await project.mapsRecoveryExport(mapId, collectionBytes(persistedCollection(draft)));
+    const packageBytes = new TextEncoder().encode(
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "daena-map-edit-draft",
+        mapEntityId: mapId,
+        descriptor: mapField.value,
+        layers: layersField.value,
+        geojson: new TextDecoder().decode(collectionBytes(persistedCollection(draft))),
+        linkMutations: [],
+      }),
+    );
+    recoveryPath = await project.mapsRecoveryExport(mapId, packageBytes);
     notice = `Draft exported to ${recoveryPath}`;
   } catch (cause) {
     applyEditorEvent({ type: "save-failed", message: cause instanceof Error ? cause.message : String(cause) });
@@ -1101,11 +1122,11 @@ async function runRemoveLayer(layer: VectorLayerDefinition, savedCount: number) 
     sourceAsset = change.source;
     draft = {
       type: "FeatureCollection",
-      features: draft.features.filter((feature) => feature.properties.daenaLayerId !== layer.id),
+      features: draft.features.filter((feature) => featureLayerId(feature) !== layer.id),
     };
     loaded = {
       type: "FeatureCollection",
-      features: loaded.features.filter((feature) => feature.properties.daenaLayerId !== layer.id),
+      features: loaded.features.filter((feature) => featureLayerId(feature) !== layer.id),
     };
     const remaining = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
     activeLayerId = remaining[0]?.id ?? null;
@@ -1621,17 +1642,17 @@ onMount(() => {
             <div class="inspector" aria-label="Selected feature">
               <strong>Selected feature</strong>
               <p class="hint">
-                {selectedFeature.properties.kind} · {selectedFeature.properties.daenaLayerId === "base"
+                {featureSemanticType(selectedFeature)} · {featureLayerId(selectedFeature) === "base"
                   ? "base geography"
                   : "authored"}
               </p>
               <label>
                 Name
                 <input
-                  value={selectedFeature.properties.name ?? ""}
+                  value={featureName(selectedFeature) ?? ""}
                   maxlength="256"
                   aria-label="Feature name"
-                  disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                  disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
                   onchange={(event) => {
                     const next = event.currentTarget.value.trim() || null;
                     editor?.updateSelectedName(next);
@@ -1640,9 +1661,9 @@ onMount(() => {
               <label>
                 Layer
                 <select
-                  value={selectedFeature.properties.daenaLayerId}
+                  value={featureLayerId(selectedFeature)}
                   aria-label="Feature layer"
-                  disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                  disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
                   onchange={(event) => editor?.moveSelectionToLayer(event.currentTarget.value)}>
                   {#each listedLayers.filter((layer) => layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
                     <option value={layer.id}>{layer.name}</option>
@@ -1651,7 +1672,7 @@ onMount(() => {
               </label>
               <button
                 type="button"
-                disabled={selectedFeature.properties.daenaLayerId === "base" || activeLayer?.locked}
+                disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
                 onclick={() => editor?.duplicateSelection()}>Duplicate feature</button>
             </div>
           {/if}

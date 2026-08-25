@@ -4,7 +4,7 @@ import Fill from "ol/style/Fill.js";
 import Stroke from "ol/style/Stroke.js";
 import Style from "ol/style/Style.js";
 import Text from "ol/style/Text.js";
-import { BASE_LAYER_ID, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
+import { BASE_LAYER_ID, featureLayerId, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
 
 function colorWithOpacity(color: string, opacity: number) {
   if (!color.startsWith("#") || (color.length !== 7 && color.length !== 4)) return color;
@@ -32,7 +32,7 @@ export function visibleUnlockedFeatures(
   if (baseVisible(layers)) enabled.add(BASE_LAYER_ID);
   return {
     type: "FeatureCollection",
-    features: collection.features.filter((feature) => enabled.has(feature.properties.daenaLayerId)),
+    features: collection.features.filter((feature) => enabled.has(featureLayerId(feature))),
   };
 }
 

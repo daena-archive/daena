@@ -152,10 +152,16 @@ export interface RasterLayerChange {
 export interface VectorSourceReplace {
   source: Asset;
 }
+export interface MapLinkMutation {
+  entityId: string;
+  expectedLocationsRevision: string;
+  locations: unknown;
+}
 export interface MapEditApply {
   map: FieldValue;
   layers: FieldValue;
   source: Asset;
+  locations?: FieldValue[];
 }
 export interface PhysicalJobStatus {
   jobId: string;
@@ -1372,7 +1378,7 @@ export const project = {
     invoke<void>("maps_editor_focus_link", { pluginId: pluginId ?? null, linkId }),
   mapsRecoveryList: (entityId: string) => invoke<MapRecoveryCopy[]>("maps_recovery_list", { entityId }),
   mapsRecoveryRestore: (entityId: string, fileName: string) =>
-    invoke<Asset>("maps_recovery_restore", { entityId, fileName }),
+    invoke<MapEditApply>("maps_recovery_restore", { entityId, fileName }),
   registerAsset: (
     input: {
       entity_id: string;
@@ -1442,11 +1448,13 @@ export const project = {
     expectedMapRevision: string;
     expectedLayersRevision: string;
     expectedSourceRevision: string;
+    linkMutations?: MapLinkMutation[];
     requestId?: string;
   }) =>
     invoke<MapEditApply>("project_apply_map_edit", {
       ...input,
       bytes: Array.from(input.bytes),
+      linkMutations: input.linkMutations ?? [],
       requestId: input.requestId ?? crypto.randomUUID(),
     }),
   createVectorLayer: (

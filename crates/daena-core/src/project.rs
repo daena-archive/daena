@@ -374,10 +374,20 @@ pub struct VectorSourceReplace {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MapLinkMutation {
+    pub entity_id: String,
+    pub expected_locations_revision: String,
+    pub locations: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MapEditApply {
     pub map: FieldValue,
     pub layers: FieldValue,
     pub source: Asset,
+    #[serde(default)]
+    pub locations: Vec<FieldValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2416,8 +2426,8 @@ impl ProjectStore {
         Ok(conflicts)
     }
 
-    /// Writes a rejected map save draft to `.daena/conflicts/maps/`. The
-    /// original source asset is never overwritten without review; the draft
+    /// Writes a rejected map save draft package to `.daena/conflicts/maps/`.
+    /// The original source asset is never overwritten without review; the draft
     /// lives only in the disposable derived state directory.
     pub fn save_map_recovery_copy(
         &self,
@@ -2425,9 +2435,10 @@ impl ProjectStore {
         bytes: &[u8],
     ) -> Result<String, CoreError> {
         self.require_map_entity(entity_id)?;
-        if bytes.len() > crate::maps::MAP_RECOVERY_MAX_BYTES {
+        let package = crate::maps::MapEditDraftPackage::parse(bytes)?;
+        if package.map_entity_id != entity_id {
             return Err(CoreError::Validation(
-                "map recovery copy exceeds the host transfer limit".into(),
+                "map edit draft mapEntityId does not match the target map".into(),
             ));
         }
         let conflicts = self.map_recovery_dir(true)?;
@@ -2479,15 +2490,14 @@ impl ProjectStore {
         Ok(copies)
     }
 
-    /// Replaces a map source asset with a previously exported recovery draft.
-    /// This is an explicit user action, so the revision preflight runs against
-    /// the current revision instead of a stale one.
+    /// Restores a previously exported map edit draft package. This is an
+    /// explicit user action, so compare-and-swap uses the current revisions.
     pub fn restore_map_recovery_copy(
         &self,
         entity_id: &str,
         file_name: &str,
         request_id: Option<&str>,
-    ) -> Result<Asset, CoreError> {
+    ) -> Result<MapEditApply, CoreError> {
         self.require_map_entity(entity_id)?;
         if file_name.trim().is_empty() || file_name.contains('/') || file_name.contains('\\') {
             return Err(CoreError::Validation(
@@ -2504,38 +2514,60 @@ impl ProjectStore {
             operation: "read map recovery copy",
             source: error,
         })?;
-        if bytes.len() > crate::maps::MAP_RECOVERY_MAX_BYTES {
+        let package = crate::maps::MapEditDraftPackage::parse(&bytes)?;
+        if package.map_entity_id != entity_id {
             return Err(CoreError::Validation(
-                "map recovery copy exceeds the host transfer limit".into(),
+                "map edit draft mapEntityId does not match the target map".into(),
             ));
         }
-        let descriptor: crate::maps::MapDescriptor = self
-            .list_fields(entity_id.into())?
-            .into_iter()
+        let fields = self.list_fields_unchecked(entity_id.to_owned())?;
+        let map_field = fields
+            .iter()
             .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
-            .map(|field| {
-                serde_json::from_value(field.value)
-                    .map_err(|error| CoreError::Serialization(error.to_string()))
-            })
-            .transpose()?
             .ok_or_else(|| CoreError::NotFound("map descriptor not found".into()))?;
-        let Some(source_asset_id) = descriptor.source_asset_id else {
-            return Err(CoreError::NotFound(
-                "map has no saved source asset to restore".into(),
-            ));
-        };
-        let mut source = self.asset_unchecked(&source_asset_id)?;
-        let expected_revision = self.revision_for_asset(&source.id)?;
-        let digest = format!("sha256:{}", digest_bytes(&bytes));
-        self.replace_asset_bytes_with_request(
-            AssetReplaceInput {
-                asset_id: source_asset_id,
-                content_hash: digest,
-                size: bytes.len() as i64,
-                mime_type: std::mem::take(&mut source.mime_type),
-            },
-            bytes,
-            &expected_revision,
+        let map_revision = self.revision_for_field(map_field)?;
+        let layers_field = self.layers_field(entity_id)?;
+        let source_id = map_field
+            .value
+            .get("authoredSourceAssetId")
+            .or_else(|| map_field.value.get("sourceAssetId"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::NotFound("vector source asset not found".into()))?
+            .to_owned();
+        let source = self.asset_unchecked(&source_id)?;
+        let source_revision = self.revision_for_asset(&source.id)?;
+        let geojson_bytes = package.geojson.into_bytes();
+        let upload_content_hash = format!("sha256:{:x}", Sha256::digest(&geojson_bytes));
+        let mut link_mutations = Vec::with_capacity(package.link_mutations.len());
+        for value in package.link_mutations {
+            let mutation: MapLinkMutation = serde_json::from_value(value)
+                .map_err(|error| CoreError::Validation(format!("invalid link mutation: {error}")))?;
+            let current = self
+                .list_fields_unchecked(mutation.entity_id.clone())?
+                .into_iter()
+                .find(|field| {
+                    field.namespace == crate::maps::MAP_NAMESPACE && field.key == "locations"
+                });
+            let expected_locations_revision = match &current {
+                Some(field) => self.revision_for_field(field)?,
+                None => String::new(),
+            };
+            link_mutations.push(MapLinkMutation {
+                entity_id: mutation.entity_id,
+                expected_locations_revision,
+                locations: mutation.locations,
+            });
+        }
+        self.apply_map_edit(
+            entity_id.to_owned(),
+            package.descriptor,
+            package.layers,
+            geojson_bytes,
+            upload_content_hash,
+            &map_revision,
+            &layers_field.revision,
+            &source_revision,
+            link_mutations,
             request_id,
         )
     }
@@ -6459,7 +6491,7 @@ impl ProjectStore {
             return Err(crate::maps::vector::fail(
                 crate::maps::vector::CODE_SOURCE_INVALID,
                 "$",
-                "replacement target is not a daena-vector source asset",
+                "replacement target is not a daena-openlayers source asset",
             ));
         }
         let layers = self.layers_field(&asset.entity_id)?;
@@ -6538,6 +6570,7 @@ impl ProjectStore {
         expected_map_revision: &str,
         expected_layers_revision: &str,
         expected_source_revision: &str,
+        link_mutations: Vec<MapLinkMutation>,
         request_id: Option<&str>,
     ) -> Result<MapEditApply, CoreError> {
         let input_fingerprint = digest_bytes(
@@ -6549,6 +6582,7 @@ impl ProjectStore {
                 "expectedMapRevision": expected_map_revision,
                 "expectedLayersRevision": expected_layers_revision,
                 "expectedSourceRevision": expected_source_revision,
+                "linkMutations": link_mutations,
             }))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
@@ -6612,6 +6646,51 @@ impl ProjectStore {
                 "map edit target is not a canonical authored GeoJSON asset",
             ));
         }
+        let mut prepared_links = Vec::with_capacity(link_mutations.len());
+        let mut seen_link_entities = BTreeSet::new();
+        for mutation in &link_mutations {
+            if !seen_link_entities.insert(mutation.entity_id.clone()) {
+                return Err(CoreError::Validation(
+                    "maps: apply_map_edit linkMutations must target distinct entities".into(),
+                ));
+            }
+            let exists: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                    params![mutation.entity_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(CoreError::NotFound(format!(
+                    "link entity {} not found",
+                    mutation.entity_id
+                )));
+            }
+            let current = self
+                .list_fields_unchecked(mutation.entity_id.clone())?
+                .into_iter()
+                .find(|field| {
+                    field.namespace == crate::maps::MAP_NAMESPACE && field.key == "locations"
+                });
+            let current_revision = match &current {
+                Some(field) => self.revision_for_field(field)?,
+                None => String::new(),
+            };
+            Self::ensure_expected_revision(
+                Some(mutation.expected_locations_revision.as_str()),
+                current_revision,
+                "field",
+            )?;
+            prepared_links.push(FieldValue {
+                entity_id: mutation.entity_id.clone(),
+                namespace: crate::maps::MAP_NAMESPACE.into(),
+                key: "locations".into(),
+                value: mutation.locations.clone(),
+                revision: String::new(),
+            });
+        }
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
         let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
         if descriptor
@@ -6648,16 +6727,24 @@ impl ProjectStore {
                 revision: String::new(),
                 ..source.clone()
             },
+            locations: prepared_links.clone(),
         })
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let mut affected = vec![format!("entities/{map_entity_id}/"), source.path.clone()];
+        for link in &prepared_links {
+            affected.push(format!("entities/{}/", link.entity_id));
+        }
         let transaction = self.begin_mutation_with_fingerprint(
             &request_id,
             Some(&result),
-            &[format!("entities/{map_entity_id}/"), source.path.clone()],
+            &affected,
             &input_fingerprint,
         )?;
         crate::maps::validate_field(&transaction, &map_entity_id, "map", &descriptor)?;
         crate::maps::validate_field(&transaction, &map_entity_id, "layers", &layers_value)?;
+        for link in &prepared_links {
+            crate::maps::validate_field(&transaction, &link.entity_id, "locations", &link.value)?;
+        }
         transaction.execute(
             "UPDATE assets SET content_hash=?1,size=?2,mime_type=?3 WHERE id=?4",
             params![content_hash, size, crate::maps::VECTOR_MIME, source.id],
@@ -6670,8 +6757,21 @@ impl ProjectStore {
             "UPDATE entity_fields SET value=?1 WHERE entity_id=?2 AND namespace=?3 AND key='layers'",
             params![encode_field_value(&layers_value)?, map_entity_id, crate::maps::MAP_NAMESPACE],
         )?;
+        for link in &prepared_links {
+            transaction.execute(
+                "INSERT INTO entity_fields(entity_id,namespace,key,value) VALUES (?1,?2,?3,?4) ON CONFLICT(entity_id,namespace,key) DO UPDATE SET value=excluded.value",
+                params![
+                    link.entity_id,
+                    crate::maps::MAP_NAMESPACE,
+                    "locations",
+                    encode_field_value(&link.value)?
+                ],
+            )?;
+        }
         transaction.commit()?;
-        self.refresh_maps_projection_for_entities(std::slice::from_ref(&map_entity_id))?;
+        let mut projection_ids = vec![map_entity_id.clone()];
+        projection_ids.extend(prepared_links.iter().map(|link| link.entity_id.clone()));
+        self.refresh_maps_projection_for_entities(&projection_ids)?;
         self.notify_export_worker()?;
         map_field.value = descriptor;
         map_field.revision = self.revision_for_field(&map_field)?;
@@ -6680,10 +6780,16 @@ impl ProjectStore {
         source.content_hash = content_hash;
         source.size = size;
         source.revision = self.revision_for_asset(&source.id)?;
+        let mut locations = Vec::with_capacity(prepared_links.len());
+        for mut link in prepared_links {
+            link.revision = self.revision_for_field(&link)?;
+            locations.push(link);
+        }
         let applied = MapEditApply {
             map: map_field,
             layers: layers_field,
             source,
+            locations,
         };
         self.write_mutation_result(
             &request_id,

@@ -35,7 +35,7 @@ export function geometryToSvg(feature: VectorFeature): { kind: "path" | "point";
 export function visiblePhysicalFeatures(collection: VectorFeatureCollection, layers: readonly VectorLayerDefinition[]) {
   const visible = new Map(layers.filter((layer) => layer.defaultVisible).map((layer) => [layer.id, layer] as const));
   return collection.features.flatMap((feature) => {
-    const layer = visible.get(feature.properties.daenaLayerId);
+    const layer = visible.get(feature.properties.daena.layerId);
     if (!layer) return [];
     return [{ feature, layer, svg: geometryToSvg(feature) }];
   });

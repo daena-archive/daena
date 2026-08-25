@@ -1,7 +1,10 @@
 import {
   DEFAULT_VECTOR_LAYER_STYLE,
+  daenaProperties,
+  featureLayerId,
   type VectorFeature,
   type VectorFeatureCollection,
+  type VectorFeatureProperties,
   type VectorKind,
   type VectorLayerDefinition,
   type VectorLayerStyle,
@@ -28,7 +31,7 @@ export function isRevisionConflict(message: string) {
 }
 
 export function featureCountForLayer(collection: VectorFeatureCollection, layerId: string) {
-  return collection.features.filter((feature) => feature.properties.daenaLayerId === layerId).length;
+  return collection.features.filter((feature) => featureLayerId(feature) === layerId).length;
 }
 
 function asKind(value: unknown): VectorKind {
@@ -55,14 +58,59 @@ function asGeometry(value: unknown): VectorFeature["geometry"] | null {
   const type = (value as { type: unknown }).type;
   const coordinates = (value as { coordinates: unknown }).coordinates;
   if (type === "Point" && coordinateRingsValid(coordinates, 0)) return { type, coordinates: coordinates as number[] };
+  if (type === "MultiPoint" && coordinateRingsValid(coordinates, 1)) {
+    return { type, coordinates: coordinates as number[][] };
+  }
   if (type === "LineString" && coordinateRingsValid(coordinates, 1)) {
     return { type, coordinates: coordinates as number[][] };
+  }
+  if (type === "MultiLineString" && coordinateRingsValid(coordinates, 2)) {
+    return { type, coordinates: coordinates as number[][][] };
   }
   if (type === "Polygon" && coordinateRingsValid(coordinates, 2)) {
     return { type, coordinates: coordinates as number[][][] };
   }
   if (type === "MultiPolygon" && coordinateRingsValid(coordinates, 3)) {
     return { type, coordinates: coordinates as number[][][][] };
+  }
+  return null;
+}
+
+function asCustom(value: unknown): Record<string, string | number | boolean | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string | number | boolean | null> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (entry === null || typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+function asDaenaProperties(value: unknown, fallbackLayerId: string, lenient: boolean): VectorFeatureProperties | null {
+  if (!value || typeof value !== "object") return null;
+  const properties = value as Record<string, unknown>;
+  const daena = properties.daena;
+  if (daena && typeof daena === "object" && !Array.isArray(daena)) {
+    const nested = daena as Record<string, unknown>;
+    return {
+      daena: {
+        layerId: typeof nested.layerId === "string" ? nested.layerId : fallbackLayerId,
+        semanticType: asKind(nested.semanticType),
+        name: typeof nested.name === "string" ? nested.name : null,
+        style: nested.style && typeof nested.style === "object" ? (nested.style as Record<string, unknown>) : null,
+        label: nested.label && typeof nested.label === "object" ? (nested.label as Record<string, unknown>) : null,
+        custom: asCustom(nested.custom),
+      },
+    };
+  }
+  if (!lenient) return null;
+  if (typeof properties.daenaLayerId === "string" || typeof properties.kind === "string") {
+    return daenaProperties(
+      typeof properties.daenaLayerId === "string" ? properties.daenaLayerId : fallbackLayerId,
+      asKind(properties.kind),
+      typeof properties.name === "string" ? properties.name : null,
+    );
   }
   return null;
 }
@@ -113,18 +161,21 @@ export function parseVectorCollection(
         continue;
       }
       throw new Error(
-        `vector.geometry.invalid: ${path}/geometry: unsupported or malformed geometry (expected Point, LineString, Polygon, or MultiPolygon with finite coordinates)`,
+        `vector.geometry.invalid: ${path}/geometry: unsupported or malformed geometry (expected Point, MultiPoint, LineString, MultiLineString, Polygon, or MultiPolygon with finite coordinates)`,
       );
     }
-    const properties = feature.properties ?? {};
+    const properties = asDaenaProperties(feature.properties, "base", lenient);
+    if (!properties) {
+      if (lenient) {
+        onSkipped?.(path, "missing properties.daena");
+        continue;
+      }
+      throw new Error(`vector.source.unsupported-version: ${path}/properties: flat feature properties are unsupported; use properties.daena`);
+    }
     features.push({
       type: "Feature",
       id: String(feature.id),
-      properties: {
-        daenaLayerId: typeof properties.daenaLayerId === "string" ? properties.daenaLayerId : "base",
-        kind: asKind(properties.kind),
-        name: typeof properties.name === "string" ? properties.name : null,
-      },
+      properties,
       geometry,
     });
   }
@@ -171,3 +222,5 @@ export function layerFromField(
   if (!found || found.kind !== "vector" || typeof found.id !== "string") return null;
   return parseVectorLayers({ layers: [found] })[0] ?? null;
 }
+
+export { daenaProperties };

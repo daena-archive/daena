@@ -6,7 +6,6 @@ use std::fmt;
 use std::path::Path;
 use uuid::Uuid;
 
-pub const VECTOR_PROVIDER: &str = "daena-vector";
 pub const VECTOR_SOURCE_FORMAT: &str = "daena-geojson";
 pub const VECTOR_MIME: &str = "application/geo+json";
 pub const VECTOR_FILENAME: &str = "map.geojson";
@@ -17,6 +16,8 @@ pub const VECTOR_MAX_FEATURE_POSITIONS: usize = 20_000;
 pub const VECTOR_MAX_RINGS: usize = 256;
 pub const VECTOR_MAX_LAYERS: usize = 64;
 pub const VECTOR_MAX_PROPERTY_BYTES: usize = 2 * 1024;
+pub const VECTOR_MAX_CUSTOM_KEYS: usize = 32;
+pub const VECTOR_MAX_LABEL_TEXT: usize = 256;
 pub const VECTOR_CENTER_Y_MIN: f64 = 0.0;
 pub const VECTOR_CENTER_Y_MAX: f64 = 1.0;
 const SCALE: i32 = 1_000_000;
@@ -36,7 +37,9 @@ pub struct Micro(pub i32, pub i32);
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Geometry {
     Point(Micro),
+    MultiPoint(Vec<Micro>),
     LineString(Vec<Micro>),
+    MultiLineString(Vec<Vec<Micro>>),
     Polygon {
         exterior: Vec<Micro>,
         holes: Vec<Vec<Micro>>,
@@ -44,12 +47,15 @@ enum Geometry {
     MultiPolygon(Vec<(Vec<Micro>, Vec<Vec<Micro>>)>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Feature {
     id: String,
     layer_id: String,
-    kind: String,
+    semantic_type: String,
     name: Option<String>,
+    style: Option<Value>,
+    label: Option<Value>,
+    custom: serde_json::Map<String, Value>,
     geometry: Geometry,
 }
 
@@ -495,7 +501,9 @@ fn polygon_abs_area(exterior: &[Micro]) -> i128 {
 fn count_positions(geometry: &Geometry) -> usize {
     match geometry {
         Geometry::Point(_) => 1,
+        Geometry::MultiPoint(points) => points.len(),
         Geometry::LineString(line) => line.len(),
+        Geometry::MultiLineString(lines) => lines.iter().map(Vec::len).sum(),
         Geometry::Polygon { exterior, holes } => {
             exterior.len() + holes.iter().map(Vec::len).sum::<usize>()
         }
@@ -520,17 +528,21 @@ fn canonical_uuid(value: &str, path: &str) -> Result<String, CoreError> {
     Ok(text)
 }
 
-fn parse_kind(value: Option<&Value>, path: &str) -> Result<String, CoreError> {
+fn parse_semantic_type(value: Option<&Value>, path: &str) -> Result<String, CoreError> {
     let kind = value
         .and_then(Value::as_str)
-        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "kind is required"))?;
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "semanticType is required"))?;
     if matches!(
         kind,
         "land" | "lake" | "region" | "route" | "marker" | "custom"
     ) {
         Ok(kind.to_owned())
     } else {
-        Err(fail(CODE_SOURCE_INVALID, path, "kind is not supported"))
+        Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "semanticType is not supported",
+        ))
     }
 }
 
@@ -573,6 +585,29 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
             coordinates,
             &format!("{path}.coordinates"),
         )?)),
+        "MultiPoint" => {
+            let values = coordinates.as_array().ok_or_else(|| {
+                fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "must be an array",
+                )
+            })?;
+            if values.is_empty() {
+                return Err(fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "MultiPoint requires at least one position",
+                ));
+            }
+            let mut points = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| parse_position(value, &format!("{path}.coordinates[{index}]")))
+                .collect::<Result<Vec<_>, _>>()?;
+            points.sort();
+            Ok(Geometry::MultiPoint(points))
+        }
         "LineString" => {
             let values = coordinates.as_array().ok_or_else(|| {
                 fail(
@@ -584,6 +619,38 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
             let line = dedup_adjacent(parse_line(values, &format!("{path}.coordinates"))?);
             validate_line(&line, &format!("{path}.coordinates"))?;
             Ok(Geometry::LineString(line))
+        }
+        "MultiLineString" => {
+            let values = coordinates.as_array().ok_or_else(|| {
+                fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "must be an array",
+                )
+            })?;
+            if values.is_empty() {
+                return Err(fail(
+                    CODE_GEOMETRY_INVALID,
+                    &format!("{path}.coordinates"),
+                    "MultiLineString requires at least one line",
+                ));
+            }
+            let mut lines = Vec::with_capacity(values.len());
+            for (index, line) in values.iter().enumerate() {
+                let positions = line.as_array().ok_or_else(|| {
+                    fail(
+                        CODE_GEOMETRY_INVALID,
+                        &format!("{path}.coordinates[{index}]"),
+                        "must be an array",
+                    )
+                })?;
+                let line =
+                    dedup_adjacent(parse_line(positions, &format!("{path}.coordinates[{index}]"))?);
+                validate_line(&line, &format!("{path}.coordinates[{index}]"))?;
+                lines.push(line);
+            }
+            lines.sort();
+            Ok(Geometry::MultiLineString(lines))
         }
         "Polygon" => {
             let values = coordinates.as_array().ok_or_else(|| {
@@ -678,10 +745,81 @@ fn geometry_matches_kind(kind: &str, geometry: &Geometry) -> bool {
         (
             "land" | "lake" | "region",
             Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
-        ) | ("route", Geometry::LineString(_))
-            | ("marker", Geometry::Point(_))
+        ) | ("route", Geometry::LineString(_) | Geometry::MultiLineString(_))
+            | ("marker", Geometry::Point(_) | Geometry::MultiPoint(_))
             | ("custom", _)
     )
+}
+
+fn parse_custom_properties(
+    value: Option<&Value>,
+    path: &str,
+) -> Result<serde_json::Map<String, Value>, CoreError> {
+    match value {
+        None => Ok(serde_json::Map::new()),
+        Some(Value::Object(object)) => {
+            if object.len() > VECTOR_MAX_CUSTOM_KEYS {
+                return Err(fail(
+                    CODE_LIMIT,
+                    path,
+                    format!("custom exceeds {VECTOR_MAX_CUSTOM_KEYS} keys"),
+                ));
+            }
+            let mut out = serde_json::Map::new();
+            for (key, entry) in object {
+                if key.is_empty() || key.len() > 64 {
+                    return Err(fail(
+                        CODE_SOURCE_INVALID,
+                        path,
+                        "custom keys must be 1..=64 bytes",
+                    ));
+                }
+                match entry {
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        if let Value::String(text) = entry {
+                            if text.len() > VECTOR_MAX_LABEL_TEXT {
+                                return Err(fail(
+                                    CODE_LIMIT,
+                                    &format!("{path}.{key}"),
+                                    format!("string values exceed {VECTOR_MAX_LABEL_TEXT} bytes"),
+                                ));
+                            }
+                        }
+                        out.insert(key.clone(), entry.clone());
+                    }
+                    _ => {
+                        return Err(fail(
+                            CODE_SOURCE_INVALID,
+                            &format!("{path}.{key}"),
+                            "custom values must be string, number, boolean, or null",
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        Some(_) => Err(fail(CODE_SOURCE_INVALID, path, "custom must be an object")),
+    }
+}
+
+fn parse_optional_style(value: Option<&Value>, path: &str) -> Result<Option<Value>, CoreError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(style) => {
+            validate_partial_vector_style(style, path)?;
+            Ok(Some(style.clone()))
+        }
+    }
+}
+
+fn parse_optional_label(value: Option<&Value>, path: &str) -> Result<Option<Value>, CoreError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(label) => {
+            validate_label(label, path)?;
+            Ok(Some(label.clone()))
+        }
+    }
 }
 
 fn parse_feature(
@@ -750,8 +888,11 @@ fn parse_feature(
             Ok(Feature {
                 id: Uuid::new_v4().to_string(),
                 layer_id: "base".into(),
-                kind: "land".into(),
+                semantic_type: "land".into(),
                 name: None,
+                style: None,
+                label: None,
+                custom: serde_json::Map::new(),
                 geometry,
             })
         }
@@ -762,26 +903,77 @@ fn parse_feature(
                 })?,
                 &format!("{path}.id"),
             )?;
+            if properties
+                .as_object()
+                .is_some_and(|object| {
+                    object.contains_key("daenaLayerId")
+                        || object.contains_key("kind")
+                        || (object.contains_key("name") && !object.contains_key("daena"))
+                })
+            {
+                return Err(fail(
+                    CODE_UNSUPPORTED_VERSION,
+                    &format!("{path}.properties"),
+                    "flat feature properties are unsupported; use properties.daena",
+                ));
+            }
             let properties = object_keys(
                 properties,
                 &format!("{path}.properties"),
-                &["daenaLayerId", "kind", "name"],
+                &["daena"],
             )?;
-            let layer_id = properties
-                .get("daenaLayerId")
+            let daena = properties.get("daena").ok_or_else(|| {
+                fail(
+                    CODE_SOURCE_INVALID,
+                    &format!("{path}.properties.daena"),
+                    "is required",
+                )
+            })?;
+            let daena = object_keys(
+                daena,
+                &format!("{path}.properties.daena"),
+                &[
+                    "layerId",
+                    "semanticType",
+                    "name",
+                    "style",
+                    "label",
+                    "custom",
+                ],
+            )?;
+            let layer_id = daena
+                .get("layerId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     fail(
                         CODE_SOURCE_INVALID,
-                        &format!("{path}.properties.daenaLayerId"),
+                        &format!("{path}.properties.daena.layerId"),
                         "is required",
                     )
                 })?
                 .to_owned();
-            let kind = parse_kind(properties.get("kind"), &format!("{path}.properties.kind"))?;
-            let name = parse_name(properties.get("name"), &format!("{path}.properties.name"))?;
+            let semantic_type = parse_semantic_type(
+                daena.get("semanticType"),
+                &format!("{path}.properties.daena.semanticType"),
+            )?;
+            let name = parse_name(
+                daena.get("name"),
+                &format!("{path}.properties.daena.name"),
+            )?;
+            let style = parse_optional_style(
+                daena.get("style"),
+                &format!("{path}.properties.daena.style"),
+            )?;
+            let label = parse_optional_label(
+                daena.get("label"),
+                &format!("{path}.properties.daena.label"),
+            )?;
+            let custom = parse_custom_properties(
+                daena.get("custom"),
+                &format!("{path}.properties.daena.custom"),
+            )?;
             if layer_id == "base" {
-                if !matches!(kind.as_str(), "land" | "lake")
+                if !matches!(semantic_type.as_str(), "land" | "lake")
                     || !matches!(
                         geometry,
                         Geometry::Polygon { .. } | Geometry::MultiPolygon(_)
@@ -794,27 +986,29 @@ fn parse_feature(
                     ));
                 }
             } else {
-                canonical_uuid(&layer_id, &format!("{path}.properties.daenaLayerId"))?;
+                canonical_uuid(&layer_id, &format!("{path}.properties.daena.layerId"))?;
                 if !known_layers.is_empty() && !known_layers.contains(&layer_id) {
                     return Err(fail(
                         CODE_LAYER_MISSING,
-                        &format!("{path}.properties.daenaLayerId"),
+                        &format!("{path}.properties.daena.layerId"),
                         "layer does not exist",
                     ));
                 }
-                if !geometry_matches_kind(&kind, &geometry) {
+                if !geometry_matches_kind(&semantic_type, &geometry) {
                     return Err(fail(
                         CODE_GEOMETRY_INVALID,
                         path,
-                        "geometry does not match kind",
+                        "geometry does not match semanticType",
                     ));
                 }
             }
-            let encoded = format!(
-                "{{\"daenaLayerId\":{},\"kind\":{},\"name\":{}}}",
-                serde_json::to_string(&layer_id).unwrap(),
-                serde_json::to_string(&kind).unwrap(),
-                serde_json::to_string(&name).unwrap()
+            let encoded = encode_daena_properties(
+                &layer_id,
+                &semantic_type,
+                &name,
+                style.as_ref(),
+                label.as_ref(),
+                &custom,
             );
             if encoded.len() > VECTOR_MAX_PROPERTY_BYTES {
                 return Err(fail(
@@ -826,8 +1020,11 @@ fn parse_feature(
             Ok(Feature {
                 id,
                 layer_id,
-                kind,
+                semantic_type,
                 name,
+                style,
+                label,
+                custom,
                 geometry,
             })
         }
@@ -917,10 +1114,25 @@ fn write_geometry(out: &mut String, geometry: &Geometry) {
             out.push_str(&format_micro(coord.1));
             out.push_str("]}");
         }
+        Geometry::MultiPoint(points) => {
+            out.push_str("{\"type\":\"MultiPoint\",\"coordinates\":");
+            write_positions(out, points);
+            out.push('}');
+        }
         Geometry::LineString(line) => {
             out.push_str("{\"type\":\"LineString\",\"coordinates\":");
             write_positions(out, line);
             out.push('}');
+        }
+        Geometry::MultiLineString(lines) => {
+            out.push_str("{\"type\":\"MultiLineString\",\"coordinates\":[");
+            for (index, line) in lines.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_positions(out, line);
+            }
+            out.push_str("]}");
         }
         Geometry::Polygon { exterior, holes } => {
             out.push_str("{\"type\":\"Polygon\",\"coordinates\":");
@@ -940,6 +1152,45 @@ fn write_geometry(out: &mut String, geometry: &Geometry) {
     }
 }
 
+fn encode_daena_properties(
+    layer_id: &str,
+    semantic_type: &str,
+    name: &Option<String>,
+    style: Option<&Value>,
+    label: Option<&Value>,
+    custom: &serde_json::Map<String, Value>,
+) -> String {
+    let mut out = String::from("{\"daena\":{\"layerId\":");
+    out.push_str(&serde_json::to_string(layer_id).unwrap());
+    out.push_str(",\"semanticType\":");
+    out.push_str(&serde_json::to_string(semantic_type).unwrap());
+    out.push_str(",\"name\":");
+    out.push_str(&serde_json::to_string(name).unwrap());
+    out.push_str(",\"style\":");
+    match style {
+        Some(value) => out.push_str(&serde_json::to_string(value).unwrap()),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"label\":");
+    match label {
+        Some(value) => out.push_str(&serde_json::to_string(value).unwrap()),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"custom\":{");
+    let mut keys = custom.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::to_string(key).unwrap());
+        out.push(':');
+        out.push_str(&serde_json::to_string(&custom[key]).unwrap());
+    }
+    out.push_str("}}}");
+    out
+}
+
 #[must_use]
 pub fn empty_canonical_bytes() -> Vec<u8> {
     serialize_features(&[])
@@ -953,13 +1204,16 @@ fn serialize_features(features: &[Feature]) -> Vec<u8> {
         }
         out.push_str("{\"type\":\"Feature\",\"id\":");
         out.push_str(&serde_json::to_string(&feature.id).unwrap());
-        out.push_str(",\"properties\":{\"daenaLayerId\":");
-        out.push_str(&serde_json::to_string(&feature.layer_id).unwrap());
-        out.push_str(",\"kind\":");
-        out.push_str(&serde_json::to_string(&feature.kind).unwrap());
-        out.push_str(",\"name\":");
-        out.push_str(&serde_json::to_string(&feature.name).unwrap());
-        out.push_str("},\"geometry\":");
+        out.push_str(",\"properties\":");
+        out.push_str(&encode_daena_properties(
+            &feature.layer_id,
+            &feature.semantic_type,
+            &feature.name,
+            feature.style.as_ref(),
+            feature.label.as_ref(),
+            &feature.custom,
+        ));
+        out.push_str(",\"geometry\":");
         write_geometry(&mut out, &feature.geometry);
         out.push('}');
     }
@@ -1048,8 +1302,11 @@ pub fn canonicalize_imported_base(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
         parsed.push(Feature {
             id: Uuid::new_v4().to_string(),
             layer_id: "base".into(),
-            kind: "land".into(),
+            semantic_type: "land".into(),
             name: None,
+            style: None,
+            label: None,
+            custom: serde_json::Map::new(),
             geometry,
         });
     }
@@ -1071,7 +1328,7 @@ pub fn require_canonical_bytes(
             fs_path,
             CODE_SOURCE_INVALID,
             "$",
-            "GeoJSON source is not byte-canonical for adapter version 1",
+            "GeoJSON source is not byte-canonical for adapter version 2",
         ));
     }
     Ok(canonical)
@@ -1122,7 +1379,11 @@ pub fn feature_bounds(
             };
             match &feature.geometry {
                 Geometry::Point(coord) => visit(*coord),
+                Geometry::MultiPoint(points) => points.iter().copied().for_each(&mut visit),
                 Geometry::LineString(line) => line.iter().copied().for_each(&mut visit),
+                Geometry::MultiLineString(lines) => {
+                    lines.iter().flatten().copied().for_each(&mut visit);
+                }
                 Geometry::Polygon { exterior, holes } => {
                     exterior.iter().copied().for_each(&mut visit);
                     holes.iter().flatten().copied().for_each(&mut visit);
@@ -1145,7 +1406,7 @@ pub fn feature_bounds(
             (
                 feature.id,
                 feature.layer_id,
-                feature.kind,
+                feature.semantic_type,
                 min_x,
                 min_y,
                 max_x,
@@ -1255,6 +1516,267 @@ pub fn validate_generation(value: &Value) -> Result<(), CoreError> {
     Ok(())
 }
 
+fn validate_hex_color(value: &Value, path: &str) -> Result<(), CoreError> {
+    let color = value
+        .as_str()
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "must be a hex color"))?;
+    if !color.starts_with('#')
+        || color.len() != 7
+        || !color[1..].chars().all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Err(fail(CODE_SOURCE_INVALID, path, "must match #RRGGBB"));
+    }
+    Ok(())
+}
+
+fn validate_opacity(value: &Value, path: &str) -> Result<(), CoreError> {
+    let opacity = value
+        .as_f64()
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "must be a finite number"))?;
+    if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "must be finite in [0, 1]",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_label(label: &Value, path: &str) -> Result<(), CoreError> {
+    let label = label
+        .as_object()
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "must be an object"))?;
+    let allowed = BTreeSet::from([
+        "source",
+        "text",
+        "size",
+        "color",
+        "haloColor",
+        "haloWidth",
+        "placement",
+        "offset",
+        "rotation",
+        "minZoom",
+        "maxZoom",
+    ]);
+    if label.keys().any(|key| !allowed.contains(key.as_str()))
+        || !matches!(
+            label.get("source").and_then(Value::as_str),
+            Some("name" | "explicit")
+        )
+        || !matches!(
+            label.get("placement").and_then(Value::as_str),
+            Some("point" | "line" | "interior")
+        )
+    {
+        return Err(fail(CODE_SOURCE_INVALID, path, "contains invalid fields"));
+    }
+    if label.get("text").is_some_and(|value| {
+        !value.is_null()
+            && value
+                .as_str()
+                .is_none_or(|text| text.len() > VECTOR_MAX_LABEL_TEXT)
+    }) {
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.text"),
+            format!("exceeds {VECTOR_MAX_LABEL_TEXT} bytes"),
+        ));
+    }
+    for (key, min, max) in [
+        ("size", 6.0, 96.0),
+        ("haloWidth", 0.0, 16.0),
+        ("rotation", -360.0, 360.0),
+    ] {
+        let value = label
+            .get(key)
+            .and_then(Value::as_f64)
+            .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.{key}"), "must be a finite number"))?;
+        if !value.is_finite() || !(min..=max).contains(&value) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.{key}"),
+                "is outside the supported range",
+            ));
+        }
+    }
+    for key in ["color", "haloColor"] {
+        validate_hex_color(
+            label
+                .get(key)
+                .ok_or_else(|| fail(CODE_SOURCE_INVALID, &format!("{path}.{key}"), "is required"))?,
+            &format!("{path}.{key}"),
+        )?;
+    }
+    let offset = label.get("offset").and_then(Value::as_array).ok_or_else(|| {
+        fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.offset"),
+            "must contain two numbers",
+        )
+    })?;
+    if offset.len() != 2
+        || offset.iter().any(|value| {
+            value
+                .as_f64()
+                .is_none_or(|value| !value.is_finite() || value.abs() > 512.0)
+        })
+    {
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            &format!("{path}.offset"),
+            "must contain two finite values in [-512, 512]",
+        ));
+    }
+    for key in ["minZoom", "maxZoom"] {
+        match label.get(key) {
+            None | Some(Value::Null) => {}
+            Some(value) => {
+                let zoom = value.as_f64().ok_or_else(|| {
+                    fail(
+                        CODE_SOURCE_INVALID,
+                        &format!("{path}.{key}"),
+                        "must be a finite number or null",
+                    )
+                })?;
+                if !zoom.is_finite() || !(0.0..=24.0).contains(&zoom) {
+                    return Err(fail(
+                        CODE_SOURCE_INVALID,
+                        &format!("{path}.{key}"),
+                        "must be finite in [0, 24]",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_partial_vector_style(style: &Value, path: &str) -> Result<(), CoreError> {
+    let object = style
+        .as_object()
+        .ok_or_else(|| fail(CODE_SOURCE_INVALID, path, "must be an object"))?;
+    let allowed = BTreeSet::from([
+        "fill",
+        "fillOpacity",
+        "stroke",
+        "strokeOpacity",
+        "strokeWidth",
+        "strokeDash",
+        "pointRadius",
+        "icon",
+        "iconSize",
+        "label",
+    ]);
+    if object.keys().any(|key| !allowed.contains(key.as_str())) {
+        return Err(fail(
+            CODE_SOURCE_INVALID,
+            path,
+            "contains unsupported style fields",
+        ));
+    }
+    if let Some(fill) = object.get("fill") {
+        validate_hex_color(fill, &format!("{path}.fill"))?;
+    }
+    if let Some(stroke) = object.get("stroke") {
+        validate_hex_color(stroke, &format!("{path}.stroke"))?;
+    }
+    if let Some(fill_opacity) = object.get("fillOpacity") {
+        validate_opacity(fill_opacity, &format!("{path}.fillOpacity"))?;
+    }
+    if let Some(stroke_opacity) = object.get("strokeOpacity") {
+        validate_opacity(stroke_opacity, &format!("{path}.strokeOpacity"))?;
+    }
+    if let Some(stroke_width) = object.get("strokeWidth") {
+        let stroke_width = stroke_width.as_f64().ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.strokeWidth"),
+                "must be a finite number",
+            )
+        })?;
+        if !stroke_width.is_finite() || !(0.0..=32.0).contains(&stroke_width) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.strokeWidth"),
+                "must be finite in [0, 32]",
+            ));
+        }
+    }
+    if let Some(point_radius) = object.get("pointRadius") {
+        let point_radius = point_radius.as_f64().ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.pointRadius"),
+                "must be a finite number",
+            )
+        })?;
+        if !point_radius.is_finite() || !(1.0..=64.0).contains(&point_radius) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.pointRadius"),
+                "must be finite in [1, 64]",
+            ));
+        }
+    }
+    if let Some(dash) = object.get("strokeDash") {
+        let dash = dash.as_array().ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.strokeDash"),
+                "must be an array",
+            )
+        })?;
+        if dash.len() > 16
+            || dash.iter().any(|value| {
+                value
+                    .as_f64()
+                    .is_none_or(|value| !value.is_finite() || value < 0.0 || value > 128.0)
+            })
+        {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.strokeDash"),
+                "must contain at most 16 finite values in [0, 128]",
+            ));
+        }
+    }
+    if let Some(icon) = object.get("icon") {
+        if !icon.is_null()
+            && icon
+                .as_str()
+                .is_none_or(|value| value.is_empty() || value.len() > 256)
+        {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.icon"),
+                "must be null or a Daena icon reference up to 256 bytes",
+            ));
+        }
+    }
+    if let Some(icon_size) = object.get("iconSize") {
+        let icon_size = icon_size.as_f64().ok_or_else(|| {
+            fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.iconSize"),
+                "must be a finite number",
+            )
+        })?;
+        if !icon_size.is_finite() || !(4.0..=256.0).contains(&icon_size) {
+            return Err(fail(
+                CODE_SOURCE_INVALID,
+                &format!("{path}.iconSize"),
+                "must be finite in [4, 256]",
+            ));
+        }
+    }
+    if let Some(label) = object.get("label") {
+        validate_label(label, &format!("{path}.label"))?;
+    }
+    Ok(())
+}
+
 pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
     let object = style.as_object().ok_or_else(|| {
         fail(
@@ -1270,212 +1792,14 @@ pub fn validate_vector_style(style: &Value) -> Result<(), CoreError> {
         "strokeWidth",
         "pointRadius",
     ];
-    let allowed = BTreeSet::from([
-        "fill",
-        "fillOpacity",
-        "stroke",
-        "strokeOpacity",
-        "strokeWidth",
-        "strokeDash",
-        "pointRadius",
-        "icon",
-        "iconSize",
-        "label",
-    ]);
-    if required.iter().any(|key| !object.contains_key(*key))
-        || object.keys().any(|key| !allowed.contains(key.as_str()))
-    {
+    if required.iter().any(|key| !object.contains_key(*key)) {
         return Err(fail(
             CODE_SOURCE_INVALID,
             "style",
             "vector style must contain fill, fillOpacity, stroke, strokeWidth, and pointRadius",
         ));
     }
-    for key in ["fill", "stroke"] {
-        let color = object
-            .get(key)
-            .and_then(Value::as_str)
-            .ok_or_else(|| fail(CODE_SOURCE_INVALID, key, "must be a hex color"))?;
-        if !color.starts_with('#')
-            || color.len() != 7
-            || !color[1..].chars().all(|ch| ch.is_ascii_hexdigit())
-        {
-            return Err(fail(CODE_SOURCE_INVALID, key, "must match #RRGGBB"));
-        }
-    }
-    let fill_opacity = object
-        .get("fillOpacity")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| {
-            fail(
-                CODE_SOURCE_INVALID,
-                "fillOpacity",
-                "must be a finite number",
-            )
-        })?;
-    if !fill_opacity.is_finite() || !(0.0..=1.0).contains(&fill_opacity) {
-        return Err(fail(
-            CODE_SOURCE_INVALID,
-            "fillOpacity",
-            "must be finite in [0, 1]",
-        ));
-    }
-    if let Some(stroke_opacity) = object.get("strokeOpacity") {
-        let stroke_opacity = stroke_opacity.as_f64().ok_or_else(|| {
-            fail(CODE_SOURCE_INVALID, "strokeOpacity", "must be a finite number")
-        })?;
-        if !stroke_opacity.is_finite() || !(0.0..=1.0).contains(&stroke_opacity) {
-            return Err(fail(
-                CODE_SOURCE_INVALID,
-                "strokeOpacity",
-                "must be finite in [0, 1]",
-            ));
-        }
-    }
-    let stroke_width = object
-        .get("strokeWidth")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| {
-            fail(
-                CODE_SOURCE_INVALID,
-                "strokeWidth",
-                "must be a finite number",
-            )
-        })?;
-    if !stroke_width.is_finite() || !(0.0..=32.0).contains(&stroke_width) {
-        return Err(fail(
-            CODE_SOURCE_INVALID,
-            "strokeWidth",
-            "must be finite in [0, 32]",
-        ));
-    }
-    let point_radius = object
-        .get("pointRadius")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| {
-            fail(
-                CODE_SOURCE_INVALID,
-                "pointRadius",
-                "must be a finite number",
-            )
-        })?;
-    if !point_radius.is_finite() || !(1.0..=64.0).contains(&point_radius) {
-        return Err(fail(
-            CODE_SOURCE_INVALID,
-            "pointRadius",
-            "must be finite in [1, 64]",
-        ));
-    }
-    if let Some(dash) = object.get("strokeDash") {
-        let dash = dash.as_array().ok_or_else(|| {
-            fail(CODE_SOURCE_INVALID, "strokeDash", "must be an array")
-        })?;
-        if dash.len() > 16
-            || dash.iter().any(|value| {
-                value
-                    .as_f64()
-                    .is_none_or(|value| !value.is_finite() || value < 0.0 || value > 128.0)
-            })
-        {
-            return Err(fail(
-                CODE_SOURCE_INVALID,
-                "strokeDash",
-                "must contain at most 16 finite values in [0, 128]",
-            ));
-        }
-    }
-    if let Some(icon) = object.get("icon") {
-        if !icon.is_null()
-            && icon
-                .as_str()
-                .is_none_or(|value| value.is_empty() || value.len() > 256)
-        {
-            return Err(fail(
-                CODE_SOURCE_INVALID,
-                "icon",
-                "must be null or a Daena icon reference up to 256 bytes",
-            ));
-        }
-    }
-    if let Some(icon_size) = object.get("iconSize") {
-        let icon_size = icon_size
-            .as_f64()
-            .ok_or_else(|| fail(CODE_SOURCE_INVALID, "iconSize", "must be a finite number"))?;
-        if !icon_size.is_finite() || !(4.0..=256.0).contains(&icon_size) {
-            return Err(fail(
-                CODE_SOURCE_INVALID,
-                "iconSize",
-                "must be finite in [4, 256]",
-            ));
-        }
-    }
-    if let Some(label) = object.get("label") {
-        let label = label
-            .as_object()
-            .ok_or_else(|| fail(CODE_SOURCE_INVALID, "label", "must be an object"))?;
-        let allowed = BTreeSet::from([
-            "source",
-            "text",
-            "size",
-            "color",
-            "haloColor",
-            "haloWidth",
-            "placement",
-            "offset",
-            "rotation",
-            "minZoom",
-            "maxZoom",
-        ]);
-        if label.keys().any(|key| !allowed.contains(key.as_str()))
-            || !matches!(label.get("source").and_then(Value::as_str), Some("name" | "explicit"))
-            || !matches!(
-                label.get("placement").and_then(Value::as_str),
-                Some("point" | "line" | "interior")
-            )
-        {
-            return Err(fail(CODE_SOURCE_INVALID, "label", "contains invalid fields"));
-        }
-        if label
-            .get("text")
-            .is_some_and(|value| !value.is_null() && value.as_str().is_none_or(|text| text.len() > 512))
-        {
-            return Err(fail(CODE_SOURCE_INVALID, "label.text", "exceeds 512 bytes"));
-        }
-        for (key, min, max) in [
-            ("size", 6.0, 96.0),
-            ("haloWidth", 0.0, 16.0),
-            ("rotation", -360.0, 360.0),
-        ] {
-            let value = label
-                .get(key)
-                .and_then(Value::as_f64)
-                .ok_or_else(|| fail(CODE_SOURCE_INVALID, key, "must be a finite number"))?;
-            if !value.is_finite() || !(min..=max).contains(&value) {
-                return Err(fail(CODE_SOURCE_INVALID, key, "is outside the supported range"));
-            }
-        }
-        for key in ["color", "haloColor"] {
-            let value = label.get(key).and_then(Value::as_str).unwrap_or_default();
-            if value.len() != 7 || !value.starts_with('#') || !value[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
-                return Err(fail(CODE_SOURCE_INVALID, key, "must match #RRGGBB"));
-            }
-        }
-        let offset = label.get("offset").and_then(Value::as_array).ok_or_else(|| {
-            fail(CODE_SOURCE_INVALID, "label.offset", "must contain two numbers")
-        })?;
-        if offset.len() != 2
-            || offset
-                .iter()
-                .any(|value| value.as_f64().is_none_or(|value| !value.is_finite() || value.abs() > 512.0))
-        {
-            return Err(fail(
-                CODE_SOURCE_INVALID,
-                "label.offset",
-                "must contain two finite values in [-512, 512]",
-            ));
-        }
-    }
-    Ok(())
+    validate_partial_vector_style(style, "style")
 }
 
 #[cfg(test)]
@@ -1488,7 +1812,16 @@ mod tests {
             "features": [{
                 "type": "Feature",
                 "id": "018f89ec-25fc-7816-8b47-6f80905f2801",
-                "properties": {"daenaLayerId": "base", "kind": "land", "name": null},
+                "properties": {
+                    "daena": {
+                        "layerId": "base",
+                        "semanticType": "land",
+                        "name": null,
+                        "style": null,
+                        "label": null,
+                        "custom": {}
+                    }
+                },
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
@@ -1509,7 +1842,7 @@ mod tests {
             .contains("\"type\":\"FeatureCollection\""));
         let expected = concat!(
             "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\",\"id\":\"018f89ec-25fc-7816-8b47-6f80905f2801\",",
-            "\"properties\":{\"daenaLayerId\":\"base\",\"kind\":\"land\",\"name\":null},",
+            "\"properties\":{\"daena\":{\"layerId\":\"base\",\"semanticType\":\"land\",\"name\":null,\"style\":null,\"label\":null,\"custom\":{}}},",
             "\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-10,-10],[10,-10],[10,10],[-10,10],[-10,-10]]]}}]}\n"
         );
         assert_eq!(std::str::from_utf8(&first).unwrap(), expected);
@@ -1522,6 +1855,83 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains(CODE_SOURCE_INVALID));
+    }
+
+    #[test]
+    fn rejects_flat_v1_feature_properties() {
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "id": "018f89ec-25fc-7816-8b47-6f80905f2801",
+                "properties": {"daenaLayerId": "base", "kind": "land", "name": null},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0], [-10.0, -10.0]]]
+                }
+            }]
+        });
+        assert!(canonicalize_committed(&serde_json::to_vec(&input).unwrap(), &BTreeSet::new())
+            .unwrap_err()
+            .to_string()
+            .contains(CODE_UNSUPPORTED_VERSION));
+    }
+
+    #[test]
+    fn multipoint_and_multilinestring_canonicalize() {
+        let layer = "018f89ec-25fc-7816-8b47-6f80905f2868";
+        let known = BTreeSet::from([layer.to_owned()]);
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "id": "018f89ec-25fc-7816-8b47-6f80905f2802",
+                    "properties": {
+                        "daena": {
+                            "layerId": layer,
+                            "semanticType": "marker",
+                            "name": null,
+                            "style": null,
+                            "label": null,
+                            "custom": {}
+                        }
+                    },
+                    "geometry": {"type": "MultiPoint", "coordinates": [[2.0, 1.0], [1.0, 2.0]]}
+                },
+                {
+                    "type": "Feature",
+                    "id": "018f89ec-25fc-7816-8b47-6f80905f2803",
+                    "properties": {
+                        "daena": {
+                            "layerId": layer,
+                            "semanticType": "route",
+                            "name": "Trail",
+                            "style": null,
+                            "label": null,
+                            "custom": {"difficulty": 2}
+                        }
+                    },
+                    "geometry": {
+                        "type": "MultiLineString",
+                        "coordinates": [[[4.0, 4.0], [5.0, 5.0]], [[0.0, 0.0], [1.0, 1.0]]]
+                    }
+                }
+            ]
+        });
+        let first = canonicalize_committed(&serde_json::to_vec(&input).unwrap(), &known).unwrap();
+        let second = canonicalize_committed(&first, &known).unwrap();
+        assert_eq!(first, second);
+        let value: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(
+            value["features"][0]["geometry"]["coordinates"],
+            serde_json::json!([[1, 2], [2, 1]])
+        );
+        assert_eq!(
+            value["features"][1]["geometry"]["coordinates"],
+            serde_json::json!([[[0, 0], [1, 1]], [[4, 4], [5, 5]]])
+        );
+        assert_eq!(value["features"][1]["properties"]["daena"]["custom"]["difficulty"], 2);
     }
 
     #[test]
@@ -1540,8 +1950,8 @@ mod tests {
         let bytes = canonicalize_candidate(&serde_json::to_vec(&candidate).unwrap()).unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         let feature = &value["features"][0];
-        assert_eq!(feature["properties"]["daenaLayerId"], "base");
-        assert_eq!(feature["properties"]["kind"], "land");
+        assert_eq!(feature["properties"]["daena"]["layerId"], "base");
+        assert_eq!(feature["properties"]["daena"]["semanticType"], "land");
         assert!(Uuid::parse_str(feature["id"].as_str().unwrap()).is_ok());
     }
 
@@ -1562,9 +1972,9 @@ mod tests {
         let bytes = canonicalize_imported_base(&serde_json::to_vec(&input).unwrap()).unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         let feature = &value["features"][0];
-        assert_eq!(feature["properties"]["daenaLayerId"], "base");
-        assert_eq!(feature["properties"]["kind"], "land");
-        assert_eq!(feature["properties"]["name"], Value::Null);
+        assert_eq!(feature["properties"]["daena"]["layerId"], "base");
+        assert_eq!(feature["properties"]["daena"]["semanticType"], "land");
+        assert_eq!(feature["properties"]["daena"]["name"], Value::Null);
         assert_ne!(feature["id"], "018f89ec-25fc-7816-8b47-6f80905f2869");
         assert!(canonicalize_imported_base(
             &serde_json::to_vec(&serde_json::json!({

@@ -406,7 +406,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
         "features": [{
             "type": "Feature",
             "id": "00000000-0000-4000-8000-000000000002",
-            "properties": {"daenaLayerId": "base", "kind": "land", "name": null},
+            "properties": {"daena": {"layerId": "base", "semanticType": "land", "name": null, "style": null, "label": null, "custom": {}}},
             "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
         }]
     }))
@@ -4937,45 +4937,74 @@ fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
 fn map_recovery_copies_are_canonical_listed_newest_first_and_restored() {
     let root = std::env::temp_dir().join(format!("daena-map-recovery-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
-    let map = store.create_map("Recovered map".into()).unwrap();
-    let source = std::env::temp_dir().join(format!("daena-map-source-{}.map", Uuid::new_v4()));
-    std::fs::write(&source, b"original-source").unwrap();
-    let asset = store
-        .register_asset_file(AssetFileInput {
-            entity_id: map.id.clone(),
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            source_path: source.to_string_lossy().into_owned(),
-            filename: "map.map".into(),
-            mime_type: "application/x-fmg-map".into(),
-            provenance: None,
-        })
+    let accepted = store
+        .accept_vector_map(
+            "Recovered map".into(),
+            vector_candidate(),
+            vector_generation(),
+            None,
+        )
         .unwrap();
-    store
-        .set_field(FieldValue {
-            entity_id: map.id.clone(),
-            namespace: crate::maps::MAP_NAMESPACE.into(),
-            key: "map".into(),
-            value: serde_json::json!({
-                "schemaVersion": 1,
-                "provider": {"id": "azgaar-fmg", "adapterVersion": 1, "sourceFormat": "fmg-map"},
-                "sourceAssetId": asset.id,
-                "previewAssetId": null,
-                "defaultView": {"center": [0.5, 0.5], "zoom": 1}
-            }),
-            revision: String::new(),
-        })
+    let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
+    let map_field = fields
+        .iter()
+        .find(|field| field.key == "map")
+        .cloned()
         .unwrap();
-    store.flush_checkpoint("test export").unwrap();
-    std::fs::remove_file(&source).unwrap();
-    let before = store.list_map_recovery_copies(&map.id).unwrap();
+    let layers_field = fields
+        .iter()
+        .find(|field| field.key == "layers")
+        .cloned()
+        .unwrap();
+    let original = store.asset_bytes(accepted.source.id.clone()).unwrap();
+    let mut edited = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
+    edited["features"][0]["properties"]["daena"]["name"] = serde_json::json!("Draft land");
+    let geojson = String::from_utf8(
+        crate::maps::vector::canonicalize_committed(
+            &serde_json::to_vec(&edited).unwrap(),
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let draft = crate::maps::MapEditDraftPackage {
+        schema_version: 1,
+        kind: crate::maps::MAP_EDIT_DRAFT_KIND.into(),
+        map_entity_id: accepted.entity.id.clone(),
+        descriptor: map_field.value.clone(),
+        layers: layers_field.value.clone(),
+        geojson: geojson.clone(),
+        link_mutations: Vec::new(),
+    };
+    let first = draft.encode().unwrap();
+    let mut edited_v2 = edited.clone();
+    edited_v2["features"][0]["properties"]["daena"]["name"] = serde_json::json!("Draft land v2");
+    let geojson_v2 = String::from_utf8(
+        crate::maps::vector::canonicalize_committed(
+            &serde_json::to_vec(&edited_v2).unwrap(),
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let second_draft = crate::maps::MapEditDraftPackage {
+        geojson: geojson_v2,
+        ..draft.clone()
+    };
+    let second = second_draft.encode().unwrap();
+    let before = store.list_map_recovery_copies(&accepted.entity.id).unwrap();
     assert!(before.is_empty());
-    let first_path = store.save_map_recovery_copy(&map.id, b"draft-v1").unwrap();
-    let second_path = store.save_map_recovery_copy(&map.id, b"draft-v2").unwrap();
+    let first_path = store
+        .save_map_recovery_copy(&accepted.entity.id, &first)
+        .unwrap();
+    let second_path = store
+        .save_map_recovery_copy(&accepted.entity.id, &second)
+        .unwrap();
     assert!(first_path.starts_with(".daena/conflicts/maps/") && first_path.ends_with(".map"));
     assert!(second_path.starts_with(".daena/conflicts/maps/") && second_path.ends_with(".map"));
-    assert_eq!(std::fs::read(root.join(&second_path)).unwrap(), b"draft-v2");
+    assert_eq!(std::fs::read(root.join(&second_path)).unwrap(), second);
 
-    let copies = store.list_map_recovery_copies(&map.id).unwrap();
+    let copies = store.list_map_recovery_copies(&accepted.entity.id).unwrap();
     assert_eq!(copies.len(), 2);
     assert!(copies
         .iter()
@@ -4983,30 +5012,16 @@ fn map_recovery_copies_are_canonical_listed_newest_first_and_restored() {
     assert!(copies
         .iter()
         .any(|copy| copy.file_name == second_path.rsplit('/').next().unwrap()));
-    assert!(copies
-        .iter()
-        .all(|copy| copy.path.starts_with(".daena/conflicts/maps/")));
-    assert!(copies
-        .iter()
-        .all(|copy| copy.created_at.chars().all(|c| c.is_ascii_digit())));
     assert!(copies[0].created_at >= copies[1].created_at);
 
-    let expected_bytes = std::fs::read(root.join(&copies[0].path)).unwrap();
     let restored = store
-        .restore_map_recovery_copy(&map.id, &copies[0].file_name, None)
+        .restore_map_recovery_copy(&accepted.entity.id, &copies[0].file_name, None)
         .unwrap();
-    store.flush_checkpoint("test export").unwrap();
+    let restored_bytes = store.asset_bytes(restored.source.id.clone()).unwrap();
     assert_eq!(
-        std::fs::read(root.join(&restored.path)).unwrap(),
-        expected_bytes
+        String::from_utf8(restored_bytes).unwrap(),
+        second_draft.geojson
     );
-    let asset = store.list_assets(map.id).unwrap().pop().unwrap();
-    assert_eq!(asset.size as usize, expected_bytes.len());
-    assert_eq!(
-        asset.content_hash,
-        format!("sha256:{}", digest_bytes(&expected_bytes))
-    );
-    assert_eq!(asset.mime_type, "application/x-fmg-map");
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -5020,24 +5035,45 @@ fn map_recovery_copies_require_map_entities_and_reject_traversal() {
             entity_type: Some("place".into()),
         })
         .unwrap();
-    assert!(store.save_map_recovery_copy(&place.id, b"x").is_err());
+    let accepted = store
+        .accept_vector_map(
+            "Map".into(),
+            vector_candidate(),
+            vector_generation(),
+            None,
+        )
+        .unwrap();
+    let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
+    let map_field = fields.iter().find(|field| field.key == "map").unwrap();
+    let layers_field = fields.iter().find(|field| field.key == "layers").unwrap();
+    let package = crate::maps::MapEditDraftPackage {
+        schema_version: 1,
+        kind: crate::maps::MAP_EDIT_DRAFT_KIND.into(),
+        map_entity_id: accepted.entity.id.clone(),
+        descriptor: map_field.value.clone(),
+        layers: layers_field.value.clone(),
+        geojson: String::from_utf8(crate::maps::empty_canonical_bytes()).unwrap(),
+        link_mutations: Vec::new(),
+    }
+    .encode()
+    .unwrap();
+    assert!(store.save_map_recovery_copy(&place.id, &package).is_err());
     assert!(store.list_map_recovery_copies(&place.id).is_err());
     assert!(store
         .restore_map_recovery_copy(&place.id, "../escape.map", None)
         .is_err());
-    let map = store.create_map("Traversal map".into()).unwrap();
     assert!(store
-        .restore_map_recovery_copy(&map.id, "../escape.map", None)
+        .restore_map_recovery_copy(&accepted.entity.id, "../escape.map", None)
         .is_err());
     assert!(store
         .restore_map_recovery_copy(
-            &map.id,
+            &accepted.entity.id,
             "other-entity-00000000-0000-0000-0000-000000000000.map",
             None
         )
         .is_err());
     assert!(store
-        .restore_map_recovery_copy(&map.id, "missing.map", None)
+        .restore_map_recovery_copy(&accepted.entity.id, "missing.map", None)
         .is_err());
 }
 
@@ -6378,8 +6414,8 @@ fn vector_map_import_geojson_as_readonly_base() {
     )
     .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(stored["features"][0]["properties"]["daenaLayerId"], "base");
-    assert_eq!(stored["features"][0]["properties"]["kind"], "land");
+    assert_eq!(stored["features"][0]["properties"]["daena"]["layerId"], "base");
+    assert_eq!(stored["features"][0]["properties"]["daena"]["semanticType"], "land");
     assert_ne!(
         stored["features"][0]["id"],
         "018f89ec-25fc-7816-8b47-6f80905f2869"
@@ -6449,8 +6485,8 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
     )
     .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
-    assert_eq!(stored["features"][0]["properties"]["daenaLayerId"], "base");
-    assert_eq!(stored["features"][0]["properties"]["kind"], "land");
+    assert_eq!(stored["features"][0]["properties"]["daena"]["layerId"], "base");
+    assert_eq!(stored["features"][0]["properties"]["daena"]["semanticType"], "land");
 
     let layers_revision = store
         .list_fields(accepted.entity.id.clone())
@@ -6481,7 +6517,7 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
             {
                 "type": "Feature",
                 "id": feature_id,
-                "properties": {"daenaLayerId": layer_id, "kind": "region", "name": "West"},
+                "properties": {"daena": {"layerId": layer_id, "semanticType": "region", "name": "West", "style": null, "label": null, "custom": {}}},
                 "geometry": {
                     "type": "Polygon",
                     "coordinates": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0], [4.0, 4.0]]]
@@ -6663,6 +6699,161 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
         .unwrap();
     assert_eq!(feature_count, 1);
     drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
+    let root = std::env::temp_dir().join(format!("daena-map-edit-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let accepted = store
+        .accept_vector_map(
+            "Editable".into(),
+            vector_candidate(),
+            vector_generation(),
+            None,
+        )
+        .unwrap();
+    let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
+    let map_field = fields.iter().find(|field| field.key == "map").cloned().unwrap();
+    let layers_field = fields
+        .iter()
+        .find(|field| field.key == "layers")
+        .cloned()
+        .unwrap();
+    let created = store
+        .create_vector_layer(
+            accepted.entity.id.clone(),
+            "Countries".into(),
+            &layers_field.revision,
+            None,
+            None,
+        )
+        .unwrap();
+    let layer_id = created.layer_id.clone();
+    let feature_id = Uuid::new_v4().to_string();
+    let authored = serde_json::json!({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "id": feature_id,
+            "properties": {
+                "daena": {
+                    "layerId": layer_id,
+                    "semanticType": "region",
+                    "name": "West",
+                    "style": null,
+                    "label": null,
+                    "custom": {"tier": 1}
+                }
+            },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[4.0, 4.0], [6.0, 4.0], [6.0, 6.0], [4.0, 6.0], [4.0, 4.0]]]
+            }
+        }]
+    });
+    let authored_bytes = serde_json::to_vec(&authored).unwrap();
+    let canonical = crate::maps::vector::canonicalize_committed(
+        &authored_bytes,
+        &crate::maps::vector::layer_ids_from_layers_field(&created.layers.value),
+    )
+    .unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&authored_bytes));
+    let place = store
+        .create_entity(CreateEntity {
+            name: "West".into(),
+            entity_type: Some("place".into()),
+        })
+        .unwrap();
+    let location_id = Uuid::new_v4().to_string();
+    let locations = serde_json::json!({
+        "schemaVersion": 1,
+        "locations": [{
+            "id": location_id,
+            "mapEntityId": accepted.entity.id,
+            "role": "region",
+            "label": "West",
+            "anchor": {
+                "kind": "provider-feature",
+                "provider": crate::maps::VECTOR_PROVIDER,
+                "featureKind": "geojson-feature",
+                "featureId": feature_id,
+                "fallbackPoint": [0.5, 0.5]
+            },
+            "validity": {"from": null, "to": null}
+        }]
+    });
+    let mut next_descriptor = map_field.value.clone();
+    next_descriptor["defaultView"]["zoom"] = serde_json::json!(2.5);
+    let request_id = Uuid::new_v4().to_string();
+    let applied = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            next_descriptor.clone(),
+            created.layers.value.clone(),
+            authored_bytes.clone(),
+            upload_hash.clone(),
+            &map_field.revision,
+            &created.layers.revision,
+            &accepted.source.revision,
+            vec![MapLinkMutation {
+                entity_id: place.id.clone(),
+                expected_locations_revision: String::new(),
+                locations: locations.clone(),
+            }],
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(applied.map.value["defaultView"]["zoom"], 2.5);
+    assert_eq!(applied.source.content_hash, format!("sha256:{:x}", Sha256::digest(&canonical)));
+    assert_eq!(store.asset_bytes(accepted.source.id.clone()).unwrap(), canonical);
+    assert_eq!(
+        store.map_locations(place.id.clone()).unwrap()[0].id,
+        location_id
+    );
+    let replayed = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            next_descriptor.clone(),
+            created.layers.value.clone(),
+            authored_bytes.clone(),
+            upload_hash.clone(),
+            &map_field.revision,
+            &created.layers.revision,
+            &accepted.source.revision,
+            vec![MapLinkMutation {
+                entity_id: place.id.clone(),
+                expected_locations_revision: String::new(),
+                locations: locations.clone(),
+            }],
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(replayed.map.revision, applied.map.revision);
+    assert_eq!(replayed.source.revision, applied.source.revision);
+    let before_hash = store.asset(accepted.source.id.clone()).unwrap().content_hash;
+    let stale = store.apply_map_edit(
+        accepted.entity.id.clone(),
+        next_descriptor,
+        created.layers.value,
+        authored_bytes,
+        upload_hash,
+        "stale-map-revision",
+        &applied.layers.revision,
+        &applied.source.revision,
+        Vec::new(),
+        None,
+    );
+    assert!(stale
+        .unwrap_err()
+        .to_string()
+        .contains("revision conflict"));
+    assert_eq!(
+        store.asset(accepted.source.id.clone()).unwrap().content_hash,
+        before_hash
+    );
+    drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
 

@@ -3,7 +3,7 @@ export type NormalizedPoint = readonly [number, number];
 export declare const MAP_ENTITY_TYPE: "daena.maps:map";
 export declare const MAP_NAMESPACE: "maps";
 export declare const FMG_PROVIDER: "azgaar-fmg";
-export declare const VECTOR_PROVIDER: "daena-vector";
+export declare const VECTOR_PROVIDER: "daena-openlayers";
 export declare const PHYSICAL_PROVIDER: "daena-physical";
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
@@ -45,6 +45,77 @@ export type MapAnchor = {
     rings: readonly (readonly NormalizedPoint[])[];
 };
 export type ImageSourceFormat = (typeof IMAGE_SOURCE_FORMATS)[number];
+export type MapCoordinateSpace = {
+    kind: "image";
+    extent: readonly [number, number, number, number];
+    origin: "top-left";
+    units: "pixels";
+} | {
+    kind: "world";
+    extent: readonly [number, number, number, number];
+    origin: "bottom-left";
+    units: {
+        id: string;
+        label: string;
+        metresPerUnit: number | null;
+    };
+    wrapX: boolean;
+} | {
+    kind: "geographic";
+    projection: "EPSG:4326";
+    extent: readonly [number, number, number, number];
+    wrapX: boolean;
+};
+export type MapBackgroundRef = {
+    id: string;
+    assetId: string;
+    name: string;
+    visible: boolean;
+    locked: boolean;
+    opacity: number;
+    order: number;
+    extent: readonly [number, number, number, number];
+};
+export type MapGridSettings = {
+    visible: boolean;
+    snap: boolean;
+    spacing: readonly [number, number];
+};
+export type MapLabelV2 = {
+    source: "name" | "explicit";
+    text: string | null;
+    size: number;
+    color: string;
+    haloColor: string;
+    haloWidth: number;
+    placement: "point" | "line" | "interior";
+    offset: readonly [number, number];
+    rotation: number;
+    minZoom: number | null;
+    maxZoom: number | null;
+};
+export type MapStyleV2 = {
+    fill: string;
+    fillOpacity: number;
+    stroke: string;
+    strokeOpacity?: number;
+    strokeWidth: number;
+    strokeDash?: readonly number[];
+    pointRadius: number;
+    icon?: string | null;
+    iconSize?: number;
+    label?: MapLabelV2;
+};
+export type DaenaFeaturePropertiesV2 = {
+    daena: {
+        layerId: string;
+        semanticType: string;
+        name: string | null;
+        style: Partial<MapStyleV2> | null;
+        label: MapLabelV2 | null;
+        custom: Record<string, string | number | boolean | null>;
+    };
+};
 export type MapDescriptor = {
     schemaVersion: 1;
     provider: {
@@ -59,17 +130,24 @@ export type MapDescriptor = {
         zoom: number;
     };
 } | {
-    schemaVersion: 1;
+    schemaVersion: 2;
     provider: {
         id: typeof VECTOR_PROVIDER;
-        adapterVersion: 1;
-        sourceFormat: "geojson";
+        adapterVersion: 2;
+        sourceFormat: "daena-geojson";
     };
     sourceAssetId: string;
     previewAssetId: string | null;
+    coordinateSpace: MapCoordinateSpace;
+    backgrounds: readonly MapBackgroundRef[];
     defaultView: {
-        center: NormalizedPoint;
+        center: readonly [number, number];
         zoom: number;
+        rotation: number;
+    };
+    settings: {
+        snapEnabled: boolean;
+        grid: MapGridSettings | null;
     };
     generation?: {
         id: "daena-landmass";
@@ -155,24 +233,21 @@ export type MapLayerDefinition = {
     rasterAssetId: string;
     opacity: number;
     locked: boolean;
+    blendMode?: "normal" | "multiply" | "screen" | "overlay";
 } | {
     id: string;
     name: string;
     order: number;
     defaultVisible: boolean;
     locked: boolean;
+    opacity?: number;
+    blendMode?: "normal" | "multiply" | "screen" | "overlay";
     selector: Readonly<Record<string, never>>;
-    style: {
-        fill: string;
-        fillOpacity: number;
-        stroke: string;
-        strokeWidth: number;
-        pointRadius: number;
-    };
+    style: MapStyleV2;
     kind: "vector";
 };
 export interface MapLayersField {
-    schemaVersion: 1;
+    schemaVersion: 1 | 2;
     layers: readonly MapLayerDefinition[];
 }
 export type MapFocusResult = {

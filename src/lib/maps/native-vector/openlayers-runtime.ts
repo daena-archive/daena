@@ -117,7 +117,21 @@ function featureKind(value: unknown, geometry: VectorFeature["geometry"]): Vecto
 }
 
 function readFeatures(collection: VectorFeatureCollection): Feature<Geometry>[] {
-  return format.readFeatures(collection as Parameters<GeoJSON["readFeatures"]>[0]) as Feature<Geometry>[];
+  const features = format.readFeatures(collection as Parameters<GeoJSON["readFeatures"]>[0]) as Feature<Geometry>[];
+  for (const feature of features) {
+    const daena = feature.get("daena") as
+      | { layerId?: unknown; semanticType?: unknown; name?: unknown }
+      | undefined;
+    if (daena && typeof daena === "object") {
+      feature.setProperties({
+        daenaLayerId: typeof daena.layerId === "string" ? daena.layerId : BASE_LAYER_ID,
+        kind: typeof daena.semanticType === "string" ? daena.semanticType : "custom",
+        name: typeof daena.name === "string" ? daena.name : null,
+      });
+      feature.unset("daena");
+    }
+  }
+  return features;
 }
 
 function toVectorFeature(feature: Feature<Geometry>, fallbackLayerId: string): VectorFeature | null {
@@ -130,19 +144,42 @@ function toVectorFeature(feature: Feature<Geometry>, fallbackLayerId: string): V
   if (
     !geometry ||
     (geometry.type !== "Point" &&
+      geometry.type !== "MultiPoint" &&
       geometry.type !== "LineString" &&
+      geometry.type !== "MultiLineString" &&
       geometry.type !== "Polygon" &&
       geometry.type !== "MultiPolygon")
   )
     return null;
   const properties = object.properties ?? {};
+  const layerId =
+    typeof properties.daenaLayerId === "string"
+      ? properties.daenaLayerId
+      : typeof (properties.daena as { layerId?: unknown } | undefined)?.layerId === "string"
+        ? ((properties.daena as { layerId: string }).layerId)
+        : fallbackLayerId;
+  const kind = featureKind(
+    properties.kind ?? (properties.daena as { semanticType?: unknown } | undefined)?.semanticType,
+    geometry,
+  );
+  const name =
+    typeof properties.name === "string"
+      ? properties.name
+      : typeof (properties.daena as { name?: unknown } | undefined)?.name === "string"
+        ? ((properties.daena as { name: string }).name)
+        : null;
   return {
     type: "Feature",
     id: String(feature.getId() ?? object.id ?? crypto.randomUUID()),
     properties: {
-      daenaLayerId: typeof properties.daenaLayerId === "string" ? properties.daenaLayerId : fallbackLayerId,
-      kind: featureKind(properties.kind, geometry),
-      name: typeof properties.name === "string" ? properties.name : null,
+      daena: {
+        layerId,
+        semanticType: kind,
+        name,
+        style: null,
+        label: null,
+        custom: {},
+      },
     },
     geometry,
   };
@@ -437,8 +474,8 @@ export function createNativeVectorEditor(
       const positions = converted.geometry.coordinates.flat(Infinity) as number[];
       return {
         kind: "provider-feature",
-        provider: "daena-vector",
-        featureKind: converted.properties.kind,
+        provider: "daena-openlayers",
+        featureKind: "geojson-feature",
         featureId: converted.id,
         fallbackPoint:
           positions.length >= 2

@@ -86,6 +86,44 @@ export type MapGridSettings = {
   spacing: readonly [number, number];
 };
 
+export type MapLabelV2 = {
+  source: "name" | "explicit";
+  text: string | null;
+  size: number;
+  color: string;
+  haloColor: string;
+  haloWidth: number;
+  placement: "point" | "line" | "interior";
+  offset: readonly [number, number];
+  rotation: number;
+  minZoom: number | null;
+  maxZoom: number | null;
+};
+
+export type MapStyleV2 = {
+  fill: string;
+  fillOpacity: number;
+  stroke: string;
+  strokeOpacity?: number;
+  strokeWidth: number;
+  strokeDash?: readonly number[];
+  pointRadius: number;
+  icon?: string | null;
+  iconSize?: number;
+  label?: MapLabelV2;
+};
+
+export type DaenaFeaturePropertiesV2 = {
+  daena: {
+    layerId: string;
+    semanticType: string;
+    name: string | null;
+    style: Partial<MapStyleV2> | null;
+    label: MapLabelV2 | null;
+    custom: Record<string, string | number | boolean | null>;
+  };
+};
+
 export type MapDescriptor =
   | {
       schemaVersion: 1;
@@ -195,30 +233,7 @@ export type MapLayerDefinition =
       opacity?: number;
       blendMode?: "normal" | "multiply" | "screen" | "overlay";
       selector: Readonly<Record<string, never>>;
-      style: {
-        fill: string;
-        fillOpacity: number;
-        stroke: string;
-        strokeOpacity?: number;
-        strokeWidth: number;
-        strokeDash?: readonly number[];
-        pointRadius: number;
-        icon?: string | null;
-        iconSize?: number;
-        label?: {
-          source: "name" | "explicit";
-          text: string | null;
-          size: number;
-          color: string;
-          haloColor: string;
-          haloWidth: number;
-          placement: "point" | "line" | "interior";
-          offset: readonly [number, number];
-          rotation: number;
-          minZoom: number | null;
-          maxZoom: number | null;
-        };
-      };
+      style: MapStyleV2;
       kind: "vector";
     };
 

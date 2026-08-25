@@ -106,7 +106,7 @@ export function kindForDrawMode(mode: "point" | "linestring" | "polygon" | "rect
 }
 
 export function drawModeForGeometry(geometry: VectorFeature["geometry"]): "point" | "linestring" | "polygon" {
-  if (geometry.type === "Point") return "point";
-  if (geometry.type === "LineString") return "linestring";
+  if (geometry.type === "Point" || geometry.type === "MultiPoint") return "point";
+  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return "linestring";
   return "polygon";
 }

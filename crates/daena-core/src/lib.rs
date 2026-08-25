@@ -39,7 +39,7 @@ pub use project::{
     EntitySortField, EntityTypeCount, ExternalChangeReport, FieldValue, Generation, GitChange,
     GitLogEntry, GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream,
     ImportedImageMap, MigrationHistoryEntry, ModuleField, ModuleNamespace, ModuleRecordListParams,
-    MapEditApply, ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, RasterLayerChange,
+    MapEditApply, MapLinkMutation, ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot, ProjectStore, RasterLayerChange,
     RasterLayerUpdate, Relationship, RelationshipInput, RelationshipUpdate, SaveDocument,
     SaveEntry, SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,
     WikiPageExportFormat, DEFAULT_ENTITY_QUERY_LIMIT, MAX_ENTITY_QUERY_LIMIT,

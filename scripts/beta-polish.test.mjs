@@ -121,6 +121,11 @@ assert.match(
 );
 assert.match(cssRule(workspaceNav, ".workspace-view-nav button"), /min-height: var\(--control-min-height\)/);
 assert.match(cssRule(sidebarStyles, ".recent-project-remove"), /width: 36px[\s\S]*height: 36px/);
+assert.match(
+  cssRule(sidebarStyles, ".rail-collapsed.menu-open"),
+  /z-index:\s*40/,
+  "the open project menu stacks above workspace chrome",
+);
 
 for (const source of [sidebarStyles, projectCenter, statusCenter, workspaceNav, quickOpen, toolbar])
   assert.match(source, /@media \(max-width:/, "core beta surfaces include responsive behavior");

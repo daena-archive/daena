@@ -170,6 +170,85 @@ type CreateGroup = { module: InstalledModule; options: CreateOption[] };
 type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
 type CreateDialogView = "templates" | "form";
 type WorkbenchPane = "collection" | "content" | "inspector";
+type WorkbenchLayoutPrefs = {
+  visibility: Record<WorkbenchPane, boolean>;
+  collectionWidth: number;
+  inspectorWidth: number;
+};
+const collectionPaneMin = 190;
+const collectionPaneMax = 380;
+const collectionPaneDefault = 245;
+const inspectorPaneMin = 230;
+const inspectorPaneMax = 440;
+const inspectorPaneDefault = 290;
+
+function workbenchLayoutStorageKey(sec: WorkspaceSection) {
+  return `daena:workbench-layout:${workspaceModuleId(sec)}`;
+}
+
+function clampWorkbenchPaneWidth(value: number, min: number, max: number, fallback: number) {
+  return Number.isFinite(value) && value > 0 ? Math.max(min, Math.min(max, Math.round(value))) : fallback;
+}
+
+function loadWorkbenchLayout(sec: WorkspaceSection): WorkbenchLayoutPrefs {
+  try {
+    const raw = localStorage.getItem(workbenchLayoutStorageKey(sec));
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<WorkbenchLayoutPrefs> & {
+        visibility?: Partial<Record<WorkbenchPane, boolean>>;
+      };
+      return {
+        visibility: {
+          collection: parsed.visibility?.collection !== false,
+          content: parsed.visibility?.content !== false,
+          inspector: parsed.visibility?.inspector !== false,
+        },
+        collectionWidth: clampWorkbenchPaneWidth(
+          Number(parsed.collectionWidth),
+          collectionPaneMin,
+          collectionPaneMax,
+          collectionPaneDefault,
+        ),
+        inspectorWidth: clampWorkbenchPaneWidth(
+          Number(parsed.inspectorWidth),
+          inspectorPaneMin,
+          inspectorPaneMax,
+          inspectorPaneDefault,
+        ),
+      };
+    }
+  } catch {
+    // Fall through to legacy global keys / defaults.
+  }
+  return {
+    visibility: {
+      collection: localStorage.getItem("daena:workbench-pane:collection") !== "false",
+      content: localStorage.getItem("daena:workbench-pane:content") !== "false",
+      inspector: localStorage.getItem("daena:workbench-pane:inspector") !== "false",
+    },
+    collectionWidth: clampWorkbenchPaneWidth(
+      Number(localStorage.getItem("daena:workbench-pane-width:collection")),
+      collectionPaneMin,
+      collectionPaneMax,
+      collectionPaneDefault,
+    ),
+    inspectorWidth: clampWorkbenchPaneWidth(
+      Number(localStorage.getItem("daena:workbench-pane-width:inspector")),
+      inspectorPaneMin,
+      inspectorPaneMax,
+      inspectorPaneDefault,
+    ),
+  };
+}
+
+function saveWorkbenchLayout(sec: WorkspaceSection, layout: WorkbenchLayoutPrefs) {
+  try {
+    localStorage.setItem(workbenchLayoutStorageKey(sec), JSON.stringify(layout));
+  } catch {
+    // Ignore quota / private-mode failures; in-session layout still works.
+  }
+}
+
 type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
@@ -274,10 +353,11 @@ let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>
 let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
 let restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
 let workbenchViewportWidth = $state(window.innerWidth);
-let workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>({
-  collection: localStorage.getItem("daena:workbench-pane:collection") !== "false",
-  content: localStorage.getItem("daena:workbench-pane:content") !== "false",
-  inspector: localStorage.getItem("daena:workbench-pane:inspector") !== "false",
+const initialWorkbenchLayout = loadWorkbenchLayout("lore");
+let workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>(initialWorkbenchLayout.visibility);
+let workbenchPaneWidths = $state({
+  collection: initialWorkbenchLayout.collectionWidth,
+  inspector: initialWorkbenchLayout.inspectorWidth,
 });
 let specializedSurfaceElement = $state<HTMLElement | null>(null);
 let specializedSurfaceScrollByKey = $state<Record<string, number>>({});
@@ -298,6 +378,16 @@ $effect(() => {
   void tick().then(() => {
     collectionQueryRestoring = false;
   });
+});
+
+$effect(() => {
+  const layout = loadWorkbenchLayout(section);
+  workbenchPaneVisibility = layout.visibility;
+  workbenchPaneWidths = {
+    collection: layout.collectionWidth,
+    inspector: layout.inspectorWidth,
+  };
+  restoredWorkspacePaneDimensions = null;
 });
 let name = $state("");
 let selectedCreateKey = $state("");
@@ -1368,22 +1458,19 @@ async function restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
   await tick();
 }
 
-const collectionPaneMin = 190;
-const collectionPaneMax = 380;
-const inspectorPaneMin = 230;
-const inspectorPaneMax = 440;
+function persistWorkbenchLayout() {
+  saveWorkbenchLayout(section, {
+    visibility: workbenchPaneVisibility,
+    collectionWidth: workbenchPaneWidths.collection,
+    inspectorWidth: workbenchPaneWidths.inspector,
+  });
+}
 
 function activePaneDimensions(): WorkspacePaneDimensions {
-  const storedCollectionWidth = Number(localStorage.getItem("daena:workbench-pane-width:collection"));
-  const storedInspectorWidth = Number(localStorage.getItem("daena:workbench-pane-width:inspector"));
   return {
-    collectionWidth:
-      restoredWorkspacePaneDimensions?.collectionWidth ||
-      (Number.isFinite(storedCollectionWidth) && storedCollectionWidth > 0 ? storedCollectionWidth : 245),
+    collectionWidth: restoredWorkspacePaneDimensions?.collectionWidth || workbenchPaneWidths.collection,
     contentWidth: restoredWorkspacePaneDimensions?.contentWidth || 640,
-    inspectorWidth:
-      restoredWorkspacePaneDimensions?.inspectorWidth ||
-      (Number.isFinite(storedInspectorWidth) && storedInspectorWidth > 0 ? storedInspectorWidth : 290),
+    inspectorWidth: restoredWorkspacePaneDimensions?.inspectorWidth || workbenchPaneWidths.inspector,
     viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
   };
 }
@@ -1397,14 +1484,30 @@ function resizeWorkbenchPane(pane: "collection" | "inspector", delta: number) {
   if (pane === "collection")
     panes.collectionWidth = Math.max(collectionPaneMin, Math.min(collectionPaneMax, panes.collectionWidth + delta));
   else panes.inspectorWidth = Math.max(inspectorPaneMin, Math.min(inspectorPaneMax, panes.inspectorWidth + delta));
+  workbenchPaneWidths = {
+    collection: panes.collectionWidth,
+    inspector: panes.inspectorWidth,
+  };
   restoredWorkspacePaneDimensions = panes;
-  localStorage.setItem(`daena:workbench-pane-width:${pane}`, String(panes[`${pane}Width`]));
+  persistWorkbenchLayout();
+}
+
+function resetWorkbenchPane(pane: "collection" | "inspector") {
+  const panes = activePaneDimensions();
+  if (pane === "collection") panes.collectionWidth = collectionPaneDefault;
+  else panes.inspectorWidth = inspectorPaneDefault;
+  workbenchPaneWidths = {
+    collection: panes.collectionWidth,
+    inspector: panes.inspectorWidth,
+  };
+  restoredWorkspacePaneDimensions = panes;
+  persistWorkbenchLayout();
 }
 
 function toggleWorkbenchPane(pane: WorkbenchPane) {
   const visible = !workbenchPaneVisibility[pane];
   workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
-  localStorage.setItem(`daena:workbench-pane:${pane}`, String(visible));
+  persistWorkbenchLayout();
   if (pane === "content" && !visible) editorFullscreen = false;
 }
 
@@ -6848,7 +6951,8 @@ onMount(() => {
             value={activePaneDimensions().collectionWidth}
             min={collectionPaneMin}
             max={collectionPaneMax}
-            onResize={(delta) => resizeWorkbenchPane("collection", delta)} />{/if}
+            onResize={(delta) => resizeWorkbenchPane("collection", delta)}
+            onReset={() => resetWorkbenchPane("collection")} />{/if}
 
         {#if workbenchPaneVisibility.content && section === "language"}
           {@const languageProjection = projectionModule("language")}
@@ -7225,7 +7329,8 @@ onMount(() => {
             min={inspectorPaneMin}
             max={inspectorPaneMax}
             direction={-1}
-            onResize={(delta) => resizeWorkbenchPane("inspector", delta)} />{/if}
+            onResize={(delta) => resizeWorkbenchPane("inspector", delta)}
+            onReset={() => resetWorkbenchPane("inspector")} />{/if}
 
         {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && selected}
           {@const inspectedEntity = selected}

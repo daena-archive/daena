@@ -9,11 +9,15 @@ const workbenchState = await readFile(new URL("../src/lib/shell/WorkbenchState.s
 const relatedPreview = await readFile(new URL("../src/lib/EntityHoverCard.svelte", import.meta.url), "utf8");
 
 assert.match(shell, /workbenchPaneVisibility/, "the workbench tracks pane visibility explicitly");
-assert.match(shell, /daena:workbench-pane:/, "pane visibility persists across sessions");
-assert.match(shell, /daena:workbench-pane-width:/, "resized pane widths persist across sessions");
+assert.match(shell, /daena:workbench-layout:/, "workbench layout persists per plugin");
+assert.match(shell, /workbenchLayoutStorageKey/, "layout storage is keyed by workspace plugin id");
+assert.match(shell, /loadWorkbenchLayout/, "each plugin restores its own workbench layout");
+assert.match(shell, /saveWorkbenchLayout/, "workbench layout changes are saved per plugin");
 assert.match(shell, /resizeWorkbenchPane/, "collection and inspector widths have a shared resize boundary");
+assert.match(shell, /resetWorkbenchPane/, "pane widths can be restored to defaults");
 assert.match(resizeHandle, /ArrowLeft/, "pane resizing is keyboard accessible");
 assert.match(resizeHandle, /onpointerdown/, "pane resizing supports direct manipulation");
+assert.match(resizeHandle, /ondblclick/, "double-click restores the default pane width");
 
 assert.match(shell, />Article<\/button/, "the compact entity header exposes Article mode");
 assert.match(shell, />Edit<\/button/, "the compact entity header exposes Edit mode");

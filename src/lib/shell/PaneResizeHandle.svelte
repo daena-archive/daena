@@ -6,9 +6,10 @@ interface Props {
   max: number;
   direction?: 1 | -1;
   onResize: (delta: number) => void;
+  onReset: () => void;
 }
 
-let { label, value, min, max, direction = 1, onResize }: Props = $props();
+let { label, value, min, max, direction = 1, onResize, onReset }: Props = $props();
 let dragging = $state(false);
 
 function startResize(event: PointerEvent) {
@@ -38,16 +39,23 @@ function handleKeydown(event: KeyboardEvent) {
   const physicalDelta = event.key === "ArrowRight" ? 16 : -16;
   onResize(physicalDelta * direction);
 }
+
+function handleDoubleClick(event: MouseEvent) {
+  event.preventDefault();
+  dragging = false;
+  onReset();
+}
 </script>
 
 <button
   type="button"
   class:dragging
   class="pane-resize-handle"
-  aria-label={`${label}. Current width ${Math.round(value)} pixels`}
-  title={`${label} (${Math.round(value)} px)`}
+  aria-label={`${label}. Current width ${Math.round(value)} pixels. Double-click to reset.`}
+  title={`${label} (${Math.round(value)} px) · Double-click to reset`}
   tabindex="0"
   onpointerdown={startResize}
+  ondblclick={handleDoubleClick}
   onkeydown={handleKeydown}>
   <span aria-hidden="true"></span>
 </button>

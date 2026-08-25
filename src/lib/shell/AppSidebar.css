@@ -20,6 +20,8 @@
     padding 0.2s ease;
 }
 .rail-collapsed.menu-open {
+  /* Above workspace-view-nav (3) and workspace-topbar (20); menu is a sibling-stacking popover. */
+  z-index: 40;
   overflow: visible;
 }
 .startup-rail {

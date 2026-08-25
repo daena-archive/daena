@@ -55,7 +55,9 @@ export type MapCommandKind =
   | "SetBackgroundOpacity"
   | "SetBackgroundVisibility"
   | "SetDefaultView"
-  | "SetCoordinateSpace";
+  | "SetCoordinateSpace"
+  | "ApplyGeometryOperation"
+  | "SetSnapSettings";
 
 export type MapCommand = {
   kind: MapCommandKind;
@@ -890,4 +892,49 @@ export function listedBackgrounds(document: MapDocument): MapBackgroundRef[] {
 export function nextBackgroundOrder(backgrounds: readonly MapBackgroundRef[]): number {
   if (backgrounds.length === 0) return 0;
   return Math.max(...backgrounds.map((item) => item.order)) + 1;
+}
+
+export function applyGeometryOperationCommand(
+  removedFeatures: VectorFeature[],
+  addedFeatures: VectorFeature[],
+  label: string,
+): MapCommand {
+  const removedIds = new Set(removedFeatures.map((feature) => feature.id));
+  return {
+    kind: "ApplyGeometryOperation",
+    label,
+    apply(document) {
+      let collection = removeFeatures(document.collection, removedIds);
+      for (const feature of addedFeatures) {
+        collection = replaceFeature(collection, feature);
+      }
+      return withCollection(document, collection);
+    },
+    invert(before) {
+      return applyGeometryOperationCommand(addedFeatures, removedFeatures, `Undo ${label}`);
+    },
+  };
+}
+
+export function setSnapSettingsCommand(enabled: boolean, previous: boolean): MapCommand {
+  return {
+    kind: "SetSnapSettings",
+    label: enabled ? "Enable snap" : "Disable snap",
+    coalesceKey: "snap-enabled",
+    apply(document) {
+      const descriptor = openLayersDescriptor(document);
+      if (!descriptor) return document;
+      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
+        settings: { ...descriptor.settings, snapEnabled: enabled },
+      }) as OpenLayersMapDescriptor);
+    },
+    invert() {
+      return setSnapSettingsCommand(previous, enabled);
+    },
+  };
+}
+
+export function snapEnabledFromDescriptor(descriptor: unknown): boolean {
+  if (!isOpenLayersDescriptor(descriptor)) return true;
+  return descriptor.settings?.snapEnabled !== false;
 }

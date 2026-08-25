@@ -108,3 +108,29 @@ export function extentSize(space: MapCoordinateSpace): { width: number; height: 
   const [minX, minY, maxX, maxY] = extentOf(space);
   return { width: maxX - minX, height: maxY - minY };
 }
+
+export function measureFeature(
+  feature: { geometry: { type: string; coordinates: unknown } },
+  space: MapCoordinateSpace,
+): { length: number | null; area: number | null } {
+  const { geometry } = feature;
+  if (geometry.type === "LineString") {
+    return { length: pathLength(geometry.coordinates as readonly number[][], space), area: null };
+  }
+  if (geometry.type === "MultiLineString") {
+    const lines = geometry.coordinates as readonly number[][][];
+    const total = lines.reduce((sum, line) => sum + pathLength(line, space), 0);
+    return { length: total, area: null };
+  }
+  if (geometry.type === "Polygon") {
+    const rings = geometry.coordinates as readonly number[][][];
+    return { length: pathLength(rings[0] ?? [], space), area: polygonArea(rings[0] ?? [], space) };
+  }
+  if (geometry.type === "MultiPolygon") {
+    const polygons = geometry.coordinates as readonly number[][][][];
+    const area = polygons.reduce((sum, polygon) => sum + polygonArea(polygon[0] ?? [], space), 0);
+    const length = polygons.reduce((sum, polygon) => sum + pathLength(polygon[0] ?? [], space), 0);
+    return { length, area };
+  }
+  return { length: null, area: null };
+}

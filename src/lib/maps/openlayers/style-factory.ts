@@ -1,1 +1,1 @@
-export { nativeFeatureStyle, visibleUnlockedFeatures } from "../native-vector/openlayers-style";
+export { nativeFeatureStyle, snapTargetFeatures, visibleUnlockedFeatures } from "../native-vector/openlayers-style";

@@ -28,7 +28,20 @@ export function visibleUnlockedFeatures(
   collection: VectorFeatureCollection,
   layers: readonly VectorLayerDefinition[],
 ): VectorFeatureCollection {
-  const enabled = new Set(layers.filter((layer) => layer.defaultVisible && !layer.locked).map((layer) => layer.id));
+  return snapTargetFeatures(collection, layers);
+}
+
+export function snapTargetFeatures(
+  collection: VectorFeatureCollection,
+  layers: readonly VectorLayerDefinition[],
+  snapTargetLayerIds: ReadonlySet<string> = new Set(),
+): VectorFeatureCollection {
+  const enabled = new Set<string>();
+  for (const layer of layers) {
+    if (!layer.defaultVisible) continue;
+    if (!layer.locked) enabled.add(layer.id);
+    else if (snapTargetLayerIds.has(layer.id)) enabled.add(layer.id);
+  }
   if (baseVisible(layers)) enabled.add(BASE_LAYER_ID);
   return {
     type: "FeatureCollection",

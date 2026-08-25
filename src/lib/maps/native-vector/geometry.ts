@@ -3,7 +3,7 @@ import {
   FREEHAND_SIMPLIFIED_POSITION_LIMIT,
   type VectorFeature,
   type VectorKind,
-} from "./types";
+} from "./types.ts";
 
 export function geometryPositionCount(geometry: VectorFeature["geometry"]): number {
   switch (geometry.type) {

@@ -32,6 +32,8 @@ for (const required of [
   "AddBackground",
   "SetDefaultView",
   "SetCoordinateSpace",
+  "ApplyGeometryOperation",
+  "SetSnapSettings",
   "coalesceKey",
   "invert",
 ]) {

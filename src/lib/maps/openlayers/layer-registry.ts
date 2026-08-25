@@ -20,7 +20,7 @@ import {
   type VectorLayerDefinition,
 } from "../native-vector/types";
 import { collectionSignature, type FeatureCodec } from "./feature-codec";
-import { nativeFeatureStyle, visibleUnlockedFeatures } from "./style-factory";
+import { nativeFeatureStyle, snapTargetFeatures } from "./style-factory";
 
 export type RasterLayerSource = {
   url: string;
@@ -49,7 +49,8 @@ export type LayerRegistry = {
   syncLayers: (layers: readonly MapLayerDefinition[]) => void;
   replaceCollection: (collection: VectorFeatureCollection) => void;
   collectionFromLayers: () => VectorFeatureCollection;
-  syncSnap: (collection: VectorFeatureCollection) => void;
+  syncSnap: (collection: VectorFeatureCollection, snapTargetLayerIds?: ReadonlySet<string>) => void;
+  setSnapTargetLayerIds: (ids: ReadonlySet<string>) => void;
   refreshStyle: () => void;
   dispose: () => void;
 };
@@ -78,6 +79,7 @@ export function createLayerRegistry(
   let currentLayers: MapLayerDefinition[] = [...layers];
   let lastSignature = collectionSignature(collection);
   let currentRasters = new Map<string, RasterLayerSource>();
+  let snapTargetLayerIds = new Set<string>();
   const group = new LayerGroup({ layers: [] });
   const vectorEntries = new Map<string, { layer: VectorLayer; source: VectorSource }>();
   const rasterEntries = new Map<string, ImageLayer<any>>();
@@ -163,7 +165,11 @@ export function createLayerRegistry(
     }
     lastSignature = collectionSignature(next);
     snapSource.clear(true);
-    snapSource.addFeatures(codec.readOlFeatures(visibleUnlockedFeatures(next, currentLayers.filter(isVectorLayer))));
+    snapSource.addFeatures(
+      codec.readOlFeatures(
+        snapTargetFeatures(next, currentLayers.filter(isVectorLayer), snapTargetLayerIds),
+      ),
+    );
   };
 
   const orderedOlLayers = (rasters: ReadonlyMap<string, RasterLayerSource>): BaseLayer[] => {
@@ -280,9 +286,19 @@ export function createLayerRegistry(
         currentLayers.filter(isVectorLayer).map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
       );
     },
-    syncSnap(next) {
+    syncSnap(next, targetIds = snapTargetLayerIds) {
       snapSource.clear(true);
-      snapSource.addFeatures(codec.readOlFeatures(visibleUnlockedFeatures(next, currentLayers.filter(isVectorLayer))));
+      snapSource.addFeatures(
+        codec.readOlFeatures(snapTargetFeatures(next, currentLayers.filter(isVectorLayer), targetIds)),
+      );
+    },
+    setSnapTargetLayerIds(ids) {
+      snapTargetLayerIds = new Set(ids);
+      registry.syncSnap(
+        codec.collectionFromSources(
+          currentLayers.filter(isVectorLayer).map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
+        ),
+      );
     },
     refreshStyle() {
       for (const entry of vectorEntries.values()) entry.layer.changed();

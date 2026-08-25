@@ -1,5 +1,10 @@
 import Map from "ol/Map.js";
 import View from "ol/View.js";
+import VectorLayer from "ol/layer/Vector.js";
+import VectorSource from "ol/source/Vector.js";
+import Fill from "ol/style/Fill.js";
+import Stroke from "ol/style/Stroke.js";
+import Style from "ol/style/Style.js";
 import { createEmpty, extend, getCenter } from "ol/extent.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import "ol/ol.css";
@@ -18,7 +23,7 @@ import {
 import { createBackgroundRegistry, type RuntimeBackground } from "./background-registry";
 import { collectionSignature, createFeatureCodec } from "./feature-codec";
 import { anchorForFeature, featureAtPixel } from "./hit-testing";
-import { createInteractionManager } from "./interaction-manager";
+import { createInteractionManager, type MeasureReadout, type SnapOptions } from "./interaction-manager";
 import { createLayerRegistry, type RasterLayerSource } from "./layer-registry";
 import { bindMapLifecycle } from "./lifecycle";
 import {
@@ -75,6 +80,11 @@ export type MapAdapter = {
   selectedFeatureIds: () => string[];
   selectedFeature: () => VectorFeature | null;
   resize: () => void;
+  setGeometryPreview: (features: VectorFeature[] | null) => void;
+  setSnapOptions: (options: SnapOptions) => void;
+  setSnapTargetLayerIds: (ids: ReadonlySet<string>) => void;
+  clearMeasure: () => void;
+  selectFeatureIds: (ids: readonly string[]) => void;
   dispose: () => void;
 };
 
@@ -99,6 +109,8 @@ export function createMapAdapter(
     initialView?: MapAdapterView | null;
     onViewChange?: (view: MapAdapterView) => void;
     readOnly?: boolean;
+    onMeasureReadout?: (readout: MeasureReadout | null) => void;
+    initialSnapOptions?: SnapOptions;
   },
 ): MapAdapter | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   let disposed = false;
@@ -113,6 +125,15 @@ export function createMapAdapter(
   const maxZoom = maxZoomForCoordinateSpace(space);
 
   const registry = createLayerRegistry(session.draft, session.layers, codec, space, projection);
+  const previewSource = new VectorSource({ wrapX: false });
+  const previewLayer = new VectorLayer({
+    source: previewSource,
+    style: new Style({
+      fill: new Fill({ color: "rgba(213, 171, 108, 0.22)" }),
+      stroke: new Stroke({ color: "#d5ab6c", width: 2, lineDash: [10, 8] }),
+    }),
+    zIndex: 9_000,
+  });
   const backgrounds = createBackgroundRegistry((detail) => {
     session.onDiagnostic?.(RENDERER_UNAVAILABLE, detail);
   });
@@ -135,7 +156,7 @@ export function createMapAdapter(
   try {
     map = new Map({
       target: container,
-      layers: [backgrounds.group, registry.group],
+      layers: [backgrounds.group, registry.group, previewLayer],
       view,
       controls: [],
       interactions: defaultInteractions({ altShiftDragRotate: false, pinchRotate: false }),
@@ -175,13 +196,19 @@ export function createMapAdapter(
     view,
     registry,
     codec,
+    coordinateSpace: space,
     getActiveLayerId: () => activeLayerId,
     getPickArmed: () => Boolean(session.pickArmed),
     readOnly,
     onSourceCommitted: () => commitSource("Edit geometry"),
     onSelectionChange: emitSelection,
     onDiagnostic: session.onDiagnostic,
+    onMeasureReadout: session.onMeasureReadout,
   });
+
+  if (session.initialSnapOptions) {
+    interactions.setSnapOptions(session.initialSnapOptions);
+  }
 
   const currentBackgrounds = (): readonly RuntimeBackground[] => {
     if (session.backgrounds) return session.backgrounds;
@@ -402,10 +429,29 @@ export function createMapAdapter(
       const selected = interactions.select.getFeatures().item(0);
       return selected ? codec.toVectorFeature(selected, activeLayerId ?? BASE_LAYER_ID) : null;
     },
+    setGeometryPreview(features) {
+      previewSource.clear(true);
+      if (!features || features.length === 0) return;
+      previewSource.addFeatures(codec.readOlFeatures({ type: "FeatureCollection", features }));
+    },
+    setSnapOptions: interactions.setSnapOptions,
+    setSnapTargetLayerIds(ids) {
+      registry.setSnapTargetLayerIds(ids);
+    },
+    clearMeasure: interactions.clearMeasure,
+    selectFeatureIds(ids) {
+      interactions.select.getFeatures().clear();
+      for (const id of ids) {
+        const feature = registry.getFeatureById(id);
+        if (feature) interactions.select.getFeatures().push(feature);
+      }
+      emitSelection();
+    },
     resize: () => lifecycle.resize(),
     dispose() {
       if (disposed) return;
       disposed = true;
+      previewSource.clear(true);
       interactions.dispose();
       registry.dispose();
       backgrounds.dispose();

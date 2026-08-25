@@ -15,6 +15,7 @@ import {
   Link2,
   Lock,
   LockOpen,
+  Magnet,
   Map as MapIcon,
   Maximize2,
   Minimize2,
@@ -25,10 +26,13 @@ import {
   Redo2,
   RefreshCw,
   RotateCcw,
+  Ruler,
   Save,
+  Scissors,
   Slash,
   Square,
   SquarePlus,
+  SquareStack,
   Trash2,
   Undo2,
 } from "@lucide/svelte";
@@ -136,6 +140,17 @@ import {
   setLayerOpacityCommand,
   setLayerStyleCommand,
   setLayerVisibilityCommand,
+  applyGeometryOperationCommand,
+  setSnapSettingsCommand,
+  snapEnabledFromDescriptor,
+  buildPreview,
+  commitSelectionIds,
+  canRunOperation,
+  formatMeasurement,
+  measureFeature,
+  unitsForCoordinateSpace,
+  type GeometryPreview,
+  type GeometryOperationKind,
   type MapCommand,
 } from "../editor";
 
@@ -221,6 +236,16 @@ let studioApi = $state<{
   toggleHelp: () => void;
   exportView: () => AtlasRenderRequest | null;
 } | null>(null);
+let geometryPreview = $state<GeometryPreview | null>(null);
+let measureReadout = $state("");
+let snapVertex = $state(true);
+let snapEdge = $state(true);
+let snapIntersection = $state(true);
+let snapConfigOpen = $state(false);
+let snapTargetLayerIds = $state(new Set<string>());
+let bufferDistance = $state("10");
+let simplifyTolerance = $state("0.5");
+let operationNotice = $state("");
 let layersCollapsed = $state(false);
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
@@ -254,6 +279,10 @@ const listedRasters = $derived(
   commandStack ? listedBackgrounds(commandStack.document) : backgroundsFromDescriptor(mapField?.value),
 );
 const unitsLabel = $derived(measurementSummary(coordinateSpace));
+const snapEnabled = $derived(commandStack ? snapEnabledFromDescriptor(commandStack.document.descriptor) : true);
+const selectedOpFeatures = $derived(
+  commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
+);
 const viewMaxZoom = $derived(maxZoomForCoordinateSpace(coordinateSpace));
 const brandIcon = $derived((physicalMap ? Mountain : MapIcon) as Component);
 const iconProps = { size: 15, strokeWidth: 1.8, "aria-hidden": true } as const;
@@ -969,6 +998,7 @@ function mountEditor() {
     onSelectionChange(ids) {
       selectedFeatureIds = ids;
       if (ids.length === 0) selectedFeature = null;
+      if (tool === "measure-length" || tool === "measure-area") updateMeasureFromSelection();
     },
     onDoubleClick(featureId) {
       const linked = featureLinks.get(featureId);
@@ -991,6 +1021,9 @@ function mountEditor() {
     onViewChange(next) {
       defaultView = next;
     },
+    onMeasureReadout(readout) {
+      measureReadout = readout?.label ?? "";
+    },
   });
   if ("error" in created) {
     applyEditorEvent({ type: "save-failed", message: `${created.error}: ${created.detail}` });
@@ -998,8 +1031,10 @@ function mountEditor() {
     return;
   }
   editor = created;
+  syncSnapToEditor();
   if (!canDraw) editor.setMode("static");
   else editor.setMode(tool);
+  requestAnimationFrame(() => editor?.resize());
   publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
 }
 
@@ -1249,10 +1284,94 @@ function isDirty() {
   return editorState.dirty;
 }
 
+function syncSnapToEditor() {
+  editor?.setSnapOptions({
+    enabled: snapEnabled,
+    vertex: snapVertex,
+    edge: snapEdge,
+    intersection: snapIntersection,
+  });
+  editor?.setSnapTargetLayerIds(snapTargetLayerIds);
+}
+
+function toggleSnapEnabled() {
+  if (!commandStack) return;
+  dispatchCommand(setSnapSettingsCommand(!snapEnabled, snapEnabled));
+  syncSnapToEditor();
+}
+
+function toggleSnapTargetLayer(layerId: string) {
+  const next = new Set(snapTargetLayerIds);
+  if (next.has(layerId)) next.delete(layerId);
+  else next.add(layerId);
+  snapTargetLayerIds = next;
+  syncSnapToEditor();
+}
+
+function cancelGeometryPreview() {
+  geometryPreview = null;
+  operationNotice = "";
+  editor?.setGeometryPreview(null);
+}
+
+function startGeometryOperation(operation: GeometryOperationKind) {
+  if (!commandStack) return;
+  operationNotice = "";
+  const params =
+    operation === "buffer"
+      ? { bufferDistance: Number(bufferDistance) }
+      : operation === "simplify"
+        ? { simplifyTolerance: Number(simplifyTolerance) }
+        : {};
+  const built = buildPreview(commandStack.document, operation, selectedFeatureIds, params);
+  if (built.error) {
+    operationNotice = built.error.detail;
+    return;
+  }
+  if (!built.preview) return;
+  geometryPreview = built.preview;
+  editor?.setGeometryPreview(built.preview.previewFeatures);
+}
+
+function commitGeometryPreview() {
+  if (!geometryPreview || !commandStack) return;
+  const removed = commandStack.document.collection.features.filter((feature) =>
+    geometryPreview!.removedFeatureIds.includes(feature.id),
+  );
+  dispatchCommand(
+    applyGeometryOperationCommand(removed, geometryPreview.previewFeatures, geometryPreview.label),
+  );
+  const ids = commitSelectionIds(geometryPreview);
+  cancelGeometryPreview();
+  queueMicrotask(() => {
+    if (!editor || !commandStack) return;
+    editor.syncDocument(commandStack.document.collection, layers, runtimeLayerRasters());
+    editor.selectFeatureIds(ids);
+  });
+}
+
+function updateMeasureFromSelection() {
+  if (!commandStack || selectedOpFeatures.length === 0) return;
+  const units = unitsForCoordinateSpace(coordinateSpace);
+  if (tool === "measure-length") {
+    const total = selectedOpFeatures.reduce((sum, feature) => sum + (measureFeature(feature, coordinateSpace).length ?? 0), 0);
+    measureReadout = formatMeasurement(total, units.length);
+    return;
+  }
+  if (tool === "measure-area") {
+    const total = selectedOpFeatures.reduce((sum, feature) => sum + (measureFeature(feature, coordinateSpace).area ?? 0), 0);
+    measureReadout = formatMeasurement(total, units.area);
+  }
+}
+
 function setTool(next: VectorDrawMode) {
-  if (!canDraw && next !== "static" && next !== "select") return;
+  if (!canDraw && next !== "static" && next !== "select" && !next.startsWith("measure-")) return;
+  cancelGeometryPreview();
   tool = next;
-  editor?.setMode(!canDraw ? "static" : next);
+  measureReadout = "";
+  editor?.clearMeasure();
+  editor?.setMode(!canDraw && !next.startsWith("measure-") ? "static" : next);
+  if (next === "measure-length" || next === "measure-area") updateMeasureFromSelection();
 }
 
 function switchLayer(layerId: string) {
@@ -1569,6 +1688,18 @@ function onKey(event: KeyboardEvent) {
     void setFullscreen(false);
     return;
   }
+  if (event.key === "Escape" && geometryPreview) {
+    event.preventDefault();
+    cancelGeometryPreview();
+    return;
+  }
+  if (event.key === "Escape" && measureReadout) {
+    event.preventDefault();
+    measureReadout = "";
+    editor?.clearMeasure();
+    if (tool.startsWith("measure-")) setTool("select");
+    return;
+  }
   if (event.key === "Escape" && selectedFeatureIds.length > 0) {
     event.preventDefault();
     editor?.clearSelection();
@@ -1598,6 +1729,10 @@ function onKey(event: KeyboardEvent) {
     if (event.key === "g") setTool("polygon");
     if (event.key === "r") setTool("rectangle");
     if (event.key === "f") setTool("freehand");
+    if (event.key === "\\") toggleSnapEnabled();
+    if (event.key === "d") setTool("measure-distance");
+    if (event.key === "M") setTool("measure-length");
+    if (event.key === "A") setTool("measure-area");
   }
 }
 
@@ -1732,6 +1867,51 @@ onMount(() => {
             title="Freehand"
             disabled={!canDraw}
             onclick={() => setTool("freehand")}><Pencil {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={snapEnabled}
+            aria-pressed={snapEnabled}
+            aria-label={snapEnabled ? "Snap on" : "Snap off"}
+            title={snapEnabled ? "Snap on (\\)" : "Snap off (\\)"}
+            disabled={!editor}
+            onclick={() => toggleSnapEnabled()}><Magnet {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={snapConfigOpen}
+            aria-pressed={snapConfigOpen}
+            aria-label="Snap settings"
+            title="Snap settings"
+            disabled={!editor}
+            onclick={() => (snapConfigOpen = !snapConfigOpen)}><CircleHelp {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "measure-distance"}
+            aria-pressed={tool === "measure-distance"}
+            aria-label="Measure distance"
+            title="Measure distance (D)"
+            disabled={!editor}
+            onclick={() => setTool("measure-distance")}><Ruler {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "measure-length"}
+            aria-pressed={tool === "measure-length"}
+            aria-label="Measure length"
+            title="Measure length (Shift+M)"
+            disabled={!editor}
+            onclick={() => setTool("measure-length")}><Slash {...iconProps} /></button>
+          <button
+            type="button"
+            class="icon-button"
+            class:active={tool === "measure-area"}
+            aria-pressed={tool === "measure-area"}
+            aria-label="Measure area"
+            title="Measure area (Shift+A)"
+            disabled={!editor}
+            onclick={() => setTool("measure-area")}><SquareStack {...iconProps} /></button>
           <button
             type="button"
             class="icon-button"
@@ -1870,6 +2050,14 @@ onMount(() => {
                 </button>
               </div>
             {/if}
+            {#if snapConfigOpen && !physicalMap}
+              <div class="snap-config" aria-label="Snap settings">
+                <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
+                <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
+                <label><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
+                <small>Locked layers can opt into snap targets from the layer row.</small>
+              </div>
+            {/if}
             <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
               {#each listedLayers as layer (layer.id)}
                 <div
@@ -1921,6 +2109,16 @@ onMount(() => {
                         title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
                         onclick={() => void toggleLock(layer)}
                         >{#if layer.locked}<Lock {...iconProps} />{:else}<LockOpen {...iconProps} />{/if}</button>
+                      {#if layer.locked && layer.defaultVisible && isVectorLayer(layer)}
+                        <button
+                          type="button"
+                          class="icon-button"
+                          class:active={snapTargetLayerIds.has(layer.id)}
+                          aria-pressed={snapTargetLayerIds.has(layer.id)}
+                          aria-label={`Snap to ${layer.name}`}
+                          title={`Snap to ${layer.name}`}
+                          onclick={() => toggleSnapTargetLayer(layer.id)}><Magnet {...iconProps} /></button>
+                      {/if}
                       <button
                         type="button"
                         class="icon-button"
@@ -2150,6 +2348,40 @@ onMount(() => {
               </div>
             {/if}
           {/if}
+          {#if selectedFeatureIds.length > 0 && !physicalMap}
+            <div class="geometry-ops" aria-label="Geometry operations">
+              <strong>Geometry</strong>
+              {#if geometryPreview}
+                <p class="hint">Preview: {geometryPreview.label}. Commit or cancel to finish.</p>
+                <div class="layer-row">
+                  <button type="button" onclick={() => commitGeometryPreview()}>Apply</button>
+                  <button type="button" onclick={() => cancelGeometryPreview()}>Cancel</button>
+                </div>
+              {:else}
+                <div class="layer-row">
+                  <button type="button" disabled={!canRunOperation("union", selectedOpFeatures)} onclick={() => startGeometryOperation("union")}>Union</button>
+                  <button type="button" disabled={!canRunOperation("difference", selectedOpFeatures)} onclick={() => startGeometryOperation("difference")}>Diff</button>
+                  <button type="button" disabled={!canRunOperation("intersection", selectedOpFeatures)} onclick={() => startGeometryOperation("intersection")}>Intersect</button>
+                </div>
+                <div class="layer-row">
+                  <button type="button" disabled={!canRunOperation("split", selectedOpFeatures)} onclick={() => startGeometryOperation("split")}><Scissors {...iconProps} /> Split</button>
+                  <label>
+                    Buffer
+                    <input type="number" min="0" step="any" bind:value={bufferDistance} aria-label="Buffer distance" />
+                  </label>
+                  <button type="button" disabled={!canRunOperation("buffer", selectedOpFeatures)} onclick={() => startGeometryOperation("buffer")}>Run</button>
+                </div>
+                <div class="layer-row">
+                  <label>
+                    Simplify
+                    <input type="number" min="0" step="any" bind:value={simplifyTolerance} aria-label="Simplify tolerance" />
+                  </label>
+                  <button type="button" disabled={!canRunOperation("simplify", selectedOpFeatures)} onclick={() => startGeometryOperation("simplify")}>Run</button>
+                </div>
+                {#if operationNotice}<small role="status">{operationNotice}</small>{/if}
+              {/if}
+            </div>
+          {/if}
           {#if selectedFeatureIds.length > 1 && !physicalMap}
             <div class="inspector" aria-label="Selected features">
               <strong>{selectedFeatureIds.length} features selected</strong>
@@ -2310,10 +2542,10 @@ onMount(() => {
           <div
             class="canvas"
             class:picking={picking || linkArming}
-            bind:this={host}
             tabindex="0"
             role="application"
             aria-label="Native vector map canvas">
+            <div class="map-host" bind:this={host}></div>
             {#if editor}
               <MapViewControls
                 zoom={defaultView.zoom}
@@ -2323,6 +2555,9 @@ onMount(() => {
                   editor?.setZoom(zoom);
                 }}
                 onpan={(x, y) => editor?.panCardinal(x > 0 ? 1 : x < 0 ? -1 : 0, y > 0 ? 1 : y < 0 ? -1 : 0)} />
+            {/if}
+            {#if measureReadout}
+              <div class="measure-readout" role="status">{measureReadout}</div>
             {/if}
             {#if busy}
               <div class="map-busy" role="status"><strong>Loading…</strong></div>
@@ -2460,6 +2695,38 @@ button:disabled {
   min-width: 0;
   accent-color: #d5ab6c;
 }
+.snap-config,
+.geometry-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 8px;
+  background: rgb(27 40 34 / 72%);
+  font-size: 12px;
+}
+.snap-config label,
+.geometry-ops label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.measure-readout {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 10px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 8px;
+  background: rgb(27 40 34 / 92%);
+  color: #f3d39a;
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
+}
 .epoch-year {
   width: 5.4em;
   border: 1px solid var(--theme-neutral-border-strong, #405047);
@@ -2584,6 +2851,16 @@ aside {
   min-height: 0;
   background: #0d1b2a;
 }
+.map-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.map-host :global(.ol-viewport) {
+  width: 100%;
+  height: 100%;
+}
 .stage {
   position: relative;
   display: flex;
@@ -2591,10 +2868,6 @@ aside {
   height: 100%;
   min-width: 0;
   min-height: 0;
-}
-.canvas :global(.ol-viewport) {
-  width: 100%;
-  height: 100%;
 }
 .canvas.picking {
   outline: 2px solid var(--theme-warning-border, #d5ab6c);

@@ -194,4 +194,14 @@ const parsed = parseVectorDiagnostic("vector.limit.exceeded: $: source asset exc
 assert.equal(parsed.code, "vector.limit.exceeded");
 assert.equal(parsed.path, "$");
 
+assert.equal(editor.includes("toggleSnapEnabled"), true);
+assert.equal(editor.includes("measure-distance"), true);
+assert.equal(editor.includes("commitGeometryPreview"), true);
+assert.equal(editor.includes("cancelGeometryPreview"), true);
+assert.equal(editor.includes("applyGeometryOperationCommand"), true);
+assert.equal(adapter.includes("setGeometryPreview"), true);
+assert.equal(adapter.includes("setSnapOptions"), true);
+assert.equal(interactions.includes("measure-distance"), true);
+assert.equal(interactions.includes("onMeasureReadout"), true);
+
 console.log("native vector Phase 3 source and layer helpers passed");

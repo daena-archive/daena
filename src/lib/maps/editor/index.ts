@@ -54,6 +54,9 @@ export {
   setLayerOpacityCommand,
   setLayerStyleCommand,
   setLayerVisibilityCommand,
+  applyGeometryOperationCommand,
+  setSnapSettingsCommand,
+  snapEnabledFromDescriptor,
 } from "./commands";
 export {
   DEFAULT_WORLD_SPACE,
@@ -68,7 +71,16 @@ export {
   isOpenLayersDescriptor,
   normalizedToAuthored,
 } from "./coordinate-space";
-export { measurementSummary, unitsForCoordinateSpace } from "./measurement";
+export { measurementSummary, unitsForCoordinateSpace, measureFeature, formatMeasurement, pathLength, polygonArea, pointDistance } from "./measurement";
+export {
+  runGeometryOperation,
+  canRunOperation,
+  operationLabel,
+  type GeometryOperationKind,
+  type GeometryOpParams,
+  type GeometryOpResult,
+} from "./geometry-operations";
+export { buildPreview, commitSelectionIds, type GeometryPreview } from "./geometry-preview";
 export {
   emptySelection,
   selectionFromIds,

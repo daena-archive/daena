@@ -85,11 +85,13 @@ export function createLayerRegistry(
   const rasterEntries = new Map<string, ImageLayer<any>>();
   const snapSource = new VectorSource({ wrapX: false });
 
-  const styleFor = (feature: Feature<Geometry>) => {
+  const authoredWidth = Math.max(extentOf(space)[2] - extentOf(space)[0], Number.EPSILON);
+  const styleFor = (feature: Feature<Geometry>, resolution?: number) => {
     const id = String(feature.getId() ?? "");
     return nativeFeatureStyle(feature, currentLayers.filter(isVectorLayer), {
       hovered: id === hoveredId,
       selected: selectedIds.has(id),
+      zoom: resolution && resolution > 0 ? Math.max(0, Math.log2(authoredWidth / 256 / resolution)) : undefined,
     });
   };
 
@@ -101,8 +103,8 @@ export function createLayerRegistry(
         source,
         updateWhileAnimating: true,
         updateWhileInteracting: true,
-        style(feature) {
-          return styleFor(feature as Feature<Geometry>);
+        style(feature, resolution) {
+          return styleFor(feature as Feature<Geometry>, resolution);
         },
       });
       olLayer.set("daenaLayerId", layer.id);
@@ -166,14 +168,14 @@ export function createLayerRegistry(
     lastSignature = collectionSignature(next);
     snapSource.clear(true);
     snapSource.addFeatures(
-      codec.readOlFeatures(
-        snapTargetFeatures(next, currentLayers.filter(isVectorLayer), snapTargetLayerIds),
-      ),
+      codec.readOlFeatures(snapTargetFeatures(next, currentLayers.filter(isVectorLayer), snapTargetLayerIds)),
     );
   };
 
   const orderedOlLayers = (rasters: ReadonlyMap<string, RasterLayerSource>): BaseLayer[] => {
-    const ordered = [...currentLayers].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+    const ordered = [...currentLayers].sort(
+      (left, right) => left.order - right.order || left.id.localeCompare(right.id),
+    );
     const keepVector = new Set(ordered.filter(isVectorLayer).map((layer) => layer.id));
     const keepRaster = new Set(ordered.filter(isRasterLayer).map((layer) => layer.id));
     for (const [id, entry] of vectorEntries) {
@@ -188,17 +190,20 @@ export function createLayerRegistry(
         rasterEntries.delete(id);
       }
     }
-    return ordered.flatMap((layer, index) => {
+    const rendered: BaseLayer[] = [];
+    ordered.forEach((layer, index) => {
       if (isVectorLayer(layer)) {
         const entry = ensureVector(layer);
         entry.layer.setZIndex(index);
-        return [entry.layer];
+        rendered.push(entry.layer);
+        return;
       }
       const raster = ensureRaster(layer, rasters);
-      if (!raster) return [];
+      if (!raster) return;
       raster.setZIndex(index);
-      return [raster];
+      rendered.push(raster);
     });
+    return rendered;
   };
 
   const registry: LayerRegistry = {
@@ -235,10 +240,7 @@ export function createLayerRegistry(
     },
     isSelectableVectorLayer(layer) {
       return currentLayers.some(
-        (daena) =>
-          isVectorLayer(daena) &&
-          daena.defaultVisible &&
-          vectorEntries.get(daena.id)?.layer === layer,
+        (daena) => isVectorLayer(daena) && daena.defaultVisible && vectorEntries.get(daena.id)?.layer === layer,
       );
     },
     getFeatureById(id) {

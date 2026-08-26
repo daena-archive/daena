@@ -159,6 +159,19 @@ pub struct SearchPassage {
     pub source_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MapFeatureSearchResult {
+    pub map_entity_id: String,
+    pub map_name: String,
+    pub feature_id: String,
+    pub name: String,
+    pub semantic_type: String,
+    pub layer_id: String,
+    pub layer_name: String,
+    pub rank: f64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum WikiPageExportFormat {
@@ -4604,7 +4617,12 @@ impl ProjectStore {
                 [],
                 |row| row.get(0),
             )?;
-        if search_missing || record_search_missing {
+        let map_feature_search_exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='map_feature_search')",
+            [],
+            |row| row.get(0),
+        )?;
+        if search_missing || record_search_missing || !map_feature_search_exists {
             self.rebuild_search()?;
         }
         Ok(())
@@ -8894,6 +8912,41 @@ impl ProjectStore {
             .items)
     }
 
+    pub fn search_map_features(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<Vec<MapFeatureSearchResult>, CoreError> {
+        if query.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let terms = query
+            .split_whitespace()
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut statement = self.connection.prepare(
+            "SELECT s.map_entity_id,e.name,s.feature_id,s.name,s.semantic_type,s.layer_id,s.layer_name,s.rank
+             FROM map_feature_search s
+             JOIN entities e ON e.id=s.map_entity_id AND e.deleted=0
+             WHERE map_feature_search MATCH ?1
+             ORDER BY s.rank,s.name,s.feature_id LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![terms, limit.min(100) as i64], |row| {
+            Ok(MapFeatureSearchResult {
+                map_entity_id: row.get(0)?,
+                map_name: row.get(1)?,
+                feature_id: row.get(2)?,
+                name: row.get(3)?,
+                semantic_type: row.get(4)?,
+                layer_id: row.get(5)?,
+                layer_name: row.get(6)?,
+                rank: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
+    }
+
     /// Return ranked FTS rows rather than collapsing matches to entities. The
     /// AI context builder adds authorization, byte ranges, and prompt framing.
     pub fn search_passages(
@@ -11425,7 +11478,9 @@ impl ProjectStore {
              DROP TRIGGER IF EXISTS module_records_search_delete;
              DROP TABLE IF EXISTS world_search;
              DROP TABLE IF EXISTS module_record_search;
+             DROP TABLE IF EXISTS map_feature_search;
              CREATE VIRTUAL TABLE world_search USING fts5(entity_id UNINDEXED, source_path UNINDEXED, source_hash UNINDEXED, content, source_key UNINDEXED);
+             CREATE VIRTUAL TABLE map_feature_search USING fts5(map_entity_id UNINDEXED, feature_id UNINDEXED, name, semantic_type, layer_id UNINDEXED, layer_name, content);
              INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT e.id,'entities/' || e.id || '/entity.json','',e.name || ' ' || COALESCE(e.entity_type,''),'entity' FROM entities e WHERE e.deleted=0;
              INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT d.entity_id,'entities/' || d.entity_id || '/document.md','',d.body,'document:' || d.id FROM documents d JOIN entities e ON e.id=d.entity_id WHERE e.deleted=0;
              INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) SELECT f.entity_id,'entities/' || f.entity_id || '/fields','',f.namespace || ' ' || f.key || ' ' || f.value,'field:' || f.namespace || '/' || f.key FROM entity_fields f JOIN entities e ON e.id=f.entity_id WHERE e.deleted=0;
@@ -12315,10 +12370,80 @@ fn write_vector_feature_projection(
         .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
     let known = crate::maps::vector::layer_ids_from_layers_field(&layers);
     let features = crate::maps::vector::feature_bounds(&bytes, &known)?;
+    connection.execute(
+        "DELETE FROM map_feature_search WHERE map_entity_id=?1",
+        rusqlite::params![map_entity_id],
+    )?;
+    connection.execute(
+        "DELETE FROM world_search WHERE entity_id=?1 AND source_key LIKE 'map-feature:%'",
+        rusqlite::params![map_entity_id],
+    )?;
     for (feature_id, layer_id, kind, min_x, min_y, max_x, max_y) in features {
         connection.execute(
             "INSERT OR REPLACE INTO map_feature_projection(map_entity_id,feature_id,layer_id,kind,min_x,min_y,max_x,max_y) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![map_entity_id, feature_id, layer_id, kind, min_x, min_y, max_x, max_y],
+        )?;
+    }
+    let layer_names = layers
+        .get("layers")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| {
+            Some((
+                layer.get("id")?.as_str()?.to_owned(),
+                layer.get("name")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let source: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    for feature in source
+        .get("features")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(feature_id) = feature.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(daena) = feature.pointer("/properties/daena") else {
+            continue;
+        };
+        let layer_id = daena
+            .get("layerId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("base");
+        let semantic_type = daena
+            .get("semanticType")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("custom");
+        let name = daena
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Untitled feature");
+        let layer_name = layer_names
+            .get(layer_id)
+            .map(String::as_str)
+            .unwrap_or("Unknown layer");
+        let custom = daena
+            .get("custom")
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default();
+        let content = format!("{feature_id} {name} {semantic_type} {layer_name} {custom}");
+        connection.execute(
+            "INSERT INTO map_feature_search(map_entity_id,feature_id,name,semantic_type,layer_id,layer_name,content) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![map_entity_id, feature_id, name, semantic_type, layer_id, layer_name, content],
+        )?;
+        connection.execute(
+            "INSERT INTO world_search(entity_id,source_path,source_hash,content,source_key) VALUES (?1,?2,?3,?4,?5)",
+            rusqlite::params![
+                map_entity_id,
+                format!("entities/{map_entity_id}/map-features/{feature_id}"),
+                hash,
+                content,
+                format!("map-feature:{feature_id}")
+            ],
         )?;
     }
     Ok(())

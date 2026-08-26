@@ -11,6 +11,7 @@ let {
   onclose,
   onresnap,
   onlinked,
+  onopen,
 }: {
   mapId: string;
   anchor?: MapAnchor | null;
@@ -18,6 +19,7 @@ let {
   onclose: () => void;
   onresnap: () => void;
   onlinked?: (entityId: string) => void;
+  onopen?: (entityId: string) => void;
 } = $props();
 
 let mode = $state<"existing" | "create">("existing");
@@ -34,6 +36,20 @@ let busy = $state(false);
 let existing = $state<MapPin[]>([]);
 let pointX = $state("0.500");
 let pointY = $state("0.500");
+
+function pinMatchesAnchor(pin: MapPin, value: MapAnchor | null): boolean {
+  if (!value) return false;
+  const candidate = pin.anchor as MapAnchor | undefined;
+  if (value.kind === "provider-feature") {
+    return (
+      (candidate?.kind === "provider-feature" && candidate.featureId === value.featureId) ||
+      (pin.anchorKind === "provider-feature" && pin.featureId === value.featureId)
+    );
+  }
+  return candidate?.kind === value.kind && JSON.stringify(candidate) === JSON.stringify(value);
+}
+
+const contextualExisting = $derived(existing.filter((pin) => pinMatchesAnchor(pin, anchor)));
 
 function entityTypeLabel(entityType: string | null | undefined): string {
   if (!entityType) return "entry";
@@ -198,6 +214,7 @@ async function unlink(pin: MapPin) {
     await project.unlinkMapLocation(pin.entityId, pin.id);
     await refreshExisting();
     status = "Unlinked";
+    onlinked?.(pin.entityId);
   } catch (cause) {
     status = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -230,7 +247,8 @@ $effect(() => {
   } else if (!createName.trim()) {
     createName = "Untitled place";
   }
-});</script>
+});
+</script>
 
 <aside class="map-link-panel" aria-label="Link location">
   <header>
@@ -251,15 +269,23 @@ $effect(() => {
       <button type="button" class="quiet" onclick={onresnap}>Use map click</button>
     </div>
 
-    {#if existing.length > 0}
-      <div class="existing-links" aria-label="Existing links on this map">
-        {#each existing.slice(0, 8) as pin (pin.id)}
+    {#if contextualExisting.length > 0}
+      <div class="existing-links" aria-label="Links at this location">
+        {#each contextualExisting as pin (pin.id)}
           <div class="existing-row">
             <div>
               <strong>{pin.label || pin.role}</strong>
-              <small>{pin.role}</small>
+              <small>{pin.resolution === "unresolved" ? "Deleted or missing target" : pin.role}</small>
             </div>
-            <button type="button" class="quiet" disabled={busy} onclick={() => void unlink(pin)}>Unlink</button>
+            <div class="row">
+              {#if onopen}<button
+                  type="button"
+                  class="quiet"
+                  disabled={busy || pin.resolution === "unresolved"}
+                  onclick={() => onopen?.(pin.entityId)}>Open</button
+                >{/if}
+              <button type="button" class="quiet" disabled={busy} onclick={() => void unlink(pin)}>Unlink</button>
+            </div>
           </div>
         {/each}
       </div>
@@ -291,8 +317,11 @@ $effect(() => {
           {/each}
         {/if}
       </div>
-      <button type="button" class="primary" disabled={busy || !anchor || !selectedEntityId} onclick={() => void linkExisting()}
-        >Link entity</button>
+      <button
+        type="button"
+        class="primary"
+        disabled={busy || !anchor || !selectedEntityId}
+        onclick={() => void linkExisting()}>Link entity</button>
     {:else}
       <input type="text" placeholder="New entry name" maxlength="120" bind:value={createName} />
       {#if createTypes.length === 0}
@@ -335,7 +364,9 @@ $effect(() => {
   background: rgb(32 40 36 / 96%);
   color: #f4f1ea;
   box-shadow: 0 8px 24px #0005;
-  font: 12px system-ui, sans-serif;
+  font:
+    12px system-ui,
+    sans-serif;
 }
 header {
   display: flex;
@@ -353,7 +384,9 @@ header span {
 header strong {
   display: block;
   margin-top: 3px;
-  font: 600 13px system-ui, sans-serif;
+  font:
+    600 13px system-ui,
+    sans-serif;
 }
 .coords {
   display: grid;
@@ -379,7 +412,9 @@ select {
   border-radius: 7px;
   background: #1b2420;
   color: #f4f1ea;
-  font: 12px system-ui, sans-serif;
+  font:
+    12px system-ui,
+    sans-serif;
 }
 .entity-list {
   max-height: 240px;
@@ -408,7 +443,9 @@ select {
   background: transparent;
   color: #f4f1ea;
   text-align: left;
-  font: 12px system-ui, sans-serif;
+  font:
+    12px system-ui,
+    sans-serif;
   cursor: pointer;
 }
 .entity-list button.selected {
@@ -436,7 +473,9 @@ button.primary,
   appearance: none;
   border-radius: 7px;
   padding: 6px 8px;
-  font: 12px system-ui, sans-serif;
+  font:
+    12px system-ui,
+    sans-serif;
   cursor: pointer;
 }
 button.quiet,

@@ -142,7 +142,9 @@ pub enum MapCoordinateSpace {
 impl MapCoordinateSpace {
     fn extent(&self) -> &[f64; 4] {
         match self {
-            Self::Image { extent, .. } | Self::World { extent, .. } | Self::Geographic { extent, .. } => extent,
+            Self::Image { extent, .. }
+            | Self::World { extent, .. }
+            | Self::Geographic { extent, .. } => extent,
         }
     }
 }
@@ -229,8 +231,8 @@ impl MapEditDraftPackage {
         if bytes.len() > MAP_RECOVERY_MAX_BYTES {
             return Err(invalid("map recovery copy exceeds the host transfer limit"));
         }
-        let package: Self =
-            serde_json::from_slice(bytes).map_err(|error| invalid(format!("invalid map edit draft: {error}")))?;
+        let package: Self = serde_json::from_slice(bytes)
+            .map_err(|error| invalid(format!("invalid map edit draft: {error}")))?;
         if package.schema_version != 1 || package.kind != MAP_EDIT_DRAFT_KIND {
             return Err(invalid("unsupported map edit draft package"));
         }
@@ -238,7 +240,9 @@ impl MapEditDraftPackage {
             return Err(invalid("map edit draft mapEntityId is required"));
         }
         if package.geojson.len() > VECTOR_MAX_BYTES {
-            return Err(invalid("map edit draft geojson exceeds the vector byte budget"));
+            return Err(invalid(
+                "map edit draft geojson exceeds the vector byte budget",
+            ));
         }
         Ok(package)
     }
@@ -362,7 +366,11 @@ pub struct MapDescriptor {
     pub preview_asset_id: Option<String>,
     #[serde(rename = "defaultView")]
     pub default_view: DefaultView,
-    #[serde(rename = "coordinateSpace", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "coordinateSpace",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub coordinate_space: Option<MapCoordinateSpace>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backgrounds: Vec<MapBackgroundRef>,
@@ -966,7 +974,11 @@ pub fn validate_field(
         let descriptor: MapDescriptor = serde_json::from_value(value.clone())
             .map_err(|e| invalid(format!("invalid map descriptor: {e}")))?;
         let provider = provider_spec(&descriptor.provider)?;
-        let expected_schema = if provider.kind == ProviderKind::Vector { 2 } else { 1 };
+        let expected_schema = if provider.kind == ProviderKind::Vector {
+            2
+        } else {
+            1
+        };
         if descriptor.schema_version != expected_schema {
             return Err(invalid("unsupported map provider or descriptor version"));
         }
@@ -1036,15 +1048,23 @@ pub fn validate_field(
                 || descriptor.default_view.center.1 < extent[1]
                 || descriptor.default_view.center.1 > extent[3]
             {
-                return Err(invalid("defaultView.center must be inside coordinateSpace.extent"));
+                return Err(invalid(
+                    "defaultView.center must be inside coordinateSpace.extent",
+                ));
             }
             let settings = descriptor
                 .settings
                 .as_ref()
                 .ok_or_else(|| invalid("daena-openlayers maps require settings"))?;
             if let Some(grid) = &settings.grid {
-                if grid.spacing.iter().any(|value| !value.is_finite() || *value <= 0.0) {
-                    return Err(invalid("settings.grid.spacing must contain positive finite values"));
+                if grid
+                    .spacing
+                    .iter()
+                    .any(|value| !value.is_finite() || *value <= 0.0)
+                {
+                    return Err(invalid(
+                        "settings.grid.spacing must contain positive finite values",
+                    ));
                 }
             }
             let mut background_ids = BTreeSet::new();
@@ -1265,7 +1285,10 @@ pub fn validate_field(
                 if !raster.opacity.is_finite() || !(0.0..=1.0).contains(&raster.opacity) {
                     return Err(invalid("raster layer opacity must be finite in [0, 1]"));
                 }
-                if !matches!(raster.blend_mode.as_str(), "normal" | "multiply" | "screen" | "overlay") {
+                if !matches!(
+                    raster.blend_mode.as_str(),
+                    "normal" | "multiply" | "screen" | "overlay"
+                ) {
                     return Err(invalid("raster layer blendMode is unsupported"));
                 }
                 if !raster_assets.insert(raster.raster_asset_id.clone()) {

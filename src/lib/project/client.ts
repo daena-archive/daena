@@ -75,6 +75,16 @@ export interface Entity {
   updated_at: string;
   revision: string;
 }
+export interface MapFeatureSearchResult {
+  mapEntityId: string;
+  mapName: string;
+  featureId: string;
+  name: string;
+  semanticType: string;
+  layerId: string;
+  layerName: string;
+  rank: number;
+}
 export type EntitySortField = "name" | "created_at" | "updated_at" | "relevance";
 export type EntitySortDirection = "asc" | "desc";
 export interface EntityListQuery {
@@ -143,6 +153,9 @@ export interface MapPin {
   resolution: string;
   validity?: { from: unknown | null; to: unknown | null };
   anchor?: unknown;
+  provider?: string | null;
+  featureKind?: string | null;
+  featureId?: string | null;
 }
 export interface RasterLayerChange {
   layer_id: string;
@@ -1262,6 +1275,8 @@ export const project = {
       },
     }),
   search: (query: string) => invoke<Entity[]>("project_search", { query }),
+  searchMapFeatures: (query: string, limit = 50) =>
+    invoke<MapFeatureSearchResult[]>("project_search_map_features", { query, limit }),
   deleteEntity: (id: string, options?: MutationOptions) =>
     invoke<void>("project_delete_entity", {
       id,

@@ -1819,14 +1819,15 @@ fn validate_partial_vector_style(style: &Value, path: &str) -> Result<(), CoreEr
     }
     if let Some(icon) = object.get("icon") {
         if !icon.is_null()
-            && icon
-                .as_str()
-                .is_none_or(|value| value.is_empty() || value.len() > 256)
+            && !matches!(
+                icon.as_str(),
+                Some("square" | "diamond" | "triangle" | "star")
+            )
         {
             return Err(fail(
                 CODE_SOURCE_INVALID,
                 &format!("{path}.icon"),
-                "must be null or a Daena icon reference up to 256 bytes",
+                "must be null or a supported Daena marker icon",
             ));
         }
     }

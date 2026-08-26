@@ -1,19 +1,6 @@
 import buffer from "@turf/buffer";
 import difference from "@turf/difference";
-import {
-  featureCollection,
-  lineString,
-  multiPolygon,
-  point,
-  polygon,
-  type Feature,
-  type GeoJsonProperties,
-  type LineString,
-  type MultiPolygon,
-  type Point,
-  type Polygon,
-  type Position,
-} from "@turf/helpers";
+import { featureCollection, lineString, multiPolygon, point, polygon } from "@turf/helpers";
 import intersect from "@turf/intersect";
 import lineSplit from "@turf/line-split";
 import simplify from "@turf/simplify";
@@ -31,15 +18,17 @@ import {
 } from "../native-vector/types.ts";
 import { findLayer, type MapDocument } from "./model.ts";
 
+type Position = number[];
+type GeoJsonProperties = Record<string, unknown> | null;
+type Point = { type: "Point"; coordinates: Position };
+type LineString = { type: "LineString"; coordinates: Position[] };
+type Polygon = { type: "Polygon"; coordinates: Position[][] };
+type MultiPolygon = { type: "MultiPolygon"; coordinates: Position[][][] };
+type Feature<G> = { type: "Feature"; geometry: G; properties: GeoJsonProperties };
+
 const MICRO_SCALE = 1_000_000;
 
-export type GeometryOperationKind =
-  | "union"
-  | "difference"
-  | "intersection"
-  | "split"
-  | "buffer"
-  | "simplify";
+export type GeometryOperationKind = "union" | "difference" | "intersection" | "split" | "buffer" | "simplify";
 
 export type GeometryOpParams = {
   bufferDistance?: number;
@@ -47,8 +36,7 @@ export type GeometryOpParams = {
 };
 
 export type GeometryOpResult =
-  | { ok: true; features: VectorFeature[]; removedIds: string[] }
-  | { ok: false; code: string; detail: string };
+  { ok: true; features: VectorFeature[]; removedIds: string[] } | { ok: false; code: string; detail: string };
 
 function roundCoord(value: number): number {
   return Math.round(value * MICRO_SCALE) / MICRO_SCALE;
@@ -107,7 +95,7 @@ function turfLineToDaena(feature: Feature<LineString>): VectorFeature["geometry"
   return { type: "LineString", coordinates: coords };
 }
 
-function featureToTurf(feature: VectorFeature): Feature<Polygon | LineString | Point> | null {
+function featureToTurf(feature: VectorFeature): Feature<Polygon | MultiPolygon | LineString | Point> | null {
   const { geometry } = feature;
   if (geometry.type === "Polygon") {
     return polygon(geometry.coordinates as Position[][]);
@@ -135,11 +123,7 @@ function resultFeature(source: VectorFeature, geometry: VectorFeature["geometry"
   return {
     type: "Feature",
     id: id ?? crypto.randomUUID(),
-    properties: daenaProperties(
-      featureLayerId(source),
-      featureSemanticType(source),
-      source.properties.daena.name,
-    ),
+    properties: daenaProperties(featureLayerId(source), featureSemanticType(source), source.properties.daena.name),
     geometry,
   };
 }
@@ -285,7 +269,11 @@ function runIntersection(features: VectorFeature[]): GeometryOpResult {
   }
   const geometry = turfPolygonToDaena(result);
   if (!geometry) {
-    return { ok: false, code: "geometry.intersection.invalid", detail: "Intersection result could not be represented." };
+    return {
+      ok: false,
+      code: "geometry.intersection.invalid",
+      detail: "Intersection result could not be represented.",
+    };
   }
   const error = validateGeometry(geometry);
   if (error) return { ok: false, code: "vector.geometry.invalid", detail: error };
@@ -309,7 +297,7 @@ function runSplit(features: VectorFeature[]): GeometryOpResult {
   if (!line || line.geometry.type !== "LineString") {
     return { ok: false, code: "geometry.split.line", detail: "Split line must be a LineString." };
   }
-  let splitter: Feature<LineString | Polygon> | null = null;
+  let splitter: Feature<LineString | Polygon | MultiPolygon> | null = null;
   if (isLineGeometry(cutterFeature.geometry)) {
     splitter = featureToTurf(cutterFeature) as Feature<LineString>;
   } else if (isPolygonGeometry(cutterFeature.geometry)) {
@@ -318,7 +306,7 @@ function runSplit(features: VectorFeature[]): GeometryOpResult {
   if (!splitter) {
     return { ok: false, code: "geometry.split.cutter", detail: "Cutter must be a line or polygon." };
   }
-  const split = lineSplit(line, splitter);
+  const split = lineSplit(line as Feature<LineString>, splitter as Parameters<typeof lineSplit>[1]);
   const parts = split.features
     .map((part) => turfLineToDaena(part as Feature<LineString>))
     .filter((geometry): geometry is VectorFeature["geometry"] => Boolean(geometry));
@@ -337,7 +325,10 @@ function runSplit(features: VectorFeature[]): GeometryOpResult {
 }
 
 /** Geographic maps buffer in geodesic metres; planar spaces buffer in authored coordinate units. */
-function turfBufferDistance(space: MapCoordinateSpace, distance: number): { distance: number; units: "meters" | "degrees" } {
+function turfBufferDistance(
+  space: MapCoordinateSpace,
+  distance: number,
+): { distance: number; units: "meters" | "degrees" } {
   if (space.kind === "geographic") return { distance, units: "meters" };
   return { distance, units: "degrees" };
 }
@@ -422,10 +413,7 @@ export function operationLabel(kind: GeometryOperationKind): string {
   }
 }
 
-export function canRunOperation(
-  operation: GeometryOperationKind,
-  features: readonly VectorFeature[],
-): boolean {
+export function canRunOperation(operation: GeometryOperationKind, features: readonly VectorFeature[]): boolean {
   if (features.length === 0) return false;
   switch (operation) {
     case "union":

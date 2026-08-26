@@ -6785,6 +6785,21 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         store.map_locations(place.id.clone()).unwrap()[0].id,
         location_id
     );
+    let feature_matches = store.search_map_features("West tier".into(), 10).unwrap();
+    assert_eq!(feature_matches.len(), 1);
+    assert_eq!(feature_matches[0].map_entity_id, accepted.entity.id);
+    assert_eq!(feature_matches[0].feature_id, feature_id);
+    assert_eq!(feature_matches[0].layer_name, "Countries");
+    assert!(store
+        .search("West tier".into())
+        .unwrap()
+        .iter()
+        .any(|entity| entity.id == accepted.entity.id));
+    store.rebuild_search().unwrap();
+    assert_eq!(
+        store.search_map_features("West tier".into(), 10).unwrap()[0].feature_id,
+        feature_id
+    );
     let replayed = store
         .apply_map_edit(
             accepted.entity.id.clone(),

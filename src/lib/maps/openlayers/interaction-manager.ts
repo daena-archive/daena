@@ -27,7 +27,12 @@ import {
 } from "../editor/measurement";
 import { viewToAuthored } from "../editor/coordinate-space";
 import { kindForDrawMode, simplifyFreehandGeometry } from "../native-vector/geometry";
-import { BASE_LAYER_ID, layerAcceptsEdits, type VectorDrawMode, type VectorLayerDefinition } from "../native-vector/types";
+import {
+  BASE_LAYER_ID,
+  layerAcceptsEdits,
+  type VectorDrawMode,
+  type VectorLayerDefinition,
+} from "../native-vector/types";
 import type { FeatureCodec } from "./feature-codec";
 import type { LayerRegistry } from "./layer-registry";
 
@@ -60,7 +65,7 @@ function isMeasureMode(mode: VectorDrawMode): boolean {
   return mode === "measure-distance" || mode === "measure-length" || mode === "measure-area";
 }
 
-function isDrawMode(mode: VectorDrawMode): boolean {
+function isDrawMode(mode: VectorDrawMode): mode is "point" | "linestring" | "polygon" | "rectangle" | "freehand" {
   return mode === "point" || mode === "linestring" || mode === "polygon" || mode === "rectangle" || mode === "freehand";
 }
 
@@ -240,7 +245,11 @@ export function createInteractionManager(options: {
     }
     if (type === "Polygon") {
       const polygon = geometry as import("ol/geom/Polygon.js").default;
-      const ring = polygon.getLinearRing(0)?.getCoordinates().map((coord) => viewToAuthored(coord, options.coordinateSpace)) ?? [];
+      const ring =
+        polygon
+          .getLinearRing(0)
+          ?.getCoordinates()
+          .map((coord) => viewToAuthored(coord, options.coordinateSpace)) ?? [];
       const value = polygonArea(ring, options.coordinateSpace);
       const last = ring[ring.length - 1];
       options.onMeasureReadout?.({ label: formatArea(value), point: last });
@@ -382,8 +391,7 @@ export function createInteractionManager(options: {
   map.on("pointermove", (event) => {
     if (event.dragging || options.getPickArmed()) return;
     const shouldIndicate =
-      snapOptions.enabled &&
-      (isDrawMode(currentMode) || currentMode === "select" || isMeasureMode(currentMode));
+      snapOptions.enabled && (isDrawMode(currentMode) || currentMode === "select" || isMeasureMode(currentMode));
     updateSnapIndicator(shouldIndicate ? event.coordinate : null);
   });
 

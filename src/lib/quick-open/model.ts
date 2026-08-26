@@ -4,6 +4,7 @@ export type QuickOpenCategory = "Results" | "Recent" | "Destinations" | "Create"
 
 export type QuickOpenAction =
   | { kind: "entity"; entityId: string }
+  | { kind: "map-feature"; mapEntityId: string; featureId: string }
   | { kind: "destination"; destination: string }
   | { kind: "create"; templateKey: string }
   | { kind: "command"; command: "template-gallery" | "snapshots" | "settings" | "plugins" };

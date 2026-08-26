@@ -1,7 +1,11 @@
-import type { MapBackgroundRef, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
+import type {
+  MapBackgroundRef,
+  MapCoordinateSpace,
+  MapLabelV2,
+  MapStyleV2,
+} from "../../../../packages/plugin-sdk/src/maps";
 import {
   BASE_LAYER_ID,
-  daenaProperties,
   featureLayerId,
   isRasterLayer,
   isVectorLayer,
@@ -110,7 +114,10 @@ export function createFeatureCommand(feature: VectorFeature): MapCommand {
       return withCollection(document, replaceFeature(document.collection, feature));
     },
     invert(before) {
-      return deleteFeaturesCommand([feature.id], before.collection.features.filter((item) => item.id === feature.id));
+      return deleteFeaturesCommand(
+        [feature.id],
+        before.collection.features.filter((item) => item.id === feature.id),
+      );
     },
   };
 }
@@ -304,6 +311,106 @@ export function setFeatureMetadataCommand(
   };
 }
 
+export type FeatureMetadataPatch = {
+  name?: string | null;
+  semanticType?: string;
+  style?: Partial<MapStyleV2> | null;
+  label?: MapLabelV2 | null;
+  custom?: Record<string, string | number | boolean | null>;
+};
+
+/** Apply one inspector edit to one or more features as a single undoable command. */
+export function setFeaturesMetadataCommand(
+  featureIds: readonly string[],
+  patch: FeatureMetadataPatch,
+  previous: Readonly<Record<string, FeatureMetadataPatch>>,
+  label = featureIds.length === 1 ? "Edit feature" : `Edit ${featureIds.length} features`,
+  coalesceKey?: string,
+): MapCommand {
+  const ids = new Set(featureIds);
+  return {
+    kind: "SetFeatureMetadata",
+    label,
+    coalesceKey,
+    apply(document) {
+      const features = document.collection.features.map((feature) => {
+        if (!ids.has(feature.id) || !layerAcceptsEdits(findLayer(document.layers, featureLayerId(feature)))) {
+          return feature;
+        }
+        return {
+          ...feature,
+          properties: {
+            daena: {
+              ...feature.properties.daena,
+              ...patch,
+            },
+          },
+        } as VectorFeature;
+      });
+      return withCollection(document, {
+        type: "FeatureCollection",
+        features: features.sort((left, right) => left.id.localeCompare(right.id)),
+      });
+    },
+    invert() {
+      return {
+        kind: "SetFeatureMetadata",
+        label: `Undo ${label.toLocaleLowerCase()}`,
+        apply(document) {
+          const features = document.collection.features.map((feature) => {
+            const prior = previous[feature.id];
+            if (!prior) return feature;
+            return {
+              ...feature,
+              properties: {
+                daena: {
+                  ...feature.properties.daena,
+                  ...prior,
+                },
+              },
+            } as VectorFeature;
+          });
+          return withCollection(document, {
+            type: "FeatureCollection",
+            features: features.sort((left, right) => left.id.localeCompare(right.id)),
+          });
+        },
+        invert() {
+          return setFeaturesMetadataCommand(featureIds, patch, previous, label, coalesceKey);
+        },
+      };
+    },
+  };
+}
+
+export function setFeaturesMetadataByIdCommand(
+  next: Readonly<Record<string, FeatureMetadataPatch>>,
+  previous: Readonly<Record<string, FeatureMetadataPatch>>,
+  label: string,
+  coalesceKey?: string,
+): MapCommand {
+  const ids = Object.keys(next);
+  return {
+    kind: "SetFeatureMetadata",
+    label,
+    coalesceKey,
+    apply(document) {
+      const features = document.collection.features.map((feature) => {
+        const patch = next[feature.id];
+        if (!patch || !layerAcceptsEdits(findLayer(document.layers, featureLayerId(feature)))) return feature;
+        return {
+          ...feature,
+          properties: { daena: { ...feature.properties.daena, ...patch } },
+        } as VectorFeature;
+      });
+      return withCollection(document, { type: "FeatureCollection", features });
+    },
+    invert() {
+      return setFeaturesMetadataByIdCommand(previous, next, `Undo ${label.toLocaleLowerCase()}`, coalesceKey);
+    },
+  };
+}
+
 export function createLayerCommand(layer: MapLayerDefinition): MapCommand {
   return {
     kind: "CreateLayer",
@@ -433,14 +540,7 @@ export function reorderLayerCommand(
       );
     },
     invert() {
-      return reorderLayerCommand(
-        layerId,
-        previousOrder,
-        order,
-        neighborId,
-        neighborPreviousOrder,
-        neighborOrder,
-      );
+      return reorderLayerCommand(layerId, previousOrder, order, neighborId, neighborPreviousOrder, neighborOrder);
     },
   };
 }
@@ -465,11 +565,7 @@ export function reorderLayersByIdsCommand(orderedIds: readonly string[], previou
   };
 }
 
-export function setLayerVisibilityCommand(
-  layerId: string,
-  defaultVisible: boolean,
-  previous: boolean,
-): MapCommand {
+export function setLayerVisibilityCommand(layerId: string, defaultVisible: boolean, previous: boolean): MapCommand {
   return {
     kind: "SetLayerVisibility",
     label: defaultVisible ? "Show layer" : "Hide layer",
@@ -501,11 +597,7 @@ export function setLayerLockedCommand(layerId: string, locked: boolean, previous
   };
 }
 
-export function setLayerStyleCommand(
-  layerId: string,
-  style: VectorLayerStyle,
-  previous: VectorLayerStyle,
-): MapCommand {
+export function setLayerStyleCommand(layerId: string, style: VectorLayerStyle, previous: VectorLayerStyle): MapCommand {
   return {
     kind: "SetLayerStyle",
     label: "Edit layer style",
@@ -513,9 +605,7 @@ export function setLayerStyleCommand(
     apply(document) {
       return withLayers(
         document,
-        document.layers.map((layer) =>
-          layer.id === layerId && isVectorLayer(layer) ? { ...layer, style } : layer,
-        ),
+        document.layers.map((layer) => (layer.id === layerId && isVectorLayer(layer) ? { ...layer, style } : layer)),
       );
     },
     invert() {
@@ -563,11 +653,7 @@ export function newVectorLayer(name: string, style?: VectorLayerStyle, order?: n
   };
 }
 
-export function newRasterLayer(
-  name: string,
-  rasterAssetId: string,
-  order?: number,
-): RasterLayerDefinition {
+export function newRasterLayer(name: string, rasterAssetId: string, order?: number): RasterLayerDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "raster",
@@ -593,11 +679,22 @@ export function duplicateFeaturesOntoLayer(
     .map((feature) => ({
       ...cloneCollection({ type: "FeatureCollection", features: [feature] }).features[0],
       id: crypto.randomUUID(),
-      properties: daenaProperties(targetLayerId, feature.properties.daena.semanticType, feature.properties.daena.name),
+      properties: {
+        daena: {
+          ...feature.properties.daena,
+          layerId: targetLayerId,
+          style: feature.properties.daena.style ? { ...feature.properties.daena.style } : null,
+          label: feature.properties.daena.label ? { ...feature.properties.daena.label } : null,
+          custom: { ...feature.properties.daena.custom },
+        },
+      },
     }));
 }
 
-export function buildCreateLayer(document: MapDocument, name: string): { command: MapCommand; layer: VectorLayerDefinition } {
+export function buildCreateLayer(
+  document: MapDocument,
+  name: string,
+): { command: MapCommand; layer: VectorLayerDefinition } {
   const layer = newVectorLayer(name, undefined, nextLayerOrder(document.layers));
   return { command: createLayerCommand(layer), layer };
 }
@@ -672,9 +769,12 @@ export function addBackgroundCommand(background: MapBackgroundRef): MapCommand {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
       if (descriptor.backgrounds.some((item) => item.id === background.id)) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: [...descriptor.backgrounds, background],
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: [...descriptor.backgrounds, background],
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return removeBackgroundCommand(background.id, background);
@@ -689,9 +789,12 @@ export function removeBackgroundCommand(id: string, removed: MapBackgroundRef): 
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: descriptor.backgrounds.filter((item) => item.id !== id),
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: descriptor.backgrounds.filter((item) => item.id !== id),
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return addBackgroundCommand(removed);
@@ -706,9 +809,12 @@ export function replaceBackgroundCommand(id: string, next: MapBackgroundRef, pre
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? next : item)),
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? next : item)),
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return replaceBackgroundCommand(id, previous, next);
@@ -730,13 +836,16 @@ export function reorderBackgroundCommand(
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: descriptor.backgrounds.map((item) => {
-          if (item.id === id) return { ...item, order };
-          if (item.id === neighborId) return { ...item, order: neighborOrder };
-          return item;
-        }),
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: descriptor.backgrounds.map((item) => {
+            if (item.id === id) return { ...item, order };
+            if (item.id === neighborId) return { ...item, order: neighborOrder };
+            return item;
+          }),
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return reorderBackgroundCommand(id, previousOrder, order, neighborId, neighborPreviousOrder, neighborOrder);
@@ -752,9 +861,12 @@ export function setBackgroundOpacityCommand(id: string, opacity: number, previou
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? { ...item, opacity } : item)),
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? { ...item, opacity } : item)),
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return setBackgroundOpacityCommand(id, previous, opacity);
@@ -769,9 +881,12 @@ export function setBackgroundVisibilityCommand(id: string, visible: boolean, pre
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? { ...item, visible } : item)),
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          backgrounds: descriptor.backgrounds.map((item) => (item.id === id ? { ...item, visible } : item)),
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return setBackgroundVisibilityCommand(id, previous, visible);
@@ -795,9 +910,12 @@ export function setDefaultViewCommand(
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        defaultView: stored,
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          defaultView: stored,
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return setDefaultViewCommand(previous, next);
@@ -819,10 +937,13 @@ export function setCoordinateSpaceCommand(
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      let patched = withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        coordinateSpace: next,
-        backgrounds: nextBackgrounds ?? descriptor.backgrounds,
-      }) as OpenLayersMapDescriptor);
+      let patched = withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          coordinateSpace: next,
+          backgrounds: nextBackgrounds ?? descriptor.backgrounds,
+        }) as OpenLayersMapDescriptor,
+      );
       if (nextCollection) patched = withCollection(patched, nextCollection);
       return patched;
     },
@@ -924,9 +1045,12 @@ export function setSnapSettingsCommand(enabled: boolean, previous: boolean): Map
     apply(document) {
       const descriptor = openLayersDescriptor(document);
       if (!descriptor) return document;
-      return withDescriptor(document, patchOpenLayersDescriptor(descriptor, {
-        settings: { ...descriptor.settings, snapEnabled: enabled },
-      }) as OpenLayersMapDescriptor);
+      return withDescriptor(
+        document,
+        patchOpenLayersDescriptor(descriptor, {
+          settings: { ...descriptor.settings, snapEnabled: enabled },
+        }) as OpenLayersMapDescriptor,
+      );
     },
     invert() {
       return setSnapSettingsCommand(previous, enabled);

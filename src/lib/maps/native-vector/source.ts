@@ -13,6 +13,7 @@ import {
   type VectorLayerDefinition,
   type VectorLayerStyle,
 } from "./types.ts";
+import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps";
 
 const KINDS: readonly VectorKind[] = ["land", "lake", "region", "route", "marker", "custom"];
 
@@ -91,6 +92,52 @@ function asCustom(value: unknown): Record<string, string | number | boolean | nu
   return out;
 }
 
+function asLabel(value: unknown): MapLabelV2 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const label = value as Partial<MapLabelV2>;
+  if (
+    (label.source !== "name" && label.source !== "explicit") ||
+    (label.placement !== "point" && label.placement !== "line" && label.placement !== "interior") ||
+    !Array.isArray(label.offset) ||
+    label.offset.length !== 2
+  ) {
+    return null;
+  }
+  return {
+    source: label.source,
+    text: typeof label.text === "string" ? label.text : null,
+    size: Number(label.size),
+    color: String(label.color ?? "#f7f0e5"),
+    haloColor: String(label.haloColor ?? "#0d1b2a"),
+    haloWidth: Number(label.haloWidth),
+    placement: label.placement,
+    offset: [Number(label.offset[0]), Number(label.offset[1])],
+    rotation: Number(label.rotation),
+    minZoom: typeof label.minZoom === "number" ? label.minZoom : null,
+    maxZoom: typeof label.maxZoom === "number" ? label.maxZoom : null,
+  };
+}
+
+function asPartialStyle(value: unknown): Partial<MapStyleV2> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const style: Partial<MapStyleV2> = {};
+  if (typeof raw.fill === "string") style.fill = raw.fill;
+  if (typeof raw.fillOpacity === "number") style.fillOpacity = raw.fillOpacity;
+  if (typeof raw.stroke === "string") style.stroke = raw.stroke;
+  if (typeof raw.strokeOpacity === "number") style.strokeOpacity = raw.strokeOpacity;
+  if (typeof raw.strokeWidth === "number") style.strokeWidth = raw.strokeWidth;
+  if (Array.isArray(raw.strokeDash) && raw.strokeDash.every((entry) => typeof entry === "number")) {
+    style.strokeDash = raw.strokeDash as number[];
+  }
+  if (typeof raw.pointRadius === "number") style.pointRadius = raw.pointRadius;
+  if (typeof raw.icon === "string" || raw.icon === null) style.icon = raw.icon;
+  if (typeof raw.iconSize === "number") style.iconSize = raw.iconSize;
+  const label = asLabel(raw.label);
+  if (label) style.label = label;
+  return style;
+}
+
 function asDaenaProperties(value: unknown, fallbackLayerId: string, lenient: boolean): VectorFeatureProperties | null {
   if (!value || typeof value !== "object") return null;
   const properties = value as Record<string, unknown>;
@@ -102,8 +149,8 @@ function asDaenaProperties(value: unknown, fallbackLayerId: string, lenient: boo
         layerId: typeof nested.layerId === "string" ? nested.layerId : fallbackLayerId,
         semanticType: asKind(nested.semanticType),
         name: typeof nested.name === "string" ? nested.name : null,
-        style: nested.style && typeof nested.style === "object" ? (nested.style as Record<string, unknown>) : null,
-        label: nested.label && typeof nested.label === "object" ? (nested.label as Record<string, unknown>) : null,
+        style: asPartialStyle(nested.style),
+        label: asLabel(nested.label),
         custom: asCustom(nested.custom),
       },
     };
@@ -174,7 +221,9 @@ export function parseVectorCollection(
         onSkipped?.(path, "missing properties.daena");
         continue;
       }
-      throw new Error(`vector.source.unsupported-version: ${path}/properties: flat feature properties are unsupported; use properties.daena`);
+      throw new Error(
+        `vector.source.unsupported-version: ${path}/properties: flat feature properties are unsupported; use properties.daena`,
+      );
     }
     features.push({
       type: "Feature",
@@ -187,13 +236,12 @@ export function parseVectorCollection(
 }
 
 function asStyle(value: unknown): VectorLayerStyle {
-  const style = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const style = asPartialStyle(value) ?? {};
   return {
-    fill: typeof style.fill === "string" ? style.fill : DEFAULT_VECTOR_LAYER_STYLE.fill,
-    fillOpacity: typeof style.fillOpacity === "number" ? style.fillOpacity : DEFAULT_VECTOR_LAYER_STYLE.fillOpacity,
-    stroke: typeof style.stroke === "string" ? style.stroke : DEFAULT_VECTOR_LAYER_STYLE.stroke,
-    strokeWidth: typeof style.strokeWidth === "number" ? style.strokeWidth : DEFAULT_VECTOR_LAYER_STYLE.strokeWidth,
-    pointRadius: typeof style.pointRadius === "number" ? style.pointRadius : DEFAULT_VECTOR_LAYER_STYLE.pointRadius,
+    ...DEFAULT_VECTOR_LAYER_STYLE,
+    ...style,
+    strokeDash: style.strokeDash ?? DEFAULT_VECTOR_LAYER_STYLE.strokeDash,
+    label: style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label,
   };
 }
 

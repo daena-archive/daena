@@ -57,16 +57,29 @@ export function createFeatureCodec(space: MapCoordinateSpace, projection: Projec
         geometry: mapPositions(feature.geometry, toView),
       })),
     };
-    const features = format.readFeatures(viewCollection as Parameters<GeoJSON["readFeatures"]>[0]) as Feature<Geometry>[];
+    const features = format.readFeatures(
+      viewCollection as Parameters<GeoJSON["readFeatures"]>[0],
+    ) as Feature<Geometry>[];
     for (const feature of features) {
       const daena = feature.get("daena") as
-        | { layerId?: unknown; semanticType?: unknown; name?: unknown }
+        | {
+            layerId?: unknown;
+            semanticType?: unknown;
+            name?: unknown;
+            style?: unknown;
+            label?: unknown;
+            custom?: unknown;
+          }
         | undefined;
       if (daena && typeof daena === "object") {
         feature.setProperties({
           daenaLayerId: typeof daena.layerId === "string" ? daena.layerId : BASE_LAYER_ID,
           kind: typeof daena.semanticType === "string" ? daena.semanticType : "custom",
           name: typeof daena.name === "string" ? daena.name : null,
+          daenaStyle: daena.style ?? null,
+          daenaLabel: daena.label ?? null,
+          daenaCustom:
+            daena.custom && typeof daena.custom === "object" && !Array.isArray(daena.custom) ? daena.custom : {},
         });
         feature.unset("daena");
       }
@@ -109,6 +122,10 @@ export function createFeatureCodec(space: MapCoordinateSpace, projection: Projec
         : typeof (properties.daena as { name?: unknown } | undefined)?.name === "string"
           ? (properties.daena as { name: string }).name
           : null;
+    const nested = properties.daena as { style?: unknown; label?: unknown; custom?: unknown } | undefined;
+    const style = properties.daenaStyle ?? nested?.style;
+    const label = properties.daenaLabel ?? nested?.label;
+    const custom = properties.daenaCustom ?? nested?.custom;
     return {
       type: "Feature",
       id: String(feature.getId() ?? object.id ?? crypto.randomUUID()),
@@ -117,9 +134,18 @@ export function createFeatureCodec(space: MapCoordinateSpace, projection: Projec
           layerId,
           semanticType: kind,
           name,
-          style: null,
-          label: null,
-          custom: {},
+          style:
+            style && typeof style === "object" && !Array.isArray(style)
+              ? (style as VectorFeature["properties"]["daena"]["style"])
+              : null,
+          label:
+            label && typeof label === "object" && !Array.isArray(label)
+              ? (label as VectorFeature["properties"]["daena"]["label"])
+              : null,
+          custom:
+            custom && typeof custom === "object" && !Array.isArray(custom)
+              ? (custom as VectorFeature["properties"]["daena"]["custom"])
+              : {},
         },
       },
       geometry,

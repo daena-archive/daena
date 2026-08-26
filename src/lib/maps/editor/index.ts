@@ -14,7 +14,7 @@ export {
   replaceFeature,
 } from "./model";
 export { CommandStack, type CommandStackSnapshot } from "./command-stack";
-export type { MapCommand, MapCommandKind } from "./commands";
+export type { FeatureMetadataPatch, MapCommand, MapCommandKind } from "./commands";
 export {
   addBackgroundCommand,
   applyCommand,
@@ -50,6 +50,8 @@ export {
   setCoordinateSpaceCommand,
   setDefaultViewCommand,
   setFeatureMetadataCommand,
+  setFeaturesMetadataCommand,
+  setFeaturesMetadataByIdCommand,
   setLayerLockedCommand,
   setLayerOpacityCommand,
   setLayerStyleCommand,
@@ -71,7 +73,15 @@ export {
   isOpenLayersDescriptor,
   normalizedToAuthored,
 } from "./coordinate-space";
-export { measurementSummary, unitsForCoordinateSpace, measureFeature, formatMeasurement, pathLength, polygonArea, pointDistance } from "./measurement";
+export {
+  measurementSummary,
+  unitsForCoordinateSpace,
+  measureFeature,
+  formatMeasurement,
+  pathLength,
+  polygonArea,
+  pointDistance,
+} from "./measurement";
 export {
   runGeometryOperation,
   canRunOperation,
@@ -81,13 +91,13 @@ export {
   type GeometryOpResult,
 } from "./geometry-operations";
 export { buildPreview, commitSelectionIds, type GeometryPreview } from "./geometry-preview";
+export { emptySelection, selectionFromIds, selectionHas, toggleSelectionId, type SelectionState } from "./selection";
 export {
-  emptySelection,
-  selectionFromIds,
-  selectionHas,
-  toggleSelectionId,
-  type SelectionState,
-} from "./selection";
+  buildMapSearchIndex,
+  searchMapFeatures,
+  type MapFeatureSearchEntry,
+  type MapFeatureSearchResult,
+} from "./map-search";
 export {
   buildRecoveryPackage,
   contentHashForCollection,

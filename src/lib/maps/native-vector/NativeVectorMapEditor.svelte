@@ -29,6 +29,7 @@ import {
   Ruler,
   Save,
   Scissors,
+  Search,
   Slash,
   Square,
   SquarePlus,
@@ -53,26 +54,17 @@ import {
   type MapAnchor,
   type MapBackgroundRef,
   type MapCoordinateSpace,
+  type MapLabelV2,
+  type MapStyleV2,
 } from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorImporter from "./NativeVectorImporter.svelte";
 import MapLocationLinkPanel from "./MapLocationLinkPanel.svelte";
-import {
-  createMapAdapter,
-  liveMapAdapterCount,
-  RENDERER_UNAVAILABLE,
-  type MapAdapter,
-} from "../openlayers/MapAdapter";
+import { createMapAdapter, liveMapAdapterCount, RENDERER_UNAVAILABLE, type MapAdapter } from "../openlayers/MapAdapter";
 import type { RuntimeBackground } from "../openlayers/background-registry";
 import type { RasterLayerSource } from "../openlayers/layer-registry";
 import { maxZoomForCoordinateSpace } from "../openlayers/projection";
 import { registerNativeVectorSession } from "./session";
-import {
-  collectionBytes,
-  featureCountForLayer,
-  parseVectorCollection,
-  parseVectorLayers,
-  sha256Hex,
-} from "./source";
+import { collectionBytes, featureCountForLayer, parseVectorCollection, parseVectorLayers, sha256Hex } from "./source";
 import {
   initialVectorEditorState,
   parseVectorDiagnostic,
@@ -81,6 +73,7 @@ import {
 } from "./editor-state";
 import {
   VECTOR_PROVIDER,
+  DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
   featureName,
   featureSemanticType,
@@ -136,6 +129,7 @@ import {
   setBackgroundVisibilityCommand,
   setDefaultViewCommand,
   setFeatureMetadataCommand,
+  setFeaturesMetadataByIdCommand,
   setLayerLockedCommand,
   setLayerOpacityCommand,
   setLayerStyleCommand,
@@ -149,6 +143,8 @@ import {
   formatMeasurement,
   measureFeature,
   unitsForCoordinateSpace,
+  buildMapSearchIndex,
+  searchMapFeatures,
   type GeometryPreview,
   type GeometryOperationKind,
   type MapCommand,
@@ -159,6 +155,7 @@ let {
   picking = false,
   start = "geojson",
   focusLinkId,
+  focusFeatureId,
   oncreated,
   oncancel,
   onpick,
@@ -169,6 +166,7 @@ let {
   picking?: boolean;
   start?: "import" | "geojson";
   focusLinkId?: string;
+  focusFeatureId?: string;
   oncreated?: (map: Entity) => void;
   oncancel?: () => void;
   onpick?: (anchor: MapAnchor) => void;
@@ -196,6 +194,10 @@ let notice = $state("");
 let renamingId = $state<string | null>(null);
 let selectedFeature = $state<VectorFeature | null>(null);
 let selectedFeatureIds = $state<string[]>([]);
+let featureSearch = $state("");
+let searchOpen = $state(false);
+let customKey = $state("");
+let customValue = $state("");
 let draggingLayerId = $state<string | null>(null);
 let defaultView = $state({ center: [0, 0] as [number, number], zoom: 1, rotation: 0 });
 let coordinateSpace = $state<MapCoordinateSpace>(PHYSICAL_COORDINATE_SPACE);
@@ -281,6 +283,14 @@ const listedRasters = $derived(
 const unitsLabel = $derived(measurementSummary(coordinateSpace));
 const snapEnabled = $derived(commandStack ? snapEnabledFromDescriptor(commandStack.document.descriptor) : true);
 const selectedOpFeatures = $derived(
+  commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
+);
+const linkedEntityNames = $derived(
+  new Map([...featureLinks].map(([featureId, link]) => [featureId, link.label || link.entityId])),
+);
+const mapSearchIndex = $derived(buildMapSearchIndex(draft, layers, linkedEntityNames));
+const mapSearchResults = $derived(searchMapFeatures(mapSearchIndex, featureSearch));
+const selectedFeatures = $derived(
   commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
 );
 const viewMaxZoom = $derived(maxZoomForCoordinateSpace(coordinateSpace));
@@ -464,6 +474,7 @@ function applyFeatureLinks(
     provider?: string | null;
     featureKind?: string | null;
     featureId?: string | null;
+    label?: string | null;
     bounds?: [number | null, number | null, number | null, number | null];
   }>,
 ) {
@@ -517,7 +528,7 @@ function applyFeatureLinks(
       nextFeatureLinks.set(anchor.featureId, {
         entityId: pin.entityId,
         locationId: pin.id,
-        label: null,
+        label: typeof pin.label === "string" && pin.label.trim() ? pin.label.trim() : null,
       });
     }
   }
@@ -656,11 +667,7 @@ function deleteSelectedFeatures() {
   editor?.clearSelection();
 }
 
-function offsetGeometry(
-  geometry: VectorFeature["geometry"],
-  dx: number,
-  dy: number,
-): VectorFeature["geometry"] {
+function offsetGeometry(geometry: VectorFeature["geometry"], dx: number, dy: number): VectorFeature["geometry"] {
   const shift = (coords: number[]): number[] => [coords[0] + dx, coords[1] + dy, ...coords.slice(2)];
   const walk = (value: unknown, depth: number): unknown => {
     if (depth === 0) return shift(value as number[]);
@@ -687,11 +694,11 @@ function duplicateSelectedFeatures() {
   const ids = editor.selectedFeatureIds();
   const selected = commandStack.document.collection.features.filter((feature) => ids.includes(feature.id));
   if (selected.length === 0) return;
-  const offset = duplicateOffset(coordinateSpace);
+  const [offsetX, offsetY] = duplicateOffset(coordinateSpace);
   const copies = selected.map((feature) => {
     const clone = cloneCollection({ type: "FeatureCollection", features: [feature] }).features[0];
     clone.id = crypto.randomUUID();
-    clone.geometry = offsetGeometry(clone.geometry, offset, -offset);
+    clone.geometry = offsetGeometry(clone.geometry, offsetX, offsetY);
     return clone;
   });
   dispatchCommand(duplicateFeaturesCommand(copies));
@@ -706,6 +713,121 @@ function renameSelectedFeature(name: string | null) {
     ...selectedFeature,
     properties: { daena: { ...selectedFeature.properties.daena, name } },
   };
+}
+
+function selectedMetadataSnapshot(feature: VectorFeature) {
+  return {
+    name: feature.properties.daena.name,
+    semanticType: feature.properties.daena.semanticType,
+    style: feature.properties.daena.style,
+    label: feature.properties.daena.label,
+    custom: feature.properties.daena.custom,
+  };
+}
+
+function updateSelectedMetadata(
+  build: (feature: VectorFeature) => Partial<VectorFeature["properties"]["daena"]>,
+  label: string,
+  coalesceKey?: string,
+) {
+  if (!commandStack || selectedFeatures.length === 0) return;
+  const next: Record<string, ReturnType<typeof selectedMetadataSnapshot>> = {};
+  const previous: Record<string, ReturnType<typeof selectedMetadataSnapshot>> = {};
+  for (const feature of selectedFeatures) {
+    previous[feature.id] = selectedMetadataSnapshot(feature);
+    next[feature.id] = { ...previous[feature.id], ...build(feature) };
+  }
+  dispatchCommand(setFeaturesMetadataByIdCommand(next, previous, label, coalesceKey));
+}
+
+function setSelectedSemanticType(semanticType: VectorFeature["properties"]["daena"]["semanticType"]) {
+  updateSelectedMetadata(() => ({ semanticType }), "Change semantic type", "feature-semantic-type");
+}
+
+function updateSelectedStyle(patch: Partial<MapStyleV2>) {
+  updateSelectedMetadata(
+    (feature) => ({ style: { ...(feature.properties.daena.style ?? {}), ...patch } }),
+    "Edit feature style",
+    `feature-style:${Object.keys(patch).join(",")}`,
+  );
+}
+
+function defaultFeatureLabel(feature: VectorFeature): MapLabelV2 {
+  return {
+    source: "name",
+    text: null,
+    size: 12,
+    color: "#f7f0e5",
+    haloColor: "#0d1b2a",
+    haloWidth: 3,
+    placement: feature.geometry.type === "LineString" || feature.geometry.type === "MultiLineString" ? "line" : "point",
+    offset: [0, -14],
+    rotation: 0,
+    minZoom: null,
+    maxZoom: null,
+  };
+}
+
+function updateSelectedLabel(patch: Partial<MapLabelV2>) {
+  updateSelectedMetadata(
+    (feature) => ({ label: { ...(feature.properties.daena.label ?? defaultFeatureLabel(feature)), ...patch } }),
+    "Edit feature label",
+    `feature-label:${Object.keys(patch).join(",")}`,
+  );
+}
+
+function clearSelectedOverrides() {
+  updateSelectedMetadata(() => ({ style: null, label: null }), "Use layer style");
+}
+
+function addCustomProperty() {
+  const key = customKey.trim();
+  if (!key || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key)) {
+    notice =
+      "Custom property keys must start with a letter and contain only letters, numbers, dot, dash, or underscore.";
+    return;
+  }
+  const value = customValue.trim();
+  updateSelectedMetadata(
+    (feature) => ({ custom: { ...feature.properties.daena.custom, [key]: value } }),
+    "Set custom property",
+    `feature-custom:${key}`,
+  );
+  customKey = "";
+  customValue = "";
+  notice = "";
+}
+
+function removeCustomProperty(key: string) {
+  updateSelectedMetadata((feature) => {
+    const custom = { ...feature.properties.daena.custom };
+    delete custom[key];
+    return { custom };
+  }, "Remove custom property");
+}
+
+function featureVertexCount(feature: VectorFeature) {
+  return (feature.geometry.coordinates.flat(Infinity) as number[]).length / 2;
+}
+
+function focusSearchResult(featureId: string, layerId: string) {
+  if (!commandStack || !editor) return;
+  const layer = layers.find((item) => item.id === layerId);
+  if (layer && !layer.defaultVisible) {
+    dispatchCommand(setLayerVisibilityCommand(layer.id, true, false));
+  }
+  activeLayerId = layerId;
+  editor.switchLayer(layerId);
+  editor.focusFeature(featureId);
+  searchOpen = false;
+}
+
+function focusFeatureFromNavigation(featureId: string | null | undefined) {
+  if (!featureId || !commandStack || !editor) return false;
+  const feature = commandStack.document.collection.features.find((item) => item.id === featureId);
+  if (!feature) return false;
+  focusSearchResult(feature.id, featureLayerId(feature));
+  return true;
 }
 
 function moveSelectedToLayer(layerId: string) {
@@ -750,7 +872,10 @@ function applyLayersField(field: FieldValue) {
     commandStack.replaceDocument({
       ...commandStack.document,
       layers: parsed,
-      descriptor: mapField?.value ?? commandStack.document.descriptor,
+      descriptor:
+        mapField?.value && typeof mapField.value === "object"
+          ? (mapField.value as typeof commandStack.document.descriptor)
+          : commandStack.document.descriptor,
     });
   }
 }
@@ -830,9 +955,7 @@ function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
 }
 
 function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
-  const authoredDraft = draft.features.filter(
-    (feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)),
-  );
+  const authoredDraft = draft.features.filter((feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)));
   const physical = parseDerivedCollection(products.geojson);
   const combined = {
     type: "FeatureCollection" as const,
@@ -989,11 +1112,6 @@ function mountEditor() {
     },
     onSelect(feature) {
       selectedFeature = feature;
-      if (picking) return;
-      if (feature) {
-        const linked = featureLinks.get(feature.id);
-        if (linked && onopen) onopen(linked.entityId);
-      }
     },
     onSelectionChange(ids) {
       selectedFeatureIds = ids;
@@ -1129,10 +1247,7 @@ async function load() {
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       const canvas = physicalHillshadeCanvas(historical.hydrology);
       rasterAssets = new Map([
-        [
-          "physical",
-          { url: "", width: historical.hydrology.width, height: historical.hydrology.height, canvas },
-        ],
+        ["physical", { url: "", width: historical.hydrology.width, height: historical.hydrology.height, canvas }],
       ]);
       epochBusy = false;
       epochPhase = "";
@@ -1338,9 +1453,7 @@ function commitGeometryPreview() {
   const removed = commandStack.document.collection.features.filter((feature) =>
     geometryPreview!.removedFeatureIds.includes(feature.id),
   );
-  dispatchCommand(
-    applyGeometryOperationCommand(removed, geometryPreview.previewFeatures, geometryPreview.label),
-  );
+  dispatchCommand(applyGeometryOperationCommand(removed, geometryPreview.previewFeatures, geometryPreview.label));
   const ids = commitSelectionIds(geometryPreview);
   cancelGeometryPreview();
   queueMicrotask(() => {
@@ -1354,12 +1467,18 @@ function updateMeasureFromSelection() {
   if (!commandStack || selectedOpFeatures.length === 0) return;
   const units = unitsForCoordinateSpace(coordinateSpace);
   if (tool === "measure-length") {
-    const total = selectedOpFeatures.reduce((sum, feature) => sum + (measureFeature(feature, coordinateSpace).length ?? 0), 0);
+    const total = selectedOpFeatures.reduce(
+      (sum, feature) => sum + (measureFeature(feature, coordinateSpace).length ?? 0),
+      0,
+    );
     measureReadout = formatMeasurement(total, units.length);
     return;
   }
   if (tool === "measure-area") {
-    const total = selectedOpFeatures.reduce((sum, feature) => sum + (measureFeature(feature, coordinateSpace).area ?? 0), 0);
+    const total = selectedOpFeatures.reduce(
+      (sum, feature) => sum + (measureFeature(feature, coordinateSpace).area ?? 0),
+      0,
+    );
     measureReadout = formatMeasurement(total, units.area);
   }
 }
@@ -1492,9 +1611,7 @@ function moveLayer(layer: MapLayerDefinition, direction: -1 | 1) {
   const index = listedLayers.findIndex((item) => item.id === layer.id);
   const neighbor = listedLayers[index + direction];
   if (!neighbor) return;
-  dispatchCommand(
-    reorderLayerCommand(layer.id, neighbor.order, layer.order, neighbor.id, layer.order, neighbor.order),
-  );
+  dispatchCommand(reorderLayerCommand(layer.id, neighbor.order, layer.order, neighbor.id, layer.order, neighbor.order));
 }
 
 function dropLayer(sourceId: string, targetId: string) {
@@ -1506,7 +1623,9 @@ function dropLayer(sourceId: string, targetId: string) {
   const [moved] = display.splice(from, 1);
   display.splice(to, 0, moved);
   const nextIds = [...display].reverse().map((item) => item.id);
-  const previousIds = [...layers].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id)).map((item) => item.id);
+  const previousIds = [...layers]
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+    .map((item) => item.id);
   dispatchCommand(reorderLayersByIdsCommand(nextIds, previousIds));
 }
 
@@ -1536,12 +1655,11 @@ function removeLayer(layer: MapLayerDefinition) {
   if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack || layer.locked) return;
   const savedCount = featureCountForLayer(loaded, layer.id);
   const draftCount = featureCountForLayer(draft, layer.id);
-  const extra =
-    isRasterLayer(layer)
-      ? " The raster asset stays in the project."
-      : draftCount === savedCount
-        ? ""
-        : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
+  const extra = isRasterLayer(layer)
+    ? " The raster asset stays in the project."
+    : draftCount === savedCount
+      ? ""
+      : ` Unsaved draft features on this layer (${draftCount}) will be discarded.`;
   const countLabel = isRasterLayer(layer)
     ? "this raster layer"
     : `${savedCount} saved feature${savedCount === 1 ? "" : "s"} from the map`;
@@ -1671,6 +1789,13 @@ $effect(() => {
   picking;
   linkArming;
   focusLinkedLocation(focusLinkId);
+});
+
+$effect(() => {
+  focusFeatureId;
+  editor;
+  commandStack;
+  focusFeatureFromNavigation(focusFeatureId);
 });
 
 $effect(() => {
@@ -2015,6 +2140,41 @@ onMount(() => {
     <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
         <aside aria-label="Map layers">
+          {#if !physicalMap}
+            <div class="map-search" class:open={searchOpen}>
+              <label>
+                <span class="sr-only">Search map features</span>
+                <Search {...iconProps} />
+                <input
+                  type="search"
+                  placeholder="Search this map…"
+                  aria-label="Search map features"
+                  bind:value={featureSearch}
+                  onfocus={() => (searchOpen = true)} />
+              </label>
+              {#if searchOpen && featureSearch.trim()}
+                <div class="map-search-results" role="listbox" aria-label="Map search results">
+                  {#if mapSearchResults.length === 0}
+                    <p class="hint">No matching features.</p>
+                  {:else}
+                    {#each mapSearchResults as result (result.featureId)}
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selectedFeatureIds.includes(result.featureId)}
+                        onclick={() => focusSearchResult(result.featureId, result.layerId)}>
+                        <strong>{result.name}</strong>
+                        <small
+                          >{result.semanticType} · {result.layerName}{result.linkedEntityName
+                            ? ` · ${result.linkedEntityName}`
+                            : ""}</small>
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/if}
           {#if studioSupported}
             <button
               type="button"
@@ -2042,10 +2202,18 @@ onMount(() => {
             {/if}
             {#if !physicalMap}
               <div class="layer-row">
-                <button type="button" class="text-button" disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS} onclick={() => addLayer()}>
+                <button
+                  type="button"
+                  class="text-button"
+                  disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
+                  onclick={() => addLayer()}>
                   Add vector
                 </button>
-                <button type="button" class="text-button" disabled={busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRasterLayer()}>
+                <button
+                  type="button"
+                  class="text-button"
+                  disabled={busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
+                  onclick={() => void addRasterLayer()}>
                   Add raster layer
                 </button>
               </div>
@@ -2054,7 +2222,8 @@ onMount(() => {
               <div class="snap-config" aria-label="Snap settings">
                 <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
                 <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
-                <label><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
+                <label
+                  ><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
                 <small>Locked layers can opt into snap targets from the layer row.</small>
               </div>
             {/if}
@@ -2089,7 +2258,8 @@ onMount(() => {
                           if (event.key === "Escape") renamingId = null;
                         }} />
                     {:else}{layer.name}{/if}
-                    <small class="layer-meta">{layer.kind} · {isRasterLayer(layer) ? "raster" : featureCountForLayer(draft, layer.id)}</small>
+                    <small class="layer-meta"
+                      >{layer.kind} · {isRasterLayer(layer) ? "raster" : featureCountForLayer(draft, layer.id)}</small>
                   </button>
                   <div class="layer-row">
                     <button
@@ -2130,7 +2300,10 @@ onMount(() => {
                         class="icon-button"
                         aria-label={`Duplicate ${layer.name}`}
                         title="Duplicate"
-                        disabled={busy || (isRasterLayer(layer) ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
+                        disabled={busy ||
+                          (isRasterLayer(layer)
+                            ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
+                            : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
                         onclick={() => void duplicateLayer(layer)}><Copy {...iconProps} /></button>
                       <button
                         type="button"
@@ -2166,46 +2339,130 @@ onMount(() => {
                           oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
                       </label>
                       {#if isVectorLayer(layer)}
-                      <label>
-                        Fill
-                        <input
-                          type="color"
-                          value={layer.style.fill}
-                          aria-label={`${layer.name} fill`}
-                          onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
-                      </label>
-                      <label>
-                        Stroke
-                        <input
-                          type="color"
-                          value={layer.style.stroke}
-                          aria-label={`${layer.name} stroke`}
-                          onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                      </label>
-                      <label>
-                        Stroke width
-                        <input
-                          type="number"
-                          min="0"
-                          max="32"
-                          step="0.25"
-                          value={layer.style.strokeWidth}
-                          aria-label={`${layer.name} stroke width`}
-                          onchange={(event) =>
-                            void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
-                      </label>
-                      <label>
-                        Point radius
-                        <input
-                          type="number"
-                          min="1"
-                          max="64"
-                          step="1"
-                          value={layer.style.pointRadius}
-                          aria-label={`${layer.name} point radius`}
-                          onchange={(event) =>
-                            void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
-                      </label>
+                        <label>
+                          Fill
+                          <input
+                            type="color"
+                            value={layer.style.fill}
+                            aria-label={`${layer.name} fill`}
+                            onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
+                        </label>
+                        <label>
+                          Fill opacity
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={layer.style.fillOpacity}
+                            aria-label={`${layer.name} fill opacity`}
+                            oninput={(event) =>
+                              void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
+                        </label>
+                        <label>
+                          Stroke
+                          <input
+                            type="color"
+                            value={layer.style.stroke}
+                            aria-label={`${layer.name} stroke`}
+                            onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
+                        </label>
+                        <label>
+                          Stroke opacity
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={layer.style.strokeOpacity ?? 1}
+                            aria-label={`${layer.name} stroke opacity`}
+                            oninput={(event) =>
+                              void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })} />
+                        </label>
+                        <label>
+                          Stroke width
+                          <input
+                            type="number"
+                            min="0"
+                            max="32"
+                            step="0.25"
+                            value={layer.style.strokeWidth}
+                            aria-label={`${layer.name} stroke width`}
+                            onchange={(event) =>
+                              void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
+                        </label>
+                        <label>
+                          Dash
+                          <input
+                            type="text"
+                            value={(layer.style.strokeDash ?? []).join(", ")}
+                            placeholder="solid"
+                            aria-label={`${layer.name} stroke dash`}
+                            onchange={(event) => {
+                              const values = event.currentTarget.value
+                                .split(",")
+                                .map((value) => Number(value.trim()))
+                                .filter(Number.isFinite);
+                              void updateStyle(layer, { strokeDash: values.slice(0, 16) });
+                            }} />
+                        </label>
+                        <label>
+                          Point radius
+                          <input
+                            type="number"
+                            min="1"
+                            max="64"
+                            step="1"
+                            value={layer.style.pointRadius}
+                            aria-label={`${layer.name} point radius`}
+                            onchange={(event) =>
+                              void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
+                        </label>
+                        <label>
+                          Marker
+                          <select
+                            value={layer.style.icon ?? "circle"}
+                            aria-label={`${layer.name} marker icon`}
+                            onchange={(event) =>
+                              void updateStyle(layer, {
+                                icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
+                              })}>
+                            <option value="circle">Circle</option>
+                            <option value="square">Square</option>
+                            <option value="diamond">Diamond</option>
+                            <option value="triangle">Triangle</option>
+                            <option value="star">Star</option>
+                          </select>
+                        </label>
+                        <label>
+                          Marker size
+                          <input
+                            type="number"
+                            min="4"
+                            max="256"
+                            step="1"
+                            value={layer.style.iconSize ?? 20}
+                            aria-label={`${layer.name} marker size`}
+                            onchange={(event) =>
+                              void updateStyle(layer, { iconSize: Number(event.currentTarget.value) })} />
+                        </label>
+                        <label>
+                          Label size
+                          <input
+                            type="number"
+                            min="6"
+                            max="96"
+                            step="1"
+                            value={layer.style.label?.size ?? 12}
+                            aria-label={`${layer.name} label size`}
+                            onchange={(event) =>
+                              void updateStyle(layer, {
+                                label: {
+                                  ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!),
+                                  size: Number(event.currentTarget.value),
+                                },
+                              })} />
+                        </label>
                       {/if}
                     </div>
                   {/if}
@@ -2225,7 +2482,11 @@ onMount(() => {
             {#if !rastersCollapsed}
               <p class="hint" role="status">{unitsLabel}</p>
               <div class="layer-row">
-                <button type="button" class="text-button" disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRaster()}>
+                <button
+                  type="button"
+                  class="text-button"
+                  disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS}
+                  onclick={() => void addRaster()}>
                   Add raster
                 </button>
                 <button type="button" class="text-button" onclick={() => editor?.fitExtent()}>Fit</button>
@@ -2258,14 +2519,26 @@ onMount(() => {
                         onclick={() =>
                           dispatchCommand(setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible))}
                         >{#if raster.visible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
-                      <button type="button" class="icon-button" aria-label={`Move ${raster.name} up`} onclick={() => moveRaster(raster, -1)}
-                        ><ChevronUp {...iconProps} /></button>
-                      <button type="button" class="icon-button" aria-label={`Move ${raster.name} down`} onclick={() => moveRaster(raster, 1)}
-                        ><ChevronDown {...iconProps} /></button>
-                      <button type="button" class="icon-button" aria-label={`Replace ${raster.name}`} onclick={() => void replaceRaster(raster)}
-                        ><ImageIcon {...iconProps} /></button>
-                      <button type="button" class="icon-button" aria-label={`Remove ${raster.name}`} onclick={() => removeRaster(raster)}
-                        ><Trash2 {...iconProps} /></button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Move ${raster.name} up`}
+                        onclick={() => moveRaster(raster, -1)}><ChevronUp {...iconProps} /></button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Move ${raster.name} down`}
+                        onclick={() => moveRaster(raster, 1)}><ChevronDown {...iconProps} /></button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Replace ${raster.name}`}
+                        onclick={() => void replaceRaster(raster)}><ImageIcon {...iconProps} /></button>
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Remove ${raster.name}`}
+                        onclick={() => removeRaster(raster)}><Trash2 {...iconProps} /></button>
                     </div>
                     <label>
                       Opacity
@@ -2359,85 +2632,306 @@ onMount(() => {
                 </div>
               {:else}
                 <div class="layer-row">
-                  <button type="button" disabled={!canRunOperation("union", selectedOpFeatures)} onclick={() => startGeometryOperation("union")}>Union</button>
-                  <button type="button" disabled={!canRunOperation("difference", selectedOpFeatures)} onclick={() => startGeometryOperation("difference")}>Diff</button>
-                  <button type="button" disabled={!canRunOperation("intersection", selectedOpFeatures)} onclick={() => startGeometryOperation("intersection")}>Intersect</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("union", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("union")}>Union</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("difference", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("difference")}>Diff</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("intersection", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("intersection")}>Intersect</button>
                 </div>
                 <div class="layer-row">
-                  <button type="button" disabled={!canRunOperation("split", selectedOpFeatures)} onclick={() => startGeometryOperation("split")}><Scissors {...iconProps} /> Split</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("split", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("split")}><Scissors {...iconProps} /> Split</button>
                   <label>
                     Buffer
                     <input type="number" min="0" step="any" bind:value={bufferDistance} aria-label="Buffer distance" />
                   </label>
-                  <button type="button" disabled={!canRunOperation("buffer", selectedOpFeatures)} onclick={() => startGeometryOperation("buffer")}>Run</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("buffer", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("buffer")}>Run</button>
                 </div>
                 <div class="layer-row">
                   <label>
                     Simplify
-                    <input type="number" min="0" step="any" bind:value={simplifyTolerance} aria-label="Simplify tolerance" />
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      bind:value={simplifyTolerance}
+                      aria-label="Simplify tolerance" />
                   </label>
-                  <button type="button" disabled={!canRunOperation("simplify", selectedOpFeatures)} onclick={() => startGeometryOperation("simplify")}>Run</button>
+                  <button
+                    type="button"
+                    disabled={!canRunOperation("simplify", selectedOpFeatures)}
+                    onclick={() => startGeometryOperation("simplify")}>Run</button>
                 </div>
                 {#if operationNotice}<small role="status">{operationNotice}</small>{/if}
               {/if}
             </div>
           {/if}
-          {#if selectedFeatureIds.length > 1 && !physicalMap}
-            <div class="inspector" aria-label="Selected features">
-              <strong>{selectedFeatureIds.length} features selected</strong>
-              <p class="hint">Shift-click adds to the selection. Modifier-drag boxes select across visible unlocked layers.</p>
-              <label>
-                Move to layer
-                <select
-                  aria-label="Feature layer"
-                  onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
-                  {#each listedLayers.filter((layer) => isVectorLayer(layer) && layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
-                    <option value={layer.id}>{layer.name}</option>
-                  {/each}
-                </select>
-              </label>
-              <button type="button" onclick={() => duplicateSelectedFeatures()}>Duplicate features</button>
-              <button type="button" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit selection</button>
-              <button type="button" onclick={() => deleteSelectedFeatures()}>Delete</button>
-            </div>
-          {:else if selectedFeature && !physicalMap}
-            <div class="inspector" aria-label="Selected feature">
-              <strong>Selected feature</strong>
+          {#if selectedFeatures.length > 0 && !physicalMap}
+            {@const primary = selectedFeatures[0]}
+            {@const primaryLabel = primary.properties.daena.label ?? defaultFeatureLabel(primary)}
+            {@const primaryStyle = primary.properties.daena.style ?? {}}
+            {@const linkedEntity = selectedFeatures.length === 1 ? featureLinks.get(primary.id) : null}
+            <div
+              class="inspector"
+              aria-label={selectedFeatures.length === 1 ? "Selected feature" : "Selected features"}>
+              <strong
+                >{selectedFeatures.length === 1
+                  ? (featureName(primary) ?? "Untitled feature")
+                  : `${selectedFeatures.length} features selected`}</strong>
               <p class="hint">
-                {featureSemanticType(selectedFeature)} · {featureLayerId(selectedFeature) === "base"
-                  ? "base geography"
-                  : "authored"}
+                {primary.geometry.type} · {selectedFeatures.reduce(
+                  (sum, feature) => sum + featureVertexCount(feature),
+                  0,
+                )} vertices
+                {#if selectedFeatures.length === 1}
+                  · {featureSemanticType(primary)}
+                {/if}
               </p>
+              {#if selectedFeatures.length === 1}
+                <label>
+                  Name
+                  <input
+                    value={featureName(primary) ?? ""}
+                    maxlength="256"
+                    aria-label="Feature name"
+                    disabled={featureLayerId(primary) === "base"}
+                    onchange={(event) => renameSelectedFeature(event.currentTarget.value.trim() || null)} />
+                </label>
+              {/if}
               <label>
-                Name
-                <input
-                  value={featureName(selectedFeature) ?? ""}
-                  maxlength="256"
-                  aria-label="Feature name"
-                  disabled={featureLayerId(selectedFeature) === "base" || activeLayer?.locked}
-                  onchange={(event) => {
-                    const next = event.currentTarget.value.trim() || null;
-                    renameSelectedFeature(next);
-                  }} />
+                Semantic type
+                <select
+                  value={featureSemanticType(primary)}
+                  aria-label="Feature semantic type"
+                  onchange={(event) =>
+                    setSelectedSemanticType(
+                      event.currentTarget.value as VectorFeature["properties"]["daena"]["semanticType"],
+                    )}>
+                  <option value="land">Land</option>
+                  <option value="lake">Lake</option>
+                  <option value="region">Region</option>
+                  <option value="route">Route</option>
+                  <option value="marker">Marker</option>
+                  <option value="custom">Custom</option>
+                </select>
               </label>
               <label>
                 Layer
                 <select
-                  value={featureLayerId(selectedFeature)}
+                  value={featureLayerId(primary)}
                   aria-label="Feature layer"
-                  disabled={featureLayerId(selectedFeature) === "base" || Boolean(activeLayer?.locked)}
                   onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
                   {#each listedLayers.filter((layer) => isVectorLayer(layer) && layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
                     <option value={layer.id}>{layer.name}</option>
                   {/each}
                 </select>
               </label>
-              <button
-                type="button"
-                disabled={featureLayerId(selectedFeature) === "base" || Boolean(activeLayer?.locked)}
-                onclick={() => duplicateSelectedFeatures()}>Duplicate feature</button>
-              <button type="button" onclick={() => editor?.fitSelection([selectedFeature.id])}>Fit selection</button>
-              <p class="hint">Alt-click a vertex to delete it.</p>
+
+              <details class="inspector-section">
+                <summary>Style override</summary>
+                <div class="style-grid">
+                  <label
+                    >Fill<input
+                      type="color"
+                      value={primaryStyle.fill ?? "#8f6fd1"}
+                      onchange={(event) => updateSelectedStyle({ fill: event.currentTarget.value })} /></label>
+                  <label
+                    >Fill opacity<input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={primaryStyle.fillOpacity ?? 0.35}
+                      oninput={(event) =>
+                        updateSelectedStyle({ fillOpacity: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Stroke<input
+                      type="color"
+                      value={primaryStyle.stroke ?? "#5e4893"}
+                      onchange={(event) => updateSelectedStyle({ stroke: event.currentTarget.value })} /></label>
+                  <label
+                    >Stroke opacity<input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={primaryStyle.strokeOpacity ?? 1}
+                      oninput={(event) =>
+                        updateSelectedStyle({ strokeOpacity: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Width<input
+                      type="number"
+                      min="0"
+                      max="32"
+                      step="0.25"
+                      value={primaryStyle.strokeWidth ?? 1.5}
+                      onchange={(event) =>
+                        updateSelectedStyle({ strokeWidth: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Point radius<input
+                      type="number"
+                      min="1"
+                      max="64"
+                      step="1"
+                      value={primaryStyle.pointRadius ?? 5}
+                      onchange={(event) =>
+                        updateSelectedStyle({ pointRadius: Number(event.currentTarget.value) })} /></label>
+                  <label>
+                    Marker
+                    <select
+                      value={primaryStyle.icon ?? "circle"}
+                      onchange={(event) =>
+                        updateSelectedStyle({
+                          icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
+                        })}>
+                      <option value="circle">Circle</option><option value="square">Square</option><option
+                        value="diamond">Diamond</option
+                      ><option value="triangle">Triangle</option><option value="star">Star</option>
+                    </select>
+                  </label>
+                </div>
+                <button type="button" class="text-button" onclick={clearSelectedOverrides}>Use layer style</button>
+              </details>
+
+              <details class="inspector-section">
+                <summary>Label</summary>
+                <div class="style-grid">
+                  <label
+                    >Source<select
+                      value={primaryLabel.source}
+                      onchange={(event) =>
+                        updateSelectedLabel({ source: event.currentTarget.value as "name" | "explicit" })}
+                      ><option value="name">Feature name</option><option value="explicit">Custom text</option></select
+                    ></label>
+                  {#if primaryLabel.source === "explicit"}
+                    <label
+                      >Text<input
+                        type="text"
+                        maxlength="512"
+                        value={primaryLabel.text ?? ""}
+                        onchange={(event) => updateSelectedLabel({ text: event.currentTarget.value })} /></label>
+                  {/if}
+                  <label
+                    >Size<input
+                      type="number"
+                      min="6"
+                      max="96"
+                      value={primaryLabel.size}
+                      onchange={(event) => updateSelectedLabel({ size: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Color<input
+                      type="color"
+                      value={primaryLabel.color}
+                      onchange={(event) => updateSelectedLabel({ color: event.currentTarget.value })} /></label>
+                  <label
+                    >Halo<input
+                      type="color"
+                      value={primaryLabel.haloColor}
+                      onchange={(event) => updateSelectedLabel({ haloColor: event.currentTarget.value })} /></label>
+                  <label
+                    >Halo width<input
+                      type="number"
+                      min="0"
+                      max="16"
+                      step="0.5"
+                      value={primaryLabel.haloWidth}
+                      onchange={(event) =>
+                        updateSelectedLabel({ haloWidth: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Placement<select
+                      value={primaryLabel.placement}
+                      onchange={(event) =>
+                        updateSelectedLabel({ placement: event.currentTarget.value as MapLabelV2["placement"] })}
+                      ><option value="point">Point</option><option value="line">Line</option><option value="interior"
+                        >Interior</option
+                      ></select
+                    ></label>
+                  <label
+                    >Rotation<input
+                      type="number"
+                      min="-360"
+                      max="360"
+                      value={primaryLabel.rotation}
+                      onchange={(event) =>
+                        updateSelectedLabel({ rotation: Number(event.currentTarget.value) })} /></label>
+                  <label
+                    >Min zoom<input
+                      type="number"
+                      min="0"
+                      max="24"
+                      placeholder="none"
+                      value={primaryLabel.minZoom ?? ""}
+                      onchange={(event) =>
+                        updateSelectedLabel({
+                          minZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+                        })} /></label>
+                  <label
+                    >Max zoom<input
+                      type="number"
+                      min="0"
+                      max="24"
+                      placeholder="none"
+                      value={primaryLabel.maxZoom ?? ""}
+                      onchange={(event) =>
+                        updateSelectedLabel({
+                          maxZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+                        })} /></label>
+                </div>
+              </details>
+
+              {#if selectedFeatures.length === 1}
+                <details class="inspector-section">
+                  <summary>Custom properties</summary>
+                  {#each Object.entries(primary.properties.daena.custom) as [key, value] (key)}
+                    <div class="property-row">
+                      <span><strong>{key}</strong> {String(value ?? "null")}</span><button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Remove ${key}`}
+                        onclick={() => removeCustomProperty(key)}><Trash2 {...iconProps} /></button>
+                    </div>
+                  {/each}
+                  <div class="property-editor">
+                    <input placeholder="Key" aria-label="Custom property key" bind:value={customKey} /><input
+                      placeholder="Value"
+                      aria-label="Custom property value"
+                      bind:value={customValue} /><button type="button" onclick={addCustomProperty}>Add</button>
+                  </div>
+                </details>
+                <div class="linked-entity">
+                  <strong>Linked entity</strong>
+                  {#if linkedEntity}
+                    <span>{linkedEntity.label || "Linked entry"}</span>
+                    <div class="layer-row">
+                      <button type="button" onclick={() => onopen?.(linkedEntity.entityId)}>Open</button><button
+                        type="button"
+                        onclick={() => openLinkPanel(pickAnchorFor(primary))}>Manage link</button>
+                    </div>
+                  {:else}
+                    <span class="hint">No entity linked. Deleted targets remain visible here as unresolved links.</span>
+                    <button type="button" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Link entity</button>
+                  {/if}
+                </div>
+              {/if}
+
+              <div class="layer-row">
+                <button type="button" onclick={() => duplicateSelectedFeatures()}>Duplicate</button>
+                <button type="button" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit</button>
+                <button type="button" onclick={() => deleteSelectedFeatures()}>Delete</button>
+              </div>
+              <p class="hint">Shift-click adds to selection. Alt-click a vertex to delete it.</p>
             </div>
           {/if}
           {#if !physicalMap}
@@ -2521,7 +3015,8 @@ onMount(() => {
               }}
               onlinked={() => {
                 void refreshFeatureLinks();
-              }} />
+              }}
+              {onopen} />
           {/if}
         </div>
       {:else if studioOpen && mapId}
@@ -2575,7 +3070,8 @@ onMount(() => {
               }}
               onlinked={() => {
                 void refreshFeatureLinks();
-              }} />
+              }}
+              {onopen} />
           {/if}
         </div>
       {/if}
@@ -2777,6 +3273,58 @@ aside {
   border-right: 1px solid var(--theme-neutral-border-strong, #405047);
   background: #1b2822;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.map-search {
+  position: relative;
+}
+.map-search > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 7px;
+  background: #0f1a16;
+}
+.map-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #edf2ec;
+}
+.map-search-results {
+  display: grid;
+  gap: 3px;
+  max-height: 230px;
+  margin-top: 5px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 7px;
+  background: #101c17;
+}
+.map-search-results button {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  background: transparent;
+  text-align: left;
+}
+.map-search-results small {
+  color: var(--theme-neutral-text-muted, #aebdb1);
+  font-weight: 500;
+}
 .hazard-legend {
   margin: 0;
   color: var(--theme-neutral-text-muted, #aebdb1);
@@ -2824,6 +3372,45 @@ aside {
   padding: 8px;
   border-radius: 8px;
   background: #18241f;
+}
+.inspector-section {
+  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
+  padding-top: 6px;
+}
+.inspector-section summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 7px 0;
+}
+.style-grid label {
+  display: grid;
+  gap: 3px;
+  color: #b8c8bc;
+  font-size: 10px;
+}
+.property-row,
+.linked-entity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.property-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 4px;
+  margin-top: 6px;
+}
+.linked-entity {
+  align-items: flex-start;
+  flex-direction: column;
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
 }
 .inspector input,
 .inspector select,

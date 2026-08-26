@@ -6662,6 +6662,18 @@ async fn project_search(
 }
 
 #[tauri::command]
+async fn project_search_map_features(
+    state: tauri::State<'_, SharedCore>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<daena_core::MapFeatureSearchResult>, String> {
+    with_read_project(state, move |project| {
+        project.search_map_features(query, limit.unwrap_or(50))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn project_update_entity(
     state: tauri::State<'_, SharedCore>,
     id: String,
@@ -9539,6 +9551,7 @@ pub fn run() {
             project_get_entity,
             project_query_entities,
             project_search,
+            project_search_map_features,
             project_update_entity,
             project_delete_entity,
             project_restore_entity,

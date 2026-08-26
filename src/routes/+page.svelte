@@ -23,6 +23,7 @@ import {
   type AiIndexStatus,
   type ModuleSchemaOverlay,
   type EntityTypeColor,
+  type MapFeatureSearchResult,
 } from "$lib/project/client";
 import type {
   EntityTypeDefinition,
@@ -418,6 +419,7 @@ let mapReloadCounter = $state(0);
 let mapsEditorKey = $state("welcome");
 let mapRecoveryBusy = $state(false);
 let mapFocusLinkId = $state<string | null>(null);
+let mapFocusFeatureId = $state<string | null>(null);
 let mapSelection = $state<unknown | null>(null);
 let mapPickPending = $state<
   | null
@@ -590,6 +592,7 @@ let showProjectMenu = $state(false);
 let showExternalImport = $state(false);
 let recentProjects = $state<RecentProject[]>([]);
 let searchMatches = $state<Entity[] | null>(null);
+let mapFeatureMatches = $state<MapFeatureSearchResult[] | null>(null);
 let searchRequest = 0;
 let showCreateForm = $state(false);
 let createDialogView = $state<CreateDialogView>("templates");
@@ -4261,6 +4264,16 @@ function quickOpenItems(): QuickOpenItem[] {
       };
     },
   );
+  const mapFeatureItems: QuickOpenItem[] = query
+    ? (mapFeatureMatches ?? []).map((feature) => ({
+        id: `map-feature:${feature.mapEntityId}:${feature.featureId}`,
+        category: "Results",
+        label: feature.name,
+        description: `${feature.semanticType} · ${feature.layerName} · ${feature.mapName}`,
+        keywords: [feature.featureId, feature.semanticType, feature.layerName, feature.mapName],
+        action: { kind: "map-feature", mapEntityId: feature.mapEntityId, featureId: feature.featureId },
+      }))
+    : [];
   const destinations: QuickOpenItem[] = [
     {
       id: "destination:home",
@@ -4335,7 +4348,7 @@ function quickOpenItems(): QuickOpenItem[] {
       action: { kind: "command", command: "settings" },
     },
   ];
-  return rankQuickOpenItems([...entityItems, ...destinations, ...creation, ...commands], query, 80);
+  return rankQuickOpenItems([...mapFeatureItems, ...entityItems, ...destinations, ...creation, ...commands], query, 80);
 }
 
 function openQuickOpen() {
@@ -4347,6 +4360,7 @@ function closeQuickOpen() {
   quickOpenOpen = false;
   globalQuery = "";
   searchMatches = null;
+  mapFeatureMatches = null;
   quickOpenSearchLoading = false;
   searchRequest += 1;
 }
@@ -4361,6 +4375,14 @@ async function selectQuickOpenItem(item: QuickOpenItem) {
   await tick();
   if (action.kind === "entity") {
     if (matchedEntity) await selectSearchResult(matchedEntity);
+    return;
+  }
+  if (action.kind === "map-feature") {
+    await ensureMapEditorOpen(action.mapEntityId);
+    mapFocusLinkId = null;
+    mapFocusFeatureId = null;
+    await tick();
+    mapFocusFeatureId = action.featureId;
     return;
   }
   if (action.kind === "destination") {
@@ -5427,8 +5449,11 @@ async function rebuildSearchIndex() {
     await project.rebuildSearch();
     const term = globalQuery.trim();
     if (!term || request !== searchRequest) return;
-    const matches = await project.search(term);
-    if (request === searchRequest) searchMatches = matches;
+    const [matches, features] = await Promise.all([project.search(term), project.searchMapFeatures(term)]);
+    if (request === searchRequest) {
+      searchMatches = matches;
+      mapFeatureMatches = features;
+    }
   } catch (cause) {
     if (request === searchRequest) throw new Error(friendlyError(cause));
   }
@@ -5481,15 +5506,18 @@ $effect(() => {
   const term = globalQuery.trim();
   if (!ready || !quickOpenOpen || !term) {
     searchMatches = null;
+    mapFeatureMatches = null;
     quickOpenSearchLoading = false;
     return;
   }
   const request = ++searchRequest;
   quickOpenSearchLoading = true;
-  void project
-    .search(term)
-    .then((matches) => {
-      if (request === searchRequest) searchMatches = matches;
+  void Promise.all([project.search(term), project.searchMapFeatures(term)])
+    .then(([matches, features]) => {
+      if (request === searchRequest) {
+        searchMatches = matches;
+        mapFeatureMatches = features;
+      }
     })
     .catch((cause) => {
       if (request === searchRequest) error = friendlyError(cause);
@@ -6688,8 +6716,7 @@ onMount(() => {
                     >Create physical world</button>
                   <button type="button" role="menuitem" onclick={() => void createMap("vector")}
                     >Import vector map</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                    >Import image</button>
+                  <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
                 </div>{/if}
             </div>{/if}
         {/snippet}
@@ -6993,6 +7020,7 @@ onMount(() => {
                         picking={Boolean(mapPickPending)}
                         start={mapsEditorKey.startsWith("draft-") ? mapsVectorStart : "geojson"}
                         focusLinkId={mapFocusLinkId ?? undefined}
+                        focusFeatureId={mapFocusFeatureId ?? undefined}
                         onpick={(anchor) => void applyMapPick(anchor)}
                         onopen={(entityId) => void openMapEntityFromLink(entityId)}
                         onstate={(status, detail) => {

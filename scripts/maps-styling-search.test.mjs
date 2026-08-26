@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import Feature from "ol/Feature.js";
 import Point from "ol/geom/Point.js";
-import {
-  CommandStack,
-  buildMapSearchIndex,
-  searchMapFeatures,
-  setFeaturesMetadataByIdCommand,
-} from "../src/lib/maps/editor/index.ts";
+import { CommandStack } from "../src/lib/maps/editor/command-stack.ts";
+import { setFeaturesMetadataByIdCommand } from "../src/lib/maps/editor/commands.ts";
+import { buildMapSearchIndex, searchMapFeatures } from "../src/lib/maps/editor/map-search.ts";
 import { createFeatureCodec } from "../src/lib/maps/openlayers/feature-codec.ts";
+import { createLayerRegistry } from "../src/lib/maps/openlayers/layer-registry.ts";
 import { featureStyleCacheSize, nativeFeatureStyle } from "../src/lib/maps/openlayers/style-factory.ts";
 import { projectionFromCoordinateSpace } from "../src/lib/maps/openlayers/projection.ts";
 import { DEFAULT_VECTOR_LAYER_STYLE } from "../src/lib/maps/native-vector/types.ts";
@@ -65,6 +63,37 @@ const document = {
 };
 
 const codec = createFeatureCodec(space, projectionFromCoordinateSpace(space));
+const registry = createLayerRegistry(
+  document.collection,
+  document.layers,
+  codec,
+  space,
+  projectionFromCoordinateSpace(space),
+);
+assert.equal(registry.sourceFor(layer.id)?.getFeatures().length, 1, "initial map load populates its OpenLayers source");
+registry.dispose();
+
+const importedBase = {
+  type: "FeatureCollection",
+  features: [
+    {
+      ...feature,
+      id: "00000000-0000-4000-8000-000000000002",
+      properties: {
+        daena: { ...feature.properties.daena, layerId: "base", semanticType: "land" },
+      },
+    },
+  ],
+};
+const baseRegistry = createLayerRegistry(importedBase, [], codec, space, projectionFromCoordinateSpace(space));
+assert.equal(
+  baseRegistry.sourceFor("base")?.getFeatures().length,
+  1,
+  "an imported vector map renders its reserved base features without an authored layer row",
+);
+assert.equal(baseRegistry.collectionFromLayers().features.length, 1);
+baseRegistry.dispose();
+
 const roundTrip = codec.collectionFromSource(
   new (await import("ol/source/Vector.js")).default({ features: codec.readOlFeatures(document.collection) }),
   layer.id,
@@ -101,6 +130,11 @@ const visible = nativeFeatureStyle(olFeature, [layer], { hovered: false, selecte
 const cached = nativeFeatureStyle(olFeature, [layer], { hovered: false, selected: false, zoom: 4 });
 assert.equal(visible, cached, "identical Daena style values reuse one OpenLayers Style instance");
 assert.equal(visible.getText().getText(), "Port Amber");
+assert.equal(
+  nativeFeatureStyle(olFeature, [layer], { hovered: false, selected: false, zoom: 4, labelsVisible: false }).getText(),
+  null,
+  "physical viewers can suppress generated feature labels without changing authored styles",
+);
 assert.equal(nativeFeatureStyle(olFeature, [layer], { hovered: false, selected: false, zoom: 1 }).getText(), null);
 assert.ok(featureStyleCacheSize() >= 2);
 

@@ -1,13 +1,13 @@
 import Projection from "ol/proj/Projection.js";
 import { get as getProjection } from "ol/proj.js";
-import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
+import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
 import {
   DEFAULT_WORLD_SPACE,
   WORLD_EXTENT,
   extentOf,
   wrapXOf,
   type Extent4,
-} from "../editor/coordinate-space";
+} from "../editor/coordinate-space.ts";
 
 export { WORLD_EXTENT };
 

@@ -1736,6 +1736,7 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
       mapsEditorMode = "vector";
     }
     mapFocusLinkId = null;
+    mapFocusFeatureId = null;
     if (!(await leavePluginView())) return;
     recordShellDeparture(departure);
     projectHomeOpen = false;
@@ -1780,6 +1781,7 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
     assets = [];
     mapLocations = [];
     mapFocusLinkId = null;
+    mapFocusFeatureId = null;
     projectHomeOpen = false;
     loreWikiOpen = false;
     section = "maps";
@@ -3969,6 +3971,7 @@ async function openSelectedMapEditor() {
   try {
     mapsEditorKey = selected.id;
     mapFocusLinkId = null;
+    mapFocusFeatureId = null;
     await openPluginView(mapsView);
   } catch (cause) {
     error = friendlyError(cause);
@@ -5399,6 +5402,7 @@ function resetProjectSessionState() {
   mapReloadCounter = 0;
   mapRecoveryBusy = false;
   mapFocusLinkId = null;
+  mapFocusFeatureId = null;
   mapSelection = null;
   mapPickPending = null;
   mapReconcileNotice = "";
@@ -5620,6 +5624,7 @@ onMount(() => {
       // openPluginView clears focus; also re-assert when already on the same map so
       // the vector editor retries focus after pins load.
       mapFocusLinkId = null;
+      mapFocusFeatureId = null;
       await tick();
       mapFocusLinkId = linkId;
     } catch (cause) {

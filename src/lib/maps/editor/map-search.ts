@@ -4,7 +4,7 @@ import {
   featureSemanticType,
   type MapLayerDefinition,
   type VectorFeatureCollection,
-} from "../native-vector/types";
+} from "../native-vector/types.ts";
 
 export type MapFeatureSearchEntry = {
   featureId: string;

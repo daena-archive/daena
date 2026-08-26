@@ -8208,6 +8208,10 @@ impl ProjectStore {
             "DELETE FROM map_feature_projection WHERE map_entity_id=?1",
             params![id],
         )?;
+        transaction.execute(
+            "DELETE FROM map_feature_search WHERE map_entity_id=?1",
+            params![id],
+        )?;
         transaction.execute("DELETE FROM world_search WHERE entity_id=?1", params![id])?;
         if transaction.execute(
             "DELETE FROM entities WHERE id=?1 AND deleted=1",
@@ -10677,8 +10681,13 @@ impl ProjectStore {
 
     fn rebuild_maps_projection(&self) -> Result<(), CoreError> {
         let transaction = self.connection.unchecked_transaction()?;
-        transaction
-            .execute_batch("DELETE FROM map_projection; DELETE FROM map_location_projection; DELETE FROM map_feature_projection;")?;
+        transaction.execute_batch(
+            "DELETE FROM map_projection;
+             DELETE FROM map_location_projection;
+             DELETE FROM map_feature_projection;
+             DELETE FROM map_feature_search;
+             DELETE FROM world_search WHERE source_key LIKE 'map-feature:%';",
+        )?;
         {
             let mut maps = transaction.prepare("SELECT e.id, json_extract(f.value, '$.provider.id'), json_extract(f.value, '$.sourceAssetId'), a.path, a.content_hash, authored.content_hash FROM entities e JOIN entity_fields f ON f.entity_id=e.id AND f.namespace=?1 AND f.key='map' LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') LEFT JOIN assets authored ON authored.id=json_extract(f.value, '$.authoredSourceAssetId') WHERE e.entity_type='daena.maps:map' AND e.deleted=0")?;
             let rows = maps.query_map([crate::maps::MAP_NAMESPACE], |row| {
@@ -10751,6 +10760,14 @@ impl ProjectStore {
             )?;
             self.connection.execute(
                 "DELETE FROM map_feature_projection WHERE map_entity_id=?1",
+                params![entity_id],
+            )?;
+            self.connection.execute(
+                "DELETE FROM map_feature_search WHERE map_entity_id=?1",
+                params![entity_id],
+            )?;
+            self.connection.execute(
+                "DELETE FROM world_search WHERE entity_id=?1 AND source_key LIKE 'map-feature:%'",
                 params![entity_id],
             )?;
             let map = self.connection.query_row(

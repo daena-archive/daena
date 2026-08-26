@@ -21,6 +21,7 @@ import {
 import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
+import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -87,6 +88,7 @@ let inspectSeq = 0;
 let statusTimer: ReturnType<typeof setInterval> | undefined;
 let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
 let mountedControls = false;
+const renderCompletion = createAtlasRenderCompletionTracker();
 
 function deviceScale() {
   // CPU-rendered 2x tiles cost four times as much for a small interactive
@@ -333,7 +335,7 @@ async function openSession() {
     if (map && tileSource) {
       stage = "Updating map…";
       configureTileSource(tileSource, next);
-      tileSource.refresh();
+      watchRenderCompletion(next, () => tileSource?.refresh());
     } else {
       stage = "Mounting map…";
       mapLifecycle?.dispose();
@@ -375,6 +377,24 @@ function configureTileSource(source: XYZ, status: AtlasStudioSessionStatus) {
       .replace("{y}", String(y));
     return tileUrlAllowed(url, status.sessionToken) ? url : undefined;
   });
+}
+
+function watchRenderCompletion(status: AtlasStudioSessionStatus, prepare: () => void = () => {}) {
+  const target = map;
+  if (!target) return;
+  renderCompletion.watch(
+    (complete) => target.once("rendercomplete", complete),
+    () => {
+      prepare();
+      target.render();
+    },
+    () => session?.sessionToken === status.sessionToken,
+    () => {
+      loading = false;
+      stage = "Ready";
+      schedulePrefetch(status);
+    },
+  );
 }
 
 function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number, number]; zoom: number }) {
@@ -425,11 +445,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     if (viewZoom !== zoom) viewZoom = zoom;
     schedulePrefetch(status);
   });
-  map.once("rendercomplete", () => {
-    if (loading) loading = false;
-    if (stage !== "Ready") stage = "Ready";
-    schedulePrefetch(status);
-  });
+  watchRenderCompletion(status);
   mapLifecycle = bindMapLifecycle(map, container, () => applyWorldConstraints());
 }
 
@@ -718,6 +734,7 @@ $effect(() => {
 });
 
 onDestroy(() => {
+  renderCompletion.invalidate();
   unlisten?.();
   if (debounce) clearTimeout(debounce);
   if (inspectHover) clearTimeout(inspectHover);

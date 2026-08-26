@@ -3,7 +3,7 @@ import type {
   MapCoordinateSpace,
   MapLabelV2,
   MapStyleV2,
-} from "../../../../packages/plugin-sdk/src/maps";
+} from "../../../../packages/plugin-sdk/src/maps.ts";
 import {
   BASE_LAYER_ID,
   featureLayerId,

@@ -9,10 +9,7 @@ import { createEmpty, extend, getCenter } from "ol/extent.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import "ol/ol.css";
 import type { MapAnchor, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
-import {
-  authoredToView,
-  viewToAuthored,
-} from "../editor/coordinate-space";
+import { authoredToView, viewToAuthored } from "../editor/coordinate-space";
 import {
   BASE_LAYER_ID,
   type MapLayerDefinition,
@@ -111,6 +108,7 @@ export function createMapAdapter(
     readOnly?: boolean;
     onMeasureReadout?: (readout: MeasureReadout | null) => void;
     initialSnapOptions?: SnapOptions;
+    labelsVisible?: boolean;
   },
 ): MapAdapter | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   let disposed = false;
@@ -124,7 +122,9 @@ export function createMapAdapter(
   const extent = viewExtentForCoordinateSpace(space);
   const maxZoom = maxZoomForCoordinateSpace(space);
 
-  const registry = createLayerRegistry(session.draft, session.layers, codec, space, projection);
+  const registry = createLayerRegistry(session.draft, session.layers, codec, space, projection, {
+    labelsVisible: session.labelsVisible,
+  });
   const previewSource = new VectorSource({ wrapX: false });
   const previewLayer = new VectorLayer({
     source: previewSource,
@@ -382,7 +382,8 @@ export function createMapAdapter(
     },
     setZoom: (zoom) => view.setZoom(zoom),
     panBy(dx, dy) {
-      const center = view.getCenter() ?? authoredToView([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2], space);
+      const center =
+        view.getCenter() ?? authoredToView([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2], space);
       const next = [center[0] + dx, center[1] + dy] as [number, number];
       view.setCenter(next);
     },

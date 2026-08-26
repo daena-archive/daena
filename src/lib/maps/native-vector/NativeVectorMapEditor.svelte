@@ -1142,6 +1142,7 @@ function mountEditor() {
     onMeasureReadout(readout) {
       measureReadout = readout?.label ?? "";
     },
+    labelsVisible: !physicalMap,
   });
   if ("error" in created) {
     applyEditorEvent({ type: "save-failed", message: `${created.error}: ${created.detail}` });
@@ -2229,11 +2230,11 @@ onMount(() => {
             {/if}
             <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
               {#each listedLayers as layer (layer.id)}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
                 <div
                   class="layer"
                   class:active={layer.id === activeLayerId}
                   role="listitem"
-                  tabindex="0"
                   draggable={!immutablePhysicalLayerIds.has(layer.id)}
                   ondragstart={() => (draggingLayerId = layer.id)}
                   ondragover={(event) => event.preventDefault()}
@@ -2241,12 +2242,14 @@ onMount(() => {
                     event.preventDefault();
                     if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
                     draggingLayerId = null;
-                  }}
-                  onkeydown={(event) => onLayerKey(event, layer)}>
+                  }}>
                   <button
                     class="layer-name"
                     type="button"
                     aria-pressed={layer.id === activeLayerId}
+                    onkeydown={(event) => {
+                      if (event.target === event.currentTarget) onLayerKey(event, layer);
+                    }}
                     onclick={() => switchLayer(layer.id)}>
                     {#if renamingId === layer.id}
                       <input

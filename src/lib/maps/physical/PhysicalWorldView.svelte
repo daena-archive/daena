@@ -1,12 +1,7 @@
 <script lang="ts">
 import { untrack } from "svelte";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
-import {
-  RENDERER_UNAVAILABLE,
-  createMapAdapter,
-  type MapAdapter,
-  type MapAdapterView,
-} from "../openlayers/MapAdapter";
+import { RENDERER_UNAVAILABLE, createMapAdapter, type MapAdapter, type MapAdapterView } from "../openlayers/MapAdapter";
 import type { RuntimeBackground } from "../openlayers/background-registry";
 import { PHYSICAL_COORDINATE_SPACE, extentOf } from "../editor/coordinate-space";
 import type { MapLayerDefinition, VectorFeatureCollection } from "../native-vector/types";
@@ -84,6 +79,7 @@ $effect(() => {
         view = next;
       },
       readOnly: true,
+      labelsVisible: false,
     }),
   );
   if ("error" in created) {
@@ -157,4 +153,3 @@ $effect(() => {
   padding: 0.55rem 1rem;
 }
 </style>
-

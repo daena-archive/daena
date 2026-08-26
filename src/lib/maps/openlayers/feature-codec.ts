@@ -3,15 +3,15 @@ import GeoJSON from "ol/format/GeoJSON.js";
 import type Geometry from "ol/geom/Geometry.js";
 import type Projection from "ol/proj/Projection.js";
 import VectorSource from "ol/source/Vector.js";
-import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
-import { authoredToView, mapPositions, viewToAuthored } from "../editor/coordinate-space";
-import { drawModeForGeometry, kindForDrawMode } from "../native-vector/geometry";
+import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
+import { authoredToView, mapPositions, viewToAuthored } from "../editor/coordinate-space.ts";
+import { drawModeForGeometry, kindForDrawMode } from "../native-vector/geometry.ts";
 import {
   BASE_LAYER_ID,
   type VectorFeature,
   type VectorFeatureCollection,
   type VectorKind,
-} from "../native-vector/types";
+} from "../native-vector/types.ts";
 
 export type FeatureCodec = {
   format: GeoJSON;

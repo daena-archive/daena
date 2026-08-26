@@ -6800,6 +6800,26 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
         store.search_map_features("West tier".into(), 10).unwrap()[0].feature_id,
         feature_id
     );
+    store.delete_entity(accepted.entity.id.clone()).unwrap();
+    assert!(store
+        .search_map_features("West tier".into(), 10)
+        .unwrap()
+        .is_empty());
+    assert!(!store
+        .search("West tier".into())
+        .unwrap()
+        .iter()
+        .any(|entity| entity.id == accepted.entity.id));
+    store.restore_entity(accepted.entity.id.clone()).unwrap();
+    assert_eq!(
+        store.search_map_features("West tier".into(), 10).unwrap()[0].feature_id,
+        feature_id
+    );
+    assert!(store
+        .search("West tier".into())
+        .unwrap()
+        .iter()
+        .any(|entity| entity.id == accepted.entity.id));
     let replayed = store
         .apply_map_edit(
             accepted.entity.id.clone(),

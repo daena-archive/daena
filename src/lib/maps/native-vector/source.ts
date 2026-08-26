@@ -13,7 +13,7 @@ import {
   type VectorLayerDefinition,
   type VectorLayerStyle,
 } from "./types.ts";
-import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps";
+import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps.ts";
 
 const KINDS: readonly VectorKind[] = ["land", "lake", "region", "route", "marker", "custom"];
 

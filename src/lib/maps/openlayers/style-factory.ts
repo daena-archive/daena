@@ -5,16 +5,21 @@ import RegularShape from "ol/style/RegularShape.js";
 import Stroke from "ol/style/Stroke.js";
 import Style from "ol/style/Style.js";
 import Text from "ol/style/Text.js";
-import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps";
+import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps.ts";
 import {
   BASE_LAYER_ID,
   DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
   type VectorFeatureCollection,
   type VectorLayerDefinition,
-} from "../native-vector/types";
+} from "../native-vector/types.ts";
 
-export type FeatureStyleState = { hovered: boolean; selected: boolean; zoom?: number };
+export type FeatureStyleState = {
+  hovered: boolean;
+  selected: boolean;
+  zoom?: number;
+  labelsVisible?: boolean;
+};
 
 const styleCache = new Map<string, Style>();
 const MAX_STYLE_CACHE_ENTRIES = 2_048;
@@ -85,7 +90,7 @@ export function nativeFeatureStyle(
   if (layerId === BASE_LAYER_ID) {
     if (!baseVisible(layers)) return undefined;
     const name = feature.get("name");
-    const text = typeof name === "string" ? name.trim() : "";
+    const text = state.labelsVisible === false ? "" : typeof name === "string" ? name.trim() : "";
     const key = JSON.stringify(["base", text, state.hovered, state.selected]);
     return cacheStyle(
       key,
@@ -111,7 +116,7 @@ export function nativeFeatureStyle(
   if (!layer?.defaultVisible) return undefined;
   const style = resolvedStyle(feature, layer);
   const label = resolvedLabel(feature, style);
-  const text = labelVisible(label, state.zoom) ? labelText(feature, label) : "";
+  const text = state.labelsVisible !== false && labelVisible(label, state.zoom) ? labelText(feature, label) : "";
   const key = JSON.stringify([style, label, text, state.hovered, state.selected]);
   return cacheStyle(key, () => {
     const fillColor = state.selected ? "rgba(213, 171, 108, 0.56)" : colorWithOpacity(style.fill, style.fillOpacity);
@@ -128,9 +133,8 @@ export function nativeFeatureStyle(
       width,
       lineDash: style.strokeDash ? [...style.strokeDash] : undefined,
     });
-    const radius = state.selected
-      ? Math.max(style.iconSize ? style.iconSize / 2 : 0, 7, style.pointRadius)
-      : Math.max(style.iconSize ? style.iconSize / 2 : 0, style.pointRadius);
+    const baseRadius = style.icon ? (style.iconSize ?? 20) / 2 : style.pointRadius;
+    const radius = state.selected ? Math.max(baseRadius, 7) : baseRadius;
     return new Style({
       fill,
       stroke,

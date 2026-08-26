@@ -8,19 +8,20 @@ import VectorLayer from "ol/layer/Vector.js";
 import ImageStatic from "ol/source/ImageStatic.js";
 import VectorSource from "ol/source/Vector.js";
 import type Projection from "ol/proj/Projection.js";
-import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps";
-import { authoredExtentToViewExtent, extentOf } from "../editor/coordinate-space";
+import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
+import { authoredExtentToViewExtent, extentOf } from "../editor/coordinate-space.ts";
 import {
   BASE_LAYER_ID,
+  DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
   isRasterLayer,
   isVectorLayer,
   type MapLayerDefinition,
   type VectorFeatureCollection,
   type VectorLayerDefinition,
-} from "../native-vector/types";
-import { collectionSignature, type FeatureCodec } from "./feature-codec";
-import { nativeFeatureStyle, snapTargetFeatures } from "./style-factory";
+} from "../native-vector/types.ts";
+import { collectionSignature, type FeatureCodec } from "./feature-codec.ts";
+import { nativeFeatureStyle, snapTargetFeatures } from "./style-factory.ts";
 
 export type RasterLayerSource = {
   url: string;
@@ -55,6 +56,19 @@ export type LayerRegistry = {
   dispose: () => void;
 };
 
+const IMPLICIT_BASE_LAYER: VectorLayerDefinition = {
+  id: BASE_LAYER_ID,
+  kind: "vector",
+  name: "Base",
+  order: Number.MIN_SAFE_INTEGER,
+  defaultVisible: true,
+  locked: true,
+  opacity: 1,
+  blendMode: "normal",
+  selector: {},
+  style: DEFAULT_VECTOR_LAYER_STYLE,
+};
+
 function rasterUrl(source: RasterLayerSource | undefined): string | null {
   if (!source) return null;
   if (source.canvas) {
@@ -73,11 +87,15 @@ export function createLayerRegistry(
   codec: FeatureCodec,
   space: MapCoordinateSpace,
   projection: Projection,
+  options: { labelsVisible?: boolean } = {},
 ): LayerRegistry {
   const selectedIds = new Set<string>();
   let hoveredId: string | null = null;
   let currentLayers: MapLayerDefinition[] = [...layers];
-  let lastSignature = collectionSignature(collection);
+  // The initial collection has not been copied into any OpenLayers source yet.
+  // Starting with its signature would make the first sync look like a no-op
+  // and leave every runtime layer empty.
+  let lastSignature = "";
   let currentRasters = new Map<string, RasterLayerSource>();
   let snapTargetLayerIds = new Set<string>();
   const group = new LayerGroup({ layers: [] });
@@ -85,13 +103,19 @@ export function createLayerRegistry(
   const rasterEntries = new Map<string, ImageLayer<any>>();
   const snapSource = new VectorSource({ wrapX: false });
 
+  const runtimeVectorLayers = () => {
+    const authored = currentLayers.filter(isVectorLayer);
+    return authored.some((layer) => layer.id === BASE_LAYER_ID) ? authored : [IMPLICIT_BASE_LAYER, ...authored];
+  };
+
   const authoredWidth = Math.max(extentOf(space)[2] - extentOf(space)[0], Number.EPSILON);
   const styleFor = (feature: Feature<Geometry>, resolution?: number) => {
     const id = String(feature.getId() ?? "");
-    return nativeFeatureStyle(feature, currentLayers.filter(isVectorLayer), {
+    return nativeFeatureStyle(feature, runtimeVectorLayers(), {
       hovered: id === hoveredId,
       selected: selectedIds.has(id),
       zoom: resolution && resolution > 0 ? Math.max(0, Math.log2(authoredWidth / 256 / resolution)) : undefined,
+      labelsVisible: options.labelsVisible,
     });
   };
 
@@ -149,21 +173,10 @@ export function createLayerRegistry(
     });
 
   const applyCollection = (next: VectorFeatureCollection) => {
-    for (const layer of currentLayers.filter(isVectorLayer)) {
+    for (const layer of runtimeVectorLayers()) {
       const entry = ensureVector(layer);
       entry.source.clear(true);
       entry.source.addFeatures(featuresForLayer(next, layer.id));
-    }
-    const orphaned = next.features.filter(
-      (feature) =>
-        featureLayerId(feature) === BASE_LAYER_ID && !currentLayers.some((layer) => layer.id === BASE_LAYER_ID),
-    );
-    if (orphaned.length > 0) {
-      const leftover = currentLayers.find(isVectorLayer);
-      if (leftover) {
-        const entry = ensureVector(leftover);
-        entry.source.addFeatures(codec.readOlFeatures({ type: "FeatureCollection", features: orphaned }));
-      }
     }
     lastSignature = collectionSignature(next);
     snapSource.clear(true);
@@ -173,9 +186,10 @@ export function createLayerRegistry(
   };
 
   const orderedOlLayers = (rasters: ReadonlyMap<string, RasterLayerSource>): BaseLayer[] => {
-    const ordered = [...currentLayers].sort(
-      (left, right) => left.order - right.order || left.id.localeCompare(right.id),
-    );
+    const ordered = [
+      ...(currentLayers.some((layer) => layer.id === BASE_LAYER_ID) ? [] : [IMPLICIT_BASE_LAYER]),
+      ...currentLayers,
+    ].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
     const keepVector = new Set(ordered.filter(isVectorLayer).map((layer) => layer.id));
     const keepRaster = new Set(ordered.filter(isRasterLayer).map((layer) => layer.id));
     for (const [id, entry] of vectorEntries) {
@@ -227,8 +241,7 @@ export function createLayerRegistry(
       return vectorEntries.get(layerId)?.source ?? null;
     },
     vectorOlLayers() {
-      return [...currentLayers]
-        .filter(isVectorLayer)
+      return runtimeVectorLayers()
         .filter((layer) => layer.defaultVisible)
         .flatMap((layer) => {
           const entry = vectorEntries.get(layer.id);
@@ -239,8 +252,8 @@ export function createLayerRegistry(
       return currentLayers.find((layer) => layer.id === id);
     },
     isSelectableVectorLayer(layer) {
-      return currentLayers.some(
-        (daena) => isVectorLayer(daena) && daena.defaultVisible && vectorEntries.get(daena.id)?.layer === layer,
+      return runtimeVectorLayers().some(
+        (daena) => daena.defaultVisible && vectorEntries.get(daena.id)?.layer === layer,
       );
     },
     getFeatureById(id) {
@@ -285,7 +298,7 @@ export function createLayerRegistry(
     },
     collectionFromLayers() {
       return codec.collectionFromSources(
-        currentLayers.filter(isVectorLayer).map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
+        runtimeVectorLayers().map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
       );
     },
     syncSnap(next, targetIds = snapTargetLayerIds) {
@@ -298,7 +311,7 @@ export function createLayerRegistry(
       snapTargetLayerIds = new Set(ids);
       registry.syncSnap(
         codec.collectionFromSources(
-          currentLayers.filter(isVectorLayer).map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
+          runtimeVectorLayers().map((layer) => vectorEntries.get(layer.id)?.source ?? new VectorSource()),
         ),
       );
     },

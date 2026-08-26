@@ -7063,6 +7063,540 @@ fn apply_map_edit_rejects_locked_layer_geometry_changes_and_keeps_raster_rows() 
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// Accepts a fresh physical map and returns everything a detach-for-editing
+/// test needs: the open store, its temp-dir root, the acceptance result, the
+/// `map`/`layers` field snapshots, and the authored GeoJSON asset id.
+fn physical_detach_fixture(
+    prefix: &str,
+) -> (
+    ProjectStore,
+    std::path::PathBuf,
+    AcceptedPhysicalMap,
+    FieldValue,
+    FieldValue,
+    String,
+) {
+    let settings = daena_physical::GenerationSettings {
+        width: 16,
+        height: 8,
+        radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+        target_land_fraction_ppm: 300_000,
+    };
+    let mut progress = daena_physical::NoopProgress;
+    let world = daena_physical::generate_world(settings, 831_429, 0, &mut progress).unwrap();
+    let generation = serde_json::json!({
+        "id": crate::maps::PHYSICAL_GENERATOR_ID,
+        "version": crate::maps::PHYSICAL_GENERATOR_VERSION,
+        "seed": 831429,
+        "retryIndex": 0,
+        "settings": {
+            "width": settings.width,
+            "height": settings.height,
+            "radiusMetres": settings.radius_metres,
+            "targetLandFractionPpm": settings.target_land_fraction_ppm,
+            "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
+            "plateCount": world.tectonics.settings.plate_count,
+            "continentalPlateCount": world.tectonics.settings.continental_plate_count,
+            "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
+            "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
+            "evolutionPreset": "mature",
+            "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
+            "historicalForcing": {
+                "version": 2,
+                "components": [
+                    { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
+                    { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
+                    { "amplitudeCentiC": 40, "periodYears": 2300, "phaseOffsetYears": 800 }
+                ],
+                "sensitivityPpm": 1000000,
+                "landIceAmplitudePpm": 24000,
+                "iceResponseYears": 800,
+                "iceMidpointCentiC": 0,
+                "iceTransitionWidthCentiC": 400,
+                "thermalExpansionPpmPerDegreeC": 210
+            }
+        }
+    });
+    let root = std::env::temp_dir().join(format!("daena-{prefix}-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let accepted = store
+        .accept_physical_map(
+            "Physical detach test".into(),
+            world.source.clone(),
+            generation,
+            None,
+        )
+        .unwrap();
+    let fields = store.list_fields(accepted.entity.id.clone()).unwrap();
+    let map_field = fields
+        .iter()
+        .find(|field| field.key == "map")
+        .cloned()
+        .unwrap();
+    let layers_field = fields
+        .iter()
+        .find(|field| field.key == "layers")
+        .cloned()
+        .unwrap();
+    let authored_source_id = map_field.value["authoredSourceAssetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (
+        store,
+        root,
+        accepted,
+        map_field,
+        layers_field,
+        authored_source_id,
+    )
+}
+
+/// Builds the `layers` and authored-GeoJSON payloads a real detach-for-editing
+/// save would submit: `source_layer_id` becomes hidden (still locked and
+/// otherwise unchanged), one new unlocked non-reserved vector layer inherits
+/// its style/opacity/blend mode, and one feature per entry in
+/// `feature_geometries` is copied onto that new layer with detach provenance.
+/// Returns `(layers_next, authored_collection, new_layer_id)`.
+fn physical_detach_layers_and_features(
+    layers_value: &serde_json::Value,
+    source_layer_id: &str,
+    feature_geometries: &[(&str, [[f64; 2]; 2])],
+) -> (serde_json::Value, serde_json::Value, String) {
+    let source_layer = layers_value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == source_layer_id)
+        .unwrap()
+        .clone();
+    let new_layer_id = Uuid::new_v4().to_string();
+    let next_order = layers_value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|layer| layer.get("order").and_then(|value| value.as_i64()))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut layers_next = layers_value.clone();
+    for layer in layers_next["layers"].as_array_mut().unwrap() {
+        if layer["id"] == source_layer_id {
+            layer["defaultVisible"] = serde_json::json!(false);
+        }
+    }
+    layers_next["layers"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": new_layer_id,
+            "name": format!("{} — detached at reference epoch", source_layer["name"].as_str().unwrap()),
+            "order": next_order,
+            "defaultVisible": true,
+            "locked": false,
+            // Physical reserved layers don't carry their own opacity/blendMode
+            // (they render with renderer defaults), so the detached copy uses
+            // the same defaults rather than inheriting an absent field.
+            "opacity": 1.0,
+            "blendMode": "normal",
+            "selector": {},
+            "style": source_layer["style"].clone(),
+            "kind": "vector"
+        }));
+    let features: Vec<serde_json::Value> = feature_geometries
+        .iter()
+        .map(|(derived_from_id, coords)| {
+            serde_json::json!({
+                "type": "Feature",
+                "id": Uuid::new_v4().to_string(),
+                "properties": {
+                    "daena": {
+                        "layerId": new_layer_id,
+                        "semanticType": "route",
+                        "name": null,
+                        "style": null,
+                        "label": null,
+                        "custom": {
+                            "detachedFromProvider": "daena-physical",
+                            "detachedFromLayerId": source_layer_id,
+                            "detachedFromFeatureId": derived_from_id,
+                            "detachedAtEpochYears": 0
+                        }
+                    }
+                },
+                "geometry": {"type": "LineString", "coordinates": [coords[0], coords[1]]}
+            })
+        })
+        .collect();
+    let collection = serde_json::json!({"type": "FeatureCollection", "features": features});
+    (layers_next, collection, new_layer_id)
+}
+
+#[test]
+fn apply_map_edit_accepts_detached_physical_snapshot_without_mutating_physical_source() {
+    let (store, root, accepted, map_field, layers_field, authored_source_id) =
+        physical_detach_fixture("physical-detach-accept");
+    let pworld_before = store.asset(accepted.source.id.clone()).unwrap();
+    let pworld_bytes_before = store.asset_bytes(accepted.source.id.clone()).unwrap();
+    let authored_before = store.asset(authored_source_id.clone()).unwrap();
+
+    let (layers_next, detached, new_layer_id) = physical_detach_layers_and_features(
+        &layers_field.value,
+        "rivers",
+        &[
+            ("derived-river-1", [[10.0, 10.0], [12.0, 11.0]]),
+            ("derived-river-2", [[20.0, 5.0], [21.0, 6.0]]),
+        ],
+    );
+
+    // Placing the same content directly on the reserved (and still locked)
+    // "base" physical layer id is still rejected: detachment only succeeds
+    // because the copies use the new non-reserved, unlocked layer id, not
+    // because reserved-layer protection was relaxed. "base" stays locked
+    // with zero features both before and after a real detach, so writing a
+    // feature onto it here trips the locked-layer-features guard.
+    let mut reserved_target = detached.clone();
+    reserved_target["features"][0]["properties"]["daena"]["layerId"] = serde_json::json!("base");
+    reserved_target["features"][0]["properties"]["daena"]["semanticType"] =
+        serde_json::json!("land");
+    reserved_target["features"][0]["geometry"] = serde_json::json!({
+        "type": "Polygon",
+        "coordinates": [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]]
+    });
+    let reserved_bytes = serde_json::to_vec(&reserved_target).unwrap();
+    let reserved_hash = format!("sha256:{:x}", Sha256::digest(&reserved_bytes));
+    let reserved_attempt = store.apply_map_edit(
+        accepted.entity.id.clone(),
+        map_field.value.clone(),
+        layers_next.clone(),
+        reserved_bytes,
+        reserved_hash,
+        &map_field.revision,
+        &layers_field.revision,
+        &authored_before.revision,
+        Vec::new(),
+        None,
+    );
+    assert!(reserved_attempt
+        .unwrap_err()
+        .to_string()
+        .contains("locked layer"));
+
+    let detached_bytes = serde_json::to_vec(&detached).unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&detached_bytes));
+    let known_layers = crate::maps::vector::layer_ids_from_layers_field(&layers_next);
+    let canonical =
+        crate::maps::vector::canonicalize_committed(&detached_bytes, &known_layers).unwrap();
+
+    let applied = store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            map_field.value.clone(),
+            layers_next,
+            detached_bytes,
+            upload_hash,
+            &map_field.revision,
+            &layers_field.revision,
+            &authored_before.revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+    // Authored source and layers revisions changed; the descriptor's own
+    // identity fields (never touched by this edit) still resolve correctly.
+    assert_ne!(applied.source.revision, authored_before.revision);
+    assert_ne!(applied.layers.revision, layers_field.revision);
+    assert_eq!(
+        applied.source.content_hash,
+        format!("sha256:{:x}", Sha256::digest(&canonical))
+    );
+    assert_eq!(
+        store.asset_bytes(authored_source_id.clone()).unwrap(),
+        canonical
+    );
+
+    let stored: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+    let stored_features = stored["features"].as_array().unwrap();
+    assert_eq!(stored_features.len(), 2);
+    assert!(stored_features
+        .iter()
+        .all(|feature| feature["properties"]["daena"]["layerId"] == new_layer_id));
+
+    let rivers_after = applied.layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == "rivers")
+        .unwrap();
+    assert_eq!(rivers_after["defaultVisible"], false);
+    assert_eq!(rivers_after["locked"], true);
+    let target_after = applied.layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == new_layer_id)
+        .unwrap();
+    assert_eq!(target_after["locked"], false);
+    assert_eq!(target_after["defaultVisible"], true);
+
+    // The accepted physical source is never touched by a detach save.
+    let pworld_after = store.asset(accepted.source.id.clone()).unwrap();
+    let pworld_bytes_after = store.asset_bytes(accepted.source.id.clone()).unwrap();
+    assert_eq!(pworld_after.content_hash, pworld_before.content_hash);
+    assert_eq!(pworld_after.size, pworld_before.size);
+    assert_eq!(pworld_after.revision, pworld_before.revision);
+    assert_eq!(pworld_bytes_after, pworld_bytes_before);
+
+    drop(store);
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(rebuilt.asset_bytes(authored_source_id).unwrap(), canonical);
+    let rebuilt_layers = rebuilt
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    let rebuilt_rivers = rebuilt_layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == "rivers")
+        .unwrap();
+    assert_eq!(rebuilt_rivers["defaultVisible"], false);
+    assert_eq!(
+        rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(),
+        pworld_bytes_before
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn physical_detach_save_is_atomic_on_stale_revision() {
+    let (store, root, accepted, map_field, layers_field, authored_source_id) =
+        physical_detach_fixture("physical-detach-stale");
+    let pworld_before = store.asset(accepted.source.id.clone()).unwrap();
+    let authored_before = store.asset(authored_source_id.clone()).unwrap();
+    let authored_bytes_before = store.asset_bytes(authored_source_id.clone()).unwrap();
+    let layers_before_value = layers_field.value.clone();
+
+    let (layers_next, detached, _new_layer_id) = physical_detach_layers_and_features(
+        &layers_field.value,
+        "rivers",
+        &[("derived-river-1", [[10.0, 10.0], [12.0, 11.0]])],
+    );
+    let detached_bytes = serde_json::to_vec(&detached).unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&detached_bytes));
+
+    store
+        .flush_checkpoint("physical detach stale-revision test")
+        .unwrap();
+    let before_files = canonical_files(&root);
+
+    let stale = store.apply_map_edit(
+        accepted.entity.id.clone(),
+        map_field.value.clone(),
+        layers_next,
+        detached_bytes,
+        upload_hash,
+        "stale-map-revision",
+        &layers_field.revision,
+        &authored_before.revision,
+        Vec::new(),
+        None,
+    );
+    assert!(stale.unwrap_err().to_string().contains("revision conflict"));
+
+    // Nothing changed: descriptor, layers, authored source, physical source,
+    // and the already-flushed checkpoint's portable files are all untouched.
+    let map_after = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(map_after.revision, map_field.revision);
+
+    let layers_after = store
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    assert_eq!(layers_after.revision, layers_field.revision);
+    assert_eq!(layers_after.value, layers_before_value);
+
+    let authored_after = store.asset(authored_source_id.clone()).unwrap();
+    assert_eq!(authored_after.revision, authored_before.revision);
+    assert_eq!(authored_after.content_hash, authored_before.content_hash);
+    assert_eq!(
+        store.asset_bytes(authored_source_id).unwrap(),
+        authored_bytes_before
+    );
+
+    let pworld_after = store.asset(accepted.source.id.clone()).unwrap();
+    assert_eq!(pworld_after.revision, pworld_before.revision);
+    assert_eq!(pworld_after.content_hash, pworld_before.content_hash);
+
+    assert_eq!(canonical_files(&root), before_files);
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn physical_detach_survives_clean_checkpoint_rebuild() {
+    let (store, root, accepted, map_field, layers_field, authored_source_id) =
+        physical_detach_fixture("physical-detach-checkpoint");
+    let pworld_before = store.asset(accepted.source.id.clone()).unwrap();
+    let pworld_bytes_before = store.asset_bytes(accepted.source.id.clone()).unwrap();
+
+    let (layers_next, detached, new_layer_id) = physical_detach_layers_and_features(
+        &layers_field.value,
+        "rivers",
+        &[
+            ("derived-river-1", [[10.0, 10.0], [12.0, 11.0]]),
+            ("derived-river-2", [[20.0, 5.0], [21.0, 6.0]]),
+        ],
+    );
+    let target_order = layers_next["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == new_layer_id)
+        .unwrap()["order"]
+        .clone();
+    let target_style = layers_next["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == new_layer_id)
+        .unwrap()["style"]
+        .clone();
+    let authored_revision = store.asset(authored_source_id.clone()).unwrap().revision;
+    let detached_bytes = serde_json::to_vec(&detached).unwrap();
+    let submitted_feature_ids: Vec<String> = detached["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|feature| feature["id"].as_str().unwrap().to_owned())
+        .collect();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&detached_bytes));
+    let known_layers = crate::maps::vector::layer_ids_from_layers_field(&layers_next);
+    let canonical =
+        crate::maps::vector::canonicalize_committed(&detached_bytes, &known_layers).unwrap();
+
+    store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            map_field.value.clone(),
+            layers_next,
+            detached_bytes,
+            upload_hash,
+            &map_field.revision,
+            &layers_field.revision,
+            &authored_revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+    store
+        .flush_checkpoint("physical detach checkpoint test")
+        .unwrap();
+    let checkpoint = crate::storage::read_json::<crate::storage::CheckpointManifest>(
+        &root.join(crate::storage::CHECKPOINT_MANIFEST_FILE),
+    )
+    .unwrap();
+    crate::storage::validate_checkpoint(&root, &checkpoint).unwrap();
+    let before_files = canonical_files(&root);
+
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(canonical_files(&root), before_files);
+
+    // Target layer identity, order, style, visibility, and lock state.
+    let rebuilt_layers = rebuilt
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "layers")
+        .unwrap();
+    let rebuilt_target = rebuilt_layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == new_layer_id)
+        .unwrap();
+    assert_eq!(rebuilt_target["order"], target_order);
+    assert_eq!(rebuilt_target["style"], target_style);
+    assert_eq!(rebuilt_target["defaultVisible"], true);
+    assert_eq!(rebuilt_target["locked"], false);
+
+    // Source physical layer hidden state.
+    let rebuilt_rivers = rebuilt_layers.value["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["id"] == "rivers")
+        .unwrap();
+    assert_eq!(rebuilt_rivers["defaultVisible"], false);
+    assert_eq!(rebuilt_rivers["locked"], true);
+
+    // Detached feature IDs, geometry, and provenance metadata.
+    let rebuilt_bytes = rebuilt.asset_bytes(authored_source_id).unwrap();
+    assert_eq!(rebuilt_bytes, canonical);
+    let rebuilt_collection: serde_json::Value = serde_json::from_slice(&rebuilt_bytes).unwrap();
+    let rebuilt_features = rebuilt_collection["features"].as_array().unwrap();
+    assert_eq!(rebuilt_features.len(), 2);
+    let rebuilt_ids: std::collections::BTreeSet<String> = rebuilt_features
+        .iter()
+        .map(|feature| feature["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(rebuilt_ids, submitted_feature_ids.into_iter().collect());
+    for feature in rebuilt_features {
+        assert_eq!(feature["geometry"]["type"], "LineString");
+        assert_eq!(feature["properties"]["daena"]["layerId"], new_layer_id);
+        let custom = &feature["properties"]["daena"]["custom"];
+        assert_eq!(custom["detachedFromProvider"], "daena-physical");
+        assert_eq!(custom["detachedFromLayerId"], "rivers");
+        assert_eq!(custom["detachedAtEpochYears"], 0);
+        assert!(custom["detachedFromFeatureId"]
+            .as_str()
+            .unwrap()
+            .starts_with("derived-river-"));
+    }
+
+    // Physical identity and accepted source hash are unchanged.
+    let rebuilt_pworld = rebuilt.asset(accepted.source.id.clone()).unwrap();
+    assert_eq!(rebuilt_pworld.content_hash, pworld_before.content_hash);
+    assert_eq!(rebuilt_pworld.size, pworld_before.size);
+    assert_eq!(
+        rebuilt.asset_bytes(accepted.source.id.clone()).unwrap(),
+        pworld_bytes_before
+    );
+    let rebuilt_descriptor = rebuilt
+        .list_fields(accepted.entity.id.clone())
+        .unwrap()
+        .into_iter()
+        .find(|field| field.key == "map")
+        .unwrap();
+    assert_eq!(
+        crate::maps::physical::validate_source(
+            &pworld_bytes_before,
+            &rebuilt_descriptor.value["generation"],
+        )
+        .unwrap()
+        .identity,
+        accepted.physical_identity
+    );
+
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn image_map_runtime_bytes_survive_an_interrupted_export() {
     let root = std::env::temp_dir().join(format!("daena-image-map-interrupt-{}", Uuid::new_v4()));

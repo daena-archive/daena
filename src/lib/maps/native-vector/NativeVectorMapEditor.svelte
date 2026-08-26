@@ -2180,41 +2180,39 @@ onMount(() => {
     <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
         <aside aria-label="Map layers">
-          {#if !physicalMap}
-            <div class="map-search" class:open={searchOpen}>
-              <label>
-                <span class="sr-only">Search map features</span>
-                <Search {...iconProps} />
-                <input
-                  type="search"
-                  placeholder="Search this map…"
-                  aria-label="Search map features"
-                  bind:value={featureSearch}
-                  onfocus={() => (searchOpen = true)} />
-              </label>
-              {#if searchOpen && featureSearch.trim()}
-                <div class="map-search-results" role="listbox" aria-label="Map search results">
-                  {#if mapSearchResults.length === 0}
-                    <p class="hint">No matching features.</p>
-                  {:else}
-                    {#each mapSearchResults as result (result.featureId)}
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={selectedFeatureIds.includes(result.featureId)}
-                        onclick={() => focusSearchResult(result.featureId, result.layerId)}>
-                        <strong>{result.name}</strong>
-                        <small
-                          >{result.semanticType} · {result.layerName}{result.linkedEntityName
-                            ? ` · ${result.linkedEntityName}`
-                            : ""}</small>
-                      </button>
-                    {/each}
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {/if}
+          <div class="map-search" class:open={searchOpen}>
+            <label>
+              <span class="sr-only">Search map features</span>
+              <Search {...iconProps} />
+              <input
+                type="search"
+                placeholder="Search this map…"
+                aria-label="Search map features"
+                bind:value={featureSearch}
+                onfocus={() => (searchOpen = true)} />
+            </label>
+            {#if searchOpen && featureSearch.trim()}
+              <div class="map-search-results" role="listbox" aria-label="Map search results">
+                {#if mapSearchResults.length === 0}
+                  <p class="hint">No matching features.</p>
+                {:else}
+                  {#each mapSearchResults as result (result.featureId)}
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selectedFeatureIds.includes(result.featureId)}
+                      onclick={() => focusSearchResult(result.featureId, result.layerId)}>
+                      <strong>{result.name}</strong>
+                      <small
+                        >{result.semanticType} · {result.layerName}{result.linkedEntityName
+                          ? ` · ${result.linkedEntityName}`
+                          : ""}</small>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+          </div>
           {#if studioSupported}
             <button
               type="button"

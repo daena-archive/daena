@@ -1,0 +1,333 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build (for example: v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-24.04
+
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Resolve tag
+        id: ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$MANUAL_TAG"
+          else
+            tag="$PUSH_TAG"
+          fi
+
+          if [[ -z "$tag" || "$tag" != v* ]]; then
+            echo "::error::Release tag must start with 'v' (for example: v0.1.0)."
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+
+      - name: Validate tag against application version
+        id: release
+        shell: bash
+        env:
+          TAG: ${{ steps.ref.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          tauri_version="$(jq -r '.version' src-tauri/tauri.conf.json)"
+          package_version="$(jq -r '.version' package.json)"
+          expected_tag="v${tauri_version}"
+
+          if [[ "$TAG" != "$expected_tag" ]]; then
+            echo "::error::Tag '$TAG' does not match Tauri version '$tauri_version'. Expected '$expected_tag'."
+            exit 1
+          fi
+
+          if [[ "$package_version" != "$tauri_version" ]]; then
+            echo "::error::package.json version '$package_version' does not match Tauri version '$tauri_version'."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$tauri_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x86_64
+            runner: windows-2025
+            bundle: nsis
+            suffix: windows-x86_64
+            archive: zip
+
+          - label: Windows ARM64
+            runner: windows-11-arm
+            bundle: nsis
+            suffix: windows-aarch64
+            archive: zip
+
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            bundle: deb
+            suffix: linux-x86_64
+            archive: tar.gz
+
+          - label: Linux ARM64
+            runner: ubuntu-24.04-arm
+            bundle: deb
+            suffix: linux-aarch64
+            archive: tar.gz
+
+          - label: macOS Intel
+            runner: macos-15-intel
+            bundle: dmg
+            suffix: macos-x86_64
+            archive: zip
+
+          - label: macOS Apple Silicon
+            runner: macos-15
+            bundle: dmg
+            suffix: macos-aarch64
+            archive: zip
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: deno install --node-modules-dir=auto
+
+      - name: Build Tauri bundle
+        shell: bash
+        run: deno task --node-modules-dir=auto tauri build -- --bundles ${{ matrix.bundle }}
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "NSIS installer was not found."
+          }
+
+          $asset = "daena-$env:TAG-$env:SUFFIX.zip"
+
+          New-Item -ItemType Directory -Force -Path package, dist | Out-Null
+          Copy-Item $installer.FullName -Destination "package/$($installer.Name)"
+          Copy-Item LICENSE -Destination "package/LICENSE"
+
+          Compress-Archive `
+            -Path "package/*" `
+            -DestinationPath "dist/$asset" `
+            -CompressionLevel Optimal
+
+      - name: Package Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+
+          installer="$(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          if [[ -z "$installer" ]]; then
+            echo "::error::Debian package was not found."
+            exit 1
+          fi
+
+          asset="daena-${TAG}-${SUFFIX}.tar.gz"
+
+          mkdir -p package dist
+          cp "$installer" package/
+          cp LICENSE package/LICENSE
+
+          tar -C package -czf "dist/$asset" .
+
+      - name: Package macOS release
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          set -euo pipefail
+
+          installer="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          if [[ -z "$installer" ]]; then
+            echo "::error::DMG bundle was not found."
+            exit 1
+          fi
+
+          asset="daena-${TAG}-${SUFFIX}.zip"
+
+          mkdir -p package dist
+          cp "$installer" package/
+          cp LICENSE package/LICENSE
+
+          (
+            cd package
+            /usr/bin/zip -9 "../dist/$asset" ./*
+          )
+
+      - name: Upload packaged release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.suffix }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Verify release payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected=6
+          actual="$(find release-files -maxdepth 1 -type f | wc -l)"
+
+          if [[ "$actual" -ne "$expected" ]]; then
+            echo "::error::Expected $expected release files, found $actual."
+            find release-files -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+      - name: Generate release notes and SHA-256 checksums
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<'EOF'
+          > These builds are currently unsigned. Windows SmartScreen and macOS Gatekeeper may display security warnings.
+
+          ## SHA-256 checksums
+
+          | Artifact | SHA-256 |
+          | --- | --- |
+          EOF
+
+          while IFS= read -r file; do
+            name="$(basename "$file")"
+            hash="$(sha256sum "$file" | awk '{print $1}')"
+            printf '| `%s` | `%s` |\n' "$name" "$hash" >> release-notes.md
+          done < <(find release-files -maxdepth 1 -type f -print | sort)
+
+      - name: Publish release atomically
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+
+            if [[ "$is_draft" == "true" ]]; then
+              echo "Removing stale draft release for $TAG before retrying."
+              gh release delete "$TAG" --yes
+            else
+              echo "::error::A published release already exists for $TAG."
+              exit 1
+            fi
+          fi
+
+          gh release create "$TAG" release-files/* \
+            --draft \
+            --verify-tag \
+            --title "Daena Archive $TAG" \
+            --notes-file release-notes.md
+
+          gh release edit "$TAG" --draft=false

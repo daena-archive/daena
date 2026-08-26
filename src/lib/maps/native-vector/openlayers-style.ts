@@ -82,7 +82,7 @@ export function nativeFeatureStyle(
     ? "rgba(213, 171, 108, 0.56)"
     : colorWithOpacity(layer.style.fill, layer.style.fillOpacity);
   const stroke =
-    state.hovered || state.selected ? "#f3d39a" : colorWithOpacity(layer.style.stroke, layer.style.fillOpacity);
+    state.hovered || state.selected ? "#f3d39a" : colorWithOpacity(layer.style.stroke, layer.style.strokeOpacity ?? 1);
   const width = state.selected
     ? Math.max(2.5, layer.style.strokeWidth)
     : state.hovered

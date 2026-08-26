@@ -4,14 +4,18 @@ import { listen } from "@tauri-apps/api/event";
 import {
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Circle,
   CircleHelp,
   Copy,
   Download,
+  Ellipsis,
   Eye,
   EyeOff,
+  GripVertical,
   Hexagon,
   Image as ImageIcon,
+  Layers,
   Link2,
   Lock,
   LockOpen,
@@ -30,7 +34,9 @@ import {
   Save,
   Scissors,
   Search,
+  Settings2,
   Slash,
+  SlidersHorizontal,
   Square,
   SquarePlus,
   SquareStack,
@@ -208,6 +214,9 @@ let searchOpen = $state(false);
 let customKey = $state("");
 let customValue = $state("");
 let draggingLayerId = $state<string | null>(null);
+let openMenuLayerId = $state<string | null>(null);
+let openCustomizeLayerId = $state<string | null>(null);
+let openRasterMenuId = $state<string | null>(null);
 let defaultView = $state({ center: [0, 0] as [number, number], zoom: 1, rotation: 0 });
 let coordinateSpace = $state<MapCoordinateSpace>(PHYSICAL_COORDINATE_SPACE);
 let rasterAssets = $state(new Map<string, { url: string; width: number; height: number; canvas: HTMLCanvasElement }>());
@@ -261,7 +270,7 @@ let layersCollapsed = $state(false);
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
 let epochYearsAbs = $state(0);
-let sidebarWidth = $state(260);
+let sidebarWidth = $state(300);
 let detachLayerId = $state<string | null>(null);
 let detachError = $state("");
 
@@ -1889,6 +1898,11 @@ onMount(() => {
   if (!mapId) return;
   let mounted = true;
   let unlistenHistoricalProgress: (() => void) | null = null;
+  const handleLayerMenuOutside = (event: MouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('.layer-card') && !target?.closest('.raster-card')) { openMenuLayerId = null; openCustomizeLayerId = null; openRasterMenuId = null; }
+  };
+  window.addEventListener('click', handleLayerMenuOutside);
   registerNativeVectorSession({ save, isDirty, teardown: () => editor?.dispose() });
   window.addEventListener("keydown", onKey);
   void listen<PhysicalHistoricalProgress>(PHYSICAL_HISTORICAL_PROGRESS_EVENT, (event) => {
@@ -1916,6 +1930,7 @@ onMount(() => {
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.length = 0;
     rasterAssets = new Map();
+    window.removeEventListener('click', handleLayerMenuOutside);
     registerNativeVectorSession(null);
   };
 });
@@ -2179,819 +2194,603 @@ onMount(() => {
     {/if}
     <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
-        <aside aria-label="Map layers">
-          <div class="map-search" class:open={searchOpen}>
-            <label>
-              <span class="sr-only">Search map features</span>
-              <Search {...iconProps} />
-              <input
-                type="search"
-                placeholder="Search this map…"
-                aria-label="Search map features"
-                bind:value={featureSearch}
-                onfocus={() => (searchOpen = true)} />
-            </label>
-            {#if searchOpen && featureSearch.trim()}
-              <div class="map-search-results" role="listbox" aria-label="Map search results">
-                {#if mapSearchResults.length === 0}
-                  <p class="hint">No matching features.</p>
-                {:else}
-                  {#each mapSearchResults as result (result.featureId)}
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={selectedFeatureIds.includes(result.featureId)}
-                      onclick={() => focusSearchResult(result.featureId, result.layerId)}>
-                      <strong>{result.name}</strong>
-                      <small
-                        >{result.semanticType} · {result.layerName}{result.linkedEntityName
-                          ? ` · ${result.linkedEntityName}`
-                          : ""}</small>
-                    </button>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-          </div>
-          {#if studioSupported}
+                <aside class="map-layers-panel" aria-label="Map layers">
+          <div class="map-panel-head">
+            <div class="map-panel-head-copy">
+              <span class="panel-kicker">Map layers</span>
+              <strong>{listedLayers.length} layers · {draft.features.length} features</strong>
+              <small class="map-panel-subtitle">{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} rasters` : ""}</small>
+            </div>
             <button
               type="button"
-              class="studio-open"
-              class:active={studioOpen}
-              aria-pressed={studioOpen}
-              disabled={dirty}
-              onclick={() => { if (!dirty) studioOpen = !studioOpen; }}>Atlas Studio</button>
-            {#if dirty}<p class="hint">Save authored changes before opening Atlas.</p>{/if}
-          {/if}
-          <button
-            type="button"
-            class="aside-toggle"
-            aria-expanded={!layersCollapsed}
-            onclick={() => (layersCollapsed = !layersCollapsed)}>
-            <strong id="vector-layers-heading">Layers</strong>
-            <span class="aside-chevron" class:collapsed={layersCollapsed}><ChevronDown {...iconProps} /></span>
-          </button>
-          {#if !layersCollapsed}
-            {#if physicalMap}
-              <p class="hazard-legend">
-                Hazard layers show relative generated rates; they are not real-world predictions.
-              </p>
-            {/if}
-            {#if listedLayers.length === 0}
-              <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
-            {/if}
-            {#if true}
-              <div class="layer-row">
-                <button
-                  type="button"
-                  class="text-button"
-                  disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
-                  onclick={() => addLayer()}>
-                  Add vector
-                </button>
-                <button
-                  type="button"
-                  class="text-button"
-                  disabled={physicalMap || busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
-                  onclick={() => void addRasterLayer()}>
-                  Add raster layer
-                </button>
-              </div>
-            {/if}
-            {#if snapConfigOpen}
-              <div class="snap-config" aria-label="Snap settings">
-                <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
-                <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
-                <label
-                  ><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
-                <small>Locked layers can opt into snap targets from the layer row.</small>
-              </div>
-            {/if}
-            <div class="layer-list" role="list" aria-labelledby="vector-layers-heading">
-              {#each listedLayers as layer (layer.id)}
-                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                <div
-                  class="layer"
-                  class:active={layer.id === activeLayerId}
-                  role="listitem"
-                  draggable={!immutablePhysicalLayerIds.has(layer.id)}
-                  ondragstart={() => (draggingLayerId = layer.id)}
-                  ondragover={(event) => event.preventDefault()}
-                  ondrop={(event) => {
-                    event.preventDefault();
-                    if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
-                    draggingLayerId = null;
-                  }}>
-                  <button
-                    class="layer-name"
-                    type="button"
-                    aria-pressed={layer.id === activeLayerId}
-                    onkeydown={(event) => {
-                      if (event.target === event.currentTarget) onLayerKey(event, layer);
-                    }}
-                    onclick={() => switchLayer(layer.id)}>
-                    {#if renamingId === layer.id}
-                      <input
-                        value={layer.name}
-                        aria-label="Layer name"
-                        onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                        onkeydown={(event) => {
-                          if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                          if (event.key === "Escape") renamingId = null;
-                        }} />
-                    {:else}{layer.name}{/if}
-                    <small class="layer-meta"
-                      >{layer.kind} · {isRasterLayer(layer) ? "raster" : featureCountForLayer(draft, layer.id)}</small>
-                  </button>
-                  <div class="layer-row">
-                    <button
-                      type="button"
-                      class="icon-button"
-                      aria-pressed={layer.defaultVisible}
-                      aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                      title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                      onclick={() => void toggleVisible(layer)}
-                      >{#if layer.defaultVisible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
-                    {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
+              class="panel-icon-btn"
+              aria-label="Add vector layer"
+              title="Add vector layer"
+              disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
+              onclick={() => addLayer()}
+            >
+              <SquarePlus size={15} strokeWidth={1.8} aria-hidden="true" />
+            </button>
+          </div>
+
+          <div class="map-search-wrap">
+            <div class="map-search" class:open={searchOpen}>
+              <label>
+                <Search size={14} strokeWidth={1.8} aria-hidden="true" />
+                <input
+                  type="search"
+                  placeholder="Search features…"
+                  aria-label="Search map features"
+                  bind:value={featureSearch}
+                  onfocus={() => (searchOpen = true)}
+                  onblur={() => setTimeout(() => (searchOpen = false), 180)}
+                />
+                {#if featureSearch.trim()}
+                  <button type="button" class="search-clear" aria-label="Clear search" onclick={() => (featureSearch = "")}>×</button>
+                {/if}
+              </label>
+              {#if searchOpen && featureSearch.trim()}
+                <div class="map-search-results" role="listbox" aria-label="Map search results">
+                  {#if mapSearchResults.length === 0}
+                    <p class="search-empty">No matching features.</p>
+                  {:else}
+                    {#each mapSearchResults as result (result.featureId)}
                       <button
                         type="button"
-                        class="icon-button"
-                        aria-label={`Detach ${layer.name} for editing`}
-                        title="Detach for editing"
-                        disabled={busy || epochBusy || physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
-                        onclick={() => openDetachDialog(layer)}><Scissors {...iconProps} /></button>
-                    {/if}
-                    {#if !immutablePhysicalLayerIds.has(layer.id)}
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-pressed={layer.locked}
-                        aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                        title={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                        onclick={() => void toggleLock(layer)}
-                        >{#if layer.locked}<Lock {...iconProps} />{:else}<LockOpen {...iconProps} />{/if}</button>
-                      {#if layer.locked && layer.defaultVisible && isVectorLayer(layer)}
-                        <button
-                          type="button"
-                          class="icon-button"
-                          class:active={snapTargetLayerIds.has(layer.id)}
-                          aria-pressed={snapTargetLayerIds.has(layer.id)}
-                          aria-label={`Snap to ${layer.name}`}
-                          title={`Snap to ${layer.name}`}
-                          onclick={() => toggleSnapTargetLayer(layer.id)}><Magnet {...iconProps} /></button>
-                      {/if}
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Rename ${layer.name}`}
-                        title="Rename"
-                        onclick={() => (renamingId = layer.id)}><Pencil {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Duplicate ${layer.name}`}
-                        title="Duplicate"
-                        disabled={busy ||
-                          (isRasterLayer(layer)
-                            ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
-                            : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
-                        onclick={() => void duplicateLayer(layer)}><Copy {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Move ${layer.name} up`}
-                        title="Up"
-                        onclick={() => void moveLayer(layer, -1)}><ChevronUp {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Move ${layer.name} down`}
-                        title="Down"
-                        onclick={() => void moveLayer(layer, 1)}><ChevronDown {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Delete ${layer.name}`}
-                        title="Delete"
-                        onclick={() => void removeLayer(layer)}><Trash2 {...iconProps} /></button>
-                    {/if}
-                  </div>
-                  {#if layer.id === activeLayerId && !immutablePhysicalLayerIds.has(layer.id)}
-                    <div class="style-row">
-                      <label>
-                        Layer opacity
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={layer.opacity}
-                          aria-label={`${layer.name} opacity`}
-                          oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
-                      </label>
-                      {#if isVectorLayer(layer)}
-                        <label>
-                          Fill
-                          <input
-                            type="color"
-                            value={layer.style.fill}
-                            aria-label={`${layer.name} fill`}
-                            onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} />
-                        </label>
-                        <label>
-                          Fill opacity
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={layer.style.fillOpacity}
-                            aria-label={`${layer.name} fill opacity`}
-                            oninput={(event) =>
-                              void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label>
-                          Stroke
-                          <input
-                            type="color"
-                            value={layer.style.stroke}
-                            aria-label={`${layer.name} stroke`}
-                            onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} />
-                        </label>
-                        <label>
-                          Stroke opacity
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.05"
-                            value={layer.style.strokeOpacity ?? 1}
-                            aria-label={`${layer.name} stroke opacity`}
-                            oninput={(event) =>
-                              void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label>
-                          Stroke width
-                          <input
-                            type="number"
-                            min="0"
-                            max="32"
-                            step="0.25"
-                            value={layer.style.strokeWidth}
-                            aria-label={`${layer.name} stroke width`}
-                            onchange={(event) =>
-                              void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label>
-                          Dash
-                          <input
-                            type="text"
-                            value={(layer.style.strokeDash ?? []).join(", ")}
-                            placeholder="solid"
-                            aria-label={`${layer.name} stroke dash`}
-                            onchange={(event) => {
-                              const values = event.currentTarget.value
-                                .split(",")
-                                .map((value) => Number(value.trim()))
-                                .filter(Number.isFinite);
-                              void updateStyle(layer, { strokeDash: values.slice(0, 16) });
-                            }} />
-                        </label>
-                        <label>
-                          Point radius
-                          <input
-                            type="number"
-                            min="1"
-                            max="64"
-                            step="1"
-                            value={layer.style.pointRadius}
-                            aria-label={`${layer.name} point radius`}
-                            onchange={(event) =>
-                              void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label>
-                          Marker
-                          <select
-                            value={layer.style.icon ?? "circle"}
-                            aria-label={`${layer.name} marker icon`}
-                            onchange={(event) =>
-                              void updateStyle(layer, {
-                                icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
-                              })}>
-                            <option value="circle">Circle</option>
-                            <option value="square">Square</option>
-                            <option value="diamond">Diamond</option>
-                            <option value="triangle">Triangle</option>
-                            <option value="star">Star</option>
-                          </select>
-                        </label>
-                        <label>
-                          Marker size
-                          <input
-                            type="number"
-                            min="4"
-                            max="256"
-                            step="1"
-                            value={layer.style.iconSize ?? 20}
-                            aria-label={`${layer.name} marker size`}
-                            onchange={(event) =>
-                              void updateStyle(layer, { iconSize: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label>
-                          Label size
-                          <input
-                            type="number"
-                            min="6"
-                            max="96"
-                            step="1"
-                            value={layer.style.label?.size ?? 12}
-                            aria-label={`${layer.name} label size`}
-                            onchange={(event) =>
-                              void updateStyle(layer, {
-                                label: {
-                                  ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!),
-                                  size: Number(event.currentTarget.value),
-                                },
-                              })} />
-                        </label>
-                      {/if}
-                    </div>
+                        role="option"
+                        aria-selected={selectedFeatureIds.includes(result.featureId)}
+                        onclick={() => focusSearchResult(result.featureId, result.layerId)}
+                      >
+                        <span class="result-name">{result.name}</span>
+                        <span class="result-meta">{result.semanticType} · {result.layerName}{result.linkedEntityName ? ` · ${result.linkedEntityName}` : ""}</span>
+                      </button>
+                    {/each}
                   {/if}
                 </div>
-              {/each}
-            </div>
-          {/if}
-          {#if !physicalMap}
-            <button
-              type="button"
-              class="aside-toggle"
-              aria-expanded={!rastersCollapsed}
-              onclick={() => (rastersCollapsed = !rastersCollapsed)}>
-              <strong id="raster-layers-heading">Rasters</strong>
-              <span class="aside-chevron" class:collapsed={rastersCollapsed}><ChevronDown {...iconProps} /></span>
-            </button>
-            {#if !rastersCollapsed}
-              <p class="hint" role="status">{unitsLabel}</p>
-              <div class="layer-row">
-                <button
-                  type="button"
-                  class="text-button"
-                  disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS}
-                  onclick={() => void addRaster()}>
-                  Add raster
-                </button>
-                <button type="button" class="text-button" onclick={() => editor?.fitExtent()}>Fit</button>
-                <button type="button" class="text-button" onclick={() => editor?.actualPixels()}>Actual pixels</button>
-              </div>
-              <label class="calibrate">
-                Metres per unit
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  bind:value={calibrateMetres}
-                  placeholder={coordinateSpace.kind === "image" ? "pixels until calibrated" : "optional"}
-                  aria-label="Metres per unit" />
-                <button type="button" onclick={() => applyCalibration()}>Calibrate</button>
-              </label>
-              {#if listedRasters.length === 0}
-                <p class="hint">Add PNG, JPEG, or SVG overlays. Image maps open at exact pixel extent.</p>
-              {/if}
-              <div class="layer-list" role="list" aria-labelledby="raster-layers-heading">
-                {#each listedRasters as raster (raster.id)}
-                  <div class="layer" role="listitem">
-                    <span class="layer-name">{raster.name}</span>
-                    <div class="layer-row">
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-pressed={raster.visible}
-                        aria-label={raster.visible ? `Hide ${raster.name}` : `Show ${raster.name}`}
-                        onclick={() =>
-                          dispatchCommand(setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible))}
-                        >{#if raster.visible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Move ${raster.name} up`}
-                        onclick={() => moveRaster(raster, -1)}><ChevronUp {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Move ${raster.name} down`}
-                        onclick={() => moveRaster(raster, 1)}><ChevronDown {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Replace ${raster.name}`}
-                        onclick={() => void replaceRaster(raster)}><ImageIcon {...iconProps} /></button>
-                      <button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Remove ${raster.name}`}
-                        onclick={() => removeRaster(raster)}><Trash2 {...iconProps} /></button>
-                    </div>
-                    <label>
-                      Opacity
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={raster.opacity}
-                        aria-label={`${raster.name} opacity`}
-                        oninput={(event) =>
-                          dispatchCommand(
-                            setBackgroundOpacityCommand(raster.id, Number(event.currentTarget.value), raster.opacity),
-                          )} />
-                    </label>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {/if}
-          {#if physicalMap}
-            <button
-              type="button"
-              class="aside-toggle"
-              aria-expanded={!historyCollapsed}
-              onclick={() => (historyCollapsed = !historyCollapsed)}>
-              <strong>Natural history</strong>
-              <span class="aside-chevron" class:collapsed={historyCollapsed}><ChevronDown {...iconProps} /></span>
-            </button>
-            {#if !historyCollapsed}
-              <div class="event-control" aria-label="Materialize natural history">
-                <label>
-                  Event
-                  <select bind:value={eventKind} disabled={eventBusy || busy}>
-                    <option value="earthquake">Earthquake</option>
-                    <option value="eruption">Eruption</option>
-                  </select>
-                </label>
-                <label>
-                  From (years)
-                  <input
-                    type="number"
-                    min="-100000"
-                    max="100000"
-                    step="1"
-                    bind:value={eventStartYears}
-                    disabled={eventBusy || busy} />
-                </label>
-                <label>
-                  To (years)
-                  <input
-                    type="number"
-                    min="-100000"
-                    max="100000"
-                    step="1"
-                    bind:value={eventEndYears}
-                    disabled={eventBusy || busy} />
-                </label>
-                <label>
-                  Max events
-                  <input
-                    type="number"
-                    min="1"
-                    max="128"
-                    step="1"
-                    bind:value={eventMaxEvents}
-                    disabled={eventBusy || busy} />
-                </label>
-                <label>
-                  Hazard seed
-                  <input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} />
-                </label>
-                <button type="button" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>
-                  {eventBusy ? "Committing…" : "Commit events"}
-                </button>
-                <small
-                  >Creates revisioned entities and map links; generated hazards remain read-only and are not
-                  predictions.</small>
-                {#if eventNotice}<small role="status">{eventNotice}</small>{/if}
-              </div>
-            {/if}
-          {/if}
-          {#if selectedOpFeatures.length > 0}
-            <div class="geometry-ops" aria-label="Geometry operations">
-              <strong>Geometry</strong>
-              {#if geometryPreview}
-                <p class="hint">Preview: {geometryPreview.label}. Commit or cancel to finish.</p>
-                <div class="layer-row">
-                  <button type="button" onclick={() => commitGeometryPreview()}>Apply</button>
-                  <button type="button" onclick={() => cancelGeometryPreview()}>Cancel</button>
-                </div>
-              {:else}
-                <div class="layer-row">
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("union", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("union")}>Union</button>
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("difference", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("difference")}>Diff</button>
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("intersection", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("intersection")}>Intersect</button>
-                </div>
-                <div class="layer-row">
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("split", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("split")}><Scissors {...iconProps} /> Split</button>
-                  <label>
-                    Buffer
-                    <input type="number" min="0" step="any" bind:value={bufferDistance} aria-label="Buffer distance" />
-                  </label>
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("buffer", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("buffer")}>Run</button>
-                </div>
-                <div class="layer-row">
-                  <label>
-                    Simplify
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      bind:value={simplifyTolerance}
-                      aria-label="Simplify tolerance" />
-                  </label>
-                  <button
-                    type="button"
-                    disabled={!canRunOperation("simplify", selectedOpFeatures)}
-                    onclick={() => startGeometryOperation("simplify")}>Run</button>
-                </div>
-                {#if operationNotice}<small role="status">{operationNotice}</small>{/if}
               {/if}
             </div>
-          {/if}
-          {#if selectedFeatures.length > 0}
-            {@const primary = selectedFeatures[0]}
-            {@const primaryLabel = primary.properties.daena.label ?? defaultFeatureLabel(primary)}
-            {@const primaryStyle = primary.properties.daena.style ?? {}}
-            {@const linkedEntity = selectedFeatures.length === 1 ? featureLinks.get(primary.id) : null}
-            <div
-              class="inspector"
-              aria-label={selectedFeatures.length === 1 ? "Selected feature" : "Selected features"}>
-              <strong
-                >{selectedFeatures.length === 1
-                  ? (featureName(primary) ?? "Untitled feature")
-                  : `${selectedFeatures.length} features selected`}</strong>
-              <p class="hint">
-                {primary.geometry.type} · {selectedFeatures.reduce(
-                  (sum, feature) => sum + featureVertexCount(feature),
-                  0,
-                )} vertices
-                {#if selectedFeatures.length === 1}
-                  · {featureSemanticType(primary)}
-                {/if}
-              </p>
-              {#if selectedFeatures.length === 1}
-                <label>
-                  Name
-                  <input
-                    value={featureName(primary) ?? ""}
-                    maxlength="256"
-                    aria-label="Feature name"
-                    disabled={featureLayerId(primary) === "base"}
-                    onchange={(event) => renameSelectedFeature(event.currentTarget.value.trim() || null)} />
-                </label>
-              {/if}
-              <label>
-                Semantic type
-                <select
-                  value={featureSemanticType(primary)}
-                  aria-label="Feature semantic type"
-                  onchange={(event) =>
-                    setSelectedSemanticType(
-                      event.currentTarget.value as VectorFeature["properties"]["daena"]["semanticType"],
-                    )}>
-                  <option value="land">Land</option>
-                  <option value="lake">Lake</option>
-                  <option value="region">Region</option>
-                  <option value="route">Route</option>
-                  <option value="marker">Marker</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              <label>
-                Layer
-                <select
-                  value={featureLayerId(primary)}
-                  aria-label="Feature layer"
-                  onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
-                  {#each listedLayers.filter((layer) => isVectorLayer(layer) && layer.id !== "base" && layer.defaultVisible && !layer.locked) as layer}
-                    <option value={layer.id}>{layer.name}</option>
-                  {/each}
-                </select>
-              </label>
+          </div>
 
-              <details class="inspector-section">
-                <summary>Style override</summary>
-                <div class="style-grid">
-                  <label
-                    >Fill<input
-                      type="color"
-                      value={primaryStyle.fill ?? "#8f6fd1"}
-                      onchange={(event) => updateSelectedStyle({ fill: event.currentTarget.value })} /></label>
-                  <label
-                    >Fill opacity<input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={primaryStyle.fillOpacity ?? 0.35}
-                      oninput={(event) =>
-                        updateSelectedStyle({ fillOpacity: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Stroke<input
-                      type="color"
-                      value={primaryStyle.stroke ?? "#5e4893"}
-                      onchange={(event) => updateSelectedStyle({ stroke: event.currentTarget.value })} /></label>
-                  <label
-                    >Stroke opacity<input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={primaryStyle.strokeOpacity ?? 1}
-                      oninput={(event) =>
-                        updateSelectedStyle({ strokeOpacity: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Width<input
-                      type="number"
-                      min="0"
-                      max="32"
-                      step="0.25"
-                      value={primaryStyle.strokeWidth ?? 1.5}
-                      onchange={(event) =>
-                        updateSelectedStyle({ strokeWidth: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Point radius<input
-                      type="number"
-                      min="1"
-                      max="64"
-                      step="1"
-                      value={primaryStyle.pointRadius ?? 5}
-                      onchange={(event) =>
-                        updateSelectedStyle({ pointRadius: Number(event.currentTarget.value) })} /></label>
-                  <label>
-                    Marker
-                    <select
-                      value={primaryStyle.icon ?? "circle"}
-                      onchange={(event) =>
-                        updateSelectedStyle({
-                          icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
-                        })}>
-                      <option value="circle">Circle</option><option value="square">Square</option><option
-                        value="diamond">Diamond</option
-                      ><option value="triangle">Triangle</option><option value="star">Star</option>
+          {#if studioSupported}
+            <div class="studio-callout">
+              <button
+                type="button"
+                class="studio-open-btn"
+                class:active={studioOpen}
+                aria-pressed={studioOpen}
+                disabled={dirty}
+                onclick={() => {
+                  if (!dirty) studioOpen = !studioOpen;
+                }}
+              >
+                <span class="studio-open-label">Atlas Studio</span>
+                <small>{studioOpen ? "Close" : dirty ? "Save to open" : "Open"}</small>
+              </button>
+              {#if dirty}<span class="studio-hint">Save authored changes before opening Atlas.</span>{/if}
+            </div>
+          {/if}
+
+          <div class="map-panel-body">
+            <!-- Layers -->
+            <details class="map-section-group" open={!layersCollapsed}>
+              <summary
+                onclick={(event) => {
+                  event.preventDefault();
+                  layersCollapsed = !layersCollapsed;
+                }}
+              >
+                <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                <strong>Layers</strong>
+                <span class="section-count">{listedLayers.length}</span>
+              </summary>
+              <div class="section-body">
+                {#if physicalMap}
+                  <p class="section-note">Hazard layers show relative generated rates; they are not real-world predictions.</p>
+                {/if}
+                {#if listedLayers.length === 0}
+                  <p class="empty-note">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
+                {/if}
+                <div class="quick-add-row">
+                  <button
+                    type="button"
+                    class="quiet-button small"
+                    disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
+                    onclick={() => addLayer()}
+                  >
+                    Add vector
+                  </button>
+                  <button
+                    type="button"
+                    class="quiet-button small"
+                    disabled={physicalMap || busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
+                    onclick={() => void addRasterLayer()}
+                  >
+                    Add raster layer
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost-btn small"
+                    class:active={snapConfigOpen}
+                    aria-pressed={snapConfigOpen}
+                    onclick={() => (snapConfigOpen = !snapConfigOpen)}
+                    title="Snap settings"
+                  >
+                    <Settings2 size={13} strokeWidth={1.8} aria-hidden="true" /> Snap
+                  </button>
+                </div>
+                {#if snapConfigOpen}
+                  <div class="snap-config" aria-label="Snap settings">
+                    <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
+                    <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
+                    <label><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
+                    <small>Locked layers can opt into snap targets from the layer row.</small>
+                  </div>
+                {/if}
+
+                <div class="layer-list" role="list">
+                  {#each listedLayers as layer (layer.id)}
+                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                    <div
+                      class="layer-card"
+                      class:active={layer.id === activeLayerId}
+                      class:locked={layer.locked}
+                      class:immutable={immutablePhysicalLayerIds.has(layer.id)}
+                      role="listitem"
+                      draggable={!immutablePhysicalLayerIds.has(layer.id)}
+                      ondragstart={() => (draggingLayerId = layer.id)}
+                      ondragover={(event) => event.preventDefault()}
+                      ondrop={(event) => {
+                        event.preventDefault();
+                        if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
+                        draggingLayerId = null;
+                      }}
+                    >
+                      <div class="layer-card-main">
+                        <span class="drag-handle" aria-hidden="true" title="Drag to reorder">
+                          <GripVertical size={12} strokeWidth={1.8} />
+                        </span>
+                        <span class="layer-kind-icon" aria-hidden="true">
+                          {#if isRasterLayer(layer)}<ImageIcon size={13} strokeWidth={1.8} />{:else}<Layers size={13} strokeWidth={1.8} />{/if}
+                        </span>
+                        <button
+                          class="layer-name"
+                          type="button"
+                          aria-pressed={layer.id === activeLayerId}
+                          onkeydown={(event) => {
+                            if (event.target === event.currentTarget) onLayerKey(event, layer);
+                          }}
+                          onclick={() => switchLayer(layer.id)}
+                        >
+                          {#if renamingId === layer.id}
+                            <input
+                              value={layer.name}
+                              aria-label="Layer name"
+                              autofocus
+                              onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                              onkeydown={(event) => {
+                                if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                                if (event.key === "Escape") renamingId = null;
+                              }}
+                            />
+                          {:else}
+                            <span class="layer-name-text">{layer.name}</span>
+                            <span class="layer-meta">{layer.kind} · {isRasterLayer(layer) ? "raster" : `${featureCountForLayer(draft, layer.id)} feats`}{layer.locked ? " · locked" : ""}{!layer.defaultVisible ? " · hidden" : ""}</span>
+                          {/if}
+                        </button>
+                        <div class="layer-card-actions">
+                          <button
+                            type="button"
+                            class="mini-icon"
+                            class:off={!layer.defaultVisible}
+                            aria-pressed={layer.defaultVisible}
+                            aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                            title={layer.defaultVisible ? "Hide" : "Show"}
+                            onclick={() => void toggleVisible(layer)}
+                          >{#if layer.defaultVisible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff size={14} strokeWidth={1.8} />{/if}</button>
+                          {#if !immutablePhysicalLayerIds.has(layer.id)}
+                            <button
+                              type="button"
+                              class="mini-icon"
+                              class:off={!layer.locked}
+                              aria-pressed={layer.locked}
+                              aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                              title={layer.locked ? "Unlock" : "Lock"}
+                              onclick={() => void toggleLock(layer)}
+                            >{#if layer.locked}<Lock size={14} strokeWidth={1.8} />{:else}<LockOpen size={14} strokeWidth={1.8} />{/if}</button>
+                          {/if}
+                          {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
+                            <button
+                              type="button"
+                              class="mini-icon"
+                              aria-label={`Detach ${layer.name} for editing`}
+                              title="Detach for editing"
+                              disabled={busy || epochBusy || physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
+                              onclick={() => openDetachDialog(layer)}><Scissors size={14} strokeWidth={1.8} /></button>
+                          {/if}
+                          <button
+                            type="button"
+                            class="mini-icon customize-btn"
+                            class:active={openCustomizeLayerId === layer.id}
+                            aria-label={`Customize ${layer.name}`}
+                            aria-expanded={openCustomizeLayerId === layer.id}
+                            title="Customize"
+                            onclick={(event) => { event.stopPropagation(); openCustomizeLayerId = openCustomizeLayerId === layer.id ? null : layer.id; }}
+                          ><SlidersHorizontal size={14} strokeWidth={1.8} /></button>
+                        </div>
+                      </div>
+
+                      {#if !immutablePhysicalLayerIds.has(layer.id)}
+                        <div class="layer-card-toolbar">
+                          <button type="button" class="toolbar-btn" aria-label={`Rename ${layer.name}`} title="Rename" onclick={() => (renamingId = layer.id)}><Pencil size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="toolbar-btn"
+                            aria-label={`Move ${layer.name} up`}
+                            title="Move up"
+                            disabled={busy}
+                            onclick={() => void moveLayer(layer, -1)}><ChevronUp size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="toolbar-btn"
+                            aria-label={`Move ${layer.name} down`}
+                            title="Move down"
+                            disabled={busy}
+                            onclick={() => void moveLayer(layer, 1)}><ChevronDown size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="toolbar-btn"
+                            aria-label={`Duplicate ${layer.name}`}
+                            title="Duplicate"
+                            disabled={busy ||
+                              (isRasterLayer(layer)
+                                ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
+                                : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
+                            onclick={() => void duplicateLayer(layer)}><Copy size={12} strokeWidth={1.8} /></button>
+                          <button type="button" class="toolbar-btn danger" aria-label={`Remove ${layer.name}`} title="Remove" onclick={() => void removeLayer(layer)}><Trash2 size={12} strokeWidth={1.8} /></button>
+                        </div>
+                      {/if}
+
+                      {#if openCustomizeLayerId === layer.id}
+                        <div class="layer-customize" onclick={(event) => event.stopPropagation()}>
+                          <div class="opacity-group">
+                            <span class="customize-label">Opacity</span>
+                            <label class="detail-range">
+                              <span>Layer</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={layer.opacity}
+                                aria-label={`${layer.name} layer opacity`}
+                                oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))}
+                              />
+                              <em>{Math.round(layer.opacity * 100)}%</em>
+                            </label>
+                            <label class="detail-range">
+                              <span>Fill</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={layer.style.fillOpacity}
+                                aria-label={`${layer.name} fill opacity`}
+                                oninput={(event) => void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })}
+                              />
+                              <em>{Math.round(layer.style.fillOpacity * 100)}%</em>
+                            </label>
+                            <label class="detail-range">
+                              <span>Stroke</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.05"
+                                value={layer.style.strokeOpacity ?? 1}
+                                aria-label={`${layer.name} stroke opacity`}
+                                oninput={(event) => void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })}
+                              />
+                              <em>{Math.round((layer.style.strokeOpacity ?? 1) * 100)}%</em>
+                            </label>
+                          </div>
+                          {#if isVectorLayer(layer)}
+                            <details class="layer-advanced" open>
+                              <summary>
+                                <span>Advanced style</span>
+                                <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
+                              </summary>
+                              <div class="detail-grid">
+                                <label><span>Fill</span><input type="color" value={layer.style.fill} aria-label={`${layer.name} fill`} onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} /></label>
+                                <label><span>Stroke</span><input type="color" value={layer.style.stroke} aria-label={`${layer.name} stroke`} onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} /></label>
+                                <label><span>Stroke width</span><input type="number" min="0" max="32" step="0.25" value={layer.style.strokeWidth} aria-label={`${layer.name} stroke width`} onchange={(event) => void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} /></label>
+                                <label><span>Dash</span><input type="text" value={(layer.style.strokeDash ?? []).join(", ")} placeholder="solid" aria-label={`${layer.name} stroke dash`} onchange={(event) => { const values = event.currentTarget.value.split(",").map((v) => Number(v.trim())).filter(Number.isFinite); void updateStyle(layer, { strokeDash: values.slice(0, 16) }); }} /></label>
+                                <label><span>Point radius</span><input type="number" min="1" max="64" step="1" value={layer.style.pointRadius} aria-label={`${layer.name} point radius`} onchange={(event) => void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} /></label>
+                                <label><span>Marker</span>
+                                  <select value={layer.style.icon ?? "circle"} aria-label={`${layer.name} marker icon`} onchange={(event) => void updateStyle(layer, { icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value })}>
+                                    <option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option><option value="triangle">Triangle</option><option value="star">Star</option>
+                                  </select>
+                                </label>
+                                <label><span>Marker size</span><input type="number" min="4" max="256" step="1" value={layer.style.iconSize ?? 20} aria-label={`${layer.name} marker size`} onchange={(event) => void updateStyle(layer, { iconSize: Number(event.currentTarget.value) })} /></label>
+                                <label><span>Label size</span><input type="number" min="6" max="96" step="1" value={layer.style.label?.size ?? 12} aria-label={`${layer.name} label size`} onchange={(event) => void updateStyle(layer, { label: { ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!), size: Number(event.currentTarget.value) } })} /></label>
+                              </div>
+                            </details>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            </details>
+
+            {#if !physicalMap}
+              <details class="map-section-group" open={!rastersCollapsed}>
+                <summary
+                  onclick={(event) => {
+                    event.preventDefault();
+                    rastersCollapsed = !rastersCollapsed;
+                  }}
+                >
+                  <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                  <strong>Rasters</strong>
+                  <span class="section-count">{listedRasters.length}</span>
+                </summary>
+                <div class="section-body">
+                  <p class="section-note">{unitsLabel}</p>
+                  <div class="quick-add-row">
+                    <button type="button" class="quiet-button small" disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRaster()}>Add raster</button>
+                    <button type="button" class="quiet-button small" onclick={() => editor?.fitExtent()}>Fit</button>
+                    <button type="button" class="quiet-button small" onclick={() => editor?.actualPixels()}>Actual pixels</button>
+                  </div>
+                  <label class="calibrate-field">
+                    <span>Metres per unit</span>
+                    <div class="calibrate-row">
+                      <input type="number" min="0" step="any" bind:value={calibrateMetres} placeholder={coordinateSpace.kind === "image" ? "pixels until calibrated" : "optional"} aria-label="Metres per unit" />
+                      <button type="button" class="quiet-button small" onclick={() => applyCalibration()}>Calibrate</button>
+                    </div>
+                  </label>
+                  {#if listedRasters.length === 0}
+                    <p class="empty-note">No rasters yet. Add PNG, JPEG, or SVG overlays. Image maps open at exact pixel extent.</p>
+                  {/if}
+                  <div class="raster-list" role="list">
+                    {#each listedRasters as raster (raster.id)}
+                      <div class="raster-card" role="listitem">
+                        <div class="raster-card-main">
+                          <span class="raster-icon"><ImageIcon size={13} strokeWidth={1.8} aria-hidden="true" /></span>
+                          <span class="raster-name">{raster.name}</span>
+                          <div class="raster-actions">
+                            <button
+                              type="button"
+                              class="mini-icon"
+                              aria-pressed={raster.visible}
+                              aria-label={raster.visible ? `Hide ${raster.name}` : `Show ${raster.name}`}
+                              onclick={() => dispatchCommand(setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible))}
+                            >{#if raster.visible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff size={14} strokeWidth={1.8} />{/if}</button>
+                            <button type="button" class="mini-icon" aria-label={`Replace ${raster.name}`} onclick={() => void replaceRaster(raster)}><ImageIcon size={14} strokeWidth={1.8} /></button>
+                            <button type="button" class="mini-icon danger" aria-label={`Remove ${raster.name}`} onclick={() => removeRaster(raster)}><Trash2 size={14} strokeWidth={1.8} /></button>
+                            <button
+                              type="button"
+                              class="mini-icon more-btn"
+                              class:active={openRasterMenuId === raster.id}
+                              aria-label="More actions"
+                              aria-expanded={openRasterMenuId === raster.id}
+                              aria-haspopup="menu"
+                              title="More"
+                              onclick={(event) => { event.stopPropagation(); openRasterMenuId = openRasterMenuId === raster.id ? null : raster.id; }}
+                            ><Ellipsis size={14} strokeWidth={1.8} /></button>
+                          </div>
+                        </div>
+                        {#if openRasterMenuId === raster.id}
+                          <div class="layer-menu" role="menu" aria-label={`Actions for ${raster.name}`} onclick={(event) => event.stopPropagation()}>
+                            <button type="button" role="menuitem" class="layer-menu-item" onclick={() => { openRasterMenuId = null; moveRaster(raster, -1); }}><ChevronUp size={12} strokeWidth={1.8} /> Move up</button>
+                            <button type="button" role="menuitem" class="layer-menu-item" onclick={() => { openRasterMenuId = null; moveRaster(raster, 1); }}><ChevronDown size={12} strokeWidth={1.8} /> Move down</button>
+                            <div class="layer-menu-separator"></div>
+                            <span class="layer-menu-meta">{raster.visible ? "Visible" : "Hidden"} · {Math.round(raster.opacity * 100)}%</span>
+                          </div>
+                        {/if}
+                        <label class="detail-range small">
+                          <span>Opacity</span>
+                          <input type="range" min="0" max="1" step="0.05" value={raster.opacity} aria-label={`${raster.name} opacity`} oninput={(event) => dispatchCommand(setBackgroundOpacityCommand(raster.id, Number(event.currentTarget.value), raster.opacity))} />
+                          <em>{Math.round(raster.opacity * 100)}%</em>
+                        </label>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              </details>
+            {/if}
+
+            {#if physicalMap}
+              <details class="map-section-group" open={!historyCollapsed}>
+                <summary
+                  onclick={(event) => {
+                    event.preventDefault();
+                    historyCollapsed = !historyCollapsed;
+                  }}
+                >
+                  <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                  <strong>Natural history</strong>
+                </summary>
+                <div class="section-body">
+                  <div class="event-control" aria-label="Materialize natural history">
+                    <label><span>Event</span>
+                      <select bind:value={eventKind} disabled={eventBusy || busy}>
+                        <option value="earthquake">Earthquake</option>
+                        <option value="eruption">Eruption</option>
+                      </select>
+                    </label>
+                    <div class="event-grid">
+                      <label><span>From (years)</span><input type="number" min="-100000" max="100000" step="1" bind:value={eventStartYears} disabled={eventBusy || busy} /></label>
+                      <label><span>To (years)</span><input type="number" min="-100000" max="100000" step="1" bind:value={eventEndYears} disabled={eventBusy || busy} /></label>
+                    </div>
+                    <div class="event-grid">
+                      <label><span>Max events</span><input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} /></label>
+                      <label><span>Hazard seed</span><input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} /></label>
+                    </div>
+                    <button type="button" class="primary-button small" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>{eventBusy ? "Committing…" : "Commit events"}</button>
+                    <p class="field-hint">Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</p>
+                    {#if eventNotice}<p class="field-hint" role="status">{eventNotice}</p>{/if}
+                  </div>
+                </div>
+              </details>
+            {/if}
+
+            {#if selectedOpFeatures.length > 0}
+              <details class="map-section-group" open>
+                <summary>
+                  <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                  <strong>Geometry</strong>
+                  <span class="section-count">{selectedOpFeatures.length}</span>
+                </summary>
+                <div class="section-body">
+                  <div class="geometry-ops" aria-label="Geometry operations">
+                    {#if geometryPreview}
+                      <p class="section-note">Preview: {geometryPreview.label}. Commit or cancel to finish.</p>
+                      <div class="quick-add-row">
+                        <button type="button" class="primary-button small" onclick={() => commitGeometryPreview()}>Apply</button>
+                        <button type="button" class="quiet-button small" onclick={() => cancelGeometryPreview()}>Cancel</button>
+                      </div>
+                    {:else}
+                      <div class="quick-add-row">
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("union", selectedOpFeatures)} onclick={() => startGeometryOperation("union")}>Union</button>
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("difference", selectedOpFeatures)} onclick={() => startGeometryOperation("difference")}>Diff</button>
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("intersection", selectedOpFeatures)} onclick={() => startGeometryOperation("intersection")}>Intersect</button>
+                      </div>
+                      <div class="quick-add-row">
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("split", selectedOpFeatures)} onclick={() => startGeometryOperation("split")}><Scissors size={12} strokeWidth={1.8} /> Split</button>
+                        <label class="inline-field"><span>Buffer</span><input type="number" min="0" step="any" bind:value={bufferDistance} aria-label="Buffer distance" /></label>
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("buffer", selectedOpFeatures)} onclick={() => startGeometryOperation("buffer")}>Run</button>
+                      </div>
+                      <div class="quick-add-row">
+                        <label class="inline-field"><span>Simplify</span><input type="number" min="0" step="any" bind:value={simplifyTolerance} aria-label="Simplify tolerance" /></label>
+                        <button type="button" class="quiet-button small" disabled={!canRunOperation("simplify", selectedOpFeatures)} onclick={() => startGeometryOperation("simplify")}>Run</button>
+                      </div>
+                      {#if operationNotice}<p class="field-hint" role="status">{operationNotice}</p>{/if}
+                    {/if}
+                  </div>
+                </div>
+              </details>
+            {/if}
+
+            {#if selectedFeatures.length > 0}
+              {@const primary = selectedFeatures[0]}
+              {@const primaryLabel = primary.properties.daena.label ?? defaultFeatureLabel(primary)}
+              {@const primaryStyle = primary.properties.daena.style ?? {}}
+              {@const linkedEntity = selectedFeatures.length === 1 ? featureLinks.get(primary.id) : null}
+              <details class="map-section-group" open>
+                <summary>
+                  <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+                  <strong>{selectedFeatures.length === 1 ? "Selected feature" : `${selectedFeatures.length} features`}</strong>
+                </summary>
+                <div class="section-body">
+                  <div class="selection-head">
+                    <strong class="selection-title">{selectedFeatures.length === 1 ? (featureName(primary) ?? "Untitled feature") : `${selectedFeatures.length} features selected`}</strong>
+                    <p class="section-note">{primary.geometry.type} · {selectedFeatures.reduce((sum, f) => sum + featureVertexCount(f), 0)} vertices{#if selectedFeatures.length === 1} · {featureSemanticType(primary)}{/if}</p>
+                  </div>
+
+                  {#if selectedFeatures.length === 1}
+                    <label class="field"><span>Name</span><input value={featureName(primary) ?? ""} maxlength="256" aria-label="Feature name" disabled={featureLayerId(primary) === "base"} onchange={(event) => renameSelectedFeature(event.currentTarget.value.trim() || null)} /></label>
+                  {/if}
+                  <label class="field"><span>Semantic type</span>
+                    <select value={featureSemanticType(primary)} aria-label="Feature semantic type" onchange={(event) => setSelectedSemanticType(event.currentTarget.value as VectorFeature["properties"]["daena"]["semanticType"])}>
+                      <option value="land">Land</option><option value="lake">Lake</option><option value="region">Region</option><option value="route">Route</option><option value="marker">Marker</option><option value="custom">Custom</option>
                     </select>
                   </label>
-                </div>
-                <button type="button" class="text-button" onclick={clearSelectedOverrides}>Use layer style</button>
-              </details>
+                  <label class="field"><span>Layer</span>
+                    <select value={featureLayerId(primary)} aria-label="Feature layer" onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
+                      {#each listedLayers.filter((l) => isVectorLayer(l) && l.id !== "base" && l.defaultVisible && !l.locked) as layer}
+                        <option value={layer.id}>{layer.name}</option>
+                      {/each}
+                    </select>
+                  </label>
 
-              <details class="inspector-section">
-                <summary>Label</summary>
-                <div class="style-grid">
-                  <label
-                    >Source<select
-                      value={primaryLabel.source}
-                      onchange={(event) =>
-                        updateSelectedLabel({ source: event.currentTarget.value as "name" | "explicit" })}
-                      ><option value="name">Feature name</option><option value="explicit">Custom text</option></select
-                    ></label>
-                  {#if primaryLabel.source === "explicit"}
-                    <label
-                      >Text<input
-                        type="text"
-                        maxlength="512"
-                        value={primaryLabel.text ?? ""}
-                        onchange={(event) => updateSelectedLabel({ text: event.currentTarget.value })} /></label>
-                  {/if}
-                  <label
-                    >Size<input
-                      type="number"
-                      min="6"
-                      max="96"
-                      value={primaryLabel.size}
-                      onchange={(event) => updateSelectedLabel({ size: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Color<input
-                      type="color"
-                      value={primaryLabel.color}
-                      onchange={(event) => updateSelectedLabel({ color: event.currentTarget.value })} /></label>
-                  <label
-                    >Halo<input
-                      type="color"
-                      value={primaryLabel.haloColor}
-                      onchange={(event) => updateSelectedLabel({ haloColor: event.currentTarget.value })} /></label>
-                  <label
-                    >Halo width<input
-                      type="number"
-                      min="0"
-                      max="16"
-                      step="0.5"
-                      value={primaryLabel.haloWidth}
-                      onchange={(event) =>
-                        updateSelectedLabel({ haloWidth: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Placement<select
-                      value={primaryLabel.placement}
-                      onchange={(event) =>
-                        updateSelectedLabel({ placement: event.currentTarget.value as MapLabelV2["placement"] })}
-                      ><option value="point">Point</option><option value="line">Line</option><option value="interior"
-                        >Interior</option
-                      ></select
-                    ></label>
-                  <label
-                    >Rotation<input
-                      type="number"
-                      min="-360"
-                      max="360"
-                      value={primaryLabel.rotation}
-                      onchange={(event) =>
-                        updateSelectedLabel({ rotation: Number(event.currentTarget.value) })} /></label>
-                  <label
-                    >Min zoom<input
-                      type="number"
-                      min="0"
-                      max="24"
-                      placeholder="none"
-                      value={primaryLabel.minZoom ?? ""}
-                      onchange={(event) =>
-                        updateSelectedLabel({
-                          minZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
-                        })} /></label>
-                  <label
-                    >Max zoom<input
-                      type="number"
-                      min="0"
-                      max="24"
-                      placeholder="none"
-                      value={primaryLabel.maxZoom ?? ""}
-                      onchange={(event) =>
-                        updateSelectedLabel({
-                          maxZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
-                        })} /></label>
-                </div>
-              </details>
-
-              {#if selectedFeatures.length === 1}
-                <details class="inspector-section">
-                  <summary>Custom properties</summary>
-                  {#each Object.entries(primary.properties.daena.custom) as [key, value] (key)}
-                    <div class="property-row">
-                      <span><strong>{key}</strong> {String(value ?? "null")}</span><button
-                        type="button"
-                        class="icon-button"
-                        aria-label={`Remove ${key}`}
-                        onclick={() => removeCustomProperty(key)}><Trash2 {...iconProps} /></button>
+                  <details class="sub-section">
+                    <summary>Style override</summary>
+                    <div class="detail-grid compact">
+                      <label><span>Fill</span><input type="color" value={primaryStyle.fill ?? "#8f6fd1"} onchange={(event) => updateSelectedStyle({ fill: event.currentTarget.value })} /></label>
+                      <label><span>Fill opacity</span>
+                        <div class="range-with-value"><input type="range" min="0" max="1" step="0.05" value={primaryStyle.fillOpacity ?? 0.35} oninput={(event) => updateSelectedStyle({ fillOpacity: Number(event.currentTarget.value) })} /><small>{Math.round((primaryStyle.fillOpacity ?? 0.35)*100)}%</small></div>
+                      </label>
+                      <label><span>Stroke</span><input type="color" value={primaryStyle.stroke ?? "#5e4893"} onchange={(event) => updateSelectedStyle({ stroke: event.currentTarget.value })} /></label>
+                      <label><span>Stroke opacity</span>
+                        <div class="range-with-value"><input type="range" min="0" max="1" step="0.05" value={primaryStyle.strokeOpacity ?? 1} oninput={(event) => updateSelectedStyle({ strokeOpacity: Number(event.currentTarget.value) })} /><small>{Math.round((primaryStyle.strokeOpacity ?? 1)*100)}%</small></div>
+                      </label>
+                      <label><span>Width</span><input type="number" min="0" max="32" step="0.25" value={primaryStyle.strokeWidth ?? 1.5} onchange={(event) => updateSelectedStyle({ strokeWidth: Number(event.currentTarget.value) })} /></label>
+                      <label><span>Point radius</span><input type="number" min="1" max="64" step="1" value={primaryStyle.pointRadius ?? 5} onchange={(event) => updateSelectedStyle({ pointRadius: Number(event.currentTarget.value) })} /></label>
+                      <label><span>Marker</span>
+                        <select value={primaryStyle.icon ?? "circle"} onchange={(event) => updateSelectedStyle({ icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value })}>
+                          <option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option><option value="triangle">Triangle</option><option value="star">Star</option>
+                        </select>
+                      </label>
                     </div>
-                  {/each}
-                  <div class="property-editor">
-                    <input placeholder="Key" aria-label="Custom property key" bind:value={customKey} /><input
-                      placeholder="Value"
-                      aria-label="Custom property value"
-                      bind:value={customValue} /><button type="button" onclick={addCustomProperty}>Add</button>
+                    <button type="button" class="quiet-button small" onclick={clearSelectedOverrides}>Use layer style</button>
+                  </details>
+
+                  <details class="sub-section">
+                    <summary>Label</summary>
+                    <div class="detail-grid compact">
+                      <label><span>Source</span><select value={primaryLabel.source} onchange={(event) => updateSelectedLabel({ source: event.currentTarget.value as "name" | "explicit" })}><option value="name">Feature name</option><option value="explicit">Custom text</option></select></label>
+                      {#if primaryLabel.source === "explicit"}
+                        <label><span>Text</span><input type="text" maxlength="512" value={primaryLabel.text ?? ""} onchange={(event) => updateSelectedLabel({ text: event.currentTarget.value })} /></label>
+                      {/if}
+                      <label><span>Size</span><input type="number" min="6" max="96" value={primaryLabel.size} onchange={(event) => updateSelectedLabel({ size: Number(event.currentTarget.value) })} /></label>
+                      <label><span>Color</span><input type="color" value={primaryLabel.color} onchange={(event) => updateSelectedLabel({ color: event.currentTarget.value })} /></label>
+                      <label><span>Halo</span><input type="color" value={primaryLabel.haloColor} onchange={(event) => updateSelectedLabel({ haloColor: event.currentTarget.value })} /></label>
+                      <label><span>Halo width</span><input type="number" min="0" max="16" step="0.5" value={primaryLabel.haloWidth} onchange={(event) => updateSelectedLabel({ haloWidth: Number(event.currentTarget.value) })} /></label>
+                      <label><span>Placement</span><select value={primaryLabel.placement} onchange={(event) => updateSelectedLabel({ placement: event.currentTarget.value as MapLabelV2["placement"] })}><option value="point">Point</option><option value="line">Line</option><option value="interior">Interior</option></select></label>
+                      <label><span>Rotation</span><input type="number" min="-360" max="360" value={primaryLabel.rotation} onchange={(event) => updateSelectedLabel({ rotation: Number(event.currentTarget.value) })} /></label>
+                      <label><span>Min zoom</span><input type="number" min="0" max="24" placeholder="none" value={primaryLabel.minZoom ?? ""} onchange={(event) => updateSelectedLabel({ minZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) })} /></label>
+                      <label><span>Max zoom</span><input type="number" min="0" max="24" placeholder="none" value={primaryLabel.maxZoom ?? ""} onchange={(event) => updateSelectedLabel({ maxZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) })} /></label>
+                    </div>
+                  </details>
+
+                  {#if selectedFeatures.length === 1}
+                    <details class="sub-section">
+                      <summary>Custom properties</summary>
+                      {#each Object.entries(primary.properties.daena.custom) as [key, value] (key)}
+                        <div class="property-row">
+                          <span><strong>{key}</strong> {String(value ?? "null")}</span>
+                          <button type="button" class="mini-icon danger" aria-label={`Remove ${key}`} onclick={() => removeCustomProperty(key)}><Trash2 size={12} strokeWidth={1.8} /></button>
+                        </div>
+                      {/each}
+                      <div class="property-editor">
+                        <input placeholder="Key" aria-label="Custom property key" bind:value={customKey} />
+                        <input placeholder="Value" aria-label="Custom property value" bind:value={customValue} />
+                        <button type="button" class="quiet-button small" onclick={addCustomProperty}>Add</button>
+                      </div>
+                    </details>
+                    <div class="linked-entity-card">
+                      <strong>Linked entity</strong>
+                      {#if linkedEntity}
+                        <span class="linked-name">{linkedEntity.label || "Linked entry"}</span>
+                        <div class="quick-add-row">
+                          <button type="button" class="quiet-button small" onclick={() => onopen?.(linkedEntity.entityId)}>Open</button>
+                          <button type="button" class="quiet-button small" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Manage link</button>
+                        </div>
+                      {:else}
+                        <span class="section-note">No entity linked. Deleted targets remain visible as unresolved links.</span>
+                        <button type="button" class="quiet-button small" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Link entity</button>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  <div class="quick-add-row">
+                    <button type="button" class="quiet-button small" onclick={() => duplicateSelectedFeatures()}>Duplicate</button>
+                    <button type="button" class="quiet-button small" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit</button>
+                    <button type="button" class="quiet-button small danger" onclick={() => deleteSelectedFeatures()}>Delete</button>
                   </div>
-                </details>
-                <div class="linked-entity">
-                  <strong>Linked entity</strong>
-                  {#if linkedEntity}
-                    <span>{linkedEntity.label || "Linked entry"}</span>
-                    <div class="layer-row">
-                      <button type="button" onclick={() => onopen?.(linkedEntity.entityId)}>Open</button><button
-                        type="button"
-                        onclick={() => openLinkPanel(pickAnchorFor(primary))}>Manage link</button>
-                    </div>
-                  {:else}
-                    <span class="hint">No entity linked. Deleted targets remain visible here as unresolved links.</span>
-                    <button type="button" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Link entity</button>
-                  {/if}
+                  <p class="field-hint">Shift-click adds to selection. Alt-click a vertex to delete it.</p>
                 </div>
-              {/if}
+              </details>
+            {/if}
 
-              <div class="layer-row">
-                <button type="button" onclick={() => duplicateSelectedFeatures()}>Duplicate</button>
-                <button type="button" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit</button>
-                <button type="button" onclick={() => deleteSelectedFeatures()}>Delete</button>
-              </div>
-              <p class="hint">Shift-click adds to selection. Alt-click a vertex to delete it.</p>
-            </div>
-          {/if}
-          {#if !physicalMap}
-            <p class="hint">
-              Base geography is read-only. Point, line, polygon, rectangle, and freehand edits save through the
-              canonical GeoJSON source. Delete removes the selected feature.
-            </p>
-          {/if}
+            {#if !physicalMap}
+              <p class="section-note foot-note">Base geography is read-only. Point, line, polygon, rectangle, and freehand edits save through the canonical GeoJSON source. Delete removes the selected feature.</p>
+            {/if}
+          </div>
         </aside>
+
         <button
           type="button"
           class="sidebar-resizer"
@@ -3133,73 +2932,25 @@ onMount(() => {
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  background: #17211d;
-  color: #edf2ec;
+  background: var(--canvas, #f7f6f2);
+  color: var(--ink);
 }
-.header-actions,
-.layer-row,
-.style-row {
+
+/* keep header-actions for topbar */
+.header-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
-.calibrate {
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  font: 12px system-ui;
-}
-.calibrate input {
-  width: 100%;
-}
-.studio-open {
-  width: 100%;
-  padding: 10px 12px;
-  font-size: 13px;
-}
-.aside-toggle {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-.aside-chevron {
-  display: grid;
-  place-items: center;
-  transform: rotate(0deg);
-}
-.aside-chevron.collapsed {
-  transform: rotate(-90deg);
-}
-button {
-  border: 0;
-  border-radius: 7px;
-  padding: 8px 10px;
-  background: #31443b;
-  color: #edf2ec;
-  font: 700 12px system-ui;
-  cursor: pointer;
-}
-button.active,
-button.save {
-  background: #d5ab6c;
-  color: var(--brass-ink);
-}
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
+
 .editor-body {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: var(--sidebar-width, 260px) 6px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 300px) 6px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  background: var(--canvas, #f7f6f2);
 }
 .editor-body.studio {
   grid-template-columns: minmax(0, 1fr);
@@ -3209,12 +2960,1167 @@ button:disabled {
   padding: 0;
   border: 0;
   border-radius: 0;
-  background: #405047;
+  background: var(--line, #e4e1d8);
   cursor: col-resize;
 }
 .sidebar-resizer:hover,
 .sidebar-resizer:focus-visible {
-  background: #d5ab6c;
+  background: var(--line-strong, #d9cdbd);
+}
+
+/* ───────── Map Layers Panel ───────── */
+.map-layers-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface, #fffefa);
+  border-right: 1px solid var(--line, #e4e1d8);
+  color: var(--ink);
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+
+/* panel header - like CollectionPane */
+.map-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+  background: var(--surface, #fffefa);
+}
+.map-panel-head-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.map-panel-head-copy .panel-kicker {
+  color: var(--accent, #b4773f);
+  font-weight: 800;
+  font-size: 10px;
+  line-height: 1;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.map-panel-head-copy strong {
+  color: var(--ink);
+  font-weight: 650;
+  font-size: 12px;
+  line-height: 1.2;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-panel-subtitle {
+  color: var(--ink-faint, #aaa79d);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.panel-icon-btn {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  flex: 0 0 32px;
+  padding: 0;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft, #77766d);
+  cursor: pointer;
+}
+.panel-icon-btn:hover:not(:disabled) {
+  border-color: var(--line-strong, #d9cdbd);
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink);
+}
+.panel-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* search */
+.map-search-wrap {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+  background: var(--surface, #fffefa);
+}
+.map-search {
+  position: relative;
+}
+.map-search > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 9px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-faint);
+  box-shadow: 0 1px 2px rgba(34, 40, 34, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.map-search:focus-within > label {
+  border-color: var(--line-strong, #d9cdbd);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft, #c99965) 18%, transparent);
+}
+.map-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 9px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.map-search input::placeholder {
+  color: var(--ink-faint);
+}
+.search-clear {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  flex: 0 0 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.search-clear:hover {
+  background: var(--line, #e4e1d8);
+  color: var(--ink);
+}
+.map-search-results {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 10px;
+  background: var(--surface, #fffefa);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(38,42,33,0.12));
+}
+.map-search-results button {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.map-search-results button:hover,
+.map-search-results button[aria-selected="true"] {
+  background: var(--surface-muted, #f4f2ec);
+}
+.result-name {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1.2;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-meta {
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-empty {
+  margin: 0;
+  padding: 10px 8px;
+  color: var(--ink-faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* studio callout */
+.studio-callout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+  background: var(--surface-subtle, #f7f3ec);
+}
+.studio-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft);
+  font-weight: 650;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  cursor: pointer;
+}
+.studio-open-btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.studio-open-btn.active {
+  border-color: var(--accent-soft, #c99965);
+  background: var(--accent-bg, #f2e4d2);
+  color: var(--accent, #b4773f);
+}
+.studio-open-btn small {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.studio-open-btn.active small {
+  background: var(--surface);
+  color: var(--accent);
+}
+.studio-hint {
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+/* body */
+.map-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-bottom: 12px;
+  background: var(--surface, #fffefa);
+}
+
+/* section groups - mimic InspectorSection */
+.map-section-group {
+  border-bottom: 1px solid var(--line, #e4e1d8);
+}
+.map-section-group summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 12px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  color: var(--ink-soft);
+}
+.map-section-group summary::-webkit-details-marker {
+  display: none;
+}
+.map-section-group summary:hover {
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink);
+}
+.map-section-group summary :global(svg) {
+  flex: 0 0 14px;
+  transition: transform 0.16s ease;
+  color: var(--ink-faint);
+}
+.map-section-group[open] summary :global(svg) {
+  transform: rotate(90deg);
+}
+.map-section-group summary strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.map-section-group summary:hover strong {
+  color: var(--ink);
+}
+.section-count {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink-faint);
+  font-weight: 700;
+  font-size: 9px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  text-align: center;
+}
+.map-section-group[open] .section-count {
+  background: var(--accent-bg, #f2e4d2);
+  color: var(--accent, #b4773f);
+}
+.section-body {
+  padding: 10px 12px 14px;
+  display: grid;
+  gap: 10px;
+}
+.section-note {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.empty-note {
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px dashed var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface-subtle, #f7f3ec);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+.foot-note {
+  margin: 8px 12px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line, #e4e1d8);
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+/* quick add row */
+.quick-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.quick-add-row .quiet-button.small,
+.quick-add-row .ghost-btn.small,
+.quick-add-row .primary-button.small {
+  padding: 6px 9px;
+  border-radius: 7px;
+  font-weight: 650;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.quiet-button.small {
+  border: 1px solid var(--line, #e4e1d8);
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.quiet-button.small:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.quiet-button.small:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ghost-btn.small {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ghost-btn.small:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.ghost-btn.small.active {
+  border-color: var(--line-strong);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.primary-button.small {
+  border: 1px solid var(--accent, #b4773f);
+  background: var(--accent, #b4773f);
+  color: var(--on-accent, #fffefa);
+  cursor: pointer;
+}
+.primary-button.small:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+.primary-button.small:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* snap config */
+.snap-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 9px;
+  background: var(--surface-subtle, #f7f3ec);
+}
+.snap-config label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  cursor: pointer;
+}
+.snap-config small {
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+/* layer list */
+.layer-list,
+.raster-list {
+  display: grid;
+  gap: 6px;
+}
+.layer-card,
+.raster-card {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 10px;
+  background: var(--surface, #fffefa);
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.layer-card:hover {
+  border-color: var(--line-strong, #d9cdbd);
+  box-shadow: 0 1px 6px rgba(38,42,33,0.06);
+}
+.layer-card.active {
+  border-color: var(--accent-soft, #c99965);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-soft) 22%, transparent), 0 2px 10px rgba(38,42,33,0.07);
+}
+.layer-card.locked {
+  opacity: 0.92;
+}
+.layer-card.immutable {
+  background: var(--surface-muted, #f4f2ec);
+  border-style: dashed;
+}
+.layer-card-main,
+.raster-card-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 6px 4px 4px;
+}
+.drag-handle {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 28px;
+  flex: 0 0 16px;
+  color: var(--ink-faint);
+  cursor: grab;
+  border-radius: 4px;
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+.layer-kind-icon,
+.raster-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  border-radius: 7px;
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink-soft);
+}
+.layer-card.active .layer-kind-icon {
+  background: var(--accent-bg, #f2e4d2);
+  color: var(--accent, #b4773f);
+}
+.layer-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.layer-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1.2;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.layer-card.active .layer-name-text {
+  color: var(--ink);
+}
+.layer-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-faint);
+  font-weight: 500;
+  font-size: 10px;
+  line-height: 1;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.layer-name input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong, #d9cdbd);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  outline: 0;
+}
+.layer-name input:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 18%, transparent);
+}
+.layer-card-actions,
+.raster-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+.mini-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.mini-icon:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.mini-icon.off {
+  background: var(--surface-muted);
+  color: var(--ink-faint);
+  border-color: transparent;
+}
+.mini-icon.danger {
+  color: var(--danger, #a14f42);
+}
+.mini-icon.danger:hover:not(:disabled) {
+  background: var(--danger-bg, #fdf2ef);
+  border-color: var(--danger-line, #e7c4bc);
+  color: var(--danger);
+}
+.mini-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.mini-icon.more-btn.active {
+  border-color: var(--line-strong, #d9cdbd);
+  background: var(--surface-muted, #f4f2ec);
+  color: var(--ink);
+}
+.mini-icon.customize-btn.active {
+  border-color: var(--accent-soft, #c99965);
+  background: var(--accent-bg, #f2e4d2);
+  color: var(--accent, #b4773f);
+}
+.layer-menu {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border-top: 1px solid var(--line, #e4e1d8);
+  background: var(--surface-subtle, #f7f3ec);
+  animation: layer-menu-in 0.12s ease;
+}
+@keyframes layer-menu-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.layer-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  text-align: left;
+  cursor: pointer;
+}
+.layer-menu-item:hover:not(:disabled) {
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+}
+.layer-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.layer-menu-item.danger {
+  color: var(--danger, #a14f42);
+}
+.layer-menu-item.danger:hover:not(:disabled) {
+  background: var(--danger-bg, #fdf2ef);
+  color: var(--danger, #a14f42);
+}
+.layer-menu-item.active {
+  background: var(--accent-bg, #f2e4d2);
+  color: var(--accent, #b4773f);
+}
+.layer-menu-separator {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line, #e4e1d8);
+}
+.layer-menu-meta {
+  padding: 6px 8px;
+  color: var(--ink-faint);
+  font-weight: 500;
+  font-size: 9px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  text-align: center;
+}
+.layer-advanced {
+  margin-top: 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface, #fffefa);
+}
+.layer-advanced summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 9px;
+  background: var(--surface-subtle, #f7f3ec);
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 9px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
+}
+.layer-advanced summary::-webkit-details-marker { display: none; }
+.layer-advanced[open] summary { border-bottom: 1px solid var(--line, #e4e1d8); }
+.layer-advanced summary:hover { color: var(--ink); }
+.layer-advanced .detail-grid { padding: 8px; }
+.layer-card-toolbar,
+.raster-card-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line, #e4e1d8);
+  background: var(--surface-subtle, #f7f3ec);
+  overflow-x: auto;
+}
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 6px;
+  background: var(--surface, #fffefa);
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  white-space: nowrap;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.toolbar-btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.toolbar-btn.active {
+  border-color: var(--accent-soft);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.toolbar-btn.danger {
+  color: var(--danger, #a14f42);
+}
+.toolbar-btn.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger-line);
+}
+.toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.toolbar-spacer {
+  flex: 1;
+}
+.toolbar-meta {
+  color: var(--ink-faint);
+  font-weight: 500;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+/* layer detail */
+.layer-customize {
+  display: grid;
+  gap: 10px;
+  padding: 10px 11px 12px;
+  border-top: 1px solid var(--accent-soft, #c99965);
+  background: var(--accent-bg, #f2e4d2);
+}
+.opacity-group {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-soft, #c99965) 40%, transparent);
+}
+.customize-label {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.detail-range {
+  display: grid;
+  grid-template-columns: 60px 1fr 36px;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.detail-range.small {
+  grid-template-columns: 60px 1fr 36px;
+}
+.detail-range span {
+  color: var(--ink-soft);
+}
+.detail-range em {
+  color: var(--ink-faint);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.detail-range input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent, #b4773f);
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.detail-grid.compact {
+  gap: 8px;
+}
+.detail-grid label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.detail-grid label span {
+  color: var(--ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.detail-grid input[type="color"] {
+  width: 100%;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  cursor: pointer;
+}
+.detail-grid input[type="number"],
+.detail-grid input[type="text"],
+.detail-grid select {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  outline: 0;
+}
+.detail-grid input:focus,
+.detail-grid select:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 16%, transparent);
+}
+.range-with-value {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+.range-with-value small {
+  color: var(--ink-faint);
+  font-weight: 600;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* raster */
+.raster-card-main .raster-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.calibrate-field {
+  display: grid;
+  gap: 6px;
+}
+.calibrate-field span {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.calibrate-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+}
+.calibrate-row input {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.calibrate-row input:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 16%, transparent);
+  outline: 0;
+}
+
+/* event / geometry / selection */
+.event-control {
+  display: grid;
+  gap: 10px;
+}
+.event-control label {
+  display: grid;
+  gap: 4px;
+}
+.event-control label span {
+  color: var(--ink-faint);
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.event-control select,
+.event-control input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.event-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.field-hint {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.inline-field input {
+  width: 84px;
+  padding: 6px 7px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.geometry-ops {
+  display: grid;
+  gap: 8px;
+}
+.sub-section {
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface, #fffefa);
+}
+.sub-section summary {
+  padding: 8px 10px;
+  background: var(--surface-subtle, #f7f3ec);
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
+}
+.sub-section summary::-webkit-details-marker { display: none; }
+.sub-section[open] summary {
+  border-bottom: 1px solid var(--line, #e4e1d8);
+}
+.sub-section .detail-grid {
+  padding: 10px;
+}
+.sub-section .quiet-button {
+  margin: 0 10px 10px;
+}
+.field {
+  display: grid;
+  gap: 5px;
+}
+.field span {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.field input,
+.field select {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 16%, transparent);
+  outline: 0;
+}
+.selection-head {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line, #e4e1d8);
+}
+.selection-title {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.2;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  overflow-wrap: anywhere;
+}
+.property-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface-subtle, #f7f3ec);
+  font-size: 12px;
+}
+.property-row strong {
+  color: var(--ink);
+}
+.property-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  padding: 10px;
+}
+.property-editor input {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-weight: 500;
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.linked-entity-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 11px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 9px;
+  background: var(--surface-subtle, #f7f3ec);
+}
+.linked-entity-card strong {
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 10px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.linked-name {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 12px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+
+/* canvas / stage remain dark */
+.canvas {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: #0d1b2a;
+}
+.map-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.map-host :global(.ol-viewport) {
+  width: 100%;
+  height: 100%;
+}
+.stage {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: #0d1b2a;
+}
+.canvas.picking {
+  outline: 2px solid var(--accent-soft, #c99965);
+  outline-offset: -2px;
+}
+.map-busy {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.3rem;
+  pointer-events: none;
+  color: #f7f0e5;
+  text-align: center;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
+}
+.map-busy strong {
+  font: 600 1.05rem/1.3 inherit;
+}
+.map-busy span {
+  color: #d9d0c3;
+  font-size: 0.8rem;
 }
 .epoch-control {
   position: absolute;
@@ -3237,23 +4143,6 @@ button:disabled {
   width: 140px;
   min-width: 0;
   accent-color: #d5ab6c;
-}
-.snap-config,
-.geometry-ops {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 8px;
-  background: rgb(27 40 34 / 72%);
-  font-size: 12px;
-}
-.snap-config label,
-.geometry-ops label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .measure-readout {
   position: absolute;
@@ -3285,41 +4174,6 @@ button:disabled {
   color: #d8e3d9;
   font-size: 12px;
 }
-.event-control {
-  display: grid;
-  gap: 8px;
-  padding: 4px 0 8px;
-  color: #d8e3d9;
-  font-size: 12px;
-}
-.event-control label {
-  display: grid;
-  gap: 4px;
-  color: var(--theme-neutral-text-muted, #aebdb1);
-  font-size: 11px;
-}
-.event-control input,
-.event-control select {
-  min-width: 0;
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 6px;
-  padding: 6px 7px;
-  background: #0f1a16;
-  color: #edf2ec;
-  font: 12px system-ui;
-}
-.event-control small {
-  color: var(--theme-neutral-text-muted, #aebdb1);
-}
-aside {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  overflow: auto;
-  border-right: 1px solid var(--theme-neutral-border-strong, #405047);
-  background: #1b2822;
-}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -3329,234 +4183,39 @@ aside {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
 }
-.map-search {
-  position: relative;
-}
-.map-search > label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 7px;
-  background: #0f1a16;
-}
-.map-search input {
-  min-width: 0;
-  width: 100%;
-  padding: 8px 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: #edf2ec;
-}
-.map-search-results {
-  display: grid;
-  gap: 3px;
-  max-height: 230px;
-  margin-top: 5px;
-  overflow: auto;
-  padding: 4px;
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 7px;
-  background: #101c17;
-}
-.map-search-results button {
-  display: grid;
-  gap: 2px;
-  padding: 7px 8px;
-  background: transparent;
-  text-align: left;
-}
-.map-search-results small {
-  color: var(--theme-neutral-text-muted, #aebdb1);
-  font-weight: 500;
-}
-.hazard-legend {
-  margin: 0;
-  color: var(--theme-neutral-text-muted, #aebdb1);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.layer-list {
-  display: grid;
-  gap: 6px;
-}
-.layer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 2px 4px;
-  padding: 1px 4px;
-  border-radius: 6px;
-  background: #18241f;
-}
-.layer.active {
-  outline: 1px solid var(--theme-warning-border, #d5ab6c);
-}
-.layer-name {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-start;
-  text-align: left;
-  width: 100%;
-  padding: 4px 6px;
-  background: transparent;
-  font-weight: 600;
-}
-.layer-meta {
-  color: var(--theme-neutral-text-muted, #aebdb1);
-  font-size: 10px;
-  font-weight: 500;
-}
-.style-row {
-  grid-column: 1 / -1;
-}
-.inspector {
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 8px;
-  background: #18241f;
-}
-.inspector-section {
-  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
-  padding-top: 6px;
-}
-.inspector-section summary {
-  cursor: pointer;
-  font-weight: 700;
-}
-.style-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin: 7px 0;
-}
-.style-grid label {
-  display: grid;
-  gap: 3px;
-  color: #b8c8bc;
-  font-size: 10px;
-}
-.property-row,
-.linked-entity {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-.property-editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 4px;
-  margin-top: 6px;
-}
-.linked-entity {
-  align-items: flex-start;
-  flex-direction: column;
-  padding-top: 6px;
-  border-top: 1px solid var(--theme-neutral-border-strong, #405047);
-}
-.inspector input,
-.inspector select,
-.layer-name input,
-.style-row input[type="number"] {
-  width: 100%;
-  border: 0;
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: #0f1a16;
-  color: #edf2ec;
-}
-.style-row label {
-  display: grid;
-  gap: 4px;
-  font-size: 11px;
-  color: #b8c8bc;
-}
-.canvas {
-  position: relative;
-  display: flex;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  background: #0d1b2a;
-}
-.map-host {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-.map-host :global(.ol-viewport) {
-  width: 100%;
-  height: 100%;
-}
-.stage {
-  position: relative;
-  display: flex;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-}
-.canvas.picking {
-  outline: 2px solid var(--theme-warning-border, #d5ab6c);
-  outline-offset: -2px;
-}
-.map-busy {
-  position: absolute;
-  z-index: 3;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 0.3rem;
-  pointer-events: none;
-  color: #f7f0e5;
-  text-align: center;
-  text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
-}
-.map-busy strong {
-  font: 600 1.05rem/1.3 inherit;
-}
-.map-busy span {
-  color: #d9d0c3;
-  font-size: 0.8rem;
-}
-.icon-button {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 1px solid var(--theme-neutral-border-strong, #4d6358);
-  background: transparent;
-}
-.layer-row {
-  flex-wrap: nowrap;
-  gap: 2px;
-}
-.layer-row .icon-button {
-  width: 22px;
-  height: 22px;
-}
 .hint,
 .error {
-  color: #bac7bd;
+  color: var(--ink-faint);
   line-height: 1.45;
+  font-size: 11px;
 }
 .error {
   margin: 0;
   padding: 8px 16px;
-  color: #f5a49c;
+  color: var(--danger, #a14f42);
+  background: var(--danger-bg, #fdf2ef);
+  border-bottom: 1px solid var(--danger-line, #e7c4bc);
 }
 button:focus-visible {
-  outline: 2px solid var(--theme-warning-border, #f3d39a);
+  outline: 2px solid var(--accent-soft, #c99965);
   outline-offset: 2px;
+}
+@media (max-width: 900px) {
+  .editor-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 6px  minmax(320px, 1fr);
+  }
+  .map-layers-panel {
+    max-height: 42vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar-resizer {
+    display: none;
+  }
+  .event-grid {
+    grid-template-columns: 1fr;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .native-vector-editor,
@@ -3565,9 +4224,5 @@ button:focus-visible {
     animation: none !important;
   }
 }
-@media (max-width: 900px) {
-  .event-control {
-    grid-template-columns: 1fr;
-  }
-}
+
 </style>

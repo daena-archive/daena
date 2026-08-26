@@ -135,6 +135,11 @@ assert.equal(
   null,
   "physical viewers can suppress generated feature labels without changing authored styles",
 );
+assert.equal(
+  nativeFeatureStyle(olFeature, [layer], { hovered: false, selected: false, zoom: 4, labelsVisible: (id) => id !== layer.id }).getText(),
+  null,
+  "label visibility can be controlled per layer without changing feature styles",
+);
 assert.equal(nativeFeatureStyle(olFeature, [layer], { hovered: false, selected: false, zoom: 1 }).getText(), null);
 assert.ok(featureStyleCacheSize() >= 2);
 

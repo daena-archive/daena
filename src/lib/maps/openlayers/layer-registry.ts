@@ -87,7 +87,7 @@ export function createLayerRegistry(
   codec: FeatureCodec,
   space: MapCoordinateSpace,
   projection: Projection,
-  options: { labelsVisible?: boolean } = {},
+  options: { labelsVisible?: boolean | ((layerId: string) => boolean) } = {},
 ): LayerRegistry {
   const selectedIds = new Set<string>();
   let hoveredId: string | null = null;
@@ -115,7 +115,10 @@ export function createLayerRegistry(
       hovered: id === hoveredId,
       selected: selectedIds.has(id),
       zoom: resolution && resolution > 0 ? Math.max(0, Math.log2(authoredWidth / 256 / resolution)) : undefined,
-      labelsVisible: options.labelsVisible,
+      labelsVisible:
+        typeof options.labelsVisible === "function"
+          ? options.labelsVisible(String(feature.get("daenaLayerId") ?? ""))
+          : options.labelsVisible,
     });
   };
 

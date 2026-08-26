@@ -61,7 +61,8 @@ export type MapCommandKind =
   | "SetDefaultView"
   | "SetCoordinateSpace"
   | "ApplyGeometryOperation"
-  | "SetSnapSettings";
+  | "SetSnapSettings"
+  | "DetachPhysicalFeatures";
 
 export type MapCommand = {
   kind: MapCommandKind;
@@ -577,6 +578,62 @@ export function setLayerVisibilityCommand(layerId: string, defaultVisible: boole
     },
     invert() {
       return setLayerVisibilityCommand(layerId, previous, defaultVisible);
+    },
+  };
+}
+
+export function detachPhysicalFeaturesCommand(input: {
+  sourceLayerId: string;
+  sourceLayerName: string;
+  sourceWasVisible: boolean;
+  targetLayer: VectorLayerDefinition;
+  copies: VectorFeature[];
+}): MapCommand {
+  const copyIds = new Set(input.copies.map((feature) => feature.id));
+  const label = `Detach ${input.sourceLayerName} for editing`;
+  return {
+    kind: "DetachPhysicalFeatures",
+    label,
+    apply(document) {
+      const source = findLayer(document.layers, input.sourceLayerId);
+      if (!source || source.kind !== "vector" || !source.locked || findLayer(document.layers, input.targetLayer.id)) {
+        return document;
+      }
+      const layers = document.layers.map((layer) =>
+        layer.id === input.sourceLayerId ? { ...layer, defaultVisible: false } : layer,
+      );
+      return withCollection(
+        withLayers(document, [...layers, JSON.parse(JSON.stringify(input.targetLayer)) as VectorLayerDefinition]),
+        {
+          type: "FeatureCollection",
+          features: [...document.collection.features, ...input.copies.map((feature) => JSON.parse(JSON.stringify(feature)))],
+        },
+      );
+    },
+    invert() {
+      return {
+        kind: "DetachPhysicalFeatures",
+        label: `Undo ${label.toLocaleLowerCase()}`,
+        apply(document) {
+          return withCollection(
+            withLayers(
+              document,
+              document.layers
+                .filter((layer) => layer.id !== input.targetLayer.id)
+                .map((layer) =>
+                  layer.id === input.sourceLayerId ? { ...layer, defaultVisible: input.sourceWasVisible } : layer,
+                ),
+            ),
+            {
+              type: "FeatureCollection",
+              features: document.collection.features.filter((feature) => !copyIds.has(feature.id)),
+            },
+          );
+        },
+        invert() {
+          return detachPhysicalFeaturesCommand(input);
+        },
+      };
     },
   };
 }

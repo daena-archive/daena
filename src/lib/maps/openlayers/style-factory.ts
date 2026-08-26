@@ -18,7 +18,7 @@ export type FeatureStyleState = {
   hovered: boolean;
   selected: boolean;
   zoom?: number;
-  labelsVisible?: boolean;
+  labelsVisible?: boolean | ((layerId: string) => boolean);
 };
 
 const styleCache = new Map<string, Style>();
@@ -90,7 +90,7 @@ export function nativeFeatureStyle(
   if (layerId === BASE_LAYER_ID) {
     if (!baseVisible(layers)) return undefined;
     const name = feature.get("name");
-    const text = state.labelsVisible === false ? "" : typeof name === "string" ? name.trim() : "";
+    const text = labelRenderingEnabled(state, BASE_LAYER_ID) ? (typeof name === "string" ? name.trim() : "") : "";
     const key = JSON.stringify(["base", text, state.hovered, state.selected]);
     return cacheStyle(
       key,
@@ -116,7 +116,7 @@ export function nativeFeatureStyle(
   if (!layer?.defaultVisible) return undefined;
   const style = resolvedStyle(feature, layer);
   const label = resolvedLabel(feature, style);
-  const text = state.labelsVisible !== false && labelVisible(label, state.zoom) ? labelText(feature, label) : "";
+  const text = labelRenderingEnabled(state, layerId ?? "") && labelVisible(label, state.zoom) ? labelText(feature, label) : "";
   const key = JSON.stringify([style, label, text, state.hovered, state.selected]);
   return cacheStyle(key, () => {
     const fillColor = state.selected ? "rgba(213, 171, 108, 0.56)" : colorWithOpacity(style.fill, style.fillOpacity);
@@ -155,6 +155,10 @@ export function nativeFeatureStyle(
           : undefined,
     });
   });
+}
+
+function labelRenderingEnabled(state: FeatureStyleState, layerId: string): boolean {
+  return typeof state.labelsVisible === "function" ? state.labelsVisible(layerId) : state.labelsVisible !== false;
 }
 
 export function clearFeatureStyleCache() {

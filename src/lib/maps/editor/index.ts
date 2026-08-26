@@ -31,6 +31,7 @@ export {
   deleteLayerCommand,
   duplicateFeaturesCommand,
   duplicateLayerCommand,
+  detachPhysicalFeaturesCommand,
   layersFieldValue,
   listedBackgrounds,
   moveFeaturesToLayerCommand,

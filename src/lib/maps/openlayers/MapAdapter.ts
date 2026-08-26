@@ -108,7 +108,8 @@ export function createMapAdapter(
     readOnly?: boolean;
     onMeasureReadout?: (readout: MeasureReadout | null) => void;
     initialSnapOptions?: SnapOptions;
-    labelsVisible?: boolean;
+    labelsVisible?: boolean | ((layerId: string) => boolean);
+    allowLockedBoxSelection?: boolean;
   },
 ): MapAdapter | { error: typeof RENDERER_UNAVAILABLE; detail: string } {
   let disposed = false;
@@ -204,6 +205,7 @@ export function createMapAdapter(
     onSelectionChange: emitSelection,
     onDiagnostic: session.onDiagnostic,
     onMeasureReadout: session.onMeasureReadout,
+    allowLockedBoxSelection: session.allowLockedBoxSelection === true,
   });
 
   if (session.initialSnapOptions) {

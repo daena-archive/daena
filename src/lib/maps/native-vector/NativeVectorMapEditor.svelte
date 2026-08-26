@@ -86,9 +86,16 @@ import {
   type VectorLayerDefinition,
 } from "./types";
 import { paintPhysicalSurface } from "../physical/raster";
-import PhysicalWorldView from "../physical/PhysicalWorldView.svelte";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
+import DetachPhysicalLayerDialog from "../physical/DetachPhysicalLayerDialog.svelte";
+import {
+  buildPhysicalDetachPlan,
+  isPhysicalDerivedLayerId,
+  physicalFeaturesForLayer,
+  selectedPhysicalFeatures,
+  type PhysicalDetachScope,
+} from "../physical/detach";
 import MapViewControls from "./MapViewControls.svelte";
 import {
   CommandStack,
@@ -134,6 +141,7 @@ import {
   setLayerOpacityCommand,
   setLayerStyleCommand,
   setLayerVisibilityCommand,
+  detachPhysicalFeaturesCommand,
   applyGeometryOperationCommand,
   setSnapSettingsCommand,
   snapEnabledFromDescriptor,
@@ -179,6 +187,7 @@ let editor = $state.raw<MapAdapter | null>(null);
 let commandStack = $state.raw<CommandStack | null>(null);
 let canUndo = $state(false);
 let canRedo = $state(false);
+let derivedPhysical = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<MapLayerDefinition[]>([]);
@@ -252,8 +261,9 @@ let layersCollapsed = $state(false);
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
 let epochYearsAbs = $state(0);
-let physicalLayerVisibility = $state<Map<string, boolean>>(new Map());
 let sidebarWidth = $state(260);
+let detachLayerId = $state<string | null>(null);
+let detachError = $state("");
 
 let loadGeneration = 0;
 let saveGeneration = 0;
@@ -265,7 +275,6 @@ let linkPanelOpen = $state(false);
 let linkArming = $state(false);
 let linkAnchor = $state<MapAnchor | null>(null);
 let pinsReady = $state(false);
-let physicalEditor = $state<MapAdapter | null>(null);
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
@@ -292,6 +301,9 @@ const mapSearchIndex = $derived(buildMapSearchIndex(draft, layers, linkedEntityN
 const mapSearchResults = $derived(searchMapFeatures(mapSearchIndex, featureSearch));
 const selectedFeatures = $derived(
   commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
+);
+const detachLayer = $derived(
+  detachLayerId ? layers.find((layer) => layer.id === detachLayerId && isVectorLayer(layer)) ?? null : null,
 );
 const viewMaxZoom = $derived(maxZoomForCoordinateSpace(coordinateSpace));
 const brandIcon = $derived((physicalMap ? Mountain : MapIcon) as Component);
@@ -348,6 +360,14 @@ function runtimeBackgrounds(): RuntimeBackground[] {
       },
     ];
   });
+}
+
+function renderedCollection(authored: VectorFeatureCollection): VectorFeatureCollection {
+  if (!physicalMap) return authored;
+  return {
+    type: "FeatureCollection",
+    features: [...derivedPhysical.features, ...authored.features],
+  };
 }
 
 function runtimeLayerRasters(): Map<string, RasterLayerSource> {
@@ -539,7 +559,7 @@ function applyFeatureLinks(
 
 function focusLinkedLocation(linkId: string | null | undefined) {
   if (!linkId || picking || linkArming || !pinsReady) return false;
-  const target = editor ?? physicalEditor;
+  const target = editor;
   if (!target) return false;
   const anchor = linkAnchors.get(linkId);
   if (!anchor) return false;
@@ -603,8 +623,8 @@ function cloneCollection(collection: VectorFeatureCollection): VectorFeatureColl
 function syncUiFromStack(restoreView = false) {
   if (!commandStack) return;
   const snap = commandStack.snapshot();
-  draft = snap.document.collection;
-  layers = withPhysicalVisibility(snap.document.layers);
+  draft = renderedCollection(snap.document.collection);
+  layers = snap.document.layers;
   if (mapField) {
     mapField = { ...mapField, value: snap.document.descriptor as FieldValue["value"] };
   }
@@ -636,8 +656,8 @@ function resetCommandStack(documentInput: {
 }) {
   const document = createMapDocument(documentInput);
   commandStack = new CommandStack(document);
-  draft = document.collection;
-  layers = withPhysicalVisibility(document.layers);
+  draft = renderedCollection(document.collection);
+  layers = document.layers;
   loaded = cloneCollection(document.collection);
   canUndo = false;
   canRedo = false;
@@ -843,14 +863,6 @@ function moveSelectedToLayer(layerId: string) {
   editor.switchLayer(layerId);
 }
 
-function persistedCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
-  if (!physicalMap) return collection;
-  return {
-    type: "FeatureCollection",
-    features: collection.features.filter((feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature))),
-  };
-}
-
 function physicalHillshadeCanvas(products: {
   width: number;
   height: number;
@@ -866,7 +878,7 @@ function physicalHillshadeCanvas(products: {
 function applyLayersField(field: FieldValue) {
   layersField = field;
   layersFieldRevision = field.revision;
-  const parsed = withPhysicalVisibility(parseVectorLayers(field.value));
+  const parsed = parseVectorLayers(field.value);
   layers = parsed;
   if (commandStack) {
     commandStack.replaceDocument({
@@ -878,14 +890,6 @@ function applyLayersField(field: FieldValue) {
           : commandStack.document.descriptor,
     });
   }
-}
-
-function withPhysicalVisibility(next: MapLayerDefinition[]) {
-  if (physicalLayerVisibility.size === 0) return next;
-  return next.map((layer) => {
-    const visible = physicalLayerVisibility.get(layer.id);
-    return visible === undefined ? layer : { ...layer, defaultVisible: visible };
-  });
 }
 
 function destroyEditor() {
@@ -911,12 +915,14 @@ function syncEpochFields(offset: number) {
 }
 
 function commitEpoch(offset: number) {
+  if (busy || epochBusy || dirty) return;
   const next = clampEpoch(offset);
   syncEpochFields(next);
   scheduleEpoch(next);
 }
 
 function commitEpochFromExact(absYears: number, era: "past" | "future") {
+  if (busy || epochBusy || dirty) return;
   const magnitude = Math.max(0, Math.round(Number.isFinite(absYears) ? absYears : 0));
   epochYearsAbs = magnitude;
   epochEra = era;
@@ -955,17 +961,9 @@ function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
 }
 
 function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
-  const authoredDraft = draft.features.filter((feature) => !immutablePhysicalLayerIds.has(featureLayerId(feature)));
+  if (!commandStack || commandStack.isDirty()) return;
   const physical = parseDerivedCollection(products.geojson);
-  const combined = {
-    type: "FeatureCollection" as const,
-    features: [...physical.features, ...authoredDraft],
-  };
-  resetCommandStack({
-    descriptor: mapField?.value ?? commandStack?.document.descriptor ?? {},
-    layers,
-    collection: combined,
-  });
+  derivedPhysical = physical;
   const canvas = physicalHillshadeCanvas(products.hydrology);
   rasterAssets = new Map([
     ["physical", { url: "", width: products.hydrology.width, height: products.hydrology.height, canvas }],
@@ -973,10 +971,13 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
   syncEpochFields(products.epochOffsetYears);
+  draft = renderedCollection(commandStack.document.collection);
+  editor?.syncDocument(draft, layers, runtimeLayerRasters());
+  editor?.syncBackgrounds(runtimeBackgrounds());
 }
 
 async function loadPhysicalEpoch(offset: number) {
-  if (!mapId || !physicalMap) return;
+  if (!mapId || !physicalMap || commandStack?.isDirty()) return;
   const request = ++epochRequest;
   const requestId = crypto.randomUUID();
   activeEpochRequestId = requestId;
@@ -1055,11 +1056,6 @@ function scheduleEpoch(offset: number) {
 }
 
 function mountEditor() {
-  if (physicalMap) {
-    destroyEditor();
-    publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
-    return;
-  }
   if (!host) return;
   destroyEditor();
   mountedSpaceKey = coordinateSpaceKey(coordinateSpace);
@@ -1142,7 +1138,8 @@ function mountEditor() {
     onMeasureReadout(readout) {
       measureReadout = readout?.label ?? "";
     },
-    labelsVisible: !physicalMap,
+    labelsVisible: physicalMap ? (layerId) => !isPhysicalDerivedLayerId(layerId) : true,
+    allowLockedBoxSelection: physicalMap,
   });
   if ("error" in created) {
     applyEditorEvent({ type: "save-failed", message: `${created.error}: ${created.detail}` });
@@ -1151,8 +1148,7 @@ function mountEditor() {
   }
   editor = created;
   syncSnapToEditor();
-  if (!canDraw) editor.setMode("static");
-  else editor.setMode(tool);
+  editor.setMode(canDraw || tool === "select" || tool === "static" || tool.startsWith("measure-") ? tool : "static");
   requestAnimationFrame(() => editor?.resize());
   publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
 }
@@ -1228,8 +1224,6 @@ async function load() {
         "islands",
         "ice",
       ]);
-      physicalLayerVisibility = new Map([...immutablePhysicalLayerIds].map((id) => [id, false]));
-      layers = withPhysicalVisibility(layers);
       syncEpochFields(0);
       const requestId = crypto.randomUUID();
       activeEpochRequestId = requestId;
@@ -1239,11 +1233,11 @@ async function load() {
       const historical = await project.physicalMapDerivedEpoch(mapId, 0, requestId);
       if (generation !== loadGeneration) return;
       const physical = parseDerivedCollection(historical.geojson);
-      const combined = { type: "FeatureCollection" as const, features: [...physical.features, ...collection.features] };
+      derivedPhysical = physical;
       resetCommandStack({
         descriptor: mapField?.value ?? {},
         layers,
-        collection: combined,
+        collection,
       });
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       const canvas = physicalHillshadeCanvas(historical.hydrology);
@@ -1255,7 +1249,7 @@ async function load() {
       epochProgress = null;
     } else {
       immutablePhysicalLayerIds = new Set();
-      physicalLayerVisibility = new Map();
+      derivedPhysical = { type: "FeatureCollection", features: [] };
       epochNotice = "";
       resetCommandStack({
         descriptor: mapField?.value ?? {},
@@ -1333,7 +1327,7 @@ async function save() {
   try {
     editor?.flush();
     const document = commandStack.document;
-    const snapshot = cloneCollection(persistedCollection(document.collection));
+    const snapshot = cloneCollection(document.collection);
     const bytes = collectionBytes(snapshot);
     const hash = await sha256Hex(bytes);
     const layersValue = encodeLayersField({
@@ -1364,9 +1358,9 @@ async function save() {
         collection: snapshot,
       }),
     );
-    draft = snapshot;
+    draft = renderedCollection(snapshot);
     loaded = cloneCollection(snapshot);
-    layers = withPhysicalVisibility(parseVectorLayers(applied.layers.value));
+    layers = parseVectorLayers(applied.layers.value);
     canUndo = false;
     canRedo = false;
     recoveryPath = "";
@@ -1575,16 +1569,46 @@ async function duplicateLayer(layer: MapLayerDefinition) {
 
 function toggleVisible(layer: MapLayerDefinition) {
   const nextVisible = !layer.defaultVisible;
-  if (physicalLayerVisibility.has(layer.id)) {
-    physicalLayerVisibility.set(layer.id, nextVisible);
-    physicalLayerVisibility = new Map(physicalLayerVisibility);
-    layers = layers.map((item) => (item.id === layer.id ? { ...item, defaultVisible: nextVisible } : item));
-    editor?.syncLayers(layers, runtimeLayerRasters());
-    physicalEditor?.syncLayers(layers);
-    return;
-  }
   if (!commandStack) return;
   dispatchCommand(setLayerVisibilityCommand(layer.id, nextVisible, layer.defaultVisible));
+}
+
+function openDetachDialog(layer: MapLayerDefinition) {
+  if (!physicalMap || !isVectorLayer(layer) || !isPhysicalDerivedLayerId(layer.id)) return;
+  if (physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0) return;
+  detachLayerId = layer.id;
+  detachError = "";
+}
+
+async function confirmDetach(scope: PhysicalDetachScope) {
+  if (!commandStack || !detachLayer || !isPhysicalDerivedLayerId(detachLayer.id)) return;
+  const plan = buildPhysicalDetachPlan({
+    collection: derivedPhysical,
+    document: commandStack.document,
+    sourceLayer: detachLayer,
+    epochOffsetYears: appliedEpochOffsetYears,
+    scope,
+    selectedIds: selectedFeatureIds,
+  });
+  if ("code" in plan) {
+    detachError = plan.message;
+    return;
+  }
+  dispatchCommand(detachPhysicalFeaturesCommand({
+    sourceLayerId: plan.sourceLayerId,
+    sourceLayerName: plan.sourceLayerName,
+    sourceWasVisible: detachLayer.defaultVisible,
+    targetLayer: plan.targetLayer,
+    copies: plan.copies,
+  }));
+  detachLayerId = null;
+  activeLayerId = plan.targetLayer.id;
+  tool = "select";
+  editor?.switchLayer(plan.targetLayer.id);
+  editor?.setMode("select");
+  await tick();
+  editor?.selectFeatureIds(plan.copies.map((feature) => feature.id));
+  notice = `Detached ${plan.copies.length} features from ${plan.sourceLayerName} at ${formatEpoch(plan.epochOffsetYears)}. Save to commit the snapshot.`;
 }
 
 function toggleLock(layer: MapLayerDefinition) {
@@ -1784,7 +1808,6 @@ function applyCalibration() {
 $effect(() => {
   focusLinkId;
   editor;
-  physicalEditor;
   pinsReady;
   linkAnchors;
   picking;
@@ -1911,10 +1934,10 @@ onMount(() => {
       title={studioOpen ? "Atlas Studio" : physicalMap ? "Physical world" : "Vector map"}
       subtitle={studioOpen && studioStage
         ? studioStage
-        : !physicalMap && dirty
-          ? `Unsaved changes · ${unitsLabel}`
-          : physicalMap
-            ? "Generated world map"
+        : physicalMap
+          ? (dirty ? `Unsaved authored changes · ${unitsLabel}` : "Generated world map")
+          : dirty
+            ? `Unsaved changes · ${unitsLabel}`
             : unitsLabel}
       icon={brandIcon}
       onBack={() => void requestBack()}
@@ -1931,7 +1954,7 @@ onMount(() => {
             disabled={!mapId || picking}
             onclick={() => requestLinkFromToolbar()}><Link2 {...iconProps} /></button>
         {/if}
-        {#if !physicalMap}
+        {#if !studioOpen}
           <button
             type="button"
             class="icon-button"
@@ -2096,7 +2119,9 @@ onMount(() => {
             aria-pressed={atlasOpen}
             aria-label="Export atlas"
             title="Export atlas"
+            disabled={dirty}
             onclick={() => {
+              if (dirty) return;
               if (studioOpen) {
                 const request = studioApi?.exportView();
                 if (request) studioExport = request;
@@ -2129,6 +2154,20 @@ onMount(() => {
     {/if}
     {#if notice}
       <p class="hint" role="status">{notice}</p>
+    {/if}
+    {#if detachLayer && isPhysicalDerivedLayerId(detachLayer.id)}
+      {@const detachAll = physicalFeaturesForLayer(derivedPhysical, detachLayer.id)}
+      {@const detachSelected = selectedPhysicalFeatures(derivedPhysical, detachLayer.id, selectedFeatureIds)}
+      <DetachPhysicalLayerDialog
+        sourceLayerName={detachLayer.name}
+        epochOffsetYears={appliedEpochOffsetYears}
+        selectedFeatureCount={detachSelected.length}
+        totalSourceLayerFeatureCount={detachAll.length}
+        initialScope={detachSelected.length > 0 && detachSelected.length < detachAll.length ? "selected" : "layer"}
+        busy={busy}
+        error={detachError}
+        onconfirm={(scope) => void confirmDetach(scope)}
+        oncancel={() => { detachLayerId = null; detachError = ""; }} />
     {/if}
     {#if atlasOpen && mapId}
       <AtlasRenderPanel
@@ -2182,7 +2221,9 @@ onMount(() => {
               class="studio-open"
               class:active={studioOpen}
               aria-pressed={studioOpen}
-              onclick={() => (studioOpen = !studioOpen)}>Atlas Studio</button>
+              disabled={dirty}
+              onclick={() => { if (!dirty) studioOpen = !studioOpen; }}>Atlas Studio</button>
+            {#if dirty}<p class="hint">Save authored changes before opening Atlas.</p>{/if}
           {/if}
           <button
             type="button"
@@ -2201,7 +2242,7 @@ onMount(() => {
             {#if listedLayers.length === 0}
               <p class="hint">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
             {/if}
-            {#if !physicalMap}
+            {#if true}
               <div class="layer-row">
                 <button
                   type="button"
@@ -2213,13 +2254,13 @@ onMount(() => {
                 <button
                   type="button"
                   class="text-button"
-                  disabled={busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
+                  disabled={physicalMap || busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
                   onclick={() => void addRasterLayer()}>
                   Add raster layer
                 </button>
               </div>
             {/if}
-            {#if snapConfigOpen && !physicalMap}
+            {#if snapConfigOpen}
               <div class="snap-config" aria-label="Snap settings">
                 <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
                 <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
@@ -2273,6 +2314,15 @@ onMount(() => {
                       title={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
                       onclick={() => void toggleVisible(layer)}
                       >{#if layer.defaultVisible}<Eye {...iconProps} />{:else}<EyeOff {...iconProps} />{/if}</button>
+                    {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label={`Detach ${layer.name} for editing`}
+                        title="Detach for editing"
+                        disabled={busy || epochBusy || physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
+                        onclick={() => openDetachDialog(layer)}><Scissors {...iconProps} /></button>
+                    {/if}
                     {#if !immutablePhysicalLayerIds.has(layer.id)}
                       <button
                         type="button"
@@ -2624,7 +2674,7 @@ onMount(() => {
               </div>
             {/if}
           {/if}
-          {#if selectedFeatureIds.length > 0 && !physicalMap}
+          {#if selectedOpFeatures.length > 0}
             <div class="geometry-ops" aria-label="Geometry operations">
               <strong>Geometry</strong>
               {#if geometryPreview}
@@ -2681,7 +2731,7 @@ onMount(() => {
               {/if}
             </div>
           {/if}
-          {#if selectedFeatures.length > 0 && !physicalMap}
+          {#if selectedFeatures.length > 0}
             {@const primary = selectedFeatures[0]}
             {@const primaryLabel = primary.properties.daena.label ?? defaultFeatureLabel(primary)}
             {@const primaryStyle = primary.properties.daena.style ?? {}}
@@ -2953,22 +3003,17 @@ onMount(() => {
       {/if}
       {#if physicalMap && !studioOpen}
         <div class="stage">
-          <div class="canvas" class:picking={picking || linkArming} role="img" aria-label="Physical world map">
-            <PhysicalWorldView
-              collection={draft}
-              {layers}
-              raster={rasterAssets.get("physical")?.canvas ?? null}
-              {pickArmed}
-              onready={(next) => {
-                physicalEditor = next;
-              }}
-              onMapPick={(anchor) => {
-                if (picking && onpick) {
-                  onpick(anchor);
-                  return;
-                }
-                if (linkArming || linkPanelOpen) openLinkPanel(anchor);
-              }} />
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div class="canvas" class:picking={picking || linkArming} tabindex="0" role="application" aria-label="Physical world map">
+            <div class="map-host" bind:this={host}></div>
+            {#if editor}
+              <MapViewControls
+                zoom={defaultView.zoom}
+                min={0}
+                max={viewMaxZoom}
+                onzoom={(zoom) => editor?.setZoom(zoom)}
+                onpan={(x, y) => editor?.panCardinal(x > 0 ? 1 : x < 0 ? -1 : 0, y > 0 ? 1 : y < 0 ? -1 : 0)} />
+            {/if}
             <div class="epoch-control" aria-label="World epoch">
               <input
                 id="physical-epoch"
@@ -2978,7 +3023,7 @@ onMount(() => {
                 step={EPOCH_STEP}
                 value={epochOffsetYears}
                 aria-label="Epoch offset"
-                disabled={busy}
+                disabled={busy || epochBusy || dirty}
                 oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
               <input
                 class="epoch-year"
@@ -2988,7 +3033,7 @@ onMount(() => {
                 spellcheck="false"
                 value={epochYearsAbs.toLocaleString("en-US")}
                 aria-label="Years from epoch"
-                disabled={busy}
+                disabled={busy || epochBusy || dirty}
                 onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
               <span>
                 {#if epochOffsetYears === 0}
@@ -3000,6 +3045,7 @@ onMount(() => {
                 {/if}
               </span>
             </div>
+            {#if dirty}<p class="epoch-dirty-hint">Save or undo authored changes before changing the physical epoch.</p>{/if}
             {#if busy || epochBusy}
               <div class="map-busy" role="status">
                 <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>

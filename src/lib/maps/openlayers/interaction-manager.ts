@@ -82,6 +82,7 @@ export function createInteractionManager(options: {
   onSelectionChange: () => void;
   onMeasureReadout?: (readout: MeasureReadout | null) => void;
   onDiagnostic?: (code: string, detail: string) => void;
+  allowLockedBoxSelection?: boolean;
 }): InteractionManager {
   const { map, view, registry, codec } = options;
   let currentMode: VectorDrawMode = options.readOnly ? "static" : "select";
@@ -156,7 +157,7 @@ export function createInteractionManager(options: {
     select.setActive(true);
     modify.setActive(false);
     translate.setActive(false);
-    dragBox.setActive(false);
+    dragBox.setActive(options.allowLockedBoxSelection === true);
   }
 
   const activeEditableLayer = (): VectorLayerDefinition | null => {
@@ -274,7 +275,7 @@ export function createInteractionManager(options: {
       select.setActive(true);
       modify.setActive(false);
       translate.setActive(false);
-      dragBox.setActive(false);
+      dragBox.setActive(options.allowLockedBoxSelection === true);
       return;
     }
     const editable = activeEditableLayer();
@@ -283,7 +284,7 @@ export function createInteractionManager(options: {
     select.setActive(currentMode === "static" || selecting);
     modify.setActive(selecting);
     translate.setActive(selecting);
-    dragBox.setActive(selecting);
+    dragBox.setActive(selecting || (currentMode === "static" && options.allowLockedBoxSelection === true));
 
     if (measuring) {
       const drawType =
@@ -364,13 +365,13 @@ export function createInteractionManager(options: {
 
   select.on("select", () => options.onSelectionChange());
   dragBox.on("boxend", () => {
-    if (currentMode !== "select") return;
+    if (currentMode !== "select" && !(currentMode === "static" && options.allowLockedBoxSelection === true)) return;
     const extent = dragBox.getGeometry().getExtent();
     select.getFeatures().clear();
     registry.forEachVectorFeature((feature) => {
       const layerId = String(feature.get("daenaLayerId") ?? "");
       const layer = registry.layerById(layerId);
-      if (!layerAcceptsEdits(layer)) return;
+      if (!featureSelectable(feature)) return;
       const geometry = feature.getGeometry();
       if (!geometry) return;
       const featureExtent = geometry.getExtent();

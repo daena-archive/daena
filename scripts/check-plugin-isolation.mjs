@@ -9,9 +9,9 @@ const tauri = fs.readFileSync("src-tauri/tauri.conf.json", "utf8");
 const capability = fs.readFileSync("src-tauri/capabilities/plugin.json", "utf8");
 
 assert.equal(
-  /packages\/modules\/(?:index\.ts|lore\/src|timeline\/src)/.test(route),
+  /packages\/modules\/(?:index\.ts|[^/]+\/src\/index\.ts)/.test(route),
   false,
-  "main route must not import plugin implementations",
+  "main route must not import plugin runtime entrypoints",
 );
 assert.doesNotMatch(frame, /srcdoc|sandbox=/, "main webview must not host plugin code");
 assert.match(frame, /mountPluginWebview/);

@@ -17,16 +17,16 @@ contracts remain in the focused plans below:
 - [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
 - [`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) defines the optional built-in Git
   integration.
-- [`OPENLAYERS_MAPS.md`](./OPENLAYERS_MAPS.md) defines Daena-owned
-  map rendering, vector editing, raster backgrounds, Atlas interaction, and
-  map/entity integration.
+- [`MAPS.md`](./MAPS.md) defines map authoring, generated physical worlds,
+  Atlas interaction and export, and map/entity integration.
 - [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
 - [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
 - [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the
   reviewable external-source migration pipeline and importer boundary.
 
 Those documents may add detail but must not contradict the boundaries here.
-ADRs in [`adr/`](./adr/) record narrower decisions and security constraints.
+The consolidated [`ADR index`](./adr/README.md) records narrower decisions and
+security constraints.
 
 ## Product direction
 
@@ -305,6 +305,7 @@ Changes to this architecture must preserve these exit properties:
 - Git never stages nonportable paths or unresolved/unflushed portable state;
 - derived search, map, relationship, and view projections can be rebuilt.
 
-Use the focused plans and ADRs for phase-specific acceptance criteria. When
-implementation and documentation diverge, verify the current source and tests,
-then update this architecture and the relevant focused authority together.
+Use the focused plans for phase-specific acceptance criteria and the ADRs for
+the architectural constraints those phases must preserve. When implementation
+and documentation diverge, verify the current source and tests, then update
+this architecture and the relevant focused authority together.

@@ -1149,8 +1149,9 @@ types compile or unit tests pass; every stated exit gate must have evidence.
 
 Deliver:
 
-- ADRs for AI trust boundary, provider routing/privacy, prompt/context model,
-  RAG index placement, and proposal-only mutation;
+- confirmation that [ADR 0003](adr/0003-ai-trust-privacy-and-proposals.md)
+  captures the AI trust boundary, provider routing/privacy, prompt/context
+  model, RAG index placement, and proposal-only mutation;
 - `daena-ai` crate skeleton with provider-neutral request, result, event, error,
   caller, policy, and provenance types;
 - fake provider and cancellation/deadline primitives;
@@ -1263,7 +1264,7 @@ Deliver:
 file and recovers equivalent source coverage; edits re-embed only affected
 chunks; incompatible models trigger rebuild; core project access works while the
 AI index is absent/failed; the evaluation corpus meets thresholds recorded in
-the Phase 4 ADR with zero unauthorized retrievals.
+this document with zero unauthorized retrievals.
 
 ### Phase 5 — remote providers and production privacy controls
 
@@ -1323,7 +1324,7 @@ Agents implementing this plan must follow this protocol.
 
 1. Read this document completely and identify the one approved phase/slice.
 2. Read `AGENTS.md`, `ARCHITECTURE.md`, `PLUGIN_PLATFORM_PLAN.md`, and
-   `STORAGE.md`; read the relevant ADRs and SDK guide.
+   `STORAGE.md`; read the [`ADR index`](adr/README.md) and SDK guide.
 3. Run `rtk git status --short` and preserve unrelated staged, unstaged, and
    untracked work.
 4. Use codebase-memory graph tools first for symbols/call paths. Verify important
@@ -1351,8 +1352,8 @@ Agents implementing this plan must follow this protocol.
   lifecycle semantics.
 - Do not add remote disclosure, tool calling, fallback, telemetry, retention, or
   persistence merely because a provider SDK makes it easy.
-- If a phase exposes a missing prerequisite, stop and update the plan/ADR with
-  user approval rather than silently broadening scope.
+- If a phase exposes a missing prerequisite, stop and update the plan or add a
+  superseding ADR with user approval rather than silently broadening scope.
 
 ### 15.3 Verification
 

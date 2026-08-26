@@ -71,16 +71,6 @@ for (const name of ["lore", "timeline", "writing", "maps"]) {
       `maps: expected hierarchy relationships ${expected.join(", ")}, got ${relationshipTypes.join(", ")}`,
     );
   }
-  const fixtures = await readJson("docs/maps/phase-1-fixtures.json");
-  if (!Array.isArray(fixtures.fixtures) || fixtures.fixtures.length < 3) {
-    throw new Error("maps phase-1 fixtures are incomplete");
-  }
-  if (JSON.stringify([...(fixtures.relationships ?? [])].sort()) !== JSON.stringify(expected)) {
-    throw new Error("maps phase-1 fixture relationships drift from the manifest");
-  }
-  for (const fixture of fixtures.fixtures) {
-    if (fixture.value?.schemaVersion !== 1) throw new Error(`${fixture.id}: schemaVersion must be 1`);
-  }
 }
 
 for (const name of ["declarative", "ui", "wasm-service"]) {

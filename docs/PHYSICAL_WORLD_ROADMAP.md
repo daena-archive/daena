@@ -6,13 +6,10 @@
 **Scope:** Future capabilities extending Daena's native physical world, derived environmental data, and authored map layers
 **Non-goal:** This document does not prescribe implementation architecture, algorithms, storage formats, or delivery dates.
 
-This roadmap builds on the current physical-map product boundaries defined by:
-
-- `NATIVE_MAP_GENERATOR.md`
-- `ATLAS_MAP_RENDERING.md`
-- `OPENLAYERS_MAPS.md`
-- `PLUGIN_PLATFORM_PLAN.md`
-- `AI_INTEGRATION.md`
+This roadmap builds on the current map, physical-world, and Atlas product
+boundaries defined by [`MAPS.md`](./MAPS.md), together with the platform and AI
+boundaries in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) and
+[`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
 
 The current physical world already provides immutable elevation/bathymetry, tectonic causes, hydrology, a simplified climate model, historical climate/sea-level derivation, earthquake/volcanic hazards, and optional materialized natural events. Future features should extend those capabilities without turning the accepted physical map into a continuously mutable terrain simulation.
 

@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+
 import { buildExternalImportMappingCatalog, importFolderFor } from "../src/lib/externalImport.ts";
 import type { ProjectModuleManifest } from "../src/lib/project/client.ts";
 
@@ -19,7 +21,14 @@ function manifest(id: string, enabled: boolean, entityType: string, fieldKey: st
     schemas: [
       {
         namespace: id,
-        entityTypes: [entityType],
+        entityTypes: [
+          {
+            id: entityType,
+            name: entityType,
+            icon: { kind: "catalog", id: entityType } as any,
+            iconColor: { kind: "preset", id: "violet" } as any,
+          },
+        ],
         fields: [{ key: fieldKey, label: fieldKey, type: "text" }],
       },
     ],
@@ -36,50 +45,46 @@ function manifest(id: string, enabled: boolean, entityType: string, fieldKey: st
     commands: [],
     services: { provides: [], consumes: [] },
     events: { publishes: [], subscribes: [] },
-  } as ProjectModuleManifest;
+  } as unknown as ProjectModuleManifest;
 }
 
-Deno.test("external import mapping catalog excludes disabled contributions", () => {
-  const catalog = buildExternalImportMappingCatalog([
-    manifest("enabled.module", true, "person", "summary"),
-    manifest("disabled.module", false, "place", "coordinates"),
-  ]);
+const catalog = buildExternalImportMappingCatalog([
+  manifest("enabled.module", true, "person", "summary"),
+  manifest("disabled.module", false, "place", "coordinates"),
+]);
+assert.deepEqual(
+  catalog.entityTypes.map((choice) => choice.id),
+  ["person"],
+  "disabled entity types stay out of the mapping catalog",
+);
+assert.deepEqual(
+  catalog.fields.map((choice) => choice.key),
+  ["summary"],
+  "disabled fields stay out of the mapping catalog",
+);
+assert.doesNotMatch(catalog.fingerprint, /disabled\.module/);
 
-  if (catalog.entityTypes.map((choice) => choice.id).join(",") !== "person") {
-    throw new Error("disabled entity types leaked into the mapping catalog");
-  }
-  if (catalog.fields.map((choice) => choice.key).join(",") !== "summary") {
-    throw new Error("disabled fields leaked into the mapping catalog");
-  }
-  if (catalog.fingerprint.includes("disabled.module")) {
-    throw new Error("disabled manifests leaked into the mapping fingerprint");
-  }
+assert.equal(importFolderFor("People/Heroes/Alice.md"), "People/Heroes");
+assert.equal(importFolderFor("Root.md"), "");
+
+const enabled = manifest("enabled.module", true, "person", "summary");
+enabled.schemas[0].fields.push({
+  key: "references",
+  label: "References",
+  type: "relationship",
+  relationshipType: "references",
+  targetEntityTypes: ["person"],
 });
+const relationships = buildExternalImportMappingCatalog([enabled]);
+assert.equal(
+  relationships.fields.some((choice) => choice.key === "references"),
+  false,
+  "relationship fields stay out of ordinary field mappings",
+);
+assert.deepEqual(
+  relationships.relationships.map((choice) => choice.id),
+  ["references"],
+  "relationship mappings use the manifest relationship type",
+);
 
-Deno.test("external import folder scope uses portable parent paths", () => {
-  if (importFolderFor("People/Heroes/Alice.md") !== "People/Heroes") {
-    throw new Error("nested portable folder was not preserved");
-  }
-  if (importFolderFor("Root.md") !== "") {
-    throw new Error("root-level files must use the global scope");
-  }
-});
-
-Deno.test("external import keeps relationship fields out of ordinary field mappings", () => {
-  const enabled = manifest("enabled.module", true, "person", "summary");
-  enabled.schemas[0].fields.push({
-    key: "references",
-    label: "References",
-    type: "relationship",
-    relationshipType: "references",
-    targetEntityTypes: ["person"],
-  });
-  const catalog = buildExternalImportMappingCatalog([enabled]);
-
-  if (catalog.fields.some((choice) => choice.key === "references")) {
-    throw new Error("relationship fields leaked into ordinary import field mappings");
-  }
-  if (catalog.relationships.map((choice) => choice.id).join(",") !== "references") {
-    throw new Error("relationship mapping must use the manifest relationship type");
-  }
-});
+console.log("external import mapping checks passed");

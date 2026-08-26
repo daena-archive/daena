@@ -163,7 +163,7 @@ types are removed. Cross-reference rules (namespace ownership, migration
 contiguity, template-field typing) stay handwritten in Rust's
 `validate_manifest` and are mirrored in the TypeScript `validatePluginManifest`,
 with parity enforced by a dual-validator conformance test over a shared fixture
-battery. See [ADR 0006](adr/0006-rust-first-contract-generation.md).
+battery. See [ADR 0002](adr/0002-rust-owned-public-contracts.md).
 
 The initial manifest contains:
 
@@ -502,7 +502,8 @@ than the source of truth.
 
 Create the manifest and RPC contract types in Rust, generate the JSON Schemas
 and TypeScript declarations from them, and define the capability registry,
-lifecycle state machine, and error model. Add ADRs for isolation, package
+lifecycle state machine, and error model. Confirm that
+[ADR 0001](adr/0001-plugin-platform-boundary.md) captures isolation, package
 trust, plugin-to-plugin communication, and data ownership. Update
 `ARCHITECTURE.md` to link to this document.
 
@@ -657,7 +658,8 @@ refactoring implementation code:
 5. generated JSON Schemas and TypeScript SDK types (generated from the Rust
    contract types by `npm run gen:plugin-contract`, not hand-written);
 6. canonical Lore and Timeline manifests; and
-7. ADRs for isolation, authority, packaging trust, and inter-plugin contracts.
+7. the accepted plugin-platform boundary in
+   [ADR 0001](adr/0001-plugin-platform-boundary.md).
 
 Implementation should then follow the phase gates in order. In particular,
 installer UI or marketplace work must not jump ahead of backend identity,
@@ -668,8 +670,8 @@ authorization, bundled-plugin conversion, and runtime isolation.
 This appendix is the implementation record of the contract-reconciliation
 effort. It supersedes the interim `plan/` documents and preserves their
 load-bearing decisions and current state. The overall decision — Rust owns the
-contract, schemas and TypeScript are generated artifacts — is [ADR 0006]
-(adr/0006-rust-first-contract-generation.md).
+contract, schemas and TypeScript are generated artifacts — is [ADR 0002]
+(adr/0002-rust-owned-public-contracts.md).
 
 ### Representations are unified under Rust
 

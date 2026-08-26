@@ -198,7 +198,7 @@ Overlay-capable modules (those that declare the `schema.overlay` capability)
 may also store a project-owned `schemaOverlay` on `plugins/{module_id}.json`. The
 overlay disables packaged builtins and adds custom entity types, fields, and
 templates for that project only. Package manifest defaults remain immutable;
-see [`adr/0012-plugin-schema-overlays.md`](./adr/0012-plugin-schema-overlays.md).
+see [`adr/0002-rust-owned-public-contracts.md`](./adr/0002-rust-owned-public-contracts.md).
 
 Search indexes, map projections, relationship indexes, Atlas render
 intermediates under `.daena/cache/atlas/`, accepted physical-world physics

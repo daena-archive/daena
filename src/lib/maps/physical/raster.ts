@@ -1,4 +1,4 @@
-import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates";
+import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates.ts";
 
 export type PhysicalRasterProducts = {
   width: number;

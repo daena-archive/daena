@@ -139,8 +139,7 @@ docker run --rm \
 - [Language module](docs/LANGUAGE_MODULE.md)
 - [Plugin SDK](docs/PLUGIN_SDK.md)
 - [Plugin platform plan](docs/PLUGIN_PLATFORM_PLAN.md)
-- [OpenLayers maps](docs/OPENLAYERS_MAPS.md)
-- [Atlas Studio](docs/ATLAS_STUDIO.md)
+- [Maps, physical worlds, and Atlas](docs/MAPS.md)
 - [Git integration](docs/GIT_INTEGRATION.md)
 
 ## License

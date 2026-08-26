@@ -545,6 +545,6 @@ machine-readable or architectural contract it summarizes:
 - [`schemas/fixtures/manifest/`](../schemas/fixtures/manifest/) — the shared
   fixture battery the conformance and structural checks run against.
 - [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md)
-- [`adr/0006-rust-first-contract-generation.md`](adr/0006-rust-first-contract-generation.md)
+- [`adr/0002-rust-owned-public-contracts.md`](adr/0002-rust-owned-public-contracts.md)
   — the decision that Rust owns the contract and schemas/TS are generated
   artifacts.

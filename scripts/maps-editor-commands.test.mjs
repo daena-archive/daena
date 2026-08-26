@@ -1,136 +1,71 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
-const files = {
-  model: readFileSync(new URL("../src/lib/maps/editor/model.ts", import.meta.url), "utf8"),
-  commands: readFileSync(new URL("../src/lib/maps/editor/commands.ts", import.meta.url), "utf8"),
-  stack: readFileSync(new URL("../src/lib/maps/editor/command-stack.ts", import.meta.url), "utf8"),
-  persistence: readFileSync(new URL("../src/lib/maps/editor/persistence.ts", import.meta.url), "utf8"),
-  selection: readFileSync(new URL("../src/lib/maps/editor/selection.ts", import.meta.url), "utf8"),
-  adapter: readFileSync(new URL("../src/lib/maps/openlayers/MapAdapter.ts", import.meta.url), "utf8"),
+import { CommandStack } from "../src/lib/maps/editor/command-stack.ts";
+import {
+  createLayerCommand,
+  renameLayerCommand,
+  setLayerOpacityCommand,
+  setLayerVisibilityCommand,
+} from "../src/lib/maps/editor/commands.ts";
+import { createMapDocument } from "../src/lib/maps/editor/model.ts";
+
+const baseLayer = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  kind: "vector",
+  name: "Places",
+  order: 0,
+  defaultVisible: true,
+  locked: false,
+  opacity: 1,
+  blendMode: "normal",
+  selector: {},
+  style: { fill: "#8f6fd1", fillOpacity: 0.35, stroke: "#5e4893", strokeWidth: 1.5, pointRadius: 5 },
 };
 
-for (const required of ["MapDocument", "documentHash", "createMapDocument"]) {
-  assert.ok(files.model.includes(required), `model missing ${required}`);
-}
-for (const required of [
-  "CreateFeature",
-  "DeleteFeatures",
-  "ReplaceGeometry",
-  "DuplicateFeatures",
-  "MoveFeaturesToLayer",
-  "SetFeatureMetadata",
-  "CreateLayer",
-  "DuplicateLayer",
-  "DeleteLayer",
-  "RenameLayer",
-  "ReorderLayer",
-  "SetLayerVisibility",
-  "SetLayerLocked",
-  "SetLayerOpacity",
-  "SetLayerStyle",
-  "AddBackground",
-  "SetDefaultView",
-  "SetCoordinateSpace",
-  "ApplyGeometryOperation",
-  "SetSnapSettings",
-  "coalesceKey",
-  "invert",
-]) {
-  assert.ok(files.commands.includes(required), `commands missing ${required}`);
-}
-for (const required of ["setBaseline", "canUndo", "canRedo", "coalesceKey", "byteBudget", "isDirty"]) {
-  assert.ok(files.stack.includes(required), `command-stack missing ${required}`);
-}
-assert.ok(files.persistence.includes("daena-map-edit-draft"));
-assert.ok(files.persistence.includes("encodeLayersField"));
-assert.ok(files.selection.includes("selectionFromIds"));
-assert.equal(files.adapter.includes("undo("), false);
-assert.equal(files.adapter.includes("redo("), false);
-assert.ok(files.adapter.includes("onCommand"));
-assert.ok(files.adapter.includes("syncDocument"));
-assert.ok(files.adapter.includes("dispose()"));
-assert.ok(files.adapter.includes("liveAdapters"));
-
-/** Minimal inlined stack to verify coalesce + baseline semantics without TS module resolution. */
-function hash(value) {
-  return JSON.stringify(value);
-}
-
-class MiniStack {
-  constructor(document) {
-    this.document = structuredClone(document);
-    this.baseline = hash(document);
-    this.undo = [];
-    this.redo = [];
-  }
-  apply(command) {
-    const before = structuredClone(this.document);
-    if (command.coalesceKey && this.undo.at(-1)?.coalesceKey === command.coalesceKey) {
-      this.document = command.apply(this.document);
-      this.undo.at(-1).command = command;
-      this.redo = [];
-      return;
-    }
-    this.document = command.apply(this.document);
-    this.undo.push({ command, inverse: command.invert(before), coalesceKey: command.coalesceKey });
-    this.redo = [];
-  }
-  canUndo() {
-    return this.undo.length > 0;
-  }
-  isDirty() {
-    return hash(this.document) !== this.baseline;
-  }
-  setBaseline(document) {
-    this.document = structuredClone(document);
-    this.baseline = hash(document);
-    this.undo = [];
-    this.redo = [];
-  }
-  undoOnce() {
-    const entry = this.undo.pop();
-    if (!entry) return;
-    this.document = entry.inverse.apply(this.document);
-    this.redo.push(entry);
-  }
-}
-
-const doc = { features: [], layers: [{ id: "a", visible: true }] };
-const stack = new MiniStack(doc);
-assert.equal(stack.isDirty(), false);
-stack.apply({
-  coalesceKey: "g",
-  apply: (d) => ({ ...d, features: [1] }),
-  invert: (before) => ({ apply: () => structuredClone(before) }),
+const document = createMapDocument({
+  descriptor: {},
+  layers: [baseLayer],
+  collection: { type: "FeatureCollection", features: [] },
 });
-stack.apply({
-  coalesceKey: "g",
-  apply: (d) => ({ ...d, features: [1, 2] }),
-  invert: (before) => ({ apply: () => structuredClone(before) }),
-});
-assert.equal(stack.undo.length, 1);
-assert.deepEqual(stack.document.features, [1, 2]);
-stack.undoOnce();
-assert.deepEqual(stack.document.features, []);
-assert.equal(stack.isDirty(), false);
-stack.apply({
-  apply: (d) => ({ ...d, layers: [...d.layers, { id: "b", visible: true }] }),
-  invert: (before) => ({ apply: () => structuredClone(before) }),
-});
-assert.equal(stack.isDirty(), true);
-stack.setBaseline(stack.document);
+const stack = new CommandStack(document);
+const snapshots = [];
+stack.onChange((snapshot) => snapshots.push(snapshot));
+
 assert.equal(stack.isDirty(), false);
 assert.equal(stack.canUndo(), false);
+assert.equal(stack.canRedo(), false);
 
-assert.ok(files.commands.includes("buildCreateRasterLayer"));
-assert.ok(files.commands.includes("buildDuplicateLayer"));
-assert.ok(files.commands.includes("protectedLayerIds") || files.commands.includes("layerAcceptsEdits"));
-assert.ok(files.commands.includes("SetLayerOpacity"));
-assert.ok(files.commands.includes("reorderLayersByIdsCommand"));
-assert.ok(files.adapter.includes("fitSelection"));
-assert.ok(files.adapter.includes("clearSelection"));
-assert.equal(files.adapter.includes("event.key !== \"Delete\""), false);
-assert.equal(files.adapter.includes("registry.source.removeFeature"), false);
+stack.apply(setLayerOpacityCommand(baseLayer.id, 0.7, 1));
+stack.apply(setLayerOpacityCommand(baseLayer.id, 0.4, 0.7));
+assert.equal(stack.document.layers[0].opacity, 0.4);
+assert.equal(stack.snapshot().undoLabel, "Layer opacity");
+assert.equal(stack.undo()?.layers[0].opacity, 1, "coalesced edits undo to the value before the gesture");
+assert.equal(stack.canUndo(), false, "coalesced edits occupy one undo entry");
+assert.equal(stack.redo()?.layers[0].opacity, 0.4);
 
-console.log("map editor command stack checks passed");
+stack.apply(renameLayerCommand(baseLayer.id, "Places and regions", "Places"));
+stack.apply(renameLayerCommand(baseLayer.id, "Regions", "Places and regions"));
+assert.equal(stack.document.layers[0].name, "Regions");
+assert.equal(stack.undo()?.layers[0].name, "Places");
+
+stack.apply(setLayerVisibilityCommand(baseLayer.id, false, true));
+assert.equal(stack.document.layers[0].defaultVisible, false);
+assert.equal(stack.canRedo(), false, "a new command clears redo history");
+
+const secondLayer = { ...baseLayer, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Routes", order: 1 };
+stack.apply(createLayerCommand(secondLayer));
+assert.equal(stack.document.layers.length, 2);
+assert.equal(stack.undo()?.layers.length, 1);
+assert.equal(stack.redo()?.layers.length, 2);
+
+const committed = stack.document;
+stack.setBaseline(committed);
+assert.equal(stack.isDirty(), false);
+assert.equal(stack.canUndo(), false);
+assert.equal(stack.canRedo(), false);
+assert.ok(snapshots.length >= 1, "subscribers receive command-stack snapshots");
+
+committed.layers[0].name = "Mutated caller copy";
+assert.equal(stack.document.layers[0].name, "Places", "the command stack owns a defensive document copy");
+
+console.log("map command stack behavior checks passed");

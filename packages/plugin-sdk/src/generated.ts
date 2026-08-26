@@ -86,8 +86,6 @@ export interface EventPublishPayload { payload: unknown; type: string }
 export interface FieldListPayload { entityId: string; namespace: string; sharedOnly?: boolean | null }
 export interface FieldReadPayload { entityId: string; key: string; namespace: string }
 export interface FieldSetPayload { entityId: string; expectedRevision: string; key: string; namespace: string; value: unknown }
-export interface MapsAssetCreateBeginPayload { mapEntityId: string; mimeType?: string | null; size: number }
-export interface MapsAssetCreateCommitPayload { contentHash: string; handle: string }
 export interface MapsImageImportBeginPayload { filename: string; mimeType: string; name: string; size: number }
 export interface MapsImageImportCommitPayload { contentHash: string; handle: string }
 export interface MapsLayerCreatePayload { expectedRevision: string; kind?: string | null; mapEntityId: string; name: string }
@@ -147,8 +145,6 @@ export interface BrokerMethodPayloads {
   "field.list": FieldListPayload;
   "field.read": FieldReadPayload;
   "field.set": FieldSetPayload;
-  "maps.asset.create.begin": MapsAssetCreateBeginPayload;
-  "maps.asset.create.commit": MapsAssetCreateCommitPayload;
   "maps.image.import.begin": MapsImageImportBeginPayload;
   "maps.image.import.commit": MapsImageImportCommitPayload;
   "maps.layer.create": MapsLayerCreatePayload;

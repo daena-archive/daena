@@ -33,8 +33,7 @@ function toggleFullscreen() {
 }
 
 async function importFile() {
-  const source =
-    mode === "image" ? await project.pickImageMapFile() : await project.pickVectorMapFile();
+  const source = mode === "image" ? await project.pickImageMapFile() : await project.pickVectorMapFile();
   if (typeof source !== "string") {
     oncancel?.();
     return;
@@ -57,9 +56,7 @@ onMount(() => {
 });
 </script>
 
-<section
-  class="importer"
-  aria-label={mode === "geojson" ? "Import a GeoJSON vector map" : "Import an image map"}>
+<section class="importer" aria-label={mode === "geojson" ? "Import a GeoJSON vector map" : "Import an image map"}>
   <WorkspaceTopbar
     title={mode === "geojson" ? "Import vector map" : "Import image"}
     subtitle="Native vector map"

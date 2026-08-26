@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  applyGeometryOperationCommand,
-  setSnapSettingsCommand,
-} from "../src/lib/maps/editor/commands.ts";
+import { applyGeometryOperationCommand, setSnapSettingsCommand } from "../src/lib/maps/editor/commands.ts";
 import { createMapDocument, documentHash } from "../src/lib/maps/editor/model.ts";
 import { runGeometryOperation } from "../src/lib/maps/editor/geometry-operations.ts";
 import { buildPreview, commitSelectionIds } from "../src/lib/maps/editor/geometry-preview.ts";
@@ -16,7 +13,15 @@ const squareA = {
   },
   geometry: {
     type: "Polygon",
-    coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+    coordinates: [
+      [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10],
+        [0, 0],
+      ],
+    ],
   },
 };
 const squareB = {
@@ -27,7 +32,15 @@ const squareB = {
   },
   geometry: {
     type: "Polygon",
-    coordinates: [[[5, 5], [15, 5], [15, 15], [5, 15], [5, 5]]],
+    coordinates: [
+      [
+        [5, 5],
+        [15, 5],
+        [15, 15],
+        [5, 15],
+        [5, 5],
+      ],
+    ],
   },
 };
 const line = {
@@ -38,7 +51,10 @@ const line = {
   },
   geometry: {
     type: "LineString",
-    coordinates: [[0, 7.5], [20, 7.5]],
+    coordinates: [
+      [0, 7.5],
+      [20, 7.5],
+    ],
   },
 };
 

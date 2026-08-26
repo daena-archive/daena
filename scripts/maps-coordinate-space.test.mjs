@@ -29,7 +29,12 @@ import {
 } from "../src/lib/maps/editor/commands.ts";
 import { CommandStack } from "../src/lib/maps/editor/command-stack.ts";
 import { createMapDocument } from "../src/lib/maps/editor/model.ts";
-import { measurementSummary, pathLength, polygonArea, unitsForCoordinateSpace } from "../src/lib/maps/editor/measurement.ts";
+import {
+  measurementSummary,
+  pathLength,
+  polygonArea,
+  unitsForCoordinateSpace,
+} from "../src/lib/maps/editor/measurement.ts";
 import { parseVectorLayers } from "../src/lib/maps/native-vector/source.ts";
 
 const imageSpace = {
@@ -75,8 +80,29 @@ const descriptor = {
 assert.equal(coordinateSpaceFromDescriptor(descriptor).kind, "image");
 assert.equal(unitsForCoordinateSpace(imageSpace).length, "px");
 assert.match(measurementSummary(imageSpace), /pixels/);
-assert.equal(pathLength([[0, 0], [10, 0]], imageSpace), 10);
-assert.equal(polygonArea([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], imageSpace), 100);
+assert.equal(
+  pathLength(
+    [
+      [0, 0],
+      [10, 0],
+    ],
+    imageSpace,
+  ),
+  10,
+);
+assert.equal(
+  polygonArea(
+    [
+      [0, 0],
+      [10, 0],
+      [10, 10],
+      [0, 10],
+      [0, 0],
+    ],
+    imageSpace,
+  ),
+  100,
+);
 
 const geographic = {
   kind: "geographic",
@@ -85,7 +111,15 @@ const geographic = {
   wrapX: true,
 };
 assert.equal(unitsForCoordinateSpace(geographic).length, "m");
-assert.ok(pathLength([[0, 0], [0, 1]], geographic) > 100000);
+assert.ok(
+  pathLength(
+    [
+      [0, 0],
+      [0, 1],
+    ],
+    geographic,
+  ) > 100000,
+);
 
 const world = {
   kind: "world",
@@ -150,7 +184,9 @@ stack.undo();
 assert.equal(stack.document.descriptor.coordinateSpace.kind, "image");
 assert.deepEqual(stack.document.collection.features[0].geometry.coordinates, beforeCalibrate);
 
-stack.apply(setDefaultViewCommand({ center: [10, 20], zoom: 3, rotation: 0 }, { center: [400, 200], zoom: 1, rotation: 0 }));
+stack.apply(
+  setDefaultViewCommand({ center: [10, 20], zoom: 3, rotation: 0 }, { center: [400, 200], zoom: 1, rotation: 0 }),
+);
 assert.deepEqual(stack.document.descriptor.defaultView.center, [10, 20]);
 assert.equal(stack.isDirty(), true);
 
@@ -200,7 +236,10 @@ const created = buildCreateRasterLayer(layerDoc, "Hillshade", "dddddddd-dddd-4dd
 assert.equal(created.layer.kind, "raster");
 const layerStack = new CommandStack(layerDoc);
 layerStack.apply(created.command);
-assert.equal(layerStack.document.layers.some((layer) => layer.id === created.layer.id), true);
+assert.equal(
+  layerStack.document.layers.some((layer) => layer.id === created.layer.id),
+  true,
+);
 layerStack.apply(setLayerOpacityCommand(created.layer.id, 0.25, 1));
 assert.equal(layerStack.document.layers.find((layer) => layer.id === created.layer.id)?.opacity, 0.25);
 layerStack.undo();
@@ -242,7 +281,8 @@ assert.notEqual(duplicatedRaster.layer.rasterAssetId, rasterSource.rasterAssetId
 assert.equal(duplicatedRaster.layer.rasterAssetId, duplicatedAssetId);
 layerStack.apply(duplicatedRaster.command);
 assert.equal(
-  new Set(layerStack.document.layers.filter((layer) => layer.kind === "raster").map((layer) => layer.rasterAssetId)).size,
+  new Set(layerStack.document.layers.filter((layer) => layer.kind === "raster").map((layer) => layer.rasterAssetId))
+    .size,
   layerStack.document.layers.filter((layer) => layer.kind === "raster").length,
 );
 

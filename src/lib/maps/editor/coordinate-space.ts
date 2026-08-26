@@ -1,8 +1,4 @@
-import type {
-  MapBackgroundRef,
-  MapCoordinateSpace,
-  MapDescriptor,
-} from "../../../../packages/plugin-sdk/src/maps.ts";
+import type { MapBackgroundRef, MapCoordinateSpace, MapDescriptor } from "../../../../packages/plugin-sdk/src/maps.ts";
 import type { VectorFeatureCollection } from "../native-vector/types.ts";
 
 export type Extent4 = [number, number, number, number];
@@ -91,10 +87,7 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-export function mapPositions<T>(
-  geometry: T,
-  transform: (position: number[]) => number[],
-): T {
+export function mapPositions<T>(geometry: T, transform: (position: number[]) => number[]): T {
   const walk = (value: unknown, depth: number): unknown => {
     if (depth === 0) {
       const position = value as number[];
@@ -144,7 +137,10 @@ export function flipYExtent(extent: readonly number[], space: MapCoordinateSpace
   return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
 }
 
-export function flipYCollection(collection: VectorFeatureCollection, space: MapCoordinateSpace): VectorFeatureCollection {
+export function flipYCollection(
+  collection: VectorFeatureCollection,
+  space: MapCoordinateSpace,
+): VectorFeatureCollection {
   return transformCollection(collection, (position) => flipYPosition(position, space));
 }
 
@@ -213,7 +209,8 @@ export function parseCoordinateSpace(value: unknown): MapCoordinateSpace | null 
       units: {
         id: units.id,
         label: units.label,
-        metresPerUnit: typeof units.metresPerUnit === "number" && Number.isFinite(units.metresPerUnit) ? units.metresPerUnit : null,
+        metresPerUnit:
+          typeof units.metresPerUnit === "number" && Number.isFinite(units.metresPerUnit) ? units.metresPerUnit : null,
       },
       wrapX: space.wrapX === true,
     };

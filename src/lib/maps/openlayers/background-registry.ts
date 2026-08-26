@@ -52,7 +52,9 @@ export function createBackgroundRegistry(onError?: (detail: string) => void): Ba
   return {
     group,
     sync(backgrounds, space, projection) {
-      const ordered = [...backgrounds].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+      const ordered = [...backgrounds].sort(
+        (left, right) => left.order - right.order || left.id.localeCompare(right.id),
+      );
       const keep = new Set(ordered.map((background) => background.id));
       for (const [id, layer] of layers) {
         if (!keep.has(id)) {

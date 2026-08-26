@@ -3,12 +3,7 @@
  * Authored maps use the native OpenLayers / physical editors in the host shell.
  * This module no longer embeds a third-party map webview.
  */
-export {
-  VECTOR_PROVIDER,
-  PHYSICAL_PROVIDER,
-  type MapAnchor,
-  type NormalizedPoint,
-} from "../../../plugin-sdk/src/maps";
+export { VECTOR_PROVIDER, PHYSICAL_PROVIDER, type MapAnchor, type NormalizedPoint } from "../../../plugin-sdk/src/maps";
 
 export type ProviderCapabilities = {
   provider: string;

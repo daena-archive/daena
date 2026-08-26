@@ -31,10 +31,7 @@ export class CommandStack {
   #byteBudget: number;
   #listener: ((snapshot: CommandStackSnapshot) => void) | null = null;
 
-  constructor(
-    document: MapDocument,
-    options?: { maxEntries?: number; byteBudget?: number },
-  ) {
+  constructor(document: MapDocument, options?: { maxEntries?: number; byteBudget?: number }) {
     this.#document = cloneDocument(document);
     this.#baselineHash = documentHash(this.#document);
     this.#maxEntries = options?.maxEntries ?? UNDO_STACK_SIZE;

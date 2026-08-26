@@ -26,7 +26,10 @@ const water = classifyPhysicalWater(width, height, bathymetry, lakeCells);
 assert.equal(water.ocean.filter(Boolean).length, 8, "the largest connected bathymetry component is ocean");
 assert.equal(water.inland.filter(Boolean).length, 8, "bounded lake components remain visible");
 assert.equal(water.inland[6], false, "isolated one-cell sinks stay suppressed");
-assert.equal(water.ocean.some((value, index) => value && water.inland[index]), false);
+assert.equal(
+  water.ocean.some((value, index) => value && water.inland[index]),
+  false,
+);
 
 const root = resolve(import.meta.dirname, "..");
 for (const path of [

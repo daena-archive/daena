@@ -1,8 +1,4 @@
-import type {
-  MapLayerDefinition,
-  VectorFeature,
-  VectorFeatureCollection,
-} from "../native-vector/types.ts";
+import type { MapLayerDefinition, VectorFeature, VectorFeatureCollection } from "../native-vector/types.ts";
 import type { OpenLayersMapDescriptor } from "./coordinate-space.ts";
 
 /** Plain Daena map authoring state — no OpenLayers objects. */
@@ -54,10 +50,7 @@ export function createMapDocument(input: {
   };
 }
 
-export function replaceFeature(
-  collection: VectorFeatureCollection,
-  feature: VectorFeature,
-): VectorFeatureCollection {
+export function replaceFeature(collection: VectorFeatureCollection, feature: VectorFeature): VectorFeatureCollection {
   const features = collection.features.map((item) => (item.id === feature.id ? feature : item));
   if (!features.some((item) => item.id === feature.id)) features.push(feature);
   return {
@@ -66,27 +59,18 @@ export function replaceFeature(
   };
 }
 
-export function removeFeatures(
-  collection: VectorFeatureCollection,
-  ids: ReadonlySet<string>,
-): VectorFeatureCollection {
+export function removeFeatures(collection: VectorFeatureCollection, ids: ReadonlySet<string>): VectorFeatureCollection {
   return {
     type: "FeatureCollection",
     features: collection.features.filter((feature) => !ids.has(feature.id)),
   };
 }
 
-export function findFeature(
-  collection: VectorFeatureCollection,
-  id: string,
-): VectorFeature | undefined {
+export function findFeature(collection: VectorFeatureCollection, id: string): VectorFeature | undefined {
   return collection.features.find((feature) => feature.id === id);
 }
 
-export function findLayer(
-  layers: readonly MapLayerDefinition[],
-  id: string,
-): MapLayerDefinition | undefined {
+export function findLayer(layers: readonly MapLayerDefinition[], id: string): MapLayerDefinition | undefined {
   return layers.find((layer) => layer.id === id);
 }
 

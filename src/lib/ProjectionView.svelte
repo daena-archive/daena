@@ -23,11 +23,13 @@ let {
 
 let container = $state<HTMLElement | null>(null);
 let error = $state("");
-let liveSubtitle = $state(subtitle);
+let surfaceSubtitle = $state<string | null>(null);
+let liveSubtitle = $derived(surfaceSubtitle ?? subtitle);
 const topbarIcon = $derived(kind === "graph" ? Network : kind === "timeline" ? CalendarRange : Languages);
 
 $effect(() => {
-  liveSubtitle = subtitle;
+  void subtitle;
+  surfaceSubtitle = null;
 });
 
 onMount(() => {
@@ -36,7 +38,7 @@ onMount(() => {
     const projectionContext: ModuleContext = {
       ...context,
       reportSurfaceMeta: (meta) => {
-        liveSubtitle = meta.subtitle;
+        surfaceSubtitle = meta.subtitle;
       },
     };
     const cleanup = view.mount(container, projectionContext);

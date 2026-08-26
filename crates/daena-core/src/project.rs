@@ -3128,7 +3128,7 @@ impl ProjectStore {
             )
             .collect::<BTreeSet<_>>();
         for plugin_id in plugin_ids {
-            crate::storage::write_canonical_plugin(&staging_root, &manifest, snapshot, plugin_id)?;
+            crate::storage::write_canonical_plugin(&staging_root, manifest, snapshot, plugin_id)?;
         }
         let mut current_sources = staged_canonical_sources(&staging_root, snapshot)?;
         let mut transaction_staged_paths = BTreeSet::new();

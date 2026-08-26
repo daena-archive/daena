@@ -1,3 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+
 let cached: string | null = null;
 let inflight: Promise<string> | null = null;
 
@@ -9,7 +12,6 @@ export async function appVersion(): Promise<string> {
   inflight = (async () => {
     // 1. Dedicated Tauri command — single runtime source (CARGO_PKG_VERSION / tauri.conf.json)
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const v = await invoke<string>("app_version");
       if (v) {
         cached = v;
@@ -20,7 +22,6 @@ export async function appVersion(): Promise<string> {
     }
     // 2. Stock Tauri app plugin (fallback for older builds)
     try {
-      const { getVersion } = await import("@tauri-apps/api/app");
       const v = await getVersion();
       if (v) {
         cached = v;

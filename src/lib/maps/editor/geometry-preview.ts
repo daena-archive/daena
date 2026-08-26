@@ -22,7 +22,7 @@ export function buildPreview(
   operation: GeometryOperationKind,
   selectedIds: readonly string[],
   params: GeometryOpParams = {},
-): { preview: GeometryPreview | null; error: GeometryOpResult & { ok: false } | null } {
+): { preview: GeometryPreview | null; error: (GeometryOpResult & { ok: false }) | null } {
   const result = runGeometryOperation(document, operation, selectedIds, params);
   if (!result.ok) return { preview: null, error: result };
   return {

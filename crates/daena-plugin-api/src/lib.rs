@@ -533,7 +533,7 @@ pub enum MigrationOperation {
     },
     AddField {
         namespace: String,
-        field: FieldDefinition,
+        field: Box<FieldDefinition>,
     },
     RenameField {
         namespace: String,

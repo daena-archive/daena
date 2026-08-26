@@ -60,15 +60,7 @@ function render(name, options = {}) {
 try {
   runCargo(["test", "--manifest-path", manifest, "--locked", "--offline"], 300_000);
   runCargo(["test", "--manifest-path", "crates/daena-core/Cargo.toml", "--locked", "--offline", "maps::atlas"]);
-  runCargo([
-    "test",
-    "--manifest-path",
-    "src-tauri/Cargo.toml",
-    "--locked",
-    "--offline",
-    "--lib",
-    "atlas_",
-  ]);
+  runCargo(["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--offline", "--lib", "atlas_"]);
 
   const physical = JSON.parse(
     runCargo([

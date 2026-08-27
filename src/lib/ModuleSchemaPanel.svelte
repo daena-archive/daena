@@ -441,6 +441,50 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     .filter((override) => override.entityTypeId && (override.icon || override.iconColor))
     .filter((override) => !disabledEntityTypes.has(override.entityTypeId))
     .sort((left, right) => left.entityTypeId.localeCompare(right.entityTypeId));
+  const fieldTimelineOverrides = cloneJson(
+    ((value as unknown as Record<string, unknown>).fieldTimelineOverrides as unknown[] | undefined) ?? [],
+  )
+    .map((ov: unknown) => {
+      const raw = ov as unknown as Record<string, unknown>;
+      const fieldKey = ensureFieldKey(String(raw.fieldKey ?? ""));
+      if (!fieldKey) return null;
+      const t = raw.timeline as Record<string, unknown> | null | undefined;
+      if (t === null) return { fieldKey, timeline: null as unknown as null };
+      if (t === undefined) return { fieldKey, timeline: null as unknown as null };
+      if (typeof t !== "object") return null;
+      const role = String((t as Record<string, unknown>).role ?? "")
+        .trim()
+        .toLowerCase();
+      if (!["point", "start", "end"].includes(role)) return null;
+      const group =
+        (t as Record<string, unknown>).group != null ? String((t as Record<string, unknown>).group).trim() : undefined;
+      const label =
+        (t as Record<string, unknown>).label != null ? String((t as Record<string, unknown>).label).trim() : undefined;
+      const layerRaw =
+        (t as Record<string, unknown>).layer != null
+          ? String((t as Record<string, unknown>).layer)
+              .trim()
+              .toLowerCase()
+          : undefined;
+      const layer = layerRaw && ["dates", "lifelines"].includes(layerRaw) ? layerRaw : undefined;
+      const timeline: Record<string, unknown> = { role };
+      if (group) timeline.group = group;
+      if (label) timeline.label = label;
+      if (layer) timeline.layer = layer;
+      return {
+        fieldKey,
+        timeline: timeline as unknown as { role: string; group?: string; label?: string; layer?: string },
+      };
+    })
+    .filter((ov: unknown): ov is NonNullable<typeof ov> => ov !== null)
+    .filter(
+      (ov: unknown, index: number, all: unknown[]) =>
+        (all as Array<{ fieldKey: string }>).findIndex((c) => c.fieldKey === (ov as { fieldKey: string }).fieldKey) ===
+        index,
+    )
+    .sort((left: unknown, right: unknown) =>
+      (left as { fieldKey: string }).fieldKey.localeCompare((right as { fieldKey: string }).fieldKey),
+    ) as unknown as Array<Record<string, unknown>>;
   return {
     version: value.version || 1,
     disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].sort(),
@@ -453,7 +497,8 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     templateOverrides,
     fieldMetadataOverrides,
     entityTypeAppearanceOverrides,
-  };
+    fieldTimelineOverrides,
+  } as unknown as ModuleSchemaOverlay;
 }
 
 function fingerprint(value: ModuleSchemaOverlay): string {
@@ -497,6 +542,12 @@ let newFieldTargetEntityTypes = $state<string[]>([]);
 let newFieldRelationshipType = $state("");
 let newFieldCardinality = $state<"one" | "many">("many");
 let newFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
+let newFieldShared = $state(false);
+let newFieldTimelineEnabled = $state(false);
+let newFieldTimelineRole = $state<"point" | "start" | "end">("point");
+let newFieldTimelineGroup = $state("");
+let newFieldTimelineLabel = $state("");
+let newFieldTimelineLayer = $state<"dates" | "lifelines">("dates");
 let editingBuiltinMetadataFieldKey = $state<string | null>(null);
 let editBuiltinMetadataDrafts = $state<MetadataFieldDraft[]>([]);
 let editingFieldKey = $state<string | null>(null);
@@ -509,9 +560,20 @@ let editFieldTargetEntityTypes = $state<string[]>([]);
 let editFieldRelationshipType = $state("");
 let editFieldCardinality = $state<"one" | "many">("many");
 let editFieldOneOfVariants = $state<Array<{ label: string; type: FieldType; options: string }>>([]);
+let editFieldShared = $state(false);
+let editFieldTimelineEnabled = $state(false);
+let editFieldTimelineRole = $state<"point" | "start" | "end">("point");
+let editFieldTimelineGroup = $state("");
+let editFieldTimelineLabel = $state("");
+let editFieldTimelineLayer = $state<"dates" | "lifelines">("dates");
 let newFieldMetadata = $state<MetadataFieldDraft[]>([]);
 let editFieldMetadata = $state<MetadataFieldDraft[]>([]);
 let editingBuiltinFieldKey = $state<string | null>(null);
+let editingTimelineFieldKey = $state<string | null>(null);
+let editTimelineRole = $state<"point" | "start" | "end">("point");
+let editTimelineGroup = $state("");
+let editTimelineLabel = $state("");
+let editTimelineLayer = $state<"dates" | "lifelines">("dates");
 
 let newTemplateName = $state("");
 let newTemplateEntityType = $state("");
@@ -610,10 +672,23 @@ function toggleDisabled(listKey: "disabledEntityTypes" | "disabledFields" | "dis
   const next = { ...draft, [listKey]: [...current].sort() } as ModuleSchemaOverlay;
   if (listKey === "disabledFields" && current.has(id)) {
     // Remove scope and metadata overrides for disabled field
-    next.fieldScopeOverrides = (next.fieldScopeOverrides ?? []).filter((ov) => ov.fieldKey !== id);
-    next.fieldMetadataOverrides = (next.fieldMetadataOverrides ?? []).filter((ov) => ov.fieldKey !== id);
+    next.fieldScopeOverrides = (next.fieldScopeOverrides ?? []).filter(
+      (ov: { fieldKey: string }) => ov.fieldKey !== id,
+    );
+    next.fieldMetadataOverrides = (next.fieldMetadataOverrides ?? []).filter(
+      (ov: { fieldKey: string }) => ov.fieldKey !== id,
+    );
+    (next as unknown as Record<string, unknown>).fieldTimelineOverrides = (
+      ((next as unknown as Record<string, unknown>).fieldTimelineOverrides as
+        Array<{ fieldKey: string }> | undefined) ?? []
+    ).filter((ov) => ov.fieldKey !== id);
+    if (
+      ((next as unknown as Record<string, unknown>).fieldTimelineOverrides as Array<unknown> | undefined)?.length === 0
+    )
+      delete (next as unknown as Record<string, unknown>).fieldTimelineOverrides;
     if (editingBuiltinFieldKey === id) editingBuiltinFieldKey = null;
     if (editingBuiltinMetadataFieldKey === id) cancelBuiltinMetadataEdit();
+    if (editingTimelineFieldKey === id) editingTimelineFieldKey = null;
   }
   if (listKey === "disabledEntityTypes" && current.has(id)) {
     const overrides = (next.entityTypeAppearanceOverrides ?? []).filter((ov) => ov.entityTypeId !== id);
@@ -662,6 +737,196 @@ function selectableFieldOptions() {
       hint: fieldTypeLabel(field.type),
     }))
     .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function effectiveTimeline(
+  field: FieldDefinition,
+): { role: string; group?: string; label?: string; layer?: string } | null | undefined {
+  const override = (
+    draft as unknown as { fieldTimelineOverrides?: Array<{ fieldKey: string; timeline: unknown }> }
+  ).fieldTimelineOverrides?.find((ov) => ov.fieldKey === field.key);
+  if (override !== undefined)
+    return override.timeline as unknown as { role: string; group?: string; label?: string; layer?: string } | null;
+  const raw = (field as unknown as Record<string, unknown>).timeline as unknown as
+    { role: string; group?: string; label?: string; layer?: string } | undefined;
+  return raw ?? null;
+}
+
+function timelineBadge(field: FieldDefinition): string {
+  const tl = effectiveTimeline(field);
+  if (!tl) return "";
+  const role = tl.role ?? "point";
+  const layer = tl.layer ?? "dates";
+  const group = tl.group ? `· ${tl.group}` : "";
+  const label = tl.label ? `· ${tl.label}` : "";
+  return `${role} · ${layer} ${group} ${label}`.trim();
+}
+
+function isTimelineEnabled(field: FieldDefinition): boolean {
+  return effectiveTimeline(field) != null;
+}
+
+function startTimelineEdit(field: FieldDefinition) {
+  if (field.type !== "date") return;
+  editingBuiltinFieldKey = null;
+  editingBuiltinMetadataFieldKey = null;
+  editingFieldKey = null;
+  editingTimelineFieldKey = field.key;
+  const tl = effectiveTimeline(field);
+  if (tl) {
+    editTimelineRole = (tl.role as "point" | "start" | "end") ?? "point";
+    editTimelineGroup = tl.group ?? "";
+    editTimelineLabel = tl.label ?? "";
+    editTimelineLayer = (tl.layer as "dates" | "lifelines") ?? "dates";
+  } else {
+    editTimelineRole = "point";
+    editTimelineGroup = "";
+    editTimelineLabel = "";
+    editTimelineLayer = "dates";
+  }
+}
+
+function cancelTimelineEdit() {
+  editingTimelineFieldKey = null;
+}
+
+function commitTimelineEdit() {
+  const key = editingTimelineFieldKey;
+  if (!key) return;
+  const field = packageFields.find((f) => f.key === key) ?? (draft.customFields ?? []).find((f) => f.key === key);
+  if (!field || field.type !== "date") return;
+  if (editTimelineRole === "start" || editTimelineRole === "end") {
+    if (!editTimelineGroup.trim()) return;
+  }
+  const isBuiltin = packageFields.some((f) => f.key === key);
+  const isCustom = !isBuiltin && (draft.customFields ?? []).some((f) => f.key === key);
+  if (isCustom) {
+    // Custom date fields must be shared to carry a timeline (validated in Rust); mirror guard in UI.
+    const shared = (field as unknown as Record<string, unknown>).shared as boolean | undefined;
+    if (!shared) return;
+  }
+  const timeline = {
+    role: editTimelineRole,
+    ...(editTimelineGroup.trim() ? { group: editTimelineGroup.trim() } : {}),
+    ...(editTimelineLabel.trim() ? { label: editTimelineLabel.trim() } : {}),
+    layer: editTimelineLayer,
+  };
+  const existing =
+    ((draft as unknown as Record<string, unknown>).fieldTimelineOverrides as
+      Array<{ fieldKey: string; timeline: unknown }> | undefined) ?? [];
+  const nextOverrides = existing.filter((ov) => ov.fieldKey !== key);
+  // Custom fields: single source of truth is field.timeline on draft.customFields.
+  // Do not emit a fieldTimelineOverrides entry; mutate the custom field directly and prune any stale override.
+  if (isCustom) {
+    const nextCustomFields = (draft.customFields ?? []).map((f) => {
+      if (f.key !== key) return f;
+      return { ...f, timeline: timeline as unknown as FieldDefinition["timeline"] } as FieldDefinition;
+    });
+    const next: unknown = {
+      ...(draft as unknown as Record<string, unknown>),
+      customFields: nextCustomFields,
+      fieldTimelineOverrides: nextOverrides.length ? nextOverrides : undefined,
+    };
+    const cleaned = next as Record<string, unknown>;
+    if (!nextOverrides.length) delete cleaned.fieldTimelineOverrides;
+    setDraft(cleaned as unknown as ModuleSchemaOverlay);
+    cancelTimelineEdit();
+    return;
+  }
+  const builtinTimeline = (field as unknown as Record<string, unknown>).timeline as unknown as
+    Record<string, unknown> | undefined;
+  // For builtin, compare to packaged timeline to decide whether to store override or clear
+  let shouldStore = true;
+  if (isBuiltin && builtinTimeline) {
+    const packaged = {
+      role: String((builtinTimeline as Record<string, unknown>).role ?? "").toLowerCase(),
+      group:
+        (builtinTimeline as Record<string, unknown>).group != null
+          ? String((builtinTimeline as Record<string, unknown>).group)
+          : undefined,
+      label:
+        (builtinTimeline as Record<string, unknown>).label != null
+          ? String((builtinTimeline as Record<string, unknown>).label)
+          : undefined,
+      layer:
+        (builtinTimeline as Record<string, unknown>).layer != null
+          ? String((builtinTimeline as Record<string, unknown>).layer).toLowerCase()
+          : "dates",
+    };
+    const nextNorm = {
+      role: timeline.role,
+      group: (timeline as Record<string, unknown>).group as string | undefined,
+      label: (timeline as Record<string, unknown>).label as string | undefined,
+      layer: timeline.layer ?? "dates",
+    };
+    if (JSON.stringify(packaged) === JSON.stringify(nextNorm)) shouldStore = false;
+  } else if (isBuiltin && !builtinTimeline) {
+    // builtin without timeline — storing point defaults would be an enable, so store
+    shouldStore = true;
+  }
+  if (shouldStore) {
+    nextOverrides.push({ fieldKey: key, timeline });
+    nextOverrides.sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
+  }
+  {
+    const next: unknown = {
+      ...(draft as unknown as Record<string, unknown>),
+      fieldTimelineOverrides: nextOverrides.length ? nextOverrides : undefined,
+    };
+    const cleaned = next as Record<string, unknown>;
+    if (!nextOverrides.length) delete cleaned.fieldTimelineOverrides;
+    setDraft(cleaned as unknown as ModuleSchemaOverlay);
+  }
+  cancelTimelineEdit();
+}
+
+function disableTimeline(field: FieldDefinition) {
+  const key = field.key;
+  const existing =
+    ((draft as unknown as Record<string, unknown>).fieldTimelineOverrides as
+      Array<{ fieldKey: string; timeline: unknown }> | undefined) ?? [];
+  const nextOverrides = existing.filter((ov) => ov.fieldKey !== key);
+  const isBuiltin = packageFields.some((f) => f.key === key);
+  const isCustom = !isBuiltin && (draft.customFields ?? []).some((f) => f.key === key);
+  if (isCustom) {
+    const nextCustomFields = (draft.customFields ?? []).map((f) => {
+      if (f.key !== key) return f;
+      const nf = { ...f } as Record<string, unknown>;
+      delete nf.timeline;
+      return nf as unknown as FieldDefinition;
+    });
+    const next: unknown = {
+      ...(draft as unknown as Record<string, unknown>),
+      customFields: nextCustomFields,
+      fieldTimelineOverrides: nextOverrides.length ? nextOverrides : undefined,
+    };
+    const cleaned = next as Record<string, unknown>;
+    if (!nextOverrides.length) delete cleaned.fieldTimelineOverrides;
+    setDraft(cleaned as unknown as ModuleSchemaOverlay);
+    if (editingTimelineFieldKey === key) editingTimelineFieldKey = null;
+    return;
+  }
+  const hasBuiltinTimeline = !!(field as unknown as Record<string, unknown>).timeline;
+  if (hasBuiltinTimeline) {
+    // disabling builtin timeline → store null override
+    nextOverrides.push({ fieldKey: key, timeline: null as unknown as null });
+    nextOverrides.sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
+    {
+      const next: unknown = { ...(draft as unknown as Record<string, unknown>), fieldTimelineOverrides: nextOverrides };
+      setDraft(next as unknown as ModuleSchemaOverlay);
+    }
+  } else {
+    // builtin without timeline but with an existing override (e.g. previously enabled) → just remove override
+    if (nextOverrides.length === 0) {
+      const d = { ...(draft as unknown as Record<string, unknown>) } as unknown as Record<string, unknown>;
+      delete d.fieldTimelineOverrides;
+      setDraft(d as unknown as ModuleSchemaOverlay);
+    } else {
+      const next: unknown = { ...(draft as unknown as Record<string, unknown>), fieldTimelineOverrides: nextOverrides };
+      setDraft(next as unknown as ModuleSchemaOverlay);
+    }
+  }
+  if (editingTimelineFieldKey === key) editingTimelineFieldKey = null;
 }
 
 function updateBuiltinFieldScope(field: FieldDefinition, entityTypes: string[]) {
@@ -901,6 +1166,12 @@ async function discardChanges() {
   newFieldCardinality = "many";
   newFieldOneOfVariants = [];
   newFieldMetadata = [];
+  newFieldShared = false;
+  newFieldTimelineEnabled = false;
+  newFieldTimelineRole = "point";
+  newFieldTimelineGroup = "";
+  newFieldTimelineLabel = "";
+  newFieldTimelineLayer = "dates";
   editingFieldKey = null;
   editFieldLabel = "";
   editFieldType = "text";
@@ -912,9 +1183,20 @@ async function discardChanges() {
   editFieldCardinality = "many";
   editFieldOneOfVariants = [];
   editFieldMetadata = [];
+  editFieldShared = false;
+  editFieldTimelineEnabled = false;
+  editFieldTimelineRole = "point";
+  editFieldTimelineGroup = "";
+  editFieldTimelineLabel = "";
+  editFieldTimelineLayer = "dates";
   editingBuiltinFieldKey = null;
   editingBuiltinMetadataFieldKey = null;
   editBuiltinMetadataDrafts = [];
+  editingTimelineFieldKey = null;
+  editTimelineRole = "point";
+  editTimelineGroup = "";
+  editTimelineLabel = "";
+  editTimelineLayer = "dates";
   newTemplateName = "";
   newTemplateEntityType = "";
   newTemplateDescription = "";
@@ -1118,6 +1400,12 @@ function cancelFieldEdit() {
   editFieldCardinality = "many";
   editFieldOneOfVariants = [];
   editFieldMetadata = [];
+  editFieldShared = false;
+  editFieldTimelineEnabled = false;
+  editFieldTimelineRole = "point";
+  editFieldTimelineGroup = "";
+  editFieldTimelineLabel = "";
+  editFieldTimelineLayer = "dates";
 }
 
 function startFieldEdit(field: FieldDefinition) {
@@ -1125,6 +1413,7 @@ function startFieldEdit(field: FieldDefinition) {
   editingTemplateId = null;
   editingBuiltinFieldKey = null;
   editingBuiltinMetadataFieldKey = null;
+  editingTimelineFieldKey = null;
   editingFieldKey = field.key;
   editFieldLabel = field.label;
   editFieldType = FIELD_TYPES.includes(field.type) ? field.type : "text";
@@ -1141,6 +1430,22 @@ function startFieldEdit(field: FieldDefinition) {
     options: formatOptions(v.options as string[] | undefined),
   }));
   editFieldMetadata = draftsFromMetadataFields((field as unknown as Record<string, unknown>).metadataFields);
+  editFieldShared = Boolean((field as unknown as Record<string, unknown>).shared);
+  const tl = (field as unknown as Record<string, unknown>).timeline as Record<string, unknown> | undefined;
+  if (tl && typeof tl === "object") {
+    editFieldTimelineEnabled = true;
+    editFieldTimelineRole =
+      (String((tl as Record<string, unknown>).role ?? "point").toLowerCase() as "point" | "start" | "end") ?? "point";
+    editFieldTimelineGroup = tl.group != null ? String(tl.group) : "";
+    editFieldTimelineLabel = tl.label != null ? String(tl.label) : "";
+    editFieldTimelineLayer = tl.layer != null ? (String(tl.layer).toLowerCase() as "dates" | "lifelines") : "dates";
+  } else {
+    editFieldTimelineEnabled = false;
+    editFieldTimelineRole = "point";
+    editFieldTimelineGroup = "";
+    editFieldTimelineLabel = "";
+    editFieldTimelineLayer = "dates";
+  }
 }
 
 function addCustomField() {
@@ -1193,6 +1498,19 @@ function addCustomField() {
       if (defs.length !== newFieldMetadata.length) return;
       base.metadataFields = defs;
     }
+  } else if (newFieldType === "date") {
+    if (newFieldShared) {
+      base.shared = true;
+      if (newFieldTimelineEnabled) {
+        if ((newFieldTimelineRole === "start" || newFieldTimelineRole === "end") && !newFieldTimelineGroup.trim())
+          return;
+        const tl: Record<string, unknown> = { role: newFieldTimelineRole, layer: newFieldTimelineLayer };
+        if (newFieldTimelineGroup.trim()) tl.group = newFieldTimelineGroup.trim();
+        else if (newFieldTimelineRole !== "point") return;
+        if (newFieldTimelineLabel.trim()) tl.label = newFieldTimelineLabel.trim();
+        base.timeline = tl as unknown as FieldDefinition["timeline"];
+      }
+    }
   }
 
   const field: FieldDefinition = base as FieldDefinition;
@@ -1207,6 +1525,12 @@ function addCustomField() {
   newFieldCardinality = "many";
   newFieldOneOfVariants = [];
   newFieldMetadata = [];
+  newFieldShared = false;
+  newFieldTimelineEnabled = false;
+  newFieldTimelineRole = "point";
+  newFieldTimelineGroup = "";
+  newFieldTimelineLabel = "";
+  newFieldTimelineLayer = "dates";
 }
 
 function commitFieldEdit() {
@@ -1261,6 +1585,33 @@ function commitFieldEdit() {
     extra.options = undefined;
     extra.multiple = undefined;
     extra.oneOf = undefined;
+    extra.shared = undefined;
+    extra.timeline = undefined;
+  } else if (editFieldType === "date") {
+    extra.options = undefined;
+    extra.multiple = undefined;
+    extra.targetEntityTypes = undefined;
+    extra.relationshipType = undefined;
+    extra.cardinality = undefined;
+    extra.oneOf = undefined;
+    extra.metadataFields = undefined;
+    if (editFieldShared) {
+      extra.shared = true;
+      if (editFieldTimelineEnabled) {
+        if ((editFieldTimelineRole === "start" || editFieldTimelineRole === "end") && !editFieldTimelineGroup.trim())
+          return;
+        const tl: Record<string, unknown> = { role: editFieldTimelineRole, layer: editFieldTimelineLayer };
+        if (editFieldTimelineGroup.trim()) tl.group = editFieldTimelineGroup.trim();
+        else if (editFieldTimelineRole !== "point") return;
+        if (editFieldTimelineLabel.trim()) tl.label = editFieldTimelineLabel.trim();
+        extra.timeline = tl;
+      } else {
+        extra.timeline = undefined;
+      }
+    } else {
+      extra.shared = undefined;
+      extra.timeline = undefined;
+    }
   } else {
     extra.options = undefined;
     extra.multiple = undefined;
@@ -1269,39 +1620,58 @@ function commitFieldEdit() {
     extra.cardinality = undefined;
     extra.oneOf = undefined;
     extra.metadataFields = undefined;
+    extra.shared = undefined;
+    extra.timeline = undefined;
   }
 
-  setDraft({
-    ...draft,
-    customFields: (draft.customFields ?? []).map((field) => {
-      if (field.key !== key) return field;
-      const next: any = {
-        ...field,
-        label,
-        type: editFieldType,
-        entityTypes: editFieldEntityTypes.length ? [...editFieldEntityTypes].sort() : undefined,
-      };
-      // Clear previous type-specific keys then apply new
-      delete next.options;
-      delete next.multiple;
-      delete next.targetEntityTypes;
-      delete next.relationshipType;
-      delete next.cardinality;
-      delete next.oneOf;
-      delete next.metadataFields;
-      Object.assign(next, extra);
-      // Remove undefined
-      for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
-      return next;
-    }),
+  const nextCustomFields = (draft.customFields ?? []).map((field) => {
+    if (field.key !== key) return field;
+    const next: any = {
+      ...field,
+      label,
+      type: editFieldType,
+      entityTypes: editFieldEntityTypes.length ? [...editFieldEntityTypes].sort() : undefined,
+    };
+    // Clear previous type-specific keys then apply new
+    delete next.options;
+    delete next.multiple;
+    delete next.targetEntityTypes;
+    delete next.relationshipType;
+    delete next.cardinality;
+    delete next.oneOf;
+    delete next.metadataFields;
+    delete next.shared;
+    delete next.timeline;
+    Object.assign(next, extra);
+    // Remove undefined
+    for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+    return next;
   });
+  // Prune any stale fieldTimelineOverrides entry for this custom field — timeline is now owned by customFields.
+  const existingOverridesForEdit =
+    ((draft as unknown as Record<string, unknown>).fieldTimelineOverrides as
+      Array<{ fieldKey: string; timeline: unknown }> | undefined) ?? [];
+  const nextOverridesForEdit = existingOverridesForEdit.filter((ov) => ov.fieldKey !== key);
+  {
+    const nextDraft: Record<string, unknown> = {
+      ...(draft as unknown as Record<string, unknown>),
+      customFields: nextCustomFields,
+      fieldTimelineOverrides: nextOverridesForEdit.length ? nextOverridesForEdit : undefined,
+    };
+    if (!nextOverridesForEdit.length) delete nextDraft.fieldTimelineOverrides;
+    setDraft(nextDraft as unknown as ModuleSchemaOverlay);
+  }
   cancelFieldEdit();
 }
 
 function removeCustomField(key: string) {
   if (editingFieldKey === key) cancelFieldEdit();
-  setDraft({
-    ...draft,
+  const nextOverrides = (
+    ((draft as unknown as Record<string, unknown>).fieldTimelineOverrides as
+      Array<{ fieldKey: string; timeline: unknown }> | undefined) ?? []
+  ).filter((ov) => ov.fieldKey !== key);
+  const nextDraft: Record<string, unknown> = {
+    ...(draft as unknown as Record<string, unknown>),
     customFields: (draft.customFields ?? []).filter((field) => field.key !== key),
     customTemplates: (draft.customTemplates ?? []).map((template) => {
       const fields = { ...(template.fields as Record<string, unknown>) };
@@ -1312,7 +1682,10 @@ function removeCustomField(key: string) {
         requiredFields: template.requiredFields?.filter((item) => item !== key) ?? null,
       };
     }),
-  });
+    fieldTimelineOverrides: nextOverrides.length ? nextOverrides : undefined,
+  };
+  if (!nextOverrides.length) delete nextDraft.fieldTimelineOverrides;
+  setDraft(nextDraft as unknown as ModuleSchemaOverlay);
 }
 
 function addNewFieldOneOfVariant() {
@@ -1530,6 +1903,10 @@ function canAddField(): boolean {
     if (newFieldMetadata.some((d) => !d.label.trim())) return false;
     return true;
   }
+  if (newFieldType === "date" && newFieldShared && newFieldTimelineEnabled) {
+    if ((newFieldTimelineRole === "start" || newFieldTimelineRole === "end") && !newFieldTimelineGroup.trim())
+      return false;
+  }
   return true;
 }
 
@@ -1546,6 +1923,10 @@ function canSaveFieldEdit(): boolean {
     if (editFieldMetadata.length > 0 && !validateMetadataDrafts(editFieldMetadata)) return false;
     if (editFieldMetadata.some((d) => !d.label.trim())) return false;
     return true;
+  }
+  if (editFieldType === "date" && editFieldShared && editFieldTimelineEnabled) {
+    if ((editFieldTimelineRole === "start" || editFieldTimelineRole === "end") && !editFieldTimelineGroup.trim())
+      return false;
   }
   return true;
 }
@@ -2079,6 +2460,45 @@ function removeCustomTemplate(id: string) {
                       <button type="button" class="quiet" onclick={cancelBuiltinMetadataEdit}>Cancel</button>
                     </div>
                   </div>
+                {:else if editingTimelineFieldKey === field.key}
+                  <div class="edit-form wide">
+                    <div class="type-select" role="group" aria-label={`Timeline for ${field.label}`}>
+                      <span class="type-select-label">Timeline</span>
+                      <label>
+                        <span>Role</span>
+                        <select bind:value={editTimelineRole}>
+                          <option value="point">Point</option>
+                          <option value="start">Start</option>
+                          <option value="end">End</option>
+                        </select>
+                      </label>
+                      {#if editTimelineRole !== "point"}
+                        <label>
+                          <span>Group</span>
+                          <input bind:value={editTimelineGroup} placeholder="e.g. life, existence" />
+                        </label>
+                      {/if}
+                      <label>
+                        <span>Label</span>
+                        <input bind:value={editTimelineLabel} placeholder="Born, Created…" />
+                      </label>
+                      <label>
+                        <span>Layer</span>
+                        <select bind:value={editTimelineLayer}>
+                          <option value="dates">Project dates</option>
+                          <option value="lifelines">Lifelines</option>
+                        </select>
+                      </label>
+                      <span class="meta-hint"
+                        >Group required for start/end; layer controls Timeline swarm. Shared required — builtin date
+                        fields are already shared.</span>
+                    </div>
+                    <div class="edit-actions">
+                      <button type="button" class="action" onclick={commitTimelineEdit}
+                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
+                      <button type="button" class="quiet" onclick={cancelTimelineEdit}>Cancel</button>
+                    </div>
+                  </div>
                 {:else}
                   <div class="item-main">
                     <div class="item-title-row">
@@ -2089,6 +2509,13 @@ function removeCustomTemplate(id: string) {
                         >{/if}
                       {#if field.type === "relationship" && effectiveBuiltinMetadata(field).length > 0}
                         <span class="meta">{builtinMetadataFieldExtras(field)}</span>
+                      {/if}
+                      {#if field.type === "date"}
+                        {#if isTimelineEnabled(field)}
+                          <span class="meta">· Timeline: {timelineBadge(field)}</span>
+                        {:else if (field as unknown as Record<string, unknown>).shared}
+                          <span class="meta">· Shared, not on Timeline</span>
+                        {/if}
                       {/if}
                     </div>
                     <span class="meta"
@@ -2106,6 +2533,9 @@ function removeCustomTemplate(id: string) {
                           (ov) => ov.fieldKey === field.key,
                         )?.metadataFields?.length ?? 0} override
                       {/if}
+                      {#if field.type === "date" && (draft as unknown as { fieldTimelineOverrides?: Array<{ fieldKey: string }> }).fieldTimelineOverrides?.some((ov) => ov.fieldKey === field.key)}
+                        <span class="dot">·</span> timeline override
+                      {/if}
                     </span>
                   </div>
                   <div class="item-actions">
@@ -2115,6 +2545,7 @@ function removeCustomTemplate(id: string) {
                       onclick={() => {
                         editingBuiltinMetadataFieldKey = null;
                         editBuiltinMetadataDrafts = [];
+                        editingTimelineFieldKey = null;
                         editingBuiltinFieldKey = field.key;
                       }}>Edit scope</button>
                     {#if field.type === "relationship"}
@@ -2123,6 +2554,26 @@ function removeCustomTemplate(id: string) {
                         class="quiet"
                         disabled={isDisabled(draft.disabledFields, field.key)}
                         onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
+                    {/if}
+                    {#if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
+                      {#if isTimelineEnabled(field)}
+                        <button
+                          type="button"
+                          class="quiet"
+                          disabled={isDisabled(draft.disabledFields, field.key)}
+                          onclick={() => startTimelineEdit(field)}>Edit Timeline</button>
+                        <button
+                          type="button"
+                          class="quiet"
+                          disabled={isDisabled(draft.disabledFields, field.key)}
+                          onclick={() => disableTimeline(field)}>Disable Timeline</button>
+                      {:else}
+                        <button
+                          type="button"
+                          class="quiet"
+                          disabled={isDisabled(draft.disabledFields, field.key)}
+                          onclick={() => startTimelineEdit(field)}>Enable Timeline</button>
+                      {/if}
                     {/if}
                   </div>
                 {/if}
@@ -2299,6 +2750,46 @@ function removeCustomTemplate(id: string) {
                           >Stored as <code>metadataFields</code> on the relationship field; validated on every link and shown
                           in the relationship details dialog.</span>
                       </div>
+                    {:else if editFieldType === "date"}
+                      <label class="inline-check">
+                        <input type="checkbox" bind:checked={editFieldShared} />
+                        <span>Shared — allow Timeline and other modules to read</span>
+                      </label>
+                      {#if editFieldShared}
+                        <label class="inline-check">
+                          <input type="checkbox" bind:checked={editFieldTimelineEnabled} />
+                          <span>Show on Timeline</span>
+                        </label>
+                        {#if editFieldTimelineEnabled}
+                          <div class="timeline-config">
+                            <label>
+                              <span>Role</span>
+                              <select bind:value={editFieldTimelineRole}>
+                                <option value="point">Point</option>
+                                <option value="start">Start</option>
+                                <option value="end">End</option>
+                              </select>
+                            </label>
+                            {#if editFieldTimelineRole !== "point"}
+                              <label>
+                                <span>Group</span>
+                                <input bind:value={editFieldTimelineGroup} placeholder="e.g. life, existence" />
+                              </label>
+                            {/if}
+                            <label>
+                              <span>Label</span>
+                              <input bind:value={editFieldTimelineLabel} placeholder="Born, Created…" />
+                            </label>
+                            <label>
+                              <span>Layer</span>
+                              <select bind:value={editFieldTimelineLayer}>
+                                <option value="dates">Project dates</option>
+                                <option value="lifelines">Lifelines</option>
+                              </select>
+                            </label>
+                          </div>
+                        {/if}
+                      {/if}
                     {/if}
                     <div class="type-select" role="group" aria-label="Applies to entity types">
                       <span class="type-select-label">Applies to <em>(optional)</em></span>
@@ -2328,6 +2819,11 @@ function removeCustomTemplate(id: string) {
                       <span class="type-pill">{fieldTypeLabel(field.type)}</span>
                       {#if fieldExtrasLabel(field)}
                         <span class="meta">{fieldExtrasLabel(field)}</span>
+                      {/if}
+                      {#if field.type === "date" && (field as unknown as Record<string, unknown>).timeline}
+                        <span class="meta">· Timeline: {timelineBadge(field)}</span>
+                      {:else if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
+                        <span class="meta">· Shared</span>
                       {/if}
                     </div>
                     <span class="meta"
@@ -2490,6 +2986,46 @@ function removeCustomTemplate(id: string) {
                 ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
               <span class="meta-hint">Each attribute becomes a field in the relationship details dialog.</span>
             </div>
+          {:else if newFieldType === "date"}
+            <label class="inline-check">
+              <input type="checkbox" bind:checked={newFieldShared} />
+              <span>Shared — allow Timeline and other modules to read</span>
+            </label>
+            {#if newFieldShared}
+              <label class="inline-check">
+                <input type="checkbox" bind:checked={newFieldTimelineEnabled} />
+                <span>Show on Timeline</span>
+              </label>
+              {#if newFieldTimelineEnabled}
+                <div class="timeline-config">
+                  <label>
+                    <span>Role</span>
+                    <select bind:value={newFieldTimelineRole}>
+                      <option value="point">Point</option>
+                      <option value="start">Start</option>
+                      <option value="end">End</option>
+                    </select>
+                  </label>
+                  {#if newFieldTimelineRole !== "point"}
+                    <label>
+                      <span>Group</span>
+                      <input bind:value={newFieldTimelineGroup} placeholder="e.g. life, existence" />
+                    </label>
+                  {/if}
+                  <label>
+                    <span>Label</span>
+                    <input bind:value={newFieldTimelineLabel} placeholder="Born, Created…" />
+                  </label>
+                  <label>
+                    <span>Layer</span>
+                    <select bind:value={newFieldTimelineLayer}>
+                      <option value="dates">Project dates</option>
+                      <option value="lifelines">Lifelines</option>
+                    </select>
+                  </label>
+                </div>
+              {/if}
+            {/if}
           {/if}
           <div class="type-select" role="group" aria-label="Applies to entity types">
             <span class="type-select-label">Applies to <em>(optional)</em></span>

@@ -42,16 +42,17 @@ export function discoverTimelineFieldSpecs(
       for (const field of schema.fields) {
         if (field.type !== "date" || !field.shared) continue;
         const metadata = field.timeline;
-        const role = metadata?.role ?? "point";
-        if ((role === "start" || role === "end") && !metadata?.group) continue;
+        if (!metadata) continue;
+        const role = metadata.role ?? "point";
+        if ((role === "start" || role === "end") && !metadata.group?.trim()) continue;
         specs.push({
           namespace: schema.namespace,
           key: field.key,
-          label: metadata?.label?.trim() || field.label,
+          label: metadata.label?.trim() || field.label,
           entityTypes: field.entityTypes,
           role,
-          group: metadata?.group ?? undefined,
-          layer: metadata?.layer ?? "dates",
+          group: metadata.group ?? undefined,
+          layer: metadata.layer ?? "dates",
         });
       }
     }

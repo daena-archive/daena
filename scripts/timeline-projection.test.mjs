@@ -28,8 +28,15 @@ const loreManifest = {
           shared: true,
           timeline: { role: "end", group: "life", label: "Died", layer: "lifelines" },
         },
-        { key: "discovered", label: "Discovered", type: "date", shared: true },
+        {
+          key: "discovered",
+          label: "Discovered",
+          type: "date",
+          shared: true,
+          timeline: { role: "point", layer: "dates" },
+        },
         { key: "privateDate", label: "Private", type: "date", shared: false },
+        { key: "unlistedDate", label: "Unlisted", type: "date", shared: true },
       ],
     },
   ],
@@ -71,7 +78,7 @@ assert.equal(fullLife[0].endLabel, "Died");
 
 const withProjectDate = buildFieldContributions(
   person,
-  [record("birth", "42"), record("discovered", "60-2-3"), record("privateDate", "70")],
+  [record("birth", "42"), record("discovered", "60-2-3"), record("privateDate", "70"), record("unlistedDate", "75")],
   specs,
 );
 assert.equal(
@@ -80,6 +87,14 @@ assert.equal(
 );
 assert.equal(
   withProjectDate.some((item) => item.startLabel === "Private"),
+  false,
+);
+assert.equal(
+  withProjectDate.some((item) => item.startLabel === "Unlisted"),
+  false,
+);
+assert.equal(
+  specs.some((s) => s.key === "unlistedDate"),
   false,
 );
 

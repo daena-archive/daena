@@ -1,8 +1,11 @@
 //! Project-owned module schema overlays (host-side customization of package defaults).
 
+#[cfg(test)]
+use crate::TimelineFieldLayer;
 use crate::{
     validate_entity_type_color, validate_icon_ref, EntityTemplate, EntityTypeColor,
     EntityTypeDefinition, FieldDefinition, IconRef, MetadataFieldDefinition, PluginManifest,
+    TimelineFieldContribution, TimelineFieldRole,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -99,6 +102,15 @@ pub fn validate_metadata_fields(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
+pub struct FieldTimelineOverride {
+    pub field_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineFieldContribution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleSchemaOverlay {
     #[serde(default = "default_overlay_version")]
     pub version: u32,
@@ -122,6 +134,8 @@ pub struct ModuleSchemaOverlay {
     pub field_metadata_overrides: Vec<FieldMetadataOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entity_type_appearance_overrides: Vec<EntityTypeAppearanceOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_timeline_overrides: Vec<FieldTimelineOverride>,
 }
 
 /// Project-specific metadata extension for a packaged relationship field.
@@ -196,6 +210,7 @@ impl Default for ModuleSchemaOverlay {
             template_overrides: Vec::new(),
             field_metadata_overrides: Vec::new(),
             entity_type_appearance_overrides: Vec::new(),
+            field_timeline_overrides: Vec::new(),
         }
     }
 }
@@ -212,6 +227,7 @@ impl ModuleSchemaOverlay {
             && self.template_overrides.is_empty()
             && self.field_metadata_overrides.is_empty()
             && self.entity_type_appearance_overrides.is_empty()
+            && self.field_timeline_overrides.is_empty()
     }
 }
 
@@ -554,6 +570,118 @@ pub fn validate_module_overlay(
             &field.key,
             field.metadata_fields.as_deref(),
         )?;
+        if let Some(timeline) = &field.timeline {
+            if field.field_type != "date" {
+                return Err(format!(
+                    "field {}: timeline contribution is only allowed for date fields",
+                    field.key
+                ));
+            }
+            if !field.shared {
+                return Err(format!(
+                    "field {}: timeline contribution must be shared",
+                    field.key
+                ));
+            }
+            if matches!(
+                timeline.role,
+                TimelineFieldRole::Start | TimelineFieldRole::End
+            ) && timeline
+                .group
+                .as_deref()
+                .is_none_or(|group| group.trim().is_empty())
+            {
+                return Err(format!(
+                    "field {}: timeline start/end contribution must declare a group",
+                    field.key
+                ));
+            }
+            if timeline
+                .label
+                .as_deref()
+                .is_some_and(|label| label.trim().is_empty())
+            {
+                return Err(format!(
+                    "field {}: timeline contribution label cannot be empty",
+                    field.key
+                ));
+            }
+        }
+    }
+
+    // Validate fieldTimelineOverrides (builtin + custom date field timeline overrides)
+    let mut timeline_override_keys = BTreeSet::new();
+    for ov in &overlay.field_timeline_overrides {
+        if ov.field_key.trim().is_empty() {
+            return Err("field timeline override requires non-empty fieldKey".into());
+        }
+        if !package_fields.contains(ov.field_key.as_str())
+            && !custom_field_keys.contains(ov.field_key.as_str())
+        {
+            return Err(format!(
+                "field timeline override references unknown field: {}",
+                ov.field_key
+            ));
+        }
+        if overlay
+            .disabled_fields
+            .iter()
+            .any(|disabled| disabled == &ov.field_key)
+        {
+            return Err(format!(
+                "field timeline override references disabled field: {}",
+                ov.field_key
+            ));
+        }
+        if !timeline_override_keys.insert(ov.field_key.as_str()) {
+            return Err(format!(
+                "duplicate field timeline override: {}",
+                ov.field_key
+            ));
+        }
+        if let Some(timeline) = &ov.timeline {
+            let field = package_schema
+                .fields
+                .iter()
+                .find(|f| f.key == ov.field_key)
+                .or_else(|| overlay.custom_fields.iter().find(|f| f.key == ov.field_key))
+                .expect("field was checked above");
+            if field.field_type != "date" {
+                return Err(format!(
+                    "field {}: timeline contribution is only allowed for date fields",
+                    ov.field_key
+                ));
+            }
+            if !field.shared {
+                return Err(format!(
+                    "field {}: timeline contribution must be shared",
+                    ov.field_key
+                ));
+            }
+            if matches!(
+                timeline.role,
+                TimelineFieldRole::Start | TimelineFieldRole::End
+            ) && timeline
+                .group
+                .as_deref()
+                .is_none_or(|group| group.trim().is_empty())
+            {
+                return Err(format!(
+                    "field {}: timeline start/end contribution must declare a group",
+                    ov.field_key
+                ));
+            }
+            if timeline
+                .label
+                .as_deref()
+                .is_some_and(|label| label.trim().is_empty())
+            {
+                return Err(format!(
+                    "field {}: timeline contribution label cannot be empty",
+                    ov.field_key
+                ));
+            }
+        }
     }
 
     // Validate fieldMetadataOverrides (builtin relationship metadata extensions)
@@ -877,6 +1005,13 @@ pub fn merge_module_manifest(
     });
     schema.fields.extend(overlay.custom_fields.clone());
     for field in &mut schema.fields {
+        if let Some(ov) = overlay
+            .field_timeline_overrides
+            .iter()
+            .find(|ov| ov.field_key == field.key)
+        {
+            field.timeline = ov.timeline.clone();
+        }
         if let Some(scope) = overlay
             .field_scope_overrides
             .iter()
@@ -1464,5 +1599,169 @@ mod tests {
         assert!(validate_module_overlay(&package, &overlay)
             .unwrap_err()
             .contains("entity type appearance override references unknown type"));
+    }
+
+    #[test]
+    fn custom_date_field_timeline_requires_shared_and_group() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_fields: vec![FieldDefinition {
+                key: "myDate".into(),
+                label: "My Date".into(),
+                field_type: "date".into(),
+                required: None,
+                options: None,
+                entity_types: Some(vec!["person".into()]),
+                relationship_type: None,
+                target_entity_types: None,
+                shared: false,
+                multiple: false,
+                cardinality: None,
+                one_of: None,
+                metadata_fields: None,
+                timeline: Some(TimelineFieldContribution {
+                    role: TimelineFieldRole::Point,
+                    group: None,
+                    label: None,
+                    layer: Some(TimelineFieldLayer::Dates),
+                }),
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("must be shared"));
+        let mut overlay = overlay;
+        overlay.custom_fields[0].shared = true;
+        overlay.custom_fields[0].field_type = "text".into();
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("only allowed for date"));
+        overlay.custom_fields[0].field_type = "date".into();
+        overlay.custom_fields[0].timeline = Some(TimelineFieldContribution {
+            role: TimelineFieldRole::Start,
+            group: None,
+            label: None,
+            layer: None,
+        });
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("must declare a group"));
+        overlay.custom_fields[0].timeline = Some(TimelineFieldContribution {
+            role: TimelineFieldRole::Start,
+            group: Some("life".into()),
+            label: Some("".into()),
+            layer: None,
+        });
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("label cannot be empty"));
+    }
+
+    #[test]
+    fn timeline_override_enables_and_disables_builtin() {
+        let package = lore_manifest();
+        // disable builtin birth timeline
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_timeline_overrides: vec![FieldTimelineOverride {
+                field_key: "birth".into(),
+                timeline: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
+        let merged = merge_module_manifest(&package, &overlay).expect("merge");
+        let birth = merged
+            .schemas
+            .iter()
+            .find(|s| s.namespace == "lore")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.key == "birth")
+            .unwrap();
+        assert!(birth.timeline.is_none());
+
+        // enable timeline for custom date field via override (alternative to direct timeline)
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_fields: vec![FieldDefinition {
+                key: "founded".into(),
+                label: "Founded".into(),
+                field_type: "date".into(),
+                required: None,
+                options: None,
+                entity_types: Some(vec!["faction".into()]),
+                relationship_type: None,
+                target_entity_types: None,
+                shared: true,
+                multiple: false,
+                cardinality: None,
+                one_of: None,
+                metadata_fields: None,
+                timeline: None,
+            }],
+            field_timeline_overrides: vec![FieldTimelineOverride {
+                field_key: "founded".into(),
+                timeline: Some(TimelineFieldContribution {
+                    role: TimelineFieldRole::Point,
+                    group: None,
+                    label: Some("Founded".into()),
+                    layer: Some(TimelineFieldLayer::Dates),
+                }),
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
+        let merged = merge_module_manifest(&package, &overlay).expect("merge");
+        let founded = merged
+            .schemas
+            .iter()
+            .find(|s| s.namespace == "lore")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.key == "founded")
+            .unwrap();
+        assert!(founded.timeline.is_some());
+        assert_eq!(
+            founded.timeline.as_ref().unwrap().role,
+            TimelineFieldRole::Point
+        );
+    }
+
+    #[test]
+    fn rejects_timeline_override_for_non_date_or_disabled() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            field_timeline_overrides: vec![FieldTimelineOverride {
+                field_key: "summary".into(),
+                timeline: Some(TimelineFieldContribution {
+                    role: TimelineFieldRole::Point,
+                    group: None,
+                    label: None,
+                    layer: None,
+                }),
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("only allowed for date"));
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            disabled_fields: vec!["birth".into()],
+            field_timeline_overrides: vec![FieldTimelineOverride {
+                field_key: "birth".into(),
+                timeline: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("references disabled field"));
     }
 }

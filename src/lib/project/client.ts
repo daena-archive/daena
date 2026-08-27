@@ -40,6 +40,16 @@ export interface FieldMetadataOverride {
   metadataFields: MetadataFieldDefinition[];
 }
 
+export interface FieldTimelineOverride {
+  fieldKey: string;
+  timeline?: {
+    role: "point" | "start" | "end";
+    group?: string | null;
+    label?: string | null;
+    layer?: "dates" | "lifelines" | null;
+  } | null;
+}
+
 export interface ModuleSchemaOverlay {
   version: number;
   disabledEntityTypes?: string[];
@@ -52,6 +62,7 @@ export interface ModuleSchemaOverlay {
   templateOverrides?: TemplateOverride[];
   fieldMetadataOverrides?: FieldMetadataOverride[];
   entityTypeAppearanceOverrides?: EntityTypeAppearanceOverride[];
+  fieldTimelineOverrides?: FieldTimelineOverride[];
 }
 
 export interface ModuleSchemaEditorState {

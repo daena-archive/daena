@@ -1403,7 +1403,9 @@ fn physical_events_survive_module_lifecycle_and_clean_rebuild() {
     let mut host = bundled_plugin_host(new_shared_core()).unwrap();
 
     sync_project_usage(&project, &mut host).unwrap();
-    project.set_module_enabled("daena.maps".into(), true).unwrap();
+    project
+        .set_module_enabled("daena.maps".into(), true)
+        .unwrap();
     sync_project_usage(&project, &mut host).unwrap();
 
     let project_id = root.to_string_lossy().to_string();

@@ -20,10 +20,10 @@ pub const VECTOR_MAX_CUSTOM_KEYS: usize = 32;
 pub const VECTOR_MAX_LABEL_TEXT: usize = 256;
 pub const VECTOR_CENTER_Y_MIN: f64 = 0.0;
 pub const VECTOR_CENTER_Y_MAX: f64 = 1.0;
-const SCALE: i32 = 1_000_000;
-const LAT_LIMIT: i32 = 90_000_000;
-const LON_LIMIT: i32 = 180_000_000;
-const ANTIMERIDIAN: i32 = 180_000_000;
+const SCALE: i64 = 1_000_000;
+const LAT_LIMIT: i64 = 90_000_000;
+const LON_LIMIT: i64 = 180_000_000;
+const ANTIMERIDIAN: i64 = 180_000_000;
 
 pub const CODE_SOURCE_INVALID: &str = "vector.source.invalid";
 pub const CODE_UNSUPPORTED_VERSION: &str = "vector.source.unsupported-version";
@@ -34,7 +34,7 @@ pub const CODE_LAYER_MISSING: &str = "vector.layer.missing";
 pub const CODE_GENERATOR: &str = "vector.generator.invalid-settings";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Micro(pub i32, pub i32);
+pub struct Micro(pub i64, pub i64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Geometry {
@@ -69,9 +69,81 @@ pub enum SourceProfile {
     Committed,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum VectorSpace {
+    Geographic,
+    Planar { extent: [f64; 4], is_image: bool },
+}
+
+impl Default for VectorSpace {
+    fn default() -> Self {
+        Self::Geographic
+    }
+}
+
+impl VectorSpace {
+    pub fn from_coordinate_space(space: &crate::maps::MapCoordinateSpace) -> Self {
+        match space {
+            crate::maps::MapCoordinateSpace::Geographic { extent, .. } => {
+                // Geographic is still geographic even if custom extent, but we treat
+                // any geographic as Geographic to preserve antimeridian handling.
+                let _ = extent;
+                Self::Geographic
+            }
+            crate::maps::MapCoordinateSpace::Image { extent, .. } => Self::Planar {
+                extent: *extent,
+                is_image: true,
+            },
+            crate::maps::MapCoordinateSpace::World { extent, .. } => {
+                // Default world extent [-180,-90,180,90] behaves like Geographic for backwards
+                // compatibility and to preserve the specific longitude error messages.
+                const WORLD_EXTENT: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
+                if *extent == WORLD_EXTENT {
+                    Self::Geographic
+                } else {
+                    Self::Planar {
+                        extent: *extent,
+                        is_image: false,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn from_descriptor_value(value: &Value) -> Self {
+        if let Some(space_value) = value.get("coordinateSpace") {
+            if let Ok(space) =
+                serde_json::from_value::<crate::maps::MapCoordinateSpace>(space_value.clone())
+            {
+                return Self::from_coordinate_space(&space);
+            }
+        }
+        // Fallback: infer from provider? For backwards compat, treat missing as Geographic.
+        Self::Geographic
+    }
+
+    pub fn is_geographic(&self) -> bool {
+        matches!(self, Self::Geographic)
+    }
+}
+
 #[must_use]
 pub fn lon_lat_to_normalized(longitude: f64, latitude: f64) -> (f64, f64) {
     ((longitude + 180.0) / 360.0, (90.0 - latitude) / 180.0)
+}
+
+#[must_use]
+pub fn planar_to_normalized(x: f64, y: f64, extent: &[f64; 4], is_image: bool) -> (f64, f64) {
+    let [min_x, min_y, max_x, max_y] = *extent;
+    let width = (max_x - min_x).max(f64::EPSILON);
+    let height = (max_y - min_y).max(f64::EPSILON);
+    let nx = (x - min_x) / width;
+    let ny = if is_image {
+        (y - min_y) / height
+    } else {
+        (max_y - y) / height
+    };
+    (nx.clamp(0.0, 1.0), ny.clamp(0.0, 1.0))
 }
 
 pub fn fail(code: &str, path: &str, detail: impl fmt::Display) -> CoreError {
@@ -94,17 +166,17 @@ pub fn path_fail(
     ))
 }
 
-fn to_micro(value: f64) -> i32 {
-    let scaled = value * f64::from(SCALE);
+fn to_micro(value: f64) -> i64 {
+    let scaled = value * (SCALE as f64);
     let rounded = scaled.round();
     if rounded == 0.0 {
         0
     } else {
-        rounded as i32
+        rounded as i64
     }
 }
 
-fn format_micro(value: i32) -> String {
+fn format_micro(value: i64) -> String {
     let sign = if value < 0 { "-" } else { "" };
     let abs = value.unsigned_abs();
     let whole = abs / 1_000_000;
@@ -263,7 +335,7 @@ fn as_f64(value: &Value, path: &str) -> Result<f64, CoreError> {
     })
 }
 
-fn parse_position(value: &Value, path: &str) -> Result<Micro, CoreError> {
+fn parse_position(value: &Value, path: &str, space: &VectorSpace) -> Result<Micro, CoreError> {
     let pair = value
         .as_array()
         .ok_or_else(|| fail(CODE_GEOMETRY_INVALID, path, "position must be an array"))?;
@@ -274,27 +346,64 @@ fn parse_position(value: &Value, path: &str) -> Result<Micro, CoreError> {
             "position must be [longitude, latitude]",
         ));
     }
-    let longitude = as_f64(&pair[0], &format!("{path}[0]"))?;
-    let latitude = as_f64(&pair[1], &format!("{path}[1]"))?;
-    let coord = Micro(to_micro(longitude), to_micro(latitude));
-    if coord.0.abs() > LON_LIMIT {
-        return Err(fail(
-            CODE_GEOMETRY_INVALID,
-            path,
-            "longitude must be in [-180, 180]",
-        ));
-    }
-    if coord.1.abs() > LAT_LIMIT {
-        return Err(fail(
-            CODE_GEOMETRY_INVALID,
-            path,
-            "latitude is outside the Daena world extent",
-        ));
+    let x = as_f64(&pair[0], &format!("{path}[0]"))?;
+    let y = as_f64(&pair[1], &format!("{path}[1]"))?;
+    let coord = Micro(to_micro(x), to_micro(y));
+    match space {
+        VectorSpace::Geographic => {
+            if coord.0.abs() > LON_LIMIT {
+                return Err(fail(
+                    CODE_GEOMETRY_INVALID,
+                    path,
+                    "longitude must be in [-180, 180]",
+                ));
+            }
+            if coord.1.abs() > LAT_LIMIT {
+                return Err(fail(
+                    CODE_GEOMETRY_INVALID,
+                    path,
+                    "latitude is outside the Daena world extent",
+                ));
+            }
+        }
+        VectorSpace::Planar {
+            extent,
+            is_image: _,
+        } => {
+            // For planar spaces (image and calibrated world), coordinates are in map units
+            // (pixels or world units). Validate they are finite and within the declared extent
+            // with a tiny epsilon to tolerate floating-point rounding during editing.
+            let [min_x, min_y, max_x, max_y] = *extent;
+            let width = max_x - min_x;
+            let height = max_y - min_y;
+            if width > 0.0 && height > 0.0 {
+                const PLANAR_ABS_LIMIT: f64 = 10_000_000.0;
+                if x.abs() > PLANAR_ABS_LIMIT || y.abs() > PLANAR_ABS_LIMIT {
+                    return Err(fail(
+                        CODE_GEOMETRY_INVALID,
+                        path,
+                        "coordinates are outside the supported planar range",
+                    ));
+                }
+                // Small epsilon relative to extent size to allow rounding; no generous margin
+                // so that features clearly outside the map are rejected.
+                let eps_x = (width * 1e-9).max(1e-6);
+                let eps_y = (height * 1e-9).max(1e-6);
+                if x < min_x - eps_x || x > max_x + eps_x || y < min_y - eps_y || y > max_y + eps_y
+                {
+                    return Err(fail(
+                        CODE_GEOMETRY_INVALID,
+                        path,
+                        "coordinates are outside the map extent",
+                    ));
+                }
+            }
+        }
     }
     Ok(coord)
 }
 
-fn parse_line(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
+fn parse_line(values: &[Value], path: &str, space: &VectorSpace) -> Result<Vec<Micro>, CoreError> {
     if values.len() < 2 {
         return Err(fail(
             CODE_GEOMETRY_INVALID,
@@ -305,11 +414,11 @@ fn parse_line(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
     values
         .iter()
         .enumerate()
-        .map(|(index, value)| parse_position(value, &format!("{path}[{index}]")))
+        .map(|(index, value)| parse_position(value, &format!("{path}[{index}]"), space))
         .collect()
 }
 
-fn parse_ring(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
+fn parse_ring(values: &[Value], path: &str, space: &VectorSpace) -> Result<Vec<Micro>, CoreError> {
     if values.len() < 4 {
         return Err(fail(
             CODE_GEOMETRY_INVALID,
@@ -320,7 +429,7 @@ fn parse_ring(values: &[Value], path: &str) -> Result<Vec<Micro>, CoreError> {
     let ring = values
         .iter()
         .enumerate()
-        .map(|(index, value)| parse_position(value, &format!("{path}[{index}]")))
+        .map(|(index, value)| parse_position(value, &format!("{path}[{index}]"), space))
         .collect::<Result<Vec<_>, _>>()?;
     if ring.first() != ring.last() {
         return Err(fail(
@@ -389,7 +498,7 @@ fn crosses_antimeridian(a: Micro, b: Micro) -> bool {
     (i64::from(a.0) - i64::from(b.0)).abs() > i64::from(ANTIMERIDIAN)
 }
 
-fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
+fn validate_line(line: &[Micro], path: &str, space: &VectorSpace) -> Result<(), CoreError> {
     if line.len() < 2 {
         return Err(fail(
             CODE_GEOMETRY_INVALID,
@@ -397,19 +506,26 @@ fn validate_line(line: &[Micro], path: &str) -> Result<(), CoreError> {
             "line requires at least two distinct positions",
         ));
     }
-    for pair in line.windows(2) {
-        if crosses_antimeridian(pair[0], pair[1]) {
-            return Err(fail(
-                CODE_ANTIMERIDIAN,
-                path,
-                "segment crosses the antimeridian",
-            ));
+    if space.is_geographic() {
+        for pair in line.windows(2) {
+            if crosses_antimeridian(pair[0], pair[1]) {
+                return Err(fail(
+                    CODE_ANTIMERIDIAN,
+                    path,
+                    "segment crosses the antimeridian",
+                ));
+            }
         }
     }
     Ok(())
 }
 
-fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Micro>, CoreError> {
+fn canonical_ring(
+    mut ring: Vec<Micro>,
+    path: &str,
+    hole: bool,
+    space: &VectorSpace,
+) -> Result<Vec<Micro>, CoreError> {
     ring = close_ring(dedup_adjacent(ring));
     if ring.len() < 4 {
         return Err(fail(
@@ -426,23 +542,25 @@ fn canonical_ring(mut ring: Vec<Micro>, path: &str, hole: bool) -> Result<Vec<Mi
             "ring requires at least three distinct positions",
         ));
     }
-    for pair in ring.windows(2) {
-        if crosses_antimeridian(pair[0], pair[1]) {
+    if space.is_geographic() {
+        for pair in ring.windows(2) {
+            if crosses_antimeridian(pair[0], pair[1]) {
+                return Err(fail(
+                    CODE_ANTIMERIDIAN,
+                    path,
+                    "segment crosses the antimeridian",
+                ));
+            }
+        }
+        let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
+        let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
+        if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
             return Err(fail(
                 CODE_ANTIMERIDIAN,
                 path,
-                "segment crosses the antimeridian",
+                "ring longitude span exceeds 180 degrees",
             ));
         }
-    }
-    let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
-    let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
-    if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
-        return Err(fail(
-            CODE_ANTIMERIDIAN,
-            path,
-            "ring longitude span exceeds 180 degrees",
-        ));
     }
     let n = open.len();
     for i in 0..n {
@@ -499,6 +617,7 @@ fn cyclic_key(open: &[Micro], start: usize) -> Vec<Micro> {
 fn canonical_polygon(
     rings: Vec<Vec<Micro>>,
     path: &str,
+    space: &VectorSpace,
 ) -> Result<(Vec<Micro>, Vec<Vec<Micro>>), CoreError> {
     if rings.is_empty() {
         return Err(fail(
@@ -514,13 +633,14 @@ fn canonical_polygon(
             format!("polygon exceeds {VECTOR_MAX_RINGS} rings"),
         ));
     }
-    let exterior = canonical_ring(rings[0].clone(), &format!("{path}[0]"), false)?;
+    let exterior = canonical_ring(rings[0].clone(), &format!("{path}[0]"), false, space)?;
     let mut holes = Vec::new();
     for (index, hole) in rings.into_iter().skip(1).enumerate() {
         holes.push(canonical_ring(
             hole,
             &format!("{path}[{}]", index + 1),
             true,
+            space,
         )?);
     }
     holes.sort();
@@ -600,7 +720,7 @@ fn parse_name(value: Option<&Value>, path: &str) -> Result<Option<String>, CoreE
     }
 }
 
-fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
+fn parse_geometry(value: &Value, path: &str, space: &VectorSpace) -> Result<Geometry, CoreError> {
     let object = object_keys(value, path, &["type", "coordinates"])?;
     let kind = object
         .get("type")
@@ -617,6 +737,7 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
         "Point" => Ok(Geometry::Point(parse_position(
             coordinates,
             &format!("{path}.coordinates"),
+            space,
         )?)),
         "MultiPoint" => {
             let values = coordinates.as_array().ok_or_else(|| {
@@ -637,7 +758,7 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    parse_position(value, &format!("{path}.coordinates[{index}]"))
+                    parse_position(value, &format!("{path}.coordinates[{index}]"), space)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             points.sort();
@@ -651,8 +772,8 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                     "must be an array",
                 )
             })?;
-            let line = dedup_adjacent(parse_line(values, &format!("{path}.coordinates"))?);
-            validate_line(&line, &format!("{path}.coordinates"))?;
+            let line = dedup_adjacent(parse_line(values, &format!("{path}.coordinates"), space)?);
+            validate_line(&line, &format!("{path}.coordinates"), space)?;
             Ok(Geometry::LineString(line))
         }
         "MultiLineString" => {
@@ -682,8 +803,9 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                 let line = dedup_adjacent(parse_line(
                     positions,
                     &format!("{path}.coordinates[{index}]"),
+                    space,
                 )?);
-                validate_line(&line, &format!("{path}.coordinates[{index}]"))?;
+                validate_line(&line, &format!("{path}.coordinates[{index}]"), space)?;
                 lines.push(line);
             }
             lines.sort();
@@ -710,10 +832,12 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                             )
                         })?,
                         &format!("{path}.coordinates[{index}]"),
+                        space,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let (exterior, holes) = canonical_polygon(rings, &format!("{path}.coordinates"))?;
+            let (exterior, holes) =
+                canonical_polygon(rings, &format!("{path}.coordinates"), space)?;
             Ok(Geometry::Polygon { exterior, holes })
         }
         "MultiPolygon" => {
@@ -747,12 +871,14 @@ fn parse_geometry(value: &Value, path: &str) -> Result<Geometry, CoreError> {
                                 )
                             })?,
                             &format!("{path}.coordinates[{index}][{ring_index}]"),
+                            space,
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 members.push(canonical_polygon(
                     rings,
                     &format!("{path}.coordinates[{index}]"),
+                    space,
                 )?);
             }
             members.sort_by(|left, right| {
@@ -866,6 +992,7 @@ fn parse_feature(
     path: &str,
     profile: SourceProfile,
     known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
 ) -> Result<Feature, CoreError> {
     let allowed = match profile {
         SourceProfile::Candidate => ["type", "geometry", "properties"].as_slice(),
@@ -889,6 +1016,7 @@ fn parse_feature(
             )
         })?,
         &format!("{path}.geometry"),
+        space,
     )?;
     if count_positions(&geometry) > VECTOR_MAX_FEATURE_POSITIONS {
         return Err(fail(
@@ -1064,6 +1192,7 @@ fn parse_collection(
     value: &Value,
     profile: SourceProfile,
     known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
 ) -> Result<Vec<Feature>, CoreError> {
     let object = object_keys(value, "$", &["type", "features"])?;
     require_type(object, "$", "FeatureCollection")?;
@@ -1087,6 +1216,7 @@ fn parse_collection(
             &format!("$.features[{index}]"),
             profile,
             known_layers,
+            space,
         )?;
         positions += count_positions(&feature.geometry);
         if positions > VECTOR_MAX_POSITIONS {
@@ -1254,8 +1384,16 @@ pub fn canonicalize_committed(
     bytes: &[u8],
     known_layers: &BTreeSet<String>,
 ) -> Result<Vec<u8>, CoreError> {
+    canonicalize_committed_with_space(bytes, known_layers, &VectorSpace::Geographic)
+}
+
+pub fn canonicalize_committed_with_space(
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
+) -> Result<Vec<u8>, CoreError> {
     let value = parse_strict_json(bytes)?;
-    let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
+    let features = parse_collection(&value, SourceProfile::Committed, known_layers, space)?;
     Ok(serialize_features(&features))
 }
 
@@ -1268,6 +1406,24 @@ pub fn assert_locked_layer_features_unchanged(
     known_next: &BTreeSet<String>,
     locked_layer_ids: &BTreeSet<String>,
 ) -> Result<(), CoreError> {
+    assert_locked_layer_features_unchanged_with_space(
+        previous_bytes,
+        next_bytes,
+        known_previous,
+        known_next,
+        locked_layer_ids,
+        &VectorSpace::Geographic,
+    )
+}
+
+pub fn assert_locked_layer_features_unchanged_with_space(
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+    known_previous: &BTreeSet<String>,
+    known_next: &BTreeSet<String>,
+    locked_layer_ids: &BTreeSet<String>,
+    space: &VectorSpace,
+) -> Result<(), CoreError> {
     if locked_layer_ids.is_empty() {
         return Ok(());
     }
@@ -1275,11 +1431,13 @@ pub fn assert_locked_layer_features_unchanged(
         &parse_strict_json(previous_bytes)?,
         SourceProfile::Committed,
         known_previous,
+        space,
     )?;
     let next = parse_collection(
         &parse_strict_json(next_bytes)?,
         SourceProfile::Committed,
         known_next,
+        space,
     )?;
     for layer_id in locked_layer_ids {
         let mut before: Vec<&Feature> = previous
@@ -1304,14 +1462,28 @@ pub fn assert_locked_layer_features_unchanged(
 }
 
 pub fn canonicalize_candidate(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
+    canonicalize_candidate_with_space(bytes, &VectorSpace::Geographic)
+}
+
+pub fn canonicalize_candidate_with_space(
+    bytes: &[u8],
+    space: &VectorSpace,
+) -> Result<Vec<u8>, CoreError> {
     let value = parse_strict_json(bytes)?;
-    let features = parse_collection(&value, SourceProfile::Candidate, &BTreeSet::new())?;
+    let features = parse_collection(&value, SourceProfile::Candidate, &BTreeSet::new(), space)?;
     Ok(serialize_features(&features))
 }
 
 /// Import polygonal GeoJSON as read-only base land. Feature ids and properties are ignored;
 /// only Point/Line geometries are rejected. Editing base land is deferred.
 pub fn canonicalize_imported_base(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
+    canonicalize_imported_base_with_space(bytes, &VectorSpace::Geographic)
+}
+
+pub fn canonicalize_imported_base_with_space(
+    bytes: &[u8],
+    space: &VectorSpace,
+) -> Result<Vec<u8>, CoreError> {
     let value = parse_strict_json(bytes)?;
     let object = object_keys(&value, "$", &["type", "features"])?;
     require_type(object, "$", "FeatureCollection")?;
@@ -1345,6 +1517,7 @@ pub fn canonicalize_imported_base(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
                 )
             })?,
             &format!("{path}.geometry"),
+            space,
         )?;
         if !matches!(
             geometry,
@@ -1392,10 +1565,21 @@ pub fn require_canonical_bytes(
     bytes: &[u8],
     known_layers: &BTreeSet<String>,
 ) -> Result<Vec<u8>, CoreError> {
-    let canonical = canonicalize_committed(bytes, known_layers).map_err(|error| match error {
-        CoreError::Validation(detail) => path_fail(fs_path, CODE_SOURCE_INVALID, "$", detail),
-        other => other,
-    })?;
+    require_canonical_bytes_with_space(fs_path, bytes, known_layers, &VectorSpace::Geographic)
+}
+
+pub fn require_canonical_bytes_with_space(
+    fs_path: &Path,
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
+) -> Result<Vec<u8>, CoreError> {
+    let canonical = canonicalize_committed_with_space(bytes, known_layers, space).map_err(
+        |error| match error {
+            CoreError::Validation(detail) => path_fail(fs_path, CODE_SOURCE_INVALID, "$", detail),
+            other => other,
+        },
+    )?;
     if canonical.as_slice() != bytes {
         return Err(path_fail(
             fs_path,
@@ -1423,8 +1607,17 @@ pub fn remove_layer_features(
     layer_id: &str,
     known_layers: &BTreeSet<String>,
 ) -> Result<(Vec<u8>, usize), CoreError> {
+    remove_layer_features_with_space(bytes, layer_id, known_layers, &VectorSpace::Geographic)
+}
+
+pub fn remove_layer_features_with_space(
+    bytes: &[u8],
+    layer_id: &str,
+    known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
+) -> Result<(Vec<u8>, usize), CoreError> {
     let value = parse_strict_json(bytes)?;
-    let mut features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
+    let mut features = parse_collection(&value, SourceProfile::Committed, known_layers, space)?;
     let before = features.len();
     features.retain(|feature| feature.layer_id != layer_id);
     let deleted = before - features.len();
@@ -1435,20 +1628,28 @@ pub fn feature_bounds(
     bytes: &[u8],
     known_layers: &BTreeSet<String>,
 ) -> Result<Vec<FeatureBounds>, CoreError> {
+    feature_bounds_with_space(bytes, known_layers, &VectorSpace::Geographic)
+}
+
+pub fn feature_bounds_with_space(
+    bytes: &[u8],
+    known_layers: &BTreeSet<String>,
+    space: &VectorSpace,
+) -> Result<Vec<FeatureBounds>, CoreError> {
     let value = parse_strict_json(bytes)?;
-    let features = parse_collection(&value, SourceProfile::Committed, known_layers)?;
+    let features = parse_collection(&value, SourceProfile::Committed, known_layers, space)?;
     Ok(features
         .into_iter()
         .map(|feature| {
-            let mut min_lon = i32::MAX;
-            let mut min_lat = i32::MAX;
-            let mut max_lon = i32::MIN;
-            let mut max_lat = i32::MIN;
+            let mut min_x_micro = i64::MAX;
+            let mut min_y_micro = i64::MAX;
+            let mut max_x_micro = i64::MIN;
+            let mut max_y_micro = i64::MIN;
             let mut visit = |coord: Micro| {
-                min_lon = min_lon.min(coord.0);
-                max_lon = max_lon.max(coord.0);
-                min_lat = min_lat.min(coord.1);
-                max_lat = max_lat.max(coord.1);
+                min_x_micro = min_x_micro.min(coord.0);
+                max_x_micro = max_x_micro.max(coord.0);
+                min_y_micro = min_y_micro.min(coord.1);
+                max_y_micro = max_y_micro.max(coord.1);
             };
             match &feature.geometry {
                 Geometry::Point(coord) => visit(*coord),
@@ -1468,14 +1669,30 @@ pub fn feature_bounds(
                     }
                 }
             }
-            let (min_x, max_y) = lon_lat_to_normalized(
-                f64::from(min_lon) / 1_000_000.0,
-                f64::from(max_lat) / 1_000_000.0,
-            );
-            let (max_x, min_y) = lon_lat_to_normalized(
-                f64::from(max_lon) / 1_000_000.0,
-                f64::from(min_lat) / 1_000_000.0,
-            );
+            let (min_x, max_y) = match space {
+                VectorSpace::Geographic => lon_lat_to_normalized(
+                    (min_x_micro as f64) / 1_000_000.0,
+                    (max_y_micro as f64) / 1_000_000.0,
+                ),
+                VectorSpace::Planar { extent, is_image } => planar_to_normalized(
+                    (min_x_micro as f64) / 1_000_000.0,
+                    (max_y_micro as f64) / 1_000_000.0,
+                    extent,
+                    *is_image,
+                ),
+            };
+            let (max_x, min_y) = match space {
+                VectorSpace::Geographic => lon_lat_to_normalized(
+                    (max_x_micro as f64) / 1_000_000.0,
+                    (min_y_micro as f64) / 1_000_000.0,
+                ),
+                VectorSpace::Planar { extent, is_image } => planar_to_normalized(
+                    (max_x_micro as f64) / 1_000_000.0,
+                    (min_y_micro as f64) / 1_000_000.0,
+                    extent,
+                    *is_image,
+                ),
+            };
             (
                 feature.id,
                 feature.layer_id,

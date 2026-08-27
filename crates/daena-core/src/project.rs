@@ -6639,18 +6639,23 @@ impl ProjectStore {
         }
         let layers = self.layers_field(&asset.entity_id)?;
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers.value);
-        let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
-        let physical_map = self
+        let descriptor_value = self
             .list_fields_unchecked(asset.entity_id.clone())?
             .into_iter()
             .find(|field| field.namespace == crate::maps::MAP_NAMESPACE && field.key == "map")
-            .and_then(|field| {
-                field
-                    .value
-                    .pointer("/provider/id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|provider| provider == crate::maps::PHYSICAL_PROVIDER)
-            })
+            .map(|field| field.value)
+            .unwrap_or(serde_json::Value::Null);
+        let vector_space =
+            crate::maps::vector::VectorSpace::from_descriptor_value(&descriptor_value);
+        let canonical = crate::maps::vector::canonicalize_committed_with_space(
+            &upload_bytes,
+            &known,
+            &vector_space,
+        )?;
+        let physical_map = descriptor_value
+            .pointer("/provider/id")
+            .and_then(serde_json::Value::as_str)
+            .map(|provider| provider == crate::maps::PHYSICAL_PROVIDER)
             .unwrap_or(false);
         if physical_map {
             crate::maps::validate_physical_authored_source_bytes(&canonical)?;
@@ -6837,7 +6842,14 @@ impl ProjectStore {
             });
         }
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
-        let canonical = crate::maps::vector::canonicalize_committed(&upload_bytes, &known)?;
+        let next_space = crate::maps::vector::VectorSpace::from_descriptor_value(&descriptor);
+        let previous_space =
+            crate::maps::vector::VectorSpace::from_descriptor_value(&map_field.value);
+        let canonical = crate::maps::vector::canonicalize_committed_with_space(
+            &upload_bytes,
+            &known,
+            &next_space,
+        )?;
         let previous_source_bytes = self.asset_bytes(source_id.clone())?;
         let previous_known = crate::maps::vector::layer_ids_from_layers_field(&layers_field.value);
         let previous_locked = crate::maps::locked_layer_ids(&layers_field.value);
@@ -6846,13 +6858,25 @@ impl ProjectStore {
             .intersection(&next_locked)
             .cloned()
             .collect();
-        crate::maps::vector::assert_locked_layer_features_unchanged(
+        crate::maps::vector::assert_locked_layer_features_unchanged_with_space(
             &previous_source_bytes,
             &canonical,
             &previous_known,
             &known,
             &still_locked,
+            &next_space,
         )?;
+        // For validation of previous vs next with differing spaces, also ensure previous bytes
+        // were valid in its own space when spaces differ (e.g., image -> world calibration).
+        if previous_space != next_space {
+            // Re-validate previous bytes in its own space to ensure the comparison is meaningful;
+            // if it fails, surface the error as locked-layer unchanged failure.
+            let _ = crate::maps::vector::canonicalize_committed_with_space(
+                &previous_source_bytes,
+                &previous_known,
+                &previous_space,
+            )?;
+        }
         if descriptor
             .pointer("/provider/id")
             .and_then(serde_json::Value::as_str)
@@ -7427,9 +7451,15 @@ impl ProjectStore {
             .collect();
         let layers_value = serde_json::json!({"schemaVersion": 2, "layers": remaining});
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
+        let vector_space =
+            crate::maps::vector::VectorSpace::from_descriptor_value(&descriptor.value);
         let bytes = self.read_asset_bytes(&source)?;
-        let (canonical, deleted) =
-            crate::maps::vector::remove_layer_features(&bytes, &layer_id, &known)?;
+        let (canonical, deleted) = crate::maps::vector::remove_layer_features_with_space(
+            &bytes,
+            &layer_id,
+            &known,
+            &vector_space,
+        )?;
         if deleted as i64 != expected_feature_count {
             return Err(CoreError::Conflict(
                 "vector.layer.in-use: expectedFeatureCount does not match the source".into(),
@@ -12386,7 +12416,22 @@ fn write_vector_feature_projection(
         .map_err(|error| CoreError::Serialization(error.to_string()))?
         .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
     let known = crate::maps::vector::layer_ids_from_layers_field(&layers);
-    let features = crate::maps::vector::feature_bounds(&bytes, &known)?;
+    // Resolve vector space from the map descriptor for correct bounds normalization
+    let descriptor_value: Option<serde_json::Value> = connection
+        .query_row(
+            "SELECT value FROM entity_fields WHERE entity_id=?1 AND namespace=?2 AND key='map'",
+            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map_err(|error| CoreError::Serialization(error.to_string()))?;
+    let vector_space = descriptor_value
+        .as_ref()
+        .map(crate::maps::vector::VectorSpace::from_descriptor_value)
+        .unwrap_or(crate::maps::vector::VectorSpace::Geographic);
+    let features = crate::maps::vector::feature_bounds_with_space(&bytes, &known, &vector_space)?;
     connection.execute(
         "DELETE FROM map_feature_search WHERE map_entity_id=?1",
         rusqlite::params![map_entity_id],

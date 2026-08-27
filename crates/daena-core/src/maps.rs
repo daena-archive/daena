@@ -1441,11 +1441,22 @@ pub fn validate_image_map_content(
                     .as_ref()
                     .map(vector::layer_ids_from_layers_field)
                     .unwrap_or_default();
-                vector::require_canonical_bytes(
-                    Path::new("assets/maps/map.geojson"),
-                    &bytes,
-                    &known,
-                )?;
+                // Use coordinate-space-aware validation; image maps store planar pixel coordinates
+                if let Some(space) = descriptor.coordinate_space.as_ref() {
+                    let vector_space = vector::VectorSpace::from_coordinate_space(space);
+                    vector::require_canonical_bytes_with_space(
+                        Path::new("assets/maps/map.geojson"),
+                        &bytes,
+                        &known,
+                        &vector_space,
+                    )?;
+                } else {
+                    vector::require_canonical_bytes(
+                        Path::new("assets/maps/map.geojson"),
+                        &bytes,
+                        &known,
+                    )?;
+                }
                 if let Some(preview_id) = descriptor.preview_asset_id.as_deref() {
                     let preview_bytes = load_asset(preview_id)?;
                     let (_, mime) =

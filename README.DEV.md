@@ -2,7 +2,16 @@
 
 Daena uses Rust, Tauri 2, Svelte 5, TypeScript, Vite, and Deno.
 
-For plugin development, please refer [here](docs/PLUGIN_SDK.md).
+For plugin development, please refer to the [definitive plugin guide](docs/PLUGIN_SDK.md).
+
+## Prerequisites
+
+* **Deno 2.x** (`deno --version`, tested 2.9.5) — JS/TS runtime, tasks, and `deno task check`
+* **Rust 1.85+** (`rustc --version`, tested 1.98) with `cargo`, `clippy`, `rustfmt` — `rustup component add clippy rustfmt` (pin via `rust-toolchain.toml` if present)
+* **Node 22+** (optional) — only if running `node scripts/...` directly; `deno task` is canonical
+* **Tauri CLI 2** — `cargo install tauri-cli` for `deno task tauri ...`
+* **System deps for Tauri 2** — see [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+* **Docker** (optional) — only for Windows cross-compile
 
 ## Setup
 
@@ -17,13 +26,13 @@ specific manifest they are checking.
 
 ## Run Daena
 
-Run the frontend in a browser:
+Run the frontend in a browser (no native APIs):
 
 ```bash
 deno task dev
 ```
 
-Run the full desktop application through Tauri:
+Run the full desktop application through Tauri (required for filesystem, Git, maps, plugins):
 
 ```bash
 deno task tauri dev
@@ -39,17 +48,40 @@ Use the Tauri desktop app when testing filesystem access, project storage,
 dialogs, Git, maps, plugins, or other native behavior. Browser development does
 not reproduce those boundaries.
 
-## Frontend Checks
+## Checks
 
-Run the main type and contract checks:
+Run all checks (type, contracts, plugins, maps):
 
 ```bash
 deno task check
-deno task format:check
-deno task build
+deno task test
 ```
 
-Run plugin and SDK checks:
+Individual groups:
+
+```bash
+deno task check        # svelte-kit sync + svelte-check + plugin contract
+deno task format:check # prettier --check
+deno task build        # vite build
+
+# JS unit / integration
+deno task test         # unit + plugins + maps
+deno task test:unit    # shell, theme, ai-stream, external-import, language, markdown, timeline, writing-tabs, git-ui
+deno task test:plugins # plugin-contract, manifest-fixtures, isolation, conformance, declarative, cli, transport
+deno task test:maps    # native-vector, physical, atlas
+
+# Focused
+deno task test:markdown
+deno task check:writing-tabs
+deno task check:timeline-calendar
+deno task check:maps:native-vector
+deno task check:maps:physical
+deno task check:maps:atlas
+```
+
+Run `deno task` to list every available task.
+
+### Plugin and SDK checks
 
 ```bash
 deno task build:plugin-sdk
@@ -62,19 +94,6 @@ deno task test:plugin-declarative
 deno task test:plugin-cli
 deno task test:plugin-transport
 ```
-
-Useful focused checks include:
-
-```bash
-deno task test:markdown
-deno task check:writing-tabs
-deno task check:timeline-calendar
-deno task check:maps:native-vector
-deno task check:maps:physical
-deno task check:maps:atlas
-```
-
-Run `deno task` to list every available task in the repository.
 
 ## Rust Checks
 
@@ -89,16 +108,27 @@ cargo test --manifest-path crates/daena-plugin-host/Cargo.toml --locked --offlin
 cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
 ```
 
-Run the desktop shell's lint checks:
-
-```bash
-cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
-```
-
 The standalone `daena-physical` crate can be checked with:
 
 ```bash
 cargo test --manifest-path crates/daena-physical/Cargo.toml --locked --offline
+```
+
+Run lint and format checks (strict — warnings deny):
+
+```bash
+cargo clippy --manifest-path crates/daena-core/Cargo.toml --locked --offline --all-targets -- -D warnings
+cargo clippy --manifest-path crates/daena-atlas/Cargo.toml --locked --offline --all-targets -- -D warnings
+cargo clippy --manifest-path crates/daena-physical/Cargo.toml --locked --offline --all-targets -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
+RUSTFLAGS="-D warnings" cargo check --manifest-path crates/daena-core/Cargo.toml --locked --offline
+cargo fmt -- --check
+```
+
+Desktop shell's canonical lint:
+
+```bash
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
 ```
 
 ## Plugin Development

@@ -2,6 +2,11 @@
 
 ![Daena Archive logo](static/branding/logo.png)
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Version: v0.1.0-alpha](https://img.shields.io/badge/version-v0.1.0--alpha-orange.svg)](#current-status)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#system-requirements)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app)
+
 > "Daena" (Avestan pronunciation: [dʌeːnaː]) is a Zoroastrian concept
 > representing insight and revelation.
 >
@@ -13,6 +18,46 @@ maps, languages, and manuscripts one connected home.
 
 Daena works offline and keeps each project in a folder on your computer. You do
 not need an account or a subscription.
+
+## Current status
+
+Daena is in active early development (**v0.1.0-alpha**) and is **not production
+ready**. APIs, storage, and plugin contracts may change before `v1.0`. Track
+progress in [GitHub Releases](../../releases) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+The first beta is expected in early September 2026.
+
+## Download
+
+**Option 1 — Download the alpha (recommended):**
+
+1. Go to [Releases](../../releases) and download the installer for your OS.
+2. Install and open Daena Archive, then create a new project folder.
+
+**Option 2 — Build from source:**
+
+```bash
+deno install --node-modules-dir=auto
+deno task tauri build
+```
+
+See [`README.DEV.md`](README.DEV.md) for full prerequisites.
+
+Each project is a folder on disk (`project.json`, `entities/`, `.daena/`). Back it up like any folder. See [`docs/STORAGE.md`](docs/STORAGE.md).
+
+## System requirements
+
+* **OS:** macOS 13+, Windows 10+, or Linux with WebKitGTK 4.1
+* **Runtime:** WebView2 (Windows, usually preinstalled), 200 MB disk + projects
+* **Build only:** Rust 1.85+ (tested 1.98), Deno 2.x (tested 2.9.5), `cargo` with `clippy`/`rustfmt`
+
+## Quick start
+
+1. **Create a project** — `File → New Project` and pick an empty folder.
+2. **Add a world bible entry** — `People` → `New` → name, document, and structured fields.
+3. **Connect ideas** — link a character to a faction, language, and place; links are bidirectional.
+4. **Write** — open `Writing Studio` → `Manuscript` and link text to world entries.
+5. **Explore** — `Search` across entities, `Timeline` for dates, `Maps` for locations.
 
 ## Features
 
@@ -101,25 +146,39 @@ Daena also provides:
 
 ### Add more through plugins
 
-Daena supports optional modules and plugins so new tools can be added without
-changing the core of your project. Plugins run with limited, user-approved
-access rather than unrestricted access to your files or system.
+Daena supports optional **plugins** (including built-in modules) so new tools
+can be added without changing the core of your project. Plugins run with
+limited, user-approved access rather than unrestricted access to your files or
+system. See [`docs/PLUGIN_SDK.md`](docs/PLUGIN_SDK.md) and
+[`docs/PLUGIN_PLATFORM_PLAN.md`](docs/PLUGIN_PLATFORM_PLAN.md).
 
-## Current status
+## FAQ
 
-Daena is in active early development (v0.1.0). It is currently in alpha and is
-not production ready.
+**Is my project compatible between versions?** `v0.1.0-alpha` storage may change
+before `v1.0`. Keep Git snapshots or backups before upgrading. See
+[`docs/STORAGE.md`](docs/STORAGE.md).
 
-The first beta is expected in early September 2026.
+**Where is my data?** In the folder you picked at `New Project` — `project.json`
+at the root, `entities/` and `assets/` for content, `.daena/` for the live
+index. Move or copy the folder to move your project.
+
+**Does Daena need the internet?** No. Writing, maps, languages, and local AI all
+work offline. Remote AI and Git remotes are opt-in.
+
+**Are plugins safe?** Plugins declare `capabilities` and need your consent to
+read/write outside their namespace. See `docs/PLUGIN_SDK.md`.
+
+## Contributing
+
+Daena is, and forever will be, free and open source. It has no subscriptions,
+paid features, or any other forms of monetization. If you find it useful, you
+can help by [reporting bugs](../../issues), contributing code, or sharing it
+with someone who enjoys worldbuilding.
 
 ## About Daena
 
-Daena is, and forever will be, free and open source. It has no subscriptions,
-paid features, or other form of monetization.
-
 Daena began as a personal attempt to organize the worlds created during
 daydreams and sleepless nights. When I failed to find an application that suited
-all my needs, I decided to create my own app ([...with blackjack and hookers](https://youtube.com/watch?v=e35AQK014tI)).
+all my needs, I decided to create my own app.
 
-If you find it useful, you can help by reporting bugs, contributing code, or
-sharing it with someone who enjoys worldbuilding.
+Daena is free and open source under the [Apache License 2.0](LICENSE).

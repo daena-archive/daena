@@ -17,6 +17,18 @@ let {
 
 let query = $state("");
 let open = $state(false);
+let rootEl: HTMLDivElement | null = $state(null);
+
+$effect(() => {
+  if (!open) return;
+  const handler = (event: MouseEvent) => {
+    const target = event.target as Node | null;
+    const el = rootEl as unknown as HTMLElement | null;
+    if (el && target && !el.contains(target)) open = false;
+  };
+  document.addEventListener("pointerdown", handler, true);
+  return () => document.removeEventListener("pointerdown", handler, true);
+});
 
 function isGregorian(id: string) {
   return id === GREGORIAN_CALENDAR_ID;
@@ -46,6 +58,7 @@ function select(id: string) {
 </script>
 
 <div
+  bind:this={rootEl}
   class="calendar-picker"
   onfocusout={(event) => {
     const next = event.relatedTarget as Node | null;
@@ -125,6 +138,8 @@ function select(id: string) {
   position: relative;
   display: grid;
   gap: 4px;
+  width: 100%;
+  min-width: 0;
 }
 .calendar-picker-label {
   color: var(--ink-faint);
@@ -165,9 +180,13 @@ function select(id: string) {
 }
 .calendar-picker-menu {
   position: absolute;
-  inset-inline: 0;
+  left: 0;
+  right: auto;
   top: calc(100% + 6px);
   z-index: 12;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 24px));
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;

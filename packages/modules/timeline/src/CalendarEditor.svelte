@@ -75,6 +75,10 @@ function payload(definition: CalendarDefinition): CalendarDefinition {
       months: definition.months,
       weekdays: definition.weekdays,
       seasons: definition.seasons,
+      ...(definition.allowNegativeYears ? { allowNegativeYears: true } : {}),
+      ...(definition.eraLabels && (definition.eraLabels.bce || definition.eraLabels.ce)
+        ? { eraLabels: definition.eraLabels }
+        : {}),
     }),
   ) as CalendarDefinition;
 }
@@ -331,6 +335,61 @@ $effect(() => {
                 onchange={(event) => setEpoch("day", event.currentTarget.value)} />
             </label>
           </div>
+        </section>
+
+        <section>
+          <h4>Eras</h4>
+          <p class="calendar-note">Control whether dates can be before the first year and how eras are labeled.</p>
+          <label class="calendar-checkbox"
+            ><input
+              type="checkbox"
+              checked={draft.allowNegativeYears ?? false}
+              onchange={(event) => {
+                const allowNegativeYears = (event.currentTarget as HTMLInputElement).checked;
+                if (allowNegativeYears) setDraft({ ...draft, allowNegativeYears: true });
+                else {
+                  const next = { ...draft } as CalendarDefinition;
+                  delete next.allowNegativeYears;
+                  if (next.eraLabels) delete next.eraLabels;
+                  setDraft(next);
+                }
+              }} /> Allow years before the first year</label>
+          {#if draft.allowNegativeYears}
+            <div class="calendar-grid">
+              <label>
+                Label for years before epoch
+                <input
+                  value={draft.eraLabels?.bce ?? ""}
+                  oninput={(event) => {
+                    const bce = (event.currentTarget as HTMLInputElement).value.trim();
+                    const ce = draft.eraLabels?.ce;
+                    const eraLabels = bce || ce ? { ...(bce ? { bce } : {}), ...(ce ? { ce } : {}) } : undefined;
+                    if (eraLabels) setDraft({ ...draft, eraLabels });
+                    else {
+                      const next = { ...draft } as CalendarDefinition;
+                      delete next.eraLabels;
+                      setDraft(next);
+                    }
+                  }} />
+              </label>
+              <label>
+                Label for years after epoch (optional)
+                <input
+                  value={draft.eraLabels?.ce ?? ""}
+                  oninput={(event) => {
+                    const ce = (event.currentTarget as HTMLInputElement).value.trim();
+                    const bce = draft.eraLabels?.bce;
+                    const eraLabels = bce || ce ? { ...(bce ? { bce } : {}), ...(ce ? { ce } : {}) } : undefined;
+                    if (eraLabels) setDraft({ ...draft, eraLabels });
+                    else {
+                      const next = { ...draft } as CalendarDefinition;
+                      delete next.eraLabels;
+                      setDraft(next);
+                    }
+                  }} />
+              </label>
+            </div>
+          {/if}
         </section>
 
         <section>
@@ -650,6 +709,25 @@ $effect(() => {
     ui-sans-serif,
     system-ui,
     sans-serif;
+}
+.calendar-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--theme-neutral-text, #302c26);
+  font:
+    600 12px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  cursor: pointer;
+}
+.calendar-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent-dark);
+  cursor: pointer;
 }
 .calendar-format-help {
   position: relative;

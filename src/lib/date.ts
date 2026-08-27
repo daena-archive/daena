@@ -52,8 +52,12 @@ export function parseCalendarDate(value: unknown): CalendarDate | null {
     }
   }
   if (typeof value !== "string") return null;
-  const match = /^(\d+)(?:-(\d+)(?:-(\d+))?)?(?:T(\d+)(?::(\d+)(?::(\d+))?)?)?$/.exec(value.trim());
+  const match = /^(-?\d+)(?:-(\d+)(?:-(\d+))?)?(?:T(\d+)(?::(\d+)(?::(\d+))?)?)?$/.exec(value.trim());
   if (!match) return null;
+  // Normalize year sign + era: keep signed year, preserve BCE era if negative
+  const rawYear = Number(match[1]);
+  const era: "BCE" | "CE" = rawYear < 0 ? "BCE" : "CE";
+  const year = rawYear;
   const precision = match[6]
     ? "second"
     : match[5]
@@ -67,8 +71,8 @@ export function parseCalendarDate(value: unknown): CalendarDate | null {
             : "year";
   return {
     calendar: GREGORIAN_CALENDAR_ID,
-    era: "CE",
-    year: Number(match[1]),
+    era,
+    year,
     precision,
     ...(match[2] ? { month: Number(match[2]) } : {}),
     ...(match[3] ? { day: Number(match[3]) } : {}),

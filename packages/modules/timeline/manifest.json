@@ -123,7 +123,9 @@
           "dateFormat": { "type": "string" },
           "months": { "type": "array" },
           "weekdays": { "type": "array" },
-          "seasons": { "type": "array" }
+          "seasons": { "type": "array" },
+          "allowNegativeYears": { "type": "boolean" },
+          "eraLabels": { "type": "object" }
         },
         "required": ["schemaVersion"],
         "additionalProperties": false

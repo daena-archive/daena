@@ -261,7 +261,11 @@ function attributesForRelationship(relationship: any): Array<{ key: string; labe
       .map((field) => {
         const raw = metadata[field.key];
         if (isEmptyValue(raw)) return null;
-        return { key: field.key, label: field.label ?? humanizeType(field.key), value: formatAttributeValue(raw, field) };
+        return {
+          key: field.key,
+          label: field.label ?? humanizeType(field.key),
+          value: formatAttributeValue(raw, field),
+        };
       })
       .filter((row): row is { key: string; label: string; value: string } => row !== null && row.value !== "");
   }
@@ -774,7 +778,10 @@ function handleEdit() {
                           >{entityName(relationship.target_id)}</button>
                         {#if relationship.attributes.length > 0}
                           <div class="wiki-attr-row" aria-label="Relationship details">
-                            {#each relationship.attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span>{/each}
+                            {#each relationship.attributes as attr}<span
+                                class="wiki-attr-chip"
+                                title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span
+                              >{/each}
                           </div>
                         {/if}
                       </li>{/each}
@@ -792,7 +799,10 @@ function handleEdit() {
                           ></button>
                         {#if relationship.attributes.length > 0}
                           <div class="wiki-attr-row" aria-label="Relationship details">
-                            {#each relationship.attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span>{/each}
+                            {#each relationship.attributes as attr}<span
+                                class="wiki-attr-chip"
+                                title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span
+                              >{/each}
                           </div>
                         {/if}
                       </li>{/each}

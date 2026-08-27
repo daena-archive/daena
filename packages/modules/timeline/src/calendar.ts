@@ -40,6 +40,8 @@ export type CalendarDefinition = {
   months: CalendarMonth[];
   weekdays: CalendarNamedUnit[];
   seasons: CalendarSeason[];
+  allowNegativeYears?: boolean;
+  eraLabels?: { bce?: string; ce?: string };
 };
 
 export type YearPresetId = "custom" | "gregorian" | "twelve-30" | "ten-36";
@@ -279,6 +281,12 @@ export function normalizeCalendarDefinition(value: unknown): CalendarDefinition 
   }
   const dateFormat = asString(record.dateFormat);
   if (dateFormat) definition.dateFormat = dateFormat;
+  const allowNegativeYears = record.allowNegativeYears;
+  if (typeof allowNegativeYears === "boolean") definition.allowNegativeYears = allowNegativeYears;
+  const eraLabelsRecord = asRecord(record.eraLabels);
+  const bce = asString(eraLabelsRecord.bce);
+  const ce = asString(eraLabelsRecord.ce);
+  if (bce || ce) definition.eraLabels = { ...(bce ? { bce } : {}), ...(ce ? { ce } : {}) };
   return definition;
 }
 
@@ -317,6 +325,12 @@ export function validateCalendarDefinition(definition: CalendarDefinition): Cale
     issues.push({
       level: "warning",
       message: "This calendar currently has no structure, so dates still use Gregorian.",
+    });
+  }
+  if (definition.allowNegativeYears && !definition.eraLabels?.bce?.trim()) {
+    issues.push({
+      level: "error",
+      message: "A label for years before the epoch is required when allowing negative years.",
     });
   }
   return issues;
@@ -405,6 +419,26 @@ export function calendarDateToParts(value: unknown, definition: CalendarDefiniti
       precision: "year",
     };
   }
+  if ((date.precision ?? "day") === "month" || date.day === undefined) {
+    const storedDay = utcDayNumber(date.year, date.month, 1);
+    const delta = storedDay - epochDayNumber(definition);
+    const yearOffset = Math.floor(delta / yearLength);
+    let doy = (delta % yearLength) + 1;
+    if (doy <= 0) doy += yearLength;
+    const parts = partsFromDayOfYear(definition, doy);
+    const year = startingYear(definition) + yearOffset;
+    const weekday =
+      definition.weekdays.length > 0
+        ? ((delta % definition.weekdays.length) + definition.weekdays.length) % definition.weekdays.length
+        : undefined;
+    return {
+      year,
+      month: parts.month,
+      ...(weekday !== undefined ? { weekday } : {}),
+      ...(seasonName(definition, parts.month, 1) ? { season: seasonName(definition, parts.month, 1) } : {}),
+      precision: "month",
+    };
+  }
   const storedDay = utcDayNumber(date.year, date.month, date.day ?? 1);
   const delta = storedDay - epochDayNumber(definition);
   const yearOffset = Math.floor(delta / yearLength);
@@ -423,7 +457,7 @@ export function calendarDateToParts(value: unknown, definition: CalendarDefiniti
     ...(seasonName(definition, parts.month, parts.day)
       ? { season: seasonName(definition, parts.month, parts.day) }
       : {}),
-    precision: date.day === undefined ? "month" : (date.precision ?? "day"),
+    precision: date.precision ?? "day",
   };
 }
 
@@ -443,6 +477,12 @@ export function partsToCalendarDate(parts: CalendarParts, definition: CalendarDe
     const year = (definition.epoch?.year ?? 1) + (parts.year - startingYear(definition));
     return { calendar: "gregorian", era: "CE", year, precision: "year" };
   }
+  if (parts.precision === "month") {
+    const doy = dayOfYear(definition, parts.month, 1);
+    const dayNumber = epochDayNumber(definition) + (parts.year - startingYear(definition)) * yearLength + (doy - 1);
+    const gregorian = fromUtcDayNumber(dayNumber);
+    return { calendar: "gregorian", era: "CE", year: gregorian.year, month: gregorian.month, precision: "month" };
+  }
   const doy = dayOfYear(definition, parts.month, parts.day);
   const dayNumber = epochDayNumber(definition) + (parts.year - startingYear(definition)) * yearLength + (doy - 1);
   const gregorian = fromUtcDayNumber(dayNumber);
@@ -452,8 +492,17 @@ export function partsToCalendarDate(parts: CalendarParts, definition: CalendarDe
     year: gregorian.year,
     month: gregorian.month,
     day: gregorian.day,
-    precision: parts.precision === "month" ? "month" : "day",
+    precision: "day",
   };
+}
+
+function eraSuffix(year: number, definition: CalendarDefinition): string {
+  if (year < 1) {
+    const label = definition.eraLabels?.bce?.trim() || "BCE";
+    return label ? ` ${label}` : "";
+  }
+  const label = definition.eraLabels?.ce?.trim();
+  return label ? ` ${label}` : "";
 }
 
 export function formatCalendarParts(parts: CalendarParts, definition: CalendarDefinition): string {
@@ -461,9 +510,10 @@ export function formatCalendarParts(parts: CalendarParts, definition: CalendarDe
   const month = parts.month !== undefined ? definition.months[parts.month - 1] : undefined;
   const weekday = parts.weekday !== undefined ? definition.weekdays[parts.weekday] : undefined;
   const pad = (value: number) => String(value).padStart(2, "0");
+  const displayYear = parts.year < 1 ? 1 - parts.year : parts.year;
   const tokens: Record<string, string> = {
-    YYYY: String(parts.year),
-    YY: String(Math.abs(parts.year)).slice(-2).padStart(2, "0"),
+    YYYY: String(displayYear),
+    YY: String(Math.abs(displayYear)).slice(-2).padStart(2, "0"),
     MMMM: month?.name ?? "",
     MMM: month?.shortName || month?.name || "",
     MM: parts.month !== undefined ? pad(parts.month) : "",
@@ -474,13 +524,15 @@ export function formatCalendarParts(parts: CalendarParts, definition: CalendarDe
     WWW: weekday?.shortName || weekday?.name || "",
     SSSS: parts.season ?? "",
   };
-  return pattern
+  const base = pattern
     .replace(/YYYY|MMMM|WWWW|SSSS|MMM|WWW|YY|MM|DD|M|D/g, (token) => tokens[token] ?? token)
     .replace(/\s+,/g, ",")
     .replace(/[/\-.]{2,}/g, (match) => match[0] ?? "")
     .replace(/\s{2,}/g, " ")
     .replace(/^[/\-.,\s]+|[/\-.,\s]+$/g, "")
     .trim();
+  const suffix = eraSuffix(parts.year, definition);
+  return suffix ? `${base}${suffix}` : base;
 }
 
 export function previewCalendarParts(definition: CalendarDefinition): CalendarParts {

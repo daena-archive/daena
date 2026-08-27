@@ -113,6 +113,7 @@ import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
 import AssetDialog from "$lib/AssetDialog.svelte";
 import ExternalImportDialog from "$lib/ExternalImportDialog.svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
+import DateEditor from "$lib/date/DateEditor.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
 import DialogHost from "$lib/DialogHost.svelte";
@@ -2186,8 +2187,7 @@ async function canLeaveLanguageSection(): Promise<boolean> {
   if (section !== "language") return true;
   try {
     const fn = (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage as
-      | (() => Promise<boolean> | boolean)
-      | undefined;
+      (() => Promise<boolean> | boolean) | undefined;
     if (typeof fn === "function") return await fn();
   } catch {}
   return true;
@@ -6046,107 +6046,18 @@ onMount(() => {
                               precision: "day",
                             }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
                             createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
-                          <div class="date-editor">
-                            <CalendarPicker
-                              selectedId={calendarIdForStoredDate(
-                                createDateForField(item.field.key),
-                                createDateCalendarByField[item.field.key],
-                              )}
-                              calendars={worldCalendars()}
-                              onSelect={(id) => setCreateDateCalendar(item.field.key, id)} />
-                            <div class="date-fields">
-                              <label for={`create-${item.field.key}-year`}
-                                >Year<input
-                                  id={`create-${item.field.key}-year`}
-                                  aria-label={`${item.field.label} year`}
-                                  type="number"
-                                  value={parts?.year ?? date.year ?? ""}
-                                  onchange={(event) =>
-                                    updateCreateDatePart(
-                                      item.field.key,
-                                      "year",
-                                      (event.currentTarget as HTMLInputElement).value,
-                                      Number.MIN_SAFE_INTEGER,
-                                    )} /></label
-                              >{#if months.length > 0}<label for={`create-${item.field.key}-month`}
-                                  >Month<select
-                                    id={`create-${item.field.key}-month`}
-                                    aria-label={`${item.field.label} month`}
-                                    value={parts?.month ?? ""}
-                                    onchange={(event) =>
-                                      updateCreateDatePart(
-                                        item.field.key,
-                                        "month",
-                                        (event.currentTarget as HTMLSelectElement).value,
-                                        1,
-                                        months.length,
-                                      )}
-                                    ><option value="">Month</option>{#each months as month, index}<option
-                                        value={index + 1}>{month.name}</option
-                                      >{/each}</select>
-                                  ></label
-                                >{:else}<label for={`create-${item.field.key}-month`}
-                                  >Month<input
-                                    id={`create-${item.field.key}-month`}
-                                    aria-label={`${item.field.label} month`}
-                                    type="number"
-                                    min="1"
-                                    max="12"
-                                    value={parts?.month ?? date.month ?? ""}
-                                    onchange={(event) =>
-                                      updateCreateDatePart(
-                                        item.field.key,
-                                        "month",
-                                        (event.currentTarget as HTMLInputElement).value,
-                                        1,
-                                        12,
-                                      )} /></label
-                                >{/if}<label for={`create-${item.field.key}-day`}
-                                >Day<input
-                                  id={`create-${item.field.key}-day`}
-                                  aria-label={`${item.field.label} day`}
-                                  type="number"
-                                  min="1"
-                                  max={daysInCalendarMonth(
-                                    calendar,
-                                    parts?.year ?? date.year ?? 1,
-                                    parts?.month ?? date.month ?? 1,
-                                  )}
-                                  value={parts?.day ?? date.day ?? ""}
-                                  onchange={(event) =>
-                                    updateCreateDatePart(
-                                      item.field.key,
-                                      "day",
-                                      (event.currentTarget as HTMLInputElement).value,
-                                      1,
-                                      daysInCalendarMonth(
-                                        calendar,
-                                        parts?.year ?? date.year ?? 1,
-                                        parts?.month ?? date.month ?? 1,
-                                      ),
-                                    )} /></label
-                              ><label class="date-time-field" for={`create-${item.field.key}-time`}
-                                >Time<input
-                                  id={`create-${item.field.key}-time`}
-                                  aria-label={`${item.field.label} time`}
-                                  type="time"
-                                  step="1"
-                                  value={calendarTimeValue(date)}
-                                  onchange={(event) =>
-                                    updateCreateDateTime(
-                                      item.field.key,
-                                      (event.currentTarget as HTMLInputElement).value,
-                                    )} /></label>
-                            </div>
-                            <small class="date-preview"
-                              >{typeof (parts?.year ?? date.year) === "number"
-                                ? formatWithCalendar(createFieldValues[item.field.key], calendar)
-                                : "Add a date"}</small
-                            ><button
-                              class="date-clear"
-                              type="button"
-                              onclick={() => clearCreateDateField(item.field.key)}>Clear date</button>
-                          </div>{:else}<button
+                          <DateEditor
+                            label={item.field.label}
+                            value={createFieldValues[item.field.key]}
+                            calendar={createCalendarDefinition(item.field.key)}
+                            calendars={worldCalendars() as any}
+                            selectedCalendarId={calendarIdForStoredDate(
+                              createDateForField(item.field.key),
+                              createDateCalendarByField[item.field.key],
+                            )}
+                            onChange={(next) => setCreateField(item.field.key, next)}
+                            onClear={() => clearCreateDateField(item.field.key)}
+                            onSelectCalendar={(id) => setCreateDateCalendar(item.field.key, id)} />{:else}<button
                             class="date-empty"
                             type="button"
                             onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button
@@ -7495,102 +7406,18 @@ onMount(() => {
                           }}{@const parts = datePartsDraft(definition.key)}{@const calendar = definitionForDateField(
                           definition.key,
                         )}{@const months = calendar?.months ?? []}
-                        <div class="date-editor">
-                          <CalendarPicker
-                            selectedId={selectedCalendarId(definition.key)}
-                            calendars={worldCalendars()}
-                            onSelect={(id) => setDateCalendar(definition.key, id)} />
-                          <div class="date-fields">
-                            <label for={`${definition.key}-year`}
-                              >Year<input
-                                id={`${definition.key}-year`}
-                                aria-label={`${definition.label} year`}
-                                type="number"
-                                value={parts?.year ?? date.year ?? ""}
-                                onchange={(event) =>
-                                  updateDatePart(
-                                    definition.key,
-                                    "year",
-                                    (event.currentTarget as HTMLInputElement).value,
-                                    Number.MIN_SAFE_INTEGER,
-                                  )} /></label
-                            >{#if months.length > 0}<label for={`${definition.key}-month`}
-                                >Month<select
-                                  id={`${definition.key}-month`}
-                                  aria-label={`${definition.label} month`}
-                                  value={parts?.month ?? ""}
-                                  onchange={(event) =>
-                                    updateDatePart(
-                                      definition.key,
-                                      "month",
-                                      (event.currentTarget as HTMLSelectElement).value,
-                                      1,
-                                      months.length,
-                                    )}
-                                  ><option value="">Month</option>{#each months as month, index}<option
-                                      value={index + 1}>{month.name}</option
-                                    >{/each}</select>
-                                ></label
-                              >{:else}<label for={`${definition.key}-month`}
-                                >Month<input
-                                  id={`${definition.key}-month`}
-                                  aria-label={`${definition.label} month`}
-                                  type="number"
-                                  min="1"
-                                  max="12"
-                                  value={parts?.month ?? date.month ?? ""}
-                                  onchange={(event) =>
-                                    updateDatePart(
-                                      definition.key,
-                                      "month",
-                                      (event.currentTarget as HTMLInputElement).value,
-                                      1,
-                                      12,
-                                    )} /></label
-                              >{/if}<label for={`${definition.key}-day`}
-                              >Day<input
-                                id={`${definition.key}-day`}
-                                aria-label={`${definition.label} day`}
-                                type="number"
-                                min="1"
-                                max={daysInCalendarMonth(
-                                  calendar,
-                                  parts?.year ?? date.year ?? 1,
-                                  parts?.month ?? date.month ?? 1,
-                                )}
-                                value={parts?.day ?? date.day ?? ""}
-                                onchange={(event) =>
-                                  updateDatePart(
-                                    definition.key,
-                                    "day",
-                                    (event.currentTarget as HTMLInputElement).value,
-                                    1,
-                                    daysInCalendarMonth(
-                                      calendar,
-                                      parts?.year ?? date.year ?? 1,
-                                      parts?.month ?? date.month ?? 1,
-                                    ),
-                                  )} /></label
-                            ><label class="date-time-field" for={`${definition.key}-time`}
-                              >Time<input
-                                id={`${definition.key}-time`}
-                                aria-label={`${definition.label} time`}
-                                type="time"
-                                step="1"
-                                value={calendarTimeValue(date)}
-                                onchange={(event) =>
-                                  updateDateTime(
-                                    definition.key,
-                                    (event.currentTarget as HTMLInputElement).value,
-                                  )} /></label>
-                          </div>
-                          <small class="date-preview"
-                            >{typeof (parts?.year ?? date.year) === "number"
-                              ? formatWithCalendar(fields[definition.key], calendar)
-                              : "Add a date"}</small
-                          ><button class="date-clear" type="button" onclick={() => clearDateField(definition.key)}
-                            >Clear date</button>
-                        </div>{:else}<button
+                        <DateEditor
+                          label={definition.label}
+                          value={fields[definition.key]}
+                          calendar={definitionForDateField(definition.key)}
+                          calendars={worldCalendars() as any}
+                          selectedCalendarId={selectedCalendarId(definition.key)}
+                          onChange={(next) => {
+                            fields = { ...fields, [definition.key]: next };
+                            markEntryDirty();
+                          }}
+                          onClear={() => clearDateField(definition.key)}
+                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)} />{:else}<button
                           class="date-empty"
                           type="button"
                           onclick={() => openDateEditor(definition.key)}>Add a date</button
@@ -8867,70 +8694,7 @@ onMount(() => {
   background: var(--theme-danger-bg, #fff0ec);
   color: var(--theme-danger-text, #813d32);
 }
-.date-editor {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--theme-warning-bg, #fcf8f1);
-}
-.date-fields {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(108px, 1.6fr);
-  gap: 6px;
-}
-.date-fields label {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.date-fields input,
-.date-fields select {
-  min-width: 0;
-  width: 100%;
-  padding: 8px 6px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--canvas);
-  color: var(--ink);
-  font-size: 11px;
-}
-.date-fields input:focus {
-  border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
-  outline: 0;
-}
-.inspector-section .date-fields {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.inspector-section .date-time-field {
-  grid-column: 1 / -1;
-}
-.date-preview {
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-}
-.date-clear,
-.date-empty {
-  width: fit-content;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 10px;
-  cursor: pointer;
-}
-.date-empty {
-  padding: 8px 10px;
-  border: 1px dashed var(--theme-warning-border, #d3c0a9);
-  border-radius: 7px;
-  color: var(--accent);
-}
+
 .inspector-heading {
   border-bottom: 1px solid var(--line);
 }
@@ -9963,12 +9727,7 @@ onMount(() => {
     width: 100%;
     justify-content: flex-end;
   }
-  .date-fields {
-    gap: 5px;
-  }
-  .date-fields input {
-    padding-inline: 5px;
-  }
+
   .modal-backdrop {
     padding: 12px;
   }
@@ -10219,7 +9978,6 @@ onMount(() => {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
-.create-input-field > label + .date-editor,
 .create-input-field > label + .create-checkbox {
   display: flex;
 }

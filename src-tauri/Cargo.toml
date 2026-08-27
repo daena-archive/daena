@@ -3,8 +3,8 @@ name = "daena"
 version = "0.1.0"
 build = "build.rs"
 license = "Apache-2.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Daena Archive is an offline-first studio for developing fictional worlds and writing the stories that grow from them."
+authors = ["H. Yazdani, Daena Archive's community"]
 edition = "2021"
 
 [profile.release]

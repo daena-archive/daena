@@ -16,7 +16,7 @@ use super::{
 };
 use crate::tectonics::{geodesic_nearest, BoundaryKind, TectonicWorld};
 
-pub const EVOLUTION_DERIVATION_VERSION: u16 = 4;
+pub const EVOLUTION_DERIVATION_VERSION: u16 = 1;
 pub const MAX_EVOLUTION_ELEVATION_MM: i32 = 9_000_000;
 pub const MAX_RELIEF_LOSS_PER_STEP_MM: i32 = 25_000;
 pub const ROUTING_ANISOTROPY_LIMIT_PPM: u32 = 950_000;

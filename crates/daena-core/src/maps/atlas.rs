@@ -465,7 +465,7 @@ pub fn capabilities_for_map(
     let descriptor = field_value(&fields, "map")
         .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
     let layers = field_value(&fields, "layers")
-        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 1, "layers": []}));
     let mut capabilities = capabilities_for_descriptor(&descriptor, &layers);
     if !capabilities.supported {
         return Ok(capabilities);
@@ -541,7 +541,7 @@ pub fn capture_snapshot(
     let descriptor_value = field_value(&fields, "map")
         .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
     let layers_value = field_value(&fields, "layers")
-        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 1, "layers": []}));
     let capabilities = capabilities_for_descriptor(&descriptor_value, &layers_value);
     if !capabilities.supported {
         return Err(CoreError::Validation(format!(
@@ -1004,9 +1004,10 @@ mod tests {
 
     #[test]
     fn unsupported_providers_are_reported_not_inferred_from_names() {
+        let unsupported_adapter = super::PHYSICAL_ADAPTER_VERSION.wrapping_add(1);
         let descriptor = serde_json::json!({
             "schemaVersion": 1,
-            "provider": {"id": "daena-openlayers", "adapterVersion": 2, "sourceFormat": "daena-geojson"}
+            "provider": {"id": "daena-openlayers", "adapterVersion": unsupported_adapter, "sourceFormat": "daena-geojson"}
         });
         let capabilities =
             capabilities_for_descriptor(&descriptor, &serde_json::json!({"layers": []}));
@@ -1016,8 +1017,8 @@ mod tests {
             "schemaVersion": 1,
             "provider": {
                 "id": "daena-physical",
-                "adapterVersion": 2,
-                "sourceFormat": "physical-world-v2"
+                "adapterVersion": super::PHYSICAL_ADAPTER_VERSION,
+                "sourceFormat": super::PHYSICAL_SOURCE_FORMAT
             }
         });
         let supported = capabilities_for_descriptor(&physical, &serde_json::json!({"layers": []}));
@@ -1092,7 +1093,7 @@ mod tests {
                 "evolutionPreset": "mature",
                 "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                 "historicalForcing": {
-                    "version": 2,
+                    "version": daena_physical::history::HISTORICAL_DERIVATION_VERSION,
                     "components": [
                         { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
                         { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
@@ -1127,7 +1128,10 @@ mod tests {
         assert_eq!(store.content_generation().unwrap(), before);
         assert_eq!(snapshot.content_generation, before);
         assert_eq!(snapshot.identity, accepted.physical_identity);
-        assert_eq!(snapshot.forcing.version, 2);
+        assert_eq!(
+            snapshot.forcing.version,
+            daena_physical::history::HISTORICAL_DERIVATION_VERSION
+        );
         assert_eq!(snapshot.forcing.land_ice_amplitude_ppm, 24_000);
         store
             .update_entity(accepted.entity.id.clone(), Some("Renamed".into()), None)

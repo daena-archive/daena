@@ -10,7 +10,7 @@ name = "daena_atlas"
 path = "src/lib.rs"
 
 [dependencies]
-daena-physical = { path = "../daena-physical-spike" }
+daena-physical = { path = "../daena-physical" }
 png = "0.17.16"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"

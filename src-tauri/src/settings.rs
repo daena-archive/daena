@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 2;
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 const MAX_RECENT_PROJECTS: usize = 6;
 const DEFAULT_AI_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 const DEFAULT_AI_MODEL: &str = "";
@@ -556,7 +556,7 @@ mod tests {
         fs::write(
             directory.join("settings.json"),
             br#"{
-  "formatVersion": 2,
+  "formatVersion": 1,
   "ai": {
     "provider": {
       "id": "lm-studio",
@@ -605,7 +605,7 @@ mod tests {
         let path = directory.join("settings.json");
         fs::write(
             &path,
-            br#"{"formatVersion":2,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
+            br#"{"formatVersion":1,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
         )
         .unwrap();
         let store = SettingsStore::new(&directory);

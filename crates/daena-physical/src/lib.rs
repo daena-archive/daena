@@ -34,8 +34,7 @@ pub const PRODUCTION_MAX_WIDTH: u32 = 384;
 pub const PRODUCTION_MAX_HEIGHT: u32 = 192;
 pub const SUPPORTED_PREVIEW_MAX_WIDTH: u32 = 2048;
 pub const SUPPORTED_PREVIEW_MAX_HEIGHT: u32 = 1024;
-/// Canonical v2 source ceiling. This is a host/storage bound, not a layout
-/// reinterpretation of `physical-world-v2`.
+/// This is a host/storage bound, not a layout reinterpretation of `physical-world-v1`.
 pub const MAX_SOURCE_BYTES: usize = 128 * 1024 * 1024;
 /// Derived GeoJSON is disposable and is not stored in the v2 source.
 pub const MAX_DERIVED_GEOJSON_BYTES: usize = 256 * 1024 * 1024;
@@ -47,7 +46,7 @@ pub const CANCELLATION_LATENCY_BUDGET_MS: u128 = 100;
 pub const GENERATION_TIME_BUDGET_MS: u128 = 8_000;
 pub const WORKING_MEMORY_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 pub const GENERATOR_ID: &str = "daena-physical-world";
-pub const GENERATOR_VERSION: u32 = 13;
+pub const GENERATOR_VERSION: u32 = 1;
 
 pub const CODE_GENERATOR_INVALID_SETTINGS: &str = "physical.generator.invalid-settings";
 pub const CODE_GENERATOR_UNSUPPORTED_VERSION: &str = "physical.generator.unsupported-version";
@@ -1157,7 +1156,8 @@ mod tests {
         duplicate_header[0] = b'X';
         assert!(decode_source(&duplicate_header).is_err());
         let mut old_version = encoded.clone();
-        old_version[8..10].copy_from_slice(&1u16.to_le_bytes());
+        let unsupported = SOURCE_VERSION.wrapping_add(1);
+        old_version[8..10].copy_from_slice(&unsupported.to_le_bytes());
         assert!(decode_source(&old_version).is_err());
     }
 

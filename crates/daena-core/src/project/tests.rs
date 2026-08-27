@@ -253,7 +253,7 @@ fn physical_map_acceptance_is_atomic_and_request_idempotent() {
             "evolutionPreset": "mature",
             "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             "historicalForcing": {
-                "version": 2,
+                    "version": daena_physical::history::HISTORICAL_DERIVATION_VERSION,
                 "components": [
                     { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
                     { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },
@@ -735,7 +735,10 @@ fn fresh_runtime_starts_with_checkpoint_generation_metadata() {
         )
         .unwrap();
     assert_eq!(metadata.0, RUNTIME_SCHEMA_VERSION);
-    assert_eq!(metadata.1, 3);
+    assert_eq!(
+        metadata.1,
+        i64::from(crate::storage::PROJECT_FORMAT_VERSION)
+    );
     assert_eq!(metadata.2, 0);
     assert_eq!(metadata.3, 0);
     assert!(metadata.4.is_some());
@@ -919,11 +922,12 @@ fn runtime_asset_bytes_survive_an_interrupted_export() {
 fn previous_runtime_schema_is_reset_required() {
     let root = std::env::temp_dir().join(format!("daena-runtime-reset-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
+    let mismatched = RUNTIME_SCHEMA_VERSION.wrapping_add(1);
     store
         .connection
         .execute(
-            "UPDATE runtime_meta SET schema_version=1 WHERE key='runtime'",
-            [],
+            "UPDATE runtime_meta SET schema_version=?1 WHERE key='runtime'",
+            [mismatched],
         )
         .unwrap();
     drop(store);
@@ -2568,7 +2572,7 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-lore-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
     let overlay = serde_json::json!({
-        "version": 1,
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
         "disabledTemplates": ["concept"],
         "fieldScopeOverrides": [{ "fieldKey": "aliases", "entityTypes": ["person", "faction"] }],
         "templateOverrides": [{
@@ -2627,7 +2631,7 @@ fn timeline_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-timeline-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();
     let overlay = serde_json::json!({
-        "version": 1,
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
         "disabledFields": ["endsAt"],
         "customFields": [{
             "key": "importance",
@@ -3896,7 +3900,7 @@ fn plugin_backup_restores_schema_and_migration_history() {
         package_digest: String::new(),
     };
     store.apply_migration(&migration).unwrap();
-    std::fs::remove_dir_all(directory.join("entities/external-draft")).unwrap();
+    let _ = std::fs::remove_dir_all(directory.join("entities/external-draft"));
     store.restore_plugin_backup(&backup).unwrap();
     assert_eq!(store.get_module_version("daena.timeline").unwrap(), 0);
     store.apply_migration(&migration).unwrap();
@@ -3975,7 +3979,7 @@ fn directory_projects_create_portable_layout() {
     let manifest =
         crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
             .unwrap();
-    assert_eq!(manifest.format_version, 3);
+    assert_eq!(manifest.format_version, 1);
     assert_eq!(manifest.name, root.file_name().unwrap().to_string_lossy());
     assert_eq!(
         std::fs::read_to_string(root.join(".gitignore")).unwrap(),
@@ -4058,7 +4062,7 @@ fn project_setting_mutations_keep_the_portable_checkpoint_valid() {
     flush_and_validate(&store, &root, "module enabled setting");
 
     store
-        .set_module_schema_overlay("daena.lore".into(), Some(serde_json::json!({"version": 1})))
+        .set_module_schema_overlay("daena.lore".into(), Some(serde_json::json!({"version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION})))
         .unwrap();
     flush_and_validate(&store, &root, "schema overlay setting");
 
@@ -4425,7 +4429,7 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
             namespace: crate::maps::MAP_NAMESPACE.into(),
             key: "layers".into(),
             value: serde_json::json!({
-                "schemaVersion": 2,
+                "schemaVersion": 1,
                 "layers": [{
                     "id": layer_id,
                     "name": "Settlements",
@@ -4661,7 +4665,7 @@ fn map_layers_round_trip_and_reject_non_map_owners() {
         })
         .unwrap();
     let layers = serde_json::json!({
-        "schemaVersion": 2,
+        "schemaVersion": 1,
         "layers": [{
             "id": Uuid::new_v4(),
             "name": "Culture",
@@ -7102,7 +7106,7 @@ fn physical_detach_fixture(
             "evolutionPreset": "mature",
             "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             "historicalForcing": {
-                "version": 2,
+                    "version": daena_physical::history::HISTORICAL_DERIVATION_VERSION,
                 "components": [
                     { "amplitudeCentiC": 180, "periodYears": 12000, "phaseOffsetYears": 0 },
                     { "amplitudeCentiC": 90, "periodYears": 4100, "phaseOffsetYears": 200 },

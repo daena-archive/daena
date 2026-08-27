@@ -116,10 +116,10 @@ export type DaenaFeaturePropertiesV2 = {
     };
 };
 export type MapDescriptor = {
-    schemaVersion: 2;
+    schemaVersion: 1;
     provider: {
         id: typeof VECTOR_PROVIDER;
-        adapterVersion: 2;
+        adapterVersion: 1;
         sourceFormat: "daena-geojson";
     };
     sourceAssetId: string;
@@ -150,8 +150,8 @@ export type MapDescriptor = {
     schemaVersion: 1;
     provider: {
         id: typeof PHYSICAL_PROVIDER;
-        adapterVersion: 2;
-        sourceFormat: "physical-world-v2";
+        adapterVersion: 1;
+        sourceFormat: "physical-world-v1";
     };
     sourceAssetId: string;
     previewAssetId: null;
@@ -161,7 +161,7 @@ export type MapDescriptor = {
     };
     generation: {
         id: "daena-physical-world";
-        version: 5;
+        version: 1;
         seed: number;
         retryIndex: number;
         settings: {
@@ -233,7 +233,7 @@ export type MapLayerDefinition = {
     kind: "vector";
 };
 export interface MapLayersField {
-    schemaVersion: 1 | 2;
+    schemaVersion: 1;
     layers: readonly MapLayerDefinition[];
 }
 export type MapFocusResult = {

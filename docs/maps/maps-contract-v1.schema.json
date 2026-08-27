@@ -166,7 +166,7 @@
               "required": ["id", "adapterVersion", "sourceFormat"],
               "properties": {
                 "id": { "const": "daena-openlayers" },
-                "adapterVersion": { "const": 2 },
+                "adapterVersion": { "const": 1 },
                 "sourceFormat": { "const": "daena-geojson" }
               }
             },
@@ -176,8 +176,8 @@
               "required": ["id", "adapterVersion", "sourceFormat"],
               "properties": {
                 "id": { "const": "daena-physical" },
-                "adapterVersion": { "const": 2 },
-                "sourceFormat": { "const": "physical-world-v2" }
+                "adapterVersion": { "const": 1 },
+                "sourceFormat": { "const": "physical-world-v1" }
               }
             }
           ]

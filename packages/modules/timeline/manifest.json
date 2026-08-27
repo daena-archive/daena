@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "daena.timeline",
   "name": "Timeline",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",

@@ -10,12 +10,15 @@ pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const VECTOR_PROVIDER: &str = "daena-openlayers";
 pub const PHYSICAL_PROVIDER: &str = "daena-physical";
-pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v2";
-pub const PHYSICAL_ADAPTER_VERSION: u32 = 2;
+pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v1";
+pub const PHYSICAL_ADAPTER_VERSION: u32 = 1;
+pub const VECTOR_ADAPTER_VERSION: u32 = 1;
+pub const MAP_DESCRIPTOR_SCHEMA_VERSION: u32 = 1;
+pub const MAP_LAYERS_SCHEMA_VERSION: u32 = 1;
 pub const PHYSICAL_MIME: &str = "application/vnd.daena.physical-world";
 pub const PHYSICAL_FILENAME: &str = "world.pworld";
 pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
-pub const PHYSICAL_GENERATOR_VERSION: u32 = 13;
+pub const PHYSICAL_GENERATOR_VERSION: u32 = 1;
 pub const PHYSICAL_MAX_SOURCE_BYTES: usize = daena_physical::MAX_SOURCE_BYTES;
 pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
 pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
@@ -659,7 +662,7 @@ const PROVIDER_REGISTRY: &[ProviderSpec] = &[
     ProviderSpec {
         kind: ProviderKind::Vector,
         id: VECTOR_PROVIDER,
-        adapter_version: 2,
+        adapter_version: VECTOR_ADAPTER_VERSION,
         source_format: VECTOR_SOURCE_FORMAT,
         requires_source_asset: true,
         source_mime: Some(VECTOR_MIME),
@@ -974,11 +977,7 @@ pub fn validate_field(
         let descriptor: MapDescriptor = serde_json::from_value(value.clone())
             .map_err(|e| invalid(format!("invalid map descriptor: {e}")))?;
         let provider = provider_spec(&descriptor.provider)?;
-        let expected_schema = if provider.kind == ProviderKind::Vector {
-            2
-        } else {
-            1
-        };
+        let expected_schema = MAP_DESCRIPTOR_SCHEMA_VERSION;
         if descriptor.schema_version != expected_schema {
             return Err(invalid("unsupported map provider or descriptor version"));
         }
@@ -1220,10 +1219,12 @@ pub fn validate_field(
             .optional()?
             .flatten();
         let physical_map = map_provider.as_deref() == Some(PHYSICAL_PROVIDER);
-        // Vector and physical maps both use layers schemaVersion 2.
-        if object.get("schemaVersion").and_then(Value::as_i64) != Some(2) {
+        // Vector and physical maps both use layers schemaVersion 1.
+        if object.get("schemaVersion").and_then(Value::as_i64)
+            != Some(i64::from(MAP_LAYERS_SCHEMA_VERSION))
+        {
             return Err(invalid(
-                "layers.schemaVersion must be 2 for this map provider",
+                "layers.schemaVersion must be 1 for this map provider",
             ));
         }
         let physical_layers = if physical_map {

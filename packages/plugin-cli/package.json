@@ -1,13 +1,13 @@
 {
   "name": "@daena-archive/plugin-cli",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Validate, package, and author Daena Archive plugins",
   "license": "Apache-2.0",
   "type": "module",
   "bin": { "daena-plugin": "bin/daena-plugin.mjs" },
   "files": ["bin", "README.md"],
   "dependencies": {
-    "@daena-archive/plugin-sdk": "1.0.0",
+    "@daena-archive/plugin-sdk": "0.1.0",
     "ajv": "^8.20.0"
   }
 }

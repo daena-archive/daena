@@ -57,7 +57,7 @@ const feature = {
   geometry: { type: "Point", coordinates: [20, 30] },
 };
 const document = {
-  descriptor: { schemaVersion: 2 },
+  descriptor: { schemaVersion: 1 },
   layers: [layer],
   collection: { type: "FeatureCollection", features: [feature] },
 };

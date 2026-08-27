@@ -8,7 +8,7 @@ export type MapEditDraftPackage = {
   kind: "daena-map-edit-draft";
   mapEntityId: string;
   descriptor: unknown;
-  layers: { schemaVersion: 2; layers: MapDocument["layers"] };
+  layers: { schemaVersion: 1; layers: MapDocument["layers"] };
   geojson: string;
   linkMutations: unknown[];
 };

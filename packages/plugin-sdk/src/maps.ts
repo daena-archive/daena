@@ -125,8 +125,8 @@ export type DaenaFeaturePropertiesV2 = {
 
 export type MapDescriptor =
   | {
-      schemaVersion: 2;
-      provider: { id: typeof VECTOR_PROVIDER; adapterVersion: 2; sourceFormat: "daena-geojson" };
+      schemaVersion: 1;
+      provider: { id: typeof VECTOR_PROVIDER; adapterVersion: 1; sourceFormat: "daena-geojson" };
       sourceAssetId: string;
       previewAssetId: string | null;
       coordinateSpace: MapCoordinateSpace;
@@ -147,13 +147,13 @@ export type MapDescriptor =
     }
   | {
       schemaVersion: 1;
-      provider: { id: typeof PHYSICAL_PROVIDER; adapterVersion: 2; sourceFormat: "physical-world-v2" };
+      provider: { id: typeof PHYSICAL_PROVIDER; adapterVersion: 1; sourceFormat: "physical-world-v1" };
       sourceAssetId: string;
       previewAssetId: null;
       defaultView: { center: NormalizedPoint; zoom: number };
       generation: {
         id: "daena-physical-world";
-        version: 5;
+        version: 1;
         seed: number;
         retryIndex: number;
         settings: {
@@ -230,7 +230,7 @@ export type MapLayerDefinition =
     };
 
 export interface MapLayersField {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1;
   layers: readonly MapLayerDefinition[];
 }
 

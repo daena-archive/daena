@@ -56,8 +56,8 @@ assert.deepEqual(normalizedToAuthored(0.5, 0, DEFAULT_WORLD_SPACE), [0, 90]);
 assert.deepEqual(authoredToView([10, 20], DEFAULT_WORLD_SPACE), [10, 20]);
 
 const descriptor = {
-  schemaVersion: 2,
-  provider: { id: "daena-openlayers", adapterVersion: 2, sourceFormat: "daena-geojson" },
+  schemaVersion: 1,
+  provider: { id: "daena-openlayers", adapterVersion: 1, sourceFormat: "daena-geojson" },
   sourceAssetId: "11111111-1111-4111-8111-111111111111",
   previewAssetId: "22222222-2222-4222-8222-222222222222",
   coordinateSpace: imageSpace,

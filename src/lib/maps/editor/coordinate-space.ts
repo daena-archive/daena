@@ -23,7 +23,7 @@ export const PHYSICAL_COORDINATE_SPACE: MapCoordinateSpace = {
   wrapX: false,
 };
 
-export type OpenLayersMapDescriptor = Extract<MapDescriptor, { schemaVersion: 2 }>;
+export type OpenLayersMapDescriptor = Extract<MapDescriptor, { provider: { id: "daena-openlayers" } }>;
 
 export function extentOf(space: MapCoordinateSpace): Extent4 {
   return [space.extent[0], space.extent[1], space.extent[2], space.extent[3]];
@@ -172,7 +172,7 @@ export function isOpenLayersDescriptor(value: unknown): value is OpenLayersMapDe
   if (!value || typeof value !== "object") return false;
   const descriptor = value as { schemaVersion?: unknown; provider?: { id?: unknown }; coordinateSpace?: unknown };
   return (
-    descriptor.schemaVersion === 2 &&
+    descriptor.schemaVersion === 1 &&
     descriptor.provider?.id === "daena-openlayers" &&
     descriptor.coordinateSpace !== undefined &&
     typeof descriptor.coordinateSpace === "object"

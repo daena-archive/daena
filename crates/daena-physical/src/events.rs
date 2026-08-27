@@ -13,7 +13,7 @@ use super::{
     Grid,
 };
 
-pub const EVENT_MATERIALIZATION_VERSION: u16 = 2;
+pub const EVENT_MATERIALIZATION_VERSION: u16 = 1;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
 pub const MAX_EVENTS: u32 = 128;
 const MAX_EXPECTED_EVENTS: f64 = 1_024.0;

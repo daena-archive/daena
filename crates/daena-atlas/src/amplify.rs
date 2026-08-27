@@ -1593,13 +1593,9 @@ mod tests {
     #[test]
     fn experimental_domain_key_is_isolated_from_version_one() {
         let v1 = domain_key(b"identity-fixture", 1, 0, HIERARCHICAL_RELIEF_DOMAIN);
-        let v2 = domain_key(
-            b"identity-fixture",
-            ATLAS_DETAIL_ALGORITHM_VERSION,
-            0,
-            HIERARCHICAL_RELIEF_DOMAIN,
-        );
-        assert_ne!(v1, v2);
+        let next = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
+        let v_next = domain_key(b"identity-fixture", next, 0, HIERARCHICAL_RELIEF_DOMAIN);
+        assert_ne!(v1, v_next);
     }
 
     #[test]
@@ -1878,13 +1874,14 @@ mod tests {
             );
         }
         let _ = (sea, sdf, relief.0.ocean_deep, antique.0.ocean_deep);
+        let unsupported_version = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
         let rejected = AtlasRenderRequest {
-            algorithm_version: 1,
+            algorithm_version: unsupported_version,
             ..AtlasRenderRequest::spike_png(64, 32).unwrap()
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 6);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 1);
     }
 
     #[test]

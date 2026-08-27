@@ -41,11 +41,7 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
 fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
     match algorithm_version {
         1 => b"daena-atlas-detail-v1\0",
-        2 => b"daena-atlas-detail-v2\0",
-        3 => b"daena-atlas-detail-v3\0",
-        4 => b"daena-atlas-detail-v4\0",
-        5 => b"daena-atlas-detail-v5\0",
-        _ => b"daena-atlas-detail-v6\0",
+        _ => b"daena-atlas-detail-v1\0",
     }
 }
 

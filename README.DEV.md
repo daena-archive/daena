@@ -98,7 +98,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targe
 The standalone `daena-physical` crate can be checked with:
 
 ```bash
-cargo test --manifest-path crates/daena-physical-spike/Cargo.toml --locked --offline
+cargo test --manifest-path crates/daena-physical/Cargo.toml --locked --offline
 ```
 
 ## Plugin Development

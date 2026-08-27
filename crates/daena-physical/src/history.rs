@@ -14,7 +14,7 @@ use super::{
     PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink, SeedDomain,
 };
 
-pub const HISTORICAL_DERIVATION_VERSION: u16 = 2;
+pub const HISTORICAL_DERIVATION_VERSION: u16 = 1;
 pub const FORCING_COMPONENT_COUNT: usize = 3;
 pub const MAX_HISTORICAL_OFFSET_YEARS: i64 = 10_000_000;
 const MIN_PERIOD_YEARS: i64 = 4;

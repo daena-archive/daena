@@ -812,11 +812,11 @@ export function applyCommand(document: MapDocument, command: MapCommand): MapDoc
 }
 
 export function layersFieldValue(layers: readonly MapLayerDefinition[]): {
-  schemaVersion: 2;
+  schemaVersion: 1;
   layers: MapLayerDefinition[];
 } {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     layers: cloneLayers(layers),
   };
 }

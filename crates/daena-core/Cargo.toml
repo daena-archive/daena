@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 daena-plugin-api = { path = "../daena-plugin-api" }
-daena-physical = { path = "../daena-physical-spike" }
+daena-physical = { path = "../daena-physical" }
 daena-atlas = { path = "../daena-atlas" }
 rusqlite = { version = "0.32", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }

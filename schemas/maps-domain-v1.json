@@ -26,8 +26,8 @@
         "schemaVersion": { "const": 1 },
         "provider": {
           "oneOf": [
-            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-openlayers" }, "adapterVersion": { "const": 2 }, "sourceFormat": { "const": "daena-geojson" } } },
-            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-physical" }, "adapterVersion": { "const": 2 }, "sourceFormat": { "const": "physical-world-v2" } } }
+            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-openlayers" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "daena-geojson" } } },
+            { "type": "object", "additionalProperties": false, "required": ["id", "adapterVersion", "sourceFormat"], "properties": { "id": { "const": "daena-physical" }, "adapterVersion": { "const": 1 }, "sourceFormat": { "const": "physical-world-v1" } } }
           ]
         },
         "sourceAssetId": { "anyOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },

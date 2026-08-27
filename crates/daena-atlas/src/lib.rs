@@ -24,10 +24,10 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 6;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 1;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
-pub const ATLAS_RENDERER_VERSION: u32 = 11;
+pub const ATLAS_RENDERER_VERSION: u32 = 1;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
 pub const SPIKE_STYLE_ID: &str = "daena-atlas-relief-spike";
 
@@ -390,7 +390,7 @@ pub fn prepare_from_source(
         &historical.hydrology,
     )?;
     let residual_key = cache::cache_key(&[
-        b"atlas-cache-residual-v6",
+        b"atlas-cache-residual-v1",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -492,7 +492,7 @@ pub fn prepare_from_source(
         )?
     };
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v6",
+        b"atlas-cache-drainage-v1",
         identity,
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
@@ -1097,7 +1097,7 @@ mod tests {
             [0, 0, 1, 1]
         );
         assert_eq!(pdf.rgba, region_render.rgba);
-        assert_eq!(pdf.provenance.renderer_version, 11);
+        assert_eq!(pdf.provenance.renderer_version, ATLAS_RENDERER_VERSION);
         assert!(region_render.tributary_count > 0 || globe_render.tributary_count > 0);
     }
 

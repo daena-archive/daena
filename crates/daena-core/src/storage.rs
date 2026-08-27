@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// Portable checkpoint contract for the database-authoritative runtime.
 /// This is an intentional alpha hard cut; older projects must be reset and
 /// re-imported rather than silently interpreted by this runtime.
-pub const PROJECT_FORMAT_VERSION: u32 = 3;
+pub const PROJECT_FORMAT_VERSION: u32 = 1;
 pub const CORE_PLUGIN_ID: &str = "daena.core";
 pub const CHECKPOINT_MANIFEST_FILE: &str = "checkpoint.json";
 

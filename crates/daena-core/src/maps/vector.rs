@@ -69,16 +69,14 @@ pub enum SourceProfile {
     Committed,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum VectorSpace {
+    #[default]
     Geographic,
-    Planar { extent: [f64; 4], is_image: bool },
-}
-
-impl Default for VectorSpace {
-    fn default() -> Self {
-        Self::Geographic
-    }
+    Planar {
+        extent: [f64; 4],
+        is_image: bool,
+    },
 }
 
 impl VectorSpace {
@@ -495,7 +493,7 @@ fn segments_intersect(a: Micro, b: Micro, c: Micro, d: Micro) -> bool {
 }
 
 fn crosses_antimeridian(a: Micro, b: Micro) -> bool {
-    (i64::from(a.0) - i64::from(b.0)).abs() > i64::from(ANTIMERIDIAN)
+    (a.0 - b.0).abs() > ANTIMERIDIAN
 }
 
 fn validate_line(line: &[Micro], path: &str, space: &VectorSpace) -> Result<(), CoreError> {
@@ -554,7 +552,7 @@ fn canonical_ring(
         }
         let min_lon = open.iter().map(|coord| coord.0).min().unwrap();
         let max_lon = open.iter().map(|coord| coord.0).max().unwrap();
-        if i64::from(max_lon) - i64::from(min_lon) > i64::from(ANTIMERIDIAN) {
+        if max_lon - min_lon > ANTIMERIDIAN {
             return Err(fail(
                 CODE_ANTIMERIDIAN,
                 path,

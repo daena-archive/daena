@@ -10,8 +10,8 @@ const physicalDescriptor = {
   schemaVersion: 1,
   provider: {
     id: "daena-physical",
-    adapterVersion: 2,
-    sourceFormat: "physical-world-v2",
+    adapterVersion: 1,
+    sourceFormat: "physical-world-v1",
   },
   sourceAssetId: "caa3c40c-480a-4d85-952f-b2dfdab9d289",
   authoredSourceAssetId: "11468005-3cea-4c47-a072-59ed65bf5017",

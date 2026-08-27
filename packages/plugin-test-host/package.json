@@ -1,12 +1,12 @@
 {
   "name": "@daena-archive/plugin-test-host",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "In-memory broker and conformance helpers for Daena Archive plugins",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist", "src", "README.md"],
-  "dependencies": { "@daena-archive/plugin-sdk": "1.0.0" },
+  "dependencies": { "@daena-archive/plugin-sdk": "0.1.0" },
   "scripts": { "build": "tsc -p tsconfig.json", "test": "node ../../scripts/plugin-conformance.mjs" }
 }

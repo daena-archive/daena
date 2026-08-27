@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const temp = mkdtempSync(join(tmpdir(), "daena-physical-spike-"));
+const temp = mkdtempSync(join(tmpdir(), "daena-physical-"));
 const sourcePath = join(temp, "world.pworld");
 const geojsonPath = join(temp, "coastline.geojson");
 const maxSourcePath = join(temp, "world-max.pworld");
@@ -20,13 +20,13 @@ function run(args) {
 }
 
 try {
-  run(["test", "--manifest-path", "crates/daena-physical-spike/Cargo.toml", "--locked", "--offline"]);
+  run(["test", "--manifest-path", "crates/daena-physical/Cargo.toml", "--locked", "--offline"]);
   const summary = JSON.parse(
     run([
       "run",
       "--quiet",
       "--manifest-path",
-      "crates/daena-physical-spike/Cargo.toml",
+      "crates/daena-physical/Cargo.toml",
       "--locked",
       "--offline",
       "--",
@@ -70,7 +70,7 @@ try {
       "--release",
       "--quiet",
       "--manifest-path",
-      "crates/daena-physical-spike/Cargo.toml",
+      "crates/daena-physical/Cargo.toml",
       "--locked",
       "--offline",
       "--",

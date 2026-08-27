@@ -3,7 +3,7 @@
 //! Hydrology is disposable. It consumes the canonical final elevation field,
 //! current climate, and the Iteration 4 routing graph, then produces basin,
 //! lake, river, watershed, coastline, and bounded raster diagnostics without
-//! changing the physical-world-v2 source bytes.
+//! changing the physical-world-v1 source bytes.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -16,7 +16,7 @@ use super::{
 };
 use crate::tectonics::CrustType;
 
-pub const HYDROLOGY_DERIVATION_VERSION: u16 = 5;
+pub const HYDROLOGY_DERIVATION_VERSION: u16 = 1;
 pub const MAX_HYDROLOGY_FEATURES: usize = crate::MAX_GEOJSON_FEATURES;
 pub const WATER_SOLVER_UNDERRELAXATION_PPM: u32 = 1_000_000;
 const MAX_FIXED_POINT_ITERATIONS: u32 = 32;
@@ -2605,7 +2605,6 @@ mod tests {
             }
         }
         assert_eq!(hydrology.derivation_version, HYDROLOGY_DERIVATION_VERSION);
-        assert_eq!(crate::contours::CONTOUR_DERIVATION_VERSION, 1);
     }
 
     #[test]

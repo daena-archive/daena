@@ -26,7 +26,7 @@ fn manifest(version: &str) -> String {
 fn manifest_with_svg_icon(version: &str) -> String {
     manifest(version).replace(
         r#""schemas":[]"#,
-        r#""schemas":[{"namespace":"icons","entityTypes":[{"id":"note","name":"Note","icon":{"kind":"plugin-svg","path":"icons/note.svg"}}],"fields":[]}]"#,
+        r#""schemas":[{"namespace":"icons","entityTypes":[{"id":"note","name":"Note","icon":{"kind":"plugin-svg","path":"icons/note.svg"},"iconColor":{"kind":"preset","id":"slate"}}],"fields":[]}]"#,
     ).replace(r#""namespaces":[]"#, r#""namespaces":["icons"]"#)
 }
 

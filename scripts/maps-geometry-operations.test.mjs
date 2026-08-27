@@ -60,8 +60,8 @@ const line = {
 
 const document = createMapDocument({
   descriptor: {
-    schemaVersion: 2,
-    provider: { id: "daena-openlayers", adapterVersion: 2, sourceFormat: "daena-geojson" },
+    schemaVersion: 1,
+    provider: { id: "daena-openlayers", adapterVersion: 1, sourceFormat: "daena-geojson" },
     sourceAssetId: "22222222-2222-4222-8222-222222222222",
     previewAssetId: null,
     coordinateSpace: { kind: "image", extent: [0, 0, 100, 100], origin: "top-left", units: "pixels" },

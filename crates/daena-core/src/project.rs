@@ -1545,8 +1545,8 @@ fn ensure_runtime_asset(
 }
 
 const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 7;
-const EXPORTER_CONTRACT_VERSION: &str = "2";
+const RUNTIME_SCHEMA_VERSION: i64 = 1;
+const EXPORTER_CONTRACT_VERSION: &str = "1";
 const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
 const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
 
@@ -3190,6 +3190,44 @@ impl ProjectStore {
             }
         }
         let applied = transaction.commit(None::<&serde_json::Value>)?;
+        // Incremental export stages file removals individually, which can leave
+        // an empty `entities/<id>` directory behind. Clean up any entity
+        // directories that are now stale (not in the current snapshot) and empty,
+        // so `purge` is observed as a full folder removal.
+        let entities_root = root.join("entities");
+        if entities_root.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&entities_root) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if crate::storage::is_ignored_metadata_entry(&name) {
+                        continue;
+                    }
+                    if snapshot.entities.iter().any(|e| e.id == name) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if path.is_dir() {
+                        // Only remove if the directory is empty or only contains
+                        // ignored metadata files.
+                        let is_empty = std::fs::read_dir(&path)
+                            .map(|mut iter| {
+                                iter.all(|e| {
+                                    e.map(|e| {
+                                        crate::storage::is_ignored_metadata_entry(
+                                            &e.file_name().to_string_lossy(),
+                                        )
+                                    })
+                                    .unwrap_or(true)
+                                })
+                            })
+                            .unwrap_or(true);
+                        if is_empty {
+                            let _ = std::fs::remove_dir_all(&path);
+                        }
+                    }
+                }
+            }
+        }
         self.install_checkpoint_manifest_from_verified_sources(
             root,
             target_generation,
@@ -5883,10 +5921,10 @@ impl ProjectStore {
         );
         let preview_path = format!("assets/maps/{}-{filename}", Uuid::new_v4());
         let descriptor = serde_json::json!({
-            "schemaVersion": 2,
+            "schemaVersion": crate::maps::MAP_DESCRIPTOR_SCHEMA_VERSION,
             "provider": {
                 "id": crate::maps::VECTOR_PROVIDER,
-                "adapterVersion": 2,
+                "adapterVersion": crate::maps::VECTOR_ADAPTER_VERSION,
                 "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
             },
             "sourceAssetId": source_id,
@@ -5910,7 +5948,7 @@ impl ProjectStore {
             "defaultView": {"center": [f64::from(source.width) / 2.0, f64::from(source.height) / 2.0], "zoom": 1, "rotation": 0},
             "settings": {"snapEnabled": true, "grid": null}
         });
-        let layers = serde_json::json!({"schemaVersion": 2, "layers": []});
+        let layers = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": []});
         let entity = Entity {
             id: entity_id.clone(),
             name: name.trim().into(),
@@ -6203,10 +6241,10 @@ impl ProjectStore {
         let now = chrono_like_now();
         let relative_path = format!("assets/maps/{}-map.geojson", Uuid::new_v4());
         let descriptor = serde_json::json!({
-            "schemaVersion": 2,
+            "schemaVersion": crate::maps::MAP_DESCRIPTOR_SCHEMA_VERSION,
             "provider": {
                 "id": crate::maps::VECTOR_PROVIDER,
-                "adapterVersion": 2,
+                "adapterVersion": crate::maps::VECTOR_ADAPTER_VERSION,
                 "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
             },
             "sourceAssetId": asset_id,
@@ -6217,7 +6255,7 @@ impl ProjectStore {
             "settings": {"snapEnabled": true, "grid": null},
             "generation": generation
         });
-        let layers = serde_json::json!({"schemaVersion": 2, "layers": []});
+        let layers = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": []});
         let entity = Entity {
             id: entity_id.clone(),
             name: name.trim().into(),
@@ -6338,10 +6376,10 @@ impl ProjectStore {
         let now = chrono_like_now();
         let relative_path = format!("assets/maps/{}-map.geojson", Uuid::new_v4());
         let descriptor = serde_json::json!({
-            "schemaVersion": 2,
+            "schemaVersion": crate::maps::MAP_DESCRIPTOR_SCHEMA_VERSION,
             "provider": {
                 "id": crate::maps::VECTOR_PROVIDER,
-                "adapterVersion": 2,
+                "adapterVersion": crate::maps::VECTOR_ADAPTER_VERSION,
                 "sourceFormat": crate::maps::VECTOR_SOURCE_FORMAT
             },
             "sourceAssetId": asset_id,
@@ -6351,7 +6389,7 @@ impl ProjectStore {
             "defaultView": {"center": [0, 0], "zoom": 1, "rotation": 0},
             "settings": {"snapEnabled": true, "grid": null}
         });
-        let layers = serde_json::json!({"schemaVersion": 2, "layers": []});
+        let layers = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": []});
         let entity = Entity {
             id: entity_id.clone(),
             name: name.trim().into(),
@@ -6490,7 +6528,7 @@ impl ProjectStore {
             )?;
         }
         let descriptor = serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": crate::maps::MAP_DESCRIPTOR_SCHEMA_VERSION,
             "provider": {
                 "id": crate::maps::PHYSICAL_PROVIDER,
                 "adapterVersion": crate::maps::PHYSICAL_ADAPTER_VERSION,
@@ -7060,7 +7098,7 @@ impl ProjectStore {
             "locked": false,
             "blendMode": "normal"
         }));
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": layers});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": layers});
         let asset = Asset {
             id: asset_id.clone(),
             entity_id: map_entity_id.clone(),
@@ -7189,7 +7227,7 @@ impl ProjectStore {
             "selector": selector.unwrap_or_else(|| serde_json::json!({})),
             "kind": "semantic"
         }));
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": layers});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": layers});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
             layer_id: layer_id.clone(),
@@ -7309,7 +7347,7 @@ impl ProjectStore {
             "style": style,
             "kind": "vector"
         }));
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": layers});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": layers});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
             layer_id: layer_id.clone(),
@@ -7449,7 +7487,7 @@ impl ProjectStore {
                 layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
             })
             .collect();
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": remaining});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": remaining});
         let known = crate::maps::vector::layer_ids_from_layers_field(&layers_value);
         let vector_space =
             crate::maps::vector::VectorSpace::from_descriptor_value(&descriptor.value);
@@ -7616,7 +7654,7 @@ impl ProjectStore {
                 layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
             })
             .collect::<Vec<_>>();
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": remaining});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": remaining});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
             layer_id: layer_id.clone(),
@@ -7715,7 +7753,7 @@ impl ProjectStore {
                 layer.get("id").and_then(serde_json::Value::as_str) != Some(layer_id.as_str())
             })
             .collect::<Vec<_>>();
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": remaining});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": remaining});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
             layer_id: layer_id.clone(),
@@ -7880,7 +7918,7 @@ impl ProjectStore {
                 object.insert("selector".into(), selector);
             }
         }
-        let layers_value = serde_json::json!({"schemaVersion": 2, "layers": layers});
+        let layers_value = serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": layers});
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&RasterLayerChange {
             layer_id: layer_id.clone(),
@@ -7969,7 +8007,7 @@ impl ProjectStore {
             entity_id: map_entity_id.to_owned(),
             namespace: crate::maps::MAP_NAMESPACE.into(),
             key: "layers".into(),
-            value: serde_json::json!({"schemaVersion": 2, "layers": []}),
+            value: serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": []}),
             revision: String::new(),
         };
         let revision = self.revision_for_field(&field)?;
@@ -12414,7 +12452,7 @@ fn write_vector_feature_projection(
         .map(|raw| serde_json::from_str(&raw))
         .transpose()
         .map_err(|error| CoreError::Serialization(error.to_string()))?
-        .unwrap_or_else(|| serde_json::json!({"schemaVersion": 2, "layers": []}));
+        .unwrap_or_else(|| serde_json::json!({"schemaVersion": crate::maps::MAP_LAYERS_SCHEMA_VERSION, "layers": []}));
     let known = crate::maps::vector::layer_ids_from_layers_field(&layers);
     // Resolve vector space from the map descriptor for correct bounds normalization
     let descriptor_value: Option<serde_json::Value> = connection

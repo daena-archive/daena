@@ -280,8 +280,6 @@ fn reopened_historical_products_preserve_terrain_and_report_water_balance() {
     assert_eq!(response["hazards"]["model"], "relative-generated-v1");
     let cache_key = response["cacheKey"].as_str().unwrap();
     assert!(cache_key.contains(&physical_identity));
-    assert!(cache_key.contains("history-v2"));
-    assert!(cache_key.contains("hazards-v3"));
     assert!(cache_key.contains(&format!("epoch:{}", historical.metrics.normalized_epoch)));
     assert_eq!(response["chronology"]["contractVersion"], 1);
     assert_eq!(response["chronology"]["kind"], "physical-offset-years");

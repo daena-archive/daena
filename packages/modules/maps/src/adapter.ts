@@ -57,7 +57,7 @@ export class UnavailableProviderAdapter implements MapProviderAdapter {
   async capabilities(): Promise<ProviderCapabilities> {
     return {
       provider: this.provider,
-      adapterVersion: 2,
+      adapterVersion: 1,
       featureKinds: ["geojson-feature"],
       supportsEditing: false,
     };
@@ -72,8 +72,8 @@ export class UnavailableProviderAdapter implements MapProviderAdapter {
   async isDirty(): Promise<boolean> {
     return false;
   }
-  async captureAnchor() {
-    this.fail();
+  async captureAnchor(): Promise<import("../../../plugin-sdk/src/maps").MapAnchor | null> {
+    return this.fail();
   }
   async startPick() {
     this.fail();

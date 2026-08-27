@@ -1,6 +1,6 @@
 {
   "name": "@daena-archive/plugin-sdk",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Framework-neutral Daena Archive plugin SDK",
   "license": "Apache-2.0",
   "private": false,

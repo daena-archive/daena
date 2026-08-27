@@ -4,7 +4,7 @@ use std::fs;
 #[test]
 fn project_manifest_is_byte_stable_and_lexicographically_ordered() {
     let manifest = ProjectManifest {
-        format_version: 3,
+        format_version: 1,
         id: "6f21a771-eec6-4833-9a56-89b5cfc8f126".into(),
         name: "Eldermere".into(),
         created_at: "2026-08-05T10:30:00Z".into(),
@@ -16,7 +16,7 @@ fn project_manifest_is_byte_stable_and_lexicographically_ordered() {
         br#"{
   "aiEnabled": false,
   "createdAt": "2026-08-05T10:30:00Z",
-  "formatVersion": 3,
+  "formatVersion": 1,
   "id": "6f21a771-eec6-4833-9a56-89b5cfc8f126",
   "name": "Eldermere"
 }
@@ -27,8 +27,8 @@ fn project_manifest_is_byte_stable_and_lexicographically_ordered() {
 #[test]
 fn manifest_rejects_unknown_fields_and_duplicate_keys() {
     let path = Path::new("project.json");
-    assert!(parse_json::<ProjectManifest>(path, br#"{"formatVersion":3,"id":"6f21a771-eec6-4833-9a56-89b5cfc8f126","name":"E","createdAt":"now","extra":true}"#).is_err());
-    assert!(parse_json::<ProjectManifest>(path, br#"{"formatVersion":3,"formatVersion":3,"id":"6f21a771-eec6-4833-9a56-89b5cfc8f126","name":"E","createdAt":"now"}"#).is_err());
+    assert!(parse_json::<ProjectManifest>(path, br#"{"formatVersion":1,"id":"6f21a771-eec6-4833-9a56-89b5cfc8f126","name":"E","createdAt":"now","extra":true}"#).is_err());
+    assert!(parse_json::<ProjectManifest>(path, br#"{"formatVersion":1,"formatVersion":1,"id":"6f21a771-eec6-4833-9a56-89b5cfc8f126","name":"E","createdAt":"now"}"#).is_err());
 }
 
 #[test]

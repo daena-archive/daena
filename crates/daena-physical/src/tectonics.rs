@@ -17,12 +17,12 @@ const MIN_PLATES: u16 = 4;
 const MAX_PLATES: u16 = 64;
 const MAX_VOLCANIC_CENTERS: usize = 256;
 const MAX_BOUNDARIES: usize = 2_000_000;
-pub const TECTONIC_SOURCE_VERSION: u16 = 2;
+pub const TECTONIC_SOURCE_VERSION: u16 = 1;
 pub const TECTONIC_SOURCE_HEADER_BYTES: usize = 68;
 pub const TECTONIC_MAX_SOURCE_BYTES: usize = crate::MAX_SOURCE_BYTES;
-/// Versioned v2 physical classification parameter. Keep this value stable
+/// Versioned v1 physical classification parameter. Keep this value stable
 /// unless the generator version changes; it is intentionally not serialized
-/// because the v2 header and payload are locked.
+/// because the v1 header and payload are locked.
 pub const RELATIVE_MOTION_THRESHOLD_NANORADIANS_PER_YEAR: f64 = 25_000.0;
 const CRATON_WARP_AMPLITUDE: f64 = 0.42;
 const CRATON_ANISOTROPY: f64 = 0.34;
@@ -2787,7 +2787,7 @@ fn source_payload_bytes(
 }
 
 /// Encode the tectonic result as the active explicitly versioned
-/// `physical-world-v2` source.
+/// `physical-world-v1` source.
 pub fn encode_source_v2(world: &TectonicWorld) -> Result<Vec<u8>, String> {
     world
         .validate()
@@ -2860,7 +2860,7 @@ pub fn encode_source_v2(world: &TectonicWorld) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-/// Decode a strict `physical-world-v2` source. Older source versions are not
+/// Decode a strict `physical-world-v1` source. Older source versions are not
 /// accepted by the hard-cut provider contract.
 pub fn decode_source_v2(bytes: &[u8]) -> Result<TectonicWorld, String> {
     if bytes.len() < TECTONIC_SOURCE_HEADER_BYTES {

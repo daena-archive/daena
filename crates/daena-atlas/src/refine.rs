@@ -1248,8 +1248,14 @@ mod tests {
             0,
             MULTI_SCALE_EROSION_DOMAIN,
         );
-        let v1 = domain_key(b"identity-fixture", 1, 0, REFINED_DRAINAGE_DOMAIN);
-        assert_ne!(drainage, v1);
+        let next_version = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
+        let other = domain_key(
+            b"identity-fixture",
+            next_version,
+            0,
+            REFINED_DRAINAGE_DOMAIN,
+        );
+        assert_ne!(drainage, other);
         assert_ne!(drainage, erosion);
     }
 
@@ -1274,7 +1280,7 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 6);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 1);
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);
@@ -1301,7 +1307,10 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for tributary in &refined.tributaries {
-            assert!(tributary.id.starts_with("atlas:tributary:v6:"));
+            assert!(tributary.id.starts_with(&format!(
+                "atlas:tributary:v{}:",
+                ATLAS_DERIVED_DRAINAGE_VERSION
+            )));
             assert!(tributary.path.len() >= 3);
             for point in &tributary.path {
                 let cell = nearest_cell(hydrology.grid, point[0], point[1]);
@@ -1314,7 +1323,10 @@ mod tests {
         assert!(!refined.tributaries.is_empty());
         assert!(!refined.valleys.is_empty());
         for feature in &refined.deposition {
-            assert!(feature.id.starts_with("atlas:deposition:v6:"));
+            assert!(feature.id.starts_with(&format!(
+                "atlas:deposition:v{}:",
+                ATLAS_DERIVED_DRAINAGE_VERSION
+            )));
         }
         let river_ids = hydrology
             .rivers
@@ -1327,7 +1339,10 @@ mod tests {
             );
         }
         for valley in &refined.valleys {
-            assert!(valley.id.starts_with("atlas:valley:v6:"));
+            assert!(valley.id.starts_with(&format!(
+                "atlas:valley:v{}:",
+                ATLAS_DERIVED_DRAINAGE_VERSION
+            )));
             let cell = nearest_cell(hydrology.grid, valley.lon_micro, valley.lat_micro);
             if hydrology.watershed_id[cell] != OCEAN {
                 assert_eq!(hydrology.watershed_id[cell], valley.watershed_id);
@@ -1496,8 +1511,9 @@ mod tests {
                 sample_field_mm(lattice, &rebuilt.worked_mm, 12_345_678, -8_000_000)
             )
         );
+        let unsupported = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
         let rejected = AtlasRenderRequest {
-            algorithm_version: 1,
+            algorithm_version: unsupported,
             ..AtlasRenderRequest::spike_png(64, 32).unwrap()
         }
         .normalize();

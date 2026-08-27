@@ -1,4 +1,4 @@
-//! Atlas-only derived tributaries from refined drainage version 2.
+//! Atlas-only derived tributaries from refined drainage.
 
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION};
 
@@ -154,7 +154,7 @@ mod tests {
     use crate::NoopProgress;
 
     #[test]
-    fn tributaries_use_version_two_ids_and_round_trip() {
+    fn tributaries_use_versioned_ids_and_round_trip() {
         let world = golden_world();
         let identity = spike_identity_from_source(&world.source);
         let scene = prepare_from_source(
@@ -167,7 +167,10 @@ mod tests {
         )
         .unwrap();
         for tributary in &scene.drainage.tributaries {
-            assert!(tributary.id.starts_with("atlas:tributary:v6:"));
+            assert!(tributary.id.starts_with(&format!(
+                "atlas:tributary:v{}:",
+                ATLAS_DERIVED_DRAINAGE_VERSION
+            )));
             assert!(tributary.path.len() >= 2);
             for point in &tributary.path {
                 let cell = nearest_cell(scene.hydrology.grid, point[0], point[1]);

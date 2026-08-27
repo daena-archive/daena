@@ -67,7 +67,7 @@ try {
       "run",
       "--quiet",
       "--manifest-path",
-      "crates/daena-physical-spike/Cargo.toml",
+      "crates/daena-physical/Cargo.toml",
       "--locked",
       "--offline",
       "--",

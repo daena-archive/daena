@@ -312,7 +312,7 @@ const selectedFeatures = $derived(
   commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
 );
 const detachLayer = $derived(
-  detachLayerId ? layers.find((layer) => layer.id === detachLayerId && isVectorLayer(layer)) ?? null : null,
+  detachLayerId ? (layers.find((layer) => layer.id === detachLayerId && isVectorLayer(layer)) ?? null) : null,
 );
 const viewMaxZoom = $derived(maxZoomForCoordinateSpace(coordinateSpace));
 const brandIcon = $derived((physicalMap ? Mountain : MapIcon) as Component);
@@ -1603,13 +1603,15 @@ async function confirmDetach(scope: PhysicalDetachScope) {
     detachError = plan.message;
     return;
   }
-  dispatchCommand(detachPhysicalFeaturesCommand({
-    sourceLayerId: plan.sourceLayerId,
-    sourceLayerName: plan.sourceLayerName,
-    sourceWasVisible: detachLayer.defaultVisible,
-    targetLayer: plan.targetLayer,
-    copies: plan.copies,
-  }));
+  dispatchCommand(
+    detachPhysicalFeaturesCommand({
+      sourceLayerId: plan.sourceLayerId,
+      sourceLayerName: plan.sourceLayerName,
+      sourceWasVisible: detachLayer.defaultVisible,
+      targetLayer: plan.targetLayer,
+      copies: plan.copies,
+    }),
+  );
   detachLayerId = null;
   activeLayerId = plan.targetLayer.id;
   tool = "select";
@@ -1900,9 +1902,13 @@ onMount(() => {
   let unlistenHistoricalProgress: (() => void) | null = null;
   const handleLayerMenuOutside = (event: MouseEvent) => {
     const target = event.target as HTMLElement | null;
-    if (!target?.closest('.layer-card') && !target?.closest('.raster-card')) { openMenuLayerId = null; openCustomizeLayerId = null; openRasterMenuId = null; }
+    if (!target?.closest(".layer-card") && !target?.closest(".raster-card")) {
+      openMenuLayerId = null;
+      openCustomizeLayerId = null;
+      openRasterMenuId = null;
+    }
   };
-  window.addEventListener('click', handleLayerMenuOutside);
+  window.addEventListener("click", handleLayerMenuOutside);
   registerNativeVectorSession({ save, isDirty, teardown: () => editor?.dispose() });
   window.addEventListener("keydown", onKey);
   void listen<PhysicalHistoricalProgress>(PHYSICAL_HISTORICAL_PROGRESS_EVENT, (event) => {
@@ -1930,7 +1936,7 @@ onMount(() => {
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls.length = 0;
     rasterAssets = new Map();
-    window.removeEventListener('click', handleLayerMenuOutside);
+    window.removeEventListener("click", handleLayerMenuOutside);
     registerNativeVectorSession(null);
   };
 });
@@ -1950,7 +1956,9 @@ onMount(() => {
       subtitle={studioOpen && studioStage
         ? studioStage
         : physicalMap
-          ? (dirty ? `Unsaved authored changes · ${unitsLabel}` : "Generated world map")
+          ? dirty
+            ? `Unsaved authored changes · ${unitsLabel}`
+            : "Generated world map"
           : dirty
             ? `Unsaved changes · ${unitsLabel}`
             : unitsLabel}
@@ -2179,10 +2187,13 @@ onMount(() => {
         selectedFeatureCount={detachSelected.length}
         totalSourceLayerFeatureCount={detachAll.length}
         initialScope={detachSelected.length > 0 && detachSelected.length < detachAll.length ? "selected" : "layer"}
-        busy={busy}
+        {busy}
         error={detachError}
         onconfirm={(scope) => void confirmDetach(scope)}
-        oncancel={() => { detachLayerId = null; detachError = ""; }} />
+        oncancel={() => {
+          detachLayerId = null;
+          detachError = "";
+        }} />
     {/if}
     {#if atlasOpen && mapId}
       <AtlasRenderPanel
@@ -2194,12 +2205,13 @@ onMount(() => {
     {/if}
     <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
-                <aside class="map-layers-panel" aria-label="Map layers">
+        <aside class="map-layers-panel" aria-label="Map layers">
           <div class="map-panel-head">
             <div class="map-panel-head-copy">
               <span class="panel-kicker">Map layers</span>
               <strong>{listedLayers.length} layers · {draft.features.length} features</strong>
-              <small class="map-panel-subtitle">{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} rasters` : ""}</small>
+              <small class="map-panel-subtitle"
+                >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} rasters` : ""}</small>
             </div>
             <button
               type="button"
@@ -2207,8 +2219,7 @@ onMount(() => {
               aria-label="Add vector layer"
               title="Add vector layer"
               disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
-              onclick={() => addLayer()}
-            >
+              onclick={() => addLayer()}>
               <SquarePlus size={15} strokeWidth={1.8} aria-hidden="true" />
             </button>
           </div>
@@ -2223,10 +2234,13 @@ onMount(() => {
                   aria-label="Search map features"
                   bind:value={featureSearch}
                   onfocus={() => (searchOpen = true)}
-                  onblur={() => setTimeout(() => (searchOpen = false), 180)}
-                />
+                  onblur={() => setTimeout(() => (searchOpen = false), 180)} />
                 {#if featureSearch.trim()}
-                  <button type="button" class="search-clear" aria-label="Clear search" onclick={() => (featureSearch = "")}>×</button>
+                  <button
+                    type="button"
+                    class="search-clear"
+                    aria-label="Clear search"
+                    onclick={() => (featureSearch = "")}>×</button>
                 {/if}
               </label>
               {#if searchOpen && featureSearch.trim()}
@@ -2239,10 +2253,12 @@ onMount(() => {
                         type="button"
                         role="option"
                         aria-selected={selectedFeatureIds.includes(result.featureId)}
-                        onclick={() => focusSearchResult(result.featureId, result.layerId)}
-                      >
+                        onclick={() => focusSearchResult(result.featureId, result.layerId)}>
                         <span class="result-name">{result.name}</span>
-                        <span class="result-meta">{result.semanticType} · {result.layerName}{result.linkedEntityName ? ` · ${result.linkedEntityName}` : ""}</span>
+                        <span class="result-meta"
+                          >{result.semanticType} · {result.layerName}{result.linkedEntityName
+                            ? ` · ${result.linkedEntityName}`
+                            : ""}</span>
                       </button>
                     {/each}
                   {/if}
@@ -2261,8 +2277,7 @@ onMount(() => {
                 disabled={dirty}
                 onclick={() => {
                   if (!dirty) studioOpen = !studioOpen;
-                }}
-              >
+                }}>
                 <span class="studio-open-label">Atlas Studio</span>
                 <small>{studioOpen ? "Close" : dirty ? "Save to open" : "Open"}</small>
               </button>
@@ -2277,34 +2292,35 @@ onMount(() => {
                 onclick={(event) => {
                   event.preventDefault();
                   layersCollapsed = !layersCollapsed;
-                }}
-              >
+                }}>
                 <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
                 <strong>Layers</strong>
                 <span class="section-count">{listedLayers.length}</span>
               </summary>
               <div class="section-body">
                 {#if physicalMap}
-                  <p class="section-note">Hazard layers show relative generated rates; they are not real-world predictions.</p>
+                  <p class="section-note">
+                    Hazard layers show relative generated rates; they are not real-world predictions.
+                  </p>
                 {/if}
                 {#if listedLayers.length === 0}
-                  <p class="empty-note">Add a vector layer to draw points, lines, and regions. Base geography stays read-only.</p>
+                  <p class="empty-note">
+                    Add a vector layer to draw points, lines, and regions. Base geography stays read-only.
+                  </p>
                 {/if}
                 <div class="quick-add-row">
                   <button
                     type="button"
                     class="quiet-button small"
                     disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
-                    onclick={() => addLayer()}
-                  >
+                    onclick={() => addLayer()}>
                     Add vector
                   </button>
                   <button
                     type="button"
                     class="quiet-button small"
                     disabled={physicalMap || busy || rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS}
-                    onclick={() => void addRasterLayer()}
-                  >
+                    onclick={() => void addRasterLayer()}>
                     Add raster layer
                   </button>
                   <button
@@ -2313,16 +2329,17 @@ onMount(() => {
                     class:active={snapConfigOpen}
                     aria-pressed={snapConfigOpen}
                     onclick={() => (snapConfigOpen = !snapConfigOpen)}
-                    title="Snap settings"
-                  >
+                    title="Snap settings">
                     <Settings2 size={13} strokeWidth={1.8} aria-hidden="true" /> Snap
                   </button>
                 </div>
                 {#if snapConfigOpen}
                   <div class="snap-config" aria-label="Snap settings">
-                    <label><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
+                    <label
+                      ><input type="checkbox" bind:checked={snapVertex} onchange={syncSnapToEditor} /> Vertex</label>
                     <label><input type="checkbox" bind:checked={snapEdge} onchange={syncSnapToEditor} /> Edge</label>
-                    <label><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
+                    <label
+                      ><input type="checkbox" bind:checked={snapIntersection} onchange={syncSnapToEditor} /> Intersection</label>
                     <small>Locked layers can opt into snap targets from the layer row.</small>
                   </div>
                 {/if}
@@ -2343,14 +2360,15 @@ onMount(() => {
                         event.preventDefault();
                         if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
                         draggingLayerId = null;
-                      }}
-                    >
+                      }}>
                       <div class="layer-card-main">
                         <span class="drag-handle" aria-hidden="true" title="Drag to reorder">
                           <GripVertical size={12} strokeWidth={1.8} />
                         </span>
                         <span class="layer-kind-icon" aria-hidden="true">
-                          {#if isRasterLayer(layer)}<ImageIcon size={13} strokeWidth={1.8} />{:else}<Layers size={13} strokeWidth={1.8} />{/if}
+                          {#if isRasterLayer(layer)}<ImageIcon size={13} strokeWidth={1.8} />{:else}<Layers
+                              size={13}
+                              strokeWidth={1.8} />{/if}
                         </span>
                         <button
                           class="layer-name"
@@ -2359,8 +2377,7 @@ onMount(() => {
                           onkeydown={(event) => {
                             if (event.target === event.currentTarget) onLayerKey(event, layer);
                           }}
-                          onclick={() => switchLayer(layer.id)}
-                        >
+                          onclick={() => switchLayer(layer.id)}>
                           {#if renamingId === layer.id}
                             <input
                               value={layer.name}
@@ -2370,11 +2387,15 @@ onMount(() => {
                               onkeydown={(event) => {
                                 if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
                                 if (event.key === "Escape") renamingId = null;
-                              }}
-                            />
+                              }} />
                           {:else}
                             <span class="layer-name-text">{layer.name}</span>
-                            <span class="layer-meta">{layer.kind} · {isRasterLayer(layer) ? "raster" : `${featureCountForLayer(draft, layer.id)} feats`}{layer.locked ? " · locked" : ""}{!layer.defaultVisible ? " · hidden" : ""}</span>
+                            <span class="layer-meta"
+                              >{layer.kind} · {isRasterLayer(layer)
+                                ? "raster"
+                                : `${featureCountForLayer(draft, layer.id)} feats`}{layer.locked
+                                ? " · locked"
+                                : ""}{!layer.defaultVisible ? " · hidden" : ""}</span>
                           {/if}
                         </button>
                         <div class="layer-card-actions">
@@ -2386,7 +2407,9 @@ onMount(() => {
                             aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
                             title={layer.defaultVisible ? "Hide" : "Show"}
                             onclick={() => void toggleVisible(layer)}
-                          >{#if layer.defaultVisible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff size={14} strokeWidth={1.8} />{/if}</button>
+                            >{#if layer.defaultVisible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff
+                                size={14}
+                                strokeWidth={1.8} />{/if}</button>
                           {#if !immutablePhysicalLayerIds.has(layer.id)}
                             <button
                               type="button"
@@ -2396,7 +2419,9 @@ onMount(() => {
                               aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
                               title={layer.locked ? "Unlock" : "Lock"}
                               onclick={() => void toggleLock(layer)}
-                            >{#if layer.locked}<Lock size={14} strokeWidth={1.8} />{:else}<LockOpen size={14} strokeWidth={1.8} />{/if}</button>
+                              >{#if layer.locked}<Lock size={14} strokeWidth={1.8} />{:else}<LockOpen
+                                  size={14}
+                                  strokeWidth={1.8} />{/if}</button>
                           {/if}
                           {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
                             <button
@@ -2404,7 +2429,9 @@ onMount(() => {
                               class="mini-icon"
                               aria-label={`Detach ${layer.name} for editing`}
                               title="Detach for editing"
-                              disabled={busy || epochBusy || physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
+                              disabled={busy ||
+                                epochBusy ||
+                                physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
                               onclick={() => openDetachDialog(layer)}><Scissors size={14} strokeWidth={1.8} /></button>
                           {/if}
                           <button
@@ -2414,14 +2441,21 @@ onMount(() => {
                             aria-label={`Customize ${layer.name}`}
                             aria-expanded={openCustomizeLayerId === layer.id}
                             title="Customize"
-                            onclick={(event) => { event.stopPropagation(); openCustomizeLayerId = openCustomizeLayerId === layer.id ? null : layer.id; }}
-                          ><SlidersHorizontal size={14} strokeWidth={1.8} /></button>
+                            onclick={(event) => {
+                              event.stopPropagation();
+                              openCustomizeLayerId = openCustomizeLayerId === layer.id ? null : layer.id;
+                            }}><SlidersHorizontal size={14} strokeWidth={1.8} /></button>
                         </div>
                       </div>
 
                       {#if !immutablePhysicalLayerIds.has(layer.id)}
                         <div class="layer-card-toolbar">
-                          <button type="button" class="toolbar-btn" aria-label={`Rename ${layer.name}`} title="Rename" onclick={() => (renamingId = layer.id)}><Pencil size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="toolbar-btn"
+                            aria-label={`Rename ${layer.name}`}
+                            title="Rename"
+                            onclick={() => (renamingId = layer.id)}><Pencil size={12} strokeWidth={1.8} /></button>
                           <button
                             type="button"
                             class="toolbar-btn"
@@ -2435,7 +2469,8 @@ onMount(() => {
                             aria-label={`Move ${layer.name} down`}
                             title="Move down"
                             disabled={busy}
-                            onclick={() => void moveLayer(layer, 1)}><ChevronDown size={12} strokeWidth={1.8} /></button>
+                            onclick={() => void moveLayer(layer, 1)}
+                            ><ChevronDown size={12} strokeWidth={1.8} /></button>
                           <button
                             type="button"
                             class="toolbar-btn"
@@ -2446,7 +2481,12 @@ onMount(() => {
                                 ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
                                 : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
                             onclick={() => void duplicateLayer(layer)}><Copy size={12} strokeWidth={1.8} /></button>
-                          <button type="button" class="toolbar-btn danger" aria-label={`Remove ${layer.name}`} title="Remove" onclick={() => void removeLayer(layer)}><Trash2 size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="toolbar-btn danger"
+                            aria-label={`Remove ${layer.name}`}
+                            title="Remove"
+                            onclick={() => void removeLayer(layer)}><Trash2 size={12} strokeWidth={1.8} /></button>
                         </div>
                       {/if}
 
@@ -2463,8 +2503,7 @@ onMount(() => {
                                 step="0.05"
                                 value={layer.opacity}
                                 aria-label={`${layer.name} layer opacity`}
-                                oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))}
-                              />
+                                oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
                               <em>{Math.round(layer.opacity * 100)}%</em>
                             </label>
                             <label class="detail-range">
@@ -2476,8 +2515,8 @@ onMount(() => {
                                 step="0.05"
                                 value={layer.style.fillOpacity}
                                 aria-label={`${layer.name} fill opacity`}
-                                oninput={(event) => void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })}
-                              />
+                                oninput={(event) =>
+                                  void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
                               <em>{Math.round(layer.style.fillOpacity * 100)}%</em>
                             </label>
                             <label class="detail-range">
@@ -2489,8 +2528,8 @@ onMount(() => {
                                 step="0.05"
                                 value={layer.style.strokeOpacity ?? 1}
                                 aria-label={`${layer.name} stroke opacity`}
-                                oninput={(event) => void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })}
-                              />
+                                oninput={(event) =>
+                                  void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })} />
                               <em>{Math.round((layer.style.strokeOpacity ?? 1) * 100)}%</em>
                             </label>
                           </div>
@@ -2501,18 +2540,98 @@ onMount(() => {
                                 <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
                               </summary>
                               <div class="detail-grid">
-                                <label><span>Fill</span><input type="color" value={layer.style.fill} aria-label={`${layer.name} fill`} onchange={(event) => void updateStyle(layer, { fill: event.currentTarget.value })} /></label>
-                                <label><span>Stroke</span><input type="color" value={layer.style.stroke} aria-label={`${layer.name} stroke`} onchange={(event) => void updateStyle(layer, { stroke: event.currentTarget.value })} /></label>
-                                <label><span>Stroke width</span><input type="number" min="0" max="32" step="0.25" value={layer.style.strokeWidth} aria-label={`${layer.name} stroke width`} onchange={(event) => void updateStyle(layer, { strokeWidth: Number(event.currentTarget.value) })} /></label>
-                                <label><span>Dash</span><input type="text" value={(layer.style.strokeDash ?? []).join(", ")} placeholder="solid" aria-label={`${layer.name} stroke dash`} onchange={(event) => { const values = event.currentTarget.value.split(",").map((v) => Number(v.trim())).filter(Number.isFinite); void updateStyle(layer, { strokeDash: values.slice(0, 16) }); }} /></label>
-                                <label><span>Point radius</span><input type="number" min="1" max="64" step="1" value={layer.style.pointRadius} aria-label={`${layer.name} point radius`} onchange={(event) => void updateStyle(layer, { pointRadius: Number(event.currentTarget.value) })} /></label>
-                                <label><span>Marker</span>
-                                  <select value={layer.style.icon ?? "circle"} aria-label={`${layer.name} marker icon`} onchange={(event) => void updateStyle(layer, { icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value })}>
-                                    <option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option><option value="triangle">Triangle</option><option value="star">Star</option>
+                                <label
+                                  ><span>Fill</span><input
+                                    type="color"
+                                    value={layer.style.fill}
+                                    aria-label={`${layer.name} fill`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, { fill: event.currentTarget.value })} /></label>
+                                <label
+                                  ><span>Stroke</span><input
+                                    type="color"
+                                    value={layer.style.stroke}
+                                    aria-label={`${layer.name} stroke`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, { stroke: event.currentTarget.value })} /></label>
+                                <label
+                                  ><span>Stroke width</span><input
+                                    type="number"
+                                    min="0"
+                                    max="32"
+                                    step="0.25"
+                                    value={layer.style.strokeWidth}
+                                    aria-label={`${layer.name} stroke width`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, {
+                                        strokeWidth: Number(event.currentTarget.value),
+                                      })} /></label>
+                                <label
+                                  ><span>Dash</span><input
+                                    type="text"
+                                    value={(layer.style.strokeDash ?? []).join(", ")}
+                                    placeholder="solid"
+                                    aria-label={`${layer.name} stroke dash`}
+                                    onchange={(event) => {
+                                      const values = event.currentTarget.value
+                                        .split(",")
+                                        .map((v) => Number(v.trim()))
+                                        .filter(Number.isFinite);
+                                      void updateStyle(layer, { strokeDash: values.slice(0, 16) });
+                                    }} /></label>
+                                <label
+                                  ><span>Point radius</span><input
+                                    type="number"
+                                    min="1"
+                                    max="64"
+                                    step="1"
+                                    value={layer.style.pointRadius}
+                                    aria-label={`${layer.name} point radius`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, {
+                                        pointRadius: Number(event.currentTarget.value),
+                                      })} /></label>
+                                <label
+                                  ><span>Marker</span>
+                                  <select
+                                    value={layer.style.icon ?? "circle"}
+                                    aria-label={`${layer.name} marker icon`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, {
+                                        icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
+                                      })}>
+                                    <option value="circle">Circle</option><option value="square">Square</option><option
+                                      value="diamond">Diamond</option
+                                    ><option value="triangle">Triangle</option><option value="star">Star</option>
                                   </select>
                                 </label>
-                                <label><span>Marker size</span><input type="number" min="4" max="256" step="1" value={layer.style.iconSize ?? 20} aria-label={`${layer.name} marker size`} onchange={(event) => void updateStyle(layer, { iconSize: Number(event.currentTarget.value) })} /></label>
-                                <label><span>Label size</span><input type="number" min="6" max="96" step="1" value={layer.style.label?.size ?? 12} aria-label={`${layer.name} label size`} onchange={(event) => void updateStyle(layer, { label: { ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!), size: Number(event.currentTarget.value) } })} /></label>
+                                <label
+                                  ><span>Marker size</span><input
+                                    type="number"
+                                    min="4"
+                                    max="256"
+                                    step="1"
+                                    value={layer.style.iconSize ?? 20}
+                                    aria-label={`${layer.name} marker size`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, {
+                                        iconSize: Number(event.currentTarget.value),
+                                      })} /></label>
+                                <label
+                                  ><span>Label size</span><input
+                                    type="number"
+                                    min="6"
+                                    max="96"
+                                    step="1"
+                                    value={layer.style.label?.size ?? 12}
+                                    aria-label={`${layer.name} label size`}
+                                    onchange={(event) =>
+                                      void updateStyle(layer, {
+                                        label: {
+                                          ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!),
+                                          size: Number(event.currentTarget.value),
+                                        },
+                                      })} /></label>
                               </div>
                             </details>
                           {/if}
@@ -2530,8 +2649,7 @@ onMount(() => {
                   onclick={(event) => {
                     event.preventDefault();
                     rastersCollapsed = !rastersCollapsed;
-                  }}
-                >
+                  }}>
                   <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
                   <strong>Rasters</strong>
                   <span class="section-count">{listedRasters.length}</span>
@@ -2539,19 +2657,33 @@ onMount(() => {
                 <div class="section-body">
                   <p class="section-note">{unitsLabel}</p>
                   <div class="quick-add-row">
-                    <button type="button" class="quiet-button small" disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS} onclick={() => void addRaster()}>Add raster</button>
+                    <button
+                      type="button"
+                      class="quiet-button small"
+                      disabled={busy || listedRasters.length >= IMAGE_MAX_RASTER_LAYERS}
+                      onclick={() => void addRaster()}>Add raster</button>
                     <button type="button" class="quiet-button small" onclick={() => editor?.fitExtent()}>Fit</button>
-                    <button type="button" class="quiet-button small" onclick={() => editor?.actualPixels()}>Actual pixels</button>
+                    <button type="button" class="quiet-button small" onclick={() => editor?.actualPixels()}
+                      >Actual pixels</button>
                   </div>
                   <label class="calibrate-field">
                     <span>Metres per unit</span>
                     <div class="calibrate-row">
-                      <input type="number" min="0" step="any" bind:value={calibrateMetres} placeholder={coordinateSpace.kind === "image" ? "pixels until calibrated" : "optional"} aria-label="Metres per unit" />
-                      <button type="button" class="quiet-button small" onclick={() => applyCalibration()}>Calibrate</button>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        bind:value={calibrateMetres}
+                        placeholder={coordinateSpace.kind === "image" ? "pixels until calibrated" : "optional"}
+                        aria-label="Metres per unit" />
+                      <button type="button" class="quiet-button small" onclick={() => applyCalibration()}
+                        >Calibrate</button>
                     </div>
                   </label>
                   {#if listedRasters.length === 0}
-                    <p class="empty-note">No rasters yet. Add PNG, JPEG, or SVG overlays. Image maps open at exact pixel extent.</p>
+                    <p class="empty-note">
+                      No rasters yet. Add PNG, JPEG, or SVG overlays. Image maps open at exact pixel extent.
+                    </p>
                   {/if}
                   <div class="raster-list" role="list">
                     {#each listedRasters as raster (raster.id)}
@@ -2565,10 +2697,24 @@ onMount(() => {
                               class="mini-icon"
                               aria-pressed={raster.visible}
                               aria-label={raster.visible ? `Hide ${raster.name}` : `Show ${raster.name}`}
-                              onclick={() => dispatchCommand(setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible))}
-                            >{#if raster.visible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff size={14} strokeWidth={1.8} />{/if}</button>
-                            <button type="button" class="mini-icon" aria-label={`Replace ${raster.name}`} onclick={() => void replaceRaster(raster)}><ImageIcon size={14} strokeWidth={1.8} /></button>
-                            <button type="button" class="mini-icon danger" aria-label={`Remove ${raster.name}`} onclick={() => removeRaster(raster)}><Trash2 size={14} strokeWidth={1.8} /></button>
+                              onclick={() =>
+                                dispatchCommand(
+                                  setBackgroundVisibilityCommand(raster.id, !raster.visible, raster.visible),
+                                )}
+                              >{#if raster.visible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff
+                                  size={14}
+                                  strokeWidth={1.8} />{/if}</button>
+                            <button
+                              type="button"
+                              class="mini-icon"
+                              aria-label={`Replace ${raster.name}`}
+                              onclick={() => void replaceRaster(raster)}
+                              ><ImageIcon size={14} strokeWidth={1.8} /></button>
+                            <button
+                              type="button"
+                              class="mini-icon danger"
+                              aria-label={`Remove ${raster.name}`}
+                              onclick={() => removeRaster(raster)}><Trash2 size={14} strokeWidth={1.8} /></button>
                             <button
                               type="button"
                               class="mini-icon more-btn"
@@ -2577,21 +2723,56 @@ onMount(() => {
                               aria-expanded={openRasterMenuId === raster.id}
                               aria-haspopup="menu"
                               title="More"
-                              onclick={(event) => { event.stopPropagation(); openRasterMenuId = openRasterMenuId === raster.id ? null : raster.id; }}
-                            ><Ellipsis size={14} strokeWidth={1.8} /></button>
+                              onclick={(event) => {
+                                event.stopPropagation();
+                                openRasterMenuId = openRasterMenuId === raster.id ? null : raster.id;
+                              }}><Ellipsis size={14} strokeWidth={1.8} /></button>
                           </div>
                         </div>
                         {#if openRasterMenuId === raster.id}
-                          <div class="layer-menu" role="menu" aria-label={`Actions for ${raster.name}`} onclick={(event) => event.stopPropagation()}>
-                            <button type="button" role="menuitem" class="layer-menu-item" onclick={() => { openRasterMenuId = null; moveRaster(raster, -1); }}><ChevronUp size={12} strokeWidth={1.8} /> Move up</button>
-                            <button type="button" role="menuitem" class="layer-menu-item" onclick={() => { openRasterMenuId = null; moveRaster(raster, 1); }}><ChevronDown size={12} strokeWidth={1.8} /> Move down</button>
+                          <div
+                            class="layer-menu"
+                            role="menu"
+                            aria-label={`Actions for ${raster.name}`}
+                            onclick={(event) => event.stopPropagation()}>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              class="layer-menu-item"
+                              onclick={() => {
+                                openRasterMenuId = null;
+                                moveRaster(raster, -1);
+                              }}><ChevronUp size={12} strokeWidth={1.8} /> Move up</button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              class="layer-menu-item"
+                              onclick={() => {
+                                openRasterMenuId = null;
+                                moveRaster(raster, 1);
+                              }}><ChevronDown size={12} strokeWidth={1.8} /> Move down</button>
                             <div class="layer-menu-separator"></div>
-                            <span class="layer-menu-meta">{raster.visible ? "Visible" : "Hidden"} · {Math.round(raster.opacity * 100)}%</span>
+                            <span class="layer-menu-meta"
+                              >{raster.visible ? "Visible" : "Hidden"} · {Math.round(raster.opacity * 100)}%</span>
                           </div>
                         {/if}
                         <label class="detail-range small">
                           <span>Opacity</span>
-                          <input type="range" min="0" max="1" step="0.05" value={raster.opacity} aria-label={`${raster.name} opacity`} oninput={(event) => dispatchCommand(setBackgroundOpacityCommand(raster.id, Number(event.currentTarget.value), raster.opacity))} />
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={raster.opacity}
+                            aria-label={`${raster.name} opacity`}
+                            oninput={(event) =>
+                              dispatchCommand(
+                                setBackgroundOpacityCommand(
+                                  raster.id,
+                                  Number(event.currentTarget.value),
+                                  raster.opacity,
+                                ),
+                              )} />
                           <em>{Math.round(raster.opacity * 100)}%</em>
                         </label>
                       </div>
@@ -2607,29 +2788,64 @@ onMount(() => {
                   onclick={(event) => {
                     event.preventDefault();
                     historyCollapsed = !historyCollapsed;
-                  }}
-                >
+                  }}>
                   <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
                   <strong>Natural history</strong>
                 </summary>
                 <div class="section-body">
                   <div class="event-control" aria-label="Materialize natural history">
-                    <label><span>Event</span>
+                    <label
+                      ><span>Event</span>
                       <select bind:value={eventKind} disabled={eventBusy || busy}>
                         <option value="earthquake">Earthquake</option>
                         <option value="eruption">Eruption</option>
                       </select>
                     </label>
                     <div class="event-grid">
-                      <label><span>From (years)</span><input type="number" min="-100000" max="100000" step="1" bind:value={eventStartYears} disabled={eventBusy || busy} /></label>
-                      <label><span>To (years)</span><input type="number" min="-100000" max="100000" step="1" bind:value={eventEndYears} disabled={eventBusy || busy} /></label>
+                      <label
+                        ><span>From (years)</span><input
+                          type="number"
+                          min="-100000"
+                          max="100000"
+                          step="1"
+                          bind:value={eventStartYears}
+                          disabled={eventBusy || busy} /></label>
+                      <label
+                        ><span>To (years)</span><input
+                          type="number"
+                          min="-100000"
+                          max="100000"
+                          step="1"
+                          bind:value={eventEndYears}
+                          disabled={eventBusy || busy} /></label>
                     </div>
                     <div class="event-grid">
-                      <label><span>Max events</span><input type="number" min="1" max="128" step="1" bind:value={eventMaxEvents} disabled={eventBusy || busy} /></label>
-                      <label><span>Hazard seed</span><input type="number" min="0" step="1" bind:value={eventHazardSeed} disabled={eventBusy || busy} /></label>
+                      <label
+                        ><span>Max events</span><input
+                          type="number"
+                          min="1"
+                          max="128"
+                          step="1"
+                          bind:value={eventMaxEvents}
+                          disabled={eventBusy || busy} /></label>
+                      <label
+                        ><span>Hazard seed</span><input
+                          type="number"
+                          min="0"
+                          step="1"
+                          bind:value={eventHazardSeed}
+                          disabled={eventBusy || busy} /></label>
                     </div>
-                    <button type="button" class="primary-button small" disabled={eventBusy || busy} onclick={() => void materializePhysicalEvents()}>{eventBusy ? "Committing…" : "Commit events"}</button>
-                    <p class="field-hint">Creates revisioned entities and map links; generated hazards remain read-only and are not predictions.</p>
+                    <button
+                      type="button"
+                      class="primary-button small"
+                      disabled={eventBusy || busy}
+                      onclick={() => void materializePhysicalEvents()}
+                      >{eventBusy ? "Committing…" : "Commit events"}</button>
+                    <p class="field-hint">
+                      Creates revisioned entities and map links; generated hazards remain read-only and are not
+                      predictions.
+                    </p>
                     {#if eventNotice}<p class="field-hint" role="status">{eventNotice}</p>{/if}
                   </div>
                 </div>
@@ -2648,23 +2864,62 @@ onMount(() => {
                     {#if geometryPreview}
                       <p class="section-note">Preview: {geometryPreview.label}. Commit or cancel to finish.</p>
                       <div class="quick-add-row">
-                        <button type="button" class="primary-button small" onclick={() => commitGeometryPreview()}>Apply</button>
-                        <button type="button" class="quiet-button small" onclick={() => cancelGeometryPreview()}>Cancel</button>
+                        <button type="button" class="primary-button small" onclick={() => commitGeometryPreview()}
+                          >Apply</button>
+                        <button type="button" class="quiet-button small" onclick={() => cancelGeometryPreview()}
+                          >Cancel</button>
                       </div>
                     {:else}
                       <div class="quick-add-row">
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("union", selectedOpFeatures)} onclick={() => startGeometryOperation("union")}>Union</button>
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("difference", selectedOpFeatures)} onclick={() => startGeometryOperation("difference")}>Diff</button>
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("intersection", selectedOpFeatures)} onclick={() => startGeometryOperation("intersection")}>Intersect</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("union", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("union")}>Union</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("difference", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("difference")}>Diff</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("intersection", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("intersection")}>Intersect</button>
                       </div>
                       <div class="quick-add-row">
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("split", selectedOpFeatures)} onclick={() => startGeometryOperation("split")}><Scissors size={12} strokeWidth={1.8} /> Split</button>
-                        <label class="inline-field"><span>Buffer</span><input type="number" min="0" step="any" bind:value={bufferDistance} aria-label="Buffer distance" /></label>
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("buffer", selectedOpFeatures)} onclick={() => startGeometryOperation("buffer")}>Run</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("split", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("split")}
+                          ><Scissors size={12} strokeWidth={1.8} /> Split</button>
+                        <label class="inline-field"
+                          ><span>Buffer</span><input
+                            type="number"
+                            min="0"
+                            step="any"
+                            bind:value={bufferDistance}
+                            aria-label="Buffer distance" /></label>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("buffer", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("buffer")}>Run</button>
                       </div>
                       <div class="quick-add-row">
-                        <label class="inline-field"><span>Simplify</span><input type="number" min="0" step="any" bind:value={simplifyTolerance} aria-label="Simplify tolerance" /></label>
-                        <button type="button" class="quiet-button small" disabled={!canRunOperation("simplify", selectedOpFeatures)} onclick={() => startGeometryOperation("simplify")}>Run</button>
+                        <label class="inline-field"
+                          ><span>Simplify</span><input
+                            type="number"
+                            min="0"
+                            step="any"
+                            bind:value={simplifyTolerance}
+                            aria-label="Simplify tolerance" /></label>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("simplify", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("simplify")}>Run</button>
                       </div>
                       {#if operationNotice}<p class="field-hint" role="status">{operationNotice}</p>{/if}
                     {/if}
@@ -2681,24 +2936,53 @@ onMount(() => {
               <details class="map-section-group" open>
                 <summary>
                   <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
-                  <strong>{selectedFeatures.length === 1 ? "Selected feature" : `${selectedFeatures.length} features`}</strong>
+                  <strong
+                    >{selectedFeatures.length === 1
+                      ? "Selected feature"
+                      : `${selectedFeatures.length} features`}</strong>
                 </summary>
                 <div class="section-body">
                   <div class="selection-head">
-                    <strong class="selection-title">{selectedFeatures.length === 1 ? (featureName(primary) ?? "Untitled feature") : `${selectedFeatures.length} features selected`}</strong>
-                    <p class="section-note">{primary.geometry.type} · {selectedFeatures.reduce((sum, f) => sum + featureVertexCount(f), 0)} vertices{#if selectedFeatures.length === 1} · {featureSemanticType(primary)}{/if}</p>
+                    <strong class="selection-title"
+                      >{selectedFeatures.length === 1
+                        ? (featureName(primary) ?? "Untitled feature")
+                        : `${selectedFeatures.length} features selected`}</strong>
+                    <p class="section-note">
+                      {primary.geometry.type} · {selectedFeatures.reduce((sum, f) => sum + featureVertexCount(f), 0)} vertices{#if selectedFeatures.length === 1}
+                        · {featureSemanticType(primary)}{/if}
+                    </p>
                   </div>
 
                   {#if selectedFeatures.length === 1}
-                    <label class="field"><span>Name</span><input value={featureName(primary) ?? ""} maxlength="256" aria-label="Feature name" disabled={featureLayerId(primary) === "base"} onchange={(event) => renameSelectedFeature(event.currentTarget.value.trim() || null)} /></label>
+                    <label class="field"
+                      ><span>Name</span><input
+                        value={featureName(primary) ?? ""}
+                        maxlength="256"
+                        aria-label="Feature name"
+                        disabled={featureLayerId(primary) === "base"}
+                        onchange={(event) => renameSelectedFeature(event.currentTarget.value.trim() || null)} /></label>
                   {/if}
-                  <label class="field"><span>Semantic type</span>
-                    <select value={featureSemanticType(primary)} aria-label="Feature semantic type" onchange={(event) => setSelectedSemanticType(event.currentTarget.value as VectorFeature["properties"]["daena"]["semanticType"])}>
-                      <option value="land">Land</option><option value="lake">Lake</option><option value="region">Region</option><option value="route">Route</option><option value="marker">Marker</option><option value="custom">Custom</option>
+                  <label class="field"
+                    ><span>Semantic type</span>
+                    <select
+                      value={featureSemanticType(primary)}
+                      aria-label="Feature semantic type"
+                      onchange={(event) =>
+                        setSelectedSemanticType(
+                          event.currentTarget.value as VectorFeature["properties"]["daena"]["semanticType"],
+                        )}>
+                      <option value="land">Land</option><option value="lake">Lake</option><option value="region"
+                        >Region</option
+                      ><option value="route">Route</option><option value="marker">Marker</option><option value="custom"
+                        >Custom</option>
                     </select>
                   </label>
-                  <label class="field"><span>Layer</span>
-                    <select value={featureLayerId(primary)} aria-label="Feature layer" onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
+                  <label class="field"
+                    ><span>Layer</span>
+                    <select
+                      value={featureLayerId(primary)}
+                      aria-label="Feature layer"
+                      onchange={(event) => moveSelectedToLayer(event.currentTarget.value)}>
                       {#each listedLayers.filter((l) => isVectorLayer(l) && l.id !== "base" && l.defaultVisible && !l.locked) as layer}
                         <option value={layer.id}>{layer.name}</option>
                       {/each}
@@ -2708,40 +2992,165 @@ onMount(() => {
                   <details class="sub-section">
                     <summary>Style override</summary>
                     <div class="detail-grid compact">
-                      <label><span>Fill</span><input type="color" value={primaryStyle.fill ?? "#8f6fd1"} onchange={(event) => updateSelectedStyle({ fill: event.currentTarget.value })} /></label>
-                      <label><span>Fill opacity</span>
-                        <div class="range-with-value"><input type="range" min="0" max="1" step="0.05" value={primaryStyle.fillOpacity ?? 0.35} oninput={(event) => updateSelectedStyle({ fillOpacity: Number(event.currentTarget.value) })} /><small>{Math.round((primaryStyle.fillOpacity ?? 0.35)*100)}%</small></div>
+                      <label
+                        ><span>Fill</span><input
+                          type="color"
+                          value={primaryStyle.fill ?? "#8f6fd1"}
+                          onchange={(event) => updateSelectedStyle({ fill: event.currentTarget.value })} /></label>
+                      <label
+                        ><span>Fill opacity</span>
+                        <div class="range-with-value">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={primaryStyle.fillOpacity ?? 0.35}
+                            oninput={(event) =>
+                              updateSelectedStyle({ fillOpacity: Number(event.currentTarget.value) })} /><small
+                            >{Math.round((primaryStyle.fillOpacity ?? 0.35) * 100)}%</small>
+                        </div>
                       </label>
-                      <label><span>Stroke</span><input type="color" value={primaryStyle.stroke ?? "#5e4893"} onchange={(event) => updateSelectedStyle({ stroke: event.currentTarget.value })} /></label>
-                      <label><span>Stroke opacity</span>
-                        <div class="range-with-value"><input type="range" min="0" max="1" step="0.05" value={primaryStyle.strokeOpacity ?? 1} oninput={(event) => updateSelectedStyle({ strokeOpacity: Number(event.currentTarget.value) })} /><small>{Math.round((primaryStyle.strokeOpacity ?? 1)*100)}%</small></div>
+                      <label
+                        ><span>Stroke</span><input
+                          type="color"
+                          value={primaryStyle.stroke ?? "#5e4893"}
+                          onchange={(event) => updateSelectedStyle({ stroke: event.currentTarget.value })} /></label>
+                      <label
+                        ><span>Stroke opacity</span>
+                        <div class="range-with-value">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            value={primaryStyle.strokeOpacity ?? 1}
+                            oninput={(event) =>
+                              updateSelectedStyle({ strokeOpacity: Number(event.currentTarget.value) })} /><small
+                            >{Math.round((primaryStyle.strokeOpacity ?? 1) * 100)}%</small>
+                        </div>
                       </label>
-                      <label><span>Width</span><input type="number" min="0" max="32" step="0.25" value={primaryStyle.strokeWidth ?? 1.5} onchange={(event) => updateSelectedStyle({ strokeWidth: Number(event.currentTarget.value) })} /></label>
-                      <label><span>Point radius</span><input type="number" min="1" max="64" step="1" value={primaryStyle.pointRadius ?? 5} onchange={(event) => updateSelectedStyle({ pointRadius: Number(event.currentTarget.value) })} /></label>
-                      <label><span>Marker</span>
-                        <select value={primaryStyle.icon ?? "circle"} onchange={(event) => updateSelectedStyle({ icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value })}>
-                          <option value="circle">Circle</option><option value="square">Square</option><option value="diamond">Diamond</option><option value="triangle">Triangle</option><option value="star">Star</option>
+                      <label
+                        ><span>Width</span><input
+                          type="number"
+                          min="0"
+                          max="32"
+                          step="0.25"
+                          value={primaryStyle.strokeWidth ?? 1.5}
+                          onchange={(event) =>
+                            updateSelectedStyle({ strokeWidth: Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Point radius</span><input
+                          type="number"
+                          min="1"
+                          max="64"
+                          step="1"
+                          value={primaryStyle.pointRadius ?? 5}
+                          onchange={(event) =>
+                            updateSelectedStyle({ pointRadius: Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Marker</span>
+                        <select
+                          value={primaryStyle.icon ?? "circle"}
+                          onchange={(event) =>
+                            updateSelectedStyle({
+                              icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
+                            })}>
+                          <option value="circle">Circle</option><option value="square">Square</option><option
+                            value="diamond">Diamond</option
+                          ><option value="triangle">Triangle</option><option value="star">Star</option>
                         </select>
                       </label>
                     </div>
-                    <button type="button" class="quiet-button small" onclick={clearSelectedOverrides}>Use layer style</button>
+                    <button type="button" class="quiet-button small" onclick={clearSelectedOverrides}
+                      >Use layer style</button>
                   </details>
 
                   <details class="sub-section">
                     <summary>Label</summary>
                     <div class="detail-grid compact">
-                      <label><span>Source</span><select value={primaryLabel.source} onchange={(event) => updateSelectedLabel({ source: event.currentTarget.value as "name" | "explicit" })}><option value="name">Feature name</option><option value="explicit">Custom text</option></select></label>
+                      <label
+                        ><span>Source</span><select
+                          value={primaryLabel.source}
+                          onchange={(event) =>
+                            updateSelectedLabel({ source: event.currentTarget.value as "name" | "explicit" })}
+                          ><option value="name">Feature name</option><option value="explicit">Custom text</option
+                          ></select
+                        ></label>
                       {#if primaryLabel.source === "explicit"}
-                        <label><span>Text</span><input type="text" maxlength="512" value={primaryLabel.text ?? ""} onchange={(event) => updateSelectedLabel({ text: event.currentTarget.value })} /></label>
+                        <label
+                          ><span>Text</span><input
+                            type="text"
+                            maxlength="512"
+                            value={primaryLabel.text ?? ""}
+                            onchange={(event) => updateSelectedLabel({ text: event.currentTarget.value })} /></label>
                       {/if}
-                      <label><span>Size</span><input type="number" min="6" max="96" value={primaryLabel.size} onchange={(event) => updateSelectedLabel({ size: Number(event.currentTarget.value) })} /></label>
-                      <label><span>Color</span><input type="color" value={primaryLabel.color} onchange={(event) => updateSelectedLabel({ color: event.currentTarget.value })} /></label>
-                      <label><span>Halo</span><input type="color" value={primaryLabel.haloColor} onchange={(event) => updateSelectedLabel({ haloColor: event.currentTarget.value })} /></label>
-                      <label><span>Halo width</span><input type="number" min="0" max="16" step="0.5" value={primaryLabel.haloWidth} onchange={(event) => updateSelectedLabel({ haloWidth: Number(event.currentTarget.value) })} /></label>
-                      <label><span>Placement</span><select value={primaryLabel.placement} onchange={(event) => updateSelectedLabel({ placement: event.currentTarget.value as MapLabelV2["placement"] })}><option value="point">Point</option><option value="line">Line</option><option value="interior">Interior</option></select></label>
-                      <label><span>Rotation</span><input type="number" min="-360" max="360" value={primaryLabel.rotation} onchange={(event) => updateSelectedLabel({ rotation: Number(event.currentTarget.value) })} /></label>
-                      <label><span>Min zoom</span><input type="number" min="0" max="24" placeholder="none" value={primaryLabel.minZoom ?? ""} onchange={(event) => updateSelectedLabel({ minZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) })} /></label>
-                      <label><span>Max zoom</span><input type="number" min="0" max="24" placeholder="none" value={primaryLabel.maxZoom ?? ""} onchange={(event) => updateSelectedLabel({ maxZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Size</span><input
+                          type="number"
+                          min="6"
+                          max="96"
+                          value={primaryLabel.size}
+                          onchange={(event) =>
+                            updateSelectedLabel({ size: Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Color</span><input
+                          type="color"
+                          value={primaryLabel.color}
+                          onchange={(event) => updateSelectedLabel({ color: event.currentTarget.value })} /></label>
+                      <label
+                        ><span>Halo</span><input
+                          type="color"
+                          value={primaryLabel.haloColor}
+                          onchange={(event) => updateSelectedLabel({ haloColor: event.currentTarget.value })} /></label>
+                      <label
+                        ><span>Halo width</span><input
+                          type="number"
+                          min="0"
+                          max="16"
+                          step="0.5"
+                          value={primaryLabel.haloWidth}
+                          onchange={(event) =>
+                            updateSelectedLabel({ haloWidth: Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Placement</span><select
+                          value={primaryLabel.placement}
+                          onchange={(event) =>
+                            updateSelectedLabel({ placement: event.currentTarget.value as MapLabelV2["placement"] })}
+                          ><option value="point">Point</option><option value="line">Line</option><option
+                            value="interior">Interior</option
+                          ></select
+                        ></label>
+                      <label
+                        ><span>Rotation</span><input
+                          type="number"
+                          min="-360"
+                          max="360"
+                          value={primaryLabel.rotation}
+                          onchange={(event) =>
+                            updateSelectedLabel({ rotation: Number(event.currentTarget.value) })} /></label>
+                      <label
+                        ><span>Min zoom</span><input
+                          type="number"
+                          min="0"
+                          max="24"
+                          placeholder="none"
+                          value={primaryLabel.minZoom ?? ""}
+                          onchange={(event) =>
+                            updateSelectedLabel({
+                              minZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+                            })} /></label>
+                      <label
+                        ><span>Max zoom</span><input
+                          type="number"
+                          min="0"
+                          max="24"
+                          placeholder="none"
+                          value={primaryLabel.maxZoom ?? ""}
+                          onchange={(event) =>
+                            updateSelectedLabel({
+                              maxZoom: event.currentTarget.value === "" ? null : Number(event.currentTarget.value),
+                            })} /></label>
                     </div>
                   </details>
 
@@ -2751,7 +3160,11 @@ onMount(() => {
                       {#each Object.entries(primary.properties.daena.custom) as [key, value] (key)}
                         <div class="property-row">
                           <span><strong>{key}</strong> {String(value ?? "null")}</span>
-                          <button type="button" class="mini-icon danger" aria-label={`Remove ${key}`} onclick={() => removeCustomProperty(key)}><Trash2 size={12} strokeWidth={1.8} /></button>
+                          <button
+                            type="button"
+                            class="mini-icon danger"
+                            aria-label={`Remove ${key}`}
+                            onclick={() => removeCustomProperty(key)}><Trash2 size={12} strokeWidth={1.8} /></button>
                         </div>
                       {/each}
                       <div class="property-editor">
@@ -2765,20 +3178,35 @@ onMount(() => {
                       {#if linkedEntity}
                         <span class="linked-name">{linkedEntity.label || "Linked entry"}</span>
                         <div class="quick-add-row">
-                          <button type="button" class="quiet-button small" onclick={() => onopen?.(linkedEntity.entityId)}>Open</button>
-                          <button type="button" class="quiet-button small" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Manage link</button>
+                          <button
+                            type="button"
+                            class="quiet-button small"
+                            onclick={() => onopen?.(linkedEntity.entityId)}>Open</button>
+                          <button
+                            type="button"
+                            class="quiet-button small"
+                            onclick={() => openLinkPanel(pickAnchorFor(primary))}>Manage link</button>
                         </div>
                       {:else}
-                        <span class="section-note">No entity linked. Deleted targets remain visible as unresolved links.</span>
-                        <button type="button" class="quiet-button small" onclick={() => openLinkPanel(pickAnchorFor(primary))}>Link entity</button>
+                        <span class="section-note"
+                          >No entity linked. Deleted targets remain visible as unresolved links.</span>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          onclick={() => openLinkPanel(pickAnchorFor(primary))}>Link entity</button>
                       {/if}
                     </div>
                   {/if}
 
                   <div class="quick-add-row">
-                    <button type="button" class="quiet-button small" onclick={() => duplicateSelectedFeatures()}>Duplicate</button>
-                    <button type="button" class="quiet-button small" onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit</button>
-                    <button type="button" class="quiet-button small danger" onclick={() => deleteSelectedFeatures()}>Delete</button>
+                    <button type="button" class="quiet-button small" onclick={() => duplicateSelectedFeatures()}
+                      >Duplicate</button>
+                    <button
+                      type="button"
+                      class="quiet-button small"
+                      onclick={() => editor?.fitSelection(selectedFeatureIds)}>Fit</button>
+                    <button type="button" class="quiet-button small danger" onclick={() => deleteSelectedFeatures()}
+                      >Delete</button>
                   </div>
                   <p class="field-hint">Shift-click adds to selection. Alt-click a vertex to delete it.</p>
                 </div>
@@ -2786,7 +3214,10 @@ onMount(() => {
             {/if}
 
             {#if !physicalMap}
-              <p class="section-note foot-note">Base geography is read-only. Point, line, polygon, rectangle, and freehand edits save through the canonical GeoJSON source. Delete removes the selected feature.</p>
+              <p class="section-note foot-note">
+                Base geography is read-only. Point, line, polygon, rectangle, and freehand edits save through the
+                canonical GeoJSON source. Delete removes the selected feature.
+              </p>
             {/if}
           </div>
         </aside>
@@ -2801,7 +3232,12 @@ onMount(() => {
       {#if physicalMap && !studioOpen}
         <div class="stage">
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <div class="canvas" class:picking={picking || linkArming} tabindex="0" role="application" aria-label="Physical world map">
+          <div
+            class="canvas"
+            class:picking={picking || linkArming}
+            tabindex="0"
+            role="application"
+            aria-label="Physical world map">
             <div class="map-host" bind:this={host}></div>
             {#if editor}
               <MapViewControls
@@ -2842,7 +3278,9 @@ onMount(() => {
                 {/if}
               </span>
             </div>
-            {#if dirty}<p class="epoch-dirty-hint">Save or undo authored changes before changing the physical epoch.</p>{/if}
+            {#if dirty}<p class="epoch-dirty-hint">
+                Save or undo authored changes before changing the physical epoch.
+              </p>{/if}
             {#if busy || epochBusy}
               <div class="map-busy" role="status">
                 <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>
@@ -3061,7 +3499,9 @@ onMount(() => {
   background: var(--surface, #fffefa);
   color: var(--ink-faint);
   box-shadow: 0 1px 2px rgba(34, 40, 34, 0.04);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .map-search:focus-within > label {
   border-color: var(--line-strong, #d9cdbd);
@@ -3115,7 +3555,7 @@ onMount(() => {
   border: 1px solid var(--line, #e4e1d8);
   border-radius: 10px;
   background: var(--surface, #fffefa);
-  box-shadow: var(--shadow-md, 0 8px 24px rgba(38,42,33,0.12));
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(38, 42, 33, 0.12));
 }
 .map-search-results button {
   display: grid;
@@ -3417,15 +3857,19 @@ onMount(() => {
   border-radius: 10px;
   background: var(--surface, #fffefa);
   overflow: hidden;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .layer-card:hover {
   border-color: var(--line-strong, #d9cdbd);
-  box-shadow: 0 1px 6px rgba(38,42,33,0.06);
+  box-shadow: 0 1px 6px rgba(38, 42, 33, 0.06);
 }
 .layer-card.active {
   border-color: var(--accent-soft, #c99965);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-soft) 22%, transparent), 0 2px 10px rgba(38,42,33,0.07);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent-soft) 22%, transparent),
+    0 2px 10px rgba(38, 42, 33, 0.07);
 }
 .layer-card.locked {
   opacity: 0.92;
@@ -3581,8 +4025,14 @@ onMount(() => {
   animation: layer-menu-in 0.12s ease;
 }
 @keyframes layer-menu-in {
-  from { opacity: 0; transform: translateY(-2px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .layer-menu-item {
   display: flex;
@@ -3655,10 +4105,18 @@ onMount(() => {
   cursor: pointer;
   list-style: none;
 }
-.layer-advanced summary::-webkit-details-marker { display: none; }
-.layer-advanced[open] summary { border-bottom: 1px solid var(--line, #e4e1d8); }
-.layer-advanced summary:hover { color: var(--ink); }
-.layer-advanced .detail-grid { padding: 8px; }
+.layer-advanced summary::-webkit-details-marker {
+  display: none;
+}
+.layer-advanced[open] summary {
+  border-bottom: 1px solid var(--line, #e4e1d8);
+}
+.layer-advanced summary:hover {
+  color: var(--ink);
+}
+.layer-advanced .detail-grid {
+  padding: 8px;
+}
 .layer-card-toolbar,
 .raster-card-toolbar {
   display: flex;
@@ -3961,7 +4419,9 @@ onMount(() => {
   cursor: pointer;
   list-style: none;
 }
-.sub-section summary::-webkit-details-marker { display: none; }
+.sub-section summary::-webkit-details-marker {
+  display: none;
+}
 .sub-section[open] summary {
   border-bottom: 1px solid var(--line, #e4e1d8);
 }
@@ -4203,7 +4663,7 @@ button:focus-visible {
 @media (max-width: 900px) {
   .editor-body {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 6px  minmax(320px, 1fr);
+    grid-template-rows: auto 6px minmax(320px, 1fr);
   }
   .map-layers-panel {
     max-height: 42vh;
@@ -4224,5 +4684,4 @@ button:focus-visible {
     animation: none !important;
   }
 }
-
 </style>

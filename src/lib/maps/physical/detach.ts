@@ -110,18 +110,15 @@ function limit(message: string): PhysicalDetachError {
 
 export function buildPhysicalDetachPlan(input: BuildPhysicalDetachPlanInput): PhysicalDetachPlan | PhysicalDetachError {
   const { sourceLayer } = input;
-  if (
-    !isPhysicalDerivedLayerId(sourceLayer.id) ||
-    sourceLayer.kind !== "vector" ||
-    !sourceLayer.locked
-  ) {
+  if (!isPhysicalDerivedLayerId(sourceLayer.id) || sourceLayer.kind !== "vector" || !sourceLayer.locked) {
     return { code: "physical.detach.invalid-layer", message: "This physical layer cannot be detached for editing." };
   }
 
   const all = physicalFeaturesForLayer(input.collection, sourceLayer.id);
-  const source = input.scope === "selected"
-    ? selectedPhysicalFeatures(input.collection, sourceLayer.id, input.selectedIds ?? [])
-    : all;
+  const source =
+    input.scope === "selected"
+      ? selectedPhysicalFeatures(input.collection, sourceLayer.id, input.selectedIds ?? [])
+      : all;
   if (source.length === 0) {
     return { code: "physical.detach.empty", message: "This physical layer has no generated features to detach." };
   }

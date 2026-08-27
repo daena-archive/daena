@@ -606,7 +606,10 @@ export function detachPhysicalFeaturesCommand(input: {
         withLayers(document, [...layers, JSON.parse(JSON.stringify(input.targetLayer)) as VectorLayerDefinition]),
         {
           type: "FeatureCollection",
-          features: [...document.collection.features, ...input.copies.map((feature) => JSON.parse(JSON.stringify(feature)))],
+          features: [
+            ...document.collection.features,
+            ...input.copies.map((feature) => JSON.parse(JSON.stringify(feature))),
+          ],
         },
       );
     },

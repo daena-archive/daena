@@ -116,7 +116,8 @@ export function nativeFeatureStyle(
   if (!layer?.defaultVisible) return undefined;
   const style = resolvedStyle(feature, layer);
   const label = resolvedLabel(feature, style);
-  const text = labelRenderingEnabled(state, layerId ?? "") && labelVisible(label, state.zoom) ? labelText(feature, label) : "";
+  const text =
+    labelRenderingEnabled(state, layerId ?? "") && labelVisible(label, state.zoom) ? labelText(feature, label) : "";
   const key = JSON.stringify([style, label, text, state.hovered, state.selected]);
   return cacheStyle(key, () => {
     const fillColor = state.selected ? "rgba(213, 171, 108, 0.56)" : colorWithOpacity(style.fill, style.fillOpacity);

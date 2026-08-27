@@ -38,10 +38,21 @@ for (const path of components) {
   assert.doesNotMatch(source, /https?:\/\//i, `${path} must not embed a remote resource`);
 }
 
-const acceptedPhysicalEditor = readFileSync(resolve(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"), "utf8");
+const acceptedPhysicalEditor = readFileSync(
+  resolve(root, "src/lib/maps/native-vector/NativeVectorMapEditor.svelte"),
+  "utf8",
+);
 assert.doesNotMatch(acceptedPhysicalEditor, /PhysicalWorldView/, "accepted physical maps use the OpenLayers adapter");
-assert.doesNotMatch(acceptedPhysicalEditor, /physicalLayerVisibility|withPhysicalVisibility/, "physical visibility is persisted in map layers");
-assert.match(acceptedPhysicalEditor, /allowLockedBoxSelection: physicalMap/, "physical maps allow locked box selection only through OpenLayers");
+assert.doesNotMatch(
+  acceptedPhysicalEditor,
+  /physicalLayerVisibility|withPhysicalVisibility/,
+  "physical visibility is persisted in map layers",
+);
+assert.match(
+  acceptedPhysicalEditor,
+  /allowLockedBoxSelection: physicalMap/,
+  "physical maps allow locked box selection only through OpenLayers",
+);
 
 for (const name of [
   "daena-atlas-relief.v1.json",

@@ -78,15 +78,27 @@ assert.equal(stack.document.layers[0].name, "Places", "the command stack owns a 
 // live in the document are protected from being dropped just because a resync payload
 // omits them.
 
-const lockedLayer = { ...baseLayer, id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", name: "Locked", order: 2, locked: true };
+const lockedLayer = {
+  ...baseLayer,
+  id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  name: "Locked",
+  order: 2,
+  locked: true,
+};
 const lockedFeature = {
-  type: "Feature", id: "locked-feature",
-  properties: { daena: { layerId: lockedLayer.id, semanticType: "region", name: "Locked", style: null, label: null, custom: {} } },
+  type: "Feature",
+  id: "locked-feature",
+  properties: {
+    daena: { layerId: lockedLayer.id, semanticType: "region", name: "Locked", style: null, label: null, custom: {} },
+  },
   geometry: { type: "Point", coordinates: [1, 1] },
 };
 const editableFeature = {
-  type: "Feature", id: "editable-feature",
-  properties: { daena: { layerId: baseLayer.id, semanticType: "region", name: "Editable", style: null, label: null, custom: {} } },
+  type: "Feature",
+  id: "editable-feature",
+  properties: {
+    daena: { layerId: baseLayer.id, semanticType: "region", name: "Editable", style: null, label: null, custom: {} },
+  },
   geometry: { type: "Point", coordinates: [0, 0] },
 };
 const protectedDocument = createMapDocument({
@@ -100,8 +112,11 @@ const protectedDocument = createMapDocument({
 // feature that legitimately lives in the document is entirely absent from the payload.
 const movedLockedFeature = { ...lockedFeature, geometry: { type: "Point", coordinates: [9, 9] } };
 const spuriousLockedFeature = {
-  type: "Feature", id: "derived-only-feature",
-  properties: { daena: { layerId: lockedLayer.id, semanticType: "region", name: "Derived", style: null, label: null, custom: {} } },
+  type: "Feature",
+  id: "derived-only-feature",
+  properties: {
+    daena: { layerId: lockedLayer.id, semanticType: "region", name: "Derived", style: null, label: null, custom: {} },
+  },
   geometry: { type: "Point", coordinates: [5, 5] },
 };
 const movedEditableFeature = { ...editableFeature, geometry: { type: "Point", coordinates: [2, 2] } };
@@ -114,7 +129,11 @@ const replaceCommand = captureReplaceCollection(protectedDocument, nextCollectio
 assert.ok(replaceCommand, "a genuinely different collection produces a command");
 const afterReplace = replaceCommand.apply(protectedDocument);
 const afterIds = afterReplace.collection.features.map((feature) => feature.id).sort();
-assert.deepEqual(afterIds, ["editable-feature", "locked-feature"], "locked-layer content is preserved verbatim and never sourced from the incoming payload");
+assert.deepEqual(
+  afterIds,
+  ["editable-feature", "locked-feature"],
+  "locked-layer content is preserved verbatim and never sourced from the incoming payload",
+);
 assert.deepEqual(
   afterReplace.collection.features.find((feature) => feature.id === "locked-feature").geometry.coordinates,
   [1, 1],
@@ -127,10 +146,10 @@ assert.deepEqual(
 );
 
 const restored = replaceCommand.invert(protectedDocument).apply(afterReplace);
-assert.deepEqual(
-  restored.collection.features.map((feature) => feature.id).sort(),
-  ["editable-feature", "locked-feature"],
-);
+assert.deepEqual(restored.collection.features.map((feature) => feature.id).sort(), [
+  "editable-feature",
+  "locked-feature",
+]);
 assert.deepEqual(
   restored.collection.features.find((feature) => feature.id === "editable-feature").geometry.coordinates,
   [0, 0],

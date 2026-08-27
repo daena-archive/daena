@@ -2,6 +2,7 @@ import type { Entity, EntityPage } from "$lib/project/client";
 
 export type WritingView = "manuscripts" | "reference";
 export type TimelineView = "events" | "eras" | "calendars";
+export type LanguagePane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
 export const WORKSPACE_MODULE_IDS = {
   lore: "daena.lore",

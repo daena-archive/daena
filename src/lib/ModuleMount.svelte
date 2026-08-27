@@ -1,5 +1,4 @@
 <script lang="ts">
-import { onMount } from "svelte";
 import type { ModuleContext, ModuleView } from "../../packages/module-api/src/index";
 
 let { view, context, className = "" }: { view: ModuleView; context: ModuleContext; className?: string } = $props();
@@ -7,14 +6,19 @@ let { view, context, className = "" }: { view: ModuleView; context: ModuleContex
 let container = $state<HTMLElement | null>(null);
 let error = $state("");
 
-onMount(() => {
-  if (!container) return;
+$effect(() => {
+  void view;
+  void context;
+  const target = container;
+  if (!target || !view) return;
+  error = "";
+  let cleanup: (() => void) | void;
   try {
-    const cleanup = view.mount(container, context);
-    return () => cleanup?.();
+    cleanup = view.mount(target, context);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
+  return () => cleanup?.();
 });
 </script>
 

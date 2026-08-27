@@ -253,6 +253,8 @@ export function buildModuleContext(
     availableServices?: ReadonlySet<string>;
     embedded?: boolean;
     onEntityDeleted?: () => void;
+    moduleState?: Record<string, unknown> | null;
+    onModuleStateChange?: (state: Record<string, unknown> | null) => void;
   },
 ): ModuleContext {
   void projectId;
@@ -291,6 +293,8 @@ export function buildModuleContext(
     module: manifest,
     focusEntityId: options?.focusEntityId,
     embedded: options?.embedded,
+    moduleState: options?.moduleState ?? null,
+    onModuleStateChange: options?.onModuleStateChange,
     services: {
       isAvailable: (name, major) => options?.availableServices?.has(`${name}@${major}`) ?? false,
     },

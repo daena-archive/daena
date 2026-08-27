@@ -37,6 +37,7 @@ export type ShellLocation =
       collection: WorkspaceCollectionLocation;
       panes: WorkspacePaneDimensions;
       surfaceScrollTop: number;
+      moduleState?: Record<string, unknown> | null;
     }
   | {
       kind: "plugin";
@@ -62,6 +63,15 @@ export function emptyShellNavigationHistory(): ShellNavigationHistory {
   return { back: [], forward: [] };
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+}
+
 export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "home") return "home";
   if (location.kind === "settings") return `settings:${location.section}`;
@@ -80,6 +90,7 @@ export function shellLocationKey(location: ShellLocation): string {
       ...location.collection,
       scrollTop: Math.round(location.collection.scrollTop),
     },
+    moduleState: location.moduleState ? stableStringify(location.moduleState) : "null",
   })}`;
 }
 
@@ -91,7 +102,7 @@ export function recordShellLocation(history: ShellNavigationHistory, current: Sh
   if (history.back.at(-1) && sameShellLocation(history.back.at(-1)!, current)) {
     return {
       back: [...history.back.slice(0, -1), current],
-      forward: [],
+      forward: history.forward,
     };
   }
   return {

@@ -66,6 +66,22 @@ function setBreadcrumbExtra(items: BreadcrumbItem[]) {
 }
 
 $effect(() => {
+  const externalPane = (context.moduleState?.pane as Pane) ?? "overview";
+  if (externalPane !== pane) {
+    // History restoration: update local pane without recording new history.
+    // Respect leave guards by attempting to leave; if blocked, revert shell state.
+    void (async () => {
+      if (!(await canLeave())) {
+        // Revert shell to local pane
+        context.onModuleStateChange?.({ pane });
+        return;
+      }
+      pane = externalPane;
+    })();
+  }
+});
+
+$effect(() => {
   void pane;
   breadcrumbExtra = [];
 });
@@ -93,6 +109,14 @@ async function canLeave() {
   }
   return true;
 }
+
+$effect(() => {
+  // Expose guard to shell for history navigation (Back/Forward leaving language)
+  (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage = canLeave;
+  return () => {
+    delete (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage;
+  };
+});
 
 let mutationCounter = 0;
 
@@ -147,7 +171,11 @@ async function loadLanguage(entityId: string) {
 async function switchPane(id: Pane) {
   if (pane === id) return;
   if (!(await canLeave())) return;
-  pane = id;
+  if (context.onModuleStateChange) {
+    context.onModuleStateChange({ pane: id });
+  } else {
+    pane = id;
+  }
 }
 
 async function openLinkedLexeme(lexemeId: string) {
@@ -157,7 +185,11 @@ async function openLinkedLexeme(lexemeId: string) {
     pendingLexemeId = null;
     return;
   }
-  pane = "lexicon";
+  if (context.onModuleStateChange) {
+    context.onModuleStateChange({ pane: "lexicon" });
+  } else {
+    pane = "lexicon";
+  }
 }
 
 function clearPendingLexeme() {

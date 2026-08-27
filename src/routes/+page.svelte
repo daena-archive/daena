@@ -54,6 +54,7 @@ import {
   collectionEntityTypes,
   presentCollectionPage,
   DEFAULT_COLLECTION_QUERY,
+  type LanguagePane,
   type TimelineView,
   type WorkspaceSection,
   type ProjectSection,
@@ -287,6 +288,7 @@ let shellNavigationRestoring = false;
 let section = $state<WorkspaceSection>("lore");
 let writingView = $state<WritingView>("manuscripts");
 let timelineView = $state<TimelineView>("events");
+let languagePane = $state<LanguagePane>("overview");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
@@ -1412,6 +1414,24 @@ function currentWorkspaceLocationView(): WorkspaceLocationView {
   return "default";
 }
 
+function currentModuleState(): Record<string, unknown> | null {
+  if (section === "language") return { pane: languagePane };
+  return null;
+}
+
+function restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
+  if (section === "language") {
+    if (state && typeof state.pane === "string") {
+      const pane = state.pane as LanguagePane;
+      if (["overview", "lexicon", "sounds", "writing", "grammar", "forms", "samples"].includes(pane)) {
+        languagePane = pane;
+        return;
+      }
+    }
+    languagePane = "overview";
+  }
+}
+
 function currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
   const pendingScrollTop = pendingCollectionScroll?.section === section ? pendingCollectionScroll.scrollTop : null;
   return {
@@ -1628,6 +1648,7 @@ function currentShellLocation(): ShellLocation {
     collection: currentWorkspaceCollectionLocation(),
     panes: currentWorkspacePaneDimensions(),
     surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
+    moduleState: currentModuleState(),
   };
 }
 
@@ -2090,6 +2111,7 @@ async function switchSection(next: WorkspaceSection) {
   if (!(await flushAutoSave())) return;
   if (section === next && !projectHomeOpen && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings)
     return;
+  if (section === "language" && next !== "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
@@ -2107,6 +2129,7 @@ async function switchSection(next: WorkspaceSection) {
 async function openProjectHome() {
   if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView && !projectionView)) return;
   if (!(await flushAutoSave())) return;
+  if (section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
@@ -2147,6 +2170,49 @@ async function switchTimelineView(next: TimelineView) {
   timelineView = next;
   clearSelection();
   collectionQuery.textSearch = "";
+}
+
+async function switchLanguagePane(next: LanguagePane) {
+  if (!(await flushAutoSave())) return;
+  if (languagePane === next && !projectHomeOpen && section === "language") return;
+  const departure = currentShellLocation();
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
+  languagePane = next;
+}
+
+async function canLeaveLanguageSection(): Promise<boolean> {
+  if (section !== "language") return true;
+  try {
+    const fn = (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage as
+      | (() => Promise<boolean> | boolean)
+      | undefined;
+    if (typeof fn === "function") return await fn();
+  } catch {}
+  return true;
+}
+
+function dismissTransientMenus(): boolean {
+  let dismissed = false;
+  if (filterOpen) {
+    filterOpen = false;
+    dismissed = true;
+  }
+  if (showProjectMenu) {
+    showProjectMenu = false;
+    dismissed = true;
+  }
+  if (quickOpenOpen) {
+    closeQuickOpen();
+    dismissed = true;
+  }
+  if (showCreateForm) {
+    closeCreateForm();
+    // closeCreateForm may prompt; treat as dismissed
+    dismissed = true;
+  }
+  return dismissed;
 }
 
 function sectionLabel() {
@@ -2397,6 +2463,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
         await switchTimelineView(target.timelineView);
       } else if (target.section === "writing") {
         await switchWritingView(target.writingView);
+      } else if (target.section === "language") {
+        restoreModuleState(target.section, target.moduleState);
       }
       await tick();
       await applyWorkspaceCollectionLocation(target.collection);
@@ -2423,6 +2491,7 @@ function shellLocationAvailable(target: ShellLocation) {
 
 async function navigateShellHistory(direction: "back" | "forward") {
   if (shellNavigationBusy) return;
+  if (dismissTransientMenus()) return;
   const current = currentShellLocation();
   let history = shellNavigationHistory;
   let transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
@@ -2435,6 +2504,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
     transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   }
   if (!transition) return;
+  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
     if (await restoreShellLocation(transition.target)) shellNavigationHistory = transition.history;
@@ -3952,6 +4022,7 @@ async function rebindMapLocation(location: MapLocation) {
 async function selectEntity(entity: Entity, recordHistory = true) {
   if (selected?.id === entity.id) return;
   if (!(await flushAutoSave())) return;
+  if (section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
   if (recordHistory) recordShellDeparture(departure);
@@ -4963,42 +5034,44 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
     plugin.id === id ? { ...plugin, enabled, runtimeRunning: enabled ? plugin.runtimeRunning : false } : plugin,
   );
 }
-async function openSettings(section: SettingsSection = "general") {
+async function openSettings(nextSection: SettingsSection = "general") {
   if (!(await flushAutoSave())) return;
-  if (showSettings && settingsSurface === "application" && settingsSection === section) return;
+  if (showSettings && settingsSurface === "application" && settingsSection === nextSection) return;
+  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   if (showSettings && !(await beforeAdministrationNavigate())) return;
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   showSettings = true;
   settingsSurface = "application";
-  settingsSection = section;
+  settingsSection = nextSection;
   projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
 }
-async function openProjectCenter(section: ProjectSection = "overview") {
+async function openProjectCenter(nextSection: ProjectSection = "overview") {
   if (!ready || !(await flushAutoSave())) return;
-  if (showSettings && settingsSurface === "project" && projectSection === section) return;
+  if (showSettings && settingsSurface === "project" && projectSection === nextSection) return;
+  if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   const wasEditingFields =
     showSettings && settingsSurface === "project" && projectSection === "fields" && !!schemaPluginId;
-  if (showSettings && !(await beforeAdministrationNavigate(section))) return;
+  if (showSettings && !(await beforeAdministrationNavigate(nextSection))) return;
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   showSettings = true;
   settingsSurface = "project";
-  projectSection = section;
+  projectSection = nextSection;
   projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
-  if (section === "extensions") {
+  if (nextSection === "extensions") {
     adminPlugins = null;
     await refreshAdmin();
   }
-  if (section === "fields") {
+  if (nextSection === "fields") {
     if (schemaPluginId && !moduleSupportsSchemaOverlay(schemaPluginId)) {
       schemaPluginId = null;
       schemaPluginName = "";
@@ -5008,7 +5081,7 @@ async function openProjectCenter(section: ProjectSection = "overview") {
       await refreshModuleSchemaEditor(schemaPluginId);
     }
   }
-  if (section === "advanced") {
+  if (nextSection === "advanced") {
     showAiIndexMessage("");
     await refreshAiIndexStatus();
   }
@@ -6977,6 +7050,11 @@ onMount(() => {
                 focusEntityId: selected?.id as UUID | undefined,
                 availableServices: enabledServices(),
                 onEntityDeleted: loadEntities,
+                moduleState: { pane: languagePane },
+                onModuleStateChange: (state: Record<string, unknown> | null) => {
+                  const next = (state as { pane?: LanguagePane } | null)?.pane;
+                  if (next && next !== languagePane) void switchLanguagePane(next);
+                },
               })}
               className="language-mount" />
           {/key}

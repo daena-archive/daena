@@ -225,6 +225,64 @@ const visibleRelationshipFields = $derived(
       .filter((row: any) => row.targets.length > 0);
   })(),
 );
+function parseRelationshipMetadata(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+function definitionForRelationshipType(type: string): any | null {
+  for (const schema of schemas as any[]) {
+    for (const field of (schema.fields ?? []) as any[]) {
+      if (field.type === "relationship" && field.relationshipType === type) return field;
+    }
+  }
+  return null;
+}
+function formatAttributeValue(value: unknown, field: any | null): string {
+  if (field?.type === "date") {
+    try {
+      if (parseCalendarDate(value)) return formatCalendarDate(value as any);
+    } catch {}
+  }
+  return fieldDisplay(value);
+}
+function attributesForRelationship(relationship: any): Array<{ key: string; label: string; value: string }> {
+  const metadata = parseRelationshipMetadata(relationship.metadata);
+  const definition = definitionForRelationshipType(relationship.relationship_type);
+  const fields: any[] = definition?.metadataFields ?? [];
+  if (fields.length > 0) {
+    return fields
+      .map((field) => {
+        const raw = metadata[field.key];
+        if (isEmptyValue(raw)) return null;
+        return { key: field.key, label: field.label ?? humanizeType(field.key), value: formatAttributeValue(raw, field) };
+      })
+      .filter((row): row is { key: string; label: string; value: string } => row !== null && row.value !== "");
+  }
+  // Fallback: raw metadata keys when no definition
+  return Object.entries(metadata)
+    .filter(([, v]) => !isEmptyValue(v))
+    .map(([key, raw]) => ({ key, label: humanizeType(key), value: fieldDisplay(raw) }))
+    .filter((row) => row.value !== "");
+}
+const enrichedOutbound = $derived(
+  outbound.map((relationship: any) => ({
+    ...relationship,
+    attributes: attributesForRelationship(relationship),
+  })),
+);
+const enrichedInbound = $derived(
+  inbound.map((relationship: any) => ({
+    ...relationship,
+    attributes: attributesForRelationship(relationship),
+  })),
+);
 const imageContextChoices = $derived(
   (() => {
     if (!entity) return [] as ImageContextChoice[];
@@ -707,18 +765,23 @@ function handleEdit() {
               {#if outbound.length === 0 && inbound.length === 0}
                 <p class="card-empty">No linked pages yet.</p>
               {:else}
-                {#if outbound.length > 0}<h3>From this page</h3>
+                {#if enrichedOutbound.length > 0}<h3>From this page</h3>
                   <ul>
-                    {#each outbound as relationship}<li>
+                    {#each enrichedOutbound as relationship}<li>
                         <span>{humanizeType(relationship.relationship_type)}</span><button
                           type="button"
                           onclick={() => openEntity(relationship.target_id)}
                           >{entityName(relationship.target_id)}</button>
+                        {#if relationship.attributes.length > 0}
+                          <div class="wiki-attr-row" aria-label="Relationship details">
+                            {#each relationship.attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span>{/each}
+                          </div>
+                        {/if}
                       </li>{/each}
                   </ul>{/if}
-                {#if inbound.length > 0}<h3>Links here</h3>
+                {#if enrichedInbound.length > 0}<h3>Links here</h3>
                   <ul>
-                    {#each inbound as relationship}<li>
+                    {#each enrichedInbound as relationship}<li>
                         <span>{humanizeType(relationship.relationship_type)}</span><button
                           type="button"
                           onclick={() => openEntity(relationship.source_id)}
@@ -727,6 +790,11 @@ function handleEdit() {
                               ? ` · ${labelForType(entityTypeOf(relationship.source_id))}`
                               : ""}</small
                           ></button>
+                        {#if relationship.attributes.length > 0}
+                          <div class="wiki-attr-row" aria-label="Relationship details">
+                            {#each relationship.attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span>{/each}
+                          </div>
+                        {/if}
                       </li>{/each}
                   </ul>{/if}
               {/if}
@@ -1238,6 +1306,35 @@ function handleEdit() {
 }
 .connections-card button small {
   color: var(--theme-neutral-text-muted, #939993);
+}
+.wiki-attr-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.wiki-attr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid var(--theme-neutral-border, #e5e8e2);
+  border-radius: 999px;
+  background: var(--theme-success-bg, #f8f9f7);
+  color: var(--theme-neutral-text-soft, #59645b);
+  font-size: 9px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wiki-attr-chip strong {
+  color: var(--theme-neutral-text-muted, #8b928b);
+  font-weight: 700;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .card-empty {
   margin: 10px 15px 15px;

@@ -97,6 +97,27 @@ let grammarSaving = $state(false);
 
 let lastLoadedLanguage: string | null = null;
 
+function starterDismissKey(languageId: string | null): string | null {
+  return languageId ? `daena:language:starter-dismissed:${languageId}` : null;
+}
+function loadStarterDismissed(languageId: string | null): boolean {
+  const key = starterDismissKey(languageId);
+  if (!key) return false;
+  try {
+    return localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+function persistStarterDismissed(languageId: string | null, dismissed: boolean): void {
+  const key = starterDismissKey(languageId);
+  if (!key) return;
+  try {
+    if (dismissed) localStorage.setItem(key, "true");
+    else localStorage.removeItem(key);
+  } catch {}
+}
+
 $effect(() => {
   const languageId = selectedLanguage?.id ?? null;
   void languageId;
@@ -107,7 +128,17 @@ $effect(() => {
   }
   lastLoadedLanguage = languageId;
   grammarUi = emptyGrammarUiState();
+  if (loadStarterDismissed(languageId)) {
+    grammarUi.starterDismissed = true;
+  }
   untrack(() => void loadGrammar());
+});
+
+$effect(() => {
+  if (!active) return;
+  if (grammarUi.starterDismissed) {
+    persistStarterDismissed(selectedLanguage?.id ?? null, true);
+  }
 });
 
 $effect(() => {
@@ -326,6 +357,7 @@ function advanceStarter(current: GrammarSystemId) {
   const next = nextStarterSystem(grammarUi.index, current);
   if (!next) {
     grammarUi.starterDismissed = true;
+    persistStarterDismissed(selectedLanguage?.id ?? null, true);
     grammarUi.starterCurrent = undefined;
     grammarUi.editing = null;
     grammarUi.section = null;
@@ -346,6 +378,7 @@ async function handleSkip() {
 async function handleExitStarter() {
   if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.starterDismissed = true;
+  persistStarterDismissed(selectedLanguage?.id ?? null, true);
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }
@@ -355,6 +388,7 @@ async function handleStartStarter() {
   const next = nextStarterSystem(grammarUi.index);
   if (!next) {
     grammarUi.starterDismissed = true;
+    persistStarterDismissed(selectedLanguage?.id ?? null, true);
     return;
   }
   grammarUi.query = "";
@@ -367,6 +401,7 @@ async function handleStartStarter() {
 async function handleDismissStarter() {
   if (!(await tryLeaveGrammar(grammarUi, windowConfirm))) return;
   grammarUi.starterDismissed = true;
+  persistStarterDismissed(selectedLanguage?.id ?? null, true);
   grammarUi.starterCurrent = undefined;
   grammarUi.editing = null;
 }

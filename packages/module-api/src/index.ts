@@ -283,6 +283,9 @@ export interface ModuleContext {
   readonly embedded?: boolean;
   /** Optional host chrome hook for projection surfaces under WorkspaceTopbar. */
   reportSurfaceMeta?(meta: { subtitle: string }): void;
+  /** Opaque module UI state that participates in shell history (e.g., active pane). */
+  readonly moduleState?: Record<string, unknown> | null;
+  readonly onModuleStateChange?: (state: Record<string, unknown> | null) => void;
   readonly services: {
     isAvailable(name: string, major: number): boolean;
   };

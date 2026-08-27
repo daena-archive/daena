@@ -1799,6 +1799,17 @@ function currentMapId() {
   return selected?.entity_type === "daena.maps:map" ? selected.id : null;
 }
 
+$effect(() => {
+  if (!mapProviderMenuOpen) return;
+  const handlePointerDown = (event: PointerEvent) => {
+    const target = event.target as Element | null;
+    if (target?.closest(".map-provider-menu") || target?.closest('[aria-haspopup="menu"]')) return;
+    mapProviderMenuOpen = null;
+  };
+  document.addEventListener("pointerdown", handlePointerDown, true);
+  return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+});
+
 type SavedMapEntry = Entity & { size: number };
 let savedMapsCache = $state<SavedMapEntry[] | null>(null);
 let savedMapsRequest = 0;
@@ -5799,7 +5810,8 @@ onMount(() => {
         summary={statusCenterSummary()}
         tone={statusCenterTone()}
         items={statusCenterItems()}
-        onOpenChange={(open) => open && void refreshProjectStatus()} />
+        onOpenChange={(open) => open && void refreshProjectStatus()}
+        onRefresh={refreshProjectStatus} />
     {/snippet}
     <GlobalToolbar
       {ready}
@@ -5868,11 +5880,10 @@ onMount(() => {
                             iconColor={optionIcon.iconColor}
                             pluginId={optionIcon.pluginId}
                             size={19}
-                            box={40} /><span class="create-template-copy"
-                            ><strong>{option.template.name}</strong><small
-                              >{option.template.description ?? option.template.entityType}</small
-                            ></span
-                          ><span class="create-template-arrow">›</span></button
+                            box={40} /><span class="create-template-copy"><strong>{option.template.name}</strong></span
+                          ><span class="create-template-arrow">›</span><span class="create-template-detail"
+                            ><small>{option.template.description ?? option.template.entityType}</small></span
+                          ></button
                         >{/each}
                     </div>
                   </section>{/each}
@@ -9700,6 +9711,7 @@ onMount(() => {
   place-items: center;
   padding: 20px;
   background: rgba(37, 37, 31, 0.28);
+  backdrop-filter: blur(4px);
 }
 .plugin-confirm-modal {
   z-index: 30;
@@ -9933,7 +9945,7 @@ onMount(() => {
 .create-dialog {
   display: flex;
   flex-direction: column;
-  width: min(820px, 100%);
+  width: min(960px, 100%);
   max-height: min(780px, calc(100vh - 32px));
   padding: 0;
   overflow: hidden;
@@ -10014,10 +10026,10 @@ onMount(() => {
 .create-template-card {
   display: grid;
   min-height: 132px;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto 1fr;
-  align-content: start;
-  gap: 13px 8px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-content: center;
+  gap: 6px 10px;
   width: 100%;
   padding: 15px;
   border: 1px solid var(--line);
@@ -10041,23 +10053,27 @@ onMount(() => {
 .create-template-card :global(.entity-glyph) {
   grid-row: 1;
   grid-column: 1;
+  align-self: center;
 }
 .create-template-copy {
-  grid-column: 1 / -1;
+  grid-row: 1;
+  grid-column: 2;
   min-width: 0;
+  align-self: center;
 }
-.create-template-copy strong,
-.create-template-copy small {
+.create-template-copy strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.create-template-copy strong {
   font-size: 13px;
 }
-.create-template-copy small {
+.create-template-detail {
+  grid-row: 2;
+  grid-column: 1 / 3;
+  min-width: 0;
+}
+.create-template-detail small {
   display: -webkit-box;
-  margin-top: 6px;
   color: var(--ink-faint);
   font-size: 10px;
   line-height: 1.45;
@@ -10065,9 +10081,13 @@ onMount(() => {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
+  overflow: hidden;
 }
 .create-template-arrow {
+  grid-row: 1 / span 2;
+  grid-column: 3;
   align-self: center;
+  justify-self: end;
   color: var(--ink-faint);
   font-size: 22px;
   line-height: 1;
@@ -10419,7 +10439,7 @@ onMount(() => {
   top: calc(100% + 6px);
   right: 0;
   display: grid;
-  min-width: 180px;
+  min-width: 220px;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -10434,6 +10454,7 @@ onMount(() => {
   color: var(--ink);
   text-align: left;
   font: inherit;
+  white-space: nowrap;
   cursor: pointer;
 }
 .map-provider-menu button:hover,

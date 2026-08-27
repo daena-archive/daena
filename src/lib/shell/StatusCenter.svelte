@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Activity, AlertTriangle, Check, ChevronRight, LoaderCircle, X } from "@lucide/svelte";
+import { Activity, AlertTriangle, Check, ChevronRight, LoaderCircle, RefreshCw, X } from "@lucide/svelte";
 
 export type StatusCenterTone = "neutral" | "success" | "busy" | "warning" | "danger";
 export type StatusCenterItem = {
@@ -17,20 +17,34 @@ let {
   tone = "neutral",
   items = [],
   onOpenChange,
+  onRefresh,
 }: {
   open?: boolean;
   summary: string;
   tone?: StatusCenterTone;
   items?: StatusCenterItem[];
   onOpenChange?: (open: boolean) => void;
+  onRefresh?: () => void | Promise<void>;
 } = $props();
 
 let trigger = $state<HTMLButtonElement | null>(null);
+let popoverEl = $state<HTMLDivElement | null>(null);
+let refreshing = $state(false);
 
 function setOpen(next: boolean, restoreFocus = false) {
   open = next;
   onOpenChange?.(next);
   if (!next && restoreFocus) trigger?.focus();
+}
+
+async function handleRefresh() {
+  if (refreshing || !onRefresh) return;
+  refreshing = true;
+  try {
+    await onRefresh();
+  } finally {
+    refreshing = false;
+  }
 }
 
 $effect(() => {
@@ -43,8 +57,18 @@ $effect(() => {
     setOpen(false, true);
   };
 
+  const handlePointerDown = (event: PointerEvent) => {
+    const target = event.target as Node;
+    if (popoverEl?.contains(target) || trigger?.contains(target)) return;
+    setOpen(false, true);
+  };
+
+  document.addEventListener("pointerdown", handlePointerDown, true);
   window.addEventListener("keydown", handleEscape, true);
-  return () => window.removeEventListener("keydown", handleEscape, true);
+  return () => {
+    document.removeEventListener("pointerdown", handlePointerDown, true);
+    window.removeEventListener("keydown", handleEscape, true);
+  };
 });
 </script>
 
@@ -69,16 +93,23 @@ $effect(() => {
     <span>{summary}</span>
   </button>
   {#if open}
-    <button class="status-backdrop" aria-label="Close project status" onclick={() => setOpen(false, true)}></button>
     <div
+      bind:this={popoverEl}
       id="status-center-popover"
       class="status-popover"
       role="dialog"
       aria-modal="false"
       aria-labelledby="status-center-title">
       <header>
-        <div><span>PROJECT STATUS</span><strong id="status-center-title">What Daena is doing</strong></div>
-        <button aria-label="Close project status" onclick={() => setOpen(false, true)}><X size={15} /></button>
+        <div class="status-header-title">
+          <span>PROJECT STATUS</span><strong id="status-center-title">What Daena is doing</strong>
+        </div>
+        <div class="status-header-actions">
+          <button type="button" aria-label="Refresh project status" disabled={refreshing} onclick={handleRefresh}>
+            <RefreshCw size={15} class={refreshing ? "spin" : undefined} />
+          </button>
+          <button aria-label="Close project status" onclick={() => setOpen(false, true)}><X size={15} /></button>
+        </div>
       </header>
       <div class="status-items" aria-live="polite">
         {#each items as item (item.id)}
@@ -144,13 +175,6 @@ $effect(() => {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.status-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 19;
-  border: 0;
-  background: transparent;
-}
 .status-popover {
   position: absolute;
   z-index: 20;
@@ -172,7 +196,7 @@ $effect(() => {
   border-bottom: 1px solid var(--line);
   background: var(--surface-subtle);
 }
-.status-popover header div {
+.status-popover header .status-header-title {
   display: grid;
   gap: 3px;
 }
@@ -185,6 +209,11 @@ $effect(() => {
 .status-popover header strong {
   color: var(--ink);
   font: 600 15px var(--font-display);
+}
+.status-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 .status-popover header button {
   display: grid;

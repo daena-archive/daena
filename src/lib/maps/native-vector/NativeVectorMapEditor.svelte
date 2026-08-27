@@ -1642,6 +1642,10 @@ function renameLayer(layer: MapLayerDefinition, name: string) {
   dispatchCommand(renameLayerCommand(layer.id, trimmed, layer.name));
 }
 
+function focusOnMount(node: HTMLInputElement) {
+  node.focus();
+}
+
 function moveLayer(layer: MapLayerDefinition, direction: -1 | 1) {
   if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
   const index = listedLayers.findIndex((item) => item.id === layer.id);
@@ -2382,7 +2386,7 @@ onMount(() => {
                             <input
                               value={layer.name}
                               aria-label="Layer name"
-                              autofocus
+                              use:focusOnMount
                               onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
                               onkeydown={(event) => {
                                 if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
@@ -2491,7 +2495,7 @@ onMount(() => {
                       {/if}
 
                       {#if openCustomizeLayerId === layer.id}
-                        <div class="layer-customize" onclick={(event) => event.stopPropagation()}>
+                        <div class="layer-customize">
                           <div class="opacity-group">
                             <span class="customize-label">Opacity</span>
                             <label class="detail-range">
@@ -2730,11 +2734,7 @@ onMount(() => {
                           </div>
                         </div>
                         {#if openRasterMenuId === raster.id}
-                          <div
-                            class="layer-menu"
-                            role="menu"
-                            aria-label={`Actions for ${raster.name}`}
-                            onclick={(event) => event.stopPropagation()}>
+                          <div class="layer-menu" role="menu" tabindex="-1" aria-label={`Actions for ${raster.name}`}>
                             <button
                               type="button"
                               role="menuitem"
@@ -4058,17 +4058,6 @@ onMount(() => {
   opacity: 0.45;
   cursor: not-allowed;
 }
-.layer-menu-item.danger {
-  color: var(--danger, #a14f42);
-}
-.layer-menu-item.danger:hover:not(:disabled) {
-  background: var(--danger-bg, #fdf2ef);
-  color: var(--danger, #a14f42);
-}
-.layer-menu-item.active {
-  background: var(--accent-bg, #f2e4d2);
-  color: var(--accent, #b4773f);
-}
 .layer-menu-separator {
   height: 1px;
   margin: 2px 0;
@@ -4117,8 +4106,7 @@ onMount(() => {
 .layer-advanced .detail-grid {
   padding: 8px;
 }
-.layer-card-toolbar,
-.raster-card-toolbar {
+.layer-card-toolbar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -4148,11 +4136,6 @@ onMount(() => {
   background: var(--surface-muted);
   color: var(--ink);
 }
-.toolbar-btn.active {
-  border-color: var(--accent-soft);
-  background: var(--accent-bg);
-  color: var(--accent);
-}
 .toolbar-btn.danger {
   color: var(--danger, #a14f42);
 }
@@ -4163,16 +4146,6 @@ onMount(() => {
 .toolbar-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-.toolbar-spacer {
-  flex: 1;
-}
-.toolbar-meta {
-  color: var(--ink-faint);
-  font-weight: 500;
-  font-size: 10px;
-  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-  white-space: nowrap;
 }
 
 /* layer detail */
@@ -4633,15 +4606,6 @@ onMount(() => {
 .epoch-control span {
   color: #d8e3d9;
   font-size: 12px;
-}
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
 }
 .hint,
 .error {

@@ -263,6 +263,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+
       - name: Download packaged builds
         uses: actions/download-artifact@v4
         with:

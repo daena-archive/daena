@@ -1,7 +1,7 @@
 /** Provider-neutral Maps domain types. Provider-specific selectors stay opaque. */
 export type NormalizedPoint = readonly [number, number];
 
-export const MAP_ENTITY_TYPE = "daena.maps:map" as const;
+export const MAP_ENTITY_TYPE = "daena.maps:world-map" as const;
 export const MAP_NAMESPACE = "maps" as const;
 export const VECTOR_PROVIDER = "daena-openlayers" as const;
 export const PHYSICAL_PROVIDER = "daena-physical" as const;
@@ -26,9 +26,9 @@ export const VECTOR_MAX_LAYERS = 64;
 
 /** Hierarchy relationship types owned by `daena.maps`. */
 export const MAP_RELATIONSHIP = {
-  DETAIL_MAP: "daena.maps:detail-map",
-  OVERVIEW_MAP: "daena.maps:overview-map",
-  RELATED_MAP: "daena.maps:related-map",
+  DETAIL_MAP: "detail-map",
+  OVERVIEW_MAP: "overview-map",
+  RELATED_MAP: "related-map",
 } as const;
 
 export type MapRelationshipType = (typeof MAP_RELATIONSHIP)[keyof typeof MAP_RELATIONSHIP];

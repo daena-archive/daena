@@ -121,7 +121,7 @@ function invalidMessage(field: MetadataField, value: unknown): string {
 
 // --- Calendar-aware helpers (mirrors inspector) ---
 function worldCalendars() {
-  return entities.filter((entity) => entity.entity_type === "calendar" && !entity.deleted);
+  return entities.filter((entity) => entity.entity_type === "daena.timeline:calendar" && !entity.deleted);
 }
 function calendarDefinitionForId(calendarId: string | undefined): CalendarDefinition | null {
   if (isGregorianCalendarId(calendarId)) return null;

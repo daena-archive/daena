@@ -269,7 +269,7 @@ fn is_field_key(value: &str) -> bool {
 fn is_entity_type_id(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some('a'..='z'))
-        && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+        && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | ':'))
 }
 
 fn is_relationship_type(value: &str) -> bool {
@@ -1328,7 +1328,7 @@ mod tests {
                 field_type: "number".into(),
                 required: None,
                 options: None,
-                entity_types: Some(vec!["event".into()]),
+                entity_types: Some(vec!["daena.timeline:event".into()]),
                 relationship_type: None,
                 target_entity_types: None,
                 shared: false,
@@ -1357,7 +1357,7 @@ mod tests {
             version: SCHEMA_OVERLAY_VERSION,
             field_scope_overrides: vec![FieldScopeOverride {
                 field_key: "aliases".into(),
-                entity_types: vec!["person".into(), "faction".into()],
+                entity_types: vec!["daena.lore:person".into(), "daena.lore:faction".into()],
             }],
             template_overrides: vec![TemplateOverride {
                 template_id: "person".into(),
@@ -1379,7 +1379,10 @@ mod tests {
                 .iter()
                 .find(|field| field.key == "aliases")
                 .and_then(|field| field.entity_types.clone()),
-            Some(vec!["person".into(), "faction".into()])
+            Some(vec![
+                "daena.lore:person".into(),
+                "daena.lore:faction".into()
+            ])
         );
         let person = merged
             .templates
@@ -1400,7 +1403,7 @@ mod tests {
             version: SCHEMA_OVERLAY_VERSION,
             field_scope_overrides: vec![FieldScopeOverride {
                 field_key: "aliases".into(),
-                entity_types: vec!["faction".into()],
+                entity_types: vec!["daena.lore:faction".into()],
             }],
             template_overrides: vec![TemplateOverride {
                 template_id: "person".into(),
@@ -1586,9 +1589,9 @@ mod tests {
         let package = lore_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
-            disabled_entity_types: vec!["person".into()],
+            disabled_entity_types: vec!["daena.lore:person".into()],
             entity_type_appearance_overrides: vec![EntityTypeAppearanceOverride {
-                entity_type_id: "person".into(),
+                entity_type_id: "daena.lore:person".into(),
                 icon: Some(crate::IconRef::Catalog {
                     id: "person".into(),
                 }),
@@ -1612,7 +1615,7 @@ mod tests {
                 field_type: "date".into(),
                 required: None,
                 options: None,
-                entity_types: Some(vec!["person".into()]),
+                entity_types: Some(vec!["daena.lore:person".into()]),
                 relationship_type: None,
                 target_entity_types: None,
                 shared: false,
@@ -1693,7 +1696,7 @@ mod tests {
                 field_type: "date".into(),
                 required: None,
                 options: None,
-                entity_types: Some(vec!["faction".into()]),
+                entity_types: Some(vec!["daena.lore:faction".into()]),
                 relationship_type: None,
                 target_entity_types: None,
                 shared: true,

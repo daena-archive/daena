@@ -163,7 +163,8 @@ fn relationship_fields_require_valid_target_metadata() {
     assert!(validate_manifest(&manifest).is_err());
 
     let mut manifest = parse_manifest(json).unwrap();
-    manifest.schemas[0].fields[3].target_entity_types = Some(vec!["place".into(), "place".into()]);
+    manifest.schemas[0].fields[3].target_entity_types =
+        Some(vec!["daena.lore:place".into(), "daena.lore:place".into()]);
     assert!(validate_manifest(&manifest).is_err());
 }
 

@@ -835,8 +835,10 @@ function availableEditTypes(): string[] {
   if (selected?.entity_type) types.add(selected.entity_type);
   if (entityEditDialog?.entity.entity_type) types.add(entityEditDialog.entity.entity_type);
   // Ensure map type is selectable if maps module exists in any state
-  const hasMapDecl = modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:map")));
-  if (hasMapDecl) types.add("daena.maps:map");
+  const hasMapDecl = modules.some((m) =>
+    m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:world-map")),
+  );
+  if (hasMapDecl) types.add("daena.maps:world-map");
   return [...types].sort((a, b) => entityTypeLabel(a).localeCompare(entityTypeLabel(b)));
 }
 function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
@@ -847,8 +849,8 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
   }
   if (selected?.entity_type) enabled.add(selected.entity_type);
   if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
-  if (modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:map"))))
-    enabled.add("daena.maps:map");
+  if (modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:world-map"))))
+    enabled.add("daena.maps:world-map");
   const groups: Array<{ heading: string; types: string[] }> = [];
   for (const sec of workspaceSectionOrder) {
     const manifest = manifestForWorkspaceSection(sec);
@@ -880,10 +882,10 @@ function editTypeWarning(): string | null {
   const to = entityEditDialog.entityType;
   if (from === to) return null;
   // Maps and physical events have locked provider fields
-  if (from === "daena.maps:map" || to === "daena.maps:map") {
+  if (from === "daena.maps:world-map" || to === "daena.maps:world-map") {
     return "Maps store provider fields that only apply to maps. Changing away will hide map layers and source, changing into a map cannot restore them.";
   }
-  if (from === "language" || to === "language") {
+  if (from === "daena.language:language" || to === "daena.language:language") {
     return "Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.";
   }
   // Generic field/relationship hiding
@@ -897,14 +899,14 @@ const definitions = () => {
     selected?.entity_type ??
     (section === "timeline"
       ? timelineView === "eras"
-        ? "era"
+        ? "daena.timeline:era"
         : timelineView === "calendars"
-          ? "calendar"
-          : "event"
+          ? "daena.timeline:calendar"
+          : "daena.timeline:event"
       : section === "writing"
         ? writingView === "manuscripts"
-          ? "manuscript"
-          : "reference-page"
+          ? "daena.writing:manuscript"
+          : "daena.writing:reference-page"
         : undefined);
   return (
     activeManifest()
@@ -1070,14 +1072,14 @@ function defaultCreateOption(options: CreateOption[]) {
   const entityType =
     section === "timeline"
       ? timelineView === "eras"
-        ? "era"
+        ? "daena.timeline:era"
         : timelineView === "calendars"
-          ? "calendar"
-          : "event"
+          ? "daena.timeline:calendar"
+          : "daena.timeline:event"
       : section === "writing"
         ? writingView === "manuscripts"
-          ? "manuscript"
-          : "reference-page"
+          ? "daena.writing:manuscript"
+          : "daena.writing:reference-page"
         : null;
   return (
     options.find(
@@ -1174,7 +1176,7 @@ function createDateForField(key: string) {
   return parseCalendarDate(createFieldValues[key]);
 }
 function worldCalendars() {
-  return entities.filter((entity) => entity.entity_type === "calendar" && !entity.deleted);
+  return entities.filter((entity) => entity.entity_type === "daena.timeline:calendar" && !entity.deleted);
 }
 function calendarDefinitionForId(calendarId: string | undefined): CalendarDefinition | null {
   if (isGregorianCalendarId(calendarId)) return null;
@@ -1818,7 +1820,7 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
 }
 
 function currentMapId() {
-  return selected?.entity_type === "daena.maps:map" ? selected.id : null;
+  return selected?.entity_type === "daena.maps:world-map" ? selected.id : null;
 }
 
 $effect(() => {
@@ -1849,7 +1851,7 @@ $effect(() => {
       let offset = 0;
       while (true) {
         const page = await project.queryEntities({
-          entityTypes: ["daena.maps:map"],
+          entityTypes: ["daena.maps:world-map"],
           sortField: "updated_at",
           sortDirection: "desc",
           offset,
@@ -2097,11 +2099,12 @@ async function selectSearchResult(entity: Entity) {
     ),
   );
   section = owner && owner !== "maps" ? owner : "lore";
-  if (entity.entity_type === "reference-page") writingView = "reference";
-  if (entity.entity_type === "manuscript") writingView = "manuscripts";
-  if (entity.entity_type === "era") timelineView = "eras";
-  if (entity.entity_type === "calendar") timelineView = "calendars";
-  if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
+  if (entity.entity_type === "daena.writing:reference-page") writingView = "reference";
+  if (entity.entity_type === "daena.writing:manuscript") writingView = "manuscripts";
+  if (entity.entity_type === "daena.timeline:era") timelineView = "eras";
+  if (entity.entity_type === "daena.timeline:calendar") timelineView = "calendars";
+  if (entity.entity_type === "daena.timeline:event" || entity.entity_type === "daena.timeline:encounter")
+    timelineView = "events";
   projectHomeOpen = false;
   globalQuery = "";
   collectionQuery.textSearch = "";
@@ -3448,7 +3451,7 @@ async function refreshCalendarDefinitions() {
       return;
     }
     const context = contextFor("timeline");
-    const calendars = entities.filter((entity) => entity.entity_type === "calendar" && !entity.deleted);
+    const calendars = entities.filter((entity) => entity.entity_type === "daena.timeline:calendar" && !entity.deleted);
     await Promise.all(
       calendars.map(async (calendar) => {
         const records = await context.records.list("calendar-definition", calendar.id as UUID, { limit: 1 });
@@ -3910,10 +3913,10 @@ async function applyMapPick(anchor: unknown) {
       if (!(await leavePluginView())) return;
       recordShellDeparture(departure);
       section =
-        entity.entity_type === "event" ||
-        entity.entity_type === "encounter" ||
-        entity.entity_type === "era" ||
-        entity.entity_type === "calendar"
+        entity.entity_type === "daena.timeline:event" ||
+        entity.entity_type === "daena.timeline:encounter" ||
+        entity.entity_type === "daena.timeline:era" ||
+        entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
       await selectEntity(entity, false);
@@ -3927,10 +3930,10 @@ async function applyMapPick(anchor: unknown) {
         if (!(await leavePluginView())) return;
         recordShellDeparture(departure);
         section =
-          entity.entity_type === "event" ||
-          entity.entity_type === "encounter" ||
-          entity.entity_type === "era" ||
-          entity.entity_type === "calendar"
+          entity.entity_type === "daena.timeline:event" ||
+          entity.entity_type === "daena.timeline:encounter" ||
+          entity.entity_type === "daena.timeline:era" ||
+          entity.entity_type === "daena.timeline:calendar"
             ? "timeline"
             : "lore";
         await selectEntity(entity, false);
@@ -3948,17 +3951,17 @@ async function openMapEntityFromLink(entityId: string) {
     if (!entity) throw new Error("Linked entity was not found.");
     if (!entities.some((candidate) => candidate.id === entity.id)) entities = [...entities, entity];
     const target =
-      entity.entity_type === "person" ||
-      entity.entity_type === "place" ||
-      entity.entity_type === "faction" ||
-      entity.entity_type === "artifact" ||
-      entity.entity_type === "culture"
+      entity.entity_type === "daena.lore:person" ||
+      entity.entity_type === "daena.lore:place" ||
+      entity.entity_type === "daena.lore:faction" ||
+      entity.entity_type === "daena.lore:artifact" ||
+      entity.entity_type === "daena.lore:culture"
         ? "lore"
         : entity.entity_type?.startsWith("timeline") ||
-            entity.entity_type === "event" ||
-            entity.entity_type === "encounter" ||
-            entity.entity_type === "era" ||
-            entity.entity_type === "calendar"
+            entity.entity_type === "daena.timeline:event" ||
+            entity.entity_type === "daena.timeline:encounter" ||
+            entity.entity_type === "daena.timeline:era" ||
+            entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
     const departure = currentShellLocation();
@@ -4028,9 +4031,10 @@ async function selectEntity(entity: Entity, recordHistory = true) {
   if (recordHistory) recordShellDeparture(departure);
   editorFullscreen = false;
   selected = entity;
-  if (entity.entity_type === "era") timelineView = "eras";
-  if (entity.entity_type === "calendar") timelineView = "calendars";
-  if (entity.entity_type === "event" || entity.entity_type === "encounter") timelineView = "events";
+  if (entity.entity_type === "daena.timeline:era") timelineView = "eras";
+  if (entity.entity_type === "daena.timeline:calendar") timelineView = "calendars";
+  if (entity.entity_type === "daena.timeline:event" || entity.entity_type === "daena.timeline:encounter")
+    timelineView = "events";
   hasUnsavedChanges = false;
   documentConflict = null;
   documentRevision = 0;
@@ -4044,7 +4048,7 @@ async function selectEntity(entity: Entity, recordHistory = true) {
 }
 
 async function openSelectedMapEditor() {
-  if (!selected || selected.entity_type !== "daena.maps:map") return;
+  if (!selected || selected.entity_type !== "daena.maps:world-map") return;
   const mapsView = mapsNavigationItem();
   if (!mapsView) {
     error = "The Maps integration is not available.";
@@ -4178,11 +4182,15 @@ async function createWithOption(
           schemaEntityTypeIds(schema).includes(option.template.entityType),
         ),
       ) ?? section;
-    if (option.template.entityType === "manuscript") writingView = "manuscripts";
-    if (option.template.entityType === "reference-page") writingView = "reference";
-    if (option.template.entityType === "era") timelineView = "eras";
-    if (option.template.entityType === "calendar") timelineView = "calendars";
-    if (option.template.entityType === "event" || option.template.entityType === "encounter") timelineView = "events";
+    if (option.template.entityType === "daena.writing:manuscript") writingView = "manuscripts";
+    if (option.template.entityType === "daena.writing:reference-page") writingView = "reference";
+    if (option.template.entityType === "daena.timeline:era") timelineView = "eras";
+    if (option.template.entityType === "daena.timeline:calendar") timelineView = "calendars";
+    if (
+      option.template.entityType === "daena.timeline:event" ||
+      option.template.entityType === "daena.timeline:encounter"
+    )
+      timelineView = "events";
     projectHomeOpen = false;
     name = "";
     showCreateForm = false;
@@ -4684,11 +4692,12 @@ async function saveEntityEditDialog() {
       if (newSection && newSection !== section) {
         section = newSection;
         // Reconcile writing/timeline sub-views
-        if (updated.entity_type === "manuscript") writingView = "manuscripts";
-        else if (updated.entity_type === "reference-page") writingView = "reference";
-        else if (updated.entity_type === "era") timelineView = "eras";
-        else if (updated.entity_type === "calendar") timelineView = "calendars";
-        else if (updated.entity_type === "event" || updated.entity_type === "encounter") timelineView = "events";
+        if (updated.entity_type === "daena.writing:manuscript") writingView = "manuscripts";
+        else if (updated.entity_type === "daena.writing:reference-page") writingView = "reference";
+        else if (updated.entity_type === "daena.timeline:era") timelineView = "eras";
+        else if (updated.entity_type === "daena.timeline:calendar") timelineView = "calendars";
+        else if (updated.entity_type === "daena.timeline:event" || updated.entity_type === "daena.timeline:encounter")
+          timelineView = "events";
       }
       // Reload inspector state for new type's definitions
       await loadSelectedState(updated);
@@ -6338,10 +6347,10 @@ onMount(() => {
             </div>
             <div class="hero-stats">
               <span class="stat-pill"
-                ><Puzzle size={12} strokeWidth={1.8} aria-hidden="true" />
+                ><Puzzle size={16} strokeWidth={1.8} aria-hidden="true" />
                 {adminPlugins ? adminPlugins.length : 0} installed</span>
               <span class="stat-pill"
-                ><ShieldCheck size={12} strokeWidth={1.8} aria-hidden="true" />
+                ><ShieldCheck size={16} strokeWidth={1.8} aria-hidden="true" />
                 {adminPlugins ? adminPlugins.filter((p) => p.enabled).length : 0} enabled</span>
             </div>
           </div>
@@ -6712,11 +6721,36 @@ onMount(() => {
                 onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "header" ? null : "header")}
                 >Create map</button>
               {#if mapProviderMenuOpen === "header"}<div class="map-provider-menu" role="menu">
-                  <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                    >Create physical world</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                    >Import vector map</button>
-                  <button type="button" role="menuitem" onclick={() => void createMap("image")}>Import image</button>
+                  <div class="map-provider-row">
+                    <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                      >Generate physical world</button
+                    ><span class="map-help-wrapper"
+                      ><button type="button" class="map-help" aria-label="Help for Generate physical world">?</button
+                      ><span class="map-help-tooltip" role="tooltip"
+                        >Create a whole world from scratch — continents, oceans, climate and hazards are generated. The
+                        base world can't be edited directly; copy any part you want to change into an editable layer.</span
+                      ></span>
+                  </div>
+                  <div class="map-provider-row">
+                    <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                      >Import vector map</button
+                    ><span class="map-help-wrapper"
+                      ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button><span
+                        class="map-help-tooltip"
+                        role="tooltip"
+                        >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
+                      ></span>
+                  </div>
+                  <div class="map-provider-row">
+                    <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                      >Import image map</button
+                    ><span class="map-help-wrapper"
+                      ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
+                        class="map-help-tooltip"
+                        role="tooltip"
+                        >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
+                      ></span>
+                  </div>
                 </div>{/if}
             </div>{/if}
         {/snippet}
@@ -6749,7 +6783,7 @@ onMount(() => {
         style={workspaceGridStyle()}>
         {#snippet collectionControls()}
           <div class="collection-search">
-            <span><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span><input
+            <span><Search size={16} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label={`Search ${collectionLabel()}`}
               bind:value={collectionQuery.textSearch}
               placeholder={`Search ${collectionLabel()}`} /><button
@@ -6845,21 +6879,46 @@ onMount(() => {
                     aria-expanded={mapProviderMenuOpen === "empty"}
                     onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
                     ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                      ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
+                      ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
                   {#if mapProviderMenuOpen === "empty"}<div
                       class="map-provider-menu empty-map-provider-menu"
                       role="menu">
-                      <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                        >Create physical world</button>
-                      <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                        >Import vector map</button>
-                      <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                        >Import image</button>
+                      <div class="map-provider-row">
+                        <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                          >Generate physical world</button
+                        ><span class="map-help-wrapper"
+                          ><button type="button" class="map-help" aria-label="Help for Generate physical world"
+                            >?</button
+                          ><span class="map-help-tooltip" role="tooltip"
+                            >Create a whole world from scratch — continents, oceans, climate and hazards are generated.
+                            The base world can't be edited directly; copy any part you want to change into an editable
+                            layer.</span
+                          ></span>
+                      </div>
+                      <div class="map-provider-row">
+                        <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                          >Import vector map</button
+                        ><span class="map-help-wrapper"
+                          ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
+                          ><span class="map-help-tooltip" role="tooltip"
+                            >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
+                          ></span>
+                      </div>
+                      <div class="map-provider-row">
+                        <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                          >Import image map</button
+                        ><span class="map-help-wrapper"
+                          ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
+                            class="map-help-tooltip"
+                            role="tooltip"
+                            >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
+                          ></span>
+                      </div>
                     </div>{/if}
                 </div>
               {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
                   ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                    ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+                    ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span>
                   Create {createLabel()}</button
                 >{/if}
             </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
@@ -6868,17 +6927,17 @@ onMount(() => {
                 <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
                   ><span class="group-chevron"
                     >{#if expandedGroups.has(group.type)}<ChevronDown
-                        size={12}
+                        size={16}
                         strokeWidth={1.8}
                         aria-hidden="true" />{:else}<ChevronRight
-                        size={12}
+                        size={16}
                         strokeWidth={1.8}
                         aria-hidden="true" />{/if}</span
                   ><EntityGlyph
                     icon={groupIcon.icon}
                     iconColor={groupIcon.iconColor}
                     pluginId={groupIcon.pluginId}
-                    size={14}
+                    size={16}
                     box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
                 >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}<button
@@ -6889,11 +6948,11 @@ onMount(() => {
                         icon={rowIcon.icon}
                         iconColor={rowIcon.iconColor}
                         pluginId={rowIcon.pluginId}
-                        size={14}
+                        size={16}
                         box={40} /><span class="item-copy"
                         ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                       ><span class="item-arrow" aria-hidden="true"
-                        ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                        ><ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" /></span
                       ></button
                     >{/each}{/if}
               </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
@@ -6906,11 +6965,11 @@ onMount(() => {
                   icon={rowIcon.icon}
                   iconColor={rowIcon.iconColor}
                   pluginId={rowIcon.pluginId}
-                  size={14}
+                  size={16}
                   box={40} /><span class="item-copy"
                   ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
                 ><span class="item-arrow" aria-hidden="true"
-                  ><ChevronRight size={12} strokeWidth={1.8} aria-hidden="true" /></span
+                  ><ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" /></span
                 ></button
               >{/each}{/if}
         {/snippet}
@@ -6972,7 +7031,7 @@ onMount(() => {
         {:else if workbenchPaneVisibility.content}
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
-              {@const mapId = selected?.entity_type === "daena.maps:map" ? selected.id : null}
+              {@const mapId = selected?.entity_type === "daena.maps:world-map" ? selected.id : null}
               {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
               <div class="map-editor-shell">
@@ -7093,7 +7152,7 @@ onMount(() => {
                         aria-label={`Edit ${selected.name}`}
                         title="Edit name and type"
                         onclick={() => void openEntityEditDialog()}
-                        ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button
+                        ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button
                       >{/if}
                   </div>
                 </div>
@@ -7462,7 +7521,7 @@ onMount(() => {
                         oninput={(event) => updateField(definition, event)} />{/if}
                   </div>{/each}
               </section>
-              {#if selected?.entity_type === "calendar" && projectInfo}
+              {#if selected?.entity_type === "daena.timeline:calendar" && projectInfo}
                 <section class="inspector-section inspector-section-plain">
                   <CalendarEditor
                     context={contextFor("timeline")}
@@ -7516,14 +7575,14 @@ onMount(() => {
                                 type="button"
                                 aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
                                 onclick={() => openRelationshipMetadata(relationship)}
-                                ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                                ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                             {/if}
                             <button
                               class="quiet-button relationship-remove-button"
                               type="button"
                               aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
                               onclick={() => void confirmRemoveRelationship(definition, relationship)}
-                              ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+                              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                           </div>
                         </div>
                       {/each}
@@ -7537,7 +7596,7 @@ onMount(() => {
                   <span>{assets.length}</span>
                 </div>
                 <button class="drop-zone" type="button" onclick={attachAsset}
-                  ><span><Plus size={14} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
+                  ><span><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
                   ><small>Copied into this project</small></button
                 >{#each assets as asset (asset.id)}<button
                     type="button"
@@ -7629,7 +7688,7 @@ onMount(() => {
     {/if}
     {#if error}<div class="toast" role="alert" aria-live="assertive">
         {error}<button aria-label="Dismiss" onclick={() => (error = "")}
-          ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
   </section>
   {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
@@ -7725,9 +7784,7 @@ onMount(() => {
           {#if edit.entity.entity_type == null}<option value={null}>Uncategorized — no template</option>{/if}
           {#each groupedEditTypes() as group}
             <optgroup label={group.heading.toUpperCase()}>
-              {#each group.types as t}<option value={t}
-                  >{entityTypeLabel(t)}{t !== entityTypeLabel(t) ? ` · ${t}` : ""}</option
-                >{/each}
+              {#each group.types as t}<option value={t}>{entityTypeLabel(t)}</option>{/each}
             </optgroup>
           {/each}
         </select>
@@ -7736,8 +7793,7 @@ onMount(() => {
             ? workspaceSectionLabel(sectionForEntityType(edit.entityType)!)
             : edit.entityType
               ? "Other"
-              : "Uncategorized"}
-          {#if edit.entityType}· {edit.entityType}{/if}</small
+              : "Uncategorized"}</small
         ></label>
       {#if warning}<p class="plugin-warning entity-edit-warning" role="note">{warning}</p>{/if}
       <div class="new-form-actions">
@@ -10329,6 +10385,86 @@ onMount(() => {
 }
 .map-provider-menu button:disabled:hover {
   background: transparent;
+}
+.map-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.map-provider-row [role="menuitem"] {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+.map-help {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4f1ea;
+  font:
+    700 12px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  line-height: 1;
+  text-align: center;
+  cursor: help;
+}
+.map-help:hover,
+.map-help:focus-visible {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+.map-help-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.map-help-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--surface);
+  font: 400 11px/1.4 var(--font-body, system-ui, sans-serif);
+  box-shadow: 0 8px 20px rgba(38, 42, 33, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease,
+    visibility 0.15s;
+  z-index: 3;
+  pointer-events: none;
+}
+.map-help-tooltip::after {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+  transform: rotate(45deg);
+}
+.map-help-wrapper:hover .map-help-tooltip,
+.map-help:focus-visible + .map-help-tooltip,
+.map-help:focus + .map-help-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 .empty-map-provider-menu {
   top: calc(100% + 6px);

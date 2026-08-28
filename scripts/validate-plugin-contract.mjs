@@ -65,7 +65,7 @@ for (const name of ["lore", "timeline", "writing", "maps"]) {
     .filter((field) => field.type === "relationship")
     .map((field) => field.relationshipType)
     .sort();
-  const expected = ["daena.maps:detail-map", "daena.maps:overview-map", "daena.maps:related-map"];
+  const expected = ["detail-map", "overview-map", "related-map"];
   if (JSON.stringify(relationshipTypes) !== JSON.stringify(expected)) {
     throw new Error(
       `maps: expected hierarchy relationships ${expected.join(", ")}, got ${relationshipTypes.join(", ")}`,

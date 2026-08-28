@@ -2485,7 +2485,7 @@
       "packages/plugin-cli": {
         "packageJson": {
           "dependencies": [
-            "npm:@daena-archive/plugin-sdk@1.0.0",
+            "npm:@daena-archive/plugin-sdk@0.1.0",
             "npm:ajv@^8.20.0"
           ]
         }
@@ -2493,7 +2493,7 @@
       "packages/plugin-test-host": {
         "packageJson": {
           "dependencies": [
-            "npm:@daena-archive/plugin-sdk@1.0.0"
+            "npm:@daena-archive/plugin-sdk@0.1.0"
           ]
         }
       }

@@ -57,7 +57,7 @@ function entityTypeLabel(entityType: string | null | undefined): string {
 }
 
 function preferCreateType(options: CreateTypeOption[]): string {
-  return options.find((option) => option.value === "place")?.value ?? options[0]?.value ?? "";
+  return options.find((option) => option.value === "daena.lore:place")?.value ?? options[0]?.value ?? "";
 }
 
 async function refreshCreateTypes() {

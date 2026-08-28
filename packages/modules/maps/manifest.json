@@ -33,56 +33,56 @@
       "namespace": "maps",
       "entityTypes": [
         {
-          "id": "daena.maps:map",
-          "name": "Map",
+          "id": "world-map",
+          "name": "World map",
           "icon": { "kind": "catalog", "id": "map" },
           "iconColor": { "kind": "preset", "id": "ocean" }
         },
         {
-          "id": "daena.maps:physical-natural-event",
-          "name": "Physical natural event",
+          "id": "natural-event",
+          "name": "Natural event",
           "icon": { "kind": "catalog", "id": "storm" },
           "iconColor": { "kind": "preset", "id": "frost" }
         }
       ],
       "fields": [
-        { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["daena.maps:map"] },
+        { "key": "map", "label": "Map descriptor", "type": "text", "entityTypes": ["world-map"] },
         { "key": "locations", "label": "Location references", "type": "text", "shared": true },
         {
           "key": "physicalChronology",
           "label": "Physical chronology",
           "type": "text",
-          "entityTypes": ["daena.maps:physical-natural-event"],
+          "entityTypes": ["natural-event"],
           "shared": true
         },
-        { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["daena.maps:map"] },
+        { "key": "layers", "label": "Semantic layer definitions", "type": "text", "entityTypes": ["world-map"] },
         {
           "key": "physicalCalendarBinding",
           "label": "Physical calendar binding",
           "type": "text",
-          "entityTypes": ["daena.maps:map"]
+          "entityTypes": ["world-map"]
         },
-        { "key": "atlasPresets", "label": "Atlas render presets", "type": "text", "entityTypes": ["daena.maps:map"] },
+        { "key": "atlasPresets", "label": "Atlas render presets", "type": "text", "entityTypes": ["world-map"] },
         {
           "key": "detailMap",
           "label": "Detail map",
           "type": "relationship",
-          "relationshipType": "daena.maps:detail-map",
-          "targetEntityTypes": ["daena.maps:map"]
+          "relationshipType": "detail-map",
+          "targetEntityTypes": ["world-map"]
         },
         {
           "key": "overviewMap",
           "label": "Overview map",
           "type": "relationship",
-          "relationshipType": "daena.maps:overview-map",
-          "targetEntityTypes": ["daena.maps:map"]
+          "relationshipType": "overview-map",
+          "targetEntityTypes": ["world-map"]
         },
         {
           "key": "relatedMap",
           "label": "Related map",
           "type": "relationship",
-          "relationshipType": "daena.maps:related-map",
-          "targetEntityTypes": ["daena.maps:map"]
+          "relationshipType": "related-map",
+          "targetEntityTypes": ["world-map"]
         }
       ]
     }

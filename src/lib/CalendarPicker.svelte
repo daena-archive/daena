@@ -44,7 +44,9 @@ function candidates() {
   const q = query.trim().toLowerCase();
   const all: Array<{ id: string; name: string; sub?: string }> = [
     { id: GREGORIAN_CALENDAR_ID, name: "Default", sub: "Default calendar" },
-    ...calendars.filter((e) => !e.deleted).map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "calendar" })),
+    ...calendars
+      .filter((e) => !e.deleted)
+      .map((e) => ({ id: e.id, name: e.name, sub: e.entity_type ?? "daena.timeline:calendar" })),
   ];
   if (!q) return all;
   return all.filter((c) => `${c.name} ${c.sub ?? ""}`.toLowerCase().includes(q));

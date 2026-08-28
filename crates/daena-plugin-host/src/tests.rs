@@ -337,9 +337,9 @@ fn first_party_bundled_bootstrap_grants_declared_capabilities() {
     assert_eq!(
         relationship_types,
         BTreeSet::from([
-            "daena.maps:detail-map".into(),
-            "daena.maps:overview-map".into(),
-            "daena.maps:related-map".into()
+            "detail-map".into(),
+            "overview-map".into(),
+            "related-map".into()
         ])
     );
 
@@ -537,7 +537,7 @@ fn module_record_authorization_is_collection_and_schema_bound() {
         .extend(["record.read:self".into(), "record.write:self".into()]);
     plugin.records.push(daena_plugin_api::RecordCollection {
         id: "lexemes".into(),
-        owner_entity_types: vec!["person".into()],
+        owner_entity_types: vec!["daena.lore:person".into()],
         schema: daena_plugin_api::CommandSchema {
             schema_type: daena_plugin_api::CommandValueType::Object,
             properties: [
@@ -1703,7 +1703,7 @@ fn host_views_require_active_runtime_and_granted_data_capability() {
         .components = vec![daena_plugin_api::ViewComponent::EntityList {
         id: "people".into(),
         title: "People".into(),
-        entity_type: "person".into(),
+        entity_type: "daena.lore:person".into(),
         limit: 10,
     }];
 
@@ -1747,7 +1747,7 @@ fn host_field_forms_require_read_and_write_grants() {
         daena_plugin_api::ViewComponent::EntityList {
             id: "people".into(),
             title: "People".into(),
-            entity_type: "person".into(),
+            entity_type: "daena.lore:person".into(),
             limit: 10,
         },
         daena_plugin_api::ViewComponent::FieldForm {

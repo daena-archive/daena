@@ -1,4 +1,4 @@
-export const MAP_ENTITY_TYPE = "daena.maps:map";
+export const MAP_ENTITY_TYPE = "daena.maps:world-map";
 export const MAP_NAMESPACE = "maps";
 export const VECTOR_PROVIDER = "daena-openlayers";
 export const PHYSICAL_PROVIDER = "daena-physical";
@@ -20,9 +20,9 @@ export const VECTOR_MAX_FEATURE_POSITIONS = 20_000;
 export const VECTOR_MAX_LAYERS = 64;
 /** Hierarchy relationship types owned by `daena.maps`. */
 export const MAP_RELATIONSHIP = {
-    DETAIL_MAP: "daena.maps:detail-map",
-    OVERVIEW_MAP: "daena.maps:overview-map",
-    RELATED_MAP: "daena.maps:related-map",
+    DETAIL_MAP: "detail-map",
+    OVERVIEW_MAP: "overview-map",
+    RELATED_MAP: "related-map",
 };
 /** Register the browser bridge used by the Maps host surface. */
 export function registerMapsHostSurfaceProvider(provider) {

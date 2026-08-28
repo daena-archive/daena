@@ -79,7 +79,7 @@ fn entity_rejects_document_traversal() {
     let entity = EntityFile {
         id: "018f89df-b93e-7ad0-a07f-08b1441d1550".into(),
         name: "The Glass Coast".into(),
-        entity_type: Some("place".into()),
+        entity_type: Some("daena.lore:place".into()),
         deleted: false,
         created_at: "now".into(),
         updated_at: "now".into(),

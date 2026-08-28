@@ -4,7 +4,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Version: v0.1.0-alpha](https://img.shields.io/badge/version-v0.1.0--alpha-orange.svg)](#current-status)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#system-requirements)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](../../releases)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB.svg)](https://tauri.app)
 
 > "Daena" (Avestan pronunciation: [dʌeːnaː]) is a Zoroastrian concept
@@ -42,14 +42,6 @@ deno task tauri build
 ```
 
 See [`README.DEV.md`](README.DEV.md) for full prerequisites.
-
-Each project is a folder on disk (`project.json`, `entities/`, `.daena/`). Back it up like any folder. See [`docs/STORAGE.md`](docs/STORAGE.md).
-
-## System requirements
-
-* **OS:** macOS 13+, Windows 10+, or Linux with WebKitGTK 4.1
-* **Runtime:** WebView2 (Windows, usually preinstalled), 200 MB disk + projects
-* **Build only:** Rust 1.85+ (tested 1.98), Deno 2.x (tested 2.9.5), `cargo` with `clippy`/`rustfmt`
 
 ## Quick start
 

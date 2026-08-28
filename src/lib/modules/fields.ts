@@ -1,4 +1,9 @@
-export const TIMELINE_ENTITY_TYPES = new Set(["event", "encounter", "era", "calendar"]);
+export const TIMELINE_ENTITY_TYPES = new Set([
+  "daena.timeline:event",
+  "daena.timeline:encounter",
+  "daena.timeline:era",
+  "daena.timeline:calendar",
+]);
 
 export type SchemaFieldLike = {
   key: string;
@@ -34,7 +39,7 @@ export function fieldAppliesToEntity(
   }
   if (field.type === "date") {
     const ownedByTimeline = field.entityTypes?.some((type) => TIMELINE_ENTITY_TYPES.has(type));
-    if (!ownedByTimeline && !enabledEntityTypes.has("event")) return false;
+    if (!ownedByTimeline && !enabledEntityTypes.has("daena.timeline:event")) return false;
   }
   return true;
 }

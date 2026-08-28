@@ -54,14 +54,14 @@ export interface CollectionResult {
 }
 
 export const WRITING_VIEW_TYPES: Record<WritingView, string[]> = {
-  manuscripts: ["manuscript"],
-  reference: ["reference-page"],
+  manuscripts: ["daena.writing:manuscript"],
+  reference: ["daena.writing:reference-page"],
 };
 
 export const TIMELINE_VIEW_TYPES: Record<TimelineView, string[]> = {
-  events: ["event", "encounter"],
-  eras: ["era"],
-  calendars: ["calendar"],
+  events: ["daena.timeline:event", "daena.timeline:encounter"],
+  eras: ["daena.timeline:era"],
+  calendars: ["daena.timeline:calendar"],
 };
 
 export const DEFAULT_COLLECTION_QUERY: Omit<CollectionQuery, "section"> = {

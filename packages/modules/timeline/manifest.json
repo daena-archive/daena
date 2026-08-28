@@ -54,7 +54,7 @@
           "label": "Location",
           "type": "relationship",
           "relationshipType": "occurred_at",
-          "targetEntityTypes": ["place"],
+          "targetEntityTypes": ["daena.lore:place"],
           "entityTypes": ["encounter"],
           "metadataFields": [
             { "key": "significance", "label": "Significance", "type": "enum", "options": ["central", "peripheral"] }
@@ -65,7 +65,7 @@
           "label": "Participants",
           "type": "relationship",
           "relationshipType": "involves",
-          "targetEntityTypes": ["person"],
+          "targetEntityTypes": ["daena.lore:person"],
           "entityTypes": ["encounter"],
           "metadataFields": [
             {

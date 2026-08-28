@@ -122,7 +122,7 @@ fn validates_layers_only_on_map_entities() {
     let map_id = Uuid::new_v4().to_string();
     let place_id = Uuid::new_v4().to_string();
     insert_entity(&connection, &map_id, MAP_ENTITY_TYPE);
-    insert_entity(&connection, &place_id, "place");
+    insert_entity(&connection, &place_id, "daena.lore:place");
     let source_id = Uuid::new_v4().to_string();
     insert_asset(&connection, &source_id, &map_id, VECTOR_MIME);
     connection

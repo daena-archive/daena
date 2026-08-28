@@ -857,9 +857,10 @@ mod tests {
 
     #[test]
     fn entity_create_accepts_missing_optional_collections() {
-        let parsed: EntityCreatePayload =
-            serde_json::from_value(serde_json::json!({ "name": "Map", "type": "daena.maps:map" }))
-                .unwrap();
+        let parsed: EntityCreatePayload = serde_json::from_value(
+            serde_json::json!({ "name": "Map", "type": "daena.maps:world-map" }),
+        )
+        .unwrap();
         assert!(parsed.fields.is_empty());
         assert!(parsed.relationships.is_empty());
         assert_eq!(parsed.document, None);
@@ -888,14 +889,14 @@ mod tests {
         let record: EntityRecord = serde_json::from_value(serde_json::json!({
             "id": "e1",
             "name": "Map",
-            "entityType": "daena.maps:map",
+            "entityType": "daena.maps:world-map",
             "deleted": false,
             "createdAt": "2026-01-01T00:00:00Z",
             "updatedAt": "2026-01-01T00:00:00Z",
             "revision": "rev-1"
         }))
         .unwrap();
-        assert_eq!(record.entity_type.as_deref(), Some("daena.maps:map"));
+        assert_eq!(record.entity_type.as_deref(), Some("daena.maps:world-map"));
     }
 
     #[test]

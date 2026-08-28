@@ -72,13 +72,13 @@ fn update_relationship_metadata_validates_and_roundtrips() {
     let source = store
         .create_entity(CreateEntity {
             name: "Artifact".into(),
-            entity_type: Some("artifact".into()),
+            entity_type: Some("daena.lore:artifact".into()),
         })
         .unwrap();
     let target = store
         .create_entity(CreateEntity {
             name: "Owner".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     store
@@ -127,7 +127,7 @@ fn update_relationship_metadata_validates_and_roundtrips() {
     let replacement_target = store
         .create_entity(CreateEntity {
             name: "Replacement owner".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let original_revision = relationship.revision.clone();
@@ -1130,7 +1130,7 @@ fn git_preflight_lists_only_canonical_paths_and_rejects_staged_unrelated_files()
     store
         .create_entity(CreateEntity {
             name: "Preview entity".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store.flush_checkpoint("test export").unwrap();
@@ -1276,7 +1276,7 @@ fn git_commit_rejects_paths_outside_preflight_and_accepts_subset() {
     store
         .create_entity(CreateEntity {
             name: "Select entity".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let preview = store.git_staging_preview().unwrap();
@@ -1326,7 +1326,7 @@ fn git_commit_subset_does_not_include_previously_staged_canonical_paths() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Select staged entity".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -1385,7 +1385,7 @@ fn git_show_tree_filters_to_canonical_paths_and_reset_moves_head() {
     store
         .create_entity(CreateEntity {
             name: "Later entity".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let preview = store.git_staging_preview().unwrap();
@@ -1539,7 +1539,7 @@ fn directory_mutations_return_revisions_and_replay_requests() {
         .create_entity_with_request(
             CreateEntity {
                 name: "Revisioned entity".into(),
-                entity_type: Some("place".into()),
+                entity_type: Some("daena.lore:place".into()),
             },
             Some(&request_id),
         )
@@ -1548,7 +1548,7 @@ fn directory_mutations_return_revisions_and_replay_requests() {
         .create_entity_with_request(
             CreateEntity {
                 name: "Revisioned entity".into(),
-                entity_type: Some("place".into()),
+                entity_type: Some("daena.lore:place".into()),
             },
             Some(&request_id),
         )
@@ -1636,7 +1636,7 @@ fn generated_asset_provenance_survives_checkpoint_and_runtime_rebuild() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Citadel".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let asset = store
@@ -1677,7 +1677,7 @@ fn asset_metadata_survives_checkpoint_and_runtime_rebuild() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Profile owner".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let asset = store
@@ -1828,13 +1828,13 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
     let language = store
         .create_entity(CreateEntity {
             name: "Asteri".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     let other = store
         .create_entity(CreateEntity {
             name: "Other".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     let request_id = Uuid::new_v4().to_string();
@@ -2079,7 +2079,7 @@ fn language_phonology_and_orthography_records_round_trip() {
     let language = store
         .create_entity(CreateEntity {
             name: "Asteri".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     let fricative = store
@@ -2214,7 +2214,7 @@ fn language_grammar_records_round_trip_and_rebuild_from_checkpoint() {
     let language = store
         .create_entity(CreateEntity {
             name: "Asteri".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     let lexeme = store
@@ -2319,7 +2319,7 @@ fn language_grammar_records_round_trip_and_rebuild_from_checkpoint() {
     let other = store
         .create_entity(CreateEntity {
             name: "Other".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     assert!(store
@@ -2356,7 +2356,7 @@ fn language_paradigms_round_trip_and_sort_by_name() {
     let language = store
         .create_entity(CreateEntity {
             name: "Asteri".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     store
@@ -2433,7 +2433,7 @@ fn language_paradigms_round_trip_and_sort_by_name() {
     let other = store
         .create_entity(CreateEntity {
             name: "Other".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     assert!(store
@@ -2462,7 +2462,7 @@ fn language_samples_round_trip_and_sort_by_title() {
     let language = store
         .create_entity(CreateEntity {
             name: "Asteri".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     let lexeme = store
@@ -2545,7 +2545,7 @@ fn language_samples_round_trip_and_sort_by_title() {
     let other = store
         .create_entity(CreateEntity {
             name: "Other".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     assert!(store
@@ -2705,7 +2705,7 @@ fn search_matches_prefixes() {
     store
         .create_entity(CreateEntity {
             name: "Amulet".into(),
-            entity_type: Some("artifact".into()),
+            entity_type: Some("daena.lore:artifact".into()),
         })
         .unwrap();
 
@@ -2720,7 +2720,7 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
     let alpha = store
         .create_entity(CreateEntity {
             name: "Alpha".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     store
@@ -2733,19 +2733,19 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
     store
         .create_entity(CreateEntity {
             name: "Beta".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
         .create_entity(CreateEntity {
             name: "Gamma".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
 
     let first = store
         .query_entities(EntityListQuery {
-            entity_types: vec!["person".into()],
+            entity_types: vec!["daena.lore:person".into()],
             sort_field: Some(EntitySortField::Name),
             limit: Some(1),
             ..EntityListQuery::default()
@@ -2755,12 +2755,15 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
     assert_eq!(first.items.len(), 1);
     assert_eq!(first.items[0].name, "Alpha");
     assert!(first.has_more);
-    assert_eq!(first.type_counts[0].entity_type.as_deref(), Some("person"));
+    assert_eq!(
+        first.type_counts[0].entity_type.as_deref(),
+        Some("daena.lore:person")
+    );
     assert_eq!(first.type_counts[0].count, 2);
 
     let second = store
         .query_entities(EntityListQuery {
-            entity_types: vec!["person".into()],
+            entity_types: vec!["daena.lore:person".into()],
             sort_field: Some(EntitySortField::Name),
             offset: Some(1),
             limit: Some(1),
@@ -2773,7 +2776,7 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
     let searched = store
         .query_entities(EntityListQuery {
             query: Some("hidden val".into()),
-            entity_types: vec!["person".into()],
+            entity_types: vec!["daena.lore:person".into()],
             ..EntityListQuery::default()
         })
         .unwrap();
@@ -2782,7 +2785,7 @@ fn entity_query_filters_sorts_counts_and_paginates_in_storage() {
 
     let excluded = store
         .query_entities(EntityListQuery {
-            excluded_entity_types: vec!["person".into()],
+            excluded_entity_types: vec!["daena.lore:person".into()],
             limit: Some(u32::MAX),
             ..EntityListQuery::default()
         })
@@ -2808,13 +2811,13 @@ fn archived_entities_can_be_listed_restored_and_purged() {
     let alpha = store
         .create_entity(CreateEntity {
             name: "Archived Alpha".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let beta = store
         .create_entity(CreateEntity {
             name: "Live Beta".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -2925,7 +2928,7 @@ fn purge_removes_portable_entity_folder_after_checkpoint() {
     let entity = store
         .create_entity(CreateEntity {
             name: "To Purge".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     store
@@ -2953,7 +2956,7 @@ fn archived_entity_query_paginates() {
         let entity = store
             .create_entity(CreateEntity {
                 name: format!("Archived {index}"),
-                entity_type: Some("person".into()),
+                entity_type: Some("daena.lore:person".into()),
             })
             .unwrap();
         store.delete_entity(entity.id).unwrap();
@@ -3002,7 +3005,7 @@ fn purge_refreshes_entities_with_locations_on_purged_map() {
     let place = store
         .create_entity(CreateEntity {
             name: "Old Harbor".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let location_id = Uuid::new_v4().to_string();
@@ -3058,7 +3061,7 @@ fn create_entry_writes_template_content_atomically() {
     let entity = store
         .create_entry(CreateEntry {
             name: "The Ash Court".into(),
-            entity_type: Some("faction".into()),
+            entity_type: Some("daena.lore:faction".into()),
             document: Some(CreateEntryDocument {
                 body: "A quiet power.".into(),
                 format: Some("plain-text".into()),
@@ -3079,7 +3082,7 @@ fn create_entry_writes_template_content_atomically() {
 
     let result = store.create_entry(CreateEntry {
         name: "Should roll back".into(),
-        entity_type: Some("place".into()),
+        entity_type: Some("daena.lore:place".into()),
         document: Some(CreateEntryDocument {
             body: "Not persisted".into(),
             format: None,
@@ -3108,19 +3111,19 @@ fn create_entry_writes_multiple_relationships_atomically() {
     let first_leader = store
         .create_entity(CreateEntity {
             name: "First leader".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let second_leader = store
         .create_entity(CreateEntity {
             name: "Second leader".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let faction = store
         .create_entry(CreateEntry {
             name: "The Twin Council".into(),
-            entity_type: Some("faction".into()),
+            entity_type: Some("daena.lore:faction".into()),
             document: None,
             fields: vec![],
             relationships: vec![CreateEntryRelationship {
@@ -3142,7 +3145,7 @@ fn create_entry_writes_multiple_relationships_atomically() {
 
     let result = store.create_entry(CreateEntry {
         name: "Should roll back".into(),
-        entity_type: Some("faction".into()),
+        entity_type: Some("daena.lore:faction".into()),
         document: None,
         fields: vec![],
         relationships: vec![CreateEntryRelationship {
@@ -3160,7 +3163,7 @@ fn export_round_trip_preserves_entities_and_documents() {
     let entity = source
         .create_entity(CreateEntity {
             name: "Ash Court".into(),
-            entity_type: Some("faction".into()),
+            entity_type: Some("daena.lore:faction".into()),
         })
         .unwrap();
     source
@@ -3221,7 +3224,7 @@ fn updates_canonical_document_and_preserves_namespaced_fields() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Harbor".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -3270,7 +3273,7 @@ fn saving_identical_document_content_preserves_revision() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Stable revision".into(),
-            entity_type: Some("manuscript".into()),
+            entity_type: Some("daena.writing:manuscript".into()),
         })
         .unwrap();
     let document = SaveDocument {
@@ -3295,7 +3298,7 @@ fn empty_document_revision_allows_first_document_save() {
     let entity = store
         .create_entity(CreateEntity {
             name: "First document".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
 
@@ -3325,7 +3328,7 @@ fn opening_and_updating_rebuilds_search_for_documents_and_fields() {
         let entity = store
             .create_entity(CreateEntity {
                 name: "Search target".into(),
-                entity_type: Some("place".into()),
+                entity_type: Some("daena.lore:place".into()),
             })
             .unwrap();
         store
@@ -3413,7 +3416,7 @@ fn passage_search_preserves_ranked_source_identity() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Passage target".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -3531,7 +3534,7 @@ fn assets_and_module_state_survive_export_import() {
     let entity = source
         .create_entity(CreateEntity {
             name: "Map Room".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let asset = source
@@ -3582,7 +3585,7 @@ fn seed_example_is_repeatable_after_modules_are_initialized() {
     let record_owner = store
         .create_entity(CreateEntity {
             name: "Record owner before seed".into(),
-            entity_type: Some("language".into()),
+            entity_type: Some("daena.language:language".into()),
         })
         .unwrap();
     store
@@ -3740,13 +3743,13 @@ fn wiki_page_export_is_manifest_aware_standalone_and_safe() {
     let person = store
         .create_entity(CreateEntity {
             name: "Ada / Archivist".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let place = store
         .create_entity(CreateEntity {
             name: "The Glass Library".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -3776,9 +3779,9 @@ fn wiki_page_export_is_manifest_aware_standalone_and_safe() {
             metadata: None,
         })
         .unwrap();
-    let manifest: daena_plugin_api::PluginManifest = serde_json::from_str(include_str!(
-        "../../../../packages/modules/lore/manifest.json"
-    ))
+    let manifest: daena_plugin_api::PluginManifest = daena_plugin_api::parse_manifest(
+        include_str!("../../../../packages/modules/lore/manifest.json"),
+    )
     .unwrap();
 
     let markdown_path = store
@@ -4140,13 +4143,13 @@ fn canonical_files_survive_disposable_index_deletion() {
     let source = first
         .create_entity(CreateEntity {
             name: "Source".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let target = first
         .create_entity(CreateEntity {
             name: "Target".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     first
@@ -4418,7 +4421,7 @@ fn map_entities_and_locations_survive_disposable_index_rebuild() {
     let place = store
         .create_entity(CreateEntity {
             name: "Old Harbor".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
 
@@ -4589,7 +4592,7 @@ fn map_locations_reject_dangling_maps_and_invalid_geometry() {
     let place = store
         .create_entity(CreateEntity {
             name: "Unbound place".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let dangling = store.set_field(FieldValue {
@@ -4661,7 +4664,7 @@ fn map_layers_round_trip_and_reject_non_map_owners() {
     let place = store
         .create_entity(CreateEntity {
             name: "Not a map".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let layers = serde_json::json!({
@@ -4719,7 +4722,7 @@ fn map_projection_refresh_matches_full_rebuild_after_location_upsert() {
     let place = store
         .create_entity(CreateEntity {
             name: "Incremental place".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let location_id = Uuid::new_v4().to_string();
@@ -4768,7 +4771,7 @@ fn transaction_request_ids_must_be_uuids_but_may_be_absent() {
     let place = store
         .create_entity(CreateEntity {
             name: "Rid place".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let map_id = map.id.clone();
@@ -4937,7 +4940,7 @@ fn map_recovery_copies_require_map_entities_and_reject_traversal() {
     let place = store
         .create_entity(CreateEntity {
             name: "Not a map".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let accepted = store
@@ -4985,7 +4988,7 @@ fn fresh_git_clone_rebuilds_its_ignored_index() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Cloned canonical entry".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     drop(store);
@@ -5277,7 +5280,7 @@ fn feature_resolution_returns_unresolved_when_geojson_lacks_feature() {
     let place = store
         .create_entity(CreateEntity {
             name: "Place".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
 
@@ -5323,7 +5326,7 @@ fn asset_replacement_rejects_wrong_hash_size_and_revision() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Map source".into(),
-            entity_type: Some("daena.maps:map".into()),
+            entity_type: Some("daena.maps:world-map".into()),
         })
         .unwrap();
     let asset = store
@@ -5400,7 +5403,7 @@ fn asset_metadata_rename_profile_scope_and_replacement_are_consistent() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Portrait subject".into(),
-            entity_type: Some("person".into()),
+            entity_type: Some("daena.lore:person".into()),
         })
         .unwrap();
     let first = store
@@ -5834,7 +5837,7 @@ fn large_asset_checkpoint_hashing_benchmark() {
     let entity = store
         .create_entity(CreateEntity {
             name: "Large asset owner".into(),
-            entity_type: Some("map".into()),
+            entity_type: Some("daena.maps:world-map".into()),
         })
         .unwrap();
     store
@@ -6532,7 +6535,7 @@ fn vector_map_accept_replace_layer_delete_and_checkpoint_rebuild() {
     let place = store
         .create_entity(CreateEntity {
             name: "West".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     store
@@ -6734,7 +6737,7 @@ fn apply_map_edit_atomically_persists_descriptor_layers_geometry_and_links() {
     let place = store
         .create_entity(CreateEntity {
             name: "West".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let location_id = Uuid::new_v4().to_string();
@@ -7679,7 +7682,7 @@ fn image_map_semantic_features_survive_checkpoint_rebuild_and_spatial_query() {
     let place = store
         .create_entity(CreateEntity {
             name: "Coast road".into(),
-            entity_type: Some("place".into()),
+            entity_type: Some("daena.lore:place".into()),
         })
         .unwrap();
     let location_id = Uuid::new_v4().to_string();

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use uuid::Uuid;
 
-pub const MAP_ENTITY_TYPE: &str = "daena.maps:map";
+pub const MAP_ENTITY_TYPE: &str = "daena.maps:world-map";
 pub const MAP_NAMESPACE: &str = "maps";
 pub const VECTOR_PROVIDER: &str = "daena-openlayers";
 pub const PHYSICAL_PROVIDER: &str = "daena-physical";
@@ -20,15 +20,15 @@ pub const PHYSICAL_FILENAME: &str = "world.pworld";
 pub const PHYSICAL_GENERATOR_ID: &str = "daena-physical-world";
 pub const PHYSICAL_GENERATOR_VERSION: u32 = 1;
 pub const PHYSICAL_MAX_SOURCE_BYTES: usize = daena_physical::MAX_SOURCE_BYTES;
-pub const DETAIL_MAP_RELATIONSHIP: &str = "daena.maps:detail-map";
-pub const OVERVIEW_MAP_RELATIONSHIP: &str = "daena.maps:overview-map";
-pub const RELATED_MAP_RELATIONSHIP: &str = "daena.maps:related-map";
+pub const DETAIL_MAP_RELATIONSHIP: &str = "detail-map";
+pub const OVERVIEW_MAP_RELATIONSHIP: &str = "overview-map";
+pub const RELATED_MAP_RELATIONSHIP: &str = "related-map";
 /// Stable built-in contract for explicitly materialized physical events.
-pub const PHYSICAL_EVENT_ENTITY_TYPE: &str = "daena.maps:physical-natural-event";
+pub const PHYSICAL_EVENT_ENTITY_TYPE: &str = "daena.maps:natural-event";
 pub const PHYSICAL_EVENT_NAMESPACE: &str = "maps.physical";
 pub const PHYSICAL_EVENT_CHRONOLOGY_KEY: &str = "physicalChronology";
 pub const PHYSICAL_EVENT_MAX_OFFSET_YEARS: i64 = 100_000;
-pub const PHYSICAL_EVENT_ON_MAP_RELATIONSHIP: &str = "daena.maps:physical-event-on-map";
+pub const PHYSICAL_EVENT_ON_MAP_RELATIONSHIP: &str = "physical-event-on-map";
 
 pub mod atlas;
 pub mod calendar;

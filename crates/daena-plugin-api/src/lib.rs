@@ -800,8 +800,9 @@ pub struct RpcResponse {
 }
 
 pub fn parse_manifest(json: &str) -> Result<PluginManifest, ContractError> {
-    let manifest: PluginManifest =
+    let mut manifest: PluginManifest =
         serde_json::from_str(json).map_err(|e| ContractError(format!("invalid manifest: {e}")))?;
+    normalize_manifest(&mut manifest)?;
     validate_manifest(&manifest)?;
     Ok(manifest)
 }
@@ -869,6 +870,127 @@ fn validate_entity_type_id(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some('a'..='z'))
         && chars.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | ':'))
+}
+
+fn is_bare_local_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('a'..='z'))
+        && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+}
+
+fn qualified_id(plugin_id: &str, local: &str) -> String {
+    format!("{plugin_id}:{local}")
+}
+
+fn normalize_local_id(plugin_id: &str, id: &str) -> Result<String, ContractError> {
+    if let Some((prefix, local)) = id.split_once(':') {
+        if prefix != plugin_id {
+            return Err(ContractError(format!(
+                "entity type '{id}' must be prefixed with plugin id '{plugin_id}' or be bare"
+            )));
+        }
+        if !is_bare_local_id(local) {
+            return Err(ContractError(format!(
+                "invalid local id '{local}' in '{id}'"
+            )));
+        }
+        if !validate_entity_type_id(id) {
+            return Err(ContractError(format!("invalid entity type id: {id}")));
+        }
+        Ok(id.to_string())
+    } else {
+        if !is_bare_local_id(id) {
+            return Err(ContractError(format!("invalid entity type id: {id}")));
+        }
+        Ok(qualified_id(plugin_id, id))
+    }
+}
+
+fn normalize_relationship_type(_plugin_id: &str, rel: &str) -> Result<String, ContractError> {
+    if rel.contains(':') {
+        if !validate_entity_type_id(rel) {
+            return Err(ContractError(format!("invalid relationship type: {rel}")));
+        }
+        Ok(rel.to_string())
+    } else {
+        if !is_bare_local_id(rel) {
+            return Err(ContractError(format!("invalid relationship type: {rel}")));
+        }
+        Ok(rel.to_string())
+    }
+}
+
+pub fn normalize_manifest(manifest: &mut PluginManifest) -> Result<(), ContractError> {
+    let plugin_id = manifest.id.clone();
+    // entity type definitions
+    for schema in &mut manifest.schemas {
+        for et in &mut schema.entity_types {
+            et.id = normalize_local_id(&plugin_id, &et.id)?;
+        }
+    }
+    // collect qualified entity types for later checks
+    let mut qualified_entity_types = BTreeSet::new();
+    for schema in &manifest.schemas {
+        for et in &schema.entity_types {
+            qualified_entity_types.insert(et.id.clone());
+        }
+    }
+    // fields
+    for schema in &mut manifest.schemas {
+        for field in &mut schema.fields {
+            if let Some(entity_types) = &mut field.entity_types {
+                for et in entity_types.iter_mut() {
+                    // local field applicability -> must be local
+                    *et = normalize_local_id(&plugin_id, &et)?;
+                }
+            }
+            if let Some(targets) = &mut field.target_entity_types {
+                for t in targets.iter_mut() {
+                    // target can be cross-plugin: if bare and matches local, qualify local, otherwise require qualified
+                    if t.contains(':') {
+                        if !validate_entity_type_id(t) {
+                            return Err(ContractError(format!("invalid target entity type: {t}")));
+                        }
+                    } else {
+                        // bare target: if it matches a local bare name, qualify with own plugin
+                        // else error - require qualified for cross-plugin
+                        if qualified_entity_types.contains(&qualified_id(&plugin_id, t)) {
+                            *t = qualified_id(&plugin_id, t);
+                        } else if is_bare_local_id(t) {
+                            return Err(ContractError(format!(
+                                "target entity type '{t}' must be qualified (e.g. 'daena.lore:{}') for cross-plugin reference",
+                                t
+                            )));
+                        } else {
+                            return Err(ContractError(format!("invalid target entity type: {t}")));
+                        }
+                    }
+                }
+            }
+            if let Some(rel) = &mut field.relationship_type {
+                *rel = normalize_relationship_type(&plugin_id, rel)?;
+            }
+        }
+    }
+    // templates
+    for tmpl in &mut manifest.templates {
+        tmpl.entity_type = normalize_local_id(&plugin_id, &tmpl.entity_type)?;
+    }
+    // records
+    for rec in &mut manifest.records {
+        for et in rec.owner_entity_types.iter_mut() {
+            *et = normalize_local_id(&plugin_id, &et)?;
+        }
+    }
+    // views
+    for view in &mut manifest.views {
+        for comp in &mut view.components {
+            if let ViewComponent::EntityList { entity_type, .. } = comp {
+                *entity_type = normalize_local_id(&plugin_id, entity_type)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_icon_ref(icon: &IconRef) -> Result<(), ContractError> {

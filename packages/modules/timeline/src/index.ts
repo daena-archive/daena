@@ -256,7 +256,7 @@ async function loadCalendarOptions(
   context: ModuleContext,
   entities: readonly EntitySummary[],
 ): Promise<CalendarOption[]> {
-  const calendars = entities.filter((entity) => entity.type === "calendar");
+  const calendars = entities.filter((entity) => entity.type === "daena.timeline:calendar");
   const custom: Array<CalendarOption | null> = await Promise.all(
     calendars.map(async (entity): Promise<CalendarOption | null> => {
       try {
@@ -747,13 +747,13 @@ export const timeline: DaenaModule = {
             const eras: TimelineEvent[] = [];
             for (const entry of loaded) {
               if (
-                entry.entity.type !== "calendar" &&
+                entry.entity.type !== "daena.timeline:calendar" &&
                 (entityTypes.has(entry.entity.type ?? "") || entry.relativeYear !== null)
               ) {
                 const startValue = entry.fields.startsAt ?? entry.fields.endsAt;
                 const startAnchor = timelineDateAnchor(startValue);
                 if (!startAnchor) {
-                  if (entry.entity.type !== "era")
+                  if (entry.entity.type !== "daena.timeline:era")
                     undated.push({ ...entry, relativeYear: entry.relativeYear ?? undefined });
                 } else {
                   const endValue = entry.fields.endsAt;
@@ -770,7 +770,7 @@ export const timeline: DaenaModule = {
                     end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
                     colors: colorsForLayer("timeline", entry.entity.id),
                   };
-                  if (entry.entity.type === "era") eras.push(item);
+                  if (entry.entity.type === "daena.timeline:era") eras.push(item);
                   else dated.push(item);
                 }
               }

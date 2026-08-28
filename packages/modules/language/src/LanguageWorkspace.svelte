@@ -153,7 +153,7 @@ async function loadLanguage(entityId: string) {
   try {
     const entity = await context.entities.get(entityId as UUID);
     if (cancelled || token !== languageRequest) return;
-    if (entity?.type === "language") {
+    if (entity?.type === "daena.language:language") {
       selectedLanguage = entity;
       incompatibleFocus = false;
     } else {

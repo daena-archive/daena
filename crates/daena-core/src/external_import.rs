@@ -6656,7 +6656,7 @@ mod tests {
         overrides.folders.insert(
             "People".into(),
             ImportMappingDecision {
-                entity_type: Some("person".into()),
+                entity_type: Some("daena.lore:person".into()),
                 field_mappings: BTreeMap::from([("tag".into(), "lore:tag".into())]),
                 relationship_mappings: BTreeMap::new(),
             },
@@ -6725,7 +6725,10 @@ mod tests {
             .iter()
             .find(|object| object.title == "Bob")
             .unwrap();
-        assert_eq!(bob.mapping.entity_type.as_deref(), Some("person"));
+        assert_eq!(
+            bob.mapping.entity_type.as_deref(),
+            Some("daena.lore:person")
+        );
         assert_eq!(bob.mapping.field_mappings["tag"], "lore:tag");
     }
 
@@ -6744,7 +6747,7 @@ mod tests {
         overrides.categories.insert(
             "Heroes".into(),
             ImportMappingDecision {
-                entity_type: Some("person".into()),
+                entity_type: Some("daena.lore:person".into()),
                 ..ImportMappingDecision::default()
             },
         );
@@ -6766,7 +6769,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             category_plan.objects[0].mapping.entity_type.as_deref(),
-            Some("person")
+            Some("daena.lore:person")
         );
 
         overrides.folders.insert(

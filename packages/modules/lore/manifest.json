@@ -77,7 +77,7 @@
           "label": "Languages",
           "type": "relationship",
           "relationshipType": "speaks",
-          "targetEntityTypes": ["language"],
+          "targetEntityTypes": ["daena.language:language"],
           "entityTypes": ["person"],
           "metadataFields": [
             {

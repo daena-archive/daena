@@ -272,6 +272,62 @@ fn is_entity_type_id(value: &str) -> bool {
         && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | ':'))
 }
 
+fn qualify_type_id(plugin_id: &str, id: &str) -> Result<String, String> {
+    crate::normalize_local_id(plugin_id, id).map_err(|error| error.0)
+}
+
+fn qualify_type_ids(plugin_id: &str, ids: &mut [String]) -> Result<(), String> {
+    for id in ids {
+        *id = qualify_type_id(plugin_id, id)?;
+    }
+    Ok(())
+}
+
+fn qualify_overlay_entity_types(
+    plugin_id: &str,
+    overlay: &mut ModuleSchemaOverlay,
+) -> Result<(), String> {
+    qualify_type_ids(plugin_id, &mut overlay.disabled_entity_types)?;
+    for entity_type in &mut overlay.custom_entity_types {
+        entity_type.id = qualify_type_id(plugin_id, &entity_type.id)?;
+    }
+    for field in &mut overlay.custom_fields {
+        if let Some(entity_types) = &mut field.entity_types {
+            qualify_type_ids(plugin_id, entity_types)?;
+        }
+        if let Some(targets) = &mut field.target_entity_types {
+            qualify_type_ids(plugin_id, targets)?;
+        }
+    }
+    for template in &mut overlay.custom_templates {
+        template.entity_type = qualify_type_id(plugin_id, &template.entity_type)?;
+    }
+    for scope in &mut overlay.field_scope_overrides {
+        qualify_type_ids(plugin_id, &mut scope.entity_types)?;
+    }
+    for appearance in &mut overlay.entity_type_appearance_overrides {
+        appearance.entity_type_id = qualify_type_id(plugin_id, &appearance.entity_type_id)?;
+    }
+    Ok(())
+}
+
+fn overlay_with_qualified_types(
+    package: &PluginManifest,
+    overlay: &ModuleSchemaOverlay,
+) -> Result<ModuleSchemaOverlay, String> {
+    let mut overlay = overlay.clone();
+    qualify_overlay_entity_types(&package.id, &mut overlay)?;
+    Ok(overlay)
+}
+
+/// Qualify overlay entity-type IDs to `pluginId:local` in place.
+pub fn qualify_module_overlay(
+    package: &PluginManifest,
+    overlay: &mut ModuleSchemaOverlay,
+) -> Result<(), String> {
+    qualify_overlay_entity_types(&package.id, overlay)
+}
+
 fn is_relationship_type(value: &str) -> bool {
     is_entity_type_id(value)
 }
@@ -299,6 +355,8 @@ pub fn validate_module_overlay(
             overlay.version
         ));
     }
+
+    let overlay = overlay_with_qualified_types(package, overlay)?;
 
     let namespace = primary_schema_namespace(package)?;
     let package_schema = package
@@ -949,7 +1007,8 @@ pub fn merge_module_manifest(
     package: &PluginManifest,
     overlay: &ModuleSchemaOverlay,
 ) -> Result<PluginManifest, String> {
-    validate_module_overlay(package, overlay)?;
+    let overlay = overlay_with_qualified_types(package, overlay)?;
+    validate_module_overlay(package, &overlay)?;
     let namespace = primary_schema_namespace(package)?.to_string();
     let mut merged = package.clone();
     let Some(schema) = merged
@@ -1261,7 +1320,7 @@ mod tests {
             version: SCHEMA_OVERLAY_VERSION,
             disabled_templates: vec!["concept".into()],
             custom_entity_types: vec![EntityTypeDefinition {
-                id: "species".into(),
+                id: "daena.lore:species".into(),
                 name: "Species".into(),
                 icon: crate::IconRef::UserSvg {
                     svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#.into(),
@@ -1276,7 +1335,7 @@ mod tests {
                 field_type: "text".into(),
                 required: None,
                 options: None,
-                entity_types: Some(vec!["species".into()]),
+                entity_types: Some(vec!["daena.lore:species".into()]),
                 relationship_type: None,
                 target_entity_types: None,
                 shared: false,
@@ -1289,7 +1348,7 @@ mod tests {
             custom_templates: vec![EntityTemplate {
                 id: "species".into(),
                 name: "Species".into(),
-                entity_type: "species".into(),
+                entity_type: "daena.lore:species".into(),
                 description: Some("A kind of being.".into()),
                 icon: None,
                 fields: serde_json::json!({ "summary": "", "lifespan": "" }),
@@ -1304,7 +1363,10 @@ mod tests {
             .iter()
             .find(|schema| schema.namespace == "lore")
             .unwrap();
-        assert!(schema.entity_types.iter().any(|kind| kind.id == "species"));
+        assert!(schema
+            .entity_types
+            .iter()
+            .any(|kind| kind.id == "daena.lore:species"));
         assert!(schema.fields.iter().any(|field| field.key == "lifespan"));
         assert!(!merged
             .templates
@@ -1314,6 +1376,53 @@ mod tests {
             .templates
             .iter()
             .any(|template| template.id == "species"));
+        assert_eq!(
+            merged
+                .templates
+                .iter()
+                .find(|template| template.id == "species")
+                .unwrap()
+                .entity_type,
+            "daena.lore:species"
+        );
+    }
+
+    #[test]
+    fn rejects_custom_type_that_collides_with_qualified_builtin() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_entity_types: vec![EntityTypeDefinition {
+                id: "daena.lore:person".into(),
+                name: "Person clone".into(),
+                icon: crate::IconRef::Catalog {
+                    id: "person".into(),
+                },
+                icon_color: EntityTypeColor::Preset { id: "rose".into() },
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("collides with builtin type"));
+    }
+
+    #[test]
+    fn rejects_custom_type_with_foreign_plugin_prefix() {
+        let package = lore_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_entity_types: vec![EntityTypeDefinition {
+                id: "daena.timeline:event".into(),
+                name: "Event".into(),
+                icon: crate::IconRef::Catalog { id: "event".into() },
+                icon_color: EntityTypeColor::Preset { id: "amber".into() },
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay)
+            .unwrap_err()
+            .contains("must be prefixed with plugin id 'daena.lore'"));
     }
 
     #[test]
@@ -1423,7 +1532,7 @@ mod tests {
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
             custom_entity_types: vec![EntityTypeDefinition {
-                id: "chapter".into(),
+                id: "daena.writing:chapter".into(),
                 name: "Chapter".into(),
                 icon: crate::IconRef::Catalog {
                     id: "manuscript".into(),
@@ -1436,7 +1545,7 @@ mod tests {
                 field_type: "number".into(),
                 required: None,
                 options: None,
-                entity_types: Some(vec!["chapter".into()]),
+                entity_types: Some(vec!["daena.writing:chapter".into()]),
                 relationship_type: None,
                 target_entity_types: None,
                 shared: false,
@@ -1449,7 +1558,7 @@ mod tests {
             custom_templates: vec![EntityTemplate {
                 id: "chapter".into(),
                 name: "Chapter".into(),
-                entity_type: "chapter".into(),
+                entity_type: "daena.writing:chapter".into(),
                 description: Some("A chapter draft.".into()),
                 icon: None,
                 fields: serde_json::json!({ "wordCount": 0 }),
@@ -1464,7 +1573,10 @@ mod tests {
             .iter()
             .find(|schema| schema.namespace == "writing")
             .unwrap();
-        assert!(schema.entity_types.iter().any(|kind| kind.id == "chapter"));
+        assert!(schema
+            .entity_types
+            .iter()
+            .any(|kind| kind.id == "daena.writing:chapter"));
         assert!(merged
             .templates
             .iter()

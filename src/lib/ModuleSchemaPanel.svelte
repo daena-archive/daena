@@ -211,10 +211,28 @@ function slugifyTypeId(value: string): string {
 
 /** IDs must start with a-z per host validation. */
 function ensureTypeId(value: string, fallback = "custom"): string {
-  let id = slugifyTypeId(value);
+  let id = slugifyTypeId(localTypeId(value));
   if (!id) id = fallback;
   if (!/^[a-z]/.test(id)) id = `${fallback}-${id}`;
   return id;
+}
+
+function qualifyTypeId(id: string): string {
+  const trimmed = id.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes(":")) return trimmed;
+  return pluginId ? `${pluginId}:${trimmed}` : trimmed;
+}
+
+function preserveTypeId(id: string): string {
+  const trimmed = id.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes(":")) return trimmed;
+  return qualifyTypeId(ensureTypeId(trimmed, "type"));
+}
+
+function mintTypeId(name: string): string {
+  return qualifyTypeId(ensureTypeId(name, "type"));
 }
 
 /** Field keys: lowercase snake (`WordCount` → `word_count`). */
@@ -316,7 +334,7 @@ function draftsFromMetadataFields(fields: unknown): MetadataFieldDraft[] {
 function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
   const customEntityTypes = cloneJson(value.customEntityTypes ?? [])
     .map((entityType) => ({
-      id: ensureTypeId(entityType.id, "type"),
+      id: preserveTypeId(entityType.id),
       name: entityType.name.trim() || humanizeId(entityType.id),
       icon: entityType.icon ?? FALLBACK_ICON,
       iconColor: entityType.iconColor ?? DEFAULT_TYPE_COLOR,
@@ -328,7 +346,8 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     const next: Record<string, unknown> = {
       ...f,
       key: ensureFieldKey(String(f.key ?? "")),
-      entityTypes: (f.entityTypes as string[] | undefined)?.map((name) => ensureTypeId(name, "type")).filter(Boolean),
+      entityTypes: (f.entityTypes as string[] | undefined)?.map(preserveTypeId).filter(Boolean),
+      targetEntityTypes: (f.targetEntityTypes as string[] | undefined)?.map(preserveTypeId).filter(Boolean),
     };
     if (f.type === "relationship" && Array.isArray(f.metadataFields)) {
       const raw = f.metadataFields as unknown[];
@@ -383,13 +402,13 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
   const customTemplates = cloneJson(value.customTemplates ?? []).map((template) => ({
     ...template,
     id: ensureTypeId(template.id || template.name, "template"),
-    entityType: ensureTypeId(template.entityType, "type"),
+    entityType: preserveTypeId(template.entityType),
     description: template.description?.trim() ? template.description.trim() : null,
   }));
   const fieldScopeOverrides = cloneJson(value.fieldScopeOverrides ?? [])
     .map((scope) => ({
       fieldKey: scope.fieldKey,
-      entityTypes: [...new Set(scope.entityTypes.map((name) => ensureTypeId(name, "type")).filter(Boolean))].sort(),
+      entityTypes: [...new Set(scope.entityTypes.map(preserveTypeId).filter(Boolean))].sort(),
     }))
     .sort((left, right) => left.fieldKey.localeCompare(right.fieldKey));
   const templateOverrides = cloneJson(value.templateOverrides ?? []).sort((left, right) =>
@@ -447,7 +466,7 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
   const disabledEntityTypes = new Set(value.disabledEntityTypes ?? []);
   const entityTypeAppearanceOverrides = cloneJson(value.entityTypeAppearanceOverrides ?? [])
     .map((override) => ({
-      entityTypeId: ensureTypeId(override.entityTypeId, "type"),
+      entityTypeId: preserveTypeId(override.entityTypeId),
       ...(override.icon ? { icon: override.icon } : {}),
       ...(override.iconColor ? { iconColor: override.iconColor } : {}),
     }))
@@ -500,7 +519,7 @@ function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
     ) as unknown as Array<Record<string, unknown>>;
   return {
     version: value.version || 1,
-    disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].sort(),
+    disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].map(preserveTypeId).filter(Boolean).sort(),
     disabledFields: [...(value.disabledFields ?? [])].sort(),
     disabledTemplates: [...(value.disabledTemplates ?? [])].sort(),
     customEntityTypes,
@@ -1249,7 +1268,7 @@ function startTypeEdit(type: string) {
 function addCustomType() {
   const name = newType.trim();
   if (!name) return;
-  const id = ensureTypeId(name, "type");
+  const id = mintTypeId(name);
   if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === id)) return;
   setDraft({
     ...draft,
@@ -1268,7 +1287,7 @@ function addCustomType() {
 function commitTypeEdit() {
   if (!editingTypeId) return;
   const from = editingTypeId;
-  const to = ensureTypeId(editTypeValue, "type");
+  const to = mintTypeId(editTypeValue);
   if (!editTypeValue.trim()) {
     cancelTypeEdit();
     return;
@@ -1987,7 +2006,7 @@ function addCustomTemplate() {
     packageTemplates.some((template) => template.id === candidate) ||
     (draft.customTemplates ?? []).some((template) => template.id === candidate);
   if (taken(id)) {
-    id = ensureTypeId(`${name}-${entityType}`, "template");
+    id = ensureTypeId(`${name}-${localTypeId(entityType)}`, "template");
   }
   if (taken(id)) {
     let suffix = 2;

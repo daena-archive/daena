@@ -4262,6 +4262,8 @@ async fn module_schema_overlay_set(
         if normalized.version == 0 {
             normalized.version = SCHEMA_OVERLAY_VERSION;
         }
+        daena_plugin_api::qualify_module_overlay(&package, &mut normalized)
+            .map_err(CoreError::Validation)?;
         daena_plugin_api::validate_module_overlay(&package, &normalized)
             .map_err(CoreError::Validation)?;
         let value = if normalized.is_empty() {

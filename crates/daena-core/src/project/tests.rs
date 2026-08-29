@@ -2574,14 +2574,14 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let overlay = serde_json::json!({
         "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
         "disabledTemplates": ["concept"],
-        "fieldScopeOverrides": [{ "fieldKey": "aliases", "entityTypes": ["person", "faction"] }],
+        "fieldScopeOverrides": [{ "fieldKey": "aliases", "entityTypes": ["daena.lore:person", "daena.lore:faction"] }],
         "templateOverrides": [{
             "templateId": "person",
             "fields": { "summary": "", "aliases": "", "occupation": "" },
             "requiredFields": ["occupation"]
         }],
         "customEntityTypes": [{
-            "id": "species",
+            "id": "daena.lore:species",
             "name": "Species",
             "icon": { "kind": "catalog", "id": "animal" },
             "iconColor": { "kind": "preset", "id": "moss" }
@@ -2590,12 +2590,12 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
             "key": "lifespan",
             "label": "Lifespan",
             "type": "text",
-            "entityTypes": ["species"]
+            "entityTypes": ["daena.lore:species"]
         }],
         "customTemplates": [{
             "id": "species",
             "name": "Species",
-            "entityType": "species",
+            "entityType": "daena.lore:species",
             "fields": { "summary": "", "lifespan": "" }
         }]
     });

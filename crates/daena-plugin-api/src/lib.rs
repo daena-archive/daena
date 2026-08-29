@@ -882,7 +882,7 @@ fn qualified_id(plugin_id: &str, local: &str) -> String {
     format!("{plugin_id}:{local}")
 }
 
-fn normalize_local_id(plugin_id: &str, id: &str) -> Result<String, ContractError> {
+pub(crate) fn normalize_local_id(plugin_id: &str, id: &str) -> Result<String, ContractError> {
     if let Some((prefix, local)) = id.split_once(':') {
         if prefix != plugin_id {
             return Err(ContractError(format!(

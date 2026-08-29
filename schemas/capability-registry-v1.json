@@ -102,7 +102,9 @@
     {
       "id": "relationship.write",
       "operations": [
-        "create"
+        "create",
+        "update",
+        "delete"
       ],
       "resource": "project.relationships"
     },

@@ -3844,6 +3844,77 @@ fn relationship_metadata_schemas_for_project(
         .collect())
 }
 
+fn relationship_constraints_for_project(
+    project: &ProjectStore,
+    host: &PluginHost,
+) -> Result<BTreeMap<String, daena_plugin_api::RelationshipConstraints>, CoreError> {
+    let project_id = project.info().map(|info| info.root);
+    let mut entries = host
+        .catalog
+        .list()
+        .map(|entry| entry.manifest.id.clone())
+        .collect::<Vec<_>>();
+    entries.sort();
+    let mut merged: BTreeMap<String, daena_plugin_api::RelationshipConstraints> = BTreeMap::new();
+    for module_id in entries {
+        let enabled = if project_id.is_some() {
+            project.is_module_enabled(&module_id)?
+        } else {
+            host.catalog
+                .get(&module_id)
+                .and_then(|entry| entry.manifest.enabled_by_default)
+                .unwrap_or(true)
+        };
+        if !enabled {
+            continue;
+        }
+        let entry = host
+            .runtime_entry(project_id.as_deref().unwrap_or_default(), &module_id)
+            .or_else(|| host.catalog.get(&module_id).cloned())
+            .ok_or_else(|| CoreError::Validation("plugin catalog entry disappeared".into()))?;
+        let mut manifest = entry.manifest.clone();
+        if supports_schema_overlay(&manifest) {
+            let overlay_value = if project_id.is_some() {
+                project
+                    .module_schema_overlay(&module_id)?
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+            let overlay = parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
+            manifest = merge_module_manifest(&manifest, &overlay).map_err(CoreError::Validation)?;
+        }
+        for schema in &manifest.schemas {
+            for field in &schema.fields {
+                let Some(relationship_type) = field.relationship_type.as_deref() else {
+                    continue;
+                };
+                let constraints = daena_plugin_api::RelationshipConstraints::from_field(field);
+                if let Some(existing) = merged.get(relationship_type) {
+                    if existing != &constraints {
+                        return Err(CoreError::Validation(format!(
+                            "conflicting relationship constraints for {relationship_type}"
+                        )));
+                    }
+                } else {
+                    merged.insert(relationship_type.to_owned(), constraints);
+                }
+            }
+        }
+    }
+    Ok(merged)
+}
+
+fn apply_relationship_runtime_schemas(
+    project: &mut ProjectStore,
+    host: &PluginHost,
+) -> Result<(), CoreError> {
+    project.set_relationship_metadata_schemas(relationship_metadata_schemas_for_project(
+        project, host,
+    )?)?;
+    project.set_relationship_constraints(relationship_constraints_for_project(project, host)?)
+}
+
 fn refresh_relationship_metadata_schemas(
     core: &SharedCore,
     plugins: &SharedPluginHost,
@@ -3859,11 +3930,7 @@ fn refresh_relationship_metadata_schemas(
     let host = plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?;
-    let schemas = relationship_metadata_schemas_for_project(project, &host)
-        .map_err(|error| error.to_string())?;
-    project
-        .set_relationship_metadata_schemas(schemas)
-        .map_err(|error| error.to_string())
+    apply_relationship_runtime_schemas(project, &host).map_err(|error| error.to_string())
 }
 
 async fn sync_project_usage_and_wait(
@@ -4278,8 +4345,7 @@ async fn module_schema_overlay_set(
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)?;
+        apply_relationship_runtime_schemas(project, &host)?;
         Ok(normalized)
     })
     .await
@@ -4396,8 +4462,7 @@ async fn module_enable(
         host.record_project_usage(&project_id, &id, &manifest.version)
             .map_err(|error| CoreError::Conflict(error.to_string()))?;
         project.set_module_enabled(id, true)?;
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)?;
+        apply_relationship_runtime_schemas(project, &host)?;
         Ok(())
     })
     .await
@@ -4443,8 +4508,7 @@ async fn module_disable(
         }
         host.deactivate_bundled(&project_id, &id);
         close_plugin_webview(&app, &id);
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)?;
+        apply_relationship_runtime_schemas(project, &host)?;
         Ok(())
     })
     .await
@@ -4617,8 +4681,7 @@ async fn plugin_upgrade(
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)?;
+        apply_relationship_runtime_schemas(project, &host)?;
         Ok(())
     })
     .await
@@ -4688,8 +4751,7 @@ async fn plugin_rollback(
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)?;
+        apply_relationship_runtime_schemas(project, &host)?;
         Ok(())
     })
     .await
@@ -5063,6 +5125,20 @@ fn payload_value<T: serde::de::DeserializeOwned>(
         .map_err(|error| CoreError::Validation(format!("invalid plugin RPC payload: {error}")))
 }
 
+fn rpc_error_from_core(plugin_id: &str, error: CoreError) -> daena_plugin_api::RpcError {
+    let code = error.rpc_code().to_owned();
+    let message = match &error {
+        CoreError::Broker { message, .. } => message.clone(),
+        _ => format!("plugin {plugin_id}: {error}"),
+    };
+    daena_plugin_api::RpcError {
+        code,
+        message,
+        retryable: false,
+        details: None,
+    }
+}
+
 fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<(), CoreError> {
     let object = payload.as_object().ok_or_else(|| {
         CoreError::Validation(format!("plugin RPC payload for {method} must be an object"))
@@ -5082,6 +5158,7 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             ],
         ),
         "entity.get" => (&["id"], &[]),
+        "entity.getMany" => (&["ids"], &[]),
         "entity.create" => (&["name"], &["type", "fields", "relationships", "document"]),
         "entity.update" => (&["id", "expectedRevision"], &["name", "type"]),
         "entity.delete" => (&["id", "expectedRevision"], &[]),
@@ -5121,6 +5198,10 @@ fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<
             &[],
         ),
         "relationship.list" => (&["entityId"], &[]),
+        "relationship.query" => (
+            &["entityIds", "direction"],
+            &["relationshipTypes", "offset", "limit"],
+        ),
         "relationship.create" => (
             &[
                 "source_id",
@@ -5398,6 +5479,14 @@ fn dispatch_module_rpc(
             let entity = project.get_entity(&id)?;
             serde_json::to_value(entity).map_err(|error| CoreError::Validation(error.to_string()))
         }
+        "entity.getMany" => {
+            let payload: daena_plugin_api::EntityGetManyPayload = serde_json::from_value(payload)
+                .map_err(|error| {
+                CoreError::Validation(format!("invalid entity.getMany payload: {error}"))
+            })?;
+            serde_json::to_value(project.get_entities(&payload.ids)?)
+                .map_err(|error| CoreError::Validation(error.to_string()))
+        }
         "entity.create" => {
             let fields = payload
                 .get("fields")
@@ -5659,6 +5748,49 @@ fn dispatch_module_rpc(
         "relationship.list" => {
             serde_json::to_value(project.list_relationships(payload_string(&payload, "entityId")?)?)
                 .map_err(|error| CoreError::Validation(error.to_string()))
+        }
+        "relationship.query" => {
+            let payload: daena_plugin_api::RelationshipQueryPayload =
+                serde_json::from_value(payload).map_err(|error| {
+                    CoreError::Validation(format!("invalid relationship.query payload: {error}"))
+                })?;
+            let direction = match payload.direction {
+                daena_plugin_api::RelationshipQueryDirection::Incoming => {
+                    daena_core::RelationshipQueryDirection::Incoming
+                }
+                daena_plugin_api::RelationshipQueryDirection::Outgoing => {
+                    daena_core::RelationshipQueryDirection::Outgoing
+                }
+                daena_plugin_api::RelationshipQueryDirection::Any => {
+                    daena_core::RelationshipQueryDirection::Any
+                }
+            };
+            let page = project.query_relationships(daena_core::RelationshipQuery {
+                entity_ids: payload.entity_ids,
+                relationship_types: payload.relationship_types,
+                direction,
+                offset: payload.offset,
+                limit: payload.limit,
+            })?;
+            let record = daena_plugin_api::RelationshipPageRecord {
+                items: page
+                    .items
+                    .into_iter()
+                    .map(|relationship| daena_plugin_api::RelationshipRecord {
+                        id: relationship.id,
+                        source_id: relationship.source_id,
+                        target_id: relationship.target_id,
+                        relationship_type: relationship.relationship_type,
+                        metadata: relationship.metadata,
+                        revision: relationship.revision,
+                    })
+                    .collect(),
+                total: page.total,
+                offset: page.offset,
+                limit: page.limit,
+                has_more: page.has_more,
+            };
+            serde_json::to_value(record).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "relationship.create" => {
             let expected_revision = required_payload_string(
@@ -6563,8 +6695,7 @@ async fn project_open_memory(
         let host = plugins
             .lock()
             .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
-        let schemas = relationship_metadata_schemas_for_project(project, &host)?;
-        project.set_relationship_metadata_schemas(schemas)
+        apply_relationship_runtime_schemas(project, &host)
     })
     .await;
     if result.is_ok() {

@@ -25,7 +25,12 @@
     "ai.text.generate-structured",
     "service.call:daena.maps/navigation"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "daena.language": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": false
+    }
+  },
   "namespaces": ["lore"],
   "schemas": [
     {

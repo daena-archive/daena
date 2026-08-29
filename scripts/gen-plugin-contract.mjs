@@ -172,6 +172,8 @@ const MANIFEST_DEF_ORDER = [
   "IconRef",
   "EntityTypeColor",
   "EntityTypeDefinition",
+  "RelationshipUniqueness",
+  "RelationshipConstraints",
   "FieldDefinition",
   "SchemaContribution",
   "EntityTemplate",
@@ -269,6 +271,9 @@ rpcLines.push(defToDeclaration("PluginBootstrap", rpcDefs.PluginBootstrap));
 rpcLines.push(defToDeclaration("EntityRecord", rpcDefs.EntityRecord));
 rpcLines.push(defToDeclaration("EntityTypeCountRecord", rpcDefs.EntityTypeCountRecord));
 rpcLines.push(defToDeclaration("EntityPageRecord", rpcDefs.EntityPageRecord));
+rpcLines.push(defToDeclaration("RelationshipQueryDirection", rpcDefs.RelationshipQueryDirection));
+rpcLines.push(defToDeclaration("RelationshipRecord", rpcDefs.RelationshipRecord));
+rpcLines.push(defToDeclaration("RelationshipPageRecord", rpcDefs.RelationshipPageRecord));
 
 // SDK-only helpers not derivable from the schemas.
 rpcLines.push(`export interface MutationOptions { expectedRevision?: string; requestId?: string }`);

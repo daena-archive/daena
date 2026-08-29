@@ -54,6 +54,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
         }],
         templates: vec![],
@@ -792,20 +793,29 @@ fn wasm_service_provider_is_registered_and_invokable_after_activation() {
 #[test]
 fn bundled_timeline_service_uses_the_generic_wasm_provider_path() {
     let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))
+        .unwrap();
     host.register_bundled_json_with_wasm(
         include_str!("../../../packages/modules/timeline/manifest.json"),
         Some(BUNDLED_TIMELINE_SERVICE_WASM),
     )
     .unwrap();
+    for plugin_id in ["daena.language", "daena.lore", "daena.timeline"] {
+        let manifest = host.catalog.get(plugin_id).unwrap().manifest.clone();
+        host.grants
+            .set(
+                "project",
+                &manifest.id,
+                &manifest.capabilities,
+                manifest.capabilities.iter().cloned().collect(),
+            )
+            .unwrap();
+    }
     let manifest = host.catalog.get("daena.timeline").unwrap().manifest.clone();
-    host.grants
-        .set(
-            "project",
-            &manifest.id,
-            &manifest.capabilities,
-            manifest.capabilities.iter().cloned().collect(),
-        )
-        .unwrap();
     host.activate_bundled("project", &manifest.id).unwrap();
     let value = host
         .services
@@ -1821,11 +1831,13 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("entity.list", &empty, &["entity.read"]),
         ("entity.query", &empty, &["entity.read"]),
         ("entity.get", &empty, &["entity.read"]),
+        ("entity.getMany", &empty, &["entity.read"]),
         ("entity.update", &empty, &["entity.write"]),
         ("entity.delete", &empty, &["entity.delete"]),
         ("document.list", &empty, &["document.read"]),
         ("document.save", &empty, &["document.write"]),
         ("relationship.list", &empty, &["relationship.read"]),
+        ("relationship.query", &empty, &["relationship.read"]),
         ("relationship.create", &empty, &["relationship.write"]),
         ("relationship.update", &empty, &["relationship.write"]),
         ("relationship.delete", &empty, &["relationship.write"]),
@@ -2193,4 +2205,38 @@ fn event_and_service_capability_rules_are_stable() {
     )
     .unwrap_err();
     assert_eq!(missing_major.code, "payload.invalid");
+}
+
+#[test]
+fn activation_fails_for_optional_but_missing_dependency_types() {
+    let mut consumer = manifest("com.example.consumer", "consumer");
+    consumer.dependencies.insert(
+        "com.example.owner".into(),
+        daena_plugin_api::Dependency {
+            version: ">=1.0.0 <2.0.0".into(),
+            required: false,
+        },
+    );
+    consumer.schemas[0].fields[0].field_type = "relationship".into();
+    consumer.schemas[0].fields[0].relationship_type = Some("mentions".into());
+    consumer.schemas[0].fields[0].target_entity_types =
+        Some(vec!["com.example.owner:person".into()]);
+    let mut host = PluginHost::new();
+    host.catalog
+        .insert_for_test(CatalogEntry {
+            manifest: consumer.clone(),
+            package_root: PathBuf::new(),
+            digest: consumer.id.repeat(64).chars().take(64).collect(),
+            embedded_wasm: None,
+        })
+        .unwrap();
+    host.namespaces.register_manifest(&consumer).unwrap();
+    let error = host
+        .activate_bundled("project", "com.example.consumer")
+        .unwrap_err();
+    assert!(
+        error.0.contains("not active") || error.0.contains("not declared"),
+        "{}",
+        error.0
+    );
 }

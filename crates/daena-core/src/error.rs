@@ -19,6 +19,10 @@ pub enum CoreError {
         operation: &'static str,
     },
     ProjectNotOpen,
+    Broker {
+        code: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for CoreError {
@@ -36,6 +40,7 @@ impl fmt::Display for CoreError {
             | Self::Git(message) => f.write_str(message),
             Self::Unauthorized { operation } => write!(f, "unauthorized operation: {operation}"),
             Self::ProjectNotOpen => f.write_str("no project is open"),
+            Self::Broker { message, .. } => f.write_str(message),
         }
     }
 }
@@ -80,5 +85,21 @@ impl From<String> for CoreError {
 impl From<&str> for CoreError {
     fn from(message: &str) -> Self {
         Self::Validation(message.to_string())
+    }
+}
+
+impl CoreError {
+    pub fn broker(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Broker {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn rpc_code(&self) -> &str {
+        match self {
+            Self::Broker { code, .. } => code,
+            _ => "core.error",
+        }
     }
 }

@@ -27,7 +27,12 @@
     "service.provide:daena.timeline.resolve-date@1",
     "service.call:daena.maps/navigation"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "daena.lore": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": false
+    }
+  },
   "namespaces": ["timeline"],
   "schemas": [
     {

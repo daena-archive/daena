@@ -6,7 +6,9 @@ use crate::external_import::{
     ImportedFieldReport, ImportedObjectReport, ImportedRelationshipReport, StagedLinkKind,
     StagedLinkResolution, ValidatedImportPlan, VALIDATED_IMPORT_PLAN_SCHEMA_VERSION,
 };
-use daena_plugin_api::{MetadataFieldDefinition, PluginManifest};
+use daena_plugin_api::{
+    MetadataFieldDefinition, PluginManifest, RelationshipConstraints, RelationshipUniqueness,
+};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use rusqlite::{
     named_params, params, types::Value as SqlValue, Connection, OpenFlags, OptionalExtension,
@@ -76,6 +78,10 @@ pub struct Entity {
 
 pub const DEFAULT_ENTITY_QUERY_LIMIT: u32 = 50;
 pub const MAX_ENTITY_QUERY_LIMIT: u32 = 200;
+pub const MAX_ENTITY_GET_MANY: usize = 500;
+pub const MAX_RELATIONSHIP_QUERY_ENTITIES: usize = 200;
+pub const DEFAULT_RELATIONSHIP_QUERY_LIMIT: u32 = 200;
+pub const MAX_RELATIONSHIP_QUERY_LIMIT: u32 = 500;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -212,6 +218,31 @@ pub struct Relationship {
     pub metadata: String,
     #[serde(default)]
     pub revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipQueryDirection {
+    Incoming,
+    Outgoing,
+    Any,
+}
+
+#[derive(Debug, Clone)]
+pub struct RelationshipQuery {
+    pub entity_ids: Vec<String>,
+    pub relationship_types: Vec<String>,
+    pub direction: RelationshipQueryDirection,
+    pub offset: Option<u64>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipPage {
+    pub items: Vec<Relationship>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1592,6 +1623,7 @@ pub struct ProjectStore {
     database_epoch: String,
     root: Option<PathBuf>,
     relationship_metadata_schemas: BTreeMap<String, Vec<MetadataFieldDefinition>>,
+    relationship_constraints: BTreeMap<String, RelationshipConstraints>,
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
@@ -1810,6 +1842,7 @@ impl ProjectStore {
             database_epoch,
             root: Some(root),
             relationship_metadata_schemas: BTreeMap::new(),
+            relationship_constraints: BTreeMap::new(),
             suppress_sync: Cell::new(true),
             _session_lock: None,
             export_worker: None,
@@ -2032,6 +2065,7 @@ impl ProjectStore {
             database_epoch: String::new(),
             root,
             relationship_metadata_schemas: BTreeMap::new(),
+            relationship_constraints: BTreeMap::new(),
             suppress_sync: Cell::new(false),
             _session_lock: session_lock,
             export_worker: None,
@@ -8678,6 +8712,31 @@ impl ProjectStore {
         Ok(())
     }
 
+    pub fn set_relationship_constraints(
+        &mut self,
+        constraints: BTreeMap<String, RelationshipConstraints>,
+    ) -> Result<(), CoreError> {
+        for (relationship_type, _) in &constraints {
+            if relationship_type.trim().is_empty() {
+                return Err(CoreError::Validation(
+                    "relationship constraint type cannot be empty".into(),
+                ));
+            }
+        }
+        self.relationship_constraints = constraints;
+        Ok(())
+    }
+
+    fn constraints_for_relationship_type(
+        &self,
+        relationship_type: &str,
+    ) -> RelationshipConstraints {
+        self.relationship_constraints
+            .get(relationship_type)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn metadata_fields_for_relationship_type(
         &self,
         relationship_type: &str,
@@ -8692,6 +8751,177 @@ impl ProjectStore {
         relationship_type: &str,
     ) -> Option<&[MetadataFieldDefinition]> {
         self.metadata_fields_for_relationship_type(relationship_type)
+    }
+
+    fn canonicalize_relationship_endpoints(
+        &self,
+        relationship_type: &str,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<(String, String), CoreError> {
+        if self
+            .constraints_for_relationship_type(relationship_type)
+            .unique
+            == RelationshipUniqueness::Undirected
+        {
+            Self::canonicalize_undirected_endpoints(source_id, target_id)
+        } else {
+            Ok((source_id.to_owned(), target_id.to_owned()))
+        }
+    }
+
+    fn canonicalize_undirected_endpoints(
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<(String, String), CoreError> {
+        let source = Uuid::parse_str(source_id).map_err(|error| {
+            CoreError::Validation(format!("relationship source is not a UUID: {error}"))
+        })?;
+        let target = Uuid::parse_str(target_id).map_err(|error| {
+            CoreError::Validation(format!("relationship target is not a UUID: {error}"))
+        })?;
+        if source.as_bytes() <= target.as_bytes() {
+            Ok((source_id.to_owned(), target_id.to_owned()))
+        } else {
+            Ok((target_id.to_owned(), source_id.to_owned()))
+        }
+    }
+
+    fn validate_relationship_endpoints(
+        &self,
+        conn: &rusqlite::Connection,
+        relationship_type: &str,
+        source_id: &str,
+        target_id: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let constraints = self.constraints_for_relationship_type(relationship_type);
+        if !constraints.allow_self && source_id == target_id {
+            return Err(CoreError::broker(
+                "relationship.self",
+                "relationship cannot target the same entity",
+            ));
+        }
+        match constraints.unique {
+            RelationshipUniqueness::None => {}
+            RelationshipUniqueness::Directed => {
+                if Self::relationship_pair_exists(
+                    conn,
+                    relationship_type,
+                    source_id,
+                    target_id,
+                    false,
+                    exclude_id,
+                )? {
+                    return Err(CoreError::broker(
+                        "relationship.duplicate",
+                        "a relationship already exists for these endpoints",
+                    ));
+                }
+            }
+            RelationshipUniqueness::Undirected => {
+                if Self::relationship_pair_exists(
+                    conn,
+                    relationship_type,
+                    source_id,
+                    target_id,
+                    true,
+                    exclude_id,
+                )? {
+                    return Err(CoreError::broker(
+                        "relationship.duplicate",
+                        "a relationship already exists for these endpoints",
+                    ));
+                }
+            }
+        }
+        if constraints.acyclic
+            && Self::relationship_would_cycle(
+                conn,
+                relationship_type,
+                source_id,
+                target_id,
+                exclude_id,
+            )?
+        {
+            return Err(CoreError::broker(
+                "relationship.cycle",
+                "relationship would introduce a cycle",
+            ));
+        }
+        Ok(())
+    }
+
+    fn relationship_pair_exists(
+        conn: &rusqlite::Connection,
+        relationship_type: &str,
+        source_id: &str,
+        target_id: &str,
+        undirected: bool,
+        exclude_id: Option<&str>,
+    ) -> Result<bool, CoreError> {
+        let sql = if undirected {
+            "SELECT 1 FROM relationships WHERE relationship_type=?1 AND ((source_id=?2 AND target_id=?3) OR (source_id=?3 AND target_id=?2)) AND (?4 IS NULL OR id!=?4) LIMIT 1"
+        } else {
+            "SELECT 1 FROM relationships WHERE relationship_type=?1 AND source_id=?2 AND target_id=?3 AND (?4 IS NULL OR id!=?4) LIMIT 1"
+        };
+        let found: Option<i64> = conn
+            .query_row(
+                sql,
+                params![relationship_type, source_id, target_id, exclude_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    fn relationship_would_cycle(
+        conn: &rusqlite::Connection,
+        relationship_type: &str,
+        source_id: &str,
+        target_id: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<bool, CoreError> {
+        if source_id == target_id {
+            return Ok(true);
+        }
+        let mut statement = conn.prepare(
+            "SELECT id, source_id, target_id FROM relationships WHERE relationship_type=?1",
+        )?;
+        let rows = statement.query_map(params![relationship_type], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut adjacency: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in rows {
+            let (id, source, target) = row?;
+            if exclude_id == Some(id.as_str()) {
+                continue;
+            }
+            adjacency.entry(source).or_default().push(target);
+        }
+        adjacency
+            .entry(source_id.to_owned())
+            .or_default()
+            .push(target_id.to_owned());
+        let mut stack = vec![target_id.to_owned()];
+        let mut seen = BTreeSet::from([target_id.to_owned()]);
+        while let Some(current) = stack.pop() {
+            if current == source_id {
+                return Ok(true);
+            }
+            if let Some(next) = adjacency.get(&current) {
+                for child in next {
+                    if seen.insert(child.clone()) {
+                        stack.push(child.clone());
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub fn create_relationship(&self, input: RelationshipInput) -> Result<Relationship, CoreError> {
@@ -8717,27 +8947,19 @@ impl ProjectStore {
             relationship.revision = self.revision_for_relationship_value(&relationship)?;
             return Ok(relationship);
         }
-        for entity_id in [&input.source_id, &input.target_id] {
-            let exists: Option<String> = self
-                .connection
-                .query_row(
-                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
-                    params![entity_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if exists.is_none() {
-                return Err(CoreError::NotFound("relationship entity not found".into()));
-            }
-        }
         if input.relationship_type.trim().is_empty() {
             return Err(CoreError::NotFound(
                 "relationship type cannot be empty".into(),
             ));
         }
+        let (source_id, target_id) = self.canonicalize_relationship_endpoints(
+            &input.relationship_type,
+            &input.source_id,
+            &input.target_id,
+        )?;
         Self::ensure_expected_revision(
             expected_revision,
-            self.revision_for_entity(&input.source_id)?,
+            self.revision_for_entity(&source_id)?,
             "relationship source entity",
         )?;
         let id = Uuid::new_v4().to_string();
@@ -8754,8 +8976,8 @@ impl ProjectStore {
         let request_id = self.request_id(request_id)?;
         let result = serde_json::to_value(&Relationship {
             id: id.clone(),
-            source_id: input.source_id.clone(),
-            target_id: input.target_id.clone(),
+            source_id: source_id.clone(),
+            target_id: target_id.clone(),
             relationship_type: input.relationship_type.clone(),
             metadata: metadata.clone(),
             revision: String::new(),
@@ -8765,18 +8987,37 @@ impl ProjectStore {
             &request_id,
             Some(&result),
             &[
-                format!("entities/{}/", input.source_id),
-                format!("entities/{}/", input.target_id),
+                format!("entities/{source_id}/"),
+                format!("entities/{target_id}/"),
             ],
         )?;
-        transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, input.source_id, input.target_id, input.relationship_type, metadata])?;
+        for entity_id in [&source_id, &target_id] {
+            let exists: Option<String> = transaction
+                .query_row(
+                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                    params![entity_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(CoreError::NotFound("relationship entity not found".into()));
+            }
+        }
+        self.validate_relationship_endpoints(
+            &transaction,
+            &input.relationship_type,
+            &source_id,
+            &target_id,
+            None,
+        )?;
+        transaction.execute("INSERT INTO relationships(id,source_id,target_id,relationship_type,metadata) VALUES (?1,?2,?3,?4,?5)", params![id, source_id, target_id, input.relationship_type, metadata])?;
         transaction.commit()?;
         self.notify_export_worker()?;
         let revision = self.revision_for_relationship(&id)?;
         Ok(Relationship {
             id,
-            source_id: input.source_id,
-            target_id: input.target_id,
+            source_id,
+            target_id,
             relationship_type: input.relationship_type,
             metadata,
             revision,
@@ -8809,22 +9050,6 @@ impl ProjectStore {
             "relationship",
         )?;
 
-        if let Some(target_id) = input.target_id.as_deref() {
-            let exists: Option<String> = self
-                .connection
-                .query_row(
-                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
-                    params![target_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if exists.is_none() {
-                return Err(CoreError::NotFound(
-                    "relationship target entity not found".into(),
-                ));
-            }
-        }
-
         let metadata = input.metadata.unwrap_or_else(|| current.metadata.clone());
         let metadata_value = serde_json::from_str(&metadata).map_err(|error| {
             CoreError::Validation(format!("relationship metadata is invalid JSON: {error}"))
@@ -8835,14 +9060,19 @@ impl ProjectStore {
             self.metadata_fields_for_relationship_type(&current.relationship_type),
         )?)
         .map_err(|error| CoreError::Serialization(error.to_string()))?;
-        let target_id = input
+        let requested_target = input
             .target_id
             .clone()
             .unwrap_or_else(|| current.target_id.clone());
-        let target_changed = target_id != current.target_id;
+        let (source_id, target_id) = self.canonicalize_relationship_endpoints(
+            &current.relationship_type,
+            &current.source_id,
+            &requested_target,
+        )?;
+        let endpoints_changed = source_id != current.source_id || target_id != current.target_id;
         let updated = Relationship {
             id: current.id.clone(),
-            source_id: current.source_id.clone(),
+            source_id: source_id.clone(),
             target_id: target_id.clone(),
             relationship_type: current.relationship_type.clone(),
             metadata: metadata.clone(),
@@ -8851,19 +9081,41 @@ impl ProjectStore {
         let result = serde_json::to_value(&updated)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         let request_id = self.request_id(request_id)?;
-        let affected_prefixes = if target_changed {
+        let affected_prefixes = if endpoints_changed {
             vec![
                 format!("entities/{}/", current.source_id),
                 format!("entities/{}/", current.target_id),
+                format!("entities/{source_id}/"),
                 format!("entities/{target_id}/"),
             ]
         } else {
             vec![format!("entities/{}/", current.source_id)]
         };
         let transaction = self.begin_mutation(&request_id, Some(&result), &affected_prefixes)?;
+        if input.target_id.is_some() {
+            let exists: Option<String> = transaction
+                .query_row(
+                    "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                    params![requested_target],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if exists.is_none() {
+                return Err(CoreError::NotFound(
+                    "relationship target entity not found".into(),
+                ));
+            }
+        }
+        self.validate_relationship_endpoints(
+            &transaction,
+            &current.relationship_type,
+            &source_id,
+            &target_id,
+            Some(&current.id),
+        )?;
         if transaction.execute(
-            "UPDATE relationships SET metadata=?1, target_id=COALESCE(?2,target_id) WHERE id=?3",
-            params![metadata, input.target_id.as_deref(), current.id],
+            "UPDATE relationships SET metadata=?1, source_id=?2, target_id=?3 WHERE id=?4",
+            params![metadata, source_id, target_id, current.id],
         )? == 0
         {
             return Err(CoreError::NotFound("relationship not found".into()));
@@ -8968,6 +9220,138 @@ impl ProjectStore {
             relationship.revision = self.revision_for_relationship_value(relationship)?;
         }
         Ok(relationships)
+    }
+
+    pub fn get_entities(&self, ids: &[String]) -> Result<Vec<Entity>, CoreError> {
+        if ids.is_empty() || ids.len() > MAX_ENTITY_GET_MANY {
+            return Err(CoreError::Validation(format!(
+                "entity.getMany requires 1 to {MAX_ENTITY_GET_MANY} ids"
+            )));
+        }
+        let unique = ids.iter().collect::<BTreeSet<_>>();
+        if unique.len() != ids.len() {
+            return Err(CoreError::Validation(
+                "entity.getMany ids must be unique".into(),
+            ));
+        }
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT id,name,entity_type,deleted,created_at,updated_at FROM entities WHERE id IN ({placeholders}) AND deleted=0"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+            Ok(Entity {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                entity_type: row.get(2)?,
+                deleted: row.get::<_, i64>(3)? != 0,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                revision: String::new(),
+            })
+        })?;
+        let mut found = rows
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|entity| (entity.id.clone(), entity))
+            .collect::<BTreeMap<_, _>>();
+        let mut entities = Vec::new();
+        for id in ids {
+            if let Some(mut entity) = found.remove(id) {
+                entity.revision = self.revision_for_entity(&entity.id)?;
+                entities.push(entity);
+            }
+        }
+        Ok(entities)
+    }
+
+    pub fn query_relationships(
+        &self,
+        query: RelationshipQuery,
+    ) -> Result<RelationshipPage, CoreError> {
+        let unique_ids = query.entity_ids.iter().collect::<BTreeSet<_>>();
+        if query.entity_ids.is_empty()
+            || query.entity_ids.len() > MAX_RELATIONSHIP_QUERY_ENTITIES
+            || unique_ids.len() != query.entity_ids.len()
+        {
+            return Err(CoreError::Validation(format!(
+                "relationship.query requires 1 to {MAX_RELATIONSHIP_QUERY_ENTITIES} unique entity ids"
+            )));
+        }
+        let unique_types = query.relationship_types.iter().collect::<BTreeSet<_>>();
+        if unique_types.len() != query.relationship_types.len() {
+            return Err(CoreError::Validation(
+                "relationship.query relationshipTypes must be unique".into(),
+            ));
+        }
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_RELATIONSHIP_QUERY_LIMIT)
+            .clamp(1, MAX_RELATIONSHIP_QUERY_LIMIT);
+        let offset = query.offset.unwrap_or(0);
+        let mut sql = String::from(
+            "SELECT id,source_id,target_id,relationship_type,metadata FROM relationships WHERE ",
+        );
+        let mut params: Vec<SqlValue> = Vec::new();
+        let entity_placeholders = std::iter::repeat_n("?", query.entity_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        match query.direction {
+            RelationshipQueryDirection::Incoming => {
+                sql.push_str(&format!("target_id IN ({entity_placeholders})"));
+                params.extend(query.entity_ids.iter().cloned().map(SqlValue::Text));
+            }
+            RelationshipQueryDirection::Outgoing => {
+                sql.push_str(&format!("source_id IN ({entity_placeholders})"));
+                params.extend(query.entity_ids.iter().cloned().map(SqlValue::Text));
+            }
+            RelationshipQueryDirection::Any => {
+                sql.push_str(&format!(
+                    "(source_id IN ({entity_placeholders}) OR target_id IN ({entity_placeholders}))"
+                ));
+                params.extend(query.entity_ids.iter().cloned().map(SqlValue::Text));
+                params.extend(query.entity_ids.iter().cloned().map(SqlValue::Text));
+            }
+        }
+        if !query.relationship_types.is_empty() {
+            let type_placeholders = std::iter::repeat_n("?", query.relationship_types.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND relationship_type IN ({type_placeholders})"));
+            params.extend(query.relationship_types.iter().cloned().map(SqlValue::Text));
+        }
+        let count_sql = format!("SELECT COUNT(*) FROM ({sql}) counted");
+        let total: u64 = self.connection.query_row(
+            &count_sql,
+            rusqlite::params_from_iter(params.iter()),
+            |row| row.get(0),
+        )?;
+        sql.push_str(" ORDER BY id LIMIT ? OFFSET ?");
+        params.push(SqlValue::Integer(i64::from(limit)));
+        params.push(SqlValue::Integer(offset as i64));
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(Relationship {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                target_id: row.get(2)?,
+                relationship_type: row.get(3)?,
+                metadata: row.get(4)?,
+                revision: String::new(),
+            })
+        })?;
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        for relationship in &mut items {
+            relationship.revision = self.revision_for_relationship_value(relationship)?;
+        }
+        Ok(RelationshipPage {
+            items,
+            total,
+            offset,
+            limit,
+            has_more: offset.saturating_add(u64::from(limit)) < total,
+        })
     }
 
     pub fn search(&self, query: String) -> Result<Vec<Entity>, CoreError> {

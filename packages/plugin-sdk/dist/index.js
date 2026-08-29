@@ -213,6 +213,20 @@ function normalizeEntityPage(value) {
         typeCounts,
     };
 }
+function referencedEntityTypeAllowed(type, pluginId, localTypes, dependencies) {
+    if (localTypes.has(type))
+        return true;
+    const colon = type.indexOf(":");
+    if (colon <= 0)
+        return false;
+    const prefix = type.slice(0, colon);
+    const local = type.slice(colon + 1);
+    if (prefix === pluginId)
+        return localTypes.has(local) || localTypes.has(type);
+    if (!isPluginIdentifier(prefix) || !/^[a-z][a-z0-9_-]*$/.test(local))
+        return false;
+    return isRecord(dependencies) && isRecord(dependencies[prefix]);
+}
 function checkKeys(value, label, allowed, errors) {
     const known = new Set(allowed);
     for (const key of Object.keys(value))
@@ -268,6 +282,11 @@ export function createPluginRpcClient(transport) {
         bootstrap: () => callTransport(transport, "plugin.bootstrap", {}),
         listEntities: async (entityType) => (await callTransport(transport, "entity.list", entityType ? { entityType } : {})).map(normalizeEntity),
         queryEntities: async (query = {}) => normalizeEntityPage(await callTransport(transport, "entity.query", query)),
+        getEntity: async (id) => {
+            const entity = await callTransport(transport, "entity.get", { id });
+            return entity == null ? null : normalizeEntity(entity);
+        },
+        getEntities: async (ids) => (await callTransport(transport, "entity.getMany", { ids })).map(normalizeEntity),
         createEntity: async (name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.create", { name, type: entityType ?? null }, options?.requestId)),
         updateEntity: async (id, name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.update", { id, name: name ?? null, type: entityType ?? null, expectedRevision: options?.expectedRevision }, options?.requestId)),
         deleteEntity: (id, options) => callTransport(transport, "entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId),
@@ -441,14 +460,16 @@ export function validatePluginManifest(manifest) {
     if (value.kind !== "declarative" && value.kind !== "sandboxed")
         errors.push("kind is invalid");
     const entrypoints = value.entrypoints;
+    let hasUiEntrypoint = false;
+    let hasWasmEntrypoint = false;
     if (!entrypoints || typeof entrypoints !== "object" || Array.isArray(entrypoints))
         errors.push("entrypoints must be an object");
     else {
         for (const key of Object.keys(entrypoints))
             if (key !== "ui" && key !== "wasm")
                 errors.push(`unknown entrypoint key: ${key}`);
-        if (!("ui" in entrypoints) && !("wasm" in entrypoints))
-            errors.push("an entrypoint is required");
+        hasUiEntrypoint = "ui" in entrypoints && typeof entrypoints.ui === "string";
+        hasWasmEntrypoint = "wasm" in entrypoints && typeof entrypoints.wasm === "string";
         if ("ui" in entrypoints && entrypoints.ui !== undefined && typeof entrypoints.ui !== "string")
             errors.push("entrypoint ui must be a package path");
         if ("wasm" in entrypoints && entrypoints.wasm !== undefined && typeof entrypoints.wasm !== "string")
@@ -527,6 +548,10 @@ export function validatePluginManifest(manifest) {
                         "shared",
                         "metadataFields",
                         "timeline",
+                        "cardinality",
+                        "multiple",
+                        "oneOf",
+                        "relationshipConstraints",
                     ], errors);
                     if (field.shared !== undefined && typeof field.shared !== "boolean")
                         errors.push(`field ${String(field.key)} shared must be boolean`);
@@ -550,6 +575,23 @@ export function validatePluginManifest(manifest) {
                                 errors.push(`field ${String(field.key)} timeline contribution label is invalid`);
                             if (field.timeline.layer !== undefined && !["dates", "lifelines"].includes(String(field.timeline.layer)))
                                 errors.push(`field ${String(field.key)} timeline contribution layer is invalid`);
+                        }
+                    }
+                    if (field.relationshipConstraints !== undefined) {
+                        if (field.type !== "relationship") {
+                            errors.push(`non-relationship field ${String(field.key)} cannot declare relationshipConstraints`);
+                        }
+                        else if (!isRecord(field.relationshipConstraints)) {
+                            errors.push(`field ${String(field.key)} relationshipConstraints must be an object`);
+                        }
+                        else {
+                            checkKeys(field.relationshipConstraints, "relationship constraints", ["allowSelf", "acyclic", "unique"], errors);
+                            if (typeof field.relationshipConstraints.allowSelf !== "boolean")
+                                errors.push(`field ${String(field.key)} relationshipConstraints.allowSelf must be boolean`);
+                            if (typeof field.relationshipConstraints.acyclic !== "boolean")
+                                errors.push(`field ${String(field.key)} relationshipConstraints.acyclic must be boolean`);
+                            if (!["none", "directed", "undirected"].includes(String(field.relationshipConstraints.unique)))
+                                errors.push(`field ${String(field.key)} relationshipConstraints.unique is invalid`);
                         }
                     }
                     if (field.metadataFields !== undefined) {
@@ -793,8 +835,11 @@ export function validatePluginManifest(manifest) {
             if (fields.has(field.key))
                 errors.push(`duplicate field key: ${field.key}`);
             fields.set(field.key, field);
-            if (field.entityTypes?.some((type) => !entityTypes.has(type)))
+            if (field.entityTypes?.some((type) => !referencedEntityTypeAllowed(type, value.id, entityTypes, dependencies)))
                 errors.push(`field ${field.key} uses an unknown entity type`);
+            if (field.type === "relationship" &&
+                field.targetEntityTypes?.some((type) => !referencedEntityTypeAllowed(type, value.id, entityTypes, dependencies)))
+                errors.push(`relationship field ${field.key} uses an unknown target entity type`);
             if (field.entityTypes &&
                 (field.entityTypes.length === 0 || new Set(field.entityTypes).size !== field.entityTypes.length))
                 errors.push(`field ${field.key} has empty or duplicate entity types`);
@@ -938,6 +983,19 @@ export function validatePluginManifest(manifest) {
         }
     }
     errors.push(...validateMigrationChain(migrations, namespaceList));
+    if (!hasUiEntrypoint && !hasWasmEntrypoint) {
+        const viewsList = Array.isArray(views) ? views : [];
+        const allHostSurface = viewsList.length > 0 &&
+            viewsList.every((view) => isRecord(view) &&
+                isRecord(view.renderer) &&
+                view.renderer.type === "host-surface");
+        if (value.kind !== "declarative")
+            errors.push("empty entrypoints require a declarative plugin");
+        else if (isRecord(services) && Array.isArray(services.provides) && services.provides.length > 0)
+            errors.push("empty entrypoints cannot declare a provided service");
+        else if (!allHostSurface)
+            errors.push("empty entrypoints require every view to use a host-surface renderer");
+    }
     return [...new Set(errors)];
 }
 export function assertValidPluginManifest(manifest) {

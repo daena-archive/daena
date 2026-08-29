@@ -24,6 +24,8 @@ export interface PluginRpcClient {
     bootstrap(): Promise<PluginBootstrap>;
     listEntities(entityType?: string): Promise<EntityRecord[]>;
     queryEntities(query?: EntityQueryPayload): Promise<EntityPageRecord>;
+    getEntity(id: string): Promise<EntityRecord | null>;
+    getEntities(ids: string[]): Promise<EntityRecord[]>;
     createEntity(name: string, entityType?: string, options?: MutationOptions): Promise<EntityRecord>;
     updateEntity(id: string, name?: string, entityType?: string | null, options?: MutationOptions): Promise<EntityRecord>;
     deleteEntity(id: string, options?: MutationOptions): Promise<void>;

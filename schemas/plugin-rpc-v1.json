@@ -456,6 +456,25 @@
       ],
       "type": "object"
     },
+    "EntityGetManyPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    },
     "EntityGetPayload": {
       "additionalProperties": false,
       "properties": {
@@ -1407,6 +1426,130 @@
       ],
       "type": "object"
     },
+    "RelationshipPageRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "hasMore": {
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/RelationshipRecord"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hasMore",
+        "items",
+        "limit",
+        "offset",
+        "total"
+      ],
+      "type": "object"
+    },
+    "RelationshipQueryDirection": {
+      "enum": [
+        "incoming",
+        "outgoing",
+        "any"
+      ],
+      "type": "string"
+    },
+    "RelationshipQueryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/RelationshipQueryDirection"
+        },
+        "entityIds": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "limit": {
+          "maximum": 500,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "relationshipTypes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "direction",
+        "entityIds"
+      ],
+      "type": "object"
+    },
+    "RelationshipRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "string"
+        },
+        "relationshipType": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "sourceId": {
+          "type": "string"
+        },
+        "targetId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "metadata",
+        "relationshipType",
+        "revision",
+        "sourceId",
+        "targetId"
+      ],
+      "type": "object"
+    },
     "RelationshipUpdatePayload": {
       "additionalProperties": false,
       "properties": {
@@ -1546,6 +1689,22 @@
             "properties": {
               "payload": {
                 "$ref": "#/$defs/EntityGetPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "entity.getMany"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/EntityGetManyPayload"
               }
             }
           }
@@ -1754,6 +1913,22 @@
             "properties": {
               "payload": {
                 "$ref": "#/$defs/RelationshipListPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "relationship.query"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/RelationshipQueryPayload"
               }
             }
           }
@@ -2437,6 +2612,7 @@
             "entity.list",
             "entity.query",
             "entity.get",
+            "entity.getMany",
             "entity.create",
             "entity.update",
             "entity.delete",
@@ -2450,6 +2626,7 @@
             "record.update",
             "record.delete",
             "relationship.list",
+            "relationship.query",
             "relationship.create",
             "relationship.update",
             "relationship.delete",
@@ -2710,6 +2887,10 @@
       "payload": "EntityGetPayload",
       "requestId": "envelope"
     },
+    "entity.getMany": {
+      "payload": "EntityGetManyPayload",
+      "requestId": "envelope"
+    },
     "entity.list": {
       "payload": "EntityListPayload",
       "requestId": "envelope"
@@ -2906,6 +3087,10 @@
     },
     "relationship.list": {
       "payload": "RelationshipListPayload",
+      "requestId": "envelope"
+    },
+    "relationship.query": {
+      "payload": "RelationshipQueryPayload",
       "requestId": "envelope"
     },
     "relationship.update": {

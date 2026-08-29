@@ -1230,6 +1230,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1258,6 +1259,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1284,6 +1286,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1344,6 +1347,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "species".into(),
@@ -1446,6 +1450,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1554,6 +1559,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "chapter".into(),
@@ -1741,6 +1747,7 @@ mod tests {
                     label: None,
                     layer: Some(TimelineFieldLayer::Dates),
                 }),
+                relationship_constraints: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1817,6 +1824,7 @@ mod tests {
                 one_of: None,
                 metadata_fields: None,
                 timeline: None,
+                relationship_constraints: None,
             }],
             field_timeline_overrides: vec![FieldTimelineOverride {
                 field_key: "founded".into(),

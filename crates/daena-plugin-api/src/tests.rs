@@ -356,3 +356,115 @@ fn package_path_rejects_dot_segments() {
     assert!(!is_package_path("dist\\index.html"));
     assert!(!is_package_path(""));
 }
+
+fn host_surface_only_manifest() -> PluginManifest {
+    let json = include_str!("../../../packages/modules/maps/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.kind = PluginKind::Declarative;
+    manifest.entrypoints = Entrypoints {
+        ui: None,
+        wasm: None,
+    };
+    manifest.services.provides.clear();
+    manifest
+}
+
+#[test]
+fn host_surface_only_declarative_plugins_may_omit_entrypoints() {
+    let manifest = host_surface_only_manifest();
+    assert!(validate_manifest(&manifest).is_ok());
+}
+
+#[test]
+fn empty_entrypoints_reject_invalid_variants() {
+    let mut manifest = host_surface_only_manifest();
+    manifest.kind = PluginKind::Sandboxed;
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = host_surface_only_manifest();
+    manifest.views[0].renderer = ViewRenderer::Declarative;
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = host_surface_only_manifest();
+    manifest.views.clear();
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = host_surface_only_manifest();
+    manifest.services.provides.push(Service {
+        name: "daena.example/service".into(),
+        major: 1,
+    });
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
+fn field_entity_types_may_reference_declared_dependencies() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    assert!(validate_manifest(&manifest).is_ok());
+    manifest.dependencies.remove("daena.language");
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields.push(FieldDefinition {
+        key: "ghostNote".into(),
+        label: "Ghost note".into(),
+        field_type: "text".into(),
+        required: None,
+        options: None,
+        entity_types: Some(vec!["daena.ghost:ghost".into()]),
+        relationship_type: None,
+        target_entity_types: None,
+        shared: false,
+        multiple: false,
+        cardinality: None,
+        one_of: None,
+        metadata_fields: None,
+        timeline: None,
+        relationship_constraints: None,
+    });
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
+fn relationship_constraints_are_relationship_only_and_must_agree() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields[0].relationship_constraints = Some(RelationshipConstraints {
+        allow_self: false,
+        acyclic: true,
+        unique: RelationshipUniqueness::Directed,
+    });
+    assert!(validate_manifest(&manifest).is_err());
+
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.schemas[0].fields[3].relationship_constraints = Some(RelationshipConstraints {
+        allow_self: false,
+        acyclic: true,
+        unique: RelationshipUniqueness::Directed,
+    });
+    assert!(validate_manifest(&manifest).is_ok());
+
+    manifest.schemas[0].fields.push(FieldDefinition {
+        key: "alsoSpeaks".into(),
+        label: "Also speaks".into(),
+        field_type: "relationship".into(),
+        required: None,
+        options: None,
+        entity_types: None,
+        relationship_type: Some("speaks".into()),
+        target_entity_types: Some(vec!["daena.language:language".into()]),
+        shared: false,
+        multiple: false,
+        cardinality: None,
+        one_of: None,
+        metadata_fields: None,
+        timeline: None,
+        relationship_constraints: Some(RelationshipConstraints {
+            allow_self: true,
+            acyclic: false,
+            unique: RelationshipUniqueness::None,
+        }),
+    });
+    assert!(validate_manifest(&manifest).is_err());
+}

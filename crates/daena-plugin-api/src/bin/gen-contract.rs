@@ -16,19 +16,20 @@ use daena_plugin_api::rpc::{
     AssetListPayload, AssetMetadataUpdatePayload, AssetReadBeginPayload, AssetRegisterPayload,
     AssetReplaceBeginPayload, AssetReplaceCommitPayload, AssetTransferCancelPayload,
     DocumentListPayload, DocumentSavePayload, EntityCreateDocument, EntityCreateField,
-    EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload, EntityGetPayload,
-    EntityListPayload, EntityPageRecord, EntityQueryPayload, EntityRecord, EntityTypeCountRecord,
-    EntityUpdatePayload, EventPublishPayload, EventTypePayload, FieldListPayload, FieldReadPayload,
-    FieldSetPayload, MapsImageImportBeginPayload, MapsImageImportCommitPayload,
-    MapsLayerCreatePayload, MapsLayerDeletePayload, MapsLayerUpdatePayload,
-    MapsLocationsCreateAndLinkPayload, MapsLocationsListPayload, MapsLocationsUnlinkPayload,
-    MapsLocationsUpsertPayload, MapsPhysicalCreateBeginPayload, MapsPhysicalCreateCommitPayload,
-    MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload, MapsRecoveryExportCommitPayload,
-    MapsRecoveryListPayload, MapsRecoveryRestorePayload, MapsVectorCreateBeginPayload,
-    MapsVectorCreateCommitPayload, MapsVectorReplaceBeginPayload, MapsVectorReplaceCommitPayload,
-    PluginBootstrap, RecordCreatePayload, RecordDeletePayload, RecordListPayload,
-    RecordUpdatePayload, RelationshipCreatePayload, RelationshipDeletePayload,
-    RelationshipListPayload, RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
+    EntityCreatePayload, EntityCreateRelationship, EntityDeletePayload, EntityGetManyPayload,
+    EntityGetPayload, EntityListPayload, EntityPageRecord, EntityQueryPayload, EntityRecord,
+    EntityTypeCountRecord, EntityUpdatePayload, EventPublishPayload, EventTypePayload,
+    FieldListPayload, FieldReadPayload, FieldSetPayload, MapsImageImportBeginPayload,
+    MapsImageImportCommitPayload, MapsLayerCreatePayload, MapsLayerDeletePayload,
+    MapsLayerUpdatePayload, MapsLocationsCreateAndLinkPayload, MapsLocationsListPayload,
+    MapsLocationsUnlinkPayload, MapsLocationsUpsertPayload, MapsPhysicalCreateBeginPayload,
+    MapsPhysicalCreateCommitPayload, MapsReconcileLinksPayload, MapsRecoveryExportBeginPayload,
+    MapsRecoveryExportCommitPayload, MapsRecoveryListPayload, MapsRecoveryRestorePayload,
+    MapsVectorCreateBeginPayload, MapsVectorCreateCommitPayload, MapsVectorReplaceBeginPayload,
+    MapsVectorReplaceCommitPayload, PluginBootstrap, RecordCreatePayload, RecordDeletePayload,
+    RecordListPayload, RecordUpdatePayload, RelationshipCreatePayload, RelationshipDeletePayload,
+    RelationshipListPayload, RelationshipPageRecord, RelationshipQueryPayload,
+    RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
     PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS,
@@ -163,9 +164,8 @@ fn manifest_schema() -> Value {
 
     add_curated_defs(&mut root);
 
-    // Entrypoints: at least one package path.
+    // Entrypoints may be empty for host-surface-only declarative plugins.
     let entrypoints = defs_entry(&mut root, "Entrypoints");
-    entrypoints.insert("minProperties".to_owned(), json!(1));
     let ep_props = entrypoints
         .get_mut("properties")
         .and_then(|p| p.as_object_mut())
@@ -321,6 +321,18 @@ fn manifest_schema() -> Value {
         "FieldDefinition",
         "metadataFields",
         json!({"type": "array", "items": ref_to("MetadataFieldDefinition")}),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
+        "relationshipConstraints",
+        ref_to("RelationshipConstraints"),
+    );
+    set_prop(
+        &mut root,
+        "RelationshipConstraints",
+        "unique",
+        json!({"enum": ["none", "directed", "undirected"]}),
     );
     set_prop(
         &mut root,
@@ -497,6 +509,7 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "EntityListPayload" => gen.subschema_for::<EntityListPayload>(),
         "EntityQueryPayload" => gen.subschema_for::<EntityQueryPayload>(),
         "EntityGetPayload" => gen.subschema_for::<EntityGetPayload>(),
+        "EntityGetManyPayload" => gen.subschema_for::<EntityGetManyPayload>(),
         "EntityCreatePayload" => gen.subschema_for::<EntityCreatePayload>(),
         "EntityUpdatePayload" => gen.subschema_for::<EntityUpdatePayload>(),
         "EntityDeletePayload" => gen.subschema_for::<EntityDeletePayload>(),
@@ -510,6 +523,7 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "RecordUpdatePayload" => gen.subschema_for::<RecordUpdatePayload>(),
         "RecordDeletePayload" => gen.subschema_for::<RecordDeletePayload>(),
         "RelationshipListPayload" => gen.subschema_for::<RelationshipListPayload>(),
+        "RelationshipQueryPayload" => gen.subschema_for::<RelationshipQueryPayload>(),
         "RelationshipCreatePayload" => gen.subschema_for::<RelationshipCreatePayload>(),
         "RelationshipUpdatePayload" => gen.subschema_for::<RelationshipUpdatePayload>(),
         "RelationshipDeletePayload" => gen.subschema_for::<RelationshipDeletePayload>(),
@@ -578,6 +592,7 @@ fn rpc_schema() -> Value {
     let _ = gen.subschema_for::<EntityRecord>();
     let _ = gen.subschema_for::<EntityPageRecord>();
     let _ = gen.subschema_for::<EntityTypeCountRecord>();
+    let _ = gen.subschema_for::<RelationshipPageRecord>();
     let _ = gen.subschema_for::<RpcError>();
 
     let defs = gen.take_definitions();
@@ -654,6 +669,46 @@ fn rpc_schema() -> Value {
         props.insert(
             "limit".to_owned(),
             json!({"type": ["integer", "null"], "minimum": 1, "maximum": 200}),
+        );
+    }
+
+    {
+        let props = defs_value
+            .get_mut("EntityGetManyPayload")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("EntityGetManyPayload")
+            .get_mut("properties")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("EntityGetManyPayload properties");
+        props.insert(
+            "ids".to_owned(),
+            json!({"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 500, "uniqueItems": true}),
+        );
+    }
+
+    {
+        let props = defs_value
+            .get_mut("RelationshipQueryPayload")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("RelationshipQueryPayload")
+            .get_mut("properties")
+            .and_then(|entry| entry.as_object_mut())
+            .expect("RelationshipQueryPayload properties");
+        props.insert(
+            "entityIds".to_owned(),
+            json!({"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 200, "uniqueItems": true}),
+        );
+        props.insert(
+            "relationshipTypes".to_owned(),
+            json!({"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 64, "uniqueItems": true}),
+        );
+        props.insert(
+            "offset".to_owned(),
+            json!({"type": ["integer", "null"], "minimum": 0}),
+        );
+        props.insert(
+            "limit".to_owned(),
+            json!({"type": ["integer", "null"], "minimum": 1, "maximum": 500}),
         );
     }
 

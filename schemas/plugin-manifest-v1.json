@@ -310,7 +310,6 @@
     },
     "Entrypoints": {
       "additionalProperties": false,
-      "minProperties": 1,
       "properties": {
         "ui": {
           "$ref": "#/$defs/packagePath"
@@ -414,6 +413,9 @@
             "null"
           ],
           "uniqueItems": true
+        },
+        "relationshipConstraints": {
+          "$ref": "#/$defs/RelationshipConstraints"
         },
         "relationshipType": {
           "pattern": "^[a-z][a-z0-9_-]*$",
@@ -976,6 +978,38 @@
         "schema"
       ],
       "type": "object"
+    },
+    "RelationshipConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "acyclic": {
+          "type": "boolean"
+        },
+        "allowSelf": {
+          "type": "boolean"
+        },
+        "unique": {
+          "enum": [
+            "none",
+            "directed",
+            "undirected"
+          ]
+        }
+      },
+      "required": [
+        "acyclic",
+        "allowSelf",
+        "unique"
+      ],
+      "type": "object"
+    },
+    "RelationshipUniqueness": {
+      "enum": [
+        "none",
+        "directed",
+        "undirected"
+      ],
+      "type": "string"
     },
     "SchemaContribution": {
       "additionalProperties": false,

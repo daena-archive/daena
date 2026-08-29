@@ -61,6 +61,12 @@ export interface EntityTypeDefinition {
     id: string;
     name: string;
 }
+export type RelationshipUniqueness = "none" | "directed" | "undirected";
+export interface RelationshipConstraints {
+    acyclic: boolean;
+    allowSelf: boolean;
+    unique: "none" | "directed" | "undirected";
+}
 export interface FieldDefinition {
     cardinality?: "one" | "many";
     entityTypes?: string[];
@@ -70,6 +76,7 @@ export interface FieldDefinition {
     multiple?: boolean;
     oneOf?: OneOfVariant[];
     options?: string[] | null;
+    relationshipConstraints?: RelationshipConstraints;
     relationshipType?: string;
     required?: boolean | null;
     shared?: boolean;
@@ -284,6 +291,22 @@ export interface EntityPageRecord {
     total: number;
     typeCounts: EntityTypeCountRecord[];
 }
+export type RelationshipQueryDirection = "incoming" | "outgoing" | "any";
+export interface RelationshipRecord {
+    id: string;
+    metadata: string;
+    relationshipType: string;
+    revision: string;
+    sourceId: string;
+    targetId: string;
+}
+export interface RelationshipPageRecord {
+    hasMore: boolean;
+    items: RelationshipRecord[];
+    limit: number;
+    offset: number;
+    total: number;
+}
 export interface MutationOptions {
     expectedRevision?: string;
     requestId?: string;
@@ -422,6 +445,9 @@ export interface EntityDeletePayload {
 }
 export interface EntityGetPayload {
     id: string;
+}
+export interface EntityGetManyPayload {
+    ids: string[];
 }
 export interface EntityListPayload {
     entityType?: string | null;
@@ -604,6 +630,13 @@ export interface RelationshipDeletePayload {
 export interface RelationshipListPayload {
     entityId: string;
 }
+export interface RelationshipQueryPayload {
+    direction: RelationshipQueryDirection;
+    entityIds: string[];
+    limit?: number | null;
+    offset?: number | null;
+    relationshipTypes?: string[];
+}
 export interface RelationshipUpdatePayload {
     expectedRevision: string;
     id: string;
@@ -639,6 +672,7 @@ export interface BrokerMethodPayloads {
     "entity.create": EntityCreatePayload;
     "entity.delete": EntityDeletePayload;
     "entity.get": EntityGetPayload;
+    "entity.getMany": EntityGetManyPayload;
     "entity.list": EntityListPayload;
     "entity.query": EntityQueryPayload;
     "entity.update": EntityUpdatePayload;
@@ -675,6 +709,7 @@ export interface BrokerMethodPayloads {
     "relationship.create": RelationshipCreatePayload;
     "relationship.delete": RelationshipDeletePayload;
     "relationship.list": RelationshipListPayload;
+    "relationship.query": RelationshipQueryPayload;
     "relationship.update": RelationshipUpdatePayload;
     "search.query": SearchQueryPayload;
     "service.call": ServiceCallPayload;

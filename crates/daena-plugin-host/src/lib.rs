@@ -597,6 +597,7 @@ impl SessionRegistry {
 pub struct NamespaceOwnership {
     owners: BTreeMap<String, String>,
     relationship_types: BTreeMap<String, String>,
+    entity_types: BTreeMap<String, String>,
     fields: BTreeMap<(String, String), (String, bool)>,
 }
 
@@ -604,6 +605,7 @@ impl NamespaceOwnership {
     pub fn register_manifest(&mut self, manifest: &PluginManifest) -> Result<(), HostError> {
         let mut next_owners = self.owners.clone();
         let mut next_relationship_types = self.relationship_types.clone();
+        let mut next_entity_types = self.entity_types.clone();
         let mut next_fields = self.fields.clone();
         for namespace in &manifest.namespaces {
             if let Some(owner) = next_owners.get(namespace) {
@@ -616,6 +618,15 @@ impl NamespaceOwnership {
             next_owners.insert(namespace.clone(), manifest.id.clone());
         }
         for schema in &manifest.schemas {
+            for entity_type in &schema.entity_types {
+                let key = manifest_entity_type_key(&manifest.id, &entity_type.id);
+                if let Some(owner) = next_entity_types.get(&key) {
+                    if owner != &manifest.id {
+                        return Err(HostError(format!("entity type {key} is owned by {owner}")));
+                    }
+                }
+                next_entity_types.insert(key, manifest.id.clone());
+            }
             for field in &schema.fields {
                 let field_key = (schema.namespace.clone(), field.key.clone());
                 if let Some((owner, _)) = next_fields.get(&field_key) {
@@ -641,6 +652,7 @@ impl NamespaceOwnership {
         }
         self.owners = next_owners;
         self.relationship_types = next_relationship_types;
+        self.entity_types = next_entity_types;
         self.fields = next_fields;
         Ok(())
     }
@@ -652,6 +664,10 @@ impl NamespaceOwnership {
         self.relationship_types
             .get(relationship_type)
             .map(String::as_str)
+    }
+
+    pub fn entity_type_owner(&self, entity_type: &str) -> Option<&str> {
+        self.entity_types.get(entity_type).map(String::as_str)
     }
 
     pub fn field_owner(&self, namespace: &str, key: &str) -> Option<&str> {
@@ -2242,6 +2258,76 @@ impl PluginHost {
         Ok(plan)
     }
 
+    fn validate_referenced_entity_types(
+        &self,
+        project_id: &str,
+        manifest: &PluginManifest,
+    ) -> Result<(), HostError> {
+        let owned = manifest
+            .schemas
+            .iter()
+            .flat_map(|schema| {
+                schema
+                    .entity_types
+                    .iter()
+                    .map(|entity_type| entity_type.id.as_str())
+            })
+            .collect::<BTreeSet<_>>();
+        let referenced = manifest.schemas.iter().flat_map(|schema| {
+            schema.fields.iter().flat_map(|field| {
+                field
+                    .entity_types
+                    .iter()
+                    .flatten()
+                    .chain(field.target_entity_types.iter().flatten())
+            })
+        });
+        for entity_type in referenced {
+            if owned.contains(entity_type.as_str()) {
+                continue;
+            }
+            let Some((prefix, _)) = entity_type.split_once(':') else {
+                return Err(HostError(format!(
+                    "referenced entity type {entity_type} is not declared"
+                )));
+            };
+            if prefix == manifest.id {
+                return Err(HostError(format!(
+                    "referenced entity type {entity_type} is not declared"
+                )));
+            }
+            if !manifest.dependencies.contains_key(prefix) {
+                return Err(HostError(format!(
+                    "referenced entity type {entity_type} is not declared"
+                )));
+            }
+            if self.lifecycle.state(project_id, prefix).state != LifecycleState::Active {
+                return Err(HostError(format!(
+                    "dependency {prefix} is not active for {entity_type}"
+                )));
+            }
+            let Some(provider) = self
+                .runtime_entry(project_id, prefix)
+                .or_else(|| self.catalog.get(prefix).cloned())
+            else {
+                return Err(HostError(format!(
+                    "referenced entity type {entity_type} is not declared"
+                )));
+            };
+            if !provider.manifest.schemas.iter().any(|schema| {
+                schema.entity_types.iter().any(|candidate| {
+                    candidate.id == *entity_type
+                        || manifest_entity_type_key(prefix, &candidate.id) == *entity_type
+                })
+            }) {
+                return Err(HostError(format!(
+                    "referenced entity type {entity_type} is not provided by {prefix}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn register_manifest_declarations(
         &mut self,
         project_id: &str,
@@ -2250,6 +2336,7 @@ impl PluginHost {
         let entry = self
             .runtime_entry(project_id, plugin_id)
             .ok_or_else(|| HostError("plugin runtime version is missing".into()))?;
+        self.validate_referenced_entity_types(project_id, &entry.manifest)?;
         self.declarations
             .register(project_id, plugin_id, &entry.manifest)?;
         let grants = self.grants.get(project_id, plugin_id);
@@ -2733,13 +2820,7 @@ impl PluginHost {
             .ok_or_else(|| rpc_error("plugin.missing", "plugin is not installed", false))?
             .manifest;
         validate_declared_resource(&manifest, &request.method, &request.payload)?;
-        validate_schema_resource(
-            &manifest,
-            &request.method,
-            &request.payload,
-            session,
-            &self.namespaces,
-        )?;
+        validate_schema_resource(self, &manifest, &request.method, &request.payload, session)?;
         let capabilities =
             required_capabilities(&request.method, &request.payload, session, &self.namespaces)?;
         // Grants are project state, not session state. A webview can remain
@@ -2768,13 +2849,79 @@ impl PluginHost {
     }
 }
 
+fn manifest_entity_type_key(plugin_id: &str, entity_type_id: &str) -> String {
+    if entity_type_id.contains(':') {
+        entity_type_id.to_owned()
+    } else {
+        format!("{plugin_id}:{entity_type_id}")
+    }
+}
+
+fn entity_type_is_allowed(
+    host: &PluginHost,
+    manifest: &PluginManifest,
+    session: &Session,
+    entity_type: &str,
+) -> Result<(), RpcError> {
+    let own_key = manifest_entity_type_key(&session.plugin_id, entity_type);
+    if host.namespaces.entity_type_owner(&own_key) == Some(session.plugin_id.as_str()) {
+        return Ok(());
+    }
+    let Some((prefix, _)) = entity_type.split_once(':') else {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    };
+    if prefix == session.plugin_id {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    }
+    let Some(owner) = host.namespaces.entity_type_owner(entity_type) else {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    };
+    if owner != prefix {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    }
+    let Some(dependency) = manifest.dependencies.get(owner) else {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    };
+    if !dependency.required
+        || host.lifecycle.state(&session.project_id, owner).state != LifecycleState::Active
+    {
+        return Err(rpc_error(
+            "schema.undeclared",
+            "entity type is not declared",
+            false,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_schema_resource(
+    host: &PluginHost,
     manifest: &PluginManifest,
     method: &str,
     payload: &serde_json::Value,
     session: &Session,
-    namespaces: &NamespaceOwnership,
 ) -> Result<(), RpcError> {
+    let namespaces = &host.namespaces;
     let validate_field = |namespace: &str,
                           key: &str,
                           value: Option<&serde_json::Value>,
@@ -2845,18 +2992,7 @@ fn validate_schema_resource(
         "entity.create" => {
             let entity_type = payload.get("type").and_then(serde_json::Value::as_str);
             if let Some(entity_type) = entity_type {
-                if !manifest.schemas.iter().any(|schema| {
-                    schema
-                        .entity_types
-                        .iter()
-                        .any(|kind| kind.id == entity_type)
-                }) {
-                    return Err(rpc_error(
-                        "schema.undeclared",
-                        "entity type is not declared",
-                        false,
-                    ));
-                }
+                entity_type_is_allowed(host, manifest, session, entity_type)?;
             }
             if let Some(fields) = payload.get("fields") {
                 for field in fields.as_array().ok_or_else(|| {
@@ -2913,18 +3049,7 @@ fn validate_schema_resource(
         }
         "entity.update" => {
             if let Some(entity_type) = payload.get("type").and_then(serde_json::Value::as_str) {
-                if !manifest.schemas.iter().any(|schema| {
-                    schema
-                        .entity_types
-                        .iter()
-                        .any(|kind| kind.id == entity_type)
-                }) {
-                    return Err(rpc_error(
-                        "schema.undeclared",
-                        "entity type is not declared",
-                        false,
-                    ));
-                }
+                entity_type_is_allowed(host, manifest, session, entity_type)?;
             }
         }
         "field.read" | "field.list" | "field.set" => {

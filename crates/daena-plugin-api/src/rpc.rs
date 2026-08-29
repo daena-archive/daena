@@ -167,6 +167,62 @@ pub struct EntityGetPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct EntityGetManyPayload {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum RelationshipQueryDirection {
+    Incoming,
+    Outgoing,
+    Any,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipQueryPayload {
+    #[serde(rename = "entityIds")]
+    pub entity_ids: Vec<String>,
+    #[serde(rename = "relationshipTypes", default)]
+    pub relationship_types: Vec<String>,
+    pub direction: RelationshipQueryDirection,
+    pub offset: Option<u64>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipRecord {
+    pub id: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "targetId")]
+    pub target_id: String,
+    #[serde(rename = "relationshipType")]
+    pub relationship_type: String,
+    pub metadata: String,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RelationshipPageRecord {
+    pub items: Vec<RelationshipRecord>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct EntityCreatePayload {
     pub name: String,
     #[serde(rename = "type")]

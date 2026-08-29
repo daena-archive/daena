@@ -38,6 +38,17 @@ export class FakePluginHost implements PluginRpcTransport {
   readonly calls: Array<{ method: string; payload: unknown; requestId?: string }> = [];
   private readonly grants: Set<string>;
   private readonly entities = new Map<string, EntityRecord>();
+  private readonly relationships = new Map<
+    string,
+    {
+      id: string;
+      source_id: string;
+      target_id: string;
+      relationship_type: string;
+      metadata: string;
+      revision: string;
+    }
+  >();
   private readonly committedRequests = new Map<string, { method: string; result: unknown }>();
   private readonly queues = new Map<string, unknown[]>();
   private readonly subscriptions = new Set<string>();
@@ -47,6 +58,7 @@ export class FakePluginHost implements PluginRpcTransport {
   private readonly aiCapabilities = new Map<string, string>();
   private readonly physicalTransfers = new Map<string, { name: string; size: number; generation: unknown }>();
   private nextEntity = 1;
+  private nextRelationship = 1;
   private nextRevision = 1;
   private revoked = false;
   private declarativeActive = false;
@@ -124,6 +136,12 @@ export class FakePluginHost implements PluginRpcTransport {
           case "entity.query":
             this.require("entity.read");
             return this.query(payload);
+          case "entity.get":
+            this.require("entity.read");
+            return this.get(payload);
+          case "entity.getMany":
+            this.require("entity.read");
+            return this.getMany(payload);
           case "entity.create":
             this.require("entity.write");
             return this.create(payload);
@@ -133,6 +151,21 @@ export class FakePluginHost implements PluginRpcTransport {
           case "entity.delete":
             this.require("entity.delete");
             return this.remove(payload);
+          case "relationship.list":
+            this.require("relationship.read");
+            return this.listRelationships(payload);
+          case "relationship.query":
+            this.require("relationship.read");
+            return this.queryRelationships(payload);
+          case "relationship.create":
+            this.require("relationship.write");
+            return this.createRelationship(payload);
+          case "relationship.update":
+            this.require("relationship.write");
+            return this.updateRelationship(payload);
+          case "relationship.delete":
+            this.require("relationship.write");
+            return this.deleteRelationship(payload);
           case "event.publish":
             this.requireDynamic("event.publish", payload);
             return this.publish(payload);
@@ -161,7 +194,17 @@ export class FakePluginHost implements PluginRpcTransport {
             throw failure("unknown-method", `unsupported plugin method: ${method}`);
         }
       })();
-      if (requestId && ["entity.create", "entity.update", "entity.delete"].includes(method)) {
+      if (
+        requestId &&
+        [
+          "entity.create",
+          "entity.update",
+          "entity.delete",
+          "relationship.create",
+          "relationship.update",
+          "relationship.delete",
+        ].includes(method)
+      ) {
         this.committedRequests.set(requestId, { method, result: structuredClone(result) });
       }
       return result;
@@ -349,10 +392,214 @@ export class FakePluginHost implements PluginRpcTransport {
     };
   }
 
+  private get(payload: unknown): EntityRecord | null {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string") throw failure("invalid-payload", "entity.get requires id");
+    const entity = this.entities.get(id);
+    return entity ? structuredClone(entity) : null;
+  }
+
+  private getMany(payload: unknown): EntityRecord[] {
+    const ids = (payload as { ids?: unknown }).ids;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 500)
+      throw failure("invalid-payload", "entity.getMany requires 1 to 500 ids");
+    if (ids.some((id) => typeof id !== "string") || new Set(ids).size !== ids.length)
+      throw failure("invalid-payload", "entity.getMany ids must be unique strings");
+    return ids.flatMap((id) => {
+      const entity = this.entities.get(id);
+      return entity ? [structuredClone(entity)] : [];
+    });
+  }
+
+  private entityTypeAllowed(type: string): boolean {
+    if (
+      this.manifest.schemas.some((schema) =>
+        schema.entityTypes.some(
+          (entityType) => entityType.id === type || `${this.manifest.id}:${entityType.id}` === type,
+        ),
+      )
+    )
+      return true;
+    const colon = type.indexOf(":");
+    if (colon <= 0) return false;
+    const prefix = type.slice(0, colon);
+    const dependency = this.manifest.dependencies?.[prefix];
+    return Boolean(dependency && dependency.required);
+  }
+
+  private relationshipConstraints(relationshipType: string) {
+    const field = this.manifest.schemas
+      .flatMap((schema) => schema.fields)
+      .find((candidate) => candidate.relationshipType === relationshipType);
+    return field?.relationshipConstraints ?? { allowSelf: true, acyclic: false, unique: "none" as const };
+  }
+
+  private listRelationships(payload: unknown) {
+    const entityId = (payload as { entityId?: unknown }).entityId;
+    if (typeof entityId !== "string") throw failure("invalid-payload", "relationship.list requires entityId");
+    return [...this.relationships.values()]
+      .filter((relationship) => relationship.source_id === entityId || relationship.target_id === entityId)
+      .map((relationship) => structuredClone(relationship));
+  }
+
+  private queryRelationships(payload: unknown) {
+    const value = payload as {
+      entityIds?: unknown;
+      relationshipTypes?: unknown;
+      direction?: unknown;
+      offset?: unknown;
+      limit?: unknown;
+    };
+    const entityIds = Array.isArray(value.entityIds) ? value.entityIds.filter((id) => typeof id === "string") : [];
+    if (entityIds.length < 1 || entityIds.length > 200 || new Set(entityIds).size !== entityIds.length)
+      throw failure("invalid-payload", "relationship.query requires 1 to 200 unique entityIds");
+    const types = Array.isArray(value.relationshipTypes)
+      ? value.relationshipTypes.filter((type) => typeof type === "string")
+      : [];
+    const direction = value.direction === "incoming" || value.direction === "outgoing" ? value.direction : "any";
+    const matched = [...this.relationships.values()]
+      .filter((relationship) => {
+        if (types.length && !types.includes(relationship.relationship_type)) return false;
+        if (direction === "incoming") return entityIds.includes(relationship.target_id);
+        if (direction === "outgoing") return entityIds.includes(relationship.source_id);
+        return entityIds.includes(relationship.source_id) || entityIds.includes(relationship.target_id);
+      })
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const offset = typeof value.offset === "number" && value.offset >= 0 ? Math.floor(value.offset) : 0;
+    const limit = typeof value.limit === "number" && value.limit > 0 ? Math.min(500, Math.floor(value.limit)) : 200;
+    return {
+      items: matched.slice(offset, offset + limit).map((relationship) => structuredClone(relationship)),
+      total: matched.length,
+      offset,
+      limit,
+      hasMore: offset + limit < matched.length,
+    };
+  }
+
+  private createRelationship(payload: unknown) {
+    const value = payload as {
+      source_id?: unknown;
+      target_id?: unknown;
+      relationship_type?: unknown;
+      metadata?: unknown;
+      expectedRevision?: unknown;
+    };
+    if (
+      typeof value.source_id !== "string" ||
+      typeof value.target_id !== "string" ||
+      typeof value.relationship_type !== "string" ||
+      typeof value.expectedRevision !== "string"
+    )
+      throw failure("invalid-payload", "relationship.create requires endpoints, type, and expectedRevision");
+    const [sourceId, targetId] = this.canonicalizeEndpoints(value.relationship_type, value.source_id, value.target_id);
+    this.assertRelationshipConstraints(value.relationship_type, sourceId, targetId);
+    const relationship = {
+      id: `${this.manifest.id}:rel:${this.nextRelationship++}`,
+      source_id: sourceId,
+      target_id: targetId,
+      relationship_type: value.relationship_type,
+      metadata: typeof value.metadata === "string" ? value.metadata : "{}",
+      revision: this.revision(),
+    };
+    this.relationships.set(relationship.id, relationship);
+    return structuredClone(relationship);
+  }
+
+  private updateRelationship(payload: unknown) {
+    const value = payload as { id?: unknown; metadata?: unknown; target_id?: unknown; expectedRevision?: unknown };
+    if (typeof value.id !== "string" || !this.relationships.has(value.id))
+      throw failure("not-found", "relationship does not exist");
+    const relationship = this.relationships.get(value.id)!;
+    if (typeof value.expectedRevision !== "string" || value.expectedRevision !== relationship.revision)
+      throw failure("revision-conflict", "relationship revision does not match");
+    if (typeof value.target_id === "string") {
+      const [sourceId, targetId] = this.canonicalizeEndpoints(
+        relationship.relationship_type,
+        relationship.source_id,
+        value.target_id,
+      );
+      this.assertRelationshipConstraints(relationship.relationship_type, sourceId, targetId, relationship.id);
+      relationship.source_id = sourceId;
+      relationship.target_id = targetId;
+    }
+    if (typeof value.metadata === "string") relationship.metadata = value.metadata;
+    relationship.revision = this.revision();
+    return structuredClone(relationship);
+  }
+
+  private deleteRelationship(payload: unknown) {
+    const value = payload as { id?: unknown; expectedRevision?: unknown };
+    if (typeof value.id !== "string" || !this.relationships.has(value.id))
+      throw failure("not-found", "relationship does not exist");
+    const relationship = this.relationships.get(value.id)!;
+    if (typeof value.expectedRevision !== "string" || value.expectedRevision !== relationship.revision)
+      throw failure("revision-conflict", "relationship revision does not match");
+    this.relationships.delete(value.id);
+  }
+
+  private canonicalizeEndpoints(relationshipType: string, sourceId: string, targetId: string): [string, string] {
+    if (this.relationshipConstraints(relationshipType).unique !== "undirected") return [sourceId, targetId];
+    return sourceId.toLowerCase() <= targetId.toLowerCase() ? [sourceId, targetId] : [targetId, sourceId];
+  }
+
+  private assertRelationshipConstraints(
+    relationshipType: string,
+    sourceId: string,
+    targetId: string,
+    excludeId?: string,
+  ) {
+    const constraints = this.relationshipConstraints(relationshipType);
+    if (!constraints.allowSelf && sourceId === targetId)
+      throw failure("relationship.self", "relationship cannot target the same entity");
+    const others = [...this.relationships.values()].filter((relationship) => relationship.id !== excludeId);
+    if (
+      constraints.unique === "directed" &&
+      others.some(
+        (relationship) =>
+          relationship.relationship_type === relationshipType &&
+          relationship.source_id === sourceId &&
+          relationship.target_id === targetId,
+      )
+    )
+      throw failure("relationship.duplicate", "a relationship already exists for these endpoints");
+    if (
+      constraints.unique === "undirected" &&
+      others.some(
+        (relationship) =>
+          relationship.relationship_type === relationshipType &&
+          ((relationship.source_id === sourceId && relationship.target_id === targetId) ||
+            (relationship.source_id === targetId && relationship.target_id === sourceId)),
+      )
+    )
+      throw failure("relationship.duplicate", "a relationship already exists for these endpoints");
+    if (constraints.acyclic) {
+      const adjacency = new Map<string, string[]>();
+      for (const relationship of others.filter((candidate) => candidate.relationship_type === relationshipType)) {
+        const next = adjacency.get(relationship.source_id) ?? [];
+        next.push(relationship.target_id);
+        adjacency.set(relationship.source_id, next);
+      }
+      const stack = [targetId];
+      const seen = new Set([targetId]);
+      while (stack.length) {
+        const current = stack.pop()!;
+        if (current === sourceId) throw failure("relationship.cycle", "relationship would introduce a cycle");
+        for (const child of adjacency.get(current) ?? []) {
+          if (!seen.has(child)) {
+            seen.add(child);
+            stack.push(child);
+          }
+        }
+      }
+    }
+  }
+
   private create(payload: unknown): EntityRecord {
     const value = payload as { name?: unknown; type?: unknown };
     if (typeof value.name !== "string" || !value.name.trim())
       throw failure("invalid-payload", "entity.create requires name");
+    if (typeof value.type === "string" && !this.entityTypeAllowed(value.type))
+      throw failure("schema.undeclared", "entity type is not declared");
     const entity: EntityRecord = {
       id: `${this.manifest.id}:${this.nextEntity++}`,
       name: value.name,

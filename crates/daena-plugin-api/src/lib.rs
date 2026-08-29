@@ -134,7 +134,7 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
     CapabilityEntry {
         id: "relationship.write",
         resource: "project.relationships",
-        operations: &["create"],
+        operations: &["create", "update", "delete"],
         confirmation: None,
     },
     CapabilityEntry {
@@ -271,6 +271,41 @@ pub struct MetadataFieldDefinition {
     pub options: Option<Vec<String>>,
     #[serde(rename = "oneOf", default)]
     pub one_of: Option<Vec<OneOfVariant>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum RelationshipUniqueness {
+    #[default]
+    None,
+    Directed,
+    Undirected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RelationshipConstraints {
+    pub allow_self: bool,
+    pub acyclic: bool,
+    pub unique: RelationshipUniqueness,
+}
+
+impl Default for RelationshipConstraints {
+    fn default() -> Self {
+        Self {
+            allow_self: true,
+            acyclic: false,
+            unique: RelationshipUniqueness::None,
+        }
+    }
+}
+
+impl RelationshipConstraints {
+    pub fn from_field(field: &FieldDefinition) -> Self {
+        field.relationship_constraints.clone().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -486,6 +521,8 @@ pub struct FieldDefinition {
     /// Optional renderer-neutral chronology semantics for shared date fields.
     #[serde(default)]
     pub timeline: Option<TimelineFieldContribution>,
+    #[serde(rename = "relationshipConstraints", default)]
+    pub relationship_constraints: Option<RelationshipConstraints>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -906,6 +943,30 @@ pub(crate) fn normalize_local_id(plugin_id: &str, id: &str) -> Result<String, Co
     }
 }
 
+fn normalize_field_entity_type(
+    plugin_id: &str,
+    id: &str,
+    qualified_local: &BTreeSet<String>,
+) -> Result<String, ContractError> {
+    if let Some((prefix, local)) = id.split_once(':') {
+        if !is_identifier(prefix) || !is_bare_local_id(local) || !validate_entity_type_id(id) {
+            return Err(ContractError(format!("invalid entity type: {id}")));
+        }
+        Ok(id.to_string())
+    } else if qualified_local.contains(&qualified_id(plugin_id, id)) {
+        if !is_bare_local_id(id) {
+            return Err(ContractError(format!("invalid entity type: {id}")));
+        }
+        Ok(qualified_id(plugin_id, id))
+    } else if is_bare_local_id(id) {
+        Err(ContractError(format!(
+            "entity type '{id}' must be qualified (e.g. '{plugin_id}:{id}') for cross-plugin reference"
+        )))
+    } else {
+        Err(ContractError(format!("invalid entity type: {id}")))
+    }
+}
+
 fn normalize_relationship_type(_plugin_id: &str, rel: &str) -> Result<String, ContractError> {
     if rel.contains(':') {
         if !validate_entity_type_id(rel) {
@@ -940,31 +1001,12 @@ pub fn normalize_manifest(manifest: &mut PluginManifest) -> Result<(), ContractE
         for field in &mut schema.fields {
             if let Some(entity_types) = &mut field.entity_types {
                 for et in entity_types.iter_mut() {
-                    // local field applicability -> must be local
-                    *et = normalize_local_id(&plugin_id, &et)?;
+                    *et = normalize_field_entity_type(&plugin_id, et, &qualified_entity_types)?;
                 }
             }
             if let Some(targets) = &mut field.target_entity_types {
                 for t in targets.iter_mut() {
-                    // target can be cross-plugin: if bare and matches local, qualify local, otherwise require qualified
-                    if t.contains(':') {
-                        if !validate_entity_type_id(t) {
-                            return Err(ContractError(format!("invalid target entity type: {t}")));
-                        }
-                    } else {
-                        // bare target: if it matches a local bare name, qualify with own plugin
-                        // else error - require qualified for cross-plugin
-                        if qualified_entity_types.contains(&qualified_id(&plugin_id, t)) {
-                            *t = qualified_id(&plugin_id, t);
-                        } else if is_bare_local_id(t) {
-                            return Err(ContractError(format!(
-                                "target entity type '{t}' must be qualified (e.g. 'daena.lore:{}') for cross-plugin reference",
-                                t
-                            )));
-                        } else {
-                            return Err(ContractError(format!("invalid target entity type: {t}")));
-                        }
-                    }
+                    *t = normalize_field_entity_type(&plugin_id, t, &qualified_entity_types)?;
                 }
             }
             if let Some(rel) = &mut field.relationship_type {
@@ -1151,7 +1193,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
         return Err(ContractError("hostApi must be a valid semver range".into()));
     }
     if manifest.entrypoints.ui.is_none() && manifest.entrypoints.wasm.is_none() {
-        return Err(ContractError("at least one entrypoint is required".into()));
+        validate_empty_entrypoints(manifest)?;
     }
     for path in [
         manifest.entrypoints.ui.as_ref(),
@@ -1206,6 +1248,7 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
         }
     }
     let mut fields = BTreeMap::new();
+    let mut relationship_constraints: BTreeMap<&str, RelationshipConstraints> = BTreeMap::new();
     for schema in &manifest.schemas {
         for field in &schema.fields {
             if let Some(field_entity_types) = &field.entity_types {
@@ -1213,13 +1256,21 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                     field_entity_types.iter().collect::<BTreeSet<_>>();
                 if field_entity_types.is_empty()
                     || declared_field_entity_types.len() != field_entity_types.len()
-                    || !declared_field_entity_types.is_subset(&entity_types)
                 {
                     return Err(ContractError(format!(
                         "field {} declares unknown or duplicate entity types",
                         field.key
                     )));
                 }
+                for entity_type in field_entity_types {
+                    validate_referenced_entity_type(manifest, entity_type, &entity_types)?;
+                }
+            }
+            if field.relationship_constraints.is_some() && field.field_type != "relationship" {
+                return Err(ContractError(format!(
+                    "non-relationship field {} cannot declare relationshipConstraints",
+                    field.key
+                )));
             }
             if field.field_type == "relationship" {
                 if field.relationship_type.as_deref().is_none_or(str::is_empty) {
@@ -1242,6 +1293,21 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                         "relationship field {} declares duplicate target entity types",
                         field.key
                     )));
+                }
+                for target in target_entity_types {
+                    validate_referenced_entity_type(manifest, target, &entity_types)?;
+                }
+                if let Some(relationship_type) = field.relationship_type.as_deref() {
+                    let constraints = RelationshipConstraints::from_field(field);
+                    if let Some(existing) = relationship_constraints.get(relationship_type) {
+                        if existing != &constraints {
+                            return Err(ContractError(format!(
+                                "relationship type {relationship_type} has conflicting constraints"
+                            )));
+                        }
+                    } else {
+                        relationship_constraints.insert(relationship_type, constraints);
+                    }
                 }
             } else if field.relationship_type.is_some() || field.target_entity_types.is_some() {
                 return Err(ContractError(format!(
@@ -1818,6 +1884,64 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
         }
     }
     Ok(())
+}
+
+fn validate_empty_entrypoints(manifest: &PluginManifest) -> Result<(), ContractError> {
+    if manifest.kind != PluginKind::Declarative {
+        return Err(ContractError(
+            "empty entrypoints require a declarative plugin".into(),
+        ));
+    }
+    if !manifest.services.provides.is_empty() {
+        return Err(ContractError(
+            "empty entrypoints cannot declare a provided service".into(),
+        ));
+    }
+    if manifest.views.is_empty()
+        || !manifest
+            .views
+            .iter()
+            .all(|view| matches!(view.renderer, ViewRenderer::HostSurface { .. }))
+    {
+        return Err(ContractError(
+            "empty entrypoints require every view to use a host-surface renderer".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_referenced_entity_type(
+    manifest: &PluginManifest,
+    entity_type: &str,
+    owned_types: &BTreeSet<&String>,
+) -> Result<(), ContractError> {
+    if owned_types
+        .iter()
+        .any(|owned| owned.as_str() == entity_type)
+    {
+        return Ok(());
+    }
+    let Some((prefix, local)) = entity_type.split_once(':') else {
+        return Err(ContractError(format!(
+            "field declares unknown entity type: {entity_type}"
+        )));
+    };
+    if !is_identifier(prefix) || !is_bare_local_id(local) {
+        return Err(ContractError(format!(
+            "field declares unknown entity type: {entity_type}"
+        )));
+    }
+    if prefix == manifest.id {
+        return Err(ContractError(format!(
+            "field declares unknown entity type: {entity_type}"
+        )));
+    }
+    match manifest.dependencies.get(prefix) {
+        Some(_) => Ok(()),
+        None => Err(ContractError(format!(
+            "entity type {entity_type} references undeclared dependency {prefix}"
+        ))),
+    }
 }
 
 pub fn is_identifier(value: &str) -> bool {

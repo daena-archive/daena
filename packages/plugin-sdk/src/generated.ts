@@ -20,7 +20,9 @@ export interface TimelineFieldContribution { group?: string | null; label?: stri
 export type IconRef = { id: "agriculture" | "anchor" | "animal" | "art" | "artifact" | "bird" | "calendar" | "camp" | "castle" | "collection" | "compass" | "concept" | "craft" | "crown" | "culture" | "danger" | "encounter" | "era" | "event" | "faction" | "fire" | "fish" | "flower" | "forest" | "group" | "heart" | "home" | "ice" | "insect" | "journey" | "key" | "language" | "law" | "library" | "lock" | "magic" | "manuscript" | "map" | "mine" | "moon" | "mountain" | "music" | "object" | "person" | "place" | "plant" | "reference" | "religion" | "science" | "scroll" | "settlement" | "ship" | "spirit" | "star" | "storm" | "sun" | "theatre" | "unknown" | "vision" | "wand" | "water" | "wealth" | "world"; kind: "catalog" } | { kind: "plugin-svg"; path: string } | { kind: "user-svg"; svg: string };
 export type EntityTypeColor = { id: "brass" | "copper" | "ember" | "moss" | "pine" | "ocean" | "sky" | "frost" | "amber" | "gold" | "sand" | "rose" | "plum" | "violet" | "slate" | "ink"; kind: "preset" } | { dark: string; kind: "custom"; light: string };
 export interface EntityTypeDefinition { icon: IconRef; iconColor: EntityTypeColor; id: string; name: string }
-export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; timeline?: TimelineFieldContribution; type: FieldType }
+export type RelationshipUniqueness = "none" | "directed" | "undirected";
+export interface RelationshipConstraints { acyclic: boolean; allowSelf: boolean; unique: "none" | "directed" | "undirected" }
+export interface FieldDefinition { cardinality?: "one" | "many"; entityTypes?: string[]; key: string; label: string; metadataFields?: MetadataFieldDefinition[]; multiple?: boolean; oneOf?: OneOfVariant[]; options?: string[] | null; relationshipConstraints?: RelationshipConstraints; relationshipType?: string; required?: boolean | null; shared?: boolean; targetEntityTypes?: string[]; timeline?: TimelineFieldContribution; type: FieldType }
 export interface SchemaContribution { entityTypes: EntityTypeDefinition[]; fields: FieldDefinition[]; namespace: string }
 export interface EntityTemplate { description?: string | null; document?: string | null; entityType: string; fields: Record<string, unknown>; icon?: IconRef | null; id: string; name: string; requiredFields?: string[] | null }
 export type MigrationOperation = { kind: "create-namespace"; namespace: string } | { field: FieldDefinition; kind: "add-field"; namespace: string } | { from: string; kind: "rename-field"; namespace: string; to: string } | { key: string; kind: "drop-field"; namespace: string };
@@ -51,6 +53,9 @@ export interface PluginBootstrap { grantedCapabilities: string[]; hostApi: strin
 export interface EntityRecord { createdAt: string; deleted: boolean; entityType?: string | null; id: string; name: string; revision: string; updatedAt: string }
 export interface EntityTypeCountRecord { count: number; entityType?: string | null }
 export interface EntityPageRecord { hasMore: boolean; items: EntityRecord[]; limit: number; offset: number; total: number; typeCounts: EntityTypeCountRecord[] }
+export type RelationshipQueryDirection = "incoming" | "outgoing" | "any";
+export interface RelationshipRecord { id: string; metadata: string; relationshipType: string; revision: string; sourceId: string; targetId: string }
+export interface RelationshipPageRecord { hasMore: boolean; items: RelationshipRecord[]; limit: number; offset: number; total: number }
 export interface MutationOptions { expectedRevision?: string; requestId?: string }
 export interface RevisionedEntityPayload { id: string; expectedRevision: string }
 export interface RevisionedDocumentPayload { entityId: string; body: string; format?: string; expectedRevision: string }
@@ -78,6 +83,7 @@ export interface DocumentSavePayload { body: string; entityId: string; expectedR
 export interface EntityCreatePayload { document?: EntityCreateDocument | null; fields?: EntityCreateField[]; name: string; relationships?: EntityCreateRelationship[]; type?: string | null }
 export interface EntityDeletePayload { expectedRevision: string; id: string }
 export interface EntityGetPayload { id: string }
+export interface EntityGetManyPayload { ids: string[] }
 export interface EntityListPayload { entityType?: string | null }
 export interface EntityQueryPayload { entityTypes?: string[]; excludedEntityTypes?: string[]; limit?: number | null; offset?: number | null; query?: string | null; sortDirection?: "asc" | "desc" | null; sortField?: "name" | "createdAt" | "updatedAt" | "relevance" | null }
 export interface EntityUpdatePayload { expectedRevision: string; id: string; name?: string | null; type?: string | null }
@@ -113,6 +119,7 @@ export interface RecordUpdatePayload { collection: string; expectedRevision: str
 export interface RelationshipCreatePayload { expectedRevision: string; metadata?: string | null; relationship_type: string; source_id: string; target_id: string }
 export interface RelationshipDeletePayload { expectedRevision: string; id: string; relationship_type?: string | null }
 export interface RelationshipListPayload { entityId: string }
+export interface RelationshipQueryPayload { direction: RelationshipQueryDirection; entityIds: string[]; limit?: number | null; offset?: number | null; relationshipTypes?: string[] }
 export interface RelationshipUpdatePayload { expectedRevision: string; id: string; metadata?: string | null; target_id?: string | null }
 export interface SearchQueryPayload { query: string }
 export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
@@ -136,6 +143,7 @@ export interface BrokerMethodPayloads {
   "entity.create": EntityCreatePayload;
   "entity.delete": EntityDeletePayload;
   "entity.get": EntityGetPayload;
+  "entity.getMany": EntityGetManyPayload;
   "entity.list": EntityListPayload;
   "entity.query": EntityQueryPayload;
   "entity.update": EntityUpdatePayload;
@@ -172,6 +180,7 @@ export interface BrokerMethodPayloads {
   "relationship.create": RelationshipCreatePayload;
   "relationship.delete": RelationshipDeletePayload;
   "relationship.list": RelationshipListPayload;
+  "relationship.query": RelationshipQueryPayload;
   "relationship.update": RelationshipUpdatePayload;
   "search.query": SearchQueryPayload;
   "service.call": ServiceCallPayload;

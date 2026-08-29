@@ -247,6 +247,22 @@ export interface EntityPage {
   typeCounts: EntityTypeCount[];
 }
 
+export interface RelationshipQuery {
+  entityIds: UUID[];
+  relationshipTypes?: string[];
+  direction: "incoming" | "outgoing" | "any";
+  offset?: number;
+  limit?: number;
+}
+
+export interface RelationshipPage {
+  items: Relationship[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
 export interface EntityCreateInput {
   name: string;
   type?: string;
@@ -295,6 +311,7 @@ export interface ModuleContext {
   };
   entities: {
     get(id: UUID): Promise<EntityRecord | null>;
+    getMany(ids: UUID[]): Promise<EntityRecord[]>;
     query(query?: EntityQuery): Promise<EntityPage>;
     list(query?: EntityQuery): Promise<EntitySummary[]>;
     create(input: EntityCreateInput, options?: MutationOptions): Promise<EntityRecord>;
@@ -336,6 +353,7 @@ export interface ModuleContext {
   };
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;
+    query(query: RelationshipQuery): Promise<RelationshipPage>;
     create(input: Omit<Relationship, "id" | "revision">, options?: MutationOptions): Promise<Relationship>;
     update(
       input: { id: UUID; metadata?: Record<string, unknown>; targetId?: UUID },

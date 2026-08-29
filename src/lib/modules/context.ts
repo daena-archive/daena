@@ -48,9 +48,12 @@ interface RawField {
 }
 interface RawRelationship {
   id: string;
-  source_id: string;
-  target_id: string;
-  relationship_type: string;
+  source_id?: string;
+  target_id?: string;
+  relationship_type?: string;
+  sourceId?: string;
+  targetId?: string;
+  relationshipType?: string;
   metadata: string;
   revision: string;
 }
@@ -134,11 +137,14 @@ function toDocumentRecord(d: RawDocument): DocumentRecord {
 }
 
 function toRelationship(r: RawRelationship): Relationship {
+  const sourceId = r.source_id ?? r.sourceId ?? "";
+  const targetId = r.target_id ?? r.targetId ?? "";
+  const type = r.relationship_type ?? r.relationshipType ?? "";
   return {
     id: toUUID(r.id),
-    sourceId: toUUID(r.source_id),
-    targetId: toUUID(r.target_id),
-    type: r.relationship_type,
+    sourceId: toUUID(sourceId),
+    targetId: toUUID(targetId),
+    type,
     metadata: JSON.parse(r.metadata || "{}"),
     revision: r.revision,
   };
@@ -318,6 +324,11 @@ export function buildModuleContext(
           record.fields[f.key] = f.value;
         return record;
       },
+      getMany: async (ids: UUID[]) => {
+        checkCapability(manifest, "entity.read");
+        const found = await rpc.call<RawEntity[]>("entity.getMany", { ids });
+        return found.map(toEntityRecord);
+      },
       query: queryEntities,
       list: async (query?: EntityQuery) => {
         checkCapability(manifest, "entity.read");
@@ -486,6 +497,29 @@ export function buildModuleContext(
         checkCapability(manifest, "relationship.read");
         const rels = await rpc.call<RawRelationship[]>("relationship.list", { entityId });
         return rels.map(toRelationship);
+      },
+      query: async (query) => {
+        checkCapability(manifest, "relationship.read");
+        const page = await rpc.call<{
+          items: RawRelationship[];
+          total: number;
+          offset: number;
+          limit: number;
+          hasMore: boolean;
+        }>("relationship.query", {
+          entityIds: query.entityIds,
+          relationshipTypes: query.relationshipTypes ?? [],
+          direction: query.direction,
+          offset: query.offset,
+          limit: query.limit,
+        });
+        return {
+          items: page.items.map(toRelationship),
+          total: page.total,
+          offset: page.offset,
+          limit: page.limit,
+          hasMore: page.hasMore,
+        };
       },
       create: async (input: Omit<Relationship, "id" | "revision">, options?: MutationOptions) => {
         checkCapability(manifest, "relationship.write");

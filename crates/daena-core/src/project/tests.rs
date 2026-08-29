@@ -5,7 +5,7 @@ use crate::{
     UnsupportedSourceData, ValidatedImportAsset, ValidatedImportField, ValidatedImportObject,
     ValidatedImportRelationship, ValidatedImportSourceContext,
 };
-use daena_plugin_api::MetadataFieldDefinition;
+use daena_plugin_api::{MetadataFieldDefinition, RelationshipConstraints, RelationshipUniqueness};
 use std::collections::BTreeMap;
 
 fn canonical_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -222,6 +222,170 @@ fn update_relationship_metadata_validates_and_roundtrips() {
         .flush_checkpoint("relationship metadata recovery test")
         .unwrap();
     assert_eq!(before_recovery, canonical_files(&root));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn relationship_constraints_and_batch_reads() {
+    let root =
+        std::env::temp_dir().join(format!("daena-relationship-constraints-{}", Uuid::new_v4()));
+    let mut store = ProjectStore::open_directory(&root).unwrap();
+    let a = store
+        .create_entity(CreateEntity {
+            name: "A".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let b = store
+        .create_entity(CreateEntity {
+            name: "B".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+    let c = store
+        .create_entity(CreateEntity {
+            name: "C".into(),
+            entity_type: Some("person".into()),
+        })
+        .unwrap();
+
+    store
+        .set_relationship_constraints(BTreeMap::from([(
+            "parent_of".into(),
+            RelationshipConstraints {
+                allow_self: false,
+                acyclic: true,
+                unique: RelationshipUniqueness::Directed,
+            },
+        )]))
+        .unwrap();
+
+    let self_target = store.create_relationship(RelationshipInput {
+        source_id: a.id.clone(),
+        target_id: a.id.clone(),
+        relationship_type: "parent_of".into(),
+        metadata: None,
+    });
+    assert!(matches!(
+        self_target,
+        Err(CoreError::Broker { code, .. }) if code == "relationship.self"
+    ));
+
+    let first = store
+        .create_relationship(RelationshipInput {
+            source_id: a.id.clone(),
+            target_id: b.id.clone(),
+            relationship_type: "parent_of".into(),
+            metadata: None,
+        })
+        .unwrap();
+    let duplicate = store.create_relationship(RelationshipInput {
+        source_id: a.id.clone(),
+        target_id: b.id.clone(),
+        relationship_type: "parent_of".into(),
+        metadata: None,
+    });
+    assert!(matches!(
+        duplicate,
+        Err(CoreError::Broker { code, .. }) if code == "relationship.duplicate"
+    ));
+
+    store
+        .create_relationship(RelationshipInput {
+            source_id: b.id.clone(),
+            target_id: c.id.clone(),
+            relationship_type: "parent_of".into(),
+            metadata: None,
+        })
+        .unwrap();
+    let cycle = store.create_relationship(RelationshipInput {
+        source_id: c.id.clone(),
+        target_id: a.id.clone(),
+        relationship_type: "parent_of".into(),
+        metadata: None,
+    });
+    assert!(matches!(
+        cycle,
+        Err(CoreError::Broker { code, .. }) if code == "relationship.cycle"
+    ));
+
+    store
+        .set_relationship_constraints(BTreeMap::from([(
+            "married_to".into(),
+            RelationshipConstraints {
+                allow_self: false,
+                acyclic: false,
+                unique: RelationshipUniqueness::Undirected,
+            },
+        )]))
+        .unwrap();
+    let married = store
+        .create_relationship(RelationshipInput {
+            source_id: b.id.clone(),
+            target_id: a.id.clone(),
+            relationship_type: "married_to".into(),
+            metadata: None,
+        })
+        .unwrap();
+    if Uuid::parse_str(&a.id).unwrap().as_bytes() <= Uuid::parse_str(&b.id).unwrap().as_bytes() {
+        assert_eq!(married.source_id, a.id);
+        assert_eq!(married.target_id, b.id);
+    } else {
+        assert_eq!(married.source_id, b.id);
+        assert_eq!(married.target_id, a.id);
+    }
+    let reverse = store.create_relationship(RelationshipInput {
+        source_id: a.id.clone(),
+        target_id: b.id.clone(),
+        relationship_type: "married_to".into(),
+        metadata: None,
+    });
+    assert!(matches!(
+        reverse,
+        Err(CoreError::Broker { code, .. }) if code == "relationship.duplicate"
+    ));
+
+    let retargeted = store
+        .update_relationship(RelationshipUpdate {
+            id: married.id.clone(),
+            metadata: None,
+            target_id: Some(c.id.clone()),
+        })
+        .unwrap();
+    if Uuid::parse_str(&married.source_id).unwrap().as_bytes()
+        <= Uuid::parse_str(&c.id).unwrap().as_bytes()
+    {
+        assert_eq!(retargeted.source_id, married.source_id);
+        assert_eq!(retargeted.target_id, c.id);
+    } else {
+        assert_eq!(retargeted.source_id, c.id);
+        assert_eq!(retargeted.target_id, married.source_id);
+    }
+
+    let missing = Uuid::new_v4().to_string();
+    let entities = store
+        .get_entities(&[c.id.clone(), missing, a.id.clone()])
+        .unwrap();
+    assert_eq!(
+        entities
+            .iter()
+            .map(|entity| entity.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![c.id.as_str(), a.id.as_str()]
+    );
+
+    let page = store
+        .query_relationships(RelationshipQuery {
+            entity_ids: vec![a.id.clone()],
+            relationship_types: vec!["parent_of".into()],
+            direction: RelationshipQueryDirection::Outgoing,
+            offset: Some(0),
+            limit: Some(10),
+        })
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].id, first.id);
+
     std::fs::remove_dir_all(root).unwrap();
 }
 

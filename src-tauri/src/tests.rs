@@ -1355,6 +1355,7 @@ fn bundled_manifests_supply_generic_migrations() {
     let timeline = host.catalog.get("daena.timeline").unwrap();
     let writing = host.catalog.get("daena.writing").unwrap();
     let language = host.catalog.get("daena.language").unwrap();
+    let family_tree = host.catalog.get("daena.family-tree").unwrap();
     assert_eq!(
         core_migration(&lore.manifest).unwrap().unwrap().id,
         "lore-v1"
@@ -1370,6 +1371,10 @@ fn bundled_manifests_supply_generic_migrations() {
     assert_eq!(
         core_migration(&language.manifest).unwrap().unwrap().id,
         "language-v1"
+    );
+    assert_eq!(
+        core_migration(&family_tree.manifest).unwrap().unwrap().id,
+        "family-tree-v1"
     );
 }
 

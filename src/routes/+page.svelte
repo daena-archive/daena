@@ -132,6 +132,9 @@ import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
+import familyTreeManifestJson from "../../packages/modules/family-tree/manifest.json";
+import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
+import EntityAvatar from "$lib/EntityAvatar.svelte";
 import {
   Pencil,
   Map as MapIcon,
@@ -263,7 +266,7 @@ function saveWorkbenchLayout(sec: WorkspaceSection, layout: WorkbenchLayoutPrefs
   }
 }
 
-type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
+type NavigationRenderer = "workspace" | "maps" | "family-tree" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
   plugin: PluginAdminEntry;
@@ -468,6 +471,7 @@ let displayVersion = $state(appVersionSyncFallback());
 const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
 const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
 const MAP_HOST_SURFACE = "daena.maps/editor";
+const FAMILY_TREE_HOST_SURFACE = "daena.family-tree/editor";
 
 function enabledServices() {
   return new Set(
@@ -570,8 +574,9 @@ let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"
 let sandboxView = $state<{
   plugin: PluginAdminEntry;
   view: PluginAdminEntry["views"][number] | null;
-  renderer: "maps" | "webview";
+  renderer: "maps" | "family-tree" | "webview";
 } | null>(null);
+let familyTreeRootId = $state<string | null>(null);
 let projectionView = $state<{
   title: string;
   subtitle: string;
@@ -817,7 +822,9 @@ function viewRenderer(
   view: PluginAdminEntry["views"][number],
 ): Exclude<NavigationRenderer, "workspace"> {
   if (view.renderer?.type === "host-surface") {
-    return view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1 ? "maps" : "webview";
+    if (view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1) return "maps";
+    if (view.renderer.id === FAMILY_TREE_HOST_SURFACE && view.renderer.major === 1) return "family-tree";
+    return "webview";
   }
   if (view.renderer?.type === "sandboxed") return "webview";
   if (view.renderer?.type === "declarative") return "host";
@@ -1679,7 +1686,7 @@ function currentShellLocation(): ShellLocation {
       kind: "plugin",
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
       section,
-      entityId: selected?.id ?? null,
+      entityId: sandboxView.renderer === "family-tree" ? familyTreeRootId : (selected?.id ?? null),
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
     };
   }
@@ -1707,6 +1714,25 @@ function recordShellDeparture(location: ShellLocation) {
   shellNavigationHistory = recordShellLocation(shellNavigationHistory, location);
 }
 
+async function openFamilyTreePerson(entityId: string) {
+  let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
+  if (!entity) {
+    try {
+      entity = await project.getEntity(entityId);
+      if (entity && !entities.some((candidate) => candidate.id === entity!.id)) entities = [...entities, entity];
+    } catch (cause) {
+      error = friendlyError(cause);
+      return;
+    }
+  }
+  if (!entity || entity.deleted) return;
+  if (!(await leavePluginView())) return;
+  section = "lore";
+  projectHomeOpen = false;
+  loreWikiOpen = false;
+  await selectEntity(entity);
+}
+
 async function openHostView(
   plugin: PluginAdminEntry,
   view: PluginAdminEntry["views"][number],
@@ -1732,7 +1758,10 @@ function pluginViews(): PluginNavigationItem[] {
     .flatMap((plugin) =>
       plugin.views
         .filter((view) => !workspaceViewKeys.has(`${plugin.id}:${view.id}`))
-        .filter((view) => plugin.kind === "sandboxed" || (view.components?.length ?? 0) > 0)
+        .filter(
+          (view) =>
+            view.renderer?.type === "host-surface" || plugin.kind === "sandboxed" || (view.components?.length ?? 0) > 0,
+        )
         .map(
           (view) =>
             ({
@@ -1813,6 +1842,17 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
       : { plugin: item.plugin, view: null, renderer: "maps" };
     if (mapId) mapsEditorKey = mapId;
     else if (!sandboxView.view) mapsEditorKey = "welcome";
+    return;
+  }
+  if (item.renderer === "family-tree") {
+    if (sandboxView?.renderer === "family-tree" && !shellNavigationRestoring) return;
+    if (!(await dismissSettings())) return;
+    if (!(await leavePluginView())) return;
+    recordShellDeparture(departure);
+    projectHomeOpen = false;
+    loreWikiOpen = false;
+    if (!shellNavigationRestoring) familyTreeRootId = null;
+    sandboxView = { plugin: item.plugin, view: item.view, renderer: "family-tree" };
     return;
   }
   if (item.renderer === "host") {
@@ -2508,8 +2548,13 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await openProjectCenter(target.section);
     } else if (target.kind === "plugin") {
       await switchSection(target.section);
-      await restoreShellEntity(target.entityId);
-      await openPluginView(pluginItem!);
+      if (pluginItem?.renderer === "family-tree") {
+        familyTreeRootId = target.entityId;
+        await openPluginView(pluginItem);
+      } else {
+        await restoreShellEntity(target.entityId);
+        await openPluginView(pluginItem!);
+      }
       await restoreSpecializedSurfaceScroll(target);
     } else {
       await switchSection(target.section);
@@ -6809,6 +6854,29 @@ onMount(() => {
             const ent = entities.find((e) => e.id === id);
             if (ent) void selectEntity(ent);
           }} />
+      </SpecializedSurface>
+    {:else if sandboxView?.renderer === "family-tree" && sandboxView.view}
+      {#snippet familyTreeAvatar(entityId: string, name: string)}
+        <EntityAvatar {entityId} {name} />
+      {/snippet}
+      <SpecializedSurface
+        restoreKey={specializedSurfaceKey() ?? "family-tree"}
+        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
+        bind:element={specializedSurfaceElement}
+        onScroll={rememberSpecializedSurfaceScroll}>
+        <FamilyTreeSurface
+          context={buildModuleContext(familyTreeManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
+            availableServices: enabledServices(),
+          })}
+          projectId={projectInfo?.root ?? ""}
+          initialRootId={familyTreeRootId}
+          avatar={familyTreeAvatar}
+          onRootChange={(id) => {
+            if (id === familyTreeRootId) return;
+            recordShellDeparture(currentShellLocation());
+            familyTreeRootId = id;
+          }}
+          onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)} />
       </SpecializedSurface>
     {:else if sandboxView && sandboxView.renderer !== "maps"}
       <SpecializedSurface

@@ -1,0 +1,116 @@
+{
+  "manifestVersion": 1,
+  "id": "daena.family-tree",
+  "name": "Family Tree",
+  "version": "0.1.0",
+  "publisher": "daena-archive",
+  "enabledByDefault": false,
+  "stability": "beta",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "declarative",
+  "entrypoints": {},
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "field.read:shared",
+    "relationship.read",
+    "relationship.write",
+    "host.surface:daena.family-tree/editor@1"
+  ],
+  "dependencies": {
+    "daena.lore": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": true
+    }
+  },
+  "namespaces": ["family-tree"],
+  "schemas": [
+    {
+      "namespace": "family-tree",
+      "entityTypes": [],
+      "fields": [
+        {
+          "key": "parents",
+          "label": "Parents",
+          "type": "relationship",
+          "relationshipType": "family_parent_of",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Parent type",
+              "type": "enum",
+              "required": true,
+              "options": ["biological", "adoptive", "legal", "guardian", "step", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "partners",
+          "label": "Partners",
+          "type": "relationship",
+          "relationshipType": "family_partner_with",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Partnership type",
+              "type": "enum",
+              "required": true,
+              "options": ["marriage", "partnership", "betrothal", "concubinage", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            {
+              "key": "status",
+              "label": "Status",
+              "type": "enum",
+              "options": ["active", "ended", "planned", "unknown"]
+            },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        }
+      ]
+    }
+  ],
+  "templates": [],
+  "views": [
+    {
+      "id": "family-tree",
+      "title": "Family Tree",
+      "renderer": { "type": "host-surface", "id": "daena.family-tree/editor", "major": 1 },
+      "components": []
+    }
+  ],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [
+    {
+      "id": "family-tree-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "family-tree" }]
+    }
+  ]
+}

@@ -2240,3 +2240,60 @@ fn activation_fails_for_optional_but_missing_dependency_types() {
         error.0
     );
 }
+
+fn grant_bundled(host: &mut PluginHost, plugin_id: &str) {
+    let manifest = host.catalog.get(plugin_id).unwrap().manifest.clone();
+    host.grants
+        .set(
+            "project",
+            &manifest.id,
+            &manifest.capabilities,
+            manifest.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn family_tree_activation_requires_active_lore() {
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/family-tree/manifest.json"
+    ))
+    .unwrap();
+    grant_bundled(&mut host, "daena.family-tree");
+    let error = host
+        .activate_bundled("project", "daena.family-tree")
+        .unwrap_err();
+    assert!(
+        error.0.contains("daena.lore")
+            || error.0.contains("not active")
+            || error.0.contains("required"),
+        "{}",
+        error.0
+    );
+}
+
+#[test]
+fn family_tree_activates_when_lore_is_active() {
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))
+        .unwrap();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/family-tree/manifest.json"
+    ))
+    .unwrap();
+    for plugin_id in ["daena.language", "daena.lore", "daena.family-tree"] {
+        grant_bundled(&mut host, plugin_id);
+    }
+    host.activate_bundled("project", "daena.family-tree")
+        .unwrap();
+    assert_eq!(
+        host.lifecycle.state("project", "daena.family-tree").state,
+        LifecycleState::Active
+    );
+    host.deactivate_bundled("project", "daena.family-tree");
+}

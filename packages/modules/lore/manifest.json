@@ -76,7 +76,7 @@
       "fields": [
         { "key": "summary", "label": "Summary", "type": "text" },
         { "key": "aliases", "label": "Aliases", "type": "text" },
-        { "key": "occupation", "label": "Occupation", "type": "text", "entityTypes": ["person"] },
+        { "key": "occupation", "label": "Occupation", "type": "text", "entityTypes": ["person"], "shared": true },
         {
           "key": "languages",
           "label": "Languages",

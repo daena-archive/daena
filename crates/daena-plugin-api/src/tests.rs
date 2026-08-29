@@ -5,8 +5,10 @@ fn canonical_bundled_manifests_validate() {
     let lore = include_str!("../../../packages/modules/lore/manifest.json");
     let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
     let maps = include_str!("../../../packages/modules/maps/manifest.json");
+    let family_tree = include_str!("../../../packages/modules/family-tree/manifest.json");
     assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
     assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
+    assert_eq!(parse_manifest(family_tree).unwrap().id, "daena.family-tree");
     let maps = parse_manifest(maps).unwrap();
     assert_eq!(
         maps.views[0].renderer,
@@ -373,6 +375,17 @@ fn host_surface_only_manifest() -> PluginManifest {
 fn host_surface_only_declarative_plugins_may_omit_entrypoints() {
     let manifest = host_surface_only_manifest();
     assert!(validate_manifest(&manifest).is_ok());
+}
+
+#[test]
+fn family_tree_manifest_is_a_valid_host_surface_plugin() {
+    let manifest = parse_manifest(include_str!(
+        "../../../packages/modules/family-tree/manifest.json"
+    ))
+    .unwrap();
+    validate_manifest(&manifest).expect("family tree manifest must validate");
+    assert!(manifest.entrypoints.ui.is_none());
+    assert!(manifest.entrypoints.wasm.is_none());
 }
 
 #[test]

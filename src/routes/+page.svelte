@@ -52,6 +52,7 @@ import {
 } from "$lib/navigation/history";
 import {
   collectionEntityTypes,
+  collectionTabForEntityType,
   presentCollectionPage,
   DEFAULT_COLLECTION_QUERY,
   type LanguagePane,
@@ -62,9 +63,19 @@ import {
   type CollectionQuery,
   type CollectionResult,
   type WritingView,
+  workspaceCollectionTabs,
   workspaceSectionDescription,
+  workspaceSectionViewNav,
   workspaceModuleId,
 } from "$lib/modules/workspace";
+import {
+  chronologyWarnings,
+  firstEraCalendarId,
+  isChronologyDateKey,
+  isChronologyPropertyField,
+  isEraRelationshipField,
+  type EraContext,
+} from "$lib/modules/chronology";
 import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.svelte";
 import {
   calendarDateToParts,
@@ -299,6 +310,8 @@ let documentBody = $state("");
 let documentMode = $state<"read" | "edit">("edit");
 let fields = $state<Record<string, unknown>>({});
 let relationships = $state<Relationship[]>([]);
+let eraContexts = $state<EraContext[]>([]);
+let createEraContexts = $state<EraContext[]>([]);
 let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
 let assets = $state<Asset[]>([]);
 let assetBusyId = $state<string | null>(null);
@@ -718,6 +731,31 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
 function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
   return schema.entityTypes.map((entityType) => entityType.id);
 }
+function sectionEntityTypeDefs(target: WorkspaceSection) {
+  return (
+    manifestForWorkspaceSection(target)?.schemas.flatMap((schema) =>
+      schema.entityTypes.map((entityType) => ({ id: entityType.id, name: entityType.name })),
+    ) ?? []
+  );
+}
+function collectionTabsFor(target: WorkspaceSection) {
+  return workspaceCollectionTabs(target, sectionEntityTypeDefs(target));
+}
+function activeCollectionTab(target: WorkspaceSection = section) {
+  const tabs = collectionTabsFor(target);
+  const id = target === "timeline" ? timelineView : target === "writing" ? writingView : null;
+  return (id ? tabs.find((tab) => tab.id === id) : undefined) ?? tabs[0];
+}
+function applyCollectionTabForEntityType(entityType: string | null) {
+  const owner = sectionForEntityType(entityType) ?? section;
+  const tab = collectionTabForEntityType(collectionTabsFor(owner), entityType);
+  if (!tab) return;
+  if (owner === "writing") writingView = tab.id;
+  if (owner === "timeline") timelineView = tab.id;
+}
+function workspaceViewNavItems() {
+  return workspaceSectionViewNav(section, sectionEntityTypeDefs(section));
+}
 function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
     modules.some((module) => module.id === workspaceModuleId(target) && module.enabled),
@@ -897,17 +935,7 @@ function editTypeWarning(): string | null {
 const definitions = () => {
   const entityType =
     selected?.entity_type ??
-    (section === "timeline"
-      ? timelineView === "eras"
-        ? "daena.timeline:era"
-        : timelineView === "calendars"
-          ? "daena.timeline:calendar"
-          : "daena.timeline:event"
-      : section === "writing"
-        ? writingView === "manuscripts"
-          ? "daena.writing:manuscript"
-          : "daena.writing:reference-page"
-        : undefined);
+    (section === "timeline" || section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
   return (
     activeManifest()
       ?.schemas.filter((schema) => !entityType || schemaEntityTypeIds(schema).includes(entityType))
@@ -1069,23 +1097,12 @@ function selectedCreateOption() {
 }
 function defaultCreateOption(options: CreateOption[]) {
   const moduleId = workspaceModuleId(section);
-  const entityType =
-    section === "timeline"
-      ? timelineView === "eras"
-        ? "daena.timeline:era"
-        : timelineView === "calendars"
-          ? "daena.timeline:calendar"
-          : "daena.timeline:event"
-      : section === "writing"
-        ? writingView === "manuscripts"
-          ? "daena.writing:manuscript"
-          : "daena.writing:reference-page"
-        : null;
+  const tabTypes = section === "timeline" || section === "writing" ? (activeCollectionTab()?.entityTypes ?? []) : null;
   return (
     options.find(
-      (option) => option.module.id === moduleId && (entityType === null || option.template.entityType === entityType),
+      (option) => option.module.id === moduleId && (tabTypes ? tabTypes.includes(option.template.entityType) : true),
     ) ??
-    options.find((option) => entityType !== null && option.template.entityType === entityType) ??
+    options.find((option) => tabTypes?.includes(option.template.entityType)) ??
     options[0] ??
     null
   );
@@ -1110,6 +1127,12 @@ function createRelationshipValues(key: string) {
 }
 function setCreateRelationshipValues(key: string, values: string[]) {
   createFieldValues = { ...createFieldValues, [key]: values };
+  if (key === "era") {
+    void loadEraContexts(values).then((contexts) => {
+      createEraContexts = contexts;
+      hintCreateDateCalendarsFromEras(contexts);
+    });
+  }
 }
 function defaultCreateFieldValue(field: FieldDefinition, template: EntityTemplate) {
   if (Object.prototype.hasOwnProperty.call(template.fields, field.key)) return template.fields[field.key];
@@ -1125,14 +1148,30 @@ function resetCreateFields(option: CreateOption | null) {
   );
   createDateEditorOpen = {};
   createDateCalendarByField = {};
+  createEraContexts = [];
   createDocumentBody = option?.template.document ?? "";
   createMoreDetailsOpen = false;
 }
 function requiredCreateFields(option: CreateOption | null = selectedCreateOption()) {
-  return createFieldsFor(option).filter((item) => item.required);
+  return createFieldsFor(option).filter((item) => item.required && !isChronologyPropertyField(item.field));
 }
 function optionalCreateFields(option: CreateOption | null = selectedCreateOption()) {
-  return createFieldsFor(option).filter((item) => !item.required);
+  return createFieldsFor(option).filter((item) => !item.required && !isChronologyPropertyField(item.field));
+}
+function chronologyCreateFields(option: CreateOption | null = selectedCreateOption()) {
+  const items = createFieldsFor(option).filter((item) => isChronologyPropertyField(item.field));
+  return [
+    ...items.filter((item) => isEraRelationshipField(item.field)),
+    ...items.filter((item) => item.field.type === "date"),
+  ];
+}
+function createChronologyWarnings() {
+  return chronologyWarnings(
+    chronologyCreateFields()
+      .filter((item) => item.field.type === "date")
+      .map((item) => ({ label: item.field.label, value: createFieldValues[item.field.key] })),
+    createEraContexts,
+  );
 }
 function setCreateField(key: string, value: unknown) {
   createFieldValues = { ...createFieldValues, [key]: value };
@@ -1218,7 +1257,10 @@ function setCreateDateCalendar(key: string, calendarId: string) {
 }
 function openCreateDateEditor(key: string) {
   createDateEditorOpen = { ...createDateEditorOpen, [key]: true };
-  createDateCalendarByField = { ...createDateCalendarByField, [key]: GREGORIAN_CALENDAR_ID };
+  createDateCalendarByField = {
+    ...createDateCalendarByField,
+    [key]: createDateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID,
+  };
   setCreateField(key, "");
 }
 function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
@@ -1966,11 +2008,27 @@ function sectionEntityTypes(): string[] {
   return manifestForWorkspaceSection(section)?.schemas.flatMap(schemaEntityTypeIds) ?? [];
 }
 
+function activeTabEntityTypes(): string[] | undefined {
+  if (section !== "writing" && section !== "timeline") return undefined;
+  return activeCollectionTab()?.entityTypes ?? [];
+}
+
+$effect(() => {
+  if (!modules.length) return;
+  const timelineTabs = collectionTabsFor("timeline");
+  if (timelineTabs.length > 0 && !timelineTabs.some((tab) => tab.id === timelineView)) {
+    timelineView = timelineTabs[0].id;
+  }
+  const writingTabs = collectionTabsFor("writing");
+  if (writingTabs.length > 0 && !writingTabs.some((tab) => tab.id === writingView)) {
+    writingView = writingTabs[0].id;
+  }
+});
+
 $effect(() => {
   const entityTypes = collectionEntityTypes({
     entityTypes: new Set(sectionEntityTypes()),
-    writingView: section === "writing" ? writingView : undefined,
-    timelineView: section === "timeline" ? timelineView : undefined,
+    tabEntityTypes: activeTabEntityTypes(),
   });
   const scopeKey = JSON.stringify([
     section,
@@ -1995,8 +2053,7 @@ $effect(() => {
   const limit = collectionQuery.pageSize;
   const entityTypes = collectionEntityTypes({
     entityTypes: new Set(sectionEntityTypes()),
-    writingView: section === "writing" ? writingView : undefined,
-    timelineView: section === "timeline" ? timelineView : undefined,
+    tabEntityTypes: activeTabEntityTypes(),
   });
   const query = collectionQuery.textSearch.trim();
   const excludedEntityTypes = [...collectionQuery.excludedTypes];
@@ -2099,12 +2156,7 @@ async function selectSearchResult(entity: Entity) {
     ),
   );
   section = owner && owner !== "maps" ? owner : "lore";
-  if (entity.entity_type === "daena.writing:reference-page") writingView = "reference";
-  if (entity.entity_type === "daena.writing:manuscript") writingView = "manuscripts";
-  if (entity.entity_type === "daena.timeline:era") timelineView = "eras";
-  if (entity.entity_type === "daena.timeline:calendar") timelineView = "calendars";
-  if (entity.entity_type === "daena.timeline:event" || entity.entity_type === "daena.timeline:encounter")
-    timelineView = "events";
+  applyCollectionTabForEntityType(entity.entity_type);
   projectHomeOpen = false;
   globalQuery = "";
   collectionQuery.textSearch = "";
@@ -2153,25 +2205,29 @@ async function reconcileWorkspaceSection() {
 }
 
 async function switchWritingView(next: WritingView) {
+  const tabs = collectionTabsFor("writing");
+  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
   if (!(await flushAutoSave())) return;
-  if (writingView === next && !projectHomeOpen) return;
+  if (writingView === resolved && !projectHomeOpen) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
-  writingView = next;
+  writingView = resolved;
   clearSelection();
   collectionQuery.textSearch = "";
 }
 
 async function switchTimelineView(next: TimelineView) {
+  const tabs = collectionTabsFor("timeline");
+  const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
   if (!(await flushAutoSave())) return;
-  if (timelineView === next && !projectHomeOpen && !projectionView) return;
+  if (timelineView === resolved && !projectHomeOpen && !projectionView) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
-  timelineView = next;
+  timelineView = resolved;
   clearSelection();
   collectionQuery.textSearch = "";
 }
@@ -2243,10 +2299,12 @@ function sectionLabel() {
 
 function breadcrumbItems() {
   const items = ["Private studio", sectionLabel()];
-  if (section === "writing" && !projectHomeOpen)
-    items.push(writingView === "manuscripts" ? "Manuscripts" : "Reference pages");
-  if (section === "timeline" && !projectHomeOpen)
-    items.push(timelineView === "eras" ? "Eras" : timelineView === "calendars" ? "Calendars" : "Events");
+  if ((section === "writing" || section === "timeline") && !projectHomeOpen) {
+    const tab = activeCollectionTab();
+    items.push(
+      tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : section === "writing" ? "Writing" : "Events",
+    );
+  }
   if (selected && !projectHomeOpen && !showSettings) items.push(selected.name);
   return items;
 }
@@ -2264,75 +2322,66 @@ function workspaceHeadingKicker() {
 }
 
 function workspaceHeadingDescription() {
-  return section === "lore"
-    ? "A living reference for every person, place, and power."
-    : section === "timeline"
-      ? timelineView === "eras"
-        ? "Named periods of history, independent of any one calendar."
-        : timelineView === "calendars"
-          ? "Optional ways to name years, months, weeks, and seasons."
-          : "Events, eras, and the threads that connect them."
-      : section === "maps"
-        ? "Keep every map beside its notes, links, and provider source."
-        : section === "language"
-          ? "Words, sounds, writing, and grammar for every language of your world."
-          : writingView === "manuscripts"
-            ? "Draft stories, essays, and other long-form work."
-            : "Build the pages, notes, and references behind the story.";
+  if (section === "lore") return "A living reference for every person, place, and power.";
+  if (section === "maps") return "Keep every map beside its notes, links, and provider source.";
+  if (section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
+  const tab = activeCollectionTab();
+  if (section === "timeline") {
+    if (tab?.id === "calendars") return "Optional ways to name years, months, weeks, and seasons.";
+    if (tab?.id === "events" || !tab) return "Events, eras, and the threads that connect them.";
+    return `${tab.label} in the chronology of your world.`;
+  }
+  if (tab?.id === "manuscripts") return "Draft stories, essays, and other long-form work.";
+  if (tab?.id === "reference") return "Build the pages, notes, and references behind the story.";
+  return tab
+    ? `Draft and keep ${tab.label.toLowerCase()} beside the world they draw from.`
+    : "Manuscripts and reference pages beside the world they draw from.";
 }
 
 function collectionLabel() {
-  return section === "lore"
-    ? "entries"
-    : section === "timeline"
-      ? timelineView === "eras"
-        ? "eras"
-        : timelineView === "calendars"
-          ? "calendars"
-          : "events"
-      : section === "writing"
-        ? writingView === "manuscripts"
-          ? "manuscripts"
-          : "reference pages"
-        : section === "language"
-          ? "languages"
-          : "maps";
+  if (section === "lore") return "entries";
+  if (section === "language") return "languages";
+  if (section === "maps") return "maps";
+  const tab = activeCollectionTab();
+  if (!tab) return "entries";
+  if (tab.id === "reference") return "reference pages";
+  return tab.label.toLowerCase();
 }
 
 function collectionKicker() {
-  return section === "lore"
-    ? "LORE LIBRARY"
-    : section === "timeline"
-      ? timelineView === "eras"
-        ? "ERAS"
-        : timelineView === "calendars"
-          ? "CALENDARS"
-          : "TIMELINE"
-      : section === "maps"
-        ? "MAPS"
-        : section === "language"
-          ? "LANGUAGES"
-          : writingView === "manuscripts"
-            ? "MANUSCRIPTS"
-            : "REFERENCE PAGES";
+  if (section === "lore") return "LORE LIBRARY";
+  if (section === "maps") return "MAPS";
+  if (section === "language") return "LANGUAGES";
+  const tab = activeCollectionTab();
+  if (section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
+  if (!tab) return "ENTRIES";
+  if (tab.id === "reference") return "REFERENCE PAGES";
+  return tab.label.toUpperCase();
 }
 
 function createLabel() {
-  return section === "lore"
-    ? "entry"
-    : section === "timeline"
-      ? timelineView === "eras"
-        ? "era"
-        : timelineView === "calendars"
-          ? "calendar"
-          : "event"
-      : section === "writing"
-        ? writingView === "manuscripts"
-          ? "manuscript"
-          : "reference page"
-        : section === "language"
-          ? "language"
-          : "map";
+  if (section === "lore") return "entry";
+  if (section === "language") return "language";
+  if (section === "maps") return "map";
+  const tab = activeCollectionTab();
+  if (!tab) return "entry";
+  if (tab.id === "events") return "event";
+  if (tab.id === "calendars") return "calendar";
+  if (tab.id === "manuscripts") return "manuscript";
+  if (tab.id === "reference") return "reference page";
+  return tab.label.toLowerCase();
+}
+
+function emptyEditorKicker() {
+  if (section === "lore") return "LORE ENTRY";
+  if (section === "maps") return "MAP";
+  const tab = activeCollectionTab();
+  if (!tab) return "ENTRY";
+  if (tab.id === "events") return "TIMELINE EVENT";
+  if (tab.id === "calendars") return "CALENDAR";
+  if (tab.id === "manuscripts") return "MANUSCRIPT";
+  if (tab.id === "reference") return "REFERENCE PAGE";
+  return tab.label.toUpperCase();
 }
 
 function entityTypeLabel(entityType: string | null) {
@@ -2415,8 +2464,12 @@ async function openWorkspaceView(view: WorkspaceLocationView) {
   if (view === "library") return openLoreLibrary();
   if (view === "wiki") return openLoreWiki();
   if (view === "graph" || view === "timeline") return openProjection();
-  if (view === "events" || view === "eras" || view === "calendars") return switchTimelineView(view);
-  if (view === "manuscripts" || view === "reference") return switchWritingView(view);
+  if (section === "timeline" && collectionTabsFor("timeline").some((tab) => tab.id === view)) {
+    return switchTimelineView(view);
+  }
+  if (section === "writing" && collectionTabsFor("writing").some((tab) => tab.id === view)) {
+    return switchWritingView(view);
+  }
 }
 
 async function restoreShellEntity(entityId: string | null) {
@@ -2569,7 +2622,7 @@ function setDateCalendar(key: string, calendarId: string) {
 }
 function openDateEditor(key: string) {
   dateEditorOpen = { ...dateEditorOpen, [key]: true };
-  dateCalendarByField = { ...dateCalendarByField, [key]: GREGORIAN_CALENDAR_ID };
+  dateCalendarByField = { ...dateCalendarByField, [key]: dateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID };
   fields = { ...fields, [key]: "" };
   markEntryDirty();
 }
@@ -3759,6 +3812,7 @@ async function loadSelectedState(entity: Entity) {
     documentBody = "";
     fields = {};
     relationships = [];
+    eraContexts = [];
     metadataDialog = null;
     assets = [];
     mapLocations = [];
@@ -3820,6 +3874,13 @@ async function loadSelectedState(entity: Entity) {
         }))
       : [];
     if (!isCurrent()) return;
+    eraContexts = await loadEraContexts(
+      relationships
+        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
+        .map((relationship) => relationship.target_id),
+    );
+    if (!isCurrent()) return;
+    hintDateCalendarsFromEras(eraContexts, false);
     assets = context.module.capabilities.includes("asset.read:self")
       ? (await context.assets.list(entityId as UUID)).map((asset) => ({
           id: asset.id,
@@ -4031,10 +4092,7 @@ async function selectEntity(entity: Entity, recordHistory = true) {
   if (recordHistory) recordShellDeparture(departure);
   editorFullscreen = false;
   selected = entity;
-  if (entity.entity_type === "daena.timeline:era") timelineView = "eras";
-  if (entity.entity_type === "daena.timeline:calendar") timelineView = "calendars";
-  if (entity.entity_type === "daena.timeline:event" || entity.entity_type === "daena.timeline:encounter")
-    timelineView = "events";
+  applyCollectionTabForEntityType(entity.entity_type);
   hasUnsavedChanges = false;
   documentConflict = null;
   documentRevision = 0;
@@ -4182,15 +4240,7 @@ async function createWithOption(
           schemaEntityTypeIds(schema).includes(option.template.entityType),
         ),
       ) ?? section;
-    if (option.template.entityType === "daena.writing:manuscript") writingView = "manuscripts";
-    if (option.template.entityType === "daena.writing:reference-page") writingView = "reference";
-    if (option.template.entityType === "daena.timeline:era") timelineView = "eras";
-    if (option.template.entityType === "daena.timeline:calendar") timelineView = "calendars";
-    if (
-      option.template.entityType === "daena.timeline:event" ||
-      option.template.entityType === "daena.timeline:encounter"
-    )
-      timelineView = "events";
+    applyCollectionTabForEntityType(option.template.entityType);
     projectHomeOpen = false;
     name = "";
     showCreateForm = false;
@@ -4689,17 +4739,8 @@ async function saveEntityEditDialog() {
     // Move section if type changed to a different workspace
     if (typeChanged) {
       const newSection = sectionForEntityType(updated.entity_type);
-      if (newSection && newSection !== section) {
-        section = newSection;
-        // Reconcile writing/timeline sub-views
-        if (updated.entity_type === "daena.writing:manuscript") writingView = "manuscripts";
-        else if (updated.entity_type === "daena.writing:reference-page") writingView = "reference";
-        else if (updated.entity_type === "daena.timeline:era") timelineView = "eras";
-        else if (updated.entity_type === "daena.timeline:calendar") timelineView = "calendars";
-        else if (updated.entity_type === "daena.timeline:event" || updated.entity_type === "daena.timeline:encounter")
-          timelineView = "events";
-      }
-      // Reload inspector state for new type's definitions
+      if (newSection && newSection !== section) section = newSection;
+      applyCollectionTabForEntityType(updated.entity_type);
       await loadSelectedState(updated);
     } else {
       // Name-only change keeps inspector but refreshes collection
@@ -4758,6 +4799,78 @@ function relationshipsForDefinition(definition: FieldDefinition) {
 }
 function relationshipDefinitions() {
   return definitions().filter((candidate) => candidate.type === "relationship");
+}
+function eraRelationshipDefinition() {
+  return definitions().find(isEraRelationshipField) ?? null;
+}
+function chronologyDateDefinitions() {
+  return definitions().filter((candidate) => candidate.type === "date" && isChronologyDateKey(candidate.key));
+}
+function propertyDefinitions() {
+  return definitions().filter((candidate) => candidate.type !== "relationship" && !isChronologyDateKey(candidate.key));
+}
+function otherRelationshipDefinitions() {
+  return relationshipDefinitions().filter((candidate) => !isEraRelationshipField(candidate));
+}
+function hasChronologySection() {
+  return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
+}
+function inspectorChronologyWarnings() {
+  return chronologyWarnings(
+    chronologyDateDefinitions().map((definition) => ({ label: definition.label, value: fields[definition.key] })),
+    eraContexts,
+  );
+}
+async function loadEraContexts(eraIds: string[]): Promise<EraContext[]> {
+  const unique = [...new Set(eraIds.filter(Boolean))];
+  return Promise.all(
+    unique.map(async (id) => {
+      let start: unknown;
+      let end: unknown;
+      let calendarIds: string[] = [];
+      try {
+        const stored = await project.listFields(id);
+        start = stored.find((field) => field.key === "startsAt")?.value;
+        end = stored.find((field) => field.key === "endsAt")?.value;
+      } catch {}
+      try {
+        const linked = await project.listRelationships(id);
+        calendarIds = linked
+          .filter((relationship) => relationship.relationship_type === "uses_calendar" && relationship.source_id === id)
+          .map((relationship) => relationship.target_id);
+      } catch {}
+      return {
+        id,
+        name: entities.find((entity) => entity.id === id)?.name ?? id,
+        start,
+        end,
+        calendarIds,
+      };
+    }),
+  );
+}
+function hintDateCalendarsFromEras(contexts: EraContext[], persistDates = false) {
+  const calendarId = firstEraCalendarId(contexts);
+  if (!calendarId) return;
+  for (const definition of chronologyDateDefinitions()) {
+    const current = dateForField(definition.key);
+    if (current && !isGregorianCalendarId(current.calendar)) continue;
+    dateCalendarByField = { ...dateCalendarByField, [definition.key]: calendarId };
+    if (persistDates && current) {
+      fields = { ...fields, [definition.key]: serializeCalendarDate({ ...current, calendar: calendarId }) };
+      markEntryDirty();
+    }
+  }
+}
+function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
+  const calendarId = firstEraCalendarId(contexts);
+  if (!calendarId) return;
+  for (const key of ["startsAt", "endsAt"]) {
+    const current = createDateForField(key);
+    if (current && !isGregorianCalendarId(current.calendar)) continue;
+    createDateCalendarByField = { ...createDateCalendarByField, [key]: calendarId };
+    if (current) setCreateField(key, serializeCalendarDate({ ...current, calendar: calendarId }));
+  }
 }
 function backlinkRelationships() {
   return relationships.filter((relationship) => relationship.target_id === selected?.id);
@@ -4866,6 +4979,10 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
     );
     const removedIds = new Set(toRemove.map((relationship) => relationship.id));
     relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
+    if (isEraRelationshipField(definition)) {
+      eraContexts = await loadEraContexts(targetIds);
+      hintDateCalendarsFromEras(eraContexts, true);
+    }
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -5454,6 +5571,8 @@ function clearSelection() {
   documentBody = "";
   fields = {};
   relationships = [];
+  eraContexts = [];
+  createEraContexts = [];
   metadataDialog = null;
   assets = [];
   savedAt = "";
@@ -6071,7 +6190,11 @@ onMount(() => {
                             type="button"
                             onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button
                           >{/if}{/if}
-                    </div>{/snippet}{#each requiredCreateFields(createOption) as item}{@render createFieldControl(
+                    </div>{/snippet}{#if chronologyCreateFields(createOption).length > 0}{#each chronologyCreateFields(createOption) as item}{@render createFieldControl(
+                        item,
+                      )}{/each}{#each createChronologyWarnings() as warning}<p class="chronology-warning" role="status">
+                        {warning}
+                      </p>{/each}{/if}{#each requiredCreateFields(createOption) as item}{@render createFieldControl(
                       item,
                     )}{/each}{@const optionalFields =
                     optionalCreateFields(
@@ -6269,7 +6392,8 @@ onMount(() => {
     {/if}
     {#if ready && !showSettings && !projectHomeOpen && !hostView && !sandboxView && (section === "lore" || section === "timeline" || section === "writing")}
       <WorkspaceViewNav
-        {section}
+        label={`${section} views`}
+        views={workspaceViewNavItems()}
         activeView={currentWorkspaceLocationView()}
         onSelect={(view) => void openWorkspaceView(view)} />
     {/if}
@@ -6916,7 +7040,7 @@ onMount(() => {
                       </div>
                     </div>{/if}
                 </div>
-              {:else}<button class="empty-create" type="button" onclick={toggleCreateForm}
+              {:else}<button class="empty-create" type="button" onclick={openContextualCreate}
                   ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                     ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span>
                   Create {createLabel()}</button
@@ -7122,21 +7246,7 @@ onMount(() => {
               <div class="editor-header">
                 <div class="editor-title">
                   <span class="panel-kicker"
-                    >{selected
-                      ? entityTypeLabel(selected.entity_type).toUpperCase()
-                      : section === "lore"
-                        ? "LORE ENTRY"
-                        : section === "timeline"
-                          ? timelineView === "eras"
-                            ? "ERA"
-                            : timelineView === "calendars"
-                              ? "CALENDAR"
-                              : "TIMELINE EVENT"
-                          : section === "maps"
-                            ? "MAP"
-                            : writingView === "manuscripts"
-                              ? "MANUSCRIPT"
-                              : "REFERENCE PAGE"}</span>
+                    >{selected ? entityTypeLabel(selected.entity_type).toUpperCase() : emptyEditorKicker()}</span>
                   <div class="editor-title-row">
                     <h2
                       ondblclick={() => {
@@ -7343,7 +7453,9 @@ onMount(() => {
                         placeholder={section === "writing"
                           ? writingView === "manuscripts"
                             ? "Write your manuscript…"
-                            : "Write this reference page…"
+                            : writingView === "reference"
+                              ? "Write this reference page…"
+                              : `Write this ${createLabel()}…`
                           : section === "maps"
                             ? "Describe this map and the world it contains…"
                             : "Write the canonical story of this entry…"} />
@@ -7364,7 +7476,9 @@ onMount(() => {
                     : section === "writing"
                       ? writingView === "manuscripts"
                         ? "Your draft is waiting."
-                        : "Your reference desk is waiting."
+                        : writingView === "reference"
+                          ? "Your reference desk is waiting."
+                          : "Your canvas is waiting."
                       : "Your canvas is waiting."}
                   message={section === "maps"
                     ? "Select a map from the atlas, or create one with a map integration."
@@ -7448,13 +7562,53 @@ onMount(() => {
                     ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
-            <InspectorSection
-              title="Details"
-              count={definitions().filter((candidate) => candidate.type !== "relationship").length}>
+            <InspectorSection title="Details" count={propertyDefinitions().length + chronologyDateDefinitions().length}>
+              {#if hasChronologySection()}
+                <section class="inspector-section inspector-section-plain">
+                  <h3>Chronology</h3>
+                  {#if eraRelationshipDefinition()}
+                    {@const eraField = eraRelationshipDefinition()!}
+                    <div class="property-field">
+                      <span>{eraField.label}</span>
+                      <RelationshipPicker
+                        field={eraField}
+                        {entities}
+                        selectedIds={selectedRelationshipIds(eraField)}
+                        placeholder="Search eras…"
+                        onChange={(ids) => void updateRelationshipField(eraField, ids)} />
+                    </div>
+                  {/if}
+                  {#each inspectorChronologyWarnings() as warning}
+                    <p class="chronology-warning" role="status">{warning}</p>
+                  {/each}
+                  {#each chronologyDateDefinitions() as definition}
+                    <div class="property-field">
+                      <span
+                        >{definition.label}{#if definition.required}<b>*</b>{/if}</span>
+                      {#if dateForField(definition.key) || dateEditorOpen[definition.key]}
+                        <DateEditor
+                          label={definition.label}
+                          value={fields[definition.key]}
+                          calendar={definitionForDateField(definition.key)}
+                          calendars={worldCalendars() as any}
+                          selectedCalendarId={selectedCalendarId(definition.key)}
+                          onChange={(next) => {
+                            fields = { ...fields, [definition.key]: next };
+                            markEntryDirty();
+                          }}
+                          onClear={() => clearDateField(definition.key)}
+                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)} />
+                      {:else}
+                        <button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}
+                          >Add a date</button>
+                      {/if}
+                    </div>
+                  {/each}
+                </section>
+              {/if}
               <section class="inspector-section inspector-section-plain">
                 <h3>Properties</h3>
-                {#each definitions().filter((candidate) => candidate.type !== "relationship") as definition}<div
-                    class="property-field">
+                {#each propertyDefinitions() as definition}<div class="property-field">
                     <span
                       >{definition.label}{#if definition.required}<b>*</b>{/if}</span
                     >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
@@ -7528,17 +7682,37 @@ onMount(() => {
                     entityId={inspectedEntity.id as UUID}
                     onsaved={(definition) => {
                       if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
+                    }}
+                    onOpenEra={(eraId) => {
+                      const entity = entities.find((candidate) => candidate.id === eraId);
+                      if (entity) void selectEntity(entity);
+                    }}
+                    onEraCreated={(created) => {
+                      void loadEntities().then(() =>
+                        selectEntity({
+                          id: created.id,
+                          name: created.name,
+                          entity_type: created.type,
+                          deleted: created.deleted,
+                          created_at: created.createdAt,
+                          updated_at: created.updatedAt,
+                          revision: created.revision,
+                        }),
+                      );
                     }} />
                 </section>
               {/if}
             </InspectorSection>
             <InspectorSection
               title="Relationships"
-              count={relationships.filter((relationship) => relationship.source_id === selected?.id).length}>
-              {#if relationshipDefinitions().length === 0}<p class="inspector-group-empty">
+              count={otherRelationshipDefinitions().reduce(
+                (total, definition) => total + selectedRelationshipIds(definition).length,
+                0,
+              )}>
+              {#if otherRelationshipDefinitions().length === 0}<p class="inspector-group-empty">
                   No relationship fields are available for this entry.
                 </p>{/if}
-              {#each relationshipDefinitions() as definition}<section
+              {#each otherRelationshipDefinitions() as definition}<section
                   class="inspector-section inspector-section-plain relationship-field-section">
                   <div class="section-title">
                     <h3>{definition.label}</h3>
@@ -8776,6 +8950,12 @@ onMount(() => {
 .date-empty:hover {
   border-color: var(--accent-soft);
   background: var(--surface-muted);
+}
+.chronology-warning {
+  margin: 0;
+  color: var(--theme-warning-text, #55351f);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .inspector-heading {
   border-bottom: 1px solid var(--line);

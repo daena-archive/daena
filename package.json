@@ -19,7 +19,7 @@
     "check:maps:physical": "node scripts/maps-physical.test.mjs && node --experimental-strip-types scripts/maps-physical-surface.test.mjs",
     "check:maps:physical-benchmark": "node scripts/maps-physical-benchmark.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
-    "check:timeline-calendar": "node --experimental-strip-types scripts/timeline-calendar.test.mjs && node --experimental-strip-types scripts/timeline-projection.test.mjs && node --experimental-strip-types scripts/timeline-tabs.test.mjs && node --experimental-strip-types scripts/lore-timeline-relations.test.mjs && node scripts/timeline-ux.test.mjs",
+    "check:timeline-calendar": "node --experimental-strip-types scripts/timeline-calendar.test.mjs && node --experimental-strip-types scripts/timeline-projection.test.mjs && node --experimental-strip-types scripts/timeline-tabs.test.mjs && node --experimental-strip-types scripts/chronology.test.mjs && node --experimental-strip-types scripts/lore-timeline-relations.test.mjs && node scripts/timeline-ux.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "check:writing-tabs": "node --experimental-strip-types scripts/writing-tabs.test.mjs",
     "dev": "vite dev",

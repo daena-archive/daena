@@ -1,42 +1,22 @@
 <script lang="ts">
 import type { WorkspaceLocationView } from "$lib/navigation/history";
-import type { WorkspaceSection } from "$lib/modules/workspace";
 
 let {
-  section,
+  label,
+  views,
   activeView,
   onSelect,
 }: {
-  section: WorkspaceSection;
+  label: string;
+  views: { id: WorkspaceLocationView; label: string }[];
   activeView: WorkspaceLocationView;
   onSelect: (view: WorkspaceLocationView) => void;
 } = $props();
 
 let nav = $state<HTMLElement | null>(null);
 
-const views = $derived.by(() => {
-  if (section === "lore")
-    return [
-      { id: "library", label: "Library" },
-      { id: "wiki", label: "Wiki" },
-      { id: "graph", label: "Graph" },
-    ] satisfies { id: WorkspaceLocationView; label: string }[];
-  if (section === "timeline")
-    return [
-      { id: "timeline", label: "Timeline" },
-      { id: "events", label: "Events" },
-      { id: "eras", label: "Eras" },
-      { id: "calendars", label: "Calendars" },
-    ] satisfies { id: WorkspaceLocationView; label: string }[];
-  if (section === "writing")
-    return [
-      { id: "manuscripts", label: "Manuscripts" },
-      { id: "reference", label: "Reference" },
-    ] satisfies { id: WorkspaceLocationView; label: string }[];
-  return [];
-});
-
 function handleKeydown(event: KeyboardEvent, index: number) {
+  if (views.length === 0) return;
   let nextIndex: number | null = null;
   if (event.key === "ArrowRight") nextIndex = (index + 1) % views.length;
   if (event.key === "ArrowLeft") nextIndex = (index - 1 + views.length) % views.length;
@@ -50,7 +30,7 @@ function handleKeydown(event: KeyboardEvent, index: number) {
 }
 </script>
 
-<nav bind:this={nav} class="workspace-view-nav" aria-label={`${section} views`}>
+<nav bind:this={nav} class="workspace-view-nav" aria-label={label}>
   {#each views as view, index}
     <button
       type="button"

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { tick } from "svelte";
-import type { ModuleContext, UUID } from "../../../module-api/src/index";
+import type { EntityRecord, ModuleContext, UUID } from "../../../module-api/src/index";
 import {
   CALENDAR_DEFINITION_COLLECTION,
   DATE_FORMAT_PRESETS,
@@ -28,7 +28,15 @@ let {
   context,
   entityId,
   onsaved,
-}: { context: ModuleContext; entityId: UUID; onsaved?: (definition: CalendarDefinition) => void } = $props();
+  onOpenEra,
+  onEraCreated,
+}: {
+  context: ModuleContext;
+  entityId: UUID;
+  onsaved?: (definition: CalendarDefinition) => void;
+  onOpenEra?: (eraId: UUID) => void;
+  onEraCreated?: (era: EntityRecord) => void;
+} = $props();
 
 let saved = $state<CalendarDefinition>(emptyCalendarDefinition());
 let draft = $state<CalendarDefinition>(emptyCalendarDefinition());
@@ -43,6 +51,8 @@ let helpTrigger = $state<HTMLButtonElement>();
 let helpBox = $state<HTMLDivElement>();
 let helpStyle = $state("");
 let helpHideTimer: ReturnType<typeof setTimeout> | undefined;
+let eras = $state<{ id: UUID; name: string }[]>([]);
+let creatingEra = $state(false);
 
 const issues = $derived(validateCalendarDefinition(draft));
 const errors = $derived(issues.filter((issue) => issue.level === "error"));
@@ -65,6 +75,17 @@ async function load() {
     revision = record?.revision ?? "";
     saved = record ? normalizeCalendarDefinition(record.value) : emptyCalendarDefinition();
     if (!open) draft = saved;
+    const relationships = await context.relationships.list(entityId);
+    if (token !== loadToken) return;
+    const eraIds = relationships
+      .filter((relationship) => relationship.type === "uses_calendar" && relationship.targetId === entityId)
+      .map((relationship) => relationship.sourceId);
+    const loadedEras = await Promise.all(eraIds.map((id) => context.entities.get(id)));
+    if (token !== loadToken) return;
+    eras = loadedEras
+      .filter((era): era is EntityRecord => Boolean(era))
+      .map((era) => ({ id: era.id, name: era.name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
   } catch (cause) {
     if (token !== loadToken) return;
     error = cause instanceof Error ? cause.message : String(cause);
@@ -114,6 +135,25 @@ async function persist() {
     error = cause instanceof Error ? cause.message : String(cause);
   } finally {
     saving = false;
+  }
+}
+
+async function addEra() {
+  if (creatingEra) return;
+  creatingEra = true;
+  error = "";
+  try {
+    const created = await context.entities.create({
+      name: "New era",
+      type: "daena.timeline:era",
+      relationships: { calendar: [entityId] },
+    });
+    eras = [...eras, { id: created.id, name: created.name }].sort((left, right) => left.name.localeCompare(right.name));
+    onEraCreated?.(created);
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    creatingEra = false;
   }
 }
 
@@ -262,6 +302,24 @@ $effect(() => {
   </div>
   <p>{calendarSummary(saved)}</p>
   <p>{epochSummary(saved)}</p>
+  <div class="calendar-era-list">
+    <div class="calendar-group-head">
+      <h4>Historical eras</h4>
+      <button type="button" disabled={creatingEra} onclick={() => void addEra()}>Add era</button>
+    </div>
+    {#if eras.length === 0}<p class="calendar-note">No eras use this calendar yet.</p>
+    {:else}
+      <ul>
+        {#each eras as era}
+          <li>
+            {#if onOpenEra}<button type="button" class="calendar-era-link" onclick={() => onOpenEra(era.id)}
+                >{era.name}</button
+              >{:else}<span>{era.name}</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
   {#if error && !open}<p class="calendar-error" role="alert">{error}</p>{/if}
 </section>
 
@@ -406,8 +464,10 @@ $effect(() => {
         </section>
 
         <section>
-          <h4>Eras</h4>
-          <p class="calendar-note">Control whether dates can be before the first year and how eras are labeled.</p>
+          <h4>Year labels</h4>
+          <p class="calendar-note">
+            Control whether dates can be before the first year and how year suffixes are labeled.
+          </p>
           <label class="calendar-checkbox"
             ><input
               type="checkbox"
@@ -678,7 +738,28 @@ $effect(() => {
   justify-content: space-between;
   gap: 8px;
 }
+.calendar-era-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+.calendar-era-list ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.calendar-era-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-dark);
+  cursor: pointer;
+  text-align: left;
+}
 .calendar-summary h3,
+.calendar-summary h4,
 .calendar-modal-body h4 {
   margin: 0;
   color: var(--theme-neutral-text, #302c26);

@@ -7,8 +7,7 @@ import type {
   WritingView,
 } from "$lib/modules/workspace";
 
-export type WorkspaceLocationView =
-  "library" | "wiki" | "graph" | "timeline" | "events" | "eras" | "calendars" | "manuscripts" | "reference" | "default";
+export type WorkspaceLocationView = string;
 
 export interface WorkspaceCollectionLocation {
   query: Omit<CollectionQuery, "section">;

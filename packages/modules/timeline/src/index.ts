@@ -18,6 +18,7 @@ import {
   type TimelineFieldRole,
   type TimelineLayer,
 } from "./projection";
+import { belongsToEraScope } from "../../../../src/lib/modules/chronology";
 import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
@@ -35,6 +36,7 @@ type TimelineEvent = {
   layer: "timeline" | TimelineLayer;
   locationName?: string;
   participantNames: string[];
+  eraIds: string[];
   start: Date;
   end: Date | null;
   colors: EventColors;
@@ -47,6 +49,8 @@ type LoadedTimelineEntry = {
   fields: Record<string, unknown>;
   locationName?: string;
   participantNames: string[];
+  eraIds: string[];
+  calendarIds: string[];
   relativeYear: number | null;
   contributions: TimelineContribution[];
 };
@@ -67,6 +71,7 @@ type UndatedEvent = {
   fields: Record<string, unknown>;
   locationName?: string;
   participantNames: string[];
+  eraIds: string[];
   relativeYear?: number;
 };
 
@@ -150,7 +155,37 @@ function groupForEvent(event: TimelineEvent): TimelineGroupId {
 function layerLabel(event: TimelineEvent): string {
   if (event.layer === "lifelines") return "Lifeline";
   if (event.layer === "dates") return "Project date";
+  if (event.entity.type === "daena.timeline:era") return "Era";
   return "Timeline event";
+}
+
+function matchesTimelineQuery(event: TimelineEvent, query: string): boolean {
+  if (!query) return true;
+  return [
+    event.entity.name,
+    event.entity.type,
+    event.startLabel,
+    event.endLabel,
+    event.locationName,
+    ...event.participantNames,
+  ]
+    .filter(Boolean)
+    .some((value) => String(value).toLocaleLowerCase().includes(query));
+}
+
+function eraEnd(era: TimelineEvent): Date {
+  if (era.end) return era.end;
+  const next = new Date(era.start.getTime());
+  next.setUTCFullYear(next.getUTCFullYear() + 1);
+  return next;
+}
+
+function eraAtTime(eras: TimelineEvent[], time: Date): TimelineEvent | undefined {
+  const stamp = time.getTime();
+  const containing = eras.filter((era) => era.start.getTime() <= stamp && stamp <= eraEnd(era).getTime());
+  return containing.sort(
+    (left, right) => eraEnd(left).getTime() - left.start.getTime() - (eraEnd(right).getTime() - right.start.getTime()),
+  )[0];
 }
 
 function entityTypeLabel(type: string | null | undefined): string {
@@ -649,6 +684,7 @@ export const timeline: DaenaModule = {
         let selectedEntityType = "";
         let selectedEventId: string | null = null;
         let selectedCalendarId = "gregorian";
+        let selectedEraId = "";
         let sourceSnapshot: TimelineSourceSnapshot | null = null;
         let searchTimer: number | null = null;
         let removeOutlineResize: (() => void) | null = null;
@@ -697,27 +733,32 @@ export const timeline: DaenaModule = {
                   const relativeYear = physicalOffset(
                     sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
                   );
-                  const relationships = isTimelineEntity
-                    ? (await context.relationships.list(entity.id)).filter(
-                        (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
-                      )
-                    : [];
+                  const relationships = isTimelineEntity ? await context.relationships.list(entity.id) : [];
+                  const contextRels = relationships.filter(
+                    (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
+                  );
                   const targets = await Promise.all(
-                    relationships.map((relationship) => context.entities.get(relationship.targetId)),
+                    contextRels.map((relationship) => context.entities.get(relationship.targetId)),
                   );
                   return {
                     entity,
                     fields,
-                    locationName: relationships
+                    locationName: contextRels
                       .map((relationship, index) =>
                         relationship.type === "occurred_at" ? targets[index]?.name : undefined,
                       )
                       .find((name): name is string => Boolean(name)),
-                    participantNames: relationships
+                    participantNames: contextRels
                       .map((relationship, index) =>
                         relationship.type === "involves" ? targets[index]?.name : undefined,
                       )
                       .filter((name): name is string => Boolean(name)),
+                    eraIds: relationships
+                      .filter((relationship) => relationship.type === "during")
+                      .map((relationship) => relationship.targetId),
+                    calendarIds: relationships
+                      .filter((relationship) => relationship.type === "uses_calendar")
+                      .map((relationship) => relationship.targetId),
                     relativeYear,
                     contributions: buildFieldContributions(entity, contributedRecords, contributionSpecs),
                   };
@@ -766,6 +807,7 @@ export const timeline: DaenaModule = {
                     layer: "timeline",
                     locationName: entry.locationName,
                     participantNames: entry.participantNames,
+                    eraIds: entry.eraIds,
                     start: startAnchor.date,
                     end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
                     colors: colorsForLayer("timeline", entry.entity.id),
@@ -788,52 +830,87 @@ export const timeline: DaenaModule = {
                   pointRole: contribution.pointRole,
                   layer: contribution.layer,
                   participantNames: [],
+                  eraIds: entry.eraIds,
                   start: startAnchor.date,
                   end: endAnchor && endAnchor.date.getTime() >= startAnchor.date.getTime() ? endAnchor.date : null,
                   colors: colorsForLayer(contribution.layer, contribution.entity.id),
                 });
               }
             }
-            const allEvents = [...dated, ...contributed];
+            const eraOptions = loaded
+              .filter((entry) => entry.entity.type === "daena.timeline:era")
+              .map((entry) => ({
+                id: entry.entity.id,
+                name: entry.entity.name,
+                start: entry.fields.startsAt,
+                end: entry.fields.endsAt,
+                calendarIds: entry.calendarIds,
+              }));
+            if (selectedEraId && !eraOptions.some((era) => era.id === selectedEraId)) selectedEraId = "";
+            const scopedEra = eraOptions.find((era) => era.id === selectedEraId);
+            const inScope = (event: { eraIds: readonly string[]; startValue?: unknown; endValue?: unknown }) =>
+              !scopedEra ||
+              belongsToEraScope({
+                eraIds: event.eraIds,
+                startValue: event.startValue,
+                endValue: event.endValue,
+                eraId: scopedEra.id,
+                eraStart: scopedEra.start,
+                eraEnd: scopedEra.end,
+              });
+            const scopedDated = dated.filter(inScope);
+            const scopedContributed = contributed.filter(inScope);
+            const scopedUndated = scopedEra ? undated.filter((entry) => entry.eraIds.includes(scopedEra.id)) : undated;
+            const scopedEras = scopedEra ? eras.filter((era) => era.entity.id === scopedEra.id) : eras;
+            const allEvents = [...scopedDated, ...scopedContributed];
             const layerCounts = {
-              events: dated.length,
-              lifelines: contributed.filter((event) => event.layer === "lifelines").length,
-              dates: contributed.filter((event) => event.layer === "dates").length,
+              events: scopedDated.length + scopedEras.length,
+              lifelines: scopedContributed.filter((event) => event.layer === "lifelines").length,
+              dates: scopedContributed.filter((event) => event.layer === "dates").length,
             };
             const availableEntityTypes = [
-              ...new Set(allEvents.map((event) => event.entity.type).filter((type): type is string => Boolean(type))),
+              ...new Set(
+                [...allEvents, ...scopedEras]
+                  .map((event) => event.entity.type)
+                  .filter((type): type is string => Boolean(type)),
+              ),
             ].sort((left, right) => left.localeCompare(right));
             if (selectedEntityType && !availableEntityTypes.includes(selectedEntityType)) selectedEntityType = "";
             const query = searchQuery.trim().toLocaleLowerCase();
             const plotted = [
-              ...(showTimelineEvents ? dated : []),
-              ...contributed.filter(
+              ...(showTimelineEvents ? scopedDated : []),
+              ...scopedContributed.filter(
                 (event) =>
                   (event.layer === "dates" && showProjectDates) || (event.layer === "lifelines" && showLifelines),
               ),
             ]
               .filter((event) => !selectedEntityType || event.entity.type === selectedEntityType)
-              .filter((event) => {
-                if (!query) return true;
-                return [
-                  event.entity.name,
-                  event.entity.type,
-                  event.startLabel,
-                  event.endLabel,
-                  event.locationName,
-                  ...event.participantNames,
-                ]
-                  .filter(Boolean)
-                  .some((value) => String(value).toLocaleLowerCase().includes(query));
-              })
+              .filter((event) => matchesTimelineQuery(event, query))
               .sort((left, right) => left.start.getTime() - right.start.getTime() || left.id.localeCompare(right.id));
-            const years = [...new Set(plotted.map((event) => eventYear(event, selectedCalendar)))];
+            const visibleEras = (showTimelineEvents ? scopedEras : [])
+              .filter((era) => !selectedEntityType || era.entity.type === selectedEntityType)
+              .filter((era) => matchesTimelineQuery(era, query));
+            const years = [
+              ...new Set([
+                ...plotted.map((event) => eventYear(event, selectedCalendar)),
+                ...visibleEras.map((era) => eventYear(era, selectedCalendar)),
+              ]),
+            ];
             if (activeYear !== null && !years.includes(activeYear)) activeYear = null;
             const visible =
               activeYear === null
                 ? plotted
                 : plotted.filter((event) => eventYear(event, selectedCalendar) === activeYear);
-            if (selectedEventId && !visible.some((event) => event.id === selectedEventId)) selectedEventId = null;
+            const yearFilteredEras =
+              activeYear === null
+                ? visibleEras
+                : visibleEras.filter((era) => eventYear(era, selectedCalendar) === activeYear);
+            if (
+              selectedEventId &&
+              !visible.some((event) => event.id === selectedEventId) &&
+              !yearFilteredEras.some((era) => era.id === selectedEventId)
+            )
+              selectedEventId = null;
             if (cancelled) return;
 
             element.replaceChildren();
@@ -843,14 +920,14 @@ export const timeline: DaenaModule = {
             const calendarName = selectedCalendarOption?.name ?? "Gregorian";
             context.reportSurfaceMeta?.({
               subtitle:
-                undated.length > 0
-                  ? `${plotted.length} placed · ${undated.length} unplaced or relative · ${calendarName}`
+                scopedUndated.length > 0
+                  ? `${plotted.length} placed · ${scopedUndated.length} unplaced or relative · ${calendarName}`
                   : `${plotted.length} items · ${calendarName}`,
             });
             shell.append(style);
             let details: HTMLElement | null = null;
 
-            if (allEvents.length === 0 && undated.length === 0) {
+            if (allEvents.length === 0 && scopedEras.length === 0 && scopedUndated.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent = "No timeline items yet.";
@@ -859,11 +936,11 @@ export const timeline: DaenaModule = {
               return;
             }
 
-            if (allEvents.length === 0) {
+            if (allEvents.length === 0 && scopedEras.length === 0) {
               const empty = document.createElement("p");
               empty.className = "timeline-empty";
               empty.textContent =
-                contributed.length > 0
+                scopedContributed.length > 0
                   ? "No items are visible with the current date layers."
                   : "No dated timeline items to plot yet.";
               const detailPanel = document.createElement("div");
@@ -951,8 +1028,34 @@ export const timeline: DaenaModule = {
                 selectedEventId = null;
                 void render();
               };
+              const eraFilter = document.createElement("select");
+              eraFilter.className = "timeline-era-filter";
+              eraFilter.setAttribute("aria-label", "Era");
+              const allEras = document.createElement("option");
+              allEras.value = "";
+              allEras.textContent = "All history";
+              eraFilter.append(allEras);
+              for (const era of eraOptions) {
+                const option = document.createElement("option");
+                option.value = era.id;
+                option.textContent = era.name;
+                option.selected = era.id === selectedEraId;
+                eraFilter.append(option);
+              }
+              eraFilter.onchange = () => {
+                selectedEraId = eraFilter.value;
+                const era = eraOptions.find((candidate) => candidate.id === selectedEraId);
+                const calendarId = era?.calendarIds[0];
+                if (calendarId && calendarOptions.some((option) => option.id === calendarId)) {
+                  selectedCalendarId = calendarId;
+                }
+                activeYear = null;
+                selectedEventId = null;
+                void render();
+              };
               controls.append(
                 createFilterField("Search", search),
+                createFilterField("Era", eraFilter),
                 createFilterField("Calendar", calendar),
                 createFilterField("Entity type", typeFilter),
                 createFilterField("Year", scope),
@@ -1014,11 +1117,26 @@ export const timeline: DaenaModule = {
                 selectedEventId = event.id;
                 for (const card of outline.querySelectorAll<HTMLButtonElement>(".timeline-event-card"))
                   card.classList.toggle("is-selected", card.dataset.eventId === event.id);
-                chart?.setSelection([event.id], {
-                  focus: true,
-                  animation: {},
-                });
-                chart?.focus(event.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+                if (event.entity.type === "daena.timeline:era") {
+                  if (selectedEraId !== event.entity.id) {
+                    selectedEraId = event.entity.id;
+                    const era = eraOptions.find((candidate) => candidate.id === event.entity.id);
+                    const calendarId = era?.calendarIds[0];
+                    if (calendarId && calendarOptions.some((option) => option.id === calendarId)) {
+                      selectedCalendarId = calendarId;
+                    }
+                    void render();
+                    return;
+                  }
+                  chart?.setSelection([]);
+                  chart?.moveTo(event.start, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+                } else {
+                  chart?.setSelection([event.id], {
+                    focus: true,
+                    animation: {},
+                  });
+                  chart?.focus(event.id, { animation: { duration: 220, easingFunction: "easeInOutQuad" } });
+                }
                 renderSelection(
                   detailPanel,
                   event,
@@ -1027,9 +1145,26 @@ export const timeline: DaenaModule = {
                   selectedCalendarOption?.name ?? "Gregorian",
                 );
               };
-              if (visible.length > 0)
-                renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectedEventId, selectEvent);
-              else {
+              if (visible.length > 0 || yearFilteredEras.length > 0) {
+                if (yearFilteredEras.length > 0) {
+                  const heading = document.createElement("span");
+                  heading.className = "timeline-outline-heading";
+                  heading.textContent = "Eras";
+                  outline.append(heading);
+                  for (const era of yearFilteredEras) {
+                    const card = document.createElement("button");
+                    card.type = "button";
+                    card.className = "timeline-event-card";
+                    card.dataset.eventId = era.id;
+                    card.classList.toggle("is-selected", era.id === selectedEventId);
+                    card.textContent = era.entity.name;
+                    card.onclick = () => selectEvent(era);
+                    outline.append(card);
+                  }
+                }
+                if (visible.length > 0)
+                  renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectedEventId, selectEvent);
+              } else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
                 empty.textContent = "No items match the current filters.";
@@ -1063,7 +1198,10 @@ export const timeline: DaenaModule = {
               } else {
                 workspace.append(canvas, detailPanel);
               }
-              const selectedEvent = selectedEventId ? visible.find((event) => event.id === selectedEventId) : undefined;
+              const selectedEvent = selectedEventId
+                ? (visible.find((event) => event.id === selectedEventId) ??
+                  yearFilteredEras.find((era) => era.id === selectedEventId))
+                : undefined;
               if (selectedEvent)
                 renderSelection(
                   detailPanel,
@@ -1079,7 +1217,7 @@ export const timeline: DaenaModule = {
               const { Timeline: TimelineCtor } = await import("vis-timeline/standalone");
               if (cancelled) return;
 
-              const eventsById = new Map(visible.map((event) => [event.id, event]));
+              const eventsById = new Map([...visible, ...yearFilteredEras].map((event) => [event.id, event] as const));
               const options: TimelineOptions = {
                 stack: true,
                 stackSubgroups: true,
@@ -1103,19 +1241,12 @@ export const timeline: DaenaModule = {
               chart = new TimelineCtor(
                 canvas,
                 [
-                  ...eras.map((era) => {
-                    const end =
-                      era.end ??
-                      (() => {
-                        const next = new Date(era.start.getTime());
-                        next.setUTCFullYear(next.getUTCFullYear() + 1);
-                        return next;
-                      })();
+                  ...yearFilteredEras.map((era) => {
                     const item: DataItem = {
-                      id: `era:${era.entity.id}`,
+                      id: era.id,
                       content: era.entity.name,
                       start: era.start,
-                      end,
+                      end: eraEnd(era),
                       type: "background",
                       title: era.entity.name,
                     };
@@ -1146,6 +1277,18 @@ export const timeline: DaenaModule = {
                 selectEvent(event);
               });
               chart.on("click", (properties) => {
+                const clickedId = properties.item != null ? String(properties.item) : "";
+                const clicked = clickedId ? eventsById.get(clickedId) : undefined;
+                if (clicked) {
+                  selectEvent(clicked);
+                  return;
+                }
+                const time = properties.time instanceof Date ? properties.time : null;
+                const era = time ? eraAtTime(yearFilteredEras, time) : undefined;
+                if (era) {
+                  selectEvent(era);
+                  return;
+                }
                 if (properties.item != null) return;
                 selectedEventId = null;
                 chart?.setSelection([]);
@@ -1158,16 +1301,18 @@ export const timeline: DaenaModule = {
               resizeObserver.observe(canvas);
             }
 
-            if (undated.length > 0) {
+            if (scopedUndated.length > 0) {
               const note = document.createElement("div");
               note.className = "timeline-undated";
               const label = document.createElement("small");
-              label.textContent = undated.some((entry) => entry.relativeYear !== undefined)
-                ? "Unplaced or relative items"
-                : "Unplaced items";
+              label.textContent = scopedEra
+                ? "Unplaced in this era"
+                : scopedUndated.some((entry) => entry.relativeYear !== undefined)
+                  ? "Unplaced or relative items"
+                  : "Unplaced items";
               const list = document.createElement("div");
               list.className = "timeline-undated-list";
-              for (const entry of undated) {
+              for (const entry of scopedUndated) {
                 const button = document.createElement("button");
                 button.type = "button";
                 button.textContent =

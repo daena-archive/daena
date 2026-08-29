@@ -21,6 +21,8 @@ assert.match(
   "project dates expose a counted layer chip",
 );
 assert.match(source, /search\.placeholder = "Name, type, place…"/, "timeline exposes contextual search");
+assert.match(source, /All history/, "timeline can scope to one era or all history");
+assert.match(source, /Unplaced in this era/, "era-only events stay unplaced inside an era scope");
 assert.match(source, /timeline-details timeline-inspector/, "selected items render in a dedicated inspector");
 assert.match(source, /timeline-lifeline \.vis-item-content::before/, "lifeline ranges expose distinct endpoints");
 assert.match(

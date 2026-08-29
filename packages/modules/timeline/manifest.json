@@ -33,10 +33,30 @@
     {
       "namespace": "timeline",
       "entityTypes": [
-        { "id": "event", "name": "Timeline event", "icon": { "kind": "catalog", "id": "event" }, "iconColor": { "kind": "preset", "id": "amber" } },
-        { "id": "encounter", "name": "Encounter", "icon": { "kind": "catalog", "id": "encounter" }, "iconColor": { "kind": "preset", "id": "ember" } },
-        { "id": "era", "name": "Era", "icon": { "kind": "catalog", "id": "era" }, "iconColor": { "kind": "preset", "id": "pine" } },
-        { "id": "calendar", "name": "Calendar", "icon": { "kind": "catalog", "id": "calendar" }, "iconColor": { "kind": "preset", "id": "brass" } }
+        {
+          "id": "event",
+          "name": "Timeline event",
+          "icon": { "kind": "catalog", "id": "event" },
+          "iconColor": { "kind": "preset", "id": "amber" }
+        },
+        {
+          "id": "encounter",
+          "name": "Encounter",
+          "icon": { "kind": "catalog", "id": "encounter" },
+          "iconColor": { "kind": "preset", "id": "ember" }
+        },
+        {
+          "id": "era",
+          "name": "Era",
+          "icon": { "kind": "catalog", "id": "era" },
+          "iconColor": { "kind": "preset", "id": "pine" }
+        },
+        {
+          "id": "calendar",
+          "name": "Calendar",
+          "icon": { "kind": "catalog", "id": "calendar" },
+          "iconColor": { "kind": "preset", "id": "brass" }
+        }
       ],
       "fields": [
         {
@@ -47,8 +67,23 @@
           "entityTypes": ["event", "encounter", "era"]
         },
         { "key": "endsAt", "label": "Ends", "type": "date", "entityTypes": ["event", "encounter", "era"] },
-        { "key": "yearStart", "label": "Displayed first year", "type": "number", "entityTypes": ["era"] },
         { "key": "description", "label": "Description", "type": "text", "entityTypes": ["calendar", "era"] },
+        {
+          "key": "era",
+          "label": "Era",
+          "type": "relationship",
+          "relationshipType": "during",
+          "targetEntityTypes": ["era"],
+          "entityTypes": ["event", "encounter"]
+        },
+        {
+          "key": "calendar",
+          "label": "Calendar",
+          "type": "relationship",
+          "relationshipType": "uses_calendar",
+          "targetEntityTypes": ["calendar"],
+          "entityTypes": ["era"]
+        },
         {
           "key": "location",
           "label": "Location",
@@ -86,21 +121,21 @@
       "name": "Timeline event",
       "entityType": "event",
       "description": "A moment, turning point, or span of history.",
-      "fields": { "startsAt": "", "endsAt": "" }
+      "fields": { "startsAt": "", "endsAt": "", "era": [] }
     },
     {
       "id": "encounter",
       "name": "Encounter",
       "entityType": "encounter",
       "description": "A meeting or interaction between people at a place and time.",
-      "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [] }
+      "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [], "era": [] }
     },
     {
       "id": "era",
       "name": "Era",
       "entityType": "era",
       "description": "A named period of Timeline history.",
-      "fields": { "startsAt": "", "endsAt": "", "yearStart": "", "description": "" }
+      "fields": { "startsAt": "", "endsAt": "", "description": "", "calendar": [] }
     },
     {
       "id": "calendar",

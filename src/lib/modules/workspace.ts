@@ -1,7 +1,7 @@
 import type { Entity, EntityPage } from "$lib/project/client";
 
-export type WritingView = "manuscripts" | "reference";
-export type TimelineView = "events" | "eras" | "calendars";
+export type WritingView = string;
+export type TimelineView = string;
 export type LanguagePane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
 export const WORKSPACE_MODULE_IDS = {
@@ -53,16 +53,83 @@ export interface CollectionResult {
   groups?: CollectionGroup[];
 }
 
-export const WRITING_VIEW_TYPES: Record<WritingView, string[]> = {
-  manuscripts: ["daena.writing:manuscript"],
-  reference: ["daena.writing:reference-page"],
-};
+export interface WorkspaceCollectionTab {
+  id: string;
+  label: string;
+  entityTypes: string[];
+}
 
-export const TIMELINE_VIEW_TYPES: Record<TimelineView, string[]> = {
-  events: ["daena.timeline:event", "daena.timeline:encounter"],
-  eras: ["daena.timeline:era"],
-  calendars: ["daena.timeline:calendar"],
-};
+export interface CollectionTabType {
+  id: string;
+  name: string;
+}
+
+export const WRITING_BUILTIN_TABS: WorkspaceCollectionTab[] = [
+  { id: "manuscripts", label: "Manuscripts", entityTypes: ["daena.writing:manuscript"] },
+  { id: "reference", label: "Reference", entityTypes: ["daena.writing:reference-page"] },
+];
+
+export const TIMELINE_BUILTIN_TABS: WorkspaceCollectionTab[] = [
+  {
+    id: "events",
+    label: "Events",
+    entityTypes: ["daena.timeline:event", "daena.timeline:encounter", "daena.timeline:era"],
+  },
+  { id: "calendars", label: "Calendars", entityTypes: ["daena.timeline:calendar"] },
+];
+
+export function workspaceCollectionTabs(
+  section: WorkspaceSection,
+  types: readonly CollectionTabType[],
+): WorkspaceCollectionTab[] {
+  const builtins = section === "timeline" ? TIMELINE_BUILTIN_TABS : section === "writing" ? WRITING_BUILTIN_TABS : [];
+  if (builtins.length === 0) return [];
+  const available = new Set(types.map((type) => type.id));
+  const claimed = new Set<string>();
+  const tabs: WorkspaceCollectionTab[] = [];
+  for (const tab of builtins) {
+    const entityTypes = tab.entityTypes.filter((id) => available.has(id));
+    if (entityTypes.length === 0) continue;
+    tabs.push({ id: tab.id, label: tab.label, entityTypes });
+    for (const id of entityTypes) claimed.add(id);
+  }
+  const custom = [...types]
+    .filter((type) => !claimed.has(type.id))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .map((type) => ({ id: type.id, label: type.name, entityTypes: [type.id] }));
+  return [...tabs, ...custom];
+}
+
+export function workspaceSectionViewNav(
+  section: WorkspaceSection,
+  types: readonly CollectionTabType[],
+): { id: string; label: string }[] {
+  if (section === "lore") {
+    return [
+      { id: "library", label: "Library" },
+      { id: "wiki", label: "Wiki" },
+      { id: "graph", label: "Graph" },
+    ];
+  }
+  if (section === "timeline") {
+    return [
+      { id: "timeline", label: "Timeline" },
+      ...workspaceCollectionTabs(section, types).map((tab) => ({ id: tab.id, label: tab.label })),
+    ];
+  }
+  if (section === "writing") {
+    return workspaceCollectionTabs(section, types).map((tab) => ({ id: tab.id, label: tab.label }));
+  }
+  return [];
+}
+
+export function collectionTabForEntityType(
+  tabs: readonly WorkspaceCollectionTab[],
+  entityType: string | null | undefined,
+): WorkspaceCollectionTab | undefined {
+  if (!entityType) return undefined;
+  return tabs.find((tab) => tab.entityTypes.includes(entityType));
+}
 
 export const DEFAULT_COLLECTION_QUERY: Omit<CollectionQuery, "section"> = {
   textSearch: "",
@@ -74,22 +141,14 @@ export const DEFAULT_COLLECTION_QUERY: Omit<CollectionQuery, "section"> = {
   viewMode: "grouped",
 };
 
-function tabTypesFor(input: { writingView?: WritingView; timelineView?: TimelineView }): string[] | undefined {
-  if (input.writingView) return WRITING_VIEW_TYPES[input.writingView];
-  if (input.timelineView) return TIMELINE_VIEW_TYPES[input.timelineView];
-  return undefined;
-}
-
 /** Resolve the manifest-derived entity types that the backend should query. */
 export function collectionEntityTypes(input: {
   entityTypes: ReadonlySet<string>;
-  writingView?: WritingView;
-  timelineView?: TimelineView;
+  tabEntityTypes?: readonly string[];
 }): string[] {
-  const tabTypes = tabTypesFor(input);
   let effective = [...input.entityTypes];
-  if (tabTypes) {
-    const allowed = new Set(tabTypes);
+  if (input.tabEntityTypes) {
+    const allowed = new Set(input.tabEntityTypes);
     effective = effective.filter((type) => allowed.has(type));
   }
   return [...new Set(effective)].sort();

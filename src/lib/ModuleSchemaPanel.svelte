@@ -147,15 +147,28 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-/** Show `currentOwner` / `word_count` / `my-type` as readable labels. */
+function localTypeId(value: string): string {
+  const colon = value.lastIndexOf(":");
+  return colon >= 0 ? value.slice(colon + 1) : value;
+}
+
+/** Show `currentOwner` / `word_count` / `daena.timeline:event` as readable labels. */
 function humanizeId(value: string): string {
-  const spaced = value
+  const spaced = localTypeId(value)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .trim()
     .replace(/\s+/g, " ");
-  if (!spaced) return value;
+  if (!spaced) return localTypeId(value) || value;
   return spaced.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function entityTypeLabel(typeId: string): string {
+  const defined =
+    packageTypeDefinitions.find((type) => type.id === typeId) ??
+    (draft.customEntityTypes ?? []).find((type) => type.id === typeId);
+  const name = defined?.name.trim();
+  return name || humanizeId(typeId);
 }
 
 function fieldTypeLabel(type: FieldType): string {
@@ -1059,7 +1072,7 @@ function applyTypeFieldSelection(typeId: string, desiredKeys: string[]) {
 
 function scopeLabel(entityTypes: string[] | undefined): string {
   if (!entityTypes || entityTypes.length === 0) return "All types";
-  return entityTypes.map(humanizeId).join(", ");
+  return entityTypes.map(entityTypeLabel).join(", ");
 }
 
 function toggleInList(list: string[], id: string): string[] {
@@ -1948,7 +1961,7 @@ function fieldExtrasLabel(field: FieldDefinition): string {
     const card = f.cardinality ?? "many";
     const meta = (f.metadataFields as unknown[] | undefined)?.length ?? 0;
     const metaSuffix = meta ? ` · ${meta} attribute${meta === 1 ? "" : "s"}` : "";
-    return `${rel} → ${targets.map(humanizeId).join(", ") || "any"} · ${card}${metaSuffix}`;
+    return `${rel} → ${targets.map(entityTypeLabel).join(", ") || "any"} · ${card}${metaSuffix}`;
   }
   return "";
 }
@@ -2168,7 +2181,7 @@ function removeCustomTemplate(id: string) {
                 class="chip"
                 class:is-hidden={disabled}
                 aria-pressed={!disabled}
-                title={type.id}
+                title={type.name}
                 onclick={() => toggleDisabled("disabledEntityTypes", type.id)}>
                 {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff
                     size={11}
@@ -2187,7 +2200,7 @@ function removeCustomTemplate(id: string) {
                 <div class="appearance-row">
                   <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={14} box={28} />
                   <strong class="appearance-row-name">{type.name}</strong>
-                  <code class="appearance-row-id">{type.id}</code>
+                  <code class="appearance-row-id">{localTypeId(type.id)}</code>
                   <TypeAppearancePicker
                     compact
                     value={{ icon: appearance.icon, iconColor: appearance.iconColor }}
@@ -2257,7 +2270,7 @@ function removeCustomTemplate(id: string) {
                     <strong
                       ><EntityGlyph icon={type.icon} iconColor={type.iconColor} {pluginId} size={15} box={24} />
                       {type.name}</strong>
-                    <code>{type.id}</code>
+                    <code>{localTypeId(type.id)}</code>
                   </div>
                   <div class="item-actions">
                     <button
@@ -2354,7 +2367,7 @@ function removeCustomTemplate(id: string) {
                             class:selected={builtinFieldScope(field).includes(type)}
                             aria-pressed={builtinFieldScope(field).includes(type)}
                             onclick={() => updateBuiltinFieldScope(field, toggleInList(builtinFieldScope(field), type))}
-                            >{humanizeId(type)}</button>
+                            >{entityTypeLabel(type)}</button>
                         {/each}
                       </div>
                     </div>
@@ -2664,7 +2677,7 @@ function removeCustomTemplate(id: string) {
                               aria-pressed={editFieldTargetEntityTypes.includes(type)}
                               onclick={() =>
                                 (editFieldTargetEntityTypes = toggleInList(editFieldTargetEntityTypes, type))}>
-                              {humanizeId(type)}
+                              {entityTypeLabel(type)}
                             </button>
                           {/each}
                         </div>
@@ -2801,7 +2814,7 @@ function removeCustomTemplate(id: string) {
                             class:selected={editFieldEntityTypes.includes(type)}
                             aria-pressed={editFieldEntityTypes.includes(type)}
                             onclick={() => (editFieldEntityTypes = toggleInList(editFieldEntityTypes, type))}>
-                            {humanizeId(type)}
+                            {entityTypeLabel(type)}
                           </button>
                         {/each}
                       </div>
@@ -2913,7 +2926,7 @@ function removeCustomTemplate(id: string) {
                     class:selected={newFieldTargetEntityTypes.includes(type)}
                     aria-pressed={newFieldTargetEntityTypes.includes(type)}
                     onclick={() => (newFieldTargetEntityTypes = toggleInList(newFieldTargetEntityTypes, type))}>
-                    {humanizeId(type)}
+                    {entityTypeLabel(type)}
                   </button>
                 {/each}
               </div>
@@ -3037,7 +3050,7 @@ function removeCustomTemplate(id: string) {
                   class:selected={newFieldEntityTypes.includes(type)}
                   aria-pressed={newFieldEntityTypes.includes(type)}
                   onclick={() => (newFieldEntityTypes = toggleInList(newFieldEntityTypes, type))}>
-                  {humanizeId(type)}
+                  {entityTypeLabel(type)}
                 </button>
               {/each}
             </div>
@@ -3130,7 +3143,7 @@ function removeCustomTemplate(id: string) {
                   <div class="item-main">
                     <div class="item-title-row">
                       <strong>{template.name}</strong>
-                      <span class="type-pill ghost">{humanizeId(template.entityType)}</span>
+                      <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                       {#if isDisabled(draft.disabledTemplates, template.id)}<span class="disabled-pill"
                           ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span
                         >{/if}
@@ -3183,7 +3196,7 @@ function removeCustomTemplate(id: string) {
                       <select bind:value={editTemplateEntityType}>
                         <option value="">Choose type</option>
                         {#each effectiveTypes() as type}
-                          <option value={type}>{humanizeId(type)}</option>
+                          <option value={type}>{entityTypeLabel(type)}</option>
                         {/each}
                       </select>
                     </label>
@@ -3238,10 +3251,10 @@ function removeCustomTemplate(id: string) {
                   <div class="item-main">
                     <div class="item-title-row">
                       <strong>{template.name}</strong>
-                      <span class="type-pill ghost">{humanizeId(template.entityType)}</span>
+                      <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
                     </div>
                     <span class="meta">
-                      {humanizeId(template.entityType)}
+                      {entityTypeLabel(template.entityType)}
                       {#if template.description}
                         <span class="dot">·</span>
                         {template.description}
@@ -3278,7 +3291,7 @@ function removeCustomTemplate(id: string) {
               <select bind:value={newTemplateEntityType}>
                 <option value="">Choose type</option>
                 {#each effectiveTypes() as type}
-                  <option value={type}>{humanizeId(type)}</option>
+                  <option value={type}>{entityTypeLabel(type)}</option>
                 {/each}
               </select>
             </label>
@@ -3383,7 +3396,7 @@ function removeCustomTemplate(id: string) {
         <div class="dialog-icon warn">
           <AlertTriangle size={18} strokeWidth={1.8} aria-hidden="true" />
         </div>
-        <strong id="type-remove-title">Remove {humanizeId(typeRemovalPrompt.typeId)}?</strong>
+        <strong id="type-remove-title">Remove {entityTypeLabel(typeRemovalPrompt.typeId)}?</strong>
         <p>
           Templates for this type are removed with the type. Fields that only target it will be kept and will now apply
           to all types until you reassign them.
@@ -3421,7 +3434,7 @@ function removeCustomTemplate(id: string) {
                   <small>
                     also {(field.entityTypes ?? [])
                       .filter((type) => type !== typeRemovalPrompt?.typeId)
-                      .map(humanizeId)
+                      .map(entityTypeLabel)
                       .join(", ")}
                   </small>
                 </li>

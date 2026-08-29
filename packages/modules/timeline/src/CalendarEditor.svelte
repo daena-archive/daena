@@ -1,4 +1,5 @@
 <script lang="ts">
+import { tick } from "svelte";
 import type { ModuleContext, UUID } from "../../../module-api/src/index";
 import {
   CALENDAR_DEFINITION_COLLECTION,
@@ -37,6 +38,11 @@ let error = $state("");
 let open = $state(false);
 let saving = $state(false);
 let loadToken = 0;
+let helpOpen = $state(false);
+let helpTrigger = $state<HTMLButtonElement>();
+let helpBox = $state<HTMLDivElement>();
+let helpStyle = $state("");
+let helpHideTimer: ReturnType<typeof setTimeout> | undefined;
 
 const issues = $derived(validateCalendarDefinition(draft));
 const errors = $derived(issues.filter((issue) => issue.level === "error"));
@@ -117,8 +123,58 @@ function openModal() {
 }
 
 function closeModal() {
+  hideHelp();
   draft = saved;
   open = false;
+}
+
+function placeHelp() {
+  if (!helpTrigger || !helpBox) return;
+  const margin = 12;
+  const gap = 8;
+  const anchor = helpTrigger.getBoundingClientRect();
+  const panel = helpBox.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(margin, anchor.right - panel.width),
+    Math.max(margin, window.innerWidth - panel.width - margin),
+  );
+  const below = anchor.bottom + gap;
+  const top =
+    below + panel.height <= window.innerHeight - margin ? below : Math.max(margin, anchor.top - gap - panel.height);
+  helpStyle = `left:${left}px;top:${top}px;max-height:${Math.max(160, window.innerHeight - top - margin)}px`;
+}
+
+async function showHelp() {
+  if (helpHideTimer) {
+    clearTimeout(helpHideTimer);
+    helpHideTimer = undefined;
+  }
+  if (helpOpen) {
+    placeHelp();
+    return;
+  }
+  helpStyle = "";
+  helpOpen = true;
+  await tick();
+  placeHelp();
+}
+
+function scheduleHideHelp() {
+  if (helpHideTimer) clearTimeout(helpHideTimer);
+  helpHideTimer = setTimeout(() => {
+    helpOpen = false;
+    helpStyle = "";
+    helpHideTimer = undefined;
+  }, 150);
+}
+
+function hideHelp() {
+  if (helpHideTimer) {
+    clearTimeout(helpHideTimer);
+    helpHideTimer = undefined;
+  }
+  helpOpen = false;
+  helpStyle = "";
 }
 
 function setDraft(next: CalendarDefinition) {
@@ -171,6 +227,7 @@ function setEpoch(part: "year" | "month" | "day", raw: string) {
 $effect(() => {
   void entityId;
   open = false;
+  hideHelp();
   void load();
 });
 
@@ -184,6 +241,17 @@ $effect(() => {
   };
   window.addEventListener("keydown", onKey, true);
   return () => window.removeEventListener("keydown", onKey, true);
+});
+
+$effect(() => {
+  if (!helpOpen) return;
+  const reposition = () => placeHelp();
+  window.addEventListener("resize", reposition);
+  window.addEventListener("scroll", reposition, true);
+  return () => {
+    window.removeEventListener("resize", reposition);
+    window.removeEventListener("scroll", reposition, true);
+  };
 });
 </script>
 
@@ -399,25 +467,15 @@ $effect(() => {
               <button
                 type="button"
                 class="calendar-help"
+                bind:this={helpTrigger}
                 aria-label="Date format guide"
-                aria-describedby="calendar-format-help">
+                aria-describedby={helpOpen ? "calendar-format-help" : undefined}
+                onmouseenter={() => void showHelp()}
+                onmouseleave={scheduleHideHelp}
+                onfocus={() => void showHelp()}
+                onblur={scheduleHideHelp}>
                 ?
               </button>
-              <div id="calendar-format-help" role="tooltip" class="calendar-help-box">
-                <p>Write a pattern with these tokens. Spaces, slashes, dashes, and commas stay as you type them.</p>
-                <p>
-                  If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is
-                  cleaned up.
-                </p>
-                <dl>
-                  {#each DATE_FORMAT_GUIDE as item}
-                    <div>
-                      <dt><code>{item.token}</code></dt>
-                      <dd>{item.meaning}</dd>
-                    </div>
-                  {/each}
-                </dl>
-              </div>
             </div>
           </div>
           <div class="calendar-presets">
@@ -573,6 +631,32 @@ $effect(() => {
         </button>
       </div>
     </div>
+    {#if helpOpen}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        id="calendar-format-help"
+        role="tooltip"
+        class="calendar-help-box"
+        bind:this={helpBox}
+        style={helpStyle}
+        onclick={(event: MouseEvent) => event.stopPropagation()}
+        onmouseenter={() => void showHelp()}
+        onmouseleave={scheduleHideHelp}>
+        <p>Write a pattern with these tokens. Spaces, slashes, dashes, and commas stay as you type them.</p>
+        <p>
+          If a date has no month, day, weekday, or season, that token is dropped and leftover punctuation is cleaned up.
+        </p>
+        <dl>
+          {#each DATE_FORMAT_GUIDE as item}
+            <div>
+              <dt><code>{item.token}</code></dt>
+              <dd>{item.meaning}</dd>
+            </div>
+          {/each}
+        </dl>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -743,12 +827,12 @@ $effect(() => {
   line-height: 1;
 }
 .calendar-help-box {
-  display: none;
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 5;
+  display: grid;
+  gap: 8px;
+  position: fixed;
+  z-index: 6;
   width: min(340px, calc(100vw - 80px));
+  overflow: auto;
   padding: 12px 14px;
   border: 1px solid var(--theme-warning-border, #e3d9ca);
   border-radius: 10px;
@@ -761,10 +845,8 @@ $effect(() => {
     system-ui,
     sans-serif;
 }
-.calendar-format-help:hover .calendar-help-box,
-.calendar-format-help:focus-within .calendar-help-box {
-  display: grid;
-  gap: 8px;
+.calendar-help-box[style=""] {
+  visibility: hidden;
 }
 .calendar-help-box p {
   margin: 0;

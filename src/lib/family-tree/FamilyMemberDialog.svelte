@@ -1,0 +1,441 @@
+<script lang="ts">
+import type { EntitySummary, ModuleContext, UUID } from "../../../packages/module-api/src/index";
+import { trapModalTab } from "$lib/shell/modalFocus";
+import {
+  PARENT_KINDS,
+  PARTNER_KINDS,
+  PARTNER_STATUSES,
+  PERSON_TYPE,
+  type ParentKind,
+  type PartnerKind,
+  type PartnerStatus,
+  type RelativeRole,
+} from "./model.ts";
+import {
+  classifyMutationError,
+  createFamilyRelationship,
+  createMinimalPerson,
+  metadataFingerprint,
+} from "./mutations.ts";
+
+let {
+  context,
+  currentId,
+  currentName,
+  currentRevision,
+  role,
+  excludeIds,
+  coParentIds = [],
+  coParentName = "",
+  wouldCycle = () => false,
+  onLinked,
+  onCreatedPerson,
+  onOpenEntity,
+  onClose,
+}: {
+  context: ModuleContext;
+  currentId: string;
+  currentName: string;
+  currentRevision: string;
+  role: RelativeRole;
+  excludeIds: string[];
+  coParentIds?: string[];
+  coParentName?: string;
+  wouldCycle?: (otherId: string) => boolean | string | null;
+  onLinked: (relationshipId: string) => void;
+  onCreatedPerson: (person: EntitySummary) => void;
+  onOpenEntity: (id: string) => void;
+  onClose: () => void;
+} = $props();
+
+let mode = $state<"link" | "create">("link");
+let query = $state("");
+let results = $state<EntitySummary[]>([]);
+let total = $state(0);
+let offset = $state(0);
+let busy = $state(false);
+let saving = $state(false);
+let error = $state("");
+let name = $state("");
+let parentKind = $state<ParentKind>("biological");
+let partnerKind = $state<PartnerKind>("marriage");
+let partnerStatus = $state<PartnerStatus>("active");
+let customLabel = $state("");
+let notes = $state("");
+let created = $state<EntitySummary | null>(null);
+let linkedOk = $state(false);
+let pendingRequestId = $state<string | null>(null);
+let lastLinkFingerprint = $state("");
+let dialogEl = $state<HTMLElement | null>(null);
+let token = 0;
+const pageSize = 20;
+const excluded = $derived(new Set([currentId, ...excludeIds]));
+
+const title = $derived(
+  role === "parent"
+    ? `Add parent of ${currentName}`
+    : role === "child"
+      ? coParentName
+        ? `Add child of ${currentName} and ${coParentName}`
+        : `Add child of ${currentName}`
+      : `Add partner of ${currentName}`,
+);
+
+function metadata() {
+  if (role === "partner") {
+    return {
+      kind: partnerKind,
+      status: partnerStatus,
+      customLabel: partnerKind === "custom" ? customLabel : undefined,
+      notes,
+    };
+  }
+  return { kind: parentKind, customLabel: parentKind === "custom" ? customLabel : undefined, notes };
+}
+
+async function search(nextOffset = 0) {
+  const request = ++token;
+  busy = true;
+  error = "";
+  try {
+    const page = await context.entities.query({
+      types: [PERSON_TYPE],
+      text: query.trim() || undefined,
+      sortField: "name",
+      sortDirection: "asc",
+      offset: nextOffset,
+      limit: pageSize,
+    });
+    if (request !== token) return;
+    results = page.items.filter((item) => !item.deleted && !excluded.has(item.id));
+    total = page.total;
+    offset = page.offset;
+  } catch (cause) {
+    if (request !== token) return;
+    error = cause instanceof Error ? cause.message : String(cause);
+    results = [];
+  } finally {
+    if (request === token) busy = false;
+  }
+}
+
+function sourceIdFor(candidate: EntitySummary) {
+  if (role === "parent") return candidate.id;
+  if (role === "child") return currentId;
+  return currentId < candidate.id ? currentId : candidate.id;
+}
+
+function requestIdForLink(preferred?: string) {
+  const next = metadataFingerprint(metadata());
+  if (preferred && next === lastLinkFingerprint) return preferred;
+  lastLinkFingerprint = next;
+  return crypto.randomUUID();
+}
+
+async function performLink(candidate: EntitySummary, requestId: string) {
+  if ((parentKind === "custom" || partnerKind === "custom") && !customLabel.trim()) {
+    error = "Custom label is required.";
+    return false;
+  }
+  const cycle = wouldCycle(candidate.id);
+  if (cycle) {
+    error = typeof cycle === "string" ? cycle : "That parent link would create a cycle.";
+    return false;
+  }
+  pendingRequestId = requestId;
+  const sourceId = sourceIdFor(candidate);
+  const latest = (await context.entities.get(sourceId as UUID)) ?? candidate;
+  const relationship = await createFamilyRelationship(context, {
+    role,
+    currentId,
+    otherId: candidate.id,
+    metadata: metadata(),
+    sourceRevision: latest.revision,
+    requestId,
+  });
+  if (role === "child") {
+    for (const coParentId of coParentIds) {
+      if (!coParentId || coParentId === candidate.id) continue;
+      try {
+        const coParent = await context.entities.get(coParentId as UUID);
+        await createFamilyRelationship(context, {
+          role: "child",
+          currentId: coParentId,
+          otherId: candidate.id,
+          metadata: metadata(),
+          sourceRevision: coParent?.revision ?? "",
+          requestId: crypto.randomUUID(),
+        });
+      } catch (cause) {
+        const failure = classifyMutationError(cause);
+        if (failure.code !== "relationship.duplicate") {
+          error = `Linked to ${currentName}, but not to ${coParentName || "their partner"}: ${failure.message}`;
+        }
+      }
+    }
+  }
+  onLinked(relationship.id);
+  if (created) linkedOk = true;
+  else onClose();
+  return true;
+}
+
+async function linkPerson(candidate: EntitySummary, requestId?: string) {
+  if (saving) return;
+  saving = true;
+  error = "";
+  try {
+    await performLink(candidate, requestIdForLink(requestId));
+  } catch (cause) {
+    error = classifyMutationError(cause).message;
+  } finally {
+    saving = false;
+  }
+}
+
+async function createPerson() {
+  if (saving || !name.trim()) return;
+  saving = true;
+  error = "";
+  try {
+    const person = await createMinimalPerson(context, name, crypto.randomUUID());
+    created = person;
+    onCreatedPerson(person);
+    await performLink(person, requestIdForLink());
+  } catch (cause) {
+    error = classifyMutationError(cause).message;
+  } finally {
+    saving = false;
+  }
+}
+
+async function retryLink() {
+  if (!created || saving) return;
+  saving = true;
+  error = "";
+  try {
+    await performLink(created, requestIdForLink(pendingRequestId ?? undefined));
+  } catch (cause) {
+    error = classifyMutationError(cause).message;
+  } finally {
+    saving = false;
+  }
+}
+
+function onKeydown(event: KeyboardEvent) {
+  trapModalTab(event, dialogEl);
+  if (event.key === "Escape" && !saving) {
+    event.preventDefault();
+    onClose();
+  }
+}
+
+$effect(() => {
+  void query;
+  if (mode !== "link") return;
+  const timer = setTimeout(() => void search(0), 180);
+  return () => clearTimeout(timer);
+});
+
+$effect(() => {
+  dialogEl?.focus();
+});
+</script>
+
+<div
+  class="overlay"
+  bind:this={dialogEl}
+  tabindex="-1"
+  role="dialog"
+  aria-modal="true"
+  aria-label={title}
+  onkeydown={onKeydown}>
+  <div class="card">
+    <header>
+      <strong>{title}</strong>
+      <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>Close</button>
+    </header>
+    {#if linkedOk && created}
+      <p class="hint">Person created and linked. Open in Lore to add dates, portrait, and details.</p>
+      <div class="actions">
+        <button type="button" class="primary-button" onclick={() => onOpenEntity(created!.id)}>Open in Lore</button>
+        <button type="button" class="quiet-button" onclick={onClose}>Done</button>
+      </div>
+    {:else if created && error}
+      <p class="error" role="alert">
+        {created.name} was created, but the relationship was not saved.
+      </p>
+      <div class="actions">
+        <button type="button" class="primary-button" disabled={saving} onclick={() => void retryLink()}
+          >Retry relationship</button>
+        <button type="button" class="quiet-button" onclick={() => onOpenEntity(created!.id)}
+          >Open person in Lore</button>
+        <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>Cancel</button>
+      </div>
+    {:else}
+      <div class="tabs">
+        <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
+          >Link existing</button>
+        <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
+          >Create person</button>
+      </div>
+      {#if role !== "partner"}
+        <label>
+          Parent type
+          <select bind:value={parentKind}>
+            {#each PARENT_KINDS as kind}<option value={kind}>{kind}</option>{/each}
+          </select>
+        </label>
+      {:else}
+        <label>
+          Partnership type
+          <select bind:value={partnerKind}>
+            {#each PARTNER_KINDS as kind}<option value={kind}>{kind}</option>{/each}
+          </select>
+        </label>
+        <label>
+          Status
+          <select bind:value={partnerStatus}>
+            {#each PARTNER_STATUSES as status}<option value={status}>{status}</option>{/each}
+          </select>
+        </label>
+      {/if}
+      {#if parentKind === "custom" || partnerKind === "custom"}
+        <label>Custom label <input bind:value={customLabel} /></label>
+      {/if}
+      <label>Notes <textarea bind:value={notes} rows="2"></textarea></label>
+      {#if role === "child" && coParentName}
+        <p class="hint">Also links {coParentName} as a parent so the child hangs from this marriage.</p>
+      {/if}
+      {#if mode === "link"}
+        <label>Search <input type="search" bind:value={query} /></label>
+        {#if busy && results.length === 0}<p class="hint">Searching…</p>
+        {:else if results.length === 0}<p class="hint">No matching people.</p>
+        {:else}
+          <ul>
+            {#each results as person (person.id)}
+              <li>
+                <button type="button" disabled={saving} onclick={() => void linkPerson(person)}>{person.name}</button>
+              </li>
+            {/each}
+          </ul>
+          {#if total > results.length}
+            <div class="actions">
+              <button
+                type="button"
+                class="quiet-button"
+                disabled={offset === 0}
+                onclick={() => void search(Math.max(0, offset - pageSize))}>Previous</button>
+              <button
+                type="button"
+                class="quiet-button"
+                disabled={offset + results.length >= total}
+                onclick={() => void search(offset + pageSize)}>Next</button>
+            </div>
+          {/if}
+        {/if}
+      {:else}
+        <label>Name <input bind:value={name} /></label>
+        <p class="hint">Creates a Lore person, then links them. Dates and portraits are added in Lore.</p>
+        <button
+          type="button"
+          class="primary-button"
+          disabled={saving || !name.trim()}
+          onclick={() => void createPerson()}>Create and link</button>
+      {/if}
+    {/if}
+    {#if error && !created}<p class="error" role="alert">{error}</p>{/if}
+  </div>
+</div>
+
+<style>
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: start center;
+  padding: 48px 24px;
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.card {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+}
+header,
+.tabs,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+label,
+.hint,
+.error {
+  display: grid;
+  gap: 4px;
+  color: var(--ink);
+  font:
+    12px/1.4 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.hint {
+  color: var(--ink-muted);
+}
+.error {
+  color: var(--theme-danger-text, #8a2b2b);
+}
+input,
+select,
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+ul button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.quiet-button,
+.primary-button {
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.quiet-button {
+  background: var(--surface);
+  color: var(--ink-soft, var(--ink));
+}
+.primary-button {
+  background: var(--accent-dark, var(--accent));
+  border-color: transparent;
+  color: #fff;
+}
+</style>

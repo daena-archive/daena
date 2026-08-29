@@ -1,14 +1,19 @@
 import type { EntityRecord, EntitySummary, Relationship } from "../../../packages/module-api/src/index";
 import {
+  type BranchDirection,
   type FamilyPerson,
   type FamilyRelationship,
   type GenealogyGraph,
   type GenealogyWarning,
+  type HiddenCounts,
+  BRANCH_DIRECTIONS,
   INITIAL_ANCESTOR_GENERATIONS,
   INITIAL_DESCENDANT_GENERATIONS,
+  MAX_EXPANSION_DEPTH,
   PARENT_RELATIONSHIP,
   PARTNER_RELATIONSHIP,
   VISIBLE_PERSON_LIMIT,
+  expansionKey,
   isParentKind,
   isPartnerKind,
   isPartnerStatus,
@@ -275,4 +280,224 @@ export function summariesToPeople(
     people.push(person);
   }
   return { people, warnings };
+}
+
+export function siblingsOf(graph: GenealogyGraph, id: string): Set<string> {
+  const siblings = new Set<string>();
+  for (const parent of graph.parentsByChild.get(id) ?? []) {
+    for (const child of graph.childrenByParent.get(parent) ?? []) {
+      if (child !== id) siblings.add(child);
+    }
+  }
+  return siblings;
+}
+
+function neighborsFor(graph: GenealogyGraph, id: string, direction: BranchDirection): Iterable<string> {
+  if (direction === "parents") return graph.parentsByChild.get(id) ?? [];
+  if (direction === "children") return graph.childrenByParent.get(id) ?? [];
+  if (direction === "siblings") return siblingsOf(graph, id);
+  return graph.partnersByPerson.get(id) ?? [];
+}
+
+function partnerIncluded(
+  graph: GenealogyGraph,
+  id: string,
+  partner: string,
+  visible: Set<string>,
+  explicit: boolean,
+): boolean {
+  const rel = (graph.partnerRelationshipsByPerson.get(id) ?? []).find(
+    (candidate) => candidate.sourceId === partner || candidate.targetId === partner,
+  );
+  if (!rel) return false;
+  if (rel.status !== "ended") return true;
+  if (shareVisibleChild(graph, id, partner, visible)) return true;
+  return explicit;
+}
+
+export function seedInitialExpansions(graph: GenealogyGraph, rootId: string): Set<string> {
+  const keys = new Set<string>([
+    expansionKey(rootId, "parents"),
+    expansionKey(rootId, "children"),
+    expansionKey(rootId, "siblings"),
+  ]);
+  for (const parent of graph.parentsByChild.get(rootId) ?? []) {
+    keys.add(expansionKey(parent, "parents"));
+    keys.add(expansionKey(parent, "children"));
+  }
+  for (const child of graph.childrenByParent.get(rootId) ?? []) {
+    keys.add(expansionKey(child, "children"));
+  }
+  return keys;
+}
+
+export function visibleFromExpansions(
+  graph: GenealogyGraph,
+  rootId: string,
+  expansions: Iterable<string>,
+  protectIds: Iterable<string> = [],
+): { visible: Set<string>; refs: Map<string, number> } {
+  const keys = new Set([...expansions]);
+  const visible = new Set<string>(graph.people.has(rootId) || rootId ? [rootId] : []);
+  let grew = true;
+  for (let guard = 0; grew && guard < 64; guard += 1) {
+    grew = false;
+    for (const id of [...visible]) {
+      for (const direction of BRANCH_DIRECTIONS) {
+        if (!keys.has(expansionKey(id, direction))) continue;
+        for (const neighbor of neighborsFor(graph, id, direction)) {
+          if (direction === "partners" && !partnerIncluded(graph, id, neighbor, visible, true)) continue;
+          if (!graph.people.has(neighbor) || visible.has(neighbor)) continue;
+          visible.add(neighbor);
+          grew = true;
+        }
+      }
+      for (const partner of graph.partnersByPerson.get(id) ?? []) {
+        if (!partnerIncluded(graph, id, partner, visible, false)) continue;
+        if (!graph.people.has(partner) || visible.has(partner)) continue;
+        visible.add(partner);
+        grew = true;
+      }
+    }
+  }
+  for (const id of protectIds) {
+    if (graph.people.has(id)) visible.add(id);
+  }
+  const refs = new Map<string, number>();
+  refs.set(rootId, 1);
+  for (const id of visible) {
+    for (const direction of BRANCH_DIRECTIONS) {
+      if (!keys.has(expansionKey(id, direction))) continue;
+      for (const neighbor of neighborsFor(graph, id, direction)) {
+        if (!visible.has(neighbor)) continue;
+        if (direction === "partners" && !partnerIncluded(graph, id, neighbor, visible, true)) continue;
+        refs.set(neighbor, (refs.get(neighbor) ?? 0) + 1);
+      }
+    }
+    for (const partner of graph.partnersByPerson.get(id) ?? []) {
+      if (!visible.has(partner) || !partnerIncluded(graph, id, partner, visible, false)) continue;
+      refs.set(partner, (refs.get(partner) ?? 0) + 1);
+    }
+  }
+  return { visible, refs };
+}
+
+export function hiddenCounts(
+  graph: GenealogyGraph,
+  personId: string,
+  visible: Set<string>,
+  truncated = false,
+  lowerBound = 0,
+): HiddenCounts {
+  const count = (ids: Iterable<string>) => [...ids].filter((id) => graph.people.has(id) && !visible.has(id)).length;
+  const partners = [...(graph.partnersByPerson.get(personId) ?? [])].filter(
+    (id) => graph.people.has(id) && !visible.has(id) && partnerIncluded(graph, personId, id, visible, true),
+  ).length;
+  return {
+    parents: count(graph.parentsByChild.get(personId) ?? []),
+    children: count(graph.childrenByParent.get(personId) ?? []),
+    siblings: count(siblingsOf(graph, personId)),
+    partners,
+    truncated,
+    lowerBound,
+  };
+}
+
+export function generationDistance(
+  graph: GenealogyGraph,
+  rootId: string,
+  personId: string,
+  direction: "parents" | "children",
+): number {
+  if (personId === rootId) return 0;
+  const next = (id: string) =>
+    direction === "parents" ? graph.parentsByChild.get(id) : graph.childrenByParent.get(id);
+  let frontier = [rootId];
+  const seen = new Set([rootId]);
+  for (let distance = 1; frontier.length > 0; distance += 1) {
+    const upcoming: string[] = [];
+    for (const id of frontier) {
+      for (const neighbor of next(id) ?? []) {
+        if (seen.has(neighbor)) continue;
+        if (neighbor === personId) return distance;
+        seen.add(neighbor);
+        upcoming.push(neighbor);
+      }
+    }
+    frontier = upcoming;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+export function expansionBlocked(
+  graph: GenealogyGraph,
+  rootId: string,
+  personId: string,
+  direction: BranchDirection,
+): boolean {
+  if (direction !== "parents" && direction !== "children") return false;
+  return generationDistance(graph, rootId, personId, direction) >= MAX_EXPANSION_DEPTH;
+}
+
+export function wouldCreateParentCycle(graph: GenealogyGraph, parentId: string, childId: string): boolean {
+  return parentCyclePath(graph, parentId, childId) !== null;
+}
+
+export function parentCyclePath(graph: GenealogyGraph, parentId: string, childId: string): string[] | null {
+  if (parentId === childId) return [childId, parentId];
+  const cameFrom = new Map<string, string>();
+  const seen = new Set<string>([childId]);
+  const queue = [childId];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const child of graph.childrenByParent.get(id) ?? []) {
+      if (seen.has(child)) continue;
+      cameFrom.set(child, id);
+      if (child === parentId) {
+        const path = [parentId];
+        let current = parentId;
+        while (current !== childId) {
+          current = cameFrom.get(current)!;
+          path.push(current);
+        }
+        path.reverse();
+        return path;
+      }
+      seen.add(child);
+      queue.push(child);
+    }
+  }
+  return null;
+}
+
+export function formatParentCycleMessage(path: string[], nameOf: (id: string) => string): string {
+  if (path.length === 0) return "That parent link would create a cycle.";
+  return `That parent link would create a cycle: ${path.map(nameOf).join(" → ")}.`;
+}
+
+export function wouldCreateDuplicate(
+  graph: GenealogyGraph,
+  role: "parent" | "child" | "partner",
+  currentId: string,
+  otherId: string,
+): boolean {
+  if (role === "parent") {
+    return [...graph.relationships.values()].some(
+      (relationship) =>
+        relationship.kind === "parent" && relationship.sourceId === otherId && relationship.targetId === currentId,
+    );
+  }
+  if (role === "child") {
+    return [...graph.relationships.values()].some(
+      (relationship) =>
+        relationship.kind === "parent" && relationship.sourceId === currentId && relationship.targetId === otherId,
+    );
+  }
+  return [...graph.relationships.values()].some((relationship) => {
+    if (relationship.kind !== "partner") return false;
+    return (
+      (relationship.sourceId === currentId && relationship.targetId === otherId) ||
+      (relationship.sourceId === otherId && relationship.targetId === currentId)
+    );
+  });
 }

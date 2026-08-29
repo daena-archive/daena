@@ -19,6 +19,7 @@ import {
   RELATIONSHIP_QUERY_FETCH_CAP,
   RELATIONSHIP_QUERY_PAGE,
   truncationWarning,
+  type BranchDirection,
   type FamilyPerson,
   type GenealogyWarning,
 } from "./model.ts";
@@ -86,6 +87,22 @@ async function queryPaged(
     }
   }
   return { added, truncated, lowerBound };
+}
+
+async function collectParentsOfKnownChildren(
+  context: ModuleContext,
+  collected: Map<string, Relationship>,
+  known: Set<string>,
+  signal?: AbortSignal,
+) {
+  const childIds = uniqueIds(
+    [...collected.values()]
+      .filter((relationship) => relationship.type === PARENT_RELATIONSHIP && known.has(relationship.targetId))
+      .map((relationship) => relationship.targetId),
+    new Set(),
+  );
+  if (childIds.length === 0) return { added: [] as Relationship[], truncated: false, lowerBound: 0 };
+  return queryPaged(context, childIds, [PARENT_RELATIONSHIP], "incoming", collected, signal);
 }
 
 function uniqueIds(values: Iterable<string>, known: Set<string>): string[] {
@@ -181,14 +198,33 @@ export async function loadGenealogyNeighborhood(
     if (!known.has(relationship.targetId)) known.add(relationship.targetId);
   }
 
-  const ids = [...known];
+  recordPage(await collectParentsOfKnownChildren(context, collected, known, signal));
+
+  const hydrated = await hydratePeople(context, [...known], secondaryField, signal);
+  const warnings = [...hydrated.warnings];
+  if (truncated) warnings.push(truncationWarning(truncationLowerBound));
+  return {
+    people: hydrated.people,
+    relationships: [...collected.values()],
+    warnings,
+    truncated,
+    truncationLowerBound,
+  };
+}
+
+export async function hydratePeople(
+  context: ModuleContext,
+  ids: string[],
+  secondaryField = DEFAULT_SECONDARY_FIELD,
+  signal?: AbortSignal,
+): Promise<{ people: FamilyPerson[]; warnings: GenealogyWarning[] }> {
+  const unique = [...new Set(ids.filter(Boolean))];
   const entities = [];
-  for (let index = 0; index < ids.length; index += ENTITY_GET_MANY_LIMIT) {
+  for (let index = 0; index < unique.length; index += ENTITY_GET_MANY_LIMIT) {
     throwIfAborted(signal);
-    const batch = ids.slice(index, index + ENTITY_GET_MANY_LIMIT);
+    const batch = unique.slice(index, index + ENTITY_GET_MANY_LIMIT);
     entities.push(...(await context.entities.getMany(batch as UUID[])));
   }
-
   const fieldsById = new Map<string, Record<string, unknown>>();
   const warnings: GenealogyWarning[] = [];
   for (let index = 0; index < entities.length; index += FIELD_HYDRATE_BATCH) {
@@ -220,7 +256,6 @@ export async function loadGenealogyNeighborhood(
       if (entry.warning) warnings.push(entry.warning);
     }
   }
-
   const people: FamilyPerson[] = [];
   for (const entity of entities) {
     const person = personFromRecord(entity, fieldsById.get(entity.id) ?? {}, secondaryField);
@@ -230,9 +265,88 @@ export async function loadGenealogyNeighborhood(
     }
     people.push(person);
   }
+  return { people, warnings };
+}
+
+export async function loadExpansionLayer(
+  context: ModuleContext,
+  personId: string,
+  direction: BranchDirection,
+  collected: Map<string, Relationship>,
+  knownPeople: Set<string>,
+  secondaryField = DEFAULT_SECONDARY_FIELD,
+  signal?: AbortSignal,
+): Promise<{
+  people: FamilyPerson[];
+  relationships: Relationship[];
+  warnings: GenealogyWarning[];
+  truncated: boolean;
+  truncationLowerBound: number;
+}> {
+  let truncated = false;
+  let truncationLowerBound = 0;
+  const recordPage = (page: { truncated: boolean; lowerBound: number }) => {
+    truncated = truncated || page.truncated;
+    truncationLowerBound = Math.max(truncationLowerBound, page.lowerBound);
+  };
+  const discovered = new Set<string>();
+  if (direction === "parents") {
+    const page = await queryPaged(context, [personId], [PARENT_RELATIONSHIP], "incoming", collected, signal);
+    recordPage(page);
+    for (const relationship of page.added) discovered.add(relationship.sourceId);
+  } else if (direction === "children") {
+    const page = await queryPaged(context, [personId], [PARENT_RELATIONSHIP], "outgoing", collected, signal);
+    recordPage(page);
+    for (const relationship of page.added) discovered.add(relationship.targetId);
+    recordPage(
+      await collectParentsOfKnownChildren(
+        context,
+        collected,
+        new Set([personId, ...knownPeople, ...discovered]),
+        signal,
+      ),
+    );
+  } else if (direction === "siblings") {
+    const parents = await queryPaged(context, [personId], [PARENT_RELATIONSHIP], "incoming", collected, signal);
+    recordPage(parents);
+    const parentIds = uniqueIds(
+      [...collected.values()]
+        .filter((relationship) => relationship.type === PARENT_RELATIONSHIP && relationship.targetId === personId)
+        .map((relationship) => relationship.sourceId),
+      new Set(),
+    );
+    if (parentIds.length > 0) {
+      const children = await queryPaged(context, parentIds, [PARENT_RELATIONSHIP], "outgoing", collected, signal);
+      recordPage(children);
+      for (const relationship of children.added) {
+        if (relationship.targetId !== personId) discovered.add(relationship.targetId);
+      }
+    }
+  } else {
+    const page = await queryPaged(context, [personId], [PARTNER_RELATIONSHIP], "any", collected, signal);
+    recordPage(page);
+    for (const relationship of page.added) {
+      discovered.add(relationship.sourceId === personId ? relationship.targetId : relationship.sourceId);
+    }
+  }
+  const newIds = uniqueIds(discovered, knownPeople);
+  if (newIds.length > 0) {
+    const incident = await queryPaged(
+      context,
+      newIds,
+      [PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP],
+      "any",
+      collected,
+      signal,
+    );
+    recordPage(incident);
+  }
+  const hydrateIds = [...new Set([personId, ...discovered])];
+  const hydrated = await hydratePeople(context, hydrateIds, secondaryField, signal);
+  const warnings = [...hydrated.warnings];
   if (truncated) warnings.push(truncationWarning(truncationLowerBound));
   return {
-    people,
+    people: hydrated.people,
     relationships: [...collected.values()],
     warnings,
     truncated,

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { BaseEdge, getBezierPath, type Position } from "@xyflow/svelte";
+import { BaseEdge, getSmoothStepPath, getStraightPath, type Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import type { ParentKind, PartnerKind } from "./model";
 
@@ -11,7 +11,6 @@ let {
   targetY,
   sourcePosition,
   targetPosition,
-  markerEnd,
   selected = false,
   data,
 }: {
@@ -22,7 +21,6 @@ let {
   targetY: number;
   sourcePosition: Position;
   targetPosition: Position;
-  markerEnd?: string;
   selected?: boolean;
   data?: {
     role: string;
@@ -58,35 +56,25 @@ const dash = $derived.by(() => {
   }
 });
 const [path, labelX, labelY] = $derived(
-  getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }),
-);
-const [pathHigh] = $derived(
-  getBezierPath({
-    sourceX,
-    sourceY: sourceY - 3,
-    targetX,
-    targetY: targetY - 3,
-    sourcePosition,
-    targetPosition,
-  }),
-);
-const [pathLow] = $derived(
-  getBezierPath({
-    sourceX,
-    sourceY: sourceY + 3,
-    targetX,
-    targetY: targetY + 3,
-    sourcePosition,
-    targetPosition,
-  }),
+  partner
+    ? getStraightPath({ sourceX, sourceY, targetX, targetY })
+    : getSmoothStepPath({
+        sourceX,
+        sourceY,
+        targetX,
+        targetY,
+        sourcePosition,
+        targetPosition,
+        borderRadius: 0,
+      }),
 );
 </script>
 
 {#if partner}
   <g class="family-edge family-edge-partner" class:selected aria-label={caption}>
     <title>{caption}</title>
-    <BaseEdge {id} path={pathHigh} {labelX} {labelY} interactionWidth={20} />
-    <BaseEdge id={`${id}-parallel`} path={pathLow} interactionWidth={0} />
+    <path d={path} class="partner-rail" fill="none" />
+    <BaseEdge {id} {path} {labelX} {labelY} interactionWidth={20} />
   </g>
 {:else}
   <g class="family-edge family-edge-parent" class:selected aria-label={caption}>
@@ -96,7 +84,6 @@ const [pathLow] = $derived(
       {path}
       {labelX}
       {labelY}
-      {markerEnd}
       interactionWidth={20}
       style={dash ? `stroke-dasharray:${dash}` : undefined} />
   </g>

@@ -44,6 +44,7 @@ export type ShellLocation =
       section: WorkspaceSection;
       entityId: string | null;
       surfaceScrollTop: number;
+      moduleState?: Record<string, unknown> | null;
     };
 
 export interface ShellNavigationHistory {
@@ -76,7 +77,15 @@ export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "settings") return `settings:${location.section}`;
   if (location.kind === "project") return `project:${location.section}`;
   if (location.kind === "plugin") {
-    return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}:${Math.round(location.surfaceScrollTop)}`;
+    const state = location.moduleState ?? {};
+    const expansions = Array.isArray(state.expansions) ? [...(state.expansions as string[])].sort() : [];
+    const selectedPersonId = typeof state.selectedPersonId === "string" ? state.selectedPersonId : "";
+    const selectedRelationshipId = typeof state.selectedRelationshipId === "string" ? state.selectedRelationshipId : "";
+    return `plugin:${location.key}:${location.section}:${location.entityId ?? ""}:${stableStringify({
+      expansions,
+      selectedPersonId,
+      selectedRelationshipId,
+    })}:${Math.round(location.surfaceScrollTop)}`;
   }
   return `workspace:${JSON.stringify({
     section: location.section,

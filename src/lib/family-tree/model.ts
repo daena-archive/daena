@@ -8,6 +8,8 @@ export const DEFAULT_SECONDARY_FIELD = "occupation";
 export const PERSON_NODE_WIDTH = 220;
 export const PERSON_NODE_HEIGHT = 92;
 export const UNION_NODE_SIZE = 12;
+export const UNION_NODE_WIDTH = 12;
+export const UNION_NODE_HEIGHT = 12;
 export const VISIBLE_PERSON_LIMIT = 250;
 export const VISIBLE_UNION_LIMIT = 150;
 export const VISIBLE_EDGE_LIMIT = 500;
@@ -19,7 +21,10 @@ export const RELATIONSHIP_QUERY_ENTITY_LIMIT = 200;
 export const RELATIONSHIP_QUERY_PAGE = 200;
 export const RELATIONSHIP_QUERY_FETCH_CAP = 500;
 export const ENTITY_GET_MANY_LIMIT = 500;
+export const MAX_EXPANSION_DEPTH = 6;
 export const BRANCH_TOO_LARGE = "This branch is too large to display at once. Re-root on a nearby person to continue.";
+export const BRANCH_TOO_DEEP = BRANCH_TOO_LARGE;
+export const BRANCH_DIRECTIONS = ["parents", "children", "siblings", "partners"] as const;
 
 export const PARENT_KINDS = ["biological", "adoptive", "legal", "guardian", "step", "custom"] as const;
 export const PARTNER_KINDS = ["marriage", "partnership", "betrothal", "concubinage", "custom"] as const;
@@ -29,6 +34,31 @@ export type ParentKind = (typeof PARENT_KINDS)[number];
 export type PartnerKind = (typeof PARTNER_KINDS)[number];
 export type PartnerStatus = (typeof PARTNER_STATUSES)[number];
 export type FamilyRelationshipKind = "parent" | "partner";
+export type BranchDirection = (typeof BRANCH_DIRECTIONS)[number];
+export type ExpansionKey = `${string}:${BranchDirection}`;
+export type RelativeRole = "parent" | "child" | "partner";
+
+export interface HiddenCounts {
+  parents: number;
+  children: number;
+  siblings: number;
+  partners: number;
+  truncated: boolean;
+  lowerBound: number;
+}
+
+export interface FamilyViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface FamilyTreeSession {
+  expansions: string[];
+  selectedPersonId: string | null;
+  selectedRelationshipId: string | null;
+  viewport?: FamilyViewport | null;
+}
 
 export interface FamilyPerson {
   id: string;
@@ -79,6 +109,7 @@ export interface LayoutNode {
   id: string;
   kind: LayoutNodeKind;
   personId?: string;
+  memberIds?: string[];
   width: number;
   height: number;
 }
@@ -136,4 +167,43 @@ export function truncationWarning(lowerBound: number): GenealogyWarning {
 
 export function layoutExceedsLimits(people: number, unions: number, edges: number): boolean {
   return people > VISIBLE_PERSON_LIMIT || unions > VISIBLE_UNION_LIMIT || edges > VISIBLE_EDGE_LIMIT;
+}
+
+export function expansionKey(id: string, direction: BranchDirection): ExpansionKey {
+  return `${id}:${direction}`;
+}
+
+export function parseExpansionKey(key: string): { id: string; direction: BranchDirection } | null {
+  const index = key.lastIndexOf(":");
+  if (index <= 0) return null;
+  const direction = key.slice(index + 1);
+  if (!(BRANCH_DIRECTIONS as readonly string[]).includes(direction)) return null;
+  return { id: key.slice(0, index), direction: direction as BranchDirection };
+}
+
+export function isBranchDirection(value: string): value is BranchDirection {
+  return (BRANCH_DIRECTIONS as readonly string[]).includes(value);
+}
+
+export function familyTreeHistoryKey(session: FamilyTreeSession | null | undefined): string {
+  if (!session) return "";
+  return JSON.stringify({
+    expansions: session.expansions,
+    selectedPersonId: session.selectedPersonId ?? null,
+    selectedRelationshipId: session.selectedRelationshipId ?? null,
+  });
+}
+
+export function sameFamilyTreeSession(
+  left: FamilyTreeSession | null | undefined,
+  right: FamilyTreeSession | null | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (familyTreeHistoryKey(left) !== familyTreeHistoryKey(right)) return false;
+  const lv = left.viewport;
+  const rv = right.viewport;
+  if (!lv && !rv) return true;
+  if (!lv || !rv) return false;
+  return lv.x === rv.x && lv.y === rv.y && lv.zoom === rv.zoom;
 }

@@ -134,6 +134,7 @@ import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import familyTreeManifestJson from "../../packages/modules/family-tree/manifest.json";
 import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
+import { familyTreeHistoryKey, sameFamilyTreeSession, type FamilyTreeSession } from "$lib/family-tree/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import {
   Pencil,
@@ -577,6 +578,8 @@ let sandboxView = $state<{
   renderer: "maps" | "family-tree" | "webview";
 } | null>(null);
 let familyTreeRootId = $state<string | null>(null);
+let familyTreeSession = $state<FamilyTreeSession | null>(null);
+let familyTreeRestoreNonce = $state(0);
 let projectionView = $state<{
   title: string;
   subtitle: string;
@@ -1688,6 +1691,8 @@ function currentShellLocation(): ShellLocation {
       section,
       entityId: sandboxView.renderer === "family-tree" ? familyTreeRootId : (selected?.id ?? null),
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
+      moduleState:
+        sandboxView.renderer === "family-tree" ? (familyTreeSession as Record<string, unknown> | null) : null,
     };
   }
   return {
@@ -1851,7 +1856,10 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
     recordShellDeparture(departure);
     projectHomeOpen = false;
     loreWikiOpen = false;
-    if (!shellNavigationRestoring) familyTreeRootId = null;
+    if (!shellNavigationRestoring) {
+      familyTreeRootId = null;
+      familyTreeSession = null;
+    }
     sandboxView = { plugin: item.plugin, view: item.view, renderer: "family-tree" };
     return;
   }
@@ -2550,6 +2558,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await switchSection(target.section);
       if (pluginItem?.renderer === "family-tree") {
         familyTreeRootId = target.entityId;
+        familyTreeSession = (target.moduleState as FamilyTreeSession | null) ?? null;
+        familyTreeRestoreNonce += 1;
         await openPluginView(pluginItem);
       } else {
         await restoreShellEntity(target.entityId);
@@ -6870,11 +6880,19 @@ onMount(() => {
           })}
           projectId={projectInfo?.root ?? ""}
           initialRootId={familyTreeRootId}
+          initialSession={familyTreeSession}
+          restoreNonce={familyTreeRestoreNonce}
           avatar={familyTreeAvatar}
           onRootChange={(id) => {
             if (id === familyTreeRootId) return;
             recordShellDeparture(currentShellLocation());
             familyTreeRootId = id;
+          }}
+          onSessionChange={(session) => {
+            if (sameFamilyTreeSession(familyTreeSession, session)) return;
+            const historyChanged = familyTreeHistoryKey(familyTreeSession) !== familyTreeHistoryKey(session);
+            familyTreeSession = session;
+            if (historyChanged && familyTreeRootId) recordShellDeparture(currentShellLocation());
           }}
           onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)} />
       </SpecializedSurface>

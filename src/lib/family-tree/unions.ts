@@ -1,7 +1,8 @@
 import {
   PERSON_NODE_HEIGHT,
   PERSON_NODE_WIDTH,
-  UNION_NODE_SIZE,
+  UNION_NODE_HEIGHT,
+  UNION_NODE_WIDTH,
   layoutExceedsLimits,
   type FamilyRelationship,
   type GenealogyGraph,
@@ -59,7 +60,13 @@ export function buildLayoutGraph(graph: GenealogyGraph, visibleIds: Iterable<str
     }
     const unionId = parentUnionId(parents);
     if (!unions.has(unionId)) {
-      unions.set(unionId, { id: unionId, kind: "union", width: UNION_NODE_SIZE, height: UNION_NODE_SIZE });
+      unions.set(unionId, {
+        id: unionId,
+        kind: "union",
+        memberIds: parents,
+        width: UNION_NODE_WIDTH,
+        height: UNION_NODE_HEIGHT,
+      });
       for (const parentId of parents) {
         edges.push({
           id: `edge:parent:${unionId}:${parentId}`,
@@ -100,15 +107,18 @@ export function buildLayoutGraph(graph: GenealogyGraph, visibleIds: Iterable<str
       if (partnerSeen.has(relationship.id)) continue;
       partnerSeen.add(relationship.id);
       if (!visible.has(relationship.sourceId) || !visible.has(relationship.targetId)) continue;
-      const matchingParentUnion = [...unions.keys()].find((id) => {
-        const members = id.startsWith("union:parents:") ? id.slice("union:parents:".length).split(":") : [];
-        return (
-          members.length === 2 && members.includes(relationship.sourceId) && members.includes(relationship.targetId)
-        );
-      });
-      const unionId = matchingParentUnion ?? partnerUnionId(relationship.id);
+      const matchingParentUnion = [...unions.values()].find((node) =>
+        samePair(node.memberIds, relationship.sourceId, relationship.targetId),
+      );
+      const unionId = matchingParentUnion?.id ?? partnerUnionId(relationship.id);
       if (!unions.has(unionId)) {
-        unions.set(unionId, { id: unionId, kind: "union", width: UNION_NODE_SIZE, height: UNION_NODE_SIZE });
+        unions.set(unionId, {
+          id: unionId,
+          kind: "union",
+          memberIds: [relationship.sourceId, relationship.targetId].sort(compareId),
+          width: UNION_NODE_WIDTH,
+          height: UNION_NODE_HEIGHT,
+        });
       }
       attachPartner(edges, relationship, unionId);
     }
@@ -125,9 +135,16 @@ export function layoutGraphExceedsLimits(graph: LayoutGraph): boolean {
   return layoutExceedsLimits(people, unions, graph.edges.length);
 }
 
+function samePair(members: string[] | undefined, left: string, right: string) {
+  return Boolean(members && members.length === 2 && members.includes(left) && members.includes(right));
+}
+
 function attachPartner(edges: LayoutEdge[], relationship: FamilyRelationship, unionId: string) {
   for (const personId of [relationship.sourceId, relationship.targetId].sort(compareId)) {
     const edgeId = `edge:partner:${unionId}:${personId}`;
+    const parentEdgeId = `edge:parent:${unionId}:${personId}`;
+    const parentIndex = edges.findIndex((edge) => edge.id === parentEdgeId);
+    if (parentIndex >= 0) edges.splice(parentIndex, 1);
     if (edges.some((edge) => edge.id === edgeId)) continue;
     edges.push({
       id: edgeId,

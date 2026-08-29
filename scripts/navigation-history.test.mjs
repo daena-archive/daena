@@ -91,6 +91,41 @@ assert.equal(
   false,
   "plugin surface scroll is part of a plugin location",
 );
+assert.equal(
+  sameShellLocation(plugin, { ...plugin, moduleState: { expansions: ["root:children"] } }),
+  false,
+  "family-tree expansion keys are part of a plugin location",
+);
+assert.equal(
+  sameShellLocation(
+    { ...plugin, moduleState: { expansions: ["root:children"], selectedPersonId: "a" } },
+    { ...plugin, moduleState: { expansions: ["root:children"], selectedPersonId: "b" } },
+  ),
+  false,
+  "family-tree selection is part of a plugin location",
+);
+assert.equal(
+  sameShellLocation(
+    {
+      ...plugin,
+      moduleState: {
+        expansions: ["root:children"],
+        selectedPersonId: "a",
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    },
+    {
+      ...plugin,
+      moduleState: {
+        expansions: ["root:children"],
+        selectedPersonId: "a",
+        viewport: { x: 40, y: -12, zoom: 1.4 },
+      },
+    },
+  ),
+  true,
+  "family-tree viewport is stored without adding a history step",
+);
 
 const back = shellHistoryBack(history, graph);
 assert.ok(back, "Back is available after locations have been recorded");

@@ -5132,20 +5132,6 @@ fn payload_value<T: serde::de::DeserializeOwned>(
         .map_err(|error| CoreError::Validation(format!("invalid plugin RPC payload: {error}")))
 }
 
-fn rpc_error_from_core(plugin_id: &str, error: CoreError) -> daena_plugin_api::RpcError {
-    let code = error.rpc_code().to_owned();
-    let message = match &error {
-        CoreError::Broker { message, .. } => message.clone(),
-        _ => format!("plugin {plugin_id}: {error}"),
-    };
-    daena_plugin_api::RpcError {
-        code,
-        message,
-        retryable: false,
-        details: None,
-    }
-}
-
 fn validate_broker_payload(method: &str, payload: &serde_json::Value) -> Result<(), CoreError> {
     let object = payload.as_object().ok_or_else(|| {
         CoreError::Validation(format!("plugin RPC payload for {method} must be an object"))

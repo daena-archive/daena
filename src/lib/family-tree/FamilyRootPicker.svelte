@@ -2,6 +2,8 @@
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import { PERSON_TYPE } from "./model";
 
+import { createMinimalPerson } from "./mutations";
+
 let {
   context,
   onSelect,
@@ -11,6 +13,9 @@ let {
   onSelect: (person: EntitySummary) => void;
   compact?: boolean;
 } = $props();
+
+let createName = $state("");
+let creating = $state(false);
 
 let query = $state("");
 let results = $state<EntitySummary[]>([]);
@@ -47,6 +52,20 @@ async function search(nextOffset = 0) {
   }
 }
 
+async function createPerson() {
+  if (creating || !createName.trim()) return;
+  creating = true;
+  error = "";
+  try {
+    const person = await createMinimalPerson(context, createName, crypto.randomUUID());
+    onSelect(person);
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    creating = false;
+  }
+}
+
 $effect(() => {
   void query;
   const timer = setTimeout(() => void search(0), 180);
@@ -61,6 +80,14 @@ $effect(() => {
   </label>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if busy && results.length === 0}<p class="hint">Searching…</p>
+  {:else if results.length === 0 && !query.trim() && total === 0}
+    <p class="hint">No Lore people yet. Create a person — they will also appear in Lore.</p>
+    <label>Name <input bind:value={createName} /></label>
+    <button
+      type="button"
+      class="primary-button"
+      disabled={creating || !createName.trim()}
+      onclick={() => void createPerson()}>Create person</button>
   {:else if results.length === 0}<p class="hint">No Lore people match this search.</p>
   {:else}
     <ul>

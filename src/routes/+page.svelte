@@ -127,6 +127,8 @@ import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
 import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
+import SchemaFieldInput from "$lib/schema-workbench/SchemaFieldInput.svelte";
+import { overlayValidationStatus, primarySchemaNamespace, summarizePackageCounts } from "$lib/schema-workbench";
 import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
@@ -521,6 +523,9 @@ let schemaPluginId = $state<string | null>(null);
 let schemaPluginName = $state("");
 let schemaEditorDirty = $state(false);
 let schemaOverlayLoadToken = 0;
+let schemaOverlayCache = $state<Record<string, ModuleSchemaOverlay>>({});
+let schemaEntityCountsByType = $state<Record<string, number>>({});
+let schemaEntityCountsLoaded = $state(false);
 let displayVersion = $state(appVersionSyncFallback());
 
 const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
@@ -551,7 +556,47 @@ function schemaOverlayCandidates() {
         (module.capabilities ?? []).includes(SCHEMA_OVERLAY_CAPABILITY) &&
         (module.schemas ?? []).some((schema) => (schema.entityTypes?.length ?? 0) > 0),
     )
-    .map((module) => ({ id: module.id, name: module.name }))
+    .map((module) => {
+      const overlay =
+        schemaPluginId === module.id ? moduleSchemaOverlay : (schemaOverlayCache[module.id] ?? { version: 1 });
+      const counts = summarizePackageCounts(
+        { schemas: module.schemas ?? [], templates: module.templates ?? [] },
+        overlay,
+      );
+      const validation = overlayValidationStatus(overlay);
+      return {
+        id: module.id,
+        name: module.name,
+        typeCount: counts.types,
+        fieldCount: counts.fields,
+        templateCount: counts.templates,
+        customization: counts.customized ? ("customized" as const) : ("default" as const),
+        validationStatus: validation.status,
+        validationMessage: validation.message,
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function managedSchemaPlugins() {
+  return modules
+    .filter(
+      (module) =>
+        module.enabled &&
+        !(module.capabilities ?? []).includes(SCHEMA_OVERLAY_CAPABILITY) &&
+        (module.schemas ?? []).some(
+          (schema) => (schema.entityTypes?.length ?? 0) > 0 || (schema.fields?.length ?? 0) > 0,
+        ),
+    )
+    .map((module) => ({
+      id: module.id,
+      name: module.name,
+      reason: module.id.includes("maps")
+        ? "Maps provider fields stay extension-managed."
+        : module.id.includes("language")
+          ? "Language keeps a specialized workspace until merged schema rendering is ready."
+          : "Schema structure is owned by this extension.",
+    }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -1053,12 +1098,11 @@ const definitions = () => {
 };
 function namespaceForField(definition: FieldDefinition): string {
   const manifest = activeManifest();
-  const schema = manifest?.schemas.find(
-    (candidate) =>
-      (!selected?.entity_type || schemaEntityTypeIds(candidate).includes(selected.entity_type)) &&
-      candidate.fields.some((field) => field.key === definition.key),
-  );
-  return schema?.namespace ?? manifest?.schemas[0]?.namespace ?? activeModuleId();
+  return primarySchemaNamespace(manifest?.schemas, {
+    entityType: selected?.entity_type,
+    fieldKey: definition.key,
+    fallback: activeModuleId(),
+  });
 }
 function fieldRevisionKey(namespace: string, key: string) {
   return `${namespace}\u0000${key}`;
@@ -5561,7 +5605,10 @@ async function attachAsset() {
     const filename = source.split(/[\\/]/).pop() ?? "asset";
     const asset = await project.registerAssetFile({
       entity_id: selected.id,
-      namespace: activeManifest()?.schemas[0]?.namespace ?? activeModuleId(),
+      namespace: primarySchemaNamespace(activeManifest()?.schemas, {
+        entityType: selected.entity_type,
+        fallback: activeModuleId(),
+      }),
       source_path: source,
       filename,
       mime_type: mimeTypeFor(filename),
@@ -5796,11 +5843,60 @@ async function refreshModuleSchemaEditor(moduleId: string) {
     schemaPluginName = editor.name;
     moduleSchemaPackage = { schemas: editor.schemas, templates: editor.templates };
     moduleSchemaOverlay = editor.overlay;
+    schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: editor.overlay };
     moduleSchemaRevision += 1;
     moduleSchemaMessage = "";
+    void refreshSchemaEntityCounts();
   } catch (cause) {
     if (token !== schemaOverlayLoadToken || schemaPluginId !== moduleId) return;
     moduleSchemaMessage = friendlyError(cause);
+  }
+}
+
+async function refreshSchemaEntityCounts() {
+  if (!ready) return;
+  try {
+    const page = await project.queryEntities({ limit: 1, offset: 0 });
+    const next: Record<string, number> = {};
+    for (const entry of page.type_counts ?? []) {
+      if (entry.entity_type) next[entry.entity_type] = entry.count;
+    }
+    schemaEntityCountsByType = next;
+    schemaEntityCountsLoaded = true;
+  } catch {
+    schemaEntityCountsLoaded = false;
+  }
+}
+
+function schemaEntityCountForType(typeId: string): number | null {
+  if (!schemaEntityCountsLoaded) return null;
+  return schemaEntityCountsByType[typeId] ?? 0;
+}
+
+async function reassignSchemaEntities(fromTypeId: string, toTypeId: string) {
+  const limit = 100;
+  let offset = 0;
+  let moved = 0;
+  for (;;) {
+    const page = await project.queryEntities({
+      entityTypes: [fromTypeId],
+      offset,
+      limit,
+      archived: false,
+    });
+    for (const entity of page.items) {
+      await project.updateEntity(entity.id, null, toTypeId, {
+        expectedRevision: entity.revision,
+      });
+      moved += 1;
+    }
+    if (!page.has_more || page.items.length === 0) break;
+    offset += page.items.length;
+  }
+  await refreshSchemaEntityCounts();
+  bumpCollectionRefresh();
+  if (moved > 0) {
+    moduleSchemaMessage = `Reassigned ${moved} ${moved === 1 ? "entity" : "entities"} to the chosen type.`;
   }
 }
 function selectSchemaPlugin(moduleId: string | null) {
@@ -5844,6 +5940,7 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
     const saved = await project.setModuleSchemaOverlay(moduleId, overlay);
     if (schemaPluginId !== moduleId) return;
     moduleSchemaOverlay = saved;
+    schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: saved };
     moduleSchemaRevision += 1;
     schemaEditorDirty = false;
     modules = await project.listModuleManifests();
@@ -6628,102 +6725,34 @@ onMount(() => {
                       bind:value={name}
                       placeholder={`e.g. ${createOption.template.name}`}
                       autocomplete="off" /></label
-                  >{#snippet createFieldControl(item: CreateField)}<div class="create-input-field">
-                      <label for={`create-${item.field.key}`}
-                        ><span
-                          >{item.field.label}
-                          {#if item.required}<b>*</b>{/if}</span
-                        ></label
-                      >{#if item.field.type === "relationship"}<RelationshipPicker
-                          field={item.field}
-                          search={searchEntitiesPaged(item.field)}
-                          resolveSelected={resolveSelectedEntities}
-                          selectedIds={createRelationshipValues(item.field.key)}
-                          onChange={(ids) =>
-                            setCreateRelationshipValues(
-                              item.field.key,
-                              ids,
-                            )} />{:else if item.field.type === "text"}<textarea
-                          id={`create-${item.field.key}`}
-                          required={item.required}
-                          rows="3"
-                          value={String(createFieldValues[item.field.key] ?? "")}
-                          placeholder={`Add ${item.field.label.toLowerCase()}`}
-                          oninput={(event) =>
-                            setCreateField(item.field.key, (event.currentTarget as HTMLTextAreaElement).value)}
-                        ></textarea
-                        >{:else if item.field.type === "number"}<input
-                          id={`create-${item.field.key}`}
-                          type="number"
-                          required={item.required}
-                          value={String(createFieldValues[item.field.key] ?? "")}
-                          placeholder={`Add ${item.field.label.toLowerCase()}`}
-                          oninput={(event) =>
-                            setCreateField(
-                              item.field.key,
-                              (event.currentTarget as HTMLInputElement).value,
-                            )} />{:else if item.field.type === "boolean"}<label
-                          class="create-checkbox"
-                          for={`create-${item.field.key}`}
-                          ><input
-                            id={`create-${item.field.key}`}
-                            type="checkbox"
-                            required={item.required}
-                            checked={createFieldValues[item.field.key] === true}
-                            onchange={(event) =>
-                              setCreateField(item.field.key, (event.currentTarget as HTMLInputElement).checked)} /><span
-                            >Yes</span
-                          ></label
-                        >{:else if item.field.type === "enum"}<select
-                          id={`create-${item.field.key}`}
-                          required={item.required}
-                          multiple={item.field.multiple ?? false}
-                          value={item.field.multiple
-                            ? Array.isArray(createFieldValues[item.field.key])
-                              ? createFieldValues[item.field.key]
-                              : []
-                            : String(createFieldValues[item.field.key] ?? "")}
-                          onchange={(event) =>
-                            updateCreateEnumField(item.field.key, event, item.field.multiple ?? false)}
-                          ><option value="">Choose {item.field.label.toLowerCase()}</option
-                          >{#each item.field.options ?? [] as option}<option value={option}>{option}</option
-                            >{/each}</select>
-                        >{:else if (item.field as any).type === "oneof"}<select
-                          id={`create-${item.field.key}`}
-                          required={item.required}
-                          value={String(createFieldValues[item.field.key] ?? "")}
-                          onchange={(event) =>
-                            setCreateField(item.field.key, (event.currentTarget as HTMLSelectElement).value)}
-                          ><option value="">Choose {item.field.label.toLowerCase()}</option
-                          >{#each item.field.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                          {#each (item.field as any).oneOf ?? [] as variant}
-                            {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
-                              >{/each}
-                          {/each}</select>
-                        >{:else if item.field.type === "date"}{#if createDateForField(item.field.key) || createDateEditorOpen[item.field.key]}{@const date =
-                            createDateDraftForField(item.field.key) ?? {
-                              calendar: GREGORIAN_CALENDAR_ID,
-                              era: "CE",
-                              precision: "day",
-                            }}{@const parts = createDatePartsDraft(item.field.key)}{@const calendar =
-                            createCalendarDefinition(item.field.key)}{@const months = calendar?.months ?? []}
-                          <DateEditor
-                            label={item.field.label}
-                            value={createFieldValues[item.field.key]}
-                            calendar={createCalendarDefinition(item.field.key)}
-                            calendars={worldCalendars() as any}
-                            selectedCalendarId={calendarIdForStoredDate(
-                              createDateForField(item.field.key),
-                              createDateCalendarByField[item.field.key],
-                            )}
-                            onChange={(next) => setCreateField(item.field.key, next)}
-                            onClear={() => clearCreateDateField(item.field.key)}
-                            onSelectCalendar={(id) => setCreateDateCalendar(item.field.key, id)} />{:else}<button
-                            class="date-empty"
-                            type="button"
-                            onclick={() => openCreateDateEditor(item.field.key)}>Add a date</button
-                          >{/if}{/if}
-                    </div>{/snippet}{#if chronologyCreateFields(createOption).length > 0}{#each chronologyCreateFields(createOption) as item}{@render createFieldControl(
+                  >{#snippet createFieldControl(item: CreateField)}
+                    <SchemaFieldInput
+                      field={item.field}
+                      required={item.required}
+                      idPrefix="create"
+                      class="create-input-field"
+                      value={createFieldValues[item.field.key]}
+                      search={searchEntitiesPaged(item.field)}
+                      resolveSelected={resolveSelectedEntities}
+                      calendars={worldCalendars() as any}
+                      calendar={createCalendarDefinition(item.field.key)}
+                      selectedCalendarId={calendarIdForStoredDate(
+                        createDateForField(item.field.key),
+                        createDateCalendarByField[item.field.key],
+                      )}
+                      onChange={(next) => {
+                        if (item.field.type === "relationship") {
+                          setCreateRelationshipValues(
+                            item.field.key,
+                            Array.isArray(next) ? next.filter((id): id is string => typeof id === "string") : [],
+                          );
+                          return;
+                        }
+                        setCreateField(item.field.key, next);
+                      }}
+                      onClearDate={() => clearCreateDateField(item.field.key)}
+                      onSelectCalendar={(id) => setCreateDateCalendar(item.field.key, id)} />
+                  {/snippet}{#if chronologyCreateFields(createOption).length > 0}{#each chronologyCreateFields(createOption) as item}{@render createFieldControl(
                         item,
                       )}{/each}{#each createChronologyWarnings() as warning}<p class="chronology-warning" role="status">
                         {warning}
@@ -7227,6 +7256,7 @@ onMount(() => {
           <SchemaSettingsPanel
             projectOpen={ready}
             candidates={schemaOverlayCandidates()}
+            managedPlugins={managedSchemaPlugins()}
             selectedPluginId={schemaPluginId}
             selectedPluginName={schemaPluginName}
             packageManifest={moduleSchemaPackage}
@@ -7235,6 +7265,8 @@ onMount(() => {
             overlayRevision={moduleSchemaRevision}
             busy={moduleSchemaBusy}
             message={moduleSchemaMessage}
+            entityCountForType={schemaEntityCountForType}
+            onReassignEntities={reassignSchemaEntities}
             onSelectPlugin={selectSchemaPlugin}
             onSave={saveModuleSchemaOverlay}
             onDirtyChange={setSchemaEditorDirty} />
@@ -8118,7 +8150,10 @@ onMount(() => {
                         {entities}
                         searchEntities={searchEntitiesPaged()}
                         entityId={selected?.id ?? null}
-                        defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
+                        defaultNamespace={primarySchemaNamespace(activeManifest()?.schemas, {
+                          entityType: selected?.entity_type,
+                          fallback: activeModuleId(),
+                        })}
                         editable={!selectedLoading &&
                           !selectedLoadError &&
                           projectDiagnostics.length === 0 &&

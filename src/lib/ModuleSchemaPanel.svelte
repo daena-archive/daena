@@ -10,34 +10,59 @@ import type {
   MetadataFieldDefinition,
   EntityTypeColor,
 } from "$lib/project/client";
-import FieldPicker from "$lib/FieldPicker.svelte";
-import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
-import TypeAppearancePicker from "$lib/entity-colors/TypeAppearancePicker.svelte";
-import TypeColorPicker from "$lib/entity-colors/TypeColorPicker.svelte";
-import IconPicker from "$lib/entity-icons/IconPicker.svelte";
 import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { onMount } from "svelte";
 import { setSchemaEditorDirtyCheck } from "$lib/schemaEditorGuard";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import {
+  FIELD_TYPES,
+  METADATA_FIELD_TYPES,
+  applyTypeRemovalPlan,
+  cloneJson,
+  defaultFieldValue,
+  draftsFromMetadataFields,
+  ensureFieldKey,
+  ensureTypeId,
+  fieldKindGroupLabel,
+  fieldTypeLabel,
+  filterSchemaListItems,
+  fingerprint,
+  flattenPackageSchemas,
+  formatOptions,
+  humanizeId,
+  localTypeId,
+  metadataDraftToDefinition,
+  mintTypeId,
+  normalizeOverlay,
+  parseOneOfVariants,
+  parseOptions,
+  pruneOverlayForRemovedType,
+  preserveTypeId,
+  qualifyTypeId,
+  slugifyTypeId,
+  typeRemovalPlanIsComplete,
+  validateMetadataDrafts,
+  type ExclusiveFieldDisposition,
+  type EntityRemovalDisposition,
+  type FieldType,
+  type MetadataFieldDraft,
+  type MetadataFieldType,
+  type SchemaListItem,
+  type SchemaStatusFilter,
+} from "$lib/schema-workbench";
+import SchemaTypesPane from "$lib/schema-workbench/SchemaTypesPane.svelte";
+import SchemaFieldsPane from "$lib/schema-workbench/SchemaFieldsPane.svelte";
+import SchemaTemplatesPane from "$lib/schema-workbench/SchemaTemplatesPane.svelte";
+import {
   Layers,
-  Type,
   TextQuote,
   Blocks,
   LayoutTemplate,
-  Plus,
-  Pencil,
   Trash2,
   Check,
   X,
   SlidersHorizontal,
-  Settings2,
-  Sparkles,
-  Eye,
-  EyeOff,
-  ChevronDown,
-  ChevronRight,
   Save,
   AlertTriangle,
 } from "@lucide/svelte";
@@ -51,21 +76,6 @@ type PackageManifest = {
   templates: EntityTemplate[];
 };
 
-type FieldType = FieldDefinition["type"];
-
-const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "date", "enum", "oneof", "relationship"];
-
-const METADATA_FIELD_TYPES = ["text", "number", "boolean", "date", "enum", "oneof"] as const;
-type MetadataFieldType = (typeof METADATA_FIELD_TYPES)[number];
-type MetadataFieldDraft = {
-  key: string;
-  label: string;
-  type: MetadataFieldType;
-  required: boolean;
-  options: string;
-  oneOf: Array<{ label: string; type: Exclude<MetadataFieldType, "oneof" | "relationship">; options: string }>;
-};
-
 let {
   projectOpen,
   packageManifest,
@@ -74,6 +84,9 @@ let {
   pluginId = null,
   busy = false,
   message = "",
+  projectionLabelsForType = () => [],
+  entityCountForType = () => null,
+  onReassignEntities,
   onSave,
   onDirtyChange,
 }: {
@@ -84,16 +97,18 @@ let {
   pluginId?: string | null;
   busy?: boolean;
   message?: string;
+  projectionLabelsForType?: (typeId: string) => string[];
+  entityCountForType?: (typeId: string) => number | null;
+  /** Reassign live entities of fromTypeId to toTypeId before the overlay type is removed. */
+  onReassignEntities?: (fromTypeId: string, toTypeId: string) => Promise<void>;
   onSave: (overlay: ModuleSchemaOverlay) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
 } = $props();
 
-const packageSchema = $derived(packageManifest.schemas[0]);
-const packageTypeDefinitions = $derived(
-  [...(packageSchema?.entityTypes ?? [])].sort((left, right) => left.name.localeCompare(right.name)),
-);
+const flatPackage = $derived(flattenPackageSchemas(packageManifest));
+const packageTypeDefinitions = $derived(flatPackage.entityTypes);
 const packageTypes = $derived(packageTypeDefinitions.map((entityType) => entityType.id));
-const packageFields = $derived([...(packageSchema?.fields ?? [])]);
+const packageFields = $derived([...flatPackage.fields]);
 const packageTemplates = $derived([...(packageManifest.templates ?? [])]);
 
 function appearanceOverride(typeId: string): EntityTypeAppearanceOverride | undefined {
@@ -145,26 +160,6 @@ function clearPackageAppearanceOverride(typeId: string) {
   setDraft({ ...draft, entityTypeAppearanceOverrides: overrides.length > 0 ? overrides : undefined });
 }
 
-function cloneJson<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function localTypeId(value: string): string {
-  const colon = value.lastIndexOf(":");
-  return colon >= 0 ? value.slice(colon + 1) : value;
-}
-
-/** Show `currentOwner` / `word_count` / `daena.timeline:event` as readable labels. */
-function humanizeId(value: string): string {
-  const spaced = localTypeId(value)
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-  if (!spaced) return localTypeId(value) || value;
-  return spaced.replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
 function entityTypeLabel(typeId: string): string {
   const defined =
     packageTypeDefinitions.find((type) => type.id === typeId) ??
@@ -174,378 +169,12 @@ function entityTypeLabel(typeId: string): string {
   return name || humanizeId(typeId);
 }
 
-function fieldTypeLabel(type: FieldType): string {
-  if (type === "oneof") return "One of";
-  return type.charAt(0).toUpperCase() + type.slice(1);
-}
-
-function parseOptions(value: string): string[] {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function formatOptions(options?: string[] | null): string {
-  return (options ?? []).join(", ");
-}
-
-function parseOneOfVariants(value: string): Array<{ label: string; type: FieldType; options?: string[] }> | null {
-  if (!value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/** Entity/template ids: lowercase kebab (`Test` → `test`, `My Type` → `my-type`). */
-function slugifyTypeId(value: string): string {
-  return value
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/** IDs must start with a-z per host validation. */
-function ensureTypeId(value: string, fallback = "custom"): string {
-  let id = slugifyTypeId(localTypeId(value));
-  if (!id) id = fallback;
-  if (!/^[a-z]/.test(id)) id = `${fallback}-${id}`;
-  return id;
-}
-
-function qualifyTypeId(id: string): string {
-  const trimmed = id.trim();
-  if (!trimmed) return "";
-  if (trimmed.includes(":")) return trimmed;
-  return pluginId ? `${pluginId}:${trimmed}` : trimmed;
-}
-
-function preserveTypeId(id: string): string {
-  const trimmed = id.trim();
-  if (!trimmed) return "";
-  if (trimmed.includes(":")) return trimmed;
-  return qualifyTypeId(ensureTypeId(trimmed, "type"));
-}
-
-function mintTypeId(name: string): string {
-  return qualifyTypeId(ensureTypeId(name, "type"));
-}
-
-/** Field keys: lowercase snake (`WordCount` → `word_count`). */
-function slugifyFieldKey(value: string): string {
-  return value
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function ensureFieldKey(value: string, fallback = "field"): string {
-  let key = slugifyFieldKey(value);
-  if (!key) key = fallback;
-  if (!/^[a-z]/.test(key)) key = `${fallback}_${key}`;
-  return key;
-}
-
-function metadataDraftToDefinition(draft: MetadataFieldDraft): Record<string, unknown> | null {
-  const label = draft.label.trim();
-  if (!label) return null;
-  const key = ensureFieldKey(draft.key.trim() || label, "field");
-  if (!key) return null;
-  const base: Record<string, unknown> = { key, label, type: draft.type };
-  if (draft.required) base.required = true;
-  if (draft.type === "enum") {
-    const opts = parseOptions(draft.options);
-    if (opts.length === 0) return null;
-    base.options = opts;
-  } else if (draft.type === "oneof") {
-    if (draft.oneOf.length === 0) return null;
-    const oneOf = draft.oneOf
-      .filter((v) => v.label.trim())
-      .map((v) => {
-        const variant: Record<string, unknown> = { label: v.label.trim(), type: v.type };
-        if (v.type === "enum") {
-          const opts = parseOptions(v.options);
-          if (opts.length === 0) return null;
-          variant.options = opts;
-        }
-        return variant;
-      })
-      .filter(Boolean) as Array<Record<string, unknown>>;
-    if (oneOf.length === 0) return null;
-    base.oneOf = oneOf;
-  }
-  return base;
-}
-
-function validateMetadataDrafts(drafts: MetadataFieldDraft[]): boolean {
-  if (drafts.length === 0) return true;
-  const keys = new Set<string>();
-  for (const d of drafts) {
-    const def = metadataDraftToDefinition(d);
-    if (!def) return false;
-    const k = def.key as string;
-    if (keys.has(k)) return false;
-    keys.add(k);
-    if (def.type === "enum" && !(def.options as string[]).length) return false;
-    if (def.type === "oneof") {
-      const variants = def.oneOf as unknown[];
-      if (!variants.length) return false;
-      // metadataDraftToDefinition silently drops oneof variants without a label or
-      // (for enum) without options, so reject them here to surface the error instead
-      // of losing the variant on commit.
-      for (const v of d.oneOf) {
-        if (!v.label.trim()) return false;
-        if (v.type === "enum" && !parseOptions(v.options).length) return false;
-      }
-    }
-  }
-  return true;
-}
-
-function draftsFromMetadataFields(fields: unknown): MetadataFieldDraft[] {
-  if (!Array.isArray(fields)) return [];
-  return (fields as Array<Record<string, unknown>>).map((f) => ({
-    key: String(f.key ?? ""),
-    label: String(f.label ?? ""),
-    type: (METADATA_FIELD_TYPES as readonly string[]).includes(String(f.type)) ? (f.type as MetadataFieldType) : "text",
-    required: Boolean(f.required),
-    options: formatOptions(f.options as string[] | undefined),
-    oneOf: Array.isArray(f.oneOf)
-      ? (f.oneOf as Array<Record<string, unknown>>).map((v) => {
-          const vt = String(v.type ?? "");
-          const allowed = ["text", "number", "boolean", "date", "enum"] as const as readonly string[];
-          return {
-            label: String(v.label ?? ""),
-            type: (allowed.includes(vt) ? vt : "text") as Exclude<MetadataFieldType, "oneof" | "relationship">,
-            options: formatOptions(v.options as string[] | undefined),
-          };
-        })
-      : [],
-  }));
-}
-
-function normalizeOverlay(value: ModuleSchemaOverlay): ModuleSchemaOverlay {
-  const customEntityTypes = cloneJson(value.customEntityTypes ?? [])
-    .map((entityType) => ({
-      id: preserveTypeId(entityType.id),
-      name: entityType.name.trim() || humanizeId(entityType.id),
-      icon: entityType.icon ?? FALLBACK_ICON,
-      iconColor: entityType.iconColor ?? DEFAULT_TYPE_COLOR,
-    }))
-    .filter((entityType, index, all) => all.findIndex((candidate) => candidate.id === entityType.id) === index)
-    .sort((left, right) => left.id.localeCompare(right.id));
-  const customFields = cloneJson(value.customFields ?? []).map((field) => {
-    const f = field as unknown as Record<string, unknown>;
-    const next: Record<string, unknown> = {
-      ...f,
-      key: ensureFieldKey(String(f.key ?? "")),
-      entityTypes: (f.entityTypes as string[] | undefined)?.map(preserveTypeId).filter(Boolean),
-      targetEntityTypes: (f.targetEntityTypes as string[] | undefined)?.map(preserveTypeId).filter(Boolean),
-    };
-    if (f.type === "relationship" && Array.isArray(f.metadataFields)) {
-      const raw = f.metadataFields as unknown[];
-      const normalized = raw
-        .map((entry) => {
-          const e = entry as Record<string, unknown>;
-          const label = String(e.label ?? "").trim();
-          const rawKey = String(e.key ?? "").trim() || label;
-          const key = ensureFieldKey(rawKey, "field");
-          const t = String(e.type ?? "text");
-          const allowed = METADATA_FIELD_TYPES as readonly string[];
-          const type = allowed.includes(t) ? t : "text";
-          const out: Record<string, unknown> = { key, label, type };
-          if (e.required) out.required = true;
-          if (type === "enum" && Array.isArray(e.options)) out.options = (e.options as string[]).filter(Boolean);
-          if (type === "oneof" && Array.isArray(e.oneOf)) {
-            out.oneOf = (e.oneOf as Array<Record<string, unknown>>)
-              .filter((v) => String(v.label ?? "").trim())
-              .map((v) => {
-                const vl = String(v.label ?? "").trim();
-                const vt = String(v.type ?? "text");
-                const ok = ["text", "number", "boolean", "date", "enum"].includes(vt) ? vt : "text";
-                const ov: Record<string, unknown> = { label: vl, type: ok };
-                if (ok === "enum" && Array.isArray(v.options)) ov.options = (v.options as string[]).filter(Boolean);
-                return ov;
-              });
-          }
-          if (type === "enum" && Array.isArray(out.options)) {
-            out.options = [...new Set(out.options as string[])];
-          }
-          return out;
-        })
-        .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
-        .sort((a, b) =>
-          String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)),
-        );
-      const seen = new Set<string>();
-      const deduped: unknown[] = [];
-      for (const e of normalized) {
-        const k = String((e as Record<string, unknown>).key);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        deduped.push(e);
-      }
-      (next as Record<string, unknown>).metadataFields = deduped;
-      if ((deduped as unknown[]).length === 0) delete (next as Record<string, unknown>).metadataFields;
-    } else {
-      delete (next as Record<string, unknown>).metadataFields;
-    }
-    return next as unknown as FieldDefinition;
-  });
-  const customTemplates = cloneJson(value.customTemplates ?? []).map((template) => ({
-    ...template,
-    id: ensureTypeId(template.id || template.name, "template"),
-    entityType: preserveTypeId(template.entityType),
-    description: template.description?.trim() ? template.description.trim() : null,
-  }));
-  const fieldScopeOverrides = cloneJson(value.fieldScopeOverrides ?? [])
-    .map((scope) => ({
-      fieldKey: scope.fieldKey,
-      entityTypes: [...new Set(scope.entityTypes.map(preserveTypeId).filter(Boolean))].sort(),
-    }))
-    .sort((left, right) => left.fieldKey.localeCompare(right.fieldKey));
-  const templateOverrides = cloneJson(value.templateOverrides ?? []).sort((left, right) =>
-    left.templateId.localeCompare(right.templateId),
-  );
-  const fieldMetadataOverrides = cloneJson(value.fieldMetadataOverrides ?? [])
-    .map((ov) => {
-      const rawFields = (ov as unknown as Record<string, unknown>).metadataFields as unknown[] | undefined;
-      const normalized = ((rawFields ?? []) as unknown[])
-        .map((entry) => {
-          const e = entry as Record<string, unknown>;
-          const label = String(e.label ?? "").trim();
-          const rawKey = String(e.key ?? "").trim() || label;
-          const key = ensureFieldKey(rawKey, "field");
-          const t = String(e.type ?? "text");
-          const allowed = METADATA_FIELD_TYPES as readonly string[];
-          const type = allowed.includes(t) ? t : "text";
-          const out: Record<string, unknown> = { key, label, type };
-          if (e.required) out.required = true;
-          if (type === "enum" && Array.isArray(e.options)) out.options = (e.options as string[]).filter(Boolean);
-          if (type === "oneof" && Array.isArray(e.oneOf)) {
-            out.oneOf = (e.oneOf as Array<Record<string, unknown>>)
-              .filter((v) => String(v.label ?? "").trim())
-              .map((v) => {
-                const vl = String(v.label ?? "").trim();
-                const vt = String(v.type ?? "text");
-                const ok = ["text", "number", "boolean", "date", "enum"].includes(vt) ? vt : "text";
-                const ov2: Record<string, unknown> = { label: vl, type: ok };
-                if (ok === "enum" && Array.isArray(v.options)) ov2.options = (v.options as string[]).filter(Boolean);
-                return ov2;
-              });
-          }
-          if (type === "enum" && Array.isArray(out.options)) out.options = [...new Set(out.options as string[])];
-          return out;
-        })
-        .filter((e) => (e as Record<string, unknown>).label && (e as Record<string, unknown>).key)
-        .sort((a, b) =>
-          String((a as Record<string, unknown>).key).localeCompare(String((b as Record<string, unknown>).key)),
-        );
-      const seen = new Set<string>();
-      const deduped: unknown[] = [];
-      for (const e of normalized) {
-        const k = String((e as Record<string, unknown>).key);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        deduped.push(e);
-      }
-      return {
-        fieldKey: String((ov as unknown as Record<string, unknown>).fieldKey ?? ""),
-        metadataFields: deduped as unknown as FieldMetadataOverride["metadataFields"],
-      };
-    })
-    .filter((ov) => ov.fieldKey && ov.metadataFields && ov.metadataFields.length > 0)
-    .sort((a, b) => a.fieldKey.localeCompare(b.fieldKey));
-  const disabledEntityTypes = new Set(value.disabledEntityTypes ?? []);
-  const entityTypeAppearanceOverrides = cloneJson(value.entityTypeAppearanceOverrides ?? [])
-    .map((override) => ({
-      entityTypeId: preserveTypeId(override.entityTypeId),
-      ...(override.icon ? { icon: override.icon } : {}),
-      ...(override.iconColor ? { iconColor: override.iconColor } : {}),
-    }))
-    .filter((override) => override.entityTypeId && (override.icon || override.iconColor))
-    .filter((override) => !disabledEntityTypes.has(override.entityTypeId))
-    .sort((left, right) => left.entityTypeId.localeCompare(right.entityTypeId));
-  const fieldTimelineOverrides = cloneJson(
-    ((value as unknown as Record<string, unknown>).fieldTimelineOverrides as unknown[] | undefined) ?? [],
-  )
-    .map((ov: unknown) => {
-      const raw = ov as unknown as Record<string, unknown>;
-      const fieldKey = ensureFieldKey(String(raw.fieldKey ?? ""));
-      if (!fieldKey) return null;
-      const t = raw.timeline as Record<string, unknown> | null | undefined;
-      if (t === null) return { fieldKey, timeline: null as unknown as null };
-      if (t === undefined) return { fieldKey, timeline: null as unknown as null };
-      if (typeof t !== "object") return null;
-      const role = String((t as Record<string, unknown>).role ?? "")
-        .trim()
-        .toLowerCase();
-      if (!["point", "start", "end"].includes(role)) return null;
-      const group =
-        (t as Record<string, unknown>).group != null ? String((t as Record<string, unknown>).group).trim() : undefined;
-      const label =
-        (t as Record<string, unknown>).label != null ? String((t as Record<string, unknown>).label).trim() : undefined;
-      const layerRaw =
-        (t as Record<string, unknown>).layer != null
-          ? String((t as Record<string, unknown>).layer)
-              .trim()
-              .toLowerCase()
-          : undefined;
-      const layer = layerRaw && ["dates", "lifelines"].includes(layerRaw) ? layerRaw : undefined;
-      const timeline: Record<string, unknown> = { role };
-      if (group) timeline.group = group;
-      if (label) timeline.label = label;
-      if (layer) timeline.layer = layer;
-      return {
-        fieldKey,
-        timeline: timeline as unknown as { role: string; group?: string; label?: string; layer?: string },
-      };
-    })
-    .filter((ov: unknown): ov is NonNullable<typeof ov> => ov !== null)
-    .filter(
-      (ov: unknown, index: number, all: unknown[]) =>
-        (all as Array<{ fieldKey: string }>).findIndex((c) => c.fieldKey === (ov as { fieldKey: string }).fieldKey) ===
-        index,
-    )
-    .sort((left: unknown, right: unknown) =>
-      (left as { fieldKey: string }).fieldKey.localeCompare((right as { fieldKey: string }).fieldKey),
-    ) as unknown as Array<Record<string, unknown>>;
-  return {
-    version: value.version || 1,
-    disabledEntityTypes: [...(value.disabledEntityTypes ?? [])].map(preserveTypeId).filter(Boolean).sort(),
-    disabledFields: [...(value.disabledFields ?? [])].sort(),
-    disabledTemplates: [...(value.disabledTemplates ?? [])].sort(),
-    customEntityTypes,
-    customFields,
-    customTemplates,
-    fieldScopeOverrides,
-    templateOverrides,
-    fieldMetadataOverrides,
-    entityTypeAppearanceOverrides,
-    fieldTimelineOverrides,
-  } as unknown as ModuleSchemaOverlay;
-}
-
-function fingerprint(value: ModuleSchemaOverlay): string {
-  return JSON.stringify(normalizeOverlay(value));
-}
-
 // Remounted by parent `{#key overlayRevision}`; initial overlay is intentional.
 // svelte-ignore state_referenced_locally
-const baseline = fingerprint(overlay);
+const baseline = fingerprint(overlay, { pluginId });
 // Plain snapshot — leave checks must not depend on reading $state from external closures.
 // svelte-ignore state_referenced_locally
-let draftPlain = normalizeOverlay(overlay);
+let draftPlain = normalizeOverlay(overlay, { pluginId });
 // svelte-ignore state_referenced_locally
 let draft = $state<ModuleSchemaOverlay>(draftPlain);
 // Keep initial for discard
@@ -554,6 +183,10 @@ const initialPlain = draftPlain;
 let dirtyFlag = false;
 let dirty = $state(false);
 let activeTab = $state<"types" | "fields" | "templates">("types");
+let listQuery = $state("");
+let statusFilter = $state<SchemaStatusFilter>("all");
+let showAdvanced = $state(false);
+let selectedItemId = $state<string | null>(null);
 let builtinTypesCollapsed = $state(false);
 let builtinFieldsCollapsed = $state(false);
 let builtinTemplatesCollapsed = $state(false);
@@ -615,6 +248,8 @@ let newTemplateEntityType = $state("");
 let newTemplateDescription = $state("");
 let newTemplateFieldKeys = $state<string[]>([]);
 let newTemplateRequiredFields = $state<string[]>([]);
+let newTemplateFieldValues = $state<Record<string, unknown>>({});
+let newTemplateIncludeDocument = $state(false);
 let editingTemplateId = $state<string | null>(null);
 let editTemplateName = $state("");
 let editTemplateEntityType = $state("");
@@ -622,6 +257,8 @@ let editTemplateDescription = $state("");
 let editingBuiltinTemplateId = $state<string | null>(null);
 let editingTemplateFieldKeys = $state<string[]>([]);
 let editingTemplateRequiredFields = $state<string[]>([]);
+let editingTemplateFieldValues = $state<Record<string, unknown>>({});
+let editTemplateIncludeDocument = $state(false);
 
 function syncNewTemplateFields() {
   if (!newTemplateEntityType || !effectiveTypes().includes(newTemplateEntityType)) {
@@ -636,8 +273,13 @@ function syncNewTemplateFields() {
     .sort();
   const filtered = newTemplateFieldKeys.filter((k) => available.includes(k));
   const filteredReq = newTemplateRequiredFields.filter((k) => filtered.includes(k));
+  const filteredValues = Object.fromEntries(
+    Object.entries(newTemplateFieldValues).filter(([key]) => filtered.includes(key)),
+  );
   if (filtered.length !== newTemplateFieldKeys.length) newTemplateFieldKeys = filtered;
   if (filteredReq.length !== newTemplateRequiredFields.length) newTemplateRequiredFields = filteredReq;
+  if (Object.keys(filteredValues).length !== Object.keys(newTemplateFieldValues).length)
+    newTemplateFieldValues = filteredValues;
 }
 
 function syncEditTemplateFields() {
@@ -657,8 +299,13 @@ function syncEditTemplateFields() {
   }
   const filtered = editingTemplateFieldKeys.filter((k) => available.includes(k));
   const filteredReq = editingTemplateRequiredFields.filter((k) => filtered.includes(k));
+  const filteredValues = Object.fromEntries(
+    Object.entries(editingTemplateFieldValues).filter(([key]) => filtered.includes(key)),
+  );
   if (filtered.length !== editingTemplateFieldKeys.length) editingTemplateFieldKeys = filtered;
   if (filteredReq.length !== editingTemplateRequiredFields.length) editingTemplateRequiredFields = filteredReq;
+  if (Object.keys(filteredValues).length !== Object.keys(editingTemplateFieldValues).length)
+    editingTemplateFieldValues = filteredValues;
 }
 
 $effect(() => {
@@ -682,9 +329,9 @@ function reportDirty(next: boolean) {
 }
 
 function setDraft(next: ModuleSchemaOverlay) {
-  draftPlain = normalizeOverlay(next);
+  draftPlain = normalizeOverlay(next, { pluginId });
   draft = draftPlain;
-  reportDirty(fingerprint(draftPlain) !== baseline);
+  reportDirty(fingerprint(draftPlain, { pluginId }) !== baseline);
 }
 
 onMount(() => {
@@ -698,6 +345,81 @@ onMount(() => {
 
 function isDisabled(list: string[] | undefined, id: string) {
   return (list ?? []).includes(id);
+}
+
+function matchesWorkbenchItem(item: SchemaListItem): boolean {
+  return filterSchemaListItems([item], listQuery, statusFilter).length > 0;
+}
+
+function typeMatches(type: EntityTypeDefinition, origin: "builtin" | "custom"): boolean {
+  return matchesWorkbenchItem({
+    id: type.id,
+    kind: "type",
+    name: type.name,
+    origin,
+    enabled: origin === "custom" || !isDisabled(draft.disabledEntityTypes, type.id),
+    namespace: origin === "builtin" ? flatPackage.typeNamespace[type.id] : undefined,
+    hint: localTypeId(type.id),
+    searchText: [type.name, type.id, flatPackage.typeNamespace[type.id] ?? "", "type"].join(" "),
+  });
+}
+
+function fieldMatches(field: FieldDefinition, origin: "builtin" | "custom"): boolean {
+  return matchesWorkbenchItem({
+    id: field.key,
+    kind: "field",
+    name: field.label || humanizeId(field.key),
+    origin,
+    enabled: origin === "custom" || !isDisabled(draft.disabledFields, field.key),
+    namespace: origin === "builtin" ? flatPackage.fieldNamespace[field.key] : undefined,
+    hint: fieldTypeLabel(field.type),
+    searchText: [
+      field.label,
+      field.key,
+      field.type,
+      fieldKindGroupLabel(field.type),
+      flatPackage.fieldNamespace[field.key] ?? "",
+      scopeLabel(field.entityTypes),
+    ].join(" "),
+  });
+}
+
+function templateMatches(template: EntityTemplate, origin: "builtin" | "custom"): boolean {
+  return matchesWorkbenchItem({
+    id: template.id,
+    kind: "template",
+    name: template.name,
+    origin,
+    enabled: origin === "custom" || !isDisabled(draft.disabledTemplates, template.id),
+    hint: entityTypeLabel(template.entityType),
+    searchText: [
+      template.name,
+      template.id,
+      template.description ?? "",
+      template.entityType,
+      entityTypeLabel(template.entityType),
+      "template",
+    ].join(" "),
+  });
+}
+
+function editingPreviewFields(entityType: string): Array<{ field: FieldDefinition; required: boolean }> {
+  return editingTemplateFieldKeys
+    .map((key) => {
+      const field = effectiveFieldsForType(entityType).find((candidate) => candidate.key === key);
+      return field ? { field, required: editingTemplateRequiredFields.includes(key) } : null;
+    })
+    .filter((item): item is { field: FieldDefinition; required: boolean } => item !== null);
+}
+
+function closeSelectedItem() {
+  cancelTypeEdit();
+  cancelFieldEdit();
+  cancelTemplateFieldEdit();
+  cancelBuiltinMetadataEdit();
+  cancelTimelineEdit();
+  editingBuiltinFieldKey = null;
+  selectedItemId = null;
 }
 
 function toggleDisabled(listKey: "disabledEntityTypes" | "disabledFields" | "disabledTemplates", id: string) {
@@ -768,6 +490,12 @@ function effectiveFieldsForType(entityType: string): FieldDefinition[] {
   );
 }
 
+function effectiveTemplates(): EntityTemplate[] {
+  return [...packageTemplates, ...(draft.customTemplates ?? [])].filter(
+    (template) => !isDisabled(draft.disabledTemplates, template.id),
+  );
+}
+
 /** All enabled fields (builtin + custom) as searchable picker options. */
 function selectableFieldOptions() {
   return [...packageFields, ...(draft.customFields ?? [])]
@@ -813,6 +541,7 @@ function startTimelineEdit(field: FieldDefinition) {
   editingBuiltinMetadataFieldKey = null;
   editingFieldKey = null;
   editingTimelineFieldKey = field.key;
+  selectedItemId = `field:${field.key}`;
   const tl = effectiveTimeline(field);
   if (tl) {
     editTimelineRole = (tl.role as "point" | "start" | "end") ?? "point";
@@ -829,6 +558,7 @@ function startTimelineEdit(field: FieldDefinition) {
 
 function cancelTimelineEdit() {
   editingTimelineFieldKey = null;
+  selectedItemId = null;
 }
 
 function commitTimelineEdit() {
@@ -1128,12 +858,6 @@ function defaultTemplateFields(entityType: string): Record<string, unknown> {
   return fields;
 }
 
-function defaultFieldValue(field: FieldDefinition): unknown {
-  if (field.type === "boolean") return false;
-  if (field.type === "relationship") return [];
-  return "";
-}
-
 function fieldsForTemplate(template: EntityTemplate, builtin: boolean): Record<string, unknown> {
   if (builtin) {
     const override = (draft.templateOverrides ?? []).find((candidate) => candidate.templateId === template.id);
@@ -1149,6 +873,7 @@ function beginTemplateFieldEdit(template: EntityTemplate, builtin: boolean) {
   editingBuiltinMetadataFieldKey = null;
   editingTemplateId = builtin ? null : template.id;
   editingBuiltinTemplateId = builtin ? template.id : null;
+  selectedItemId = `template:${template.id}`;
   editTemplateName = template.name;
   editTemplateEntityType = template.entityType;
   editTemplateDescription = template.description ?? "";
@@ -1159,6 +884,8 @@ function beginTemplateFieldEdit(template: EntityTemplate, builtin: boolean) {
       ? (draft.templateOverrides ?? []).find((candidate) => candidate.templateId === template.id)?.requiredFields
       : template.requiredFields) ?? []),
   ].sort();
+  editingTemplateFieldValues = { ...fields };
+  editTemplateIncludeDocument = !builtin && template.document !== undefined && template.document !== null;
 }
 
 function templateFieldsFromSelection(template: EntityTemplate): Record<string, unknown> {
@@ -1166,7 +893,16 @@ function templateFieldsFromSelection(template: EntityTemplate): Record<string, u
   return Object.fromEntries(
     editingTemplateFieldKeys.map((key) => {
       const field = effectiveFieldsForType(template.entityType).find((candidate) => candidate.key === key);
-      return [key, key in existing ? existing[key] : field ? defaultFieldValue(field) : ""];
+      return [
+        key,
+        key in editingTemplateFieldValues
+          ? editingTemplateFieldValues[key]
+          : key in existing
+            ? existing[key]
+            : field
+              ? defaultFieldValue(field)
+              : "",
+      ];
     }),
   );
 }
@@ -1176,10 +912,13 @@ function cancelTemplateFieldEdit() {
   editingBuiltinTemplateId = null;
   editingTemplateFieldKeys = [];
   editingTemplateRequiredFields = [];
+  editingTemplateFieldValues = {};
+  editTemplateIncludeDocument = false;
+  selectedItemId = null;
 }
 
 async function save() {
-  await onSave(normalizeOverlay(draft));
+  await onSave(normalizeOverlay(draft, { pluginId }));
 }
 
 async function discardChanges() {
@@ -1243,6 +982,8 @@ async function discardChanges() {
   newTemplateDescription = "";
   newTemplateFieldKeys = [];
   newTemplateRequiredFields = [];
+  newTemplateFieldValues = {};
+  newTemplateIncludeDocument = false;
   editingTemplateId = null;
   editTemplateName = "";
   editTemplateEntityType = "";
@@ -1250,6 +991,8 @@ async function discardChanges() {
   editingBuiltinTemplateId = null;
   editingTemplateFieldKeys = [];
   editingTemplateRequiredFields = [];
+  editingTemplateFieldValues = {};
+  editTemplateIncludeDocument = false;
   typeRemovalPrompt = null;
 }
 
@@ -1259,12 +1002,14 @@ function cancelTypeEdit() {
   editTypeIcon = FALLBACK_ICON;
   editTypeColor = DEFAULT_TYPE_COLOR;
   editTypeFieldKeys = [];
+  selectedItemId = null;
 }
 
 function startTypeEdit(type: string) {
   editingFieldKey = null;
   editingTemplateId = null;
   editingTypeId = type;
+  selectedItemId = `type:${type}`;
   const definition = (draft.customEntityTypes ?? []).find((candidate) => candidate.id === type);
   editTypeValue = definition?.name ?? humanizeId(type);
   editTypeIcon = definition?.icon ?? FALLBACK_ICON;
@@ -1277,7 +1022,7 @@ function startTypeEdit(type: string) {
 function addCustomType() {
   const name = newType.trim();
   if (!name) return;
-  const id = mintTypeId(name);
+  const id = mintTypeId(name, pluginId);
   if (packageTypes.includes(id) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === id)) return;
   setDraft({
     ...draft,
@@ -1295,54 +1040,23 @@ function addCustomType() {
 
 function commitTypeEdit() {
   if (!editingTypeId) return;
-  const from = editingTypeId;
-  const to = mintTypeId(editTypeValue);
+  const stableId = editingTypeId;
   if (!editTypeValue.trim()) {
     cancelTypeEdit();
     return;
   }
-  if (
-    to !== from &&
-    (packageTypes.includes(to) || (draft.customEntityTypes ?? []).some((entityType) => entityType.id === to))
-  )
-    return;
   setDraft({
     ...draft,
     customEntityTypes: (draft.customEntityTypes ?? [])
       .map((item) =>
-        item.id === from
-          ? { ...item, id: to, name: editTypeValue.trim(), icon: editTypeIcon, iconColor: editTypeColor }
+        item.id === stableId
+          ? { ...item, name: editTypeValue.trim(), icon: editTypeIcon, iconColor: editTypeColor }
           : item,
       )
       .sort((left, right) => left.id.localeCompare(right.id)),
-    ...(to !== from
-      ? {
-          customFields: (draft.customFields ?? []).map((field) => ({
-            ...field,
-            entityTypes: field.entityTypes?.map((type) => (type === from ? to : type)),
-          })),
-          customTemplates: (draft.customTemplates ?? []).map((template) => ({
-            ...template,
-            entityType: template.entityType === from ? to : template.entityType,
-          })),
-        }
-      : {}),
   });
-  applyTypeFieldSelection(to, editTypeFieldKeys);
+  applyTypeFieldSelection(stableId, editTypeFieldKeys);
   cancelTypeEdit();
-}
-
-function removeCustomType(name: string) {
-  if (editingTypeId === name) cancelTypeEdit();
-  setDraft({
-    ...draft,
-    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item.id !== name),
-    customFields: (draft.customFields ?? []).map((field) => ({
-      ...field,
-      entityTypes: field.entityTypes?.filter((type) => type !== name),
-    })),
-    customTemplates: (draft.customTemplates ?? []).filter((template) => template.entityType !== name),
-  });
 }
 
 function dependentsForType(name: string): {
@@ -1366,14 +1080,31 @@ type TypeRemovalPrompt = {
   sharedFields: FieldDefinition[];
   templates: EntityTemplate[];
   removeSharedFields: boolean;
+  exclusiveDispositions: Record<string, ExclusiveFieldDisposition | undefined>;
+  entityCount: number | null;
+  entityDisposition: EntityRemovalDisposition | undefined;
+  busy: boolean;
+  error: string;
 };
 
 let typeRemovalPrompt = $state<TypeRemovalPrompt | null>(null);
 
 function requestRemoveCustomType(name: string) {
   const { exclusiveFields, sharedFields, templates } = dependentsForType(name);
-  if (exclusiveFields.length === 0 && sharedFields.length === 0 && templates.length === 0) {
-    removeCustomType(name);
+  const entityCount = entityCountForType(name);
+  const available = effectiveTypes().filter((typeId) => typeId !== name);
+  const needsEntityResolution = entityCount === null || entityCount > 0;
+  if (exclusiveFields.length === 0 && sharedFields.length === 0 && templates.length === 0 && !needsEntityResolution) {
+    if (editingTypeId === name) cancelTypeEdit();
+    setDraft(
+      applyTypeRemovalPlan(draft, {
+        typeId: name,
+        exclusiveDispositions: {},
+        removeSharedFieldKeys: [],
+        entityDisposition: { action: "none" },
+        entityCount: 0,
+      }),
+    );
     return;
   }
   typeRemovalPrompt = {
@@ -1382,51 +1113,121 @@ function requestRemoveCustomType(name: string) {
     sharedFields,
     templates,
     removeSharedFields: false,
+    exclusiveDispositions: {},
+    entityCount,
+    entityDisposition: needsEntityResolution
+      ? available[0]
+        ? { action: "reassign", toTypeId: available[0] }
+        : undefined
+      : { action: "none" },
+    busy: false,
+    error: "",
   };
 }
 
+function updateExclusiveDisposition(fieldKey: string, action: "remove" | "disable" | "reassign") {
+  const prompt = typeRemovalPrompt;
+  if (!prompt) return;
+  const available = effectiveTypes().filter((typeId) => typeId !== prompt.typeId);
+  const disposition: ExclusiveFieldDisposition =
+    action === "reassign" ? { action, toTypeId: available[0] ?? "" } : { action };
+  typeRemovalPrompt = {
+    ...prompt,
+    exclusiveDispositions: { ...prompt.exclusiveDispositions, [fieldKey]: disposition },
+  };
+}
+
+function updateExclusiveReassignment(fieldKey: string, toTypeId: string) {
+  const prompt = typeRemovalPrompt;
+  if (!prompt) return;
+  typeRemovalPrompt = {
+    ...prompt,
+    exclusiveDispositions: {
+      ...prompt.exclusiveDispositions,
+      [fieldKey]: { action: "reassign", toTypeId },
+    },
+  };
+}
+
+function exclusiveReassignmentTarget(prompt: TypeRemovalPrompt, fieldKey: string): string {
+  const disposition = prompt.exclusiveDispositions[fieldKey];
+  return disposition?.action === "reassign" ? disposition.toTypeId : "";
+}
+
+function updateEntityDisposition(action: "none" | "reassign") {
+  const prompt = typeRemovalPrompt;
+  if (!prompt) return;
+  const available = effectiveTypes().filter((typeId) => typeId !== prompt.typeId);
+  typeRemovalPrompt = {
+    ...prompt,
+    entityDisposition: action === "reassign" ? { action, toTypeId: available[0] ?? "" } : { action: "none" },
+    error: "",
+  };
+}
+
+function updateEntityReassignment(toTypeId: string) {
+  const prompt = typeRemovalPrompt;
+  if (!prompt) return;
+  typeRemovalPrompt = {
+    ...prompt,
+    entityDisposition: { action: "reassign", toTypeId },
+    error: "",
+  };
+}
+
+function removalPlanComplete(prompt: TypeRemovalPrompt): boolean {
+  return typeRemovalPlanIsComplete(
+    prompt.exclusiveFields.map((field) => field.key),
+    prompt.exclusiveDispositions,
+    effectiveTypes().filter((typeId) => typeId !== prompt.typeId),
+    {
+      entityCount: prompt.entityCount,
+      entityDisposition: prompt.entityDisposition,
+    },
+  );
+}
+
 function cancelTypeRemoval() {
+  if (typeRemovalPrompt?.busy) return;
   typeRemovalPrompt = null;
 }
 
-function confirmTypeRemoval() {
+async function confirmTypeRemoval() {
   const prompt = typeRemovalPrompt;
-  if (!prompt) return;
-  const { typeId, removeSharedFields } = prompt;
+  if (!prompt || !removalPlanComplete(prompt) || prompt.busy) return;
+  const { typeId, entityDisposition } = prompt;
   if (editingTypeId === typeId) cancelTypeEdit();
-  const fieldsToRemove = new Set(
-    (draft.customFields ?? [])
-      .filter((field) => {
-        const scoped = field.entityTypes ?? [];
-        if (!scoped.includes(typeId)) return false;
-        if (scoped.length === 1) return false;
-        return removeSharedFields;
-      })
-      .map((field) => field.key),
+  const exclusiveDispositions = Object.fromEntries(
+    Object.entries(prompt.exclusiveDispositions).filter(
+      (entry): entry is [string, ExclusiveFieldDisposition] => entry[1] !== undefined,
+    ),
   );
-  setDraft({
-    ...draft,
-    customEntityTypes: (draft.customEntityTypes ?? []).filter((item) => item.id !== typeId),
-    customFields: (draft.customFields ?? [])
-      .filter((field) => !fieldsToRemove.has(field.key))
-      .map((field) => ({
-        ...field,
-        entityTypes: field.entityTypes?.filter((type) => type !== typeId),
-      })),
-    customTemplates: (draft.customTemplates ?? [])
-      .filter((template) => template.entityType !== typeId)
-      .map((template) => {
-        if (fieldsToRemove.size === 0) return template;
-        const fields = { ...(template.fields as Record<string, unknown>) };
-        for (const key of fieldsToRemove) delete fields[key];
-        return {
-          ...template,
-          fields,
-          requiredFields: template.requiredFields?.filter((item) => !fieldsToRemove.has(item)) ?? null,
-        };
+
+  typeRemovalPrompt = { ...prompt, busy: true, error: "" };
+  try {
+    if (entityDisposition?.action === "reassign") {
+      if (!onReassignEntities) {
+        throw new Error("Entity reassignment is unavailable in this session.");
+      }
+      await onReassignEntities(typeId, entityDisposition.toTypeId);
+    }
+    setDraft(
+      applyTypeRemovalPlan(draft, {
+        typeId,
+        exclusiveDispositions,
+        removeSharedFieldKeys: prompt.removeSharedFields ? prompt.sharedFields.map((field) => field.key) : [],
+        entityDisposition: entityDisposition ?? { action: "none" },
+        entityCount: prompt.entityCount,
       }),
-  });
-  typeRemovalPrompt = null;
+    );
+    typeRemovalPrompt = null;
+  } catch (cause) {
+    typeRemovalPrompt = {
+      ...prompt,
+      busy: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
 }
 
 function cancelFieldEdit() {
@@ -1447,6 +1248,7 @@ function cancelFieldEdit() {
   editFieldTimelineGroup = "";
   editFieldTimelineLabel = "";
   editFieldTimelineLayer = "dates";
+  selectedItemId = null;
 }
 
 function startFieldEdit(field: FieldDefinition) {
@@ -1456,6 +1258,7 @@ function startFieldEdit(field: FieldDefinition) {
   editingBuiltinMetadataFieldKey = null;
   editingTimelineFieldKey = null;
   editingFieldKey = field.key;
+  selectedItemId = `field:${field.key}`;
   editFieldLabel = field.label;
   editFieldType = FIELD_TYPES.includes(field.type) ? field.type : "text";
   editFieldEntityTypes = [...(field.entityTypes ?? [])].sort();
@@ -1819,6 +1622,7 @@ function startBuiltinMetadataEdit(field: FieldDefinition) {
   editingBuiltinFieldKey = null;
   editingFieldKey = null;
   editingBuiltinMetadataFieldKey = field.key;
+  selectedItemId = `field:${field.key}`;
   const eff = effectiveBuiltinMetadata(field);
   editBuiltinMetadataDrafts = eff.map((mf) => {
     const r = mf as unknown as Record<string, unknown>;
@@ -1848,6 +1652,7 @@ function startBuiltinMetadataEdit(field: FieldDefinition) {
 function cancelBuiltinMetadataEdit() {
   editingBuiltinMetadataFieldKey = null;
   editBuiltinMetadataDrafts = [];
+  selectedItemId = null;
 }
 
 function commitBuiltinMetadataEdit() {
@@ -2028,7 +1833,7 @@ function addCustomTemplate() {
   for (const key of newTemplateFieldKeys) {
     const field = availableFields.find((f) => f.key === key);
     if (!field) continue;
-    fields[key] = defaultFieldValue(field);
+    fields[key] = key in newTemplateFieldValues ? newTemplateFieldValues[key] : defaultFieldValue(field);
   }
   const finalFields = fields;
   const finalRequired = newTemplateRequiredFields.filter((k) => k in finalFields);
@@ -2039,6 +1844,7 @@ function addCustomTemplate() {
     description: description || null,
     fields: finalFields,
     requiredFields: finalRequired,
+    ...(newTemplateIncludeDocument ? { document: "" } : {}),
   };
   setDraft({ ...draft, customTemplates: [...(draft.customTemplates ?? []), template] });
   newTemplateName = "";
@@ -2046,6 +1852,8 @@ function addCustomTemplate() {
   newTemplateDescription = "";
   newTemplateFieldKeys = [];
   newTemplateRequiredFields = [];
+  newTemplateFieldValues = {};
+  newTemplateIncludeDocument = false;
 }
 
 function commitTemplateEdit() {
@@ -2060,10 +1868,7 @@ function commitTemplateEdit() {
   for (const key of editingTemplateFieldKeys) {
     if (!availableFields.some((f) => f.key === key)) continue;
     const field = availableFields.find((f) => f.key === key)!;
-    const existing = (draft.customTemplates ?? []).find((t) => t.id === id)?.fields as
-      Record<string, unknown> | undefined;
-    const hasExisting = existing && key in existing;
-    fields[key] = hasExisting ? (existing as Record<string, unknown>)[key] : defaultFieldValue(field);
+    fields[key] = key in editingTemplateFieldValues ? editingTemplateFieldValues[key] : defaultFieldValue(field);
   }
   const finalRequired = editingTemplateRequiredFields.filter((k) => k in fields);
   setDraft({
@@ -2077,6 +1882,7 @@ function commitTemplateEdit() {
         description: description || null,
         fields,
         requiredFields: finalRequired,
+        document: editTemplateIncludeDocument ? (template.document ?? "") : undefined,
       };
     }),
   });
@@ -2107,7 +1913,7 @@ function removeCustomTemplate(id: string) {
 }
 </script>
 
-<section class="module-schema-panel">
+<section class="module-schema-panel" class:detail-selected={selectedItemId !== null}>
   <header class="panel-hero">
     <div class="hero-icon">
       <SlidersHorizontal size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -2146,7 +1952,10 @@ function removeCustomTemplate(id: string) {
         class="tab"
         class:active={activeTab === "types"}
         aria-selected={activeTab === "types"}
-        onclick={() => (activeTab = "types")}>
+        onclick={() => {
+          closeSelectedItem();
+          activeTab = "types";
+        }}>
         <Layers size={14} strokeWidth={1.8} aria-hidden="true" />
         Types
         <span class="tab-count">{effectiveTypes().length}</span>
@@ -2157,7 +1966,10 @@ function removeCustomTemplate(id: string) {
         class="tab"
         class:active={activeTab === "fields"}
         aria-selected={activeTab === "fields"}
-        onclick={() => (activeTab = "fields")}>
+        onclick={() => {
+          closeSelectedItem();
+          activeTab = "fields";
+        }}>
         <TextQuote size={14} strokeWidth={1.8} aria-hidden="true" />
         Fields
         <span class="tab-count"
@@ -2170,7 +1982,10 @@ function removeCustomTemplate(id: string) {
         class="tab"
         class:active={activeTab === "templates"}
         aria-selected={activeTab === "templates"}
-        onclick={() => (activeTab = "templates")}>
+        onclick={() => {
+          closeSelectedItem();
+          activeTab = "templates";
+        }}>
         <LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" />
         Templates
         <span class="tab-count"
@@ -2180,1198 +1995,199 @@ function removeCustomTemplate(id: string) {
       </button>
     </div>
 
+    <div class="workbench-toolbar" aria-label="Schema workbench filters">
+      {#if selectedItemId}
+        <button type="button" class="quiet narrow-back" onclick={closeSelectedItem}>← Back to list</button>
+      {/if}
+      <label class="workbench-search">
+        <span>Search</span>
+        <input type="search" bind:value={listQuery} placeholder={`Search ${activeTab}…`} />
+      </label>
+      <label class="workbench-status">
+        <span>Status</span>
+        <select bind:value={statusFilter}>
+          <option value="all">All</option>
+          <option value="enabled">Enabled</option>
+          <option value="disabled">Disabled</option>
+          <option value="custom">Custom</option>
+          <option value="builtin">Builtin</option>
+        </select>
+      </label>
+      <label class="advanced-toggle">
+        <input type="checkbox" bind:checked={showAdvanced} />
+        <span>Advanced</span>
+      </label>
+    </div>
+
     {#if activeTab === "types"}
-      <div class="block elevated">
-        <button
-          type="button"
-          class="block-heading collapsible"
-          aria-expanded={!builtinTypesCollapsed}
-          onclick={() => (builtinTypesCollapsed = !builtinTypesCollapsed)}>
-          <div class="heading-left">
-            <span class="heading-icon"><Layers size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Builtin entity types</h4>
-            <span class="count-badge">{packageTypeDefinitions.length}</span>
-          </div>
-          <span class="block-hint"
-            ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Click to enable or disable</span>
-          <span class="collapse-icon" aria-hidden="true"
-            >{#if builtinTypesCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown
-                size={14}
-                strokeWidth={1.8} />{/if}</span>
-        </button>
-        {#if !builtinTypesCollapsed}
-          <div class="chip-row">
-            {#each packageTypeDefinitions as type}
-              {@const disabled = isDisabled(draft.disabledEntityTypes, type.id)}
-              {@const appearance = effectivePackageAppearance(type)}
-              <button
-                type="button"
-                class="chip"
-                class:is-hidden={disabled}
-                aria-pressed={!disabled}
-                title={type.name}
-                onclick={() => toggleDisabled("disabledEntityTypes", type.id)}>
-                {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff
-                    size={11}
-                    strokeWidth={1.8}
-                    aria-hidden="true" />{/if}
-                <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={13} box={22} />
-                {type.name}
-              </button>
-            {/each}
-          </div>
-          {#if packageTypeDefinitions.some((type) => !isDisabled(draft.disabledEntityTypes, type.id))}
-            <div class="appearance-overrides">
-              <span class="appearance-overrides-label">Package type appearance</span>
-              {#each packageTypeDefinitions.filter((type) => !isDisabled(draft.disabledEntityTypes, type.id)) as type}
-                {@const appearance = effectivePackageAppearance(type)}
-                <div class="appearance-row">
-                  <EntityGlyph icon={appearance.icon} iconColor={appearance.iconColor} {pluginId} size={14} box={28} />
-                  <strong class="appearance-row-name">{type.name}</strong>
-                  <code class="appearance-row-id">{localTypeId(type.id)}</code>
-                  <TypeAppearancePicker
-                    compact
-                    value={{ icon: appearance.icon, iconColor: appearance.iconColor }}
-                    showReset={packageAppearanceChanged(type)}
-                    onReset={() => clearPackageAppearanceOverride(type.id)}
-                    onChange={(next) => setPackageAppearanceOverride(type.id, next, type)} />
-                </div>
-              {/each}
-            </div>
-          {/if}
-          <p class="subtle-note">
-            Disabled types and their exclusive fields/templates are hidden from create menus. Re-enable to bring them
-            back.
-          </p>
-        {/if}
-      </div>
-
-      <div class="block elevated">
-        <div class="block-heading">
-          <div class="heading-left">
-            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Custom entity types</h4>
-            <span class="count-badge accent">{(draft.customEntityTypes ?? []).length}</span>
-          </div>
-          <span class="block-hint">Project-only types layered on the package</span>
-        </div>
-        {#if (draft.customEntityTypes ?? []).length === 0}
-          <div class="empty-inline">
-            <Type size={16} strokeWidth={1.7} aria-hidden="true" />
-            <div>
-              <strong>No custom types yet</strong>
-              <span>Create a project type like “Species”, “Artifact” or “Language”.</span>
-            </div>
-          </div>
-        {:else}
-          <ul class="list">
-            {#each draft.customEntityTypes ?? [] as type}
-              <li class="list-item">
-                {#if editingTypeId === type.id}
-                  <div class="edit-form">
-                    <label>
-                      <span>Name</span>
-                      <input bind:value={editTypeValue} placeholder="Species" />
-                    </label>
-                    <TypeAppearancePicker
-                      value={{ icon: editTypeIcon, iconColor: editTypeColor }}
-                      onChange={(next) => {
-                        editTypeIcon = next.icon;
-                        editTypeColor = next.iconColor;
-                      }} />
-                    <div class="type-select" role="group" aria-label={`Fields for ${editTypeValue || type.name}`}>
-                      <span class="type-select-label">Fields</span>
-                      <FieldPicker
-                        options={selectableFieldOptions()}
-                        selected={editTypeFieldKeys}
-                        onChange={(keys) => (editTypeFieldKeys = keys)}
-                        placeholder="Search fields…" />
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={commitTypeEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-                      <button type="button" class="quiet" onclick={cancelTypeEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else}
-                  <div class="item-main">
-                    <strong
-                      ><EntityGlyph icon={type.icon} iconColor={type.iconColor} {pluginId} size={15} box={24} />
-                      {type.name}</strong>
-                    <code>{localTypeId(type.id)}</code>
-                  </div>
-                  <div class="item-actions">
-                    <button
-                      type="button"
-                      class="quiet icon"
-                      aria-label="Edit {type.name}"
-                      onclick={() => startTypeEdit(type.id)}
-                      ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                    <button
-                      type="button"
-                      class="danger icon"
-                      aria-label="Remove {type.name}"
-                      onclick={() => requestRemoveCustomType(type.id)}
-                      ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <div class="add-form">
-          <div class="add-row">
-            <label>
-              <span>New type</span>
-              <input
-                bind:value={newType}
-                placeholder="Species"
-                onkeydown={(event) => event.key === "Enter" && addCustomType()} />
-            </label>
-            <IconPicker value={newTypeIcon} onChange={(icon) => (newTypeIcon = icon)} />
-            <TypeColorPicker value={newTypeColor} onChange={(iconColor) => (newTypeColor = iconColor)} />
-            <button type="button" class="action primary-action" onclick={addCustomType}
-              ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add type</button>
-          </div>
-          <div class="type-select" role="group" aria-label="Fields for the new type">
-            <span class="type-select-label">Fields <em>(optional)</em></span>
-            <FieldPicker
-              options={selectableFieldOptions()}
-              selected={newTypeFieldKeys}
-              onChange={(keys) => (newTypeFieldKeys = keys)}
-              placeholder="Search fields to include…" />
-          </div>
-        </div>
-      </div>
+      <SchemaTypesPane
+        {draft}
+        {flatPackage}
+        {packageTypeDefinitions}
+        {pluginId}
+        {showAdvanced}
+        bind:selectedItemId
+        bind:builtinTypesCollapsed
+        bind:newType
+        bind:newTypeIcon
+        bind:newTypeColor
+        bind:newTypeFieldKeys
+        bind:editingTypeId
+        bind:editTypeValue
+        bind:editTypeIcon
+        bind:editTypeColor
+        bind:editTypeFieldKeys
+        {typeMatches}
+        {isDisabled}
+        {effectivePackageAppearance}
+        {packageAppearanceChanged}
+        {clearPackageAppearanceOverride}
+        {setPackageAppearanceOverride}
+        {toggleDisabled}
+        {selectableFieldOptions}
+        {effectiveFieldsForType}
+        {effectiveTemplates}
+        {projectionLabelsForType}
+        {entityCountForType}
+        {commitTypeEdit}
+        {cancelTypeEdit}
+        {startTypeEdit}
+        {requestRemoveCustomType}
+        {addCustomType} />
     {:else if activeTab === "fields"}
-      <div class="block elevated">
-        <button
-          type="button"
-          class="block-heading collapsible"
-          aria-expanded={!builtinFieldsCollapsed}
-          onclick={() => (builtinFieldsCollapsed = !builtinFieldsCollapsed)}>
-          <div class="heading-left">
-            <span class="heading-icon"><TextQuote size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Builtin fields</h4>
-            <span class="count-badge">{packageFields.length}</span>
-          </div>
-          <span class="block-hint">Enable fields and choose the entity types they apply to</span>
-          <span class="collapse-icon" aria-hidden="true"
-            >{#if builtinFieldsCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown
-                size={14}
-                strokeWidth={1.8} />{/if}</span>
-        </button>
-        {#if !builtinFieldsCollapsed}
-          <div class="chip-row">
-            {#each packageFields as field}
-              {@const disabled = isDisabled(draft.disabledFields, field.key)}
-              <button
-                type="button"
-                class="chip"
-                class:is-hidden={disabled}
-                aria-pressed={!disabled}
-                title={`${field.key} · ${fieldTypeLabel(field.type)}`}
-                onclick={() => toggleDisabled("disabledFields", field.key)}>
-                {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff
-                    size={11}
-                    strokeWidth={1.8}
-                    aria-hidden="true" />{/if}
-                {field.label || humanizeId(field.key)}
-              </button>
-            {/each}
-          </div>
-          <ul class="list compact-list">
-            {#each packageFields as field}
-              <li class="list-item compact">
-                {#if editingBuiltinFieldKey === field.key}
-                  <div class="edit-form wide">
-                    <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
-                      <span class="type-select-label">Applies to</span>
-                      <div class="chip-row compact">
-                        {#each fieldScopeTypes() as type}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={builtinFieldScope(field).includes(type)}
-                            aria-pressed={builtinFieldScope(field).includes(type)}
-                            onclick={() => updateBuiltinFieldScope(field, toggleInList(builtinFieldScope(field), type))}
-                            >{entityTypeLabel(type)}</button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={() => (editingBuiltinFieldKey = null)}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Done</button>
-                    </div>
-                  </div>
-                {:else if editingBuiltinMetadataFieldKey === field.key}
-                  <div class="edit-form wide">
-                    <div class="type-select" role="group" aria-label={`Attributes for ${field.label}`}>
-                      <span class="type-select-label">Attributes <em>(additive to builtin)</em></span>
-                      {#if editBuiltinMetadataDrafts.length === 0}
-                        <span class="meta-hint"
-                          >No attributes — builtins: {(builtinOriginalMetadata(field) as unknown as unknown[]).length},
-                          effective: {effectiveBuiltinMetadata(field).length}. Add a new one.</span>
-                      {/if}
-                      {#each editBuiltinMetadataDrafts as meta, metaIdx}
-                        {@const isBuiltinKey = (
-                          builtinOriginalMetadata(field) as unknown as MetadataFieldDefinition[]
-                        ).some((m) => String((m as unknown as Record<string, unknown>).key) === meta.key)}
-                        <div class="metadata-row">
-                          <div class="metadata-main">
-                            <input
-                              bind:value={meta.label}
-                              placeholder="Attribute label"
-                              oninput={() => {
-                                if (
-                                  !meta.key ||
-                                  slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))
-                                ) {
-                                  meta.key = slugifyFieldKey(meta.label);
-                                }
-                              }} />
-                            <input
-                              bind:value={meta.key}
-                              placeholder="key"
-                              disabled={isBuiltinKey}
-                              title={isBuiltinKey ? "Builtin key cannot be renamed" : "Metadata key"} />
-                            <select bind:value={meta.type}>
-                              {#each METADATA_FIELD_TYPES as mt}
-                                <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
-                              {/each}
-                            </select>
-                            <label class="inline-check small">
-                              <input type="checkbox" bind:checked={meta.required} />
-                              <span>Required</span>
-                            </label>
-                            <button
-                              type="button"
-                              class="quiet icon"
-                              disabled={isBuiltinKey}
-                              title={isBuiltinKey ? "Builtin attributes cannot be removed (additive)" : "Remove"}
-                              onclick={() => removeEditBuiltinMetadata(metaIdx)}
-                              ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                          </div>
-                          {#if meta.type === "enum"}
-                            <input bind:value={meta.options} placeholder="Options, comma separated" />
-                          {:else if meta.type === "oneof"}
-                            <div class="oneof-variants nested">
-                              {#each meta.oneOf as variant, vIdx}
-                                <div class="variant-row small">
-                                  <input bind:value={variant.label} placeholder="Variant label" />
-                                  <select bind:value={variant.type}>
-                                    {#each ["text", "number", "boolean", "date", "enum"] as vt}
-                                      <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
-                                    {/each}
-                                  </select>
-                                  {#if variant.type === "enum"}
-                                    <input bind:value={variant.options} placeholder="Options, comma separated" />
-                                  {/if}
-                                  <button
-                                    type="button"
-                                    class="quiet icon"
-                                    onclick={() => removeEditBuiltinMetadataOneOfVariant(metaIdx, vIdx)}
-                                    ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                                </div>
-                              {/each}
-                              <button
-                                type="button"
-                                class="quiet small"
-                                onclick={() => addEditBuiltinMetadataOneOfVariant(metaIdx)}
-                                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
-                            </div>
-                          {/if}
-                          {#if isBuiltinKey}<span class="meta-hint"
-                              >Builtin attribute — editing overrides the packaged definition.</span
-                            >{/if}
-                        </div>
-                      {/each}
-                      <button type="button" class="quiet" onclick={addEditBuiltinMetadata}
-                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-                      <span class="meta-hint"
-                        >Builtin {(builtinOriginalMetadata(field) as unknown as unknown[]).length} + override {(
-                          draft.fieldMetadataOverrides ?? []
-                        ).find((ov) => ov.fieldKey === field.key)?.metadataFields?.length ?? 0} = effective {effectiveBuiltinMetadata(
-                          field,
-                        ).length}. Stored as delta.</span>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={commitBuiltinMetadataEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save attributes</button>
-                      <button type="button" class="quiet" onclick={cancelBuiltinMetadataEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else if editingTimelineFieldKey === field.key}
-                  <div class="edit-form wide">
-                    <div class="type-select" role="group" aria-label={`Timeline for ${field.label}`}>
-                      <span class="type-select-label">Timeline</span>
-                      <label>
-                        <span>Role</span>
-                        <select bind:value={editTimelineRole}>
-                          <option value="point">Point</option>
-                          <option value="start">Start</option>
-                          <option value="end">End</option>
-                        </select>
-                      </label>
-                      {#if editTimelineRole !== "point"}
-                        <label>
-                          <span>Group</span>
-                          <input bind:value={editTimelineGroup} placeholder="e.g. life, existence" />
-                        </label>
-                      {/if}
-                      <label>
-                        <span>Label</span>
-                        <input bind:value={editTimelineLabel} placeholder="Born, Created…" />
-                      </label>
-                      <label>
-                        <span>Layer</span>
-                        <select bind:value={editTimelineLayer}>
-                          <option value="dates">Project dates</option>
-                          <option value="lifelines">Lifelines</option>
-                        </select>
-                      </label>
-                      <span class="meta-hint"
-                        >Group required for start/end; layer controls Timeline swarm. Shared required — builtin date
-                        fields are already shared.</span>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={commitTimelineEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-                      <button type="button" class="quiet" onclick={cancelTimelineEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else}
-                  <div class="item-main">
-                    <div class="item-title-row">
-                      <strong>{field.label || humanizeId(field.key)}</strong>
-                      <span class="type-pill">{fieldTypeLabel(field.type)}</span>
-                      {#if isDisabled(draft.disabledFields, field.key)}<span class="disabled-pill"
-                          ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span
-                        >{/if}
-                      {#if field.type === "relationship" && effectiveBuiltinMetadata(field).length > 0}
-                        <span class="meta">{builtinMetadataFieldExtras(field)}</span>
-                      {/if}
-                      {#if field.type === "date"}
-                        {#if isTimelineEnabled(field)}
-                          <span class="meta">· Timeline: {timelineBadge(field)}</span>
-                        {:else if (field as unknown as Record<string, unknown>).shared}
-                          <span class="meta">· Shared, not on Timeline</span>
-                        {/if}
-                      {/if}
-                    </div>
-                    <span class="meta"
-                      >{scopeLabel(builtinFieldScope(field))} <span class="dot">·</span> <code>{field.key}</code>
-                      {#if field.type === "relationship" && (field as unknown as Record<string, unknown>).metadataFields}
-                        <span class="dot">·</span>
-                        {((field as unknown as Record<string, unknown>).metadataFields as unknown[]).length} builtin attr{(
-                          (field as unknown as Record<string, unknown>).metadataFields as unknown[]
-                        ).length === 1
-                          ? ""
-                          : "s"}
-                      {/if}
-                      {#if field.type === "relationship" && (draft.fieldMetadataOverrides ?? []).some((ov) => ov.fieldKey === field.key)}
-                        <span class="dot">·</span> +{(draft.fieldMetadataOverrides ?? []).find(
-                          (ov) => ov.fieldKey === field.key,
-                        )?.metadataFields?.length ?? 0} override
-                      {/if}
-                      {#if field.type === "date" && (draft as unknown as { fieldTimelineOverrides?: Array<{ fieldKey: string }> }).fieldTimelineOverrides?.some((ov) => ov.fieldKey === field.key)}
-                        <span class="dot">·</span> timeline override
-                      {/if}
-                    </span>
-                  </div>
-                  <div class="item-actions">
-                    <button
-                      type="button"
-                      class="quiet"
-                      onclick={() => {
-                        editingBuiltinMetadataFieldKey = null;
-                        editBuiltinMetadataDrafts = [];
-                        editingTimelineFieldKey = null;
-                        editingBuiltinFieldKey = field.key;
-                      }}>Edit scope</button>
-                    {#if field.type === "relationship"}
-                      <button
-                        type="button"
-                        class="quiet"
-                        disabled={isDisabled(draft.disabledFields, field.key)}
-                        onclick={() => startBuiltinMetadataEdit(field)}>Edit attributes</button>
-                    {/if}
-                    {#if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
-                      {#if isTimelineEnabled(field)}
-                        <button
-                          type="button"
-                          class="quiet"
-                          disabled={isDisabled(draft.disabledFields, field.key)}
-                          onclick={() => startTimelineEdit(field)}>Edit Timeline</button>
-                        <button
-                          type="button"
-                          class="quiet"
-                          disabled={isDisabled(draft.disabledFields, field.key)}
-                          onclick={() => disableTimeline(field)}>Disable Timeline</button>
-                      {:else}
-                        <button
-                          type="button"
-                          class="quiet"
-                          disabled={isDisabled(draft.disabledFields, field.key)}
-                          onclick={() => startTimelineEdit(field)}>Enable Timeline</button>
-                      {/if}
-                    {/if}
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-
-      <div class="block elevated">
-        <div class="block-heading">
-          <div class="heading-left">
-            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Custom fields</h4>
-            <span class="count-badge accent">{(draft.customFields ?? []).length}</span>
-          </div>
-          <span class="block-hint">Choose at least one entity type for each field</span>
-        </div>
-        {#if (draft.customFields ?? []).length === 0}
-          <div class="empty-inline">
-            <Blocks size={16} strokeWidth={1.7} aria-hidden="true" />
-            <div>
-              <strong>No custom fields yet</strong>
-              <span>Add a field like “Word count” or “Origin”.</span>
-            </div>
-          </div>
-        {:else}
-          <ul class="list">
-            {#each draft.customFields ?? [] as field}
-              <li class="list-item">
-                {#if editingFieldKey === field.key}
-                  <div class="edit-form">
-                    <label>
-                      <span>Label</span>
-                      <input bind:value={editFieldLabel} placeholder="Word count" />
-                    </label>
-                    <label>
-                      <span>Type</span>
-                      <select bind:value={editFieldType}>
-                        {#each FIELD_TYPES as type}
-                          <option value={type}>{fieldTypeLabel(type)}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    {#if editFieldType === "enum"}
-                      <label>
-                        <span>Options <em>(comma separated)</em></span>
-                        <input bind:value={editFieldOptions} placeholder="idea, drafting, revising, complete" />
-                      </label>
-                      <label class="inline-check">
-                        <input type="checkbox" bind:checked={editFieldMultiple} />
-                        <span>Allow multiple values</span>
-                      </label>
-                    {:else if editFieldType === "oneof"}
-                      <div class="type-select" role="group" aria-label="One-of variants">
-                        <span class="type-select-label">Variants <em>(at least one)</em></span>
-                        {#each editFieldOneOfVariants as variant, idx}
-                          <div class="variant-row">
-                            <input bind:value={variant.label} placeholder="Variant label" />
-                            <select bind:value={variant.type}>
-                              {#each ["text", "number", "boolean", "date", "enum"] as vt}
-                                <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
-                              {/each}
-                            </select>
-                            {#if variant.type === "enum"}
-                              <input bind:value={variant.options} placeholder="Options, comma separated" />
-                            {/if}
-                            <button type="button" class="quiet icon" onclick={() => removeEditFieldOneOfVariant(idx)}
-                              ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                          </div>
-                        {/each}
-                        <button type="button" class="quiet" onclick={addEditFieldOneOfVariant}
-                          ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
-                      </div>
-                    {:else if editFieldType === "relationship"}
-                      <label>
-                        <span>Relationship type</span>
-                        <input bind:value={editFieldRelationshipType} placeholder="Related to" />
-                      </label>
-                      <div class="type-select" role="group" aria-label="Target entity types">
-                        <span class="type-select-label">Target types <em>(required)</em></span>
-                        <div class="chip-row compact">
-                          {#each fieldScopeTypes() as type}
-                            <button
-                              type="button"
-                              class="chip select"
-                              class:selected={editFieldTargetEntityTypes.includes(type)}
-                              aria-pressed={editFieldTargetEntityTypes.includes(type)}
-                              onclick={() =>
-                                (editFieldTargetEntityTypes = toggleInList(editFieldTargetEntityTypes, type))}>
-                              {entityTypeLabel(type)}
-                            </button>
-                          {/each}
-                        </div>
-                      </div>
-                      <label>
-                        <span>Cardinality</span>
-                        <select bind:value={editFieldCardinality}>
-                          <option value="many">Many</option>
-                          <option value="one">One</option>
-                        </select>
-                      </label>
-                      <div class="type-select" role="group" aria-label="Relationship attributes">
-                        <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
-                        {#if editFieldMetadata.length === 0}
-                          <span class="meta-hint">No attributes yet — e.g., “Since”, “Strength”, “Role”.</span>
-                        {/if}
-                        {#each editFieldMetadata as meta, metaIdx}
-                          <div class="metadata-row">
-                            <div class="metadata-main">
-                              <input
-                                bind:value={meta.label}
-                                placeholder="Attribute label"
-                                oninput={() => {
-                                  if (
-                                    !meta.key ||
-                                    slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))
-                                  ) {
-                                    meta.key = slugifyFieldKey(meta.label);
-                                  }
-                                }} />
-                              <input bind:value={meta.key} placeholder="key" title="Metadata key (snake_case)" />
-                              <select bind:value={meta.type}>
-                                {#each METADATA_FIELD_TYPES as mt}
-                                  <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
-                                {/each}
-                              </select>
-                              <label class="inline-check small">
-                                <input type="checkbox" bind:checked={meta.required} />
-                                <span>Required</span>
-                              </label>
-                              <button type="button" class="quiet icon" onclick={() => removeEditFieldMetadata(metaIdx)}
-                                ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                            </div>
-                            {#if meta.type === "enum"}
-                              <input
-                                bind:value={meta.options}
-                                placeholder="Options, comma separated e.g. weak, strong" />
-                            {:else if meta.type === "oneof"}
-                              <div class="oneof-variants nested">
-                                {#each meta.oneOf as variant, vIdx}
-                                  <div class="variant-row small">
-                                    <input bind:value={variant.label} placeholder="Variant label" />
-                                    <select bind:value={variant.type}>
-                                      {#each ["text", "number", "boolean", "date", "enum"] as vt}
-                                        <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
-                                      {/each}
-                                    </select>
-                                    {#if variant.type === "enum"}
-                                      <input bind:value={variant.options} placeholder="Options, comma separated" />
-                                    {/if}
-                                    <button
-                                      type="button"
-                                      class="quiet icon"
-                                      onclick={() => removeEditFieldMetadataOneOfVariant(metaIdx, vIdx)}
-                                      ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                                  </div>
-                                {/each}
-                                <button
-                                  type="button"
-                                  class="quiet small"
-                                  onclick={() => addEditFieldMetadataOneOfVariant(metaIdx)}
-                                  ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
-                              </div>
-                            {/if}
-                            {#if meta.label.trim() && !ensureFieldKey(meta.key)}
-                              <span class="field-error">Key must start with a letter.</span>
-                            {/if}
-                          </div>
-                        {/each}
-                        <button type="button" class="quiet" onclick={addEditFieldMetadata}
-                          ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-                        <span class="meta-hint"
-                          >Stored as <code>metadataFields</code> on the relationship field; validated on every link and shown
-                          in the relationship details dialog.</span>
-                      </div>
-                    {:else if editFieldType === "date"}
-                      <label class="inline-check">
-                        <input type="checkbox" bind:checked={editFieldShared} />
-                        <span>Shared — allow Timeline and other modules to read</span>
-                      </label>
-                      {#if editFieldShared}
-                        <label class="inline-check">
-                          <input type="checkbox" bind:checked={editFieldTimelineEnabled} />
-                          <span>Show on Timeline</span>
-                        </label>
-                        {#if editFieldTimelineEnabled}
-                          <div class="timeline-config">
-                            <label>
-                              <span>Role</span>
-                              <select bind:value={editFieldTimelineRole}>
-                                <option value="point">Point</option>
-                                <option value="start">Start</option>
-                                <option value="end">End</option>
-                              </select>
-                            </label>
-                            {#if editFieldTimelineRole !== "point"}
-                              <label>
-                                <span>Group</span>
-                                <input bind:value={editFieldTimelineGroup} placeholder="e.g. life, existence" />
-                              </label>
-                            {/if}
-                            <label>
-                              <span>Label</span>
-                              <input bind:value={editFieldTimelineLabel} placeholder="Born, Created…" />
-                            </label>
-                            <label>
-                              <span>Layer</span>
-                              <select bind:value={editFieldTimelineLayer}>
-                                <option value="dates">Project dates</option>
-                                <option value="lifelines">Lifelines</option>
-                              </select>
-                            </label>
-                          </div>
-                        {/if}
-                      {/if}
-                    {/if}
-                    <div class="type-select" role="group" aria-label="Applies to entity types">
-                      <span class="type-select-label">Applies to <em>(optional)</em></span>
-                      <div class="chip-row compact">
-                        {#each fieldScopeTypes() as type}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={editFieldEntityTypes.includes(type)}
-                            aria-pressed={editFieldEntityTypes.includes(type)}
-                            onclick={() => (editFieldEntityTypes = toggleInList(editFieldEntityTypes, type))}>
-                            {entityTypeLabel(type)}
-                          </button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" disabled={!canSaveFieldEdit()} onclick={commitFieldEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-                      <button type="button" class="quiet" onclick={cancelFieldEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else}
-                  <div class="item-main">
-                    <div class="item-title-row">
-                      <strong>{field.label}</strong>
-                      <span class="type-pill">{fieldTypeLabel(field.type)}</span>
-                      {#if fieldExtrasLabel(field)}
-                        <span class="meta">{fieldExtrasLabel(field)}</span>
-                      {/if}
-                      {#if field.type === "date" && (field as unknown as Record<string, unknown>).timeline}
-                        <span class="meta">· Timeline: {timelineBadge(field)}</span>
-                      {:else if field.type === "date" && (field as unknown as Record<string, unknown>).shared}
-                        <span class="meta">· Shared</span>
-                      {/if}
-                    </div>
-                    <span class="meta"
-                      >{scopeLabel(field.entityTypes)} <span class="dot">·</span> <code>{field.key}</code></span>
-                  </div>
-                  <div class="item-actions">
-                    <button
-                      type="button"
-                      class="quiet icon"
-                      aria-label="Edit {field.label}"
-                      onclick={() => startFieldEdit(field)}
-                      ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                    <button
-                      type="button"
-                      class="danger icon"
-                      aria-label="Remove {field.label}"
-                      onclick={() => removeCustomField(field.key)}
-                      ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <div class="add-form stacked">
-          <div class="add-row">
-            <label>
-              <span>Label</span>
-              <input
-                bind:value={newFieldLabel}
-                placeholder="Word count"
-                onkeydown={(event) => event.key === "Enter" && addCustomField()} />
-            </label>
-            <label>
-              <span>Type</span>
-              <select bind:value={newFieldType}>
-                {#each FIELD_TYPES as type}
-                  <option value={type}>{fieldTypeLabel(type)}</option>
-                {/each}
-              </select>
-            </label>
-            <button type="button" class="action primary-action" disabled={!canAddField()} onclick={addCustomField}
-              ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add field</button>
-          </div>
-          {#if newFieldType === "enum"}
-            <label>
-              <span>Options <em>(comma separated)</em></span>
-              <input bind:value={newFieldOptions} placeholder="idea, drafting, revising, complete" />
-            </label>
-            <label class="inline-check">
-              <input type="checkbox" bind:checked={newFieldMultiple} />
-              <span>Allow multiple values</span>
-            </label>
-          {:else if newFieldType === "oneof"}
-            <div class="type-select" role="group" aria-label="One-of variants">
-              <span class="type-select-label">Variants <em>(at least one)</em></span>
-              {#each newFieldOneOfVariants as variant, idx}
-                <div class="variant-row">
-                  <input bind:value={variant.label} placeholder="Variant label" />
-                  <select bind:value={variant.type}>
-                    {#each ["text", "number", "boolean", "date", "enum"] as vt}
-                      <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
-                    {/each}
-                  </select>
-                  {#if variant.type === "enum"}
-                    <input bind:value={variant.options} placeholder="Options, comma separated" />
-                  {/if}
-                  <button type="button" class="quiet icon" onclick={() => removeNewFieldOneOfVariant(idx)}
-                    ><X size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                </div>
-              {/each}
-              <button type="button" class="quiet" onclick={addNewFieldOneOfVariant}
-                ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
-            </div>
-          {:else if newFieldType === "relationship"}
-            <label>
-              <span>Relationship type</span>
-              <input bind:value={newFieldRelationshipType} placeholder="Related to" />
-            </label>
-            <div class="type-select" role="group" aria-label="Target entity types">
-              <span class="type-select-label">Target types <em>(required)</em></span>
-              <div class="chip-row compact">
-                {#each fieldScopeTypes() as type}
-                  <button
-                    type="button"
-                    class="chip select"
-                    class:selected={newFieldTargetEntityTypes.includes(type)}
-                    aria-pressed={newFieldTargetEntityTypes.includes(type)}
-                    onclick={() => (newFieldTargetEntityTypes = toggleInList(newFieldTargetEntityTypes, type))}>
-                    {entityTypeLabel(type)}
-                  </button>
-                {/each}
-              </div>
-            </div>
-            <label>
-              <span>Cardinality</span>
-              <select bind:value={newFieldCardinality}>
-                <option value="many">Many</option>
-                <option value="one">One</option>
-              </select>
-            </label>
-            <div class="type-select" role="group" aria-label="Relationship attributes">
-              <span class="type-select-label">Attributes <em>(custom fields on the relationship)</em></span>
-              {#if newFieldMetadata.length === 0}
-                <span class="meta-hint">No attributes yet — add “Since”, “Role”, “Strength” …</span>
-              {/if}
-              {#each newFieldMetadata as meta, metaIdx}
-                <div class="metadata-row">
-                  <div class="metadata-main">
-                    <input
-                      bind:value={meta.label}
-                      placeholder="Attribute label"
-                      oninput={() => {
-                        if (!meta.key || slugifyFieldKey(meta.key) === slugifyFieldKey(meta.label.slice(0, -1))) {
-                          meta.key = slugifyFieldKey(meta.label);
-                        }
-                      }} />
-                    <input bind:value={meta.key} placeholder="key" />
-                    <select bind:value={meta.type}>
-                      {#each METADATA_FIELD_TYPES as mt}
-                        <option value={mt}>{fieldTypeLabel(mt as FieldType)}</option>
-                      {/each}
-                    </select>
-                    <label class="inline-check small">
-                      <input type="checkbox" bind:checked={meta.required} />
-                      <span>Required</span>
-                    </label>
-                    <button type="button" class="quiet icon" onclick={() => removeNewFieldMetadata(metaIdx)}
-                      ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                  </div>
-                  {#if meta.type === "enum"}
-                    <input bind:value={meta.options} placeholder="Options, comma separated" />
-                  {:else if meta.type === "oneof"}
-                    <div class="oneof-variants nested">
-                      {#each meta.oneOf as variant, vIdx}
-                        <div class="variant-row small">
-                          <input bind:value={variant.label} placeholder="Variant label" />
-                          <select bind:value={variant.type}>
-                            {#each ["text", "number", "boolean", "date", "enum"] as vt}
-                              <option value={vt}>{fieldTypeLabel(vt as FieldType)}</option>
-                            {/each}
-                          </select>
-                          {#if variant.type === "enum"}
-                            <input bind:value={variant.options} placeholder="Options, comma separated" />
-                          {/if}
-                          <button
-                            type="button"
-                            class="quiet icon"
-                            onclick={() => removeNewFieldMetadataOneOfVariant(metaIdx, vIdx)}
-                            ><X size={12} strokeWidth={1.8} aria-hidden="true" /></button>
-                        </div>
-                      {/each}
-                      <button type="button" class="quiet small" onclick={() => addNewFieldMetadataOneOfVariant(metaIdx)}
-                        ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add variant</button>
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-              <button type="button" class="quiet" onclick={addNewFieldMetadata}
-                ><Plus size={12} strokeWidth={1.8} aria-hidden="true" /> Add attribute</button>
-              <span class="meta-hint">Each attribute becomes a field in the relationship details dialog.</span>
-            </div>
-          {:else if newFieldType === "date"}
-            <label class="inline-check">
-              <input type="checkbox" bind:checked={newFieldShared} />
-              <span>Shared — allow Timeline and other modules to read</span>
-            </label>
-            {#if newFieldShared}
-              <label class="inline-check">
-                <input type="checkbox" bind:checked={newFieldTimelineEnabled} />
-                <span>Show on Timeline</span>
-              </label>
-              {#if newFieldTimelineEnabled}
-                <div class="timeline-config">
-                  <label>
-                    <span>Role</span>
-                    <select bind:value={newFieldTimelineRole}>
-                      <option value="point">Point</option>
-                      <option value="start">Start</option>
-                      <option value="end">End</option>
-                    </select>
-                  </label>
-                  {#if newFieldTimelineRole !== "point"}
-                    <label>
-                      <span>Group</span>
-                      <input bind:value={newFieldTimelineGroup} placeholder="e.g. life, existence" />
-                    </label>
-                  {/if}
-                  <label>
-                    <span>Label</span>
-                    <input bind:value={newFieldTimelineLabel} placeholder="Born, Created…" />
-                  </label>
-                  <label>
-                    <span>Layer</span>
-                    <select bind:value={newFieldTimelineLayer}>
-                      <option value="dates">Project dates</option>
-                      <option value="lifelines">Lifelines</option>
-                    </select>
-                  </label>
-                </div>
-              {/if}
-            {/if}
-          {/if}
-          <div class="type-select" role="group" aria-label="Applies to entity types">
-            <span class="type-select-label">Applies to <em>(optional)</em></span>
-            <div class="chip-row compact">
-              {#each fieldScopeTypes() as type}
-                <button
-                  type="button"
-                  class="chip select"
-                  class:selected={newFieldEntityTypes.includes(type)}
-                  aria-pressed={newFieldEntityTypes.includes(type)}
-                  onclick={() => (newFieldEntityTypes = toggleInList(newFieldEntityTypes, type))}>
-                  {entityTypeLabel(type)}
-                </button>
-              {/each}
-            </div>
-          </div>
-        </div>
-      </div>
+      <SchemaFieldsPane
+        {draft}
+        {flatPackage}
+        {packageFields}
+        {showAdvanced}
+        bind:selectedItemId
+        bind:builtinFieldsCollapsed
+        bind:editingBuiltinFieldKey
+        bind:editingBuiltinMetadataFieldKey
+        bind:editBuiltinMetadataDrafts
+        bind:editingTimelineFieldKey
+        bind:editTimelineRole
+        bind:editTimelineGroup
+        bind:editTimelineLabel
+        bind:editTimelineLayer
+        bind:editingFieldKey
+        bind:editFieldLabel
+        bind:editFieldType
+        bind:editFieldEntityTypes
+        bind:editFieldOptions
+        bind:editFieldMultiple
+        bind:editFieldTargetEntityTypes
+        bind:editFieldRelationshipType
+        bind:editFieldCardinality
+        bind:editFieldOneOfVariants
+        bind:editFieldMetadata
+        bind:editFieldShared
+        bind:editFieldTimelineEnabled
+        bind:editFieldTimelineRole
+        bind:editFieldTimelineGroup
+        bind:editFieldTimelineLabel
+        bind:editFieldTimelineLayer
+        bind:newFieldLabel
+        bind:newFieldType
+        bind:newFieldEntityTypes
+        bind:newFieldOptions
+        bind:newFieldMultiple
+        bind:newFieldTargetEntityTypes
+        bind:newFieldRelationshipType
+        bind:newFieldCardinality
+        bind:newFieldOneOfVariants
+        bind:newFieldMetadata
+        bind:newFieldShared
+        bind:newFieldTimelineEnabled
+        bind:newFieldTimelineRole
+        bind:newFieldTimelineGroup
+        bind:newFieldTimelineLabel
+        bind:newFieldTimelineLayer
+        {fieldMatches}
+        {isDisabled}
+        {toggleDisabled}
+        {fieldScopeTypes}
+        {builtinFieldScope}
+        {updateBuiltinFieldScope}
+        {toggleInList}
+        {entityTypeLabel}
+        {builtinOriginalMetadata}
+        {effectiveBuiltinMetadata}
+        {builtinMetadataFieldExtras}
+        {removeEditBuiltinMetadata}
+        {removeEditBuiltinMetadataOneOfVariant}
+        {addEditBuiltinMetadataOneOfVariant}
+        {addEditBuiltinMetadata}
+        {commitBuiltinMetadataEdit}
+        {cancelBuiltinMetadataEdit}
+        {commitTimelineEdit}
+        {cancelTimelineEdit}
+        {isTimelineEnabled}
+        {timelineBadge}
+        {scopeLabel}
+        {startBuiltinMetadataEdit}
+        {startTimelineEdit}
+        {disableTimeline}
+        {removeEditFieldOneOfVariant}
+        {addEditFieldOneOfVariant}
+        {removeEditFieldMetadata}
+        {removeEditFieldMetadataOneOfVariant}
+        {addEditFieldMetadataOneOfVariant}
+        {addEditFieldMetadata}
+        {canSaveFieldEdit}
+        {commitFieldEdit}
+        {cancelFieldEdit}
+        {fieldExtrasLabel}
+        {startFieldEdit}
+        {removeCustomField}
+        {canAddField}
+        {addCustomField}
+        {removeNewFieldOneOfVariant}
+        {addNewFieldOneOfVariant}
+        {removeNewFieldMetadata}
+        {removeNewFieldMetadataOneOfVariant}
+        {addNewFieldMetadataOneOfVariant}
+        {addNewFieldMetadata} />
     {:else}
-      <div class="block elevated">
-        <button
-          type="button"
-          class="block-heading collapsible"
-          aria-expanded={!builtinTemplatesCollapsed}
-          onclick={() => (builtinTemplatesCollapsed = !builtinTemplatesCollapsed)}>
-          <div class="heading-left">
-            <span class="heading-icon"><LayoutTemplate size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Builtin templates</h4>
-            <span class="count-badge">{packageTemplates.length}</span>
-          </div>
-          <span class="block-hint">Enable templates and choose their included fields</span>
-          <span class="collapse-icon" aria-hidden="true"
-            >{#if builtinTemplatesCollapsed}<ChevronRight size={14} strokeWidth={1.8} />{:else}<ChevronDown
-                size={14}
-                strokeWidth={1.8} />{/if}</span>
-        </button>
-        {#if !builtinTemplatesCollapsed}
-          <div class="chip-row">
-            {#each packageTemplates as template}
-              {@const disabled = isDisabled(draft.disabledTemplates, template.id)}
-              <button
-                type="button"
-                class="chip"
-                class:is-hidden={disabled}
-                aria-pressed={!disabled}
-                title={template.description || template.id}
-                onclick={() => toggleDisabled("disabledTemplates", template.id)}>
-                {#if !disabled}<Check size={11} strokeWidth={2.2} aria-hidden="true" />{:else}<EyeOff
-                    size={11}
-                    strokeWidth={1.8}
-                    aria-hidden="true" />{/if}
-                {template.name}
-              </button>
-            {/each}
-          </div>
-          <ul class="list compact-list">
-            {#each packageTemplates as template}
-              <li class="list-item compact">
-                {#if editingBuiltinTemplateId === template.id}
-                  <div class="edit-form wide">
-                    <div class="type-select" role="group" aria-label={`Fields for ${template.name}`}>
-                      <span class="type-select-label">Included fields</span>
-                      <div class="chip-row compact">
-                        {#each effectiveFieldsForType(template.entityType) as field}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={editingTemplateFieldKeys.includes(field.key)}
-                            aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                            onclick={() => {
-                              editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
-                              if (!editingTemplateFieldKeys.includes(field.key))
-                                editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
-                                  (key) => key !== field.key,
-                                );
-                            }}>{field.label || humanizeId(field.key)}</button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
-                      <span class="type-select-label">Required fields</span>
-                      <div class="chip-row compact">
-                        {#each effectiveFieldsForType(template.entityType).filter( (f) => editingTemplateFieldKeys.includes(f.key) ) as field}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={editingTemplateRequiredFields.includes(field.key)}
-                            aria-pressed={editingTemplateRequiredFields.includes(field.key)}
-                            onclick={() =>
-                              (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                            >{field.label || humanizeId(field.key)}</button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={commitBuiltinTemplateEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save fields</button
-                      ><button type="button" class="quiet" onclick={cancelTemplateFieldEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else}
-                  <div class="item-main">
-                    <div class="item-title-row">
-                      <strong>{template.name}</strong>
-                      <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
-                      {#if isDisabled(draft.disabledTemplates, template.id)}<span class="disabled-pill"
-                          ><EyeOff size={10} strokeWidth={1.8} aria-hidden="true" /> Disabled</span
-                        >{/if}
-                    </div>
-                    <span class="meta"
-                      >{Object.keys(fieldsForTemplate(template, true)).length} fields <span class="dot">·</span>
-                      {template.description || template.id}</span>
-                  </div>
-                  <div class="item-actions">
-                    <button type="button" class="quiet" onclick={() => beginTemplateFieldEdit(template, true)}
-                      >Customize fields</button>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </div>
-
-      <div class="block elevated">
-        <div class="block-heading">
-          <div class="heading-left">
-            <span class="heading-icon accent"><Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-            <h4>Custom templates</h4>
-            <span class="count-badge accent">{(draft.customTemplates ?? []).length}</span>
-          </div>
-          <span class="block-hint">Create shortcuts with optional descriptions</span>
-        </div>
-        {#if (draft.customTemplates ?? []).length === 0}
-          <div class="empty-inline">
-            <LayoutTemplate size={16} strokeWidth={1.7} aria-hidden="true" />
-            <div>
-              <strong>No custom templates yet</strong>
-              <span
-                >Templates bundle fields for quick creation — e.g., “Species profile” for a custom Species type.</span>
-            </div>
-          </div>
-        {:else}
-          <ul class="list">
-            {#each draft.customTemplates ?? [] as template}
-              <li class="list-item">
-                {#if editingTemplateId === template.id}
-                  <div class="edit-form">
-                    <label>
-                      <span>Name</span>
-                      <input bind:value={editTemplateName} placeholder="Species profile" />
-                    </label>
-                    <label>
-                      <span>Entity type</span>
-                      <select bind:value={editTemplateEntityType}>
-                        <option value="">Choose type</option>
-                        {#each effectiveTypes() as type}
-                          <option value={type}>{entityTypeLabel(type)}</option>
-                        {/each}
-                      </select>
-                    </label>
-                    <label class="grow">
-                      <span>Description <em>(optional)</em></span>
-                      <input bind:value={editTemplateDescription} placeholder="A kind of being in this world." />
-                    </label>
-                    <div
-                      class="type-select"
-                      role="group"
-                      aria-label={`Fields for ${editTemplateName || template.name}`}>
-                      <span class="type-select-label">Included fields</span>
-                      <div class="chip-row compact">
-                        {#each effectiveFieldsForType(editTemplateEntityType) as field}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={editingTemplateFieldKeys.includes(field.key)}
-                            aria-pressed={editingTemplateFieldKeys.includes(field.key)}
-                            onclick={() => {
-                              editingTemplateFieldKeys = toggleInList(editingTemplateFieldKeys, field.key);
-                              if (!editingTemplateFieldKeys.includes(field.key))
-                                editingTemplateRequiredFields = editingTemplateRequiredFields.filter(
-                                  (key) => key !== field.key,
-                                );
-                            }}>{field.label || humanizeId(field.key)}</button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="type-select" role="group" aria-label={`Required fields for ${template.name}`}>
-                      <span class="type-select-label">Required fields</span>
-                      <div class="chip-row compact">
-                        {#each effectiveFieldsForType(editTemplateEntityType).filter( (f) => editingTemplateFieldKeys.includes(f.key) ) as field}
-                          <button
-                            type="button"
-                            class="chip select"
-                            class:selected={editingTemplateRequiredFields.includes(field.key)}
-                            aria-pressed={editingTemplateRequiredFields.includes(field.key)}
-                            onclick={() =>
-                              (editingTemplateRequiredFields = toggleInList(editingTemplateRequiredFields, field.key))}
-                            >{field.label || humanizeId(field.key)}</button>
-                        {/each}
-                      </div>
-                    </div>
-                    <div class="edit-actions">
-                      <button type="button" class="action" onclick={commitTemplateEdit}
-                        ><Check size={14} strokeWidth={2} aria-hidden="true" /> Save</button>
-                      <button type="button" class="quiet" onclick={cancelTemplateEdit}>Cancel</button>
-                    </div>
-                  </div>
-                {:else}
-                  <div class="item-main">
-                    <div class="item-title-row">
-                      <strong>{template.name}</strong>
-                      <span class="type-pill ghost">{entityTypeLabel(template.entityType)}</span>
-                    </div>
-                    <span class="meta">
-                      {entityTypeLabel(template.entityType)}
-                      {#if template.description}
-                        <span class="dot">·</span>
-                        {template.description}
-                      {/if}
-                    </span>
-                  </div>
-                  <div class="item-actions">
-                    <button
-                      type="button"
-                      class="quiet icon"
-                      aria-label="Edit {template.name}"
-                      onclick={() => startTemplateEdit(template)}
-                      ><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                    <button
-                      type="button"
-                      class="danger icon"
-                      aria-label="Remove {template.name}"
-                      onclick={() => removeCustomTemplate(template.id)}
-                      ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <div class="add-form stacked">
-          <div class="add-row">
-            <label>
-              <span>Name</span>
-              <input bind:value={newTemplateName} placeholder="Species profile" />
-            </label>
-            <label>
-              <span>Entity type</span>
-              <select bind:value={newTemplateEntityType}>
-                <option value="">Choose type</option>
-                {#each effectiveTypes() as type}
-                  <option value={type}>{entityTypeLabel(type)}</option>
-                {/each}
-              </select>
-            </label>
-            <button
-              type="button"
-              class="action primary-action"
-              onclick={addCustomTemplate}
-              disabled={!newTemplateName.trim() || !newTemplateEntityType.trim()}
-              ><Plus size={14} strokeWidth={2} aria-hidden="true" /> Add template</button>
-          </div>
-          <label class="grow">
-            <span>Description <em>(optional)</em></span>
-            <input bind:value={newTemplateDescription} placeholder="A kind of being in this world." />
-          </label>
-          {#if newTemplateEntityType && effectiveTypes().includes(newTemplateEntityType)}
-            <div class="type-select" role="group" aria-label="Included fields">
-              <span class="type-select-label">Included fields</span>
-              <div class="chip-row compact">
-                {#each effectiveFieldsForType(newTemplateEntityType) as field}
-                  <button
-                    type="button"
-                    class="chip select"
-                    class:selected={newTemplateFieldKeys.includes(field.key)}
-                    aria-pressed={newTemplateFieldKeys.includes(field.key)}
-                    onclick={() => {
-                      newTemplateFieldKeys = toggleInList(newTemplateFieldKeys, field.key);
-                      if (!newTemplateFieldKeys.includes(field.key))
-                        newTemplateRequiredFields = newTemplateRequiredFields.filter((k) => k !== field.key);
-                    }}>{field.label || humanizeId(field.key)}</button>
-                {/each}
-              </div>
-            </div>
-            <div class="type-select" role="group" aria-label="Required fields">
-              <span class="type-select-label">Required fields</span>
-              <div class="chip-row compact">
-                {#each effectiveFieldsForType(newTemplateEntityType).filter( (f) => newTemplateFieldKeys.includes(f.key) ) as field}
-                  <button
-                    type="button"
-                    class="chip select"
-                    class:selected={newTemplateRequiredFields.includes(field.key)}
-                    aria-pressed={newTemplateRequiredFields.includes(field.key)}
-                    onclick={() => (newTemplateRequiredFields = toggleInList(newTemplateRequiredFields, field.key))}
-                    >{field.label || humanizeId(field.key)}</button>
-                {/each}
-                {#if newTemplateFieldKeys.length === 0}
-                  <span class="meta">Select at least one included field to mark as required.</span>
-                {/if}
-              </div>
-            </div>
-          {/if}
-        </div>
-      </div>
+      <SchemaTemplatesPane
+        {draft}
+        {packageTemplates}
+        {showAdvanced}
+        bind:selectedItemId
+        bind:builtinTemplatesCollapsed
+        bind:editingBuiltinTemplateId
+        bind:editingTemplateId
+        bind:editingTemplateFieldKeys
+        bind:editingTemplateRequiredFields
+        bind:editingTemplateFieldValues
+        bind:editTemplateIncludeDocument
+        bind:editTemplateName
+        bind:editTemplateEntityType
+        bind:editTemplateDescription
+        bind:newTemplateName
+        bind:newTemplateEntityType
+        bind:newTemplateDescription
+        bind:newTemplateFieldKeys
+        bind:newTemplateRequiredFields
+        bind:newTemplateFieldValues
+        bind:newTemplateIncludeDocument
+        {templateMatches}
+        {isDisabled}
+        {toggleDisabled}
+        {effectiveFieldsForType}
+        {editingPreviewFields}
+        {fieldsForTemplate}
+        {entityTypeLabel}
+        {effectiveTypes}
+        {toggleInList}
+        {beginTemplateFieldEdit}
+        {commitBuiltinTemplateEdit}
+        {cancelTemplateFieldEdit}
+        {startTemplateEdit}
+        {commitTemplateEdit}
+        {cancelTemplateEdit}
+        {removeCustomTemplate}
+        {addCustomTemplate} />
     {/if}
 
     <div class="save-bar" class:has-dirty={dirty} class:is-busy={busy}>
@@ -3426,8 +2242,8 @@ function removeCustomTemplate(id: string) {
         </div>
         <strong id="type-remove-title">Remove {entityTypeLabel(typeRemovalPrompt.typeId)}?</strong>
         <p>
-          Templates for this type are removed with the type. Fields that only target it will be kept and will now apply
-          to all types until you reassign them.
+          Templates for this type are removed with it. Choose what should happen to every field that only applies to
+          this type before continuing.
         </p>
         {#if typeRemovalPrompt.templates.length > 0}
           <div class="type-remove-group">
@@ -3441,15 +2257,97 @@ function removeCustomTemplate(id: string) {
         {/if}
         {#if typeRemovalPrompt.exclusiveFields.length > 0}
           <div class="type-remove-group">
-            <span>Fields that only target this type (will be kept)</span>
+            <span>Fields that only target this type</span>
             <ul>
               {#each typeRemovalPrompt.exclusiveFields as field}
                 <li>
-                  <TextQuote size={12} strokeWidth={1.7} aria-hidden="true" />
-                  {field.label} <code>{field.key}</code> <small>— now applies to all types</small>
+                  <span class="field-label"
+                    ><TextQuote size={12} strokeWidth={1.7} aria-hidden="true" /> {field.label}</span>
+                  <code>{field.key}</code>
+                  <label class="type-remove-choice">
+                    <span>Disposition</span>
+                    <select
+                      value={typeRemovalPrompt.exclusiveDispositions[field.key]?.action ?? ""}
+                      onchange={(event) =>
+                        updateExclusiveDisposition(
+                          field.key,
+                          event.currentTarget.value as "remove" | "disable" | "reassign",
+                        )}>
+                      <option value="" disabled>Choose…</option>
+                      <option value="remove">Remove field</option>
+                      <option value="disable">Disable field</option>
+                      <option value="reassign">Reassign</option>
+                    </select>
+                  </label>
+                  {#if typeRemovalPrompt.exclusiveDispositions[field.key]?.action === "reassign"}
+                    <label class="type-remove-choice">
+                      <span>New type</span>
+                      <select
+                        value={exclusiveReassignmentTarget(typeRemovalPrompt, field.key)}
+                        onchange={(event) => updateExclusiveReassignment(field.key, event.currentTarget.value)}>
+                        {#each effectiveTypes().filter((typeId) => typeId !== typeRemovalPrompt?.typeId) as typeId}
+                          <option value={typeId}>{entityTypeLabel(typeId)}</option>
+                        {/each}
+                      </select>
+                    </label>
+                  {/if}
                 </li>
               {/each}
             </ul>
+          </div>
+        {/if}
+        {#if typeRemovalPrompt.entityCount === null || (typeRemovalPrompt.entityCount ?? 0) > 0}
+          <div class="type-remove-group">
+            <span>Existing entities</span>
+            <p class="type-remove-note">
+              {#if typeRemovalPrompt.entityCount == null}
+                Entity count is unavailable. Choose a destination type to reassign any entities that still use this
+                type, or confirm there are none.
+              {:else}
+                {typeRemovalPrompt.entityCount}
+                {typeRemovalPrompt.entityCount === 1 ? "entity uses" : "entities use"} this type and must be reassigned before
+                removal.
+              {/if}
+            </p>
+            {#if typeRemovalPrompt.entityCount == null}
+              <label class="type-remove-choice">
+                <span>Entities</span>
+                <select
+                  value={typeRemovalPrompt.entityDisposition?.action ?? ""}
+                  disabled={typeRemovalPrompt.busy}
+                  onchange={(event) => updateEntityDisposition(event.currentTarget.value as "none" | "reassign")}>
+                  <option value="" disabled>Choose…</option>
+                  <option value="reassign">Reassign to another type</option>
+                  <option value="none">Confirm no entities use this type</option>
+                </select>
+              </label>
+            {/if}
+            {#if typeRemovalPrompt.entityDisposition?.action === "reassign" || (typeRemovalPrompt.entityCount ?? 0) > 0}
+              <label class="type-remove-choice">
+                <span>Reassign entities to</span>
+                <select
+                  value={typeRemovalPrompt.entityDisposition?.action === "reassign"
+                    ? typeRemovalPrompt.entityDisposition.toTypeId
+                    : ""}
+                  disabled={typeRemovalPrompt.busy ||
+                    effectiveTypes().filter((typeId) => typeId !== typeRemovalPrompt?.typeId).length === 0}
+                  onchange={(event) => updateEntityReassignment(event.currentTarget.value)}>
+                  {#each effectiveTypes().filter((typeId) => typeId !== typeRemovalPrompt?.typeId) as typeId}
+                    <option value={typeId}>{entityTypeLabel(typeId)}</option>
+                  {/each}
+                </select>
+              </label>
+              {#if effectiveTypes().filter((typeId) => typeId !== typeRemovalPrompt?.typeId).length === 0}
+                <p class="type-remove-note">
+                  Create or enable another type first — entities cannot be left without a type.
+                </p>
+              {/if}
+            {/if}
+          </div>
+        {:else}
+          <div class="type-remove-group">
+            <span>Existing entities</span>
+            <p class="type-remove-note">No entities currently use this type.</p>
           </div>
         {/if}
         {#if typeRemovalPrompt.sharedFields.length > 0}
@@ -3479,10 +2377,18 @@ function removeCustomTemplate(id: string) {
             {/if}
           </div>
         {/if}
+        {#if typeRemovalPrompt.error}
+          <p class="type-remove-note" role="alert">{typeRemovalPrompt.error}</p>
+        {/if}
         <div class="type-remove-actions">
-          <button type="button" class="quiet" onclick={cancelTypeRemoval}>Keep type</button>
-          <button type="button" class="danger" onclick={confirmTypeRemoval}
-            ><Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /> Remove</button>
+          <button type="button" class="quiet" disabled={typeRemovalPrompt.busy} onclick={cancelTypeRemoval}
+            >Keep type</button>
+          <button
+            type="button"
+            class="danger"
+            disabled={typeRemovalPrompt.busy || !removalPlanComplete(typeRemovalPrompt)}
+            onclick={() => void confirmTypeRemoval()}
+            >{#if typeRemovalPrompt.busy}Reassigning…{:else}<Trash2 size={14} strokeWidth={1.8} aria-hidden="true" /> Remove{/if}</button>
         </div>
       </div>
     </div>
@@ -3649,204 +2555,36 @@ function removeCustomTemplate(id: string) {
 .tab.active .tab-count {
   background: rgba(255, 255, 255, 0.18);
 }
-.block {
+.workbench-toolbar {
   display: grid;
-  gap: 14px;
-  padding: 18px;
+  grid-template-columns: minmax(180px, 1fr) minmax(130px, 180px) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px 14px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--surface);
 }
-.block.elevated {
-  box-shadow:
-    0 1px 0 rgba(48, 44, 38, 0.03),
-    0 8px 24px rgba(48, 44, 38, 0.04);
-}
-.block-heading {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--theme-warning-border, #f0e8d9);
-}
-.block-heading.collapsible {
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--theme-warning-border, #f0e8d9);
-  padding: 0 0 12px;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 0;
-}
-.block-heading.collapsible:hover {
-  opacity: 0.92;
-}
-.collapse-icon {
-  margin-left: auto;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  color: var(--ink-soft);
-  flex: 0 0 24px;
-}
-.block-heading.collapsible:hover .collapse-icon {
-  background: var(--surface-warm);
-  color: var(--ink);
-}
-.heading-left {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-.heading-icon {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--surface-warm);
-  border: 1px solid var(--line-soft);
-  color: var(--ink-muted);
-}
-.heading-icon.accent {
-  background: var(--accent-dark);
-  border-color: var(--accent-dark);
-  color: var(--on-accent);
-}
-.block-heading h4 {
-  margin: 0;
-  font:
-    600 13px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-}
-.count-badge {
-  display: inline-grid;
-  place-items: center;
-  min-width: 22px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  border: 1px solid var(--line-soft);
-  color: var(--ink-muted);
-  font:
-    700 11px Inter,
-    sans-serif;
-}
-.count-badge.accent {
-  background: var(--theme-warning-bg, #fff3df);
-  border-color: var(--theme-warning-border, #e9c9a6);
-  color: var(--theme-warning-text, #8b5c2e);
-}
-.block-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-faint);
-  font:
-    500 11.5px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.subtle-note {
-  margin: 0;
-  padding: 9px 11px;
-  border-radius: 9px;
-  background: var(--surface-subtle);
-  border: 1px solid var(--theme-warning-border, #f0e8d9);
-  color: var(--ink-muted);
-  font:
-    400 11.5px/1.5 Inter,
-    sans-serif;
-}
-.empty-inline {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 14px 14px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 11px;
-  background: var(--surface-quiet);
-  color: var(--ink-muted);
-}
-.empty-inline strong {
-  display: block;
-  color: var(--ink);
-  font:
-    600 13px Inter,
-    sans-serif;
-  margin-bottom: 3px;
-}
-.empty-inline span {
-  font:
-    400 12px/1.5 Inter,
-    sans-serif;
-}
-
-.appearance-overrides {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-.appearance-overrides-label {
-  color: var(--ink-soft);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.appearance-row {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow-x: auto;
-}
-.appearance-row-name {
-  flex: 0 0 auto;
-  font-size: 13px;
-  white-space: nowrap;
-}
-.appearance-row-id {
-  flex: 0 0 auto;
-  color: var(--ink-faint);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.appearance-row :global(.type-appearance-picker) {
-  flex: 1;
+.workbench-search,
+.workbench-status {
   min-width: 0;
 }
+.advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.advanced-toggle input {
+  margin: 0;
+}
+.narrow-back {
+  display: none;
+}
 
-.chip-row,
-.add-row,
-.edit-actions,
-.item-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.chip-row.compact {
-  gap: 6px;
-}
-.chip,
-.action,
 .quiet,
 .danger,
 .primary {
@@ -3854,84 +2592,24 @@ function removeCustomTemplate(id: string) {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  padding: 7px 11px;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
-  padding: 7px 11px;
   background: var(--surface);
   color: var(--ink-muted);
   font:
-    600 11px Inter,
+    600 11px/1 Inter,
     ui-sans-serif,
     system-ui,
     sans-serif;
-  line-height: 1;
   cursor: pointer;
   transition: all 0.14s ease;
 }
-.chip {
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 6px 12px;
-  font:
-    600 12px Inter,
-    sans-serif;
-}
-.chip:hover,
-.action:hover,
 .quiet:hover {
   border-color: var(--theme-warning-border, #b7a88f);
   background: var(--surface-warm);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(48, 44, 38, 0.06);
-}
-.chip:active,
-.action:active,
-.quiet:active,
-.danger:active {
-  transform: translateY(0);
-  box-shadow: none;
-}
-.chip:focus-visible,
-.action:focus-visible,
-.quiet:focus-visible,
-.danger:focus-visible,
-.primary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.chip.is-hidden {
-  opacity: 0.52;
-  border-style: dashed;
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-  background: var(--theme-warning-bg, #fdf8ef);
-}
-.chip.select.selected,
-.chip[aria-pressed="true"]:not(.is-hidden) {
-  border-color: var(--theme-warning-border, #b7a88f);
-  background: var(--surface-warm);
-  color: var(--theme-neutral-text, #3f3830);
-  box-shadow: 0 1px 0 rgba(48, 44, 38, 0.12);
-}
-.chip.select:not(.selected) {
-  opacity: 0.9;
-  background: var(--theme-surface-bg, #fff);
-}
-.action {
-  background: var(--theme-warning-bg, #f7f1e7);
-  border-color: var(--theme-warning-border, #e9dfd0);
-}
-.action.primary-action {
-  background: var(--accent-dark);
-  border-color: var(--accent-dark);
-  color: var(--on-accent);
-}
-.action.primary-action:hover {
-  background: #4a6b57;
-  border-color: var(--theme-success-border, #4a6b57);
 }
 .primary {
   border-color: var(--accent-dark);
@@ -3940,16 +2618,6 @@ function removeCustomTemplate(id: string) {
 }
 .primary:hover {
   background: #4a6b57;
-}
-.action:disabled,
-.primary:disabled,
-.quiet:disabled,
-.danger:disabled,
-.chip:disabled {
-  opacity: 0.45;
-  cursor: default;
-  transform: none;
-  box-shadow: none;
 }
 .danger {
   border-color: var(--theme-danger-border, #e0b8ad);
@@ -3960,167 +2628,18 @@ function removeCustomTemplate(id: string) {
   border-color: var(--theme-danger-border, #c9897d);
   background: var(--theme-danger-bg, #f3ddd6);
 }
-.quiet.icon,
-.danger.icon {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-}
-.list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.list-item {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 10px 16px;
-  align-items: center;
-  padding: 12px 14px;
-  border: 1px solid var(--theme-warning-border, #ebe3d6);
-  border-radius: 12px;
-  background: var(--surface-quiet);
-  transition:
-    border-color 0.14s ease,
-    box-shadow 0.14s ease;
-}
-.list-item:hover {
-  border-color: var(--theme-warning-border, #e0d6c4);
-  box-shadow: 0 4px 14px rgba(48, 44, 38, 0.05);
-}
-.list-item.compact {
-  padding: 10px 14px;
-}
-.item-main {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-.item-title-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.item-main strong {
-  font:
-    600 13px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  color: var(--ink);
-}
-.meta {
-  color: var(--ink-muted);
-  font:
-    400 12px/1.4 Inter,
-    sans-serif;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.meta code {
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--theme-warning-bg, #f1ebe1);
-  border: 1px solid var(--line-soft);
-  color: var(--theme-neutral-text-soft, #6f675c);
-  font:
-    500 11px ui-monospace,
-    monospace;
-}
-.type-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  border: 1px solid var(--line-soft);
-  color: var(--ink-muted);
-  font:
-    600 10px Inter,
-    sans-serif;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-.type-pill.ghost {
-  background: var(--theme-surface-bg, #fff);
-  border-color: var(--line-soft);
-  color: var(--ink-muted);
-}
-.disabled-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-line);
-  color: var(--danger);
-  font:
-    600 10px Inter,
-    sans-serif;
-}
-.dot {
-  color: #cbbda9;
-}
-code {
-  width: fit-content;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--theme-warning-bg, #f1ebe1);
-  border: 1px solid var(--line-soft);
-  color: var(--theme-neutral-text-soft, #6f675c);
-  font:
-    500 11px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
-}
-.add-form,
-.edit-form,
-.stacked {
-  display: grid;
-  gap: 12px;
-}
-.add-form {
-  padding: 14px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 11px;
-  background: var(--theme-warning-bg, #fdf8ef);
-  margin-top: 2px;
-}
-.edit-form {
-  width: 100%;
-}
-.edit-form.wide {
-  gap: 10px;
-}
-.add-row {
-  align-items: end;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.add-row > label {
-  flex: 1 1 160px;
+.primary:disabled,
+.quiet:disabled,
+.danger:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+  box-shadow: none;
 }
 label {
   display: grid;
   gap: 5px;
   min-width: 140px;
-}
-label.grow {
-  min-width: min(100%, 280px);
-  flex: 1;
 }
 label span {
   color: var(--ink-muted);
@@ -4132,36 +2651,9 @@ label span {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-label em {
-  font-style: normal;
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--ink-faint);
-}
-.type-select {
-  display: grid;
-  gap: 7px;
-}
-.type-select-label {
-  color: var(--ink-muted);
-  font:
-    600 10px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.type-select-label em {
-  font-style: normal;
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--ink-faint);
-}
 input,
 select {
+  box-sizing: border-box;
   min-width: 140px;
   height: 36px;
   padding: 0 11px;
@@ -4170,15 +2662,10 @@ select {
   background: var(--theme-surface-bg, #fff);
   color: var(--ink);
   font:
-    400 13px Inter,
+    400 13px/1 Inter,
     ui-sans-serif,
     system-ui,
     sans-serif;
-  line-height: 1;
-  box-sizing: border-box;
-  transition:
-    border-color 0.14s ease,
-    box-shadow 0.14s ease;
 }
 select {
   padding-right: 28px;
@@ -4201,9 +2688,20 @@ select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.12);
 }
-input::placeholder {
-  color: var(--ink-faint);
+code {
+  width: fit-content;
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--theme-warning-bg, #f1ebe1);
+  color: var(--theme-neutral-text-soft, #6f675c);
+  font:
+    500 11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
+
 .save-bar {
   position: sticky;
   bottom: 0;
@@ -4368,6 +2866,7 @@ input::placeholder {
 }
 .type-remove-group li {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
@@ -4384,6 +2883,19 @@ input::placeholder {
   font:
     500 10px ui-monospace,
     monospace;
+}
+.type-remove-choice {
+  flex: 1 1 150px;
+  min-width: 140px;
+}
+.type-remove-choice select {
+  width: 100%;
+  min-width: 0;
+}
+.type-remove-group .field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .field-label {
   font-weight: 600;
@@ -4417,102 +2929,13 @@ input::placeholder {
   padding: 0;
   accent-color: var(--danger);
 }
-.inline-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  color: var(--ink);
-  font:
-    500 12px Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-  cursor: pointer;
-}
-.inline-check input {
-  width: 16px;
-  height: 16px;
-  min-width: 0;
-  accent-color: var(--accent-dark);
-}
-.variant-row {
-  display: grid;
-  grid-template-columns: 1fr 140px 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
-.variant-row.small {
-  grid-template-columns: 1fr 120px 1fr auto;
-}
-.variant-row input,
-.variant-row select {
-  min-width: 0;
-}
-@media (max-width: 720px) {
-  .variant-row {
-    grid-template-columns: 1fr;
-  }
-}
-.metadata-row {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--theme-warning-border, #f0e8d9);
-  border-radius: 9px;
-  background: var(--surface-quiet);
-}
-.metadata-main {
-  display: grid;
-  grid-template-columns: 1fr 1fr 140px auto auto;
-  gap: 8px;
-  align-items: center;
-}
-.metadata-main input,
-.metadata-main select {
-  min-width: 0;
-}
-.inline-check.small {
-  padding: 0;
-  gap: 6px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.oneof-variants.nested {
-  display: grid;
-  gap: 8px;
-  padding: 8px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.meta-hint {
-  color: var(--ink-muted);
-  font:
-    400 11px/1.45 Inter,
-    sans-serif;
-}
-.meta-hint code {
-  font-size: 10px;
-}
-.field-error {
-  color: var(--danger);
-  font:
-    500 11px Inter,
-    sans-serif;
-}
-@media (max-width: 720px) {
-  .metadata-main {
-    grid-template-columns: 1fr;
-  }
-}
 .type-remove-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
 }
-@media (max-width: 720px) {
+@media (max-width: 899px) {
   .panel-hero {
     grid-template-columns: 1fr;
   }
@@ -4525,6 +2948,13 @@ input::placeholder {
     padding: 6px 10px;
     font-size: 12.5px;
   }
+  .workbench-toolbar {
+    grid-template-columns: 1fr;
+  }
+  .narrow-back {
+    display: inline-flex;
+    justify-self: start;
+  }
   .save-bar {
     flex-direction: column;
     align-items: stretch;
@@ -4532,10 +2962,6 @@ input::placeholder {
   .save-button {
     width: 100%;
     justify-content: center;
-  }
-  .add-row {
-    flex-direction: column;
-    align-items: stretch;
   }
 }
 </style>

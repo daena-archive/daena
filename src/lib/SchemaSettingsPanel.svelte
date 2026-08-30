@@ -2,11 +2,23 @@
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
-import { Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers } from "@lucide/svelte";
+import { AlertTriangle, Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers } from "@lucide/svelte";
 
 export type SchemaPluginCandidate = {
   id: string;
   name: string;
+  typeCount?: number;
+  fieldCount?: number;
+  templateCount?: number;
+  customization?: "default" | "customized";
+  validationStatus?: "ok" | "error" | "unknown";
+  validationMessage?: string;
+};
+
+export type ManagedSchemaPlugin = {
+  id: string;
+  name: string;
+  reason?: string;
 };
 
 type PackageManifestSlice = {
@@ -21,6 +33,7 @@ type PackageManifestSlice = {
 let {
   projectOpen,
   candidates = [],
+  managedPlugins = [],
   selectedPluginId = null,
   selectedPluginName = "",
   packageManifest = null,
@@ -32,10 +45,14 @@ let {
   onSelectPlugin,
   onSave,
   onDirtyChange,
+  entityCountForType,
+  onReassignEntities,
 }: {
   projectOpen: boolean;
   /** Enabled plugins that declare schema.overlay. */
   candidates?: SchemaPluginCandidate[];
+  /** Enabled plugins whose schema is owned by the extension. */
+  managedPlugins?: ManagedSchemaPlugin[];
   selectedPluginId?: string | null;
   selectedPluginName?: string;
   /** Packaged (unmerged) schemas/templates for the selected plugin. */
@@ -48,6 +65,8 @@ let {
   onSelectPlugin: (id: string | null) => void;
   onSave: (overlay: ModuleSchemaOverlay) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
+  entityCountForType?: (typeId: string) => number | null;
+  onReassignEntities?: (fromTypeId: string, toTypeId: string) => Promise<void>;
 } = $props();
 
 let editorDirty = $state(false);
@@ -93,7 +112,7 @@ function handleDirtyChange(next: boolean) {
         </div>
         <strong>Open a project to customize Fields &amp; Types</strong>
       </div>
-    {:else if candidates.length === 0}
+    {:else if candidates.length === 0 && managedPlugins.length === 0}
       <div class="empty-state">
         <div class="empty-icon">
           <Puzzle size={20} strokeWidth={1.7} aria-hidden="true" />
@@ -101,24 +120,64 @@ function handleDirtyChange(next: boolean) {
         <strong>No customizable plugins found</strong>
       </div>
     {:else}
-      <ul class="schema-plugin-list" aria-label="Customizable extensions">
-        {#each candidates as plugin}
-          <li>
-            <button type="button" class="schema-plugin-card" onclick={() => void selectPlugin(plugin.id)}>
-              <span class="card-icon" aria-hidden="true">
-                <Puzzle size={18} strokeWidth={1.8} />
-              </span>
-              <span class="card-copy">
-                <strong>{plugin.name}</strong>
-                <span class="card-id">{plugin.id}</span>
-              </span>
-              <span class="card-arrow" aria-hidden="true">
-                <ChevronRight size={16} strokeWidth={1.8} />
-              </span>
-            </button>
-          </li>
-        {/each}
-      </ul>
+      {#if candidates.length > 0}
+        <ul class="schema-plugin-list" aria-label="Customizable extensions">
+          {#each candidates as plugin}
+            <li>
+              <button type="button" class="schema-plugin-card" onclick={() => void selectPlugin(plugin.id)}>
+                <span class="card-icon" aria-hidden="true">
+                  <Puzzle size={18} strokeWidth={1.8} />
+                </span>
+                <span class="card-copy">
+                  <strong>{plugin.name}</strong>
+                  <span class="card-meta">
+                    <span
+                      >{plugin.typeCount ?? 0} Types · {plugin.fieldCount ?? 0} Fields · {plugin.templateCount ?? 0}
+                      Templates</span>
+                    <span class="card-state" class:is-custom={plugin.customization === "customized"}>
+                      {plugin.customization === "customized" ? "Customized" : "Default"}
+                    </span>
+                    {#if plugin.validationStatus === "error"}
+                      <span class="card-state is-error" title={plugin.validationMessage ?? "Overlay validation failed"}>
+                        <AlertTriangle size={11} strokeWidth={2} aria-hidden="true" /> Error
+                      </span>
+                    {/if}
+                  </span>
+                  <span class="card-id">{plugin.id}</span>
+                </span>
+                <span class="card-arrow" aria-hidden="true">
+                  <ChevronRight size={16} strokeWidth={1.8} />
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if managedPlugins.length > 0}
+        <ul class="schema-plugin-list managed-list" aria-label="Managed by extension">
+          {#each managedPlugins as plugin}
+            <li>
+              <div
+                class="schema-plugin-card is-managed"
+                role="group"
+                aria-label={`${plugin.name} managed by extension`}>
+                <span class="card-icon" aria-hidden="true">
+                  <Puzzle size={18} strokeWidth={1.8} />
+                </span>
+                <span class="card-copy">
+                  <strong>{plugin.name}</strong>
+                  <span class="card-meta">
+                    <span class="card-state is-managed-state">Managed by extension</span>
+                  </span>
+                  <span class="card-id"
+                    >{plugin.reason ??
+                      "Schema structure is owned by this extension and is not project-customizable."}</span>
+                </span>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   {:else if packageManifest}
     <div class="schema-plugin-toolbar">
@@ -149,6 +208,8 @@ function handleDirtyChange(next: boolean) {
         pluginId={selectedPluginId}
         {busy}
         {message}
+        {entityCountForType}
+        {onReassignEntities}
         {onSave}
         onDirtyChange={handleDirtyChange} />
     {/key}
@@ -280,6 +341,63 @@ function handleDirtyChange(next: boolean) {
 .card-copy strong {
   color: var(--ink);
   font: 600 14.5px/1.15 var(--font-display, Georgia, serif);
+}
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-muted);
+  font:
+    500 12px/1.3 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.card-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--surface-quiet);
+  color: var(--ink-muted);
+  font:
+    600 10px/1 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.card-state.is-custom {
+  border-color: var(--theme-warning-border, #cbbda9);
+  background: color-mix(in srgb, var(--theme-warning-border, #cbbda9) 18%, var(--surface));
+  color: var(--ink);
+}
+.card-state.is-error {
+  border-color: var(--danger-line);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.card-state.is-managed-state {
+  border-color: var(--line);
+  background: var(--surface-warm);
+}
+.managed-list {
+  margin-top: 8px;
+}
+.schema-plugin-card.is-managed {
+  cursor: default;
+  opacity: 0.92;
+}
+.schema-plugin-card.is-managed:hover,
+.schema-plugin-card.is-managed:focus-visible {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--line);
+  background: var(--surface);
 }
 .card-id {
   color: var(--ink-faint);

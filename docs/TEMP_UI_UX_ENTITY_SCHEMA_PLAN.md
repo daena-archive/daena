@@ -759,16 +759,21 @@ fit durations land. Contract lock: `npm run test:tree-interaction`.
 Exit gate: all Tree actions are keyboard reachable; focus is never lost after
 reroot, dock close, mutation, or relayout; caps and truncation remain enforced.
 
-### Slice 5: schema workbench shell
+### Slice 5: schema workbench shell — **done**
 
-1. Split normalization/domain logic from the Svelte component.
-2. Split Types, Fields, and Templates into focused list/detail components.
-3. Add search, filters, provenance, and progressive disclosure.
-4. Use one field renderer for Template preview and entity creation.
-5. Support all package schema namespaces.
+1. Split normalization/domain logic into `src/lib/schema-workbench/model.ts`.
+2. Split Types, Fields, and Templates into `SchemaTypesPane` / `SchemaFieldsPane` /
+   `SchemaTemplatesPane`.
+3. Added search, status filters, namespace provenance (Advanced), and progressive
+   disclosure.
+4. Shared `SchemaFieldInput` powers Template preview and entity creation.
+5. Package model flattens all schema namespaces (no `schemas[0]` assumption).
+6. Plugin cards show Type/Field/Template counts, Default/Customized, and
+   Managed-by-extension entries for Language/Maps.
 
-Exit gate: existing overlay fixtures normalize to byte-equivalent data, and
-all current schema features remain editable.
+Exit gate: overlay normalize is idempotent (byte-equivalent on re-normalize), and
+all current schema features remain editable. Contract lock:
+`npm run test:schema-workbench`.
 
 ### Slice 6: safe schema preview and concurrency
 

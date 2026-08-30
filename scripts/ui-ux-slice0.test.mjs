@@ -142,7 +142,8 @@ assert.match(docs[1], /Members \+ immediate family/);
 assert.match(docs[2], /workspace\.houses\.tree\.landing/);
 assert.match(docs[2], /project\.fields\.types/);
 assert.match(docs[3], /A11Y-TREE-01/);
-assert.match(docs[3], /role="application"/);
+assert.match(docs[3], /Resolved in Slice 4|role="group"|A11Y-SCHEMA-01/);
+assert.match(docs[3], /A11Y-SCHEMA-01/);
 assert.match(docs[4], /docs\/ui-ux-slice0/);
 
 const requiredSurfaceDocs = [

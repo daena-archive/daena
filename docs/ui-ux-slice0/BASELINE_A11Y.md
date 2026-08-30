@@ -40,8 +40,8 @@ treat these as accepted permanent behavior.
 
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
-| `A11Y-SCHEMA-01` | Medium | Very long Types/Fields/Templates lists have no search/filter; keyboard traversal cost grows with overlay size. | `ModuleSchemaPanel.svelte` |
-| `A11Y-SCHEMA-02` | Medium | Validation errors often appear only after Save as unstructured text, not as field-linked announcements. | save path in schema panel |
+| ~~`A11Y-SCHEMA-01`~~ | Medium | **Resolved in Slice 5.** Search + status filters on Types/Fields/Templates lists. | workbench toolbar |
+| `A11Y-SCHEMA-02` | Medium | Validation errors often appear only after Save as unstructured text, not as field-linked announcements. | save path in schema panel; Slice 6 |
 | `A11Y-SCHEMA-03` | Low | Builtin enable chips duplicate detailed rows, producing redundant focus stops for the same field. | Fields tab |
 | `A11Y-SCHEMA-04` | Medium | No live-data impact summary before destructive overlay changes; SR users only learn counts after failure or surprise confirmations. | plan §3.7; Slice 6 target |
 

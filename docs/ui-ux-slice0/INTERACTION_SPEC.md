@@ -133,4 +133,6 @@ Advanced disclosure only: stable IDs/keys, relationship type identifiers, metada
 storage keys, one-of internals, namespace/ownership, Timeline role/group/layer,
 package/local qualification.
 
-Tabs remain Types / Fields / Templates until Slice 5 splits the workbench chrome.
+Tabs remain Types / Fields / Templates in the workbench shell; Slice 5 splits
+pane bodies into focused components with search/status filters and Advanced
+disclosure for contract identifiers.

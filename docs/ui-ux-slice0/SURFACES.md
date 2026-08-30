@@ -128,13 +128,28 @@ Groups:
 ### `project.fields.plugin-list`
 
 - Project Center → Fields & Types plugin cards (`SchemaSettingsPanel`).
-- Gap: weak customization / “Managed by extension” explanation for Language and Maps.
+- Cards show **active** Type/Field/Template counts, Default vs Customized, and
+  validation Error badge when overlay status is error.
+- Language/Maps appear as Managed by extension (no overlay editor).
 
 ### `project.fields.types` / `project.fields.fields` / `project.fields.templates`
 
-- Single large `ModuleSchemaPanel` with three tabs.
-- Current: dense builtin enable chips + detail rows; package IDs visible early; errors mostly post-Save.
+- Two-pane workbench (`workbench-list` / `workbench-detail`) with search/status
+  filters and Advanced disclosure.
+- Focused panes: `SchemaTypesPane`, `SchemaFieldsPane`, `SchemaTemplatesPane`.
+- Type detail shows origin, fields/templates/projections usage, entity count
+  placeholder; custom type **name** edits never rewrite stable IDs.
+- Type removal requires explicit exclusive-field disposition (remove / disable /
+  reassign) and entity reassignment when live entities use the type; never
+  broadens exclusive fields to all types.
+- Builtin fields: one list row with status + Enable toggle (no duplicate chips).
+- Field forms show inline property errors; Kind uses author terms (Yes/No).
+- Templates: Type → included → required → defaults → description → opening note
+  → shared Preview create form.
+- Multi-namespace package schemas flattened; shell uses `primarySchemaNamespace`.
 - Scenarios: `empty-project`, `custom-schema-live-data`, `revision-conflict`.
+- Remaining Slice 6: live entity counts in impact preview, overlay revision
+  conflicts.
 
 ## Scenario → surface matrix
 

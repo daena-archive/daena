@@ -47,10 +47,48 @@ export type PartnerStatus = (typeof PARTNER_STATUSES)[number];
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 
 export interface HouseMembership {
+  id: string;
+  revision: string;
   personId: string;
   houseId: string;
   houseName: string;
   role: string | null;
+  customLabel: string | null;
+  notes: string | null;
+}
+
+/** Visible Houses-collection summary for one house (member count + leadership). */
+export interface HouseMemberSummary {
+  houseId: string;
+  memberCount: number;
+  headName: string | null;
+  heirName: string | null;
+}
+
+/** Membership row for the House dock (person name resolved). */
+export interface HouseMemberRecord {
+  id: string;
+  revision: string;
+  personId: string;
+  personName: string;
+  houseId: string;
+  role: string | null;
+  customLabel: string | null;
+  notes: string | null;
+}
+
+export function formatMembershipRole(role: string | null | undefined, customLabel?: string | null): string {
+  const trimmed = typeof role === "string" ? role.trim() : "";
+  if (!trimmed || trimmed === "member") {
+    return customLabel?.trim() || "Member";
+  }
+  if (trimmed === "custom") return customLabel?.trim() || "Custom";
+  const label = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return customLabel?.trim() ? `${label} · ${customLabel.trim()}` : label;
+}
+
+export function isLeadershipRole(role: string | null | undefined): boolean {
+  return role === "head" || role === "heir" || role === "founder" || role === "consort";
 }
 export type FamilyRelationshipKind = "parent" | "partner";
 export type BranchDirection = (typeof BRANCH_DIRECTIONS)[number];

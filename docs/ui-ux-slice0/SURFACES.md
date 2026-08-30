@@ -72,32 +72,35 @@ Surface IDs match `SURFACE_IDS` in `src/lib/ui-ux/fixtures.ts`.
 
 ### `workspace.houses.collection`
 
-- Generic Houses collection for `house` entities.
-- Gaps: no member count / leadership summary; no **Open tree** row or detail action; New is only the global gallery.
+- Houses collection for `house` entities with member count + head/heir summary (loading state while summaries fetch).
+- Row + detail **Open tree** routes into the same House Tree session; inspector shows House summary + Open tree.
+- New house uses the shared focused create dialog.
 - Scenarios: `empty-project`, `disconnected-house`, `multiple-memberships`.
 
 ## Tree
 
 ### `workspace.houses.tree.landing`
 
-- People + Houses searchable panels.
-- Current create: **Create person** / **Create house** only in empty states; name-only prompts.
-- Target: always-visible **New person** / **New house** using the shared dialog.
+- People + Houses backend-paged panels with member summaries on Houses.
+- Always-visible **New person** / **New house** via shared focused create (stays in Tree when created from Tree).
 - Scenarios: `empty-project`, `large-project`.
 
 ### `workspace.houses.tree.open-person`
 
 - Canvas + Person dock.
-- Dock today: Open in Lore, Make root, Add parent/child/partner, visible connections.
-- Gaps: no Edit identity, Archive, or House membership editor; houses shown as name list only.
+- Dock today: Open in Lore, Make root, Add parent/child/partner, house labels with roles.
+- Gaps (Slice 4): Edit identity, Archive Person, richer membership editor on Person dock.
 - Scenarios: `multiple-memberships`, `malformed-edge`, `revision-conflict`.
 
 ### `workspace.houses.tree.open-house`
 
 - House neighborhood via `loadHouseNeighborhood` (members + intra-member kinship only).
-- Gaps: scope control unused; no House dock; empty-house copy pushes authors to Person neighborhoods; **New house** buried in View settings.
+- House dock: members list/search/role filter, Add existing / Create person, edit/remove
+  membership (conflict reload), Open full entry, Archive House.
+- Empty-house copy invites in-place membership; disconnected components show “N family groups”.
+- Role badges on leadership roles. Trees Back prefers shell history when entered from Houses.
+- Scope control (members + immediate family) is Slice 4.
 - Scenarios: `disconnected-house`, `multiple-memberships`.
-
 ### `workspace.houses.tree.relationship-dock`
 
 - Metadata editor with Save / Delete and conflict reload.

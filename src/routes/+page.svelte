@@ -144,12 +144,14 @@ import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import housesManifestJson from "../../packages/modules/houses/manifest.json";
 import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
+import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/family-tree/fetch.ts";
 import {
   familyTreeHistoryKey,
   sameFamilyTreeSession,
   HOUSE_TYPE,
   PERSON_TYPE,
   type FamilyTreeSession,
+  type HouseMemberSummary,
 } from "$lib/family-tree/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/ui-ux/EntityArchiveAction.svelte";
@@ -412,6 +414,10 @@ let collectionError = $state("");
 let collectionRequest = 0;
 /** Bumped to re-query the visible collection page without reloading every entity. */
 let collectionRefreshEpoch = $state(0);
+let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
+let houseSummaryRequest = 0;
+let houseSummariesPending = $state(false);
+
 let collectionScopeKey = "";
 let collectionQueryRestoring = false;
 let collectionListElement = $state<HTMLDivElement | null>(null);
@@ -2235,6 +2241,39 @@ $effect(() => {
     query ? 180 : 0,
   );
   return () => window.clearTimeout(timer);
+});
+
+$effect(() => {
+  const housesSection = ready && section === "houses" && housesView === "houses";
+  const ids = collectionPage.items
+    .filter((entity) => {
+      const type = entity.entity_type ?? "";
+      return type === HOUSE_TYPE || type.endsWith(":house");
+    })
+    .map((entity) => entity.id);
+  void collectionRefreshEpoch;
+  if (!housesSection || ids.length === 0) {
+    if (!housesSection) houseCollectionSummaries = new Map();
+    houseSummariesPending = false;
+    return;
+  }
+  const request = ++houseSummaryRequest;
+  houseSummariesPending = true;
+  const context = buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
+    availableServices: enabledServices(),
+  });
+  void houseMemberSummaries(context, ids)
+    .then((summaries) => {
+      if (request !== houseSummaryRequest) return;
+      houseCollectionSummaries = summaries;
+    })
+    .catch(() => {
+      if (request !== houseSummaryRequest) return;
+      houseCollectionSummaries = new Map();
+    })
+    .finally(() => {
+      if (request === houseSummaryRequest) houseSummariesPending = false;
+    });
 });
 
 $effect(() => {
@@ -4506,13 +4545,10 @@ async function createWithOption(
       document: openingDocument.trim() ? { body: openingDocument.trim(), format: "markdown" } : undefined,
     });
     recordShellDeparture(departure);
-    section =
-      workspaceSectionOrder.find((target) =>
-        manifestForWorkspaceSection(target)?.schemas.some((schema) =>
-          schemaEntityTypeIds(schema).includes(option.template.entityType),
-        ),
-      ) ?? section;
-    applyCollectionTabForEntityType(option.template.entityType);
+    const createdType = option.template.entityType ?? "";
+    const isHouse = createdType === HOUSE_TYPE || createdType === "house" || createdType.endsWith(":house");
+    const isPerson = createdType === PERSON_TYPE || createdType.endsWith(":person");
+    const fromTree = departure.kind === "workspace" && departure.section === "houses" && departure.view === "tree";
     projectHomeOpen = false;
     name = "";
     showCreateForm = false;
@@ -4521,18 +4557,40 @@ async function createWithOption(
     createDialogReturnFocus = null;
     resetCreateFields(null);
     await refreshAfterEntityMutation({ entityId: created.id });
-    await selectEntity(
-      {
-        id: created.id,
-        name: created.name,
-        entity_type: created.type,
-        deleted: created.deleted,
-        created_at: created.createdAt,
-        updated_at: created.updatedAt,
-        revision: "",
-      },
-      false,
-    );
+    if (fromTree && (isHouse || isPerson)) {
+      section = "houses";
+      housesView = "tree";
+      familyTreeRootId = created.id;
+      familyTreeSession = {
+        expansions: [],
+        selectedPersonId: null,
+        selectedRelationshipId: null,
+        viewport: null,
+        houseId: isHouse ? created.id : null,
+      };
+      familyTreeRestoreNonce += 1;
+      clearSelection();
+    } else {
+      section =
+        workspaceSectionOrder.find((target) =>
+          manifestForWorkspaceSection(target)?.schemas.some((schema) =>
+            schemaEntityTypeIds(schema).includes(option.template.entityType),
+          ),
+        ) ?? section;
+      applyCollectionTabForEntityType(option.template.entityType);
+      await selectEntity(
+        {
+          id: created.id,
+          name: created.name,
+          entity_type: created.type,
+          deleted: created.deleted,
+          created_at: created.createdAt,
+          updated_at: created.updatedAt,
+          revision: "",
+        },
+        false,
+      );
+    }
     void tick().then(() => returnFocus?.focus());
     return true;
   } catch (cause) {
@@ -7307,6 +7365,36 @@ onMount(() => {
           avatar={familyTreeAvatar}
           onNewPerson={openNewPerson}
           onNewHouse={openNewHouse}
+          onOpenHouseEntry={(houseId) => {
+            void (async () => {
+              const entity = await project.getEntity(houseId);
+              if (!entity) return;
+              upsertEntityInCache(entity);
+              section = "houses";
+              housesView = "houses";
+              familyTreeRootId = null;
+              familyTreeSession = null;
+              await selectEntity(entity);
+            })();
+          }}
+          onArchiveHouse={(houseId) => {
+            void (async () => {
+              const entity = entities.find((item) => item.id === houseId) ?? (await project.getEntity(houseId));
+              if (!entity) return;
+              await archiveEntity(entity, { skipConfirm: true });
+              familyTreeRootId = null;
+              familyTreeSession = null;
+            })();
+          }}
+          onRenameHouse={async (houseId, name) => {
+            const entity = entities.find((item) => item.id === houseId) ?? (await project.getEntity(houseId));
+            if (!entity) return;
+            const updated = await project.updateEntity(houseId, name, null, {
+              expectedRevision: entity.revision,
+            });
+            upsertEntityInCache(updated);
+            await refreshAfterEntityMutation({ entityId: updated.id });
+          }}
           onRootChange={(id) => {
             if (id === familyTreeRootId) return;
             recordShellDeparture(currentShellLocation());
@@ -7321,7 +7409,19 @@ onMount(() => {
             }
             familyTreeSession = session;
           }}
-          onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)} />
+          onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)}
+          onMembershipChanged={() => bumpCollectionRefresh()}
+          onBack={() => {
+            const current = currentShellLocation();
+            const transition = shellHistoryBack(shellNavigationHistory, current);
+            if (transition && shellLocationAvailable(transition.target)) {
+              void navigateShellHistory("back");
+              return;
+            }
+            familyTreeRootId = null;
+            familyTreeSession = null;
+            familyTreeRestoreNonce += 1;
+          }} />
       </SpecializedSurface>
     {:else if sandboxView && sandboxView.renderer !== "maps"}
       <SpecializedSurface
@@ -7606,7 +7706,14 @@ onMount(() => {
                           pluginId={rowIcon.pluginId}
                           size={16}
                           box={40} /><span class="item-copy"
-                          ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
+                          ><strong>{entity.name}</strong><small
+                            >{section === "houses" &&
+                            ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
+                              ? formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
+                                  pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
+                                })
+                              : entityTypeLabel(entity.entity_type)}</small
+                          ></span>
                       </button>
                       <EntityRowActions
                         entityName={entity.name}
@@ -7627,7 +7734,14 @@ onMount(() => {
                     pluginId={rowIcon.pluginId}
                     size={16}
                     box={40} /><span class="item-copy"
-                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
+                    ><strong>{entity.name}</strong><small
+                      >{section === "houses" &&
+                      ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
+                        ? formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
+                            pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
+                          })
+                        : entityTypeLabel(entity.entity_type)}</small
+                    ></span>
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
@@ -7807,6 +7921,14 @@ onMount(() => {
                         onclick={() => void openEntityEditDialog()}
                         ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button
                       >{/if}
+                    {#if selected && section === "houses" && selected.entity_type === HOUSE_TYPE}
+                      {@const houseEntity = selected}
+                      <button
+                        class="quiet-button"
+                        type="button"
+                        aria-label={`${ENTITY_ACTIONS.openTree} for ${houseEntity.name}`}
+                        onclick={() => void openHouseTree(houseEntity)}>{ENTITY_ACTIONS.openTree}</button>
+                    {/if}
                   </div>
                 </div>
                 {#snippet editorStatusActions()}
@@ -8079,6 +8201,24 @@ onMount(() => {
                   >{/if}
               </div>
             </div>
+            {#if section === "houses" && inspectedEntity.entity_type === HOUSE_TYPE}
+              <InspectorSection title="House" count={1}>
+                <section class="inspector-section inspector-section-plain">
+                  <p class="inspector-group-empty">
+                    {formatHouseMemberSummary(houseCollectionSummaries.get(inspectedEntity.id), {
+                      pending: houseSummariesPending && !houseCollectionSummaries.has(inspectedEntity.id),
+                    })}
+                  </p>
+                  <div class="inspector-ai-fill-actions">
+                    <button class="quiet-button" type="button" onclick={() => void openHouseTree(inspectedEntity)}
+                      >{ENTITY_ACTIONS.openTree}</button>
+                  </div>
+                  <p class="inspector-group-empty">
+                    Edit membership roles in Tree → House dock. The Members relationship field below links people.
+                  </p>
+                </section>
+              </InspectorSection>
+            {/if}
             {#if aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
                   <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button

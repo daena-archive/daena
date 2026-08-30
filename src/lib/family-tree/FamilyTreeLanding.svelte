@@ -5,8 +5,8 @@ import { Castle, ChevronRight, Plus, Search, UserPlus } from "@lucide/svelte";
 import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
 import { toAsyncEntityPage } from "$lib/ui-ux/asyncEntityQuery.ts";
 import { PERSON_TYPE } from "./model.ts";
-import { houseMemberCounts, listHouses } from "./fetch.ts";
-import { createHouse, createMinimalPerson } from "./mutations.ts";
+import { houseMemberSummaries, listHouses, formatHouseMemberSummary } from "./fetch.ts";
+import type { HouseMemberSummary } from "./model.ts";
 
 let {
   context,
@@ -32,25 +32,17 @@ let peopleOffset = $state(0);
 let peopleBusy = $state(false);
 let peopleError = $state("");
 let peopleToken = 0;
-let createName = $state("");
-let creatingPerson = $state(false);
-
 let housesQuery = $state("");
 let houses = $state<{ id: string; name: string }[]>([]);
-let houseCounts = $state(new Map<string, number>());
+let houseSummaries = $state(new Map<string, HouseMemberSummary>());
 let housesBusy = $state(false);
 let housesError = $state("");
-let createHouseName = $state("");
-let creatingHouse = $state(false);
+let housesTotal = $state(0);
+let housesOffset = $state(0);
 let housesToken = 0;
 
-const visibleHouses = $derived.by(() => {
-  const needle = housesQuery.trim().toLowerCase();
-  if (!needle) return houses;
-  return houses.filter((house) => house.name.toLowerCase().includes(needle));
-});
 const emptyPeople = $derived(!peopleBusy && people.length === 0 && !peopleQuery.trim() && peopleTotal === 0);
-const emptyHouses = $derived(!housesBusy && houses.length === 0 && !housesQuery.trim());
+const emptyHouses = $derived(!housesBusy && houses.length === 0 && !housesQuery.trim() && housesTotal === 0);
 
 async function searchPeople(nextOffset = 0) {
   const request = ++peopleToken;
@@ -85,60 +77,33 @@ async function searchPeople(nextOffset = 0) {
   }
 }
 
-async function loadHouses() {
+async function loadHouses(nextOffset = 0) {
   const request = ++housesToken;
   housesBusy = true;
   housesError = "";
   try {
-    const next = await listHouses(context);
+    const page = await listHouses(context, {
+      text: housesQuery.trim() || undefined,
+      offset: nextOffset,
+      limit: pageSize,
+    });
     if (request !== housesToken) return;
-    houses = next;
-    houseCounts = await houseMemberCounts(
+    houses = page.items;
+    housesTotal = page.total;
+    housesOffset = page.offset;
+    houseSummaries = await houseMemberSummaries(
       context,
-      next.map((house) => house.id),
+      page.items.map((house) => house.id),
     );
     if (request !== housesToken) return;
   } catch (cause) {
     if (request !== housesToken) return;
     housesError = cause instanceof Error ? cause.message : String(cause);
     houses = [];
-    houseCounts = new Map();
+    housesTotal = 0;
+    houseSummaries = new Map();
   } finally {
     if (request === housesToken) housesBusy = false;
-  }
-}
-
-async function createPerson() {
-  if (creatingPerson || !createName.trim()) return;
-  creatingPerson = true;
-  peopleError = "";
-  try {
-    const person = await createMinimalPerson(context, createName, crypto.randomUUID());
-    createName = "";
-    onSelect(person);
-  } catch (cause) {
-    peopleError = cause instanceof Error ? cause.message : String(cause);
-  } finally {
-    creatingPerson = false;
-  }
-}
-
-async function addHouse() {
-  if (creatingHouse || !createHouseName.trim()) return;
-  creatingHouse = true;
-  housesError = "";
-  try {
-    const created = await createHouse(context, createHouseName.trim(), crypto.randomUUID());
-    createHouseName = "";
-    houses = [...houses, { id: created.id, name: created.name }].sort(
-      (left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
-    );
-    houseCounts = new Map(houseCounts).set(created.id, 0);
-    onSelectHouse({ id: created.id, name: created.name });
-  } catch (cause) {
-    housesError = cause instanceof Error ? cause.message : String(cause);
-  } finally {
-    creatingHouse = false;
   }
 }
 
@@ -158,7 +123,8 @@ $effect(() => {
 });
 
 $effect(() => {
-  void loadHouses();
+  housesQuery;
+  void loadHouses(0);
 });
 </script>
 
@@ -194,17 +160,6 @@ $effect(() => {
       <div class="panel-list" role="listbox" aria-label="People">
         {#if peopleError}<p class="error" role="alert">{peopleError}</p>{/if}
         {#if peopleBusy && people.length === 0}<p class="hint">Loading people…</p>
-        {:else if emptyPeople && !onNewPerson}
-          <div class="create-cta">
-            <p class="hint">No people yet. Create one — they also appear in Lore.</p>
-            <label class="field">Name <input bind:value={createName} placeholder="Person name" /></label>
-            <button
-              type="button"
-              class="primary-button"
-              disabled={creatingPerson || !createName.trim()}
-              onclick={() => void createPerson()}
-              ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newPerson}</button>
-          </div>
         {:else if emptyPeople}
           <p class="hint">No people yet. Use {ENTITY_ACTIONS.newPerson} above — they also appear in Lore.</p>
         {:else if people.length === 0}<p class="hint">No people match this search.</p>
@@ -242,7 +197,7 @@ $effect(() => {
       <div class="panel-heading">
         <div>
           <span class="panel-kicker">HOUSES</span>
-          <strong id="landing-houses-title">{houses.length} {houses.length === 1 ? "house" : "houses"}</strong>
+          <strong id="landing-houses-title">{housesTotal} {housesTotal === 1 ? "house" : "houses"}</strong>
         </div>
       </div>
       <label class="search-field">
@@ -255,33 +210,38 @@ $effect(() => {
         {#if housesError}<p class="error" role="alert">{housesError}</p>{/if}
         {#if housesBusy && houses.length === 0}
           <p class="hint">Loading houses…</p>
-        {:else if emptyHouses && !onNewHouse}
-          <div class="create-cta">
-            <p class="hint">No houses yet. Create one to group people as a starting point.</p>
-            <label class="field">Name <input bind:value={createHouseName} placeholder="House name" /></label>
-            <button
-              type="button"
-              class="primary-button"
-              disabled={creatingHouse || !createHouseName.trim()}
-              onclick={() => void addHouse()}
-              ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newHouse}</button>
-          </div>
         {:else if emptyHouses}
           <p class="hint">No houses yet. Use {ENTITY_ACTIONS.newHouse} above to start a lineage.</p>
-        {:else if visibleHouses.length === 0}
+        {:else if houses.length === 0}
           <p class="hint">No houses match this search.</p>
         {:else}
-          {#each visibleHouses as house (house.id)}
-            {@const count = houseCounts.get(house.id) ?? 0}
+          {#each houses as house (house.id)}
+            {@const summary = houseSummaries.get(house.id)}
             <button type="button" class="collection-item" onclick={() => onSelectHouse(house)}>
               <span class="item-glyph house" aria-hidden="true"><Castle size={16} strokeWidth={1.8} /></span>
               <span class="item-copy"
-                ><strong>{house.name}</strong><small>{count} {count === 1 ? "member" : "members"}</small></span>
+                ><strong>{house.name}</strong><small
+                  >{formatHouseMemberSummary(summary, { pending: housesBusy && !summary })}</small
+                ></span>
               <span class="item-arrow" aria-hidden="true"><ChevronRight size={16} strokeWidth={1.8} /></span>
             </button>
           {/each}
         {/if}
       </div>
+      {#if housesTotal > houses.length}
+        <div class="pager">
+          <button
+            type="button"
+            class="quiet-button"
+            disabled={housesOffset === 0}
+            onclick={() => void loadHouses(Math.max(0, housesOffset - pageSize))}>Previous</button>
+          <button
+            type="button"
+            class="quiet-button"
+            disabled={housesOffset + houses.length >= housesTotal}
+            onclick={() => void loadHouses(housesOffset + pageSize)}>Next</button>
+        </div>
+      {/if}
     </section>
   </div>
 </section>

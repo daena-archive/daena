@@ -49,7 +49,8 @@
     "test:ui-ux-slice0": "node --experimental-strip-types scripts/ui-ux-slice0.test.mjs",
     "test:entity-lifecycle": "node --experimental-strip-types scripts/entity-lifecycle.test.mjs",
     "test:async-entity-picker": "node --experimental-strip-types scripts/async-entity-picker.test.mjs",
-    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:family-tree && npm run test:git-ui && npm run test:ui-ux-slice0 && npm run test:entity-lifecycle && npm run test:async-entity-picker"
+    "test:houses-management": "node --experimental-strip-types scripts/houses-management.test.mjs",
+    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:family-tree && npm run test:git-ui && npm run test:ui-ux-slice0 && npm run test:entity-lifecycle && npm run test:async-entity-picker && npm run test:houses-management"
   },
   "license": "Apache-2.0",
   "dependencies": {

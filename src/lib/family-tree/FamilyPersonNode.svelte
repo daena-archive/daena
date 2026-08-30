@@ -17,6 +17,7 @@ let {
     onMakeRoot: (id: string) => void;
     onToggleBranch?: (id: string, direction: BranchDirection) => void;
     houses?: string[];
+    roleBadge?: string | null;
     dimmed?: boolean;
   };
 } = $props();
@@ -80,6 +81,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
       {#if data.houses?.length}
         <span class="house">{data.houses[0]}{data.houses.length > 1 ? ` +${data.houses.length - 1}` : ""}</span>
       {/if}
+      {#if data.roleBadge}<em class="role-badge">{data.roleBadge}</em>{/if}
       {#if data.isRoot}<em class="root-badge">Root</em>{/if}
     </div>
     {#if data.hidden}
@@ -229,7 +231,8 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
   font-weight: 700;
   font-size: 10px;
 }
-.root-badge {
+.root-badge,
+.role-badge {
   display: inline-flex;
   align-self: start;
   margin-top: 2px;
@@ -242,6 +245,9 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
   letter-spacing: 0.05em;
   text-transform: uppercase;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.role-badge {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
 }
 .branches {
   position: absolute;

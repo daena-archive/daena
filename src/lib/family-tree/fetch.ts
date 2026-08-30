@@ -25,9 +25,50 @@ import {
   type FamilyPerson,
   type FamilyTreeLimits,
   type GenealogyWarning,
+  type HouseMemberRecord,
   type HouseMembership,
+  type HouseMemberSummary,
 } from "./model.ts";
 import { personFromRecord } from "./projection.ts";
+
+function membershipMeta(relationship: Relationship): {
+  role: string | null;
+  customLabel: string | null;
+  notes: string | null;
+} {
+  const metadata = relationship.metadata ?? {};
+  const role = typeof metadata.role === "string" ? metadata.role : null;
+  const customLabel = typeof metadata.customLabel === "string" ? metadata.customLabel : null;
+  const notes = typeof metadata.notes === "string" ? metadata.notes : null;
+  return { role, customLabel, notes };
+}
+
+/** Count kinship-connected components among house members (isolated people each form a group). */
+export function countKinshipFamilyGroups(
+  memberIds: Iterable<string>,
+  relationships: Array<{ type: string; sourceId: string; targetId: string }>,
+): number {
+  const members = [...new Set([...memberIds].filter(Boolean))];
+  if (members.length === 0) return 0;
+  const known = new Set(members);
+  const parent = new Map<string, string>(members.map((id) => [id, id]));
+  const find = (id: string): string => {
+    const next = parent.get(id) ?? id;
+    if (next !== id) parent.set(id, find(next));
+    return parent.get(id) ?? id;
+  };
+  const unite = (left: string, right: string) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parent.set(a, b);
+  };
+  for (const relationship of relationships) {
+    if (relationship.type !== PARENT_RELATIONSHIP && relationship.type !== PARTNER_RELATIONSHIP) continue;
+    if (!known.has(relationship.sourceId) || !known.has(relationship.targetId)) continue;
+    unite(relationship.sourceId, relationship.targetId);
+  }
+  return new Set(members.map((id) => find(id))).size;
+}
 
 export class NeighborhoodAbortedError extends Error {
   override name = "NeighborhoodAbortedError";
@@ -359,17 +400,30 @@ export async function loadExpansionLayer(
 
 export async function listHouses(
   context: ModuleContext,
-  signal?: AbortSignal,
-): Promise<{ id: string; name: string }[]> {
+  options?: { text?: string; offset?: number; limit?: number; signal?: AbortSignal },
+): Promise<{ items: { id: string; name: string }[]; total: number; offset: number; limit: number; hasMore: boolean }> {
+  const signal = options?.signal;
   throwIfAborted(signal);
+  const offset = Math.max(0, options?.offset ?? 0);
+  const limit = Math.min(200, Math.max(1, options?.limit ?? 40));
   const page = await context.entities.query({
     type: HOUSE_TYPE,
+    text: options?.text?.trim() || undefined,
     sortField: "name",
     sortDirection: "asc",
-    limit: 200,
+    offset,
+    limit,
+    includeDeleted: false,
   });
   throwIfAborted(signal);
-  return page.items.filter((entity) => !entity.deleted).map((entity) => ({ id: entity.id, name: entity.name }));
+  const items = page.items.filter((entity) => !entity.deleted).map((entity) => ({ id: entity.id, name: entity.name }));
+  return {
+    items,
+    total: page.total,
+    offset: page.offset,
+    limit: page.limit,
+    hasMore: page.hasMore,
+  };
 }
 
 export async function houseMemberCounts(
@@ -377,20 +431,73 @@ export async function houseMemberCounts(
   houseIds: string[],
   signal?: AbortSignal,
 ): Promise<Map<string, number>> {
+  const summaries = await houseMemberSummaries(context, houseIds, signal);
+  return new Map([...summaries.entries()].map(([id, summary]) => [id, summary.memberCount]));
+}
+
+export async function houseMemberSummaries(
+  context: ModuleContext,
+  houseIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, HouseMemberSummary>> {
   const unique = [...new Set(houseIds.filter(Boolean))];
-  const counts = new Map<string, number>(unique.map((id) => [id, 0]));
-  if (unique.length === 0) return counts;
+  const summaries = new Map<string, HouseMemberSummary>(
+    unique.map((id) => [id, { houseId: id, memberCount: 0, headName: null, heirName: null }]),
+  );
+  if (unique.length === 0) return summaries;
   const collected = new Map<string, Relationship>();
   await queryPaged(context, unique, [MEMBERSHIP_RELATIONSHIP], "incoming", collected, signal);
   const peopleByHouse = new Map<string, Set<string>>();
+  const leadershipIds = new Set<string>();
+  const headByHouse = new Map<string, string>();
+  const heirByHouse = new Map<string, string>();
   for (const relationship of collected.values()) {
     if (relationship.type !== MEMBERSHIP_RELATIONSHIP || !unique.includes(relationship.targetId)) continue;
     const members = peopleByHouse.get(relationship.targetId) ?? new Set<string>();
     members.add(relationship.sourceId);
     peopleByHouse.set(relationship.targetId, members);
+    const { role } = membershipMeta(relationship);
+    if (role === "head" && !headByHouse.has(relationship.targetId)) {
+      headByHouse.set(relationship.targetId, relationship.sourceId);
+      leadershipIds.add(relationship.sourceId);
+    }
+    if (role === "heir" && !heirByHouse.has(relationship.targetId)) {
+      heirByHouse.set(relationship.targetId, relationship.sourceId);
+      leadershipIds.add(relationship.sourceId);
+    }
   }
-  for (const id of unique) counts.set(id, peopleByHouse.get(id)?.size ?? 0);
-  return counts;
+  const names = new Map<string, string>();
+  const leaderList = [...leadershipIds];
+  for (let index = 0; index < leaderList.length; index += ENTITY_GET_MANY_LIMIT) {
+    throwIfAborted(signal);
+    const batch = leaderList.slice(index, index + ENTITY_GET_MANY_LIMIT);
+    for (const entity of await context.entities.getMany(batch as UUID[])) {
+      if (!entity.deleted) names.set(entity.id, entity.name);
+    }
+  }
+  for (const id of unique) {
+    const headId = headByHouse.get(id);
+    const heirId = heirByHouse.get(id);
+    summaries.set(id, {
+      houseId: id,
+      memberCount: peopleByHouse.get(id)?.size ?? 0,
+      headName: headId ? (names.get(headId) ?? null) : null,
+      heirName: heirId ? (names.get(heirId) ?? null) : null,
+    });
+  }
+  return summaries;
+}
+
+export function formatHouseMemberSummary(
+  summary: HouseMemberSummary | undefined | null,
+  options?: { pending?: boolean },
+): string {
+  if (!summary) return options?.pending ? "Loading…" : "0 members";
+  const count = summary.memberCount;
+  const parts = [`${count} ${count === 1 ? "member" : "members"}`];
+  if (summary.headName) parts.push(`Head ${summary.headName}`);
+  if (summary.heirName) parts.push(`Heir ${summary.heirName}`);
+  return parts.join(" · ");
 }
 
 export async function listHouseMembers(
@@ -398,26 +505,52 @@ export async function listHouseMembers(
   houseId: string,
   signal?: AbortSignal,
 ): Promise<{ id: string; name: string }[]> {
+  const records = await listHouseMemberRecords(context, houseId, signal);
+  return records.map((record) => ({ id: record.personId, name: record.personName }));
+}
+
+export async function listHouseMemberRecords(
+  context: ModuleContext,
+  houseId: string,
+  signal?: AbortSignal,
+): Promise<HouseMemberRecord[]> {
   if (!houseId) return [];
   const collected = new Map<string, Relationship>();
   await queryPaged(context, [houseId], [MEMBERSHIP_RELATIONSHIP], "incoming", collected, signal);
-  const personIds = [
-    ...new Set(
-      [...collected.values()]
-        .filter((relationship) => relationship.type === MEMBERSHIP_RELATIONSHIP && relationship.targetId === houseId)
-        .map((relationship) => relationship.sourceId),
-    ),
-  ];
+  const memberships = [...collected.values()].filter(
+    (relationship) => relationship.type === MEMBERSHIP_RELATIONSHIP && relationship.targetId === houseId,
+  );
+  const personIds = [...new Set(memberships.map((relationship) => relationship.sourceId))];
   if (personIds.length === 0) return [];
-  const records: { id: string; name: string }[] = [];
+  const names = new Map<string, string>();
   for (let index = 0; index < personIds.length; index += ENTITY_GET_MANY_LIMIT) {
     throwIfAborted(signal);
     const batch = personIds.slice(index, index + ENTITY_GET_MANY_LIMIT);
     for (const entity of await context.entities.getMany(batch as UUID[])) {
-      if (!entity.deleted && entity.type === PERSON_TYPE) records.push({ id: entity.id, name: entity.name });
+      if (!entity.deleted && entity.type === PERSON_TYPE) names.set(entity.id, entity.name);
     }
   }
-  return records.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+  return memberships
+    .flatMap((relationship) => {
+      const personName = names.get(relationship.sourceId);
+      if (!personName) return [];
+      const meta = membershipMeta(relationship);
+      return [
+        {
+          id: relationship.id,
+          revision: relationship.revision,
+          personId: relationship.sourceId,
+          personName,
+          houseId,
+          role: meta.role,
+          customLabel: meta.customLabel,
+          notes: meta.notes,
+        } satisfies HouseMemberRecord,
+      ];
+    })
+    .sort(
+      (left, right) => left.personName.localeCompare(right.personName) || left.personId.localeCompare(right.personId),
+    );
 }
 
 export async function loadHouseNeighborhood(
@@ -487,13 +620,17 @@ export async function loadHouseMemberships(
   return memberships.flatMap((relationship) => {
     const houseName = houses.get(relationship.targetId);
     if (!houseName) return [];
-    const role = relationship.metadata?.role;
+    const meta = membershipMeta(relationship);
     return [
       {
+        id: relationship.id,
+        revision: relationship.revision,
         personId: relationship.sourceId,
         houseId: relationship.targetId,
         houseName,
-        role: typeof role === "string" ? role : null,
+        role: meta.role,
+        customLabel: meta.customLabel,
+        notes: meta.notes,
       } satisfies HouseMembership,
     ];
   });

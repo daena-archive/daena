@@ -712,6 +712,24 @@ results.
 
 ### Slice 3: Houses management
 
+Status: **done** (review follow-ups applied). House collection rows show member count + head/heir summaries via
+`houseMemberSummaries`. Tree House sessions expose `FamilyHousePanel` (add/edit/remove
+membership from merged metadata, Open full entry, Archive). Empty houses invite add/
+create in-place. Role badges and “N family groups” messaging cover disconnected houses.
+Tree New person/house continue to route through shared focused create and stay in the
+Tree session when invoked from Tree. Membership mutations bump collection refresh.
+Tree Back prefers shell history when entered from Houses. Contract lock:
+`npm run test:houses-management`.
+
+Explicitly deferred / Slice 4:
+
+- Members + immediate family scope control and full legend copy for scope rules.
+- Toolbar regrouping and Person-dock Edit identity/Archive.
+- Membership “Create person” tab still uses create-and-add (`createMinimalPerson`) so the
+  new person is linked in one step; full template fields remain on header New person.
+- Houses inspector shows leadership summary + Open tree; rich membership editing stays in
+  the Tree House dock (Members relationship field remains in the generic inspector).
+
 1. Add House member summaries to the collection.
 2. Add Open tree routing and the House dock.
 3. Implement membership add/edit/remove from merged metadata.

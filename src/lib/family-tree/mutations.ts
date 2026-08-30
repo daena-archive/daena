@@ -92,18 +92,21 @@ export async function createMembership(
   houseId: string,
   sourceRevision: string,
   requestId: string,
+  metadata: Record<string, unknown> = { role: "member" },
 ) {
   let revision = sourceRevision;
   if (!revision) {
     const person = await context.entities.get(personId as UUID);
     revision = person?.revision ?? "";
   }
+  const serialized = serializeMetadata(metadata);
+  if (!serialized.role) serialized.role = "member";
   return context.relationships.create(
     {
       sourceId: personId as UUID,
       targetId: houseId as UUID,
       type: MEMBERSHIP_RELATIONSHIP,
-      metadata: { role: "member" },
+      metadata: serialized,
     },
     { expectedRevision: revision, requestId },
   );

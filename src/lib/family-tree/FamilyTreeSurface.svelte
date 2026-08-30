@@ -3,17 +3,20 @@ import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
 import { ArrowLeft, Maximize2, Plus, RotateCcw, Settings2, UserPlus, UsersRound } from "@lucide/svelte";
-import { promptDialog } from "$lib/dialogs.svelte";
-import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
+import { ENTITY_ACTIONS, TREE_LEGEND } from "$lib/ui-ux/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
+import FamilyHousePanel from "./FamilyHousePanel.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
+import FamilyMembershipDialog from "./FamilyMembershipDialog.svelte";
 import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
 import FamilyRelationshipPanel from "./FamilyRelationshipPanel.svelte";
 import FamilyRootPicker from "./FamilyRootPicker.svelte";
 import FamilyTreeLanding from "./FamilyTreeLanding.svelte";
 import FamilyTreeCanvas from "./FamilyTreeCanvas.svelte";
 import {
+  countKinshipFamilyGroups,
   isNeighborhoodAbort,
+  listHouseMemberRecords,
   listPersonSecondaryFields,
   listHouses,
   loadExpansionLayer,
@@ -33,6 +36,8 @@ import {
   PERSON_TYPE,
   expansionKey,
   familyTreeLimitsOverBudget,
+  formatMembershipRole,
+  isLeadershipRole,
   type BranchDirection,
   type FamilyPerson,
   type FamilyRelationship,
@@ -41,6 +46,7 @@ import {
   type FamilyViewport,
   type GenealogyWarning,
   type HiddenCounts,
+  type HouseMemberRecord,
   type RelativeRole,
 } from "./model.ts";
 import {
@@ -61,7 +67,6 @@ import {
   replaceRecentRoots,
   writeFamilyTreeLimits,
 } from "./state.ts";
-import { createHouse, createMembership } from "./mutations.ts";
 import { buildLayoutGraph, layoutGraphExceedsLimits } from "./unions.ts";
 
 let {
@@ -72,10 +77,15 @@ let {
   restoreNonce = 0,
   avatar,
   onOpenEntity,
+  onOpenHouseEntry,
+  onArchiveHouse,
+  onRenameHouse,
   onRootChange,
   onSessionChange,
   onNewPerson,
   onNewHouse,
+  onBack,
+  onMembershipChanged,
 }: {
   context: ModuleContext;
   projectId: string;
@@ -84,10 +94,15 @@ let {
   restoreNonce?: number;
   avatar?: Snippet<[string, string]>;
   onOpenEntity: (entityId: string) => void;
+  onOpenHouseEntry?: (houseId: string) => void;
+  onArchiveHouse?: (houseId: string) => void | Promise<void>;
+  onRenameHouse?: (houseId: string, name: string) => void | Promise<void>;
   onRootChange?: (rootId: string | null) => void;
   onSessionChange?: (session: FamilyTreeSession | null) => void;
   onNewPerson?: () => void;
   onNewHouse?: () => void;
+  onBack?: () => void | Promise<void>;
+  onMembershipChanged?: () => void;
 } = $props();
 
 let rootId = $state<string | null>(null);
@@ -125,17 +140,38 @@ let collected = new Map<string, Relationship>();
 let houses = $state<{ id: string; name: string }[]>([]);
 let houseId = $state<string | null>(null);
 let houseName = $state("");
-let memberships = $state<Map<string, { houseId: string; houseName: string }[]>>(new Map());
+let houseMembers = $state<HouseMemberRecord[]>([]);
+let houseMembersBusy = $state(false);
+let addHouseMemberOpen = $state<"link" | "create" | null>(null);
+let memberships = $state<
+  Map<string, { houseId: string; houseName: string; role: string | null; customLabel: string | null }[]>
+>(new Map());
 
 const graph = $derived(normalizeGenealogy(rawPeople, rawRelationships).graph);
 const selectedRelationship = $derived(
   selectedRelationshipId ? (graph.relationships.get(selectedRelationshipId) ?? null) : null,
 );
 const selectedPerson = $derived(selectedPersonId ? (people.get(selectedPersonId) ?? null) : null);
-const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson));
+const showHouseDock = $derived(Boolean(houseId && !selectedPerson && !selectedRelationship));
+const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson || showHouseDock));
+const familyGroupCount = $derived.by(() => {
+  if (!houseId) return 0;
+  return countKinshipFamilyGroups(
+    people.keys(),
+    rawRelationships.map((relationship) => ({
+      type: relationship.type,
+      sourceId: relationship.sourceId,
+      targetId: relationship.targetId,
+    })),
+  );
+});
 const subtitle = $derived.by(() => {
   if (!rootId) return "Choose a person or house to explore a family neighborhood.";
-  if (houseId) return houseName ? `${houseName} · ${people.size} members` : `${people.size} members`;
+  if (houseId) {
+    const parts = [houseName || "House", `${people.size} ${people.size === 1 ? "member" : "members"}`];
+    if (familyGroupCount > 1) parts.push(TREE_LEGEND.disconnectedGroups(familyGroupCount));
+    return parts.join(" · ");
+  }
   const parts: string[] = [`${people.size} in view`];
   if (truncated) parts.push(`truncated ${truncationLowerBound ? `(${truncationLowerBound}+)` : ""}`.trim());
   if (warnings.length) parts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
@@ -187,8 +223,25 @@ const hiddenByPerson = $derived.by(() => {
 const housesByPerson = $derived.by(() => {
   const map = new Map<string, string[]>();
   for (const [personId, entries] of memberships) {
-    const names = [...new Set(entries.map((entry) => entry.houseName))];
-    if (names.length) map.set(personId, names);
+    const labels = [
+      ...new Set(
+        entries.map((entry) => {
+          const role = formatMembershipRole(entry.role, entry.customLabel);
+          return entry.role && entry.role !== "member" ? `${entry.houseName} (${role})` : entry.houseName;
+        }),
+      ),
+    ];
+    if (labels.length) map.set(personId, labels);
+  }
+  return map;
+});
+const rolesByPerson = $derived.by(() => {
+  const map = new Map<string, string>();
+  if (!houseId) return map;
+  for (const member of houseMembers) {
+    if (!member.role || member.role === "member") continue;
+    if (!isLeadershipRole(member.role) && member.role !== "custom") continue;
+    map.set(member.personId, formatMembershipRole(member.role, member.customLabel));
   }
   return map;
 });
@@ -207,7 +260,8 @@ const expandedByPerson = $derived.by(() => {
 
 async function refreshHouses() {
   try {
-    houses = await listHouses(context);
+    const page = await listHouses(context, { limit: 200 });
+    houses = page.items;
   } catch {
     houses = [];
   }
@@ -216,10 +270,18 @@ async function refreshHouses() {
 async function refreshMemberships(ids: string[]) {
   try {
     const loaded = await loadHouseMemberships(context, ids);
-    const next = new Map<string, { houseId: string; houseName: string }[]>();
+    const next = new Map<
+      string,
+      { houseId: string; houseName: string; role: string | null; customLabel: string | null }[]
+    >();
     for (const entry of loaded) {
       const list = next.get(entry.personId) ?? [];
-      list.push({ houseId: entry.houseId, houseName: entry.houseName });
+      list.push({
+        houseId: entry.houseId,
+        houseName: entry.houseName,
+        role: entry.role,
+        customLabel: entry.customLabel,
+      });
       next.set(entry.personId, list);
     }
     memberships = next;
@@ -228,25 +290,18 @@ async function refreshMemberships(ids: string[]) {
   }
 }
 
-async function createHouseFromToolbar() {
-  const name = await promptDialog({
-    title: "New house",
-    message: "Create a house to group people. Membership does not change the tree layout.",
-    placeholder: "House name",
-    confirmLabel: "Create",
-  });
-  if (!name?.trim()) return;
+async function refreshHouseMembers(id = houseId) {
+  if (!id) {
+    houseMembers = [];
+    return;
+  }
+  houseMembersBusy = true;
   try {
-    const created = await createHouse(context, name.trim(), crypto.randomUUID());
-    const personId = selectedPersonId ?? rootId;
-    const person = personId ? people.get(personId) : null;
-    if (person) {
-      await createMembership(context, person.id, created.id, person.revision, crypto.randomUUID());
-    }
-    await refreshHouses();
-    await refreshMemberships([...people.keys()]);
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : String(cause);
+    houseMembers = await listHouseMemberRecords(context, id);
+  } catch {
+    houseMembers = [];
+  } finally {
+    houseMembersBusy = false;
   }
 }
 
@@ -468,6 +523,7 @@ async function loadHouse(id: string, fit = true, restored = false, name = "") {
     else positioned = null;
     void refreshHouses();
     void refreshMemberships([...people.keys()]);
+    void refreshHouseMembers(id);
   } catch (cause) {
     if (signal.aborted || isNeighborhoodAbort(cause)) return;
     error = cause instanceof Error ? cause.message : String(cause);
@@ -664,10 +720,22 @@ $effect(() => {
 });
 
 function goToLanding() {
+  if (onBack) {
+    void onBack();
+    return;
+  }
   if (!rootId) return;
   previousOrder = [];
   clearView();
   onRootChange?.(null);
+}
+
+async function reloadActiveHouse(fit = false) {
+  if (!houseId) return;
+  previousOrder = [];
+  await loadHouse(houseId, fit, false, houseName);
+  await refreshHouseMembers(houseId);
+  onMembershipChanged?.();
 }
 
 function clearView() {
@@ -678,6 +746,8 @@ function clearView() {
   rootId = null;
   houseId = null;
   houseName = "";
+  houseMembers = [];
+  addHouseMemberOpen = null;
   selectedPersonId = null;
   selectedRelationshipId = null;
   people = new Map();
@@ -974,13 +1044,49 @@ function applyRelationshipDelete(id: string) {
         {/snippet}
       </WorkbenchState>
     {:else if houseId && people.size === 0}
-      <WorkbenchState
-        kind="empty"
-        title="This house has no members"
-        message="Add people from a person neighborhood, then open the house again to see its kinship tree." />
+      <div class="workspace has-dock">
+        <WorkbenchState
+          kind="empty"
+          title="This house has no members"
+          message="Add an existing person or create one here. Membership stays in Lore; removing a member does not archive or delete them.">
+          {#snippet actions()}
+            <button type="button" class="quiet-button" onclick={() => (addHouseMemberOpen = "link")}
+              >Add existing</button>
+            <button type="button" class="primary-button" onclick={() => (addHouseMemberOpen = "create")}
+              >Create person</button>
+          {/snippet}
+        </WorkbenchState>
+        <div class="dock">
+          {#if showHouseDock && houseId}
+            <FamilyHousePanel
+              {context}
+              {houseId}
+              {houseName}
+              members={houseMembers}
+              busy={houseMembersBusy}
+              onOpenEntry={(id) => onOpenHouseEntry?.(id)}
+              onOpenPerson={(id) => selectCanvasPerson(id)}
+              onArchive={(id) => onArchiveHouse?.(id)}
+              onRename={onRenameHouse
+                ? async (id, name) => {
+                    await onRenameHouse(id, name);
+                    houseName = name;
+                  }
+                : undefined}
+              onMembersChanged={() => void reloadActiveHouse(true)}
+              onClose={() => {
+                if (people.size > 0) selectedPersonId = [...people.keys()][0] ?? null;
+                else goToLanding();
+              }} />
+          {/if}
+        </div>
+      </div>
     {:else if positioned}
       <div class="workspace" class:has-dock={dockOpen}>
         <div class="canvas-wrap">
+          {#if familyGroupCount > 1}
+            <div class="family-groups-banner" role="status">{TREE_LEGEND.disconnectedGroups(familyGroupCount)}</div>
+          {/if}
           <FamilyTreeCanvas
             layout={positioned}
             {people}
@@ -990,6 +1096,7 @@ function applyRelationshipDelete(id: string) {
             {hiddenByPerson}
             {expandedByPerson}
             {housesByPerson}
+            {rolesByPerson}
             {avatar}
             onSelectPerson={selectCanvasPerson}
             onSelectRelationship={(id) => (selectedRelationshipId = id)}
@@ -1040,12 +1147,47 @@ function applyRelationshipDelete(id: string) {
                 onSelectPerson={selectCanvasPerson}
                 onSelectRelationship={(id) => (selectedRelationshipId = id)}
                 onClose={() => (selectedPersonId = null)} />
+            {:else if showHouseDock && houseId}
+              <FamilyHousePanel
+                {context}
+                {houseId}
+                {houseName}
+                members={houseMembers}
+                busy={houseMembersBusy}
+                onOpenEntry={(id) => onOpenHouseEntry?.(id)}
+                onOpenPerson={(id) => selectCanvasPerson(id)}
+                onArchive={(id) => onArchiveHouse?.(id)}
+                onRename={onRenameHouse
+                  ? async (id, name) => {
+                      await onRenameHouse(id, name);
+                      houseName = name;
+                    }
+                  : undefined}
+                onMembersChanged={() => void reloadActiveHouse(true)}
+                onClose={() => {
+                  if (people.size > 0) selectedPersonId = [...people.keys()][0] ?? null;
+                  else goToLanding();
+                }} />
             {/if}
           </div>
         {/if}
       </div>
     {/if}
   </div>
+
+  {#if addHouseMemberOpen && houseId}
+    <FamilyMembershipDialog
+      {context}
+      {houseId}
+      {houseName}
+      excludeIds={houseMembers.map((member) => member.personId)}
+      initialMode={addHouseMemberOpen}
+      onClose={() => (addHouseMemberOpen = null)}
+      onSaved={() => {
+        addHouseMemberOpen = null;
+        void reloadActiveHouse(true);
+      }} />
+  {/if}
 
   {#if member && rootId}
     <FamilyMemberDialog
@@ -1482,5 +1624,23 @@ function applyRelationshipDelete(id: string) {
   .busy-dot {
     animation: none;
   }
+}
+
+.family-groups-banner {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent));
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.canvas-wrap {
+  position: relative;
 }
 </style>

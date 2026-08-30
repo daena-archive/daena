@@ -131,11 +131,11 @@ $effect(() => {
         <button type="button" role="menuitem" class="danger" onclick={() => void runArchive()}
           >{archiveBusy ? MUTATION_STATUS.working : ENTITY_ACTIONS.archive}</button>
       {/if}
-      {#if openInLabel && onOpenIn}
-        <button type="button" role="menuitem" onclick={() => void run(onOpenIn)}>{openInText}</button>
-      {/if}
       {#if openTree && onOpenTree}
         <button type="button" role="menuitem" onclick={() => void run(onOpenTree)}>{ENTITY_ACTIONS.openTree}</button>
+      {/if}
+      {#if openInLabel && onOpenIn}
+        <button type="button" role="menuitem" onclick={() => void run(onOpenIn)}>{openInText}</button>
       {/if}
     </div>
   {/if}

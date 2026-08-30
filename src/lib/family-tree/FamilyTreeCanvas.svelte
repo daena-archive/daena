@@ -36,6 +36,7 @@ let {
   onAddUnionChild,
   onLinkPartners,
   housesByPerson = new Map(),
+  rolesByPerson = new Map(),
   memberHouseIds = new Map(),
   houseFilterId = null,
   fitToken = 0,
@@ -58,6 +59,7 @@ let {
   onAddUnionChild: (memberIds: string[]) => void;
   onLinkPartners: (memberIds: [string, string]) => void;
   housesByPerson?: Map<string, string[]>;
+  rolesByPerson?: Map<string, string>;
   memberHouseIds?: Map<string, string[]>;
   houseFilterId?: string | null;
   fitToken?: number;
@@ -124,6 +126,7 @@ function flowNodes(): Node[] {
             onMakeRoot,
             onToggleBranch,
             houses: housesByPerson.get(personId) ?? [],
+            roleBadge: rolesByPerson.get(personId) ?? null,
             dimmed: Boolean(houseFilterId) && !(memberHouseIds.get(personId) ?? []).includes(houseFilterId ?? ""),
           },
           selected: node.personId === selectedPersonId,

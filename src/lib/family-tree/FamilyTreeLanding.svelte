@@ -3,6 +3,7 @@ import type { EntitySummary, ModuleContext } from "../../../packages/module-api/
 import type { Snippet } from "svelte";
 import { Castle, ChevronRight, Plus, Search, UserPlus } from "@lucide/svelte";
 import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
+import { toAsyncEntityPage } from "$lib/ui-ux/asyncEntityQuery.ts";
 import { PERSON_TYPE } from "./model.ts";
 import { houseMemberCounts, listHouses } from "./fetch.ts";
 import { createHouse, createMinimalPerson } from "./mutations.ts";
@@ -65,9 +66,16 @@ async function searchPeople(nextOffset = 0) {
       limit: pageSize,
     });
     if (request !== peopleToken) return;
-    people = page.items.filter((item) => !item.deleted);
-    peopleTotal = page.total;
-    peopleOffset = page.offset;
+    const normalized = toAsyncEntityPage(page);
+    people = normalized.items.map((item) => ({
+      id: item.id as EntitySummary["id"],
+      name: item.name,
+      type: item.entityType ?? PERSON_TYPE,
+      deleted: false,
+      revision: item.revision ?? "",
+    }));
+    peopleTotal = normalized.total;
+    peopleOffset = normalized.offset;
   } catch (cause) {
     if (request !== peopleToken) return;
     peopleError = cause instanceof Error ? cause.message : String(cause);

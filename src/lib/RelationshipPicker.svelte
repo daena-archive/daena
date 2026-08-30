@@ -1,60 +1,67 @@
 <script lang="ts">
-import { X, Search } from "@lucide/svelte";
-import type { Entity } from "$lib/project/client";
+import { X } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
+import AsyncEntityPicker from "./ui-ux/AsyncEntityPicker.svelte";
+import {
+  type AsyncEntityOption,
+  type AsyncEntityResolveFn,
+  type AsyncEntitySearchFn,
+  type AsyncEntitySearchQuery,
+} from "./ui-ux/asyncEntityQuery.ts";
 
 let {
   field,
-  entities,
   selectedIds,
   onChange,
+  search,
+  resolveSelected,
   placeholder = "Search and select entities…",
   hideChips = false,
   onCreate,
+  pageSize = 20,
 }: {
   field: FieldDefinition;
-  entities: Entity[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
+  /** Backend-paged search. Must not rely on a full in-memory entity list. */
+  search: AsyncEntitySearchFn;
+  /** Resolve chip labels for selected IDs (exact reads / small cache). */
+  resolveSelected?: AsyncEntityResolveFn;
   placeholder?: string;
   hideChips?: boolean;
   onCreate?: (name: string) => Promise<string | null>;
+  pageSize?: number;
 } = $props();
 
-let query = $state("");
-let open = $state(false);
 let creating = $state(false);
+let selectedEntities = $state<AsyncEntityOption[]>([]);
+let createQuery = $state("");
 
-function candidates() {
-  const normalizedQuery = query.trim().toLowerCase();
-  return entities
-    .filter((entity) => !entity.deleted)
-    .filter((entity) => !field.targetEntityTypes || field.targetEntityTypes.includes(entity.entity_type ?? ""))
-    .filter(
-      (entity) =>
-        !normalizedQuery || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(normalizedQuery),
-    );
+const entityTypes = $derived(field.targetEntityTypes?.length ? [...field.targetEntityTypes] : undefined);
+
+const scopedSearch: AsyncEntitySearchFn = async (query: AsyncEntitySearchQuery) => {
+  createQuery = query.text;
+  return search({
+    ...query,
+    entityTypes: query.entityTypes ?? entityTypes,
+    excludedEntityTypes: query.excludedEntityTypes,
+    excludeIds: [...(query.excludeIds ?? []), ...selectedIds],
+  });
+};
+
+function isOne() {
+  return (field as { cardinality?: string }).cardinality === "one";
 }
 
-function isSelected(id: string) {
-  return selectedIds.includes(id);
-}
-
-function toggle(id: string) {
-  // For cardinality "one", treat as single-select (replace)
-  if ((field as any).cardinality === "one") {
-    if (selectedIds.includes(id)) onChange([]);
-    else onChange([id]);
-    query = "";
-    open = false;
+function toggle(entity: AsyncEntityOption, nextSelected: boolean) {
+  if (isOne()) {
+    onChange(nextSelected ? [entity.id] : []);
     return;
   }
   const next = new Set(selectedIds);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
+  if (nextSelected) next.add(entity.id);
+  else next.delete(entity.id);
   onChange([...next]);
-  query = "";
-  open = true;
 }
 
 function remove(id: string) {
@@ -62,105 +69,85 @@ function remove(id: string) {
 }
 
 function entityFor(id: string) {
-  return entities.find((entity) => entity.id === id);
+  return selectedEntities.find((entity) => entity.id === id);
 }
 
-const createLabel = $derived(query.trim());
 const canCreate = $derived(
   Boolean(onCreate) &&
-    createLabel.length > 0 &&
+    createQuery.trim().length > 0 &&
     !creating &&
-    !candidates().some((entity) => entity.name.toLowerCase() === createLabel.toLowerCase()),
+    !selectedEntities.some((entity) => entity.name.toLowerCase() === createQuery.trim().toLowerCase()),
 );
 
 async function createNamed() {
   if (!onCreate || !canCreate) return;
   creating = true;
   try {
-    const id = await onCreate(createLabel);
-    if (id) toggle(id);
+    const id = await onCreate(createQuery.trim());
+    if (id) {
+      if (isOne()) onChange([id]);
+      else onChange([...new Set([...selectedIds, id])]);
+    }
   } finally {
     creating = false;
   }
 }
+
+$effect(() => {
+  const ids = [...selectedIds];
+  let cancelled = false;
+  void (async () => {
+    if (ids.length === 0) {
+      if (!cancelled) selectedEntities = [];
+      return;
+    }
+    if (resolveSelected) {
+      const resolved = await resolveSelected(ids);
+      if (!cancelled) {
+        selectedEntities = ids.map(
+          (id) => resolved.find((entity) => entity.id === id) ?? { id, name: id, entityType: null },
+        );
+      }
+      return;
+    }
+    if (!cancelled) {
+      selectedEntities = ids.map((id) => ({ id, name: id, entityType: null }));
+    }
+  })();
+  return () => {
+    cancelled = true;
+  };
+});
 </script>
 
-<div
-  class="relationship-picker"
-  onfocusout={(event) => {
-    const next = event.relatedTarget as Node | null;
-    const picker = event.currentTarget as HTMLElement;
-    if (next && picker.contains(next)) return;
-    window.setTimeout(() => {
-      if (!picker.contains(document.activeElement)) open = false;
-    }, 0);
-  }}>
+<div class="relationship-picker">
   {#if selectedIds.length > 0 && !hideChips}
     <div class="relationship-selection" aria-label={`Selected ${field.label}`}>
       {#each selectedIds as id}
         {@const entity = entityFor(id)}
-        {#if entity}
-          <button
-            type="button"
-            class="relationship-chip"
-            data-entity-id={id}
-            onclick={() => remove(id)}
-            title={`Remove ${entity.name}`}>
-            <span>{entity.name}</span><b aria-hidden="true"><X size={12} strokeWidth={1.8} aria-hidden="true" /></b>
-          </button>
-        {/if}
+        <button
+          type="button"
+          class="relationship-chip"
+          data-entity-id={id}
+          onclick={() => remove(id)}
+          title={`Remove ${entity?.name ?? id}`}>
+          <span>{entity?.name ?? id}</span><b aria-hidden="true"><X size={12} strokeWidth={1.8} /></b>
+        </button>
       {/each}
     </div>
   {/if}
-  <div class="relationship-search">
-    <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-    <input
-      aria-label={field.label}
-      value={query}
-      {placeholder}
-      onfocus={() => (open = true)}
-      oninput={(event) => {
-        query = (event.currentTarget as HTMLInputElement).value;
-        open = true;
-      }}
-      onkeydown={(event) => {
-        if (event.key === "Escape") open = false;
-      }} />
-  </div>
-  {#if open}
-    <div class="relationship-menu" role="listbox" aria-label={`${field.label} options`}>
-      {#each candidates() as entity}
-        <button
-          type="button"
-          role="option"
-          aria-selected={isSelected(entity.id)}
-          class:selected={isSelected(entity.id)}
-          onpointerdown={(event) => {
-            event.preventDefault();
-            toggle(entity.id);
-          }}
-          onkeydown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              toggle(entity.id);
-            }
-          }}>
-          <span><strong>{entity.name}</strong><small>{entity.entity_type ?? "Uncategorized"}</small></span>
-          {#if isSelected(entity.id)}<b aria-hidden="true">✓</b>{/if}
-        </button>
-      {:else}
-        <small class="relationship-empty">No matching entities.</small>
-      {/each}
-      {#if canCreate}
-        <button
-          type="button"
-          class="relationship-create"
-          onpointerdown={(event) => {
-            event.preventDefault();
-            void createNamed();
-          }}>{creating ? "Creating…" : `Create “${createLabel}”`}</button>
-      {/if}
-    </div>
+  <AsyncEntityPicker
+    search={scopedSearch}
+    {entityTypes}
+    {selectedIds}
+    {pageSize}
+    {placeholder}
+    ariaLabel={field.label}
+    emptyMessage="No matching entities."
+    onToggle={(entity, selected) => toggle(entity, selected)} />
+  {#if canCreate}
+    <button type="button" class="relationship-create" onclick={() => void createNamed()}
+      >{creating ? "Creating…" : `Create “${createQuery.trim()}”`}</button>
   {/if}
 </div>
 
@@ -168,12 +155,13 @@ async function createNamed() {
 .relationship-picker {
   position: relative;
   margin-top: 10px;
+  display: grid;
+  gap: 6px;
 }
 .relationship-selection {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin-bottom: 6px;
 }
 .relationship-chip {
   display: inline-flex;
@@ -198,81 +186,20 @@ async function createNamed() {
   font-size: 13px;
   line-height: 1;
 }
-.relationship-search {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--canvas);
-  color: var(--ink-faint);
-}
-.relationship-search:focus-within {
-  border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
-}
-.relationship-search input {
-  min-width: 0;
+.relationship-create {
   width: 100%;
-  padding: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--ink);
-  font-size: 11px;
-}
-.relationship-menu {
-  position: absolute;
-  inset-inline: 0;
-  top: calc(100% + 4px);
-  z-index: 8;
-  max-height: 190px;
-  overflow-y: auto;
-  padding: 4px;
-  border: 1px solid var(--line);
+  min-height: var(--touch-target-min, 44px);
+  padding: 8px 10px;
+  border: 1px dashed var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: var(--shadow-lg);
-}
-.relationship-menu button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
   color: var(--ink-soft);
   text-align: left;
   cursor: pointer;
-}
-.relationship-menu button:hover,
-.relationship-menu button.selected {
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.relationship-menu strong,
-.relationship-menu small {
-  display: block;
-}
-.relationship-menu strong {
   font-size: 11px;
 }
-.relationship-menu small {
-  margin-top: 2px;
-  color: var(--ink-faint);
-  font-size: 9px;
-}
-.relationship-menu button > b {
-  color: var(--accent);
-}
-.relationship-empty {
-  display: block;
-  padding: 10px 8px;
-  color: var(--ink-faint);
-  font-size: 10px;
+.relationship-create:hover {
+  border-color: var(--accent);
+  color: var(--ink);
 }
 </style>

@@ -158,6 +158,14 @@ import EntityIdentityDialog from "$lib/ui-ux/EntityIdentityDialog.svelte";
 import EntityRowActions from "$lib/ui-ux/EntityRowActions.svelte";
 import MutationStatus from "$lib/ui-ux/MutationStatus.svelte";
 import { archivedToastMessage } from "$lib/ui-ux/archive.ts";
+import {
+  toAsyncEntityPage,
+  toShellSortDirection,
+  toShellSortField,
+  type AsyncEntityOption,
+  type AsyncEntitySearchFn,
+  type AsyncEntitySearchQuery,
+} from "$lib/ui-ux/asyncEntityQuery.ts";
 import { createMutationController } from "$lib/ui-ux/mutationState.ts";
 import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
 import type { MutationSnapshot } from "$lib/ui-ux/mutationState.ts";
@@ -332,6 +340,8 @@ let timelineView = $state<TimelineView>("events");
 let languagePane = $state<LanguagePane>("overview");
 let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
+/** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
+let calendarEntities = $state<Entity[]>([]);
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
 let selectedLoading = $state(false);
@@ -400,6 +410,8 @@ let collectionPage = $state<EntityPage>(emptyEntityPage());
 let collectionLoading = $state(false);
 let collectionError = $state("");
 let collectionRequest = 0;
+/** Bumped to re-query the visible collection page without reloading every entity. */
+let collectionRefreshEpoch = $state(0);
 let collectionScopeKey = "";
 let collectionQueryRestoring = false;
 let collectionListElement = $state<HTMLDivElement | null>(null);
@@ -1306,7 +1318,7 @@ function createDateForField(key: string) {
   return parseCalendarDate(createFieldValues[key]);
 }
 function worldCalendars() {
-  return entities.filter((entity) => entity.entity_type === "daena.timeline:calendar" && !entity.deleted);
+  return calendarEntities;
 }
 function calendarDefinitionForId(calendarId: string | undefined): CalendarDefinition | null {
   if (isGregorianCalendarId(calendarId)) return null;
@@ -2076,18 +2088,9 @@ $effect(() => {
     languageListRefreshed = false;
     return;
   }
-  void entities;
   if (languageListRefreshed) return;
   languageListRefreshed = true;
-  void project
-    .listEntities()
-    .then((list) => {
-      if (section !== "language") return;
-      entities = list;
-    })
-    .catch(() => {
-      // Keep the current list on transient failures; retry on next visit.
-    });
+  bumpCollectionRefresh();
   if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0], false);
 });
 
@@ -2179,7 +2182,7 @@ $effect(() => {
 });
 
 $effect(() => {
-  void entities;
+  void collectionRefreshEpoch;
   const active = ready && Boolean(projectInfo);
   const page = collectionQuery.page;
   const limit = collectionQuery.pageSize;
@@ -2218,6 +2221,7 @@ $effect(() => {
             return;
           }
           collectionPage = result;
+          for (const entity of result.items) upsertEntityInCache(entity);
         })
         .catch((cause) => {
           if (request !== collectionRequest) return;
@@ -3656,6 +3660,91 @@ async function loadEntities() {
   await refreshCalendarDefinitions();
 }
 
+function bumpCollectionRefresh() {
+  if (collectionListElement) queueCollectionScroll(section, collectionListElement.scrollTop);
+  collectionRefreshEpoch += 1;
+}
+
+function upsertEntityInCache(entity: Entity) {
+  const index = entities.findIndex((candidate) => candidate.id === entity.id);
+  if (index >= 0) {
+    entities = entities.map((candidate) => (candidate.id === entity.id ? entity : candidate));
+  } else {
+    entities = [...entities, entity];
+  }
+}
+
+function removeEntityFromCache(id: string) {
+  entities = entities.filter((entity) => entity.id !== id);
+}
+
+/** Patch one entity (or drop it) and re-query the current collection page/counts. */
+async function refreshAfterEntityMutation(options?: { entityId?: string; removed?: boolean }) {
+  if (options?.removed && options.entityId) {
+    removeEntityFromCache(options.entityId);
+  } else if (options?.entityId) {
+    try {
+      const loaded = await project.getEntity(options.entityId);
+      if (!loaded || loaded.deleted) removeEntityFromCache(options.entityId);
+      else upsertEntityInCache(loaded);
+    } catch {
+      // Keep the prior cache entry; collection re-query still runs.
+    }
+  }
+  bumpCollectionRefresh();
+  await refreshArchivedCount();
+}
+
+function searchEntitiesPaged(field?: FieldDefinition): AsyncEntitySearchFn {
+  return async (query: AsyncEntitySearchQuery) => {
+    const page = await project.queryEntities({
+      query: query.text || undefined,
+      entityTypes: query.entityTypes ?? field?.targetEntityTypes,
+      excludedEntityTypes: query.excludedEntityTypes,
+      sortField: toShellSortField(query.sortField),
+      sortDirection: toShellSortDirection(query.sortDirection),
+      offset: query.offset,
+      limit: query.limit,
+    });
+    return toAsyncEntityPage(page, { excludeIds: query.excludeIds });
+  };
+}
+
+async function resolveSelectedEntities(ids: string[]): Promise<AsyncEntityOption[]> {
+  if (ids.length === 0) return [];
+  const byId = new Map(entities.filter((entity) => !entity.deleted).map((entity) => [entity.id, entity]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    const loaded = await Promise.all(
+      missing.map(async (id) => {
+        try {
+          return await project.getEntity(id);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const entity of loaded) {
+      if (entity && !entity.deleted) {
+        upsertEntityInCache(entity);
+        byId.set(entity.id, entity);
+      }
+    }
+  }
+  return ids.map((id) => {
+    const cached = byId.get(id);
+    if (cached) {
+      return {
+        id: cached.id,
+        name: cached.name,
+        entityType: cached.entity_type,
+        revision: cached.revision,
+      };
+    }
+    return { id, name: id, entityType: null };
+  });
+}
+
 async function refreshArchivedCount() {
   try {
     const page = await project.queryEntities({ archived: true, limit: 1 });
@@ -3666,7 +3755,7 @@ async function refreshArchivedCount() {
 }
 
 async function handleArchiveChanged() {
-  await loadEntities();
+  bumpCollectionRefresh();
   await refreshArchivedCount();
 }
 
@@ -3675,10 +3764,19 @@ async function refreshCalendarDefinitions() {
   try {
     if (!projectInfo?.root) {
       calendarDefinitions = next;
+      calendarEntities = [];
       return;
     }
     const context = contextFor("timeline");
-    const calendars = entities.filter((entity) => entity.entity_type === "daena.timeline:calendar" && !entity.deleted);
+    const page = await project.queryEntities({
+      entityTypes: ["daena.timeline:calendar"],
+      sortField: "name",
+      sortDirection: "asc",
+      limit: 200,
+    });
+    const calendars = page.items.filter((entity) => !entity.deleted);
+    calendarEntities = calendars;
+    for (const calendar of calendars) upsertEntityInCache(calendar);
     await Promise.all(
       calendars.map(async (calendar) => {
         const records = await context.records.list("calendar-definition", calendar.id as UUID, { limit: 1 });
@@ -4422,7 +4520,7 @@ async function createWithOption(
     const returnFocus = createDialogReturnFocus;
     createDialogReturnFocus = null;
     resetCreateFields(null);
-    await loadEntities();
+    await refreshAfterEntityMutation({ entityId: created.id });
     await selectEntity(
       {
         id: created.id,
@@ -4897,7 +4995,8 @@ async function openEntityEditDialog(target: Entity | null = selected) {
     if (!(await flushAutoSave())) return;
   }
   try {
-    await loadEntities();
+    const loaded = await project.getEntity(target.id);
+    if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
   } catch {}
   const current = entities.find((entity) => entity.id === target.id) ?? selected ?? target;
   entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
@@ -4942,16 +5041,20 @@ async function saveEntityEditDialog() {
   }
   if (!fresh.revision) {
     try {
-      await loadEntities();
+      const loaded = await project.getEntity(current.id);
+      if (loaded && !loaded.deleted) {
+        upsertEntityInCache(loaded);
+        entityEditDialog.entity = loaded;
+      }
     } catch {}
-    const refreshed = entities.find((e) => e.id === current.id);
+    const refreshed = entities.find((e) => e.id === current.id) ?? entityEditDialog.entity;
     if (!refreshed?.revision) {
       error = "The entity revision is unavailable. Reload the project and try again.";
       return;
     }
     entityEditDialog.entity = refreshed;
   }
-  const target = entities.find((e) => e.id === current.id) ?? fresh;
+  const target = entities.find((e) => e.id === current.id) ?? entityEditDialog.entity;
   entityEditDialog.busy = true;
   const result = await entityMutation.run(async () => {
     return project.updateEntity(
@@ -4967,8 +5070,8 @@ async function saveEntityEditDialog() {
     return;
   }
   const updated = result.value;
-  entities = entities.map((entity) => (entity.id === updated.id ? updated : entity));
   selected = updated;
+  await refreshAfterEntityMutation({ entityId: updated.id });
   if (typeChanged) {
     const newSection = sectionForEntityType(updated.entity_type);
     if (newSection && newSection !== section) section = newSection;
@@ -4990,8 +5093,8 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   if (selected?.id === target.id && !(await flushAutoSave())) return;
   const owning = contextOwningEntityType(target.entity_type ?? "");
   const result = await entityMutation.run(async () => {
-    await loadEntities();
-    const current = entities.find((entity) => entity.id === target.id) ?? target;
+    const loaded = await project.getEntity(target.id);
+    const current = loaded && !loaded.deleted ? loaded : (entities.find((entity) => entity.id === target.id) ?? target);
     if (!current.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
     await owning.entities.delete(current.id as UUID, { expectedRevision: current.revision });
     return current.name;
@@ -5005,8 +5108,7 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   entityMutation.reset();
   const wasSelected = selected?.id === target.id;
   if (wasSelected) clearSelection();
-  await loadEntities();
-  await refreshArchivedCount();
+  await refreshAfterEntityMutation({ entityId: target.id, removed: true });
   showLifecycleToast({
     message: archivedToastMessage(result.value),
     actionLabel: ENTITY_ACTIONS.viewArchive,
@@ -5283,7 +5385,7 @@ async function createRelationshipTarget(definition: FieldDefinition, name: strin
       { name: name.trim(), type: targetType },
       { requestId: crypto.randomUUID() },
     );
-    await loadEntities();
+    await refreshAfterEntityMutation({ entityId: created.id });
     return created.id;
   } catch (cause) {
     error = friendlyError(cause);
@@ -6196,8 +6298,14 @@ onMount(() => {
   let unlistenMaps: (() => void) | undefined;
   void listen<{ mapEntityId: string; linkId?: string }>("maps-navigation", async (event) => {
     try {
-      if (!entities.length) await loadEntities();
-      const map = entities.find((entity) => entity.id === event.payload.mapEntityId);
+      let map = entities.find((entity) => entity.id === event.payload.mapEntityId && !entity.deleted) ?? null;
+      if (!map) {
+        const loaded = await project.getEntity(event.payload.mapEntityId);
+        if (loaded && !loaded.deleted) {
+          upsertEntityInCache(loaded);
+          map = loaded;
+        }
+      }
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       if (!(await flushAutoSave())) return;
@@ -6237,17 +6345,13 @@ onMount(() => {
     }
     if (mapEntityId) mapSaveStates[mapEntityId] = { status, detail };
     if (status === "saved" && mapEntityId) {
-      void project
-        .listEntities()
-        .then((all) => {
-          entities = all;
-          const map = all.find((entity) => entity.id === mapEntityId);
-          if (map) {
-            selected = map;
-            void loadSelectedState(map).catch(() => {});
-          }
-        })
-        .catch(() => {});
+      void refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
+        const map = entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
+        if (map) {
+          selected = map;
+          void loadSelectedState(map).catch(() => {});
+        }
+      });
     }
     if (status === "reconcile") {
       const reconcileDetail = detail as { unresolved?: unknown } | null;
@@ -6277,12 +6381,7 @@ onMount(() => {
       if (openDetail?.entityId) void openMapEntityFromLink(openDetail.entityId);
     }
     if (status === "linked") {
-      void project
-        .listEntities()
-        .then((all) => {
-          entities = all;
-        })
-        .catch(() => {});
+      void refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
       if (selected)
         void project
           .listMapLocations(selected.id)
@@ -6479,7 +6578,8 @@ onMount(() => {
                         ></label
                       >{#if item.field.type === "relationship"}<RelationshipPicker
                           field={item.field}
-                          {entities}
+                          search={searchEntitiesPaged(item.field)}
+                          resolveSelected={resolveSelectedEntities}
                           selectedIds={createRelationshipValues(item.field.key)}
                           onChange={(ids) =>
                             setCreateRelationshipValues(
@@ -7584,7 +7684,9 @@ onMount(() => {
               context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
                 focusEntityId: selected?.id as UUID | undefined,
                 availableServices: enabledServices(),
-                onEntityDeleted: loadEntities,
+                onEntityDeleted: () => {
+                  void refreshAfterEntityMutation();
+                },
                 moduleState: { pane: languagePane },
                 onModuleStateChange: (state: Record<string, unknown> | null) => {
                   const next = (state as { pane?: LanguagePane } | null)?.pane;
@@ -7877,6 +7979,7 @@ onMount(() => {
                         bind:this={editorRef}
                         value={documentBody}
                         {entities}
+                        searchEntities={searchEntitiesPaged()}
                         entityId={selected?.id ?? null}
                         defaultNamespace={activeManifest()?.schemas[0]?.namespace ?? activeModuleId()}
                         editable={!selectedLoading &&
@@ -8027,7 +8130,8 @@ onMount(() => {
                       <span>{eraField.label}</span>
                       <RelationshipPicker
                         field={eraField}
-                        {entities}
+                        search={searchEntitiesPaged(eraField)}
+                        resolveSelected={resolveSelectedEntities}
                         selectedIds={selectedRelationshipIds(eraField)}
                         placeholder="Search eras…"
                         onChange={(ids) => void updateRelationshipField(eraField, ids)} />
@@ -8143,7 +8247,7 @@ onMount(() => {
                       if (entity) void selectEntity(entity);
                     }}
                     onEraCreated={(created) => {
-                      void loadEntities().then(() =>
+                      void refreshAfterEntityMutation({ entityId: created.id }).then(() =>
                         selectEntity({
                           id: created.id,
                           name: created.name,
@@ -8175,7 +8279,8 @@ onMount(() => {
                   </div>
                   <RelationshipPicker
                     field={definition}
-                    {entities}
+                    search={searchEntitiesPaged(definition)}
+                    resolveSelected={resolveSelectedEntities}
                     selectedIds={selectedRelationshipIds(definition)}
                     hideChips
                     onChange={(ids) => void updateRelationshipField(definition, ids)}

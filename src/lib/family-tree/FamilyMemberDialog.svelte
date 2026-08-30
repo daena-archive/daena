@@ -1,6 +1,8 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, UUID } from "../../../packages/module-api/src/index";
 import { trapModalTab } from "$lib/shell/modalFocus";
+import AsyncEntityPicker from "$lib/ui-ux/AsyncEntityPicker.svelte";
+import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/ui-ux/asyncEntityQuery.ts";
 import {
   PARENT_KINDS,
   PARTNER_KINDS,
@@ -22,7 +24,7 @@ let {
   context,
   currentId,
   currentName,
-  currentRevision,
+  currentRevision: _currentRevision,
   role,
   excludeIds,
   coParentIds = [],
@@ -51,11 +53,6 @@ let {
 } = $props();
 
 let mode = $state<"link" | "create">("link");
-let query = $state("");
-let results = $state<EntitySummary[]>([]);
-let total = $state(0);
-let offset = $state(0);
-let busy = $state(false);
 let saving = $state(false);
 let error = $state("");
 let name = $state("");
@@ -69,9 +66,7 @@ let linkedOk = $state(false);
 let pendingRequestId = $state<string | null>(null);
 let lastLinkFingerprint = $state("");
 let dialogEl = $state<HTMLElement | null>(null);
-let token = 0;
-const pageSize = 20;
-const excluded = $derived(new Set([currentId, ...excludeIds]));
+const excluded = $derived([currentId, ...excludeIds]);
 
 const title = $derived(
   role === "parent"
@@ -97,30 +92,26 @@ function metadata() {
   return { kind: parentKind, customLabel: parentKind === "custom" ? customLabel : undefined, notes };
 }
 
-async function search(nextOffset = 0) {
-  const request = ++token;
-  busy = true;
-  error = "";
-  try {
-    const page = await context.entities.query({
-      types: [PERSON_TYPE],
-      text: query.trim() || undefined,
-      sortField: "name",
-      sortDirection: "asc",
-      offset: nextOffset,
-      limit: pageSize,
-    });
-    if (request !== token) return;
-    results = page.items.filter((item) => !item.deleted && !excluded.has(item.id));
-    total = page.total;
-    offset = page.offset;
-  } catch (cause) {
-    if (request !== token) return;
-    error = cause instanceof Error ? cause.message : String(cause);
-    results = [];
-  } finally {
-    if (request === token) busy = false;
-  }
+async function searchPeople(query: { text: string; offset: number; limit: number; excludeIds?: string[] }) {
+  const page = await context.entities.query({
+    types: [PERSON_TYPE],
+    text: query.text || undefined,
+    sortField: "name",
+    sortDirection: "asc",
+    offset: query.offset,
+    limit: query.limit,
+  });
+  return toAsyncEntityPage(page, { excludeIds: query.excludeIds ?? excluded });
+}
+
+function toSummary(entity: AsyncEntityOption): EntitySummary {
+  return {
+    id: entity.id as EntitySummary["id"],
+    name: entity.name,
+    type: entity.entityType ?? PERSON_TYPE,
+    deleted: false,
+    revision: entity.revision ?? "",
+  };
 }
 
 function sourceIdFor(candidate: EntitySummary) {
@@ -235,13 +226,6 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 $effect(() => {
-  void query;
-  if (mode !== "link" || otherPerson) return;
-  const timer = setTimeout(() => void search(0), 180);
-  return () => clearTimeout(timer);
-});
-
-$effect(() => {
   dialogEl?.focus();
 });
 </script>
@@ -326,32 +310,17 @@ $effect(() => {
         <button type="button" class="primary-button" disabled={saving} onclick={() => void linkPerson(otherPerson)}
           >Save partnership</button>
       {:else if mode === "link"}
-        <label>Search <input type="search" bind:value={query} /></label>
-        {#if busy && results.length === 0}<p class="hint">Searching…</p>
-        {:else if results.length === 0}<p class="hint">No matching people.</p>
-        {:else}
-          <ul>
-            {#each results as person (person.id)}
-              <li>
-                <button type="button" disabled={saving} onclick={() => void linkPerson(person)}>{person.name}</button>
-              </li>
-            {/each}
-          </ul>
-          {#if total > results.length}
-            <div class="actions">
-              <button
-                type="button"
-                class="quiet-button"
-                disabled={offset === 0}
-                onclick={() => void search(Math.max(0, offset - pageSize))}>Previous</button>
-              <button
-                type="button"
-                class="quiet-button"
-                disabled={offset + results.length >= total}
-                onclick={() => void search(offset + pageSize)}>Next</button>
-            </div>
-          {/if}
-        {/if}
+        <AsyncEntityPicker
+          search={searchPeople}
+          entityTypes={[PERSON_TYPE]}
+          excludeIds={excluded}
+          pageSize={20}
+          dropdown={false}
+          disabled={saving}
+          placeholder="Search people"
+          ariaLabel="Search people"
+          emptyMessage="No matching people."
+          onSelect={(entity) => void linkPerson(toSummary(entity))} />
       {:else}
         <label>Name <input bind:value={name} /></label>
         <p class="hint">Creates a Lore person, then links them. Dates and portraits are added in Lore.</p>

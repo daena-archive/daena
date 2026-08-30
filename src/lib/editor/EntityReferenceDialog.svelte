@@ -2,50 +2,85 @@
 import { tick } from "svelte";
 import { X } from "@lucide/svelte";
 import type { Entity } from "$lib/project/client";
+import {
+  createRequestGate,
+  emptyAsyncEntityPage,
+  runAsyncEntitySearch,
+  type AsyncEntityOption,
+  type AsyncEntitySearchFn,
+  type AsyncEntitySearchPage,
+} from "$lib/ui-ux/asyncEntityQuery.ts";
 
 export let open = false;
+export let search: AsyncEntitySearchFn = async () => emptyAsyncEntityPage();
+/** Optional warm cache for resolving the initially selected entity name when editing. */
 export let entities: Entity[] = [];
 export let initialQuery = "";
 export let initialSelectedId = "";
 export let initialLabel = "";
 export let initialIsCustom = false;
-export let onInsert: (entity: Entity, label: string, isCustom: boolean) => void = () => {};
+export let onInsert: (entity: AsyncEntityOption, label: string, isCustom: boolean) => void = () => {};
 export let onCancel: () => void = () => {};
+export let pageSize = 20;
 
 let query = "";
 let selectedId = "";
+let selectedEntity: AsyncEntityOption | null = null;
 let label = "";
 let isCustom = false;
 let searchInput: HTMLInputElement;
 let labelInput: HTMLInputElement;
 let wasOpen = false;
 let lastFocused: Element | null = null;
-let filteredEntities: Entity[] = [];
+let page: AsyncEntitySearchPage = emptyAsyncEntityPage(pageSize);
+let busy = false;
+let error = "";
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+const gate = createRequestGate();
 
-$: filteredEntities = entities
-  .filter((entity) => !entity.deleted)
-  .filter(
-    (entity) =>
-      !query.trim() || `${entity.name} ${entity.entity_type ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
-  );
-
-function selectedEntity(): Entity | null {
-  return filteredEntities.find((entity) => entity.id === selectedId) ?? null;
+async function load(nextOffset = 0) {
+  busy = true;
+  error = "";
+  const result = await runAsyncEntitySearch(gate, search, {
+    text: query.trim(),
+    offset: nextOffset,
+    limit: pageSize,
+    sortField: "name",
+    sortDirection: "asc",
+  });
+  if ("stale" in result) return;
+  if ("error" in result) {
+    error = result.error instanceof Error ? result.error.message : String(result.error);
+    page = emptyAsyncEntityPage(pageSize);
+    busy = false;
+    return;
+  }
+  page = result.page;
+  if (selectedId) {
+    const match = page.items.find((entity) => entity.id === selectedId);
+    if (match) selectedEntity = match;
+  }
+  busy = false;
 }
 
-function select(entity: Entity) {
+function scheduleLoad(immediate = false) {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => void load(0), immediate || !query.trim() ? 0 : 180);
+}
+
+function select(entity: AsyncEntityOption) {
   selectedId = entity.id;
+  selectedEntity = entity;
   label = entity.name;
 }
 
 function submit() {
-  const entity = selectedEntity();
-  if (!entity) return;
+  if (!selectedEntity) return;
   if (isCustom) {
     if (!label.trim()) return;
-    onInsert(entity, label.trim(), true);
+    onInsert(selectedEntity, label.trim(), true);
   } else {
-    onInsert(entity, entity.name, false);
+    onInsert(selectedEntity, selectedEntity.name, false);
   }
 }
 
@@ -62,10 +97,10 @@ function handleKeydown(event: KeyboardEvent) {
   }
   if (event.target === searchInput && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
     event.preventDefault();
-    const current = filteredEntities.findIndex((entity) => entity.id === selectedId);
+    const current = page.items.findIndex((entity) => entity.id === selectedId);
     const offset = event.key === "ArrowDown" ? 1 : -1;
-    const next = current < 0 ? (offset > 0 ? 0 : filteredEntities.length - 1) : current + offset;
-    const entity = filteredEntities[Math.max(0, Math.min(filteredEntities.length - 1, next))];
+    const next = current < 0 ? (offset > 0 ? 0 : page.items.length - 1) : current + offset;
+    const entity = page.items[Math.max(0, Math.min(page.items.length - 1, next))];
     if (entity) {
       select(entity);
       void tick().then(() =>
@@ -75,9 +110,8 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Enter" && (event.target as HTMLElement | null)?.closest("button")) return;
-  if (event.key === "Enter" && !selectedEntity() && filteredEntities[0]) select(filteredEntities[0]);
-  const entity = selectedEntity();
-  const canSubmit = entity && (isCustom ? label.trim() : true);
+  if (event.key === "Enter" && !selectedEntity && page.items[0]) select(page.items[0]);
+  const canSubmit = selectedEntity && (isCustom ? label.trim() : true);
   if (event.key === "Enter" && !event.shiftKey && canSubmit) {
     event.preventDefault();
     submit();
@@ -109,15 +143,28 @@ function trapFocus(event: KeyboardEvent) {
 $: {
   if (!open) {
     wasOpen = false;
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
   } else if (!wasOpen) {
     query = initialQuery;
     selectedId = initialSelectedId;
     label = initialLabel;
     isCustom = initialIsCustom;
-    // if auto, ensure label reflects current entity name
-    if (!isCustom) {
-      const ent = entities.find((e) => e.id === initialSelectedId);
-      if (ent) label = ent.name;
+    selectedEntity = null;
+    page = emptyAsyncEntityPage(pageSize);
+    if (initialSelectedId) {
+      const cached = entities.find((entity) => entity.id === initialSelectedId && !entity.deleted);
+      if (cached) {
+        selectedEntity = {
+          id: cached.id,
+          name: cached.name,
+          entityType: cached.entity_type,
+          revision: cached.revision,
+        };
+        if (!isCustom) label = cached.name;
+      }
     }
     wasOpen = true;
     lastFocused = document.activeElement;
@@ -129,10 +176,13 @@ $: {
   }
 }
 
-$: if (selectedEntity() && !isCustom) {
-  // keep label in sync with selected entity when in auto mode (for preview/hydration)
-  const ent = selectedEntity();
-  if (ent && label !== ent.name) label = ent.name;
+$: if (open && wasOpen) {
+  void query;
+  scheduleLoad();
+}
+
+$: if (selectedEntity && !isCustom && label !== selectedEntity.name) {
+  label = selectedEntity.name;
 }
 
 $: if (!open && lastFocused) {
@@ -164,19 +214,39 @@ $: if (!open && lastFocused) {
         <input bind:this={searchInput} bind:value={query} placeholder="Search by name or type…" />
       </label>
       <div class="entity-reference-results" role="listbox" aria-label="Entity results">
-        {#each filteredEntities as entity}
-          <button
-            type="button"
-            role="option"
-            data-entity-result={entity.id}
-            aria-selected={selectedId === entity.id}
-            class:selected={selectedId === entity.id}
-            onclick={() => select(entity)}>
-            <strong>{entity.name}</strong><small>{entity.entity_type ?? "Uncategorized"}</small>
-          </button>
+        {#if error}
+          <p role="alert">{error}</p>
+        {:else if busy && page.items.length === 0}
+          <p>Searching…</p>
         {:else}
-          <p>No matching entities.</p>
-        {/each}
+          {#each page.items as entity (entity.id)}
+            <button
+              type="button"
+              role="option"
+              data-entity-result={entity.id}
+              aria-selected={selectedId === entity.id}
+              class:selected={selectedId === entity.id}
+              onclick={() => select(entity)}>
+              <strong>{entity.name}</strong><small>{entity.entityType ?? "Uncategorized"}</small>
+            </button>
+          {:else}
+            <p>No matching entities.</p>
+          {/each}
+          {#if page.total > page.items.length || page.hasMore || page.offset > 0}
+            <div class="entity-reference-pager">
+              <button
+                type="button"
+                class="quiet"
+                disabled={busy || page.offset === 0}
+                onclick={() => void load(Math.max(0, page.offset - pageSize))}>Previous</button>
+              <button
+                type="button"
+                class="quiet"
+                disabled={busy || (!page.hasMore && page.offset + page.items.length >= page.total)}
+                onclick={() => void load(page.offset + pageSize)}>Next</button>
+            </div>
+          {/if}
+        {/if}
       </div>
       <div class="entity-reference-custom-toggle">
         <label class="custom-checkbox">
@@ -184,8 +254,7 @@ $: if (!open && lastFocused) {
             type="checkbox"
             bind:checked={isCustom}
             onchange={() => {
-              const entity = selectedEntity();
-              if (!isCustom && entity) label = entity.name;
+              if (!isCustom && selectedEntity) label = selectedEntity.name;
               if (isCustom) void tick().then(() => labelInput?.focus());
             }} />
           <span>Use custom display text</span>
@@ -209,16 +278,12 @@ $: if (!open && lastFocused) {
           bind:value={label}
           placeholder={isCustom
             ? "How this reference appears in the document"
-            : (selectedEntity()?.name ?? "Entity name (auto)")}
+            : (selectedEntity?.name ?? "Entity name (auto)")}
           disabled={!isCustom} />
       </label>
       <footer>
         <button type="button" class="quiet" onclick={onCancel}>Cancel</button>
-        <button
-          type="button"
-          class="primary"
-          disabled={!selectedEntity() || (isCustom && !label.trim())}
-          onclick={submit}
+        <button type="button" class="primary" disabled={!selectedEntity || (isCustom && !label.trim())} onclick={submit}
           >{initialSelectedId && initialIsCustom !== undefined ? "Update reference" : "Insert reference"}</button>
       </footer>
     </div>
@@ -446,6 +511,24 @@ header button:focus-visible {
   margin: 0;
   padding: 12px;
   text-align: center;
+}
+.entity-reference-pager {
+  display: flex;
+  gap: 6px;
+  padding: 6px 4px 2px;
+}
+.entity-reference-pager .quiet {
+  flex: 1;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font: 600 11px/1 var(--font-body, system-ui, sans-serif);
+}
+.entity-reference-pager .quiet:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 footer {
   justify-content: flex-end;

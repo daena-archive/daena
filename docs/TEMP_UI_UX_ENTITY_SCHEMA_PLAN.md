@@ -665,12 +665,12 @@ Explicitly deferred (not Slice 1 exit-gate blockers):
 - **EntityCreateDialog** full extract — create still uses shell
   `openCreationMenu` / `openFocusedCreate`; Tree New person/house route through
   those focused paths. Full dialog extraction tracks with Slice 5 workbench splits.
-- **AsyncEntityPicker** — Slice 2 (§4.2 listing anticipates Slice 2).
-- Full in-memory `entities` refresh after mutations — Slice 2 paged refresh.
 - Language Overview inline name field remains the specialized workbench editor;
   shell **Edit identity** dialog covers collection/editor identity edits.
   Overview uses shared archive confirm + `MUTATION_STATUS` labels; full
   `MutationStatus.svelte` chrome lands with later workbench convergence.
+- Full `listEntities()` warm cache on project open remains for hover/editor
+  mentions until those surfaces move to exact reads (follow-up).
 
 1. Extract shared identity, archive, status, row-action, and empty-state components.
 2. Add contextual New to every normal workspace header (Houses: New house; Tree:
@@ -685,6 +685,20 @@ Exit gate: Lore, Timeline, Writing, Language, and Houses pass the same
 create/rename/archive/restore contract tests.
 
 ### Slice 2: paged pickers and refresh behavior
+
+Status: **done**. Shared `AsyncEntityPicker` + `asyncEntityQuery` helpers live under
+`src/lib/ui-ux/`. Relationship, Tree root, and Tree relative pickers search via
+backend pages with request tokens. Shell collection refresh uses
+`collectionRefreshEpoch` / `refreshAfterEntityMutation` instead of rematerializing
+`project.listEntities()` on every identity/archive/create mutation.
+Contract lock: `npm run test:async-entity-picker`.
+
+Still uses a full `listEntities()` warm cache on project open / seed / external
+import for hover cards, editor mention hydration, and home “recent” strips;
+interactive pickers (including editor @-mentions), map save/link handlers, and
+collection pages do not depend on that full list. `workspaceEntityCount` /
+`recentlyUpdatedEntities` still scan the warm cache until those home surfaces
+move to paged totals.
 
 1. Build `AsyncEntityPicker`.
 2. Migrate relationship, Tree root, relative, and other large entity pickers.

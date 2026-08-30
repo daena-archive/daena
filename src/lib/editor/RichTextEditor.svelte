@@ -63,6 +63,7 @@ import {
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import type { Asset, Entity } from "$lib/project/client";
+import type { AsyncEntityOption, AsyncEntitySearchFn } from "$lib/ui-ux/asyncEntityQuery.ts";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
 import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";
@@ -309,6 +310,7 @@ export let aiEnabled = false;
 export let onFullscreenChange: (value: boolean) => void = () => {};
 export let onSaveRequest: () => void = () => {};
 export let entities: Entity[] = [];
+export let searchEntities: AsyncEntitySearchFn | null = null;
 export let entityId: string | null = null;
 export let defaultNamespace: string | null = null;
 
@@ -1394,7 +1396,11 @@ function getSpoilerEl(target: EventTarget | null): HTMLElement | null {
   return parent?.closest?.("span[data-spoiler]") ?? null;
 }
 
-function insertEntityReference(entity: Entity, label: string, isCustom: boolean) {
+function insertEntityReference(
+  entity: Pick<Entity, "id" | "name"> | AsyncEntityOption,
+  label: string,
+  isCustom: boolean,
+) {
   if (!editorState || !editable) return;
   const range = entityReferenceRange;
   if (!range) return;
@@ -1449,7 +1455,11 @@ function openEntityReferenceEditor() {
   entityReferenceDialogOpen = true;
 }
 
-function saveEntityReference(entity: Entity, label: string, isCustom: boolean) {
+function saveEntityReference(
+  entity: Pick<Entity, "id" | "name"> | AsyncEntityOption,
+  label: string,
+  isCustom: boolean,
+) {
   if (entityReferenceDialogMode === "edit") {
     const reference = entityReferenceEdit;
     if (!editorState || !reference) return;
@@ -2741,6 +2751,7 @@ $: inTable = editorState?.isActive("table") ?? false;
   </div>
   <EntityReferenceDialog
     open={entityReferenceDialogOpen}
+    search={searchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 20, hasMore: false }))}
     {entities}
     initialQuery={entityReferenceDialogMode === "insert" ? entityReferenceQuery : ""}
     initialSelectedId={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.entityId ?? "") : ""}

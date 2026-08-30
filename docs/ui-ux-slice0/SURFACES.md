@@ -36,8 +36,9 @@ Surface IDs match `SURFACE_IDS` in `src/lib/ui-ux/fixtures.ts`.
 
 ### `picker.async-entity` / `workspace.houses.tree.root-picker`
 
-- **Current:** Several pickers still filter in-memory or use dedicated paged search (Tree root picker searches Lore people).
-- **Target:** Shared `AsyncEntityPicker` (Slice 2).
+- **Current:** Shared `AsyncEntityPicker` (`src/lib/ui-ux/`) backs Relationship,
+  Tree root, and Tree relative pickers with backend-paged search, exclusions,
+  type scopes, and stale-request rejection.
 - **Scenarios:** `large-project`.
 
 ## Workspaces

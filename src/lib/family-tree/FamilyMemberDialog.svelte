@@ -246,6 +246,8 @@ $effect(() => {
 });
 </script>
 
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
   class="overlay"
   bind:this={dialogEl}
@@ -253,11 +255,17 @@ $effect(() => {
   role="dialog"
   aria-modal="true"
   aria-label={title}
-  onkeydown={onKeydown}>
-  <div class="card">
-    <header>
-      <strong>{title}</strong>
-      <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>Close</button>
+  onkeydown={onKeydown}
+  onclick={(e) => {
+    if (e.target === e.currentTarget && !saving) onClose();
+  }}>
+  <div class="card" role="document" onclick={(e) => e.stopPropagation()}>
+    <header class="dialog-heading">
+      <div>
+        <span class="panel-kicker">FAMILY</span><strong>{title}</strong>
+      </div>
+      <button type="button" class="dialog-close" aria-label="Close dialog" disabled={saving} onclick={onClose}
+        >×</button>
     </header>
     {#if linkedOk && created}
       <p class="hint">Person created and linked. Open in Lore to add dates, portrait, and details.</p>
@@ -360,24 +368,62 @@ $effect(() => {
 
 <style>
 .overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 5;
+  z-index: 300;
   display: grid;
-  place-items: start center;
-  padding: 48px 24px;
-  background: color-mix(in srgb, var(--ink) 28%, transparent);
+  place-items: center;
+  padding: 20px;
+  background: rgba(37, 37, 31, 0.28);
 }
 .card {
   width: min(440px, 100%);
+  max-height: min(84vh, 720px);
+  overflow: auto;
   display: grid;
-  gap: 10px;
-  padding: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--theme-warning-border, #e3d9ca);
+  border-radius: 14px;
   background: var(--surface);
+  box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
+  outline: none;
 }
-header,
+.dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dialog-heading strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.panel-kicker {
+  display: block;
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.dialog-close {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dialog-close:hover {
+  background: var(--theme-warning-bg, #ebe6dd);
+  color: var(--ink);
+}
 .tabs,
 .actions {
   display: flex;
@@ -403,17 +449,29 @@ label,
 }
 .error {
   color: var(--theme-danger-text, #8a2b2b);
+  background: var(--danger-bg, #fff2ee);
+  border: 1px solid var(--danger-line, #edcec5);
+  border-radius: 8px;
+  padding: 8px 10px;
 }
 input,
 select,
 textarea {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 8px;
+  padding: 7px 9px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
+  font-size: 13px;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 ul {
   margin: 0;
@@ -431,12 +489,21 @@ ul button {
   background: var(--surface);
   color: var(--ink);
 }
+ul button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-muted);
+}
 .quiet-button,
 .primary-button {
-  padding: 8px 12px;
+  min-height: 34px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
 .quiet-button {

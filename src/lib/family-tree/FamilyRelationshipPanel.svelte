@@ -41,6 +41,7 @@ let currentRevision = $state("");
 
 const sourceName = $derived(people.get(relationship.sourceId)?.name ?? relationship.sourceId);
 const targetName = $derived(people.get(relationship.targetId)?.name ?? relationship.targetId);
+const relationshipTitle = $derived(`${sourceName} → ${targetName}`);
 const fields = $derived(metadataFieldsFor(context, relationship.type, relationship.kind));
 
 function metadataFieldsFor(
@@ -197,73 +198,78 @@ async function remove() {
 </script>
 
 <aside class="panel" class:docked aria-label="Relationship">
-  <header>
+  <header class="panel-head">
     <div>
-      <strong>{sourceName} → {targetName}</strong>
-      <span>{relationship.label}</span>
+      <span class="kicker">RELATIONSHIP</span>
+      <strong class="title">{relationshipTitle}</strong>
+      <span class="subtitle">{relationship.label}</span>
     </div>
-    <button type="button" class="quiet-button" onclick={onClose}>Close</button>
+    <button type="button" class="quiet-button ghost" onclick={onClose}>Close</button>
   </header>
-  {#each fields as field (field.key)}
-    {#if field.type === "enum"}
-      <label>
-        {field.label}
-        <select
-          value={String(draft[field.key] ?? "")}
-          onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLSelectElement).value)}>
-          {#each field.options ?? [] as option}
-            <option value={option}>{option}</option>
-          {/each}
-        </select>
-      </label>
-    {:else if field.type === "date"}
-      <DateEditor
-        label={field.label}
-        value={draft[field.key]}
-        calendars={[]}
-        onChange={(next) => setDraft(field.key, next)}
-        onClear={() => setDraft(field.key, null)} />
-    {:else if field.type === "boolean"}
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={Boolean(draft[field.key])}
-          onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLInputElement).checked)} />
-        {field.label}
-      </label>
-    {:else if field.type === "number"}
-      <label>
-        {field.label}
-        <input
-          type="number"
-          value={draft[field.key] ?? ""}
-          onchange={(event) => setDraft(field.key, Number((event.currentTarget as HTMLInputElement).value))} />
-      </label>
-    {:else if field.key === "notes"}
-      <label
-        >{field.label}
-        <textarea
-          rows="3"
-          value={String(draft[field.key] ?? "")}
-          oninput={(event) => setDraft(field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea
-        ></label>
-    {:else}
-      <label>
-        {field.label}
-        <input
-          value={String(draft[field.key] ?? "")}
-          oninput={(event) => setDraft(field.key, (event.currentTarget as HTMLInputElement).value)} />
-      </label>
-    {/if}
-  {/each}
+
+  <div class="form-grid">
+    {#each fields as field (field.key)}
+      {#if field.type === "enum"}
+        <label class="field">
+          <span>{field.label}</span>
+          <select
+            value={String(draft[field.key] ?? "")}
+            onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLSelectElement).value)}>
+            {#each field.options ?? [] as option}
+              <option value={option}>{option}</option>
+            {/each}
+          </select>
+        </label>
+      {:else if field.type === "date"}
+        <DateEditor
+          label={field.label}
+          value={draft[field.key]}
+          calendars={[]}
+          onChange={(next) => setDraft(field.key, next)}
+          onClear={() => setDraft(field.key, null)} />
+      {:else if field.type === "boolean"}
+        <label class="field check">
+          <input
+            type="checkbox"
+            checked={Boolean(draft[field.key])}
+            onchange={(event) => setDraft(field.key, (event.currentTarget as HTMLInputElement).checked)} />
+          <span>{field.label}</span>
+        </label>
+      {:else if field.type === "number"}
+        <label class="field">
+          <span>{field.label}</span>
+          <input
+            type="number"
+            value={draft[field.key] ?? ""}
+            onchange={(event) => setDraft(field.key, Number((event.currentTarget as HTMLInputElement).value))} />
+        </label>
+      {:else if field.key === "notes"}
+        <label class="field"
+          ><span>{field.label}</span>
+          <textarea
+            rows="3"
+            value={String(draft[field.key] ?? "")}
+            oninput={(event) => setDraft(field.key, (event.currentTarget as HTMLTextAreaElement).value)}></textarea
+          ></label>
+      {:else}
+        <label class="field">
+          <span>{field.label}</span>
+          <input
+            value={String(draft[field.key] ?? "")}
+            oninput={(event) => setDraft(field.key, (event.currentTarget as HTMLInputElement).value)} />
+        </label>
+      {/if}
+    {/each}
+  </div>
+
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if conflict}
     <div class="actions">
       <button type="button" class="quiet-button" onclick={reloadCurrent}>Reload current values</button>
-      <button type="button" class="quiet-button" onclick={() => (conflict = false)}>Review draft</button>
+      <button type="button" class="quiet-button ghost" onclick={() => (conflict = false)}>Review draft</button>
     </div>
   {/if}
-  <div class="actions">
+  <div class="actions sticky-actions">
     <button type="button" class="primary-button" disabled={saving || conflict} onclick={() => void save()}>Save</button>
     <button type="button" class="danger-button" disabled={saving} onclick={() => void remove()}>Delete</button>
   </div>
@@ -273,84 +279,135 @@ async function remove() {
 .panel {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 12px;
   width: min(420px, 100%);
   max-height: min(80vh, 720px);
   overflow: auto;
   padding: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
   background: var(--surface);
 }
 .panel.docked {
   width: 100%;
   height: 100%;
   max-height: none;
-  padding: 14px;
+  padding: 16px;
   border: none;
   border-radius: 0;
 }
-header {
+.panel-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
 }
-header div {
+.panel-head div {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
-header span,
-label,
-.error {
+.kicker {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.title {
+  color: var(--ink);
+  font: 600 13px/1.3 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.subtitle {
   color: var(--ink-muted);
-  font:
-    12px/1.4 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
+  font: 11px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
-label {
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+.field {
   display: grid;
   gap: 4px;
   color: var(--ink);
+  font: 12px/1.4 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
-.check {
+.field > span {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+}
+.field.check {
   display: flex;
   gap: 8px;
   align-items: center;
 }
+.field.check span {
+  font-weight: 500;
+}
 .error {
   color: var(--theme-danger-text, #8a2b2b);
+  font: 11px/1.4 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  background: var(--danger-bg, #fff2ee);
+  border: 1px solid var(--danger-line, #edcec5);
+  border-radius: 8px;
+  padding: 8px 10px;
 }
 input,
 textarea,
 select {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 8px;
+  padding: 7px 9px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
+  font-size: 13px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
 }
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding-top: 4px;
+}
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  padding-top: 10px;
+  background: linear-gradient(transparent, var(--surface) 30%);
 }
 .quiet-button,
 .primary-button,
 .danger-button {
-  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
 .quiet-button {
   background: var(--surface);
   color: var(--ink-soft, var(--ink));
+}
+.quiet-button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.quiet-button.ghost:hover {
+  border-color: var(--line);
+  background: var(--surface-muted);
 }
 .primary-button {
   background: var(--accent-dark, var(--accent));
@@ -361,5 +418,16 @@ select {
   background: var(--theme-danger-bg, #8a2b2b);
   border-color: transparent;
   color: #fff;
+}
+.primary-button:disabled,
+.danger-button:disabled,
+.quiet-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    scroll-behavior: auto;
+  }
 }
 </style>

@@ -2,8 +2,9 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { Settings2 } from "@lucide/svelte";
+import { Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
 import { promptDialog } from "$lib/dialogs.svelte";
+import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
 import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
 import FamilyRelationshipPanel from "./FamilyRelationshipPanel.svelte";
@@ -124,6 +125,14 @@ const selectedRelationship = $derived(
 );
 const selectedPerson = $derived(selectedPersonId ? (people.get(selectedPersonId) ?? null) : null);
 const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson));
+const subtitle = $derived.by(() => {
+  if (!rootId) return "Choose a Lore person to explore their family neighborhood.";
+  const parts: string[] = [`${people.size} in view`];
+  if (truncated) parts.push(`truncated ${truncationLowerBound ? `(${truncationLowerBound}+)` : ""}`.trim());
+  if (warnings.length) parts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
+  if (familyTreeLimitsOverBudget(limits)) parts.push("over budget");
+  return parts.join(" · ");
+});
 const personConnections = $derived.by(() => {
   if (!selectedPersonId) return [] as Array<{ id: string; label: string; otherId: string; relationshipId: string }>;
   const items: Array<{ id: string; label: string; otherId: string; relationshipId: string }> = [];
@@ -183,6 +192,13 @@ const houseFilterIdsByPerson = $derived.by(() => {
     );
   }
   return map;
+});
+const houseCounts = $derived.by(() => {
+  const counts = new Map<string, number>();
+  for (const entries of memberships.values()) {
+    for (const entry of entries) counts.set(entry.houseId, (counts.get(entry.houseId) ?? 0) + 1);
+  }
+  return counts;
 });
 const expandedByPerson = $derived.by(() => {
   const map = new Map<string, Record<BranchDirection, boolean>>();
@@ -646,34 +662,36 @@ function applyRelationshipDelete(id: string) {
 </script>
 
 <section class="surface">
-  <header>
-    <div>
-      <span class="overline">FAMILY TREE</span>
-      <h1>{rootId ? (people.get(rootId)?.name ?? "Family Tree") : "Family Tree"}</h1>
-      {#if !rootId}
-        <p>Choose a Lore person to inspect their family neighborhood.</p>
+  <!-- Topbar — mirrors WorkspaceTopbar language -->
+  <div class="family-topbar" role="banner">
+    <div class="family-topbar-main">
+      <span class="family-mark" aria-hidden="true"><UsersRound size={16} strokeWidth={1.8} /></span>
+      <div class="family-copy">
+        <strong>{rootId ? (people.get(rootId)?.name ?? "Family Tree") : "Family Tree"}</strong>
+        <small title={subtitle}>{subtitle}</small>
+      </div>
+      {#if loading && positioned}
+        <span class="topbar-busy" aria-live="polite" aria-label="Updating family tree">
+          <span class="busy-dot" aria-hidden="true"></span> Updating…
+        </span>
       {/if}
     </div>
     {#if rootId}
-      <div class="toolbar">
-        <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
-        <label class="recent">
-          <span class="sr">Filter by house</span>
-          <select aria-label="Filter by house" value={houseFilterId ?? ""} onchange={onHouseFilterChange}>
-            <option value="">All houses</option>
-            {#each houses as house (house.id)}
-              <option value={house.id}>{house.name}</option>
-            {/each}
-          </select>
-        </label>
+      <div class="family-topbar-actions" role="toolbar" aria-label="Tree view actions">
+        <button type="button" class="workspace-topbar-action" onclick={fitView} title="Fit to view">
+          <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" /> Fit
+        </button>
+        <button type="button" class="workspace-topbar-action" onclick={resetView} title="Reset to initial neighborhood">
+          <RotateCcw size={14} strokeWidth={1.8} aria-hidden="true" /> Reset
+        </button>
         <div class="settings" bind:this={settingsEl}>
           <button
             type="button"
-            class="quiet-button icon"
+            class="workspace-topbar-action icon"
             aria-expanded={settingsOpen}
             aria-label="View settings"
             onclick={() => (settingsOpen = !settingsOpen)}>
-            <Settings2 size={16} />
+            <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />
           </button>
           {#if settingsOpen}
             <div class="settings-panel" role="dialog" aria-label="View settings">
@@ -686,141 +704,247 @@ function applyRelationshipDelete(id: string) {
                 </select>
               </label>
               <label class="recent limit">
-                <span>Ancestor generations</span>
+                <span>Ancestor generations <em>{limits.ancestorGenerations}</em></span>
                 <input
-                  type="number"
+                  type="range"
                   min="1"
                   max={MAX_ANCESTOR_GENERATIONS}
+                  step="1"
                   value={limits.ancestorGenerations}
                   aria-label="Ancestor generations"
-                  onchange={onAncestorChange} />
+                  oninput={onAncestorChange} />
               </label>
               <label class="recent limit">
-                <span>Descendant generations</span>
+                <span>Descendant generations <em>{limits.descendantGenerations}</em></span>
                 <input
-                  type="number"
+                  type="range"
                   min="1"
                   max={MAX_DESCENDANT_GENERATIONS}
+                  step="1"
                   value={limits.descendantGenerations}
                   aria-label="Descendant generations"
-                  onchange={onDescendantChange} />
+                  oninput={onDescendantChange} />
               </label>
               <label class="recent limit">
-                <span>Visible people cap</span>
+                <span>Visible people cap <em>{limits.visiblePersonLimit}</em></span>
                 <input
-                  type="number"
-                  min="1"
+                  type="range"
+                  min="50"
                   max={MAX_VISIBLE_PERSON_LIMIT}
                   step="50"
                   value={limits.visiblePersonLimit}
                   aria-label="Visible people cap"
-                  onchange={onPersonCapChange} />
+                  oninput={onPersonCapChange} />
               </label>
-              <button type="button" class="quiet-button" onclick={() => void createHouseFromToolbar()}
+              <div class="settings-footnote">
+                <small
+                  >Partners and siblings are included with each visible person. Raising the cap keeps more of the
+                  neighborhood in view.</small>
+              </div>
+              <button type="button" class="quiet-button pill" onclick={() => void createHouseFromToolbar()}
                 >New house</button>
             </div>
           {/if}
         </div>
-        <button type="button" class="quiet-button" onclick={fitView}>Fit</button>
-        <button type="button" class="quiet-button" onclick={resetView}>Reset</button>
       </div>
     {/if}
-  </header>
-  {#if error}
-    <p class="banner" role="alert">
-      {error}
-      {#if rerootCandidate}
-        <button type="button" class="quiet-button" onclick={acceptReroot}>Make {rerootCandidate.name} root</button>
-      {/if}
-    </p>
-  {/if}
-  {#if layoutFailed}
-    <p class="banner" role="alert">
-      Layout failed. The previous arrangement was kept.
-      <button type="button" class="quiet-button" onclick={retryLayout}>Retry</button>
-    </p>
-  {/if}
-  {#if familyTreeLimitsOverBudget(limits)}
-    <p class="hint">{LIMITS_OVER_BUDGET}</p>
-  {/if}
-  {#if warnings.length > 0}
-    <p class="hint">
-      {warnings.length} data warning{warnings.length === 1 ? "" : "s"} — unresolved or unknown family edges were skipped.
-    </p>
-  {/if}
-  {#if !rootId}
-    <FamilyRootPicker {context} onSelect={selectRoot} />
-  {:else if loading && !positioned}
-    <p class="hint">Loading family neighborhood…</p>
-  {:else if positioned}
-    <div class="workspace" class:has-dock={dockOpen}>
-      <div class="canvas-wrap">
-        <FamilyTreeCanvas
-          layout={positioned}
-          {people}
-          {rootId}
-          {selectedPersonId}
-          {selectedRelationshipId}
-          {hiddenByPerson}
-          {expandedByPerson}
-          {housesByPerson}
-          memberHouseIds={houseFilterIdsByPerson}
-          {houseFilterId}
-          {avatar}
-          onSelectPerson={selectCanvasPerson}
-          onSelectRelationship={(id) => (selectedRelationshipId = id)}
-          onMakeRoot={(id) => {
-            previousOrder = [];
-            void loadRoot(id, true);
-          }}
-          onToggleBranch={(id, direction) => void toggleBranch(id, direction)}
-          onAddUnionChild={(memberIds) => {
-            const [id, ...coParentIds] = memberIds.filter((personId) => people.has(personId));
-            if (!id) return;
-            member = { id, role: "child", coParentIds };
-          }}
-          onLinkPartners={(memberIds) => {
-            member = { id: memberIds[0], role: "partner", otherId: memberIds[1] };
-          }}
-          {fitToken}
-          fitView={canvasFit}
-          initialViewport={canvasFit ? null : viewport}
-          onViewportChange={(next) => {
-            if (viewport && viewport.x === next.x && viewport.y === next.y && viewport.zoom === next.zoom) return;
-            viewport = next;
-          }} />
+  </div>
+
+  {#if rootId}
+    <!-- Sticky sub-toolbar — filters & pickers (aligns to WorkspaceViewNav) -->
+    <div class="family-subbar" role="toolbar" aria-label="Family filters">
+      <div class="subbar-group picker-group">
+        <span class="subbar-label">Root</span>
+        <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
       </div>
-      {#if dockOpen}
-        <div class="dock">
-          {#if selectedRelationship}
-            <FamilyRelationshipPanel
-              docked
-              {context}
-              relationship={selectedRelationship}
-              {people}
-              onClose={() => (selectedRelationshipId = null)}
-              onUpdated={applyRelationshipUpdate}
-              onDeleted={applyRelationshipDelete} />
-          {:else if selectedPerson}
-            <FamilyPersonPanel
-              person={selectedPerson}
-              isRoot={selectedPerson.id === rootId}
-              houses={housesByPerson.get(selectedPerson.id) ?? []}
-              connections={personConnections}
-              onOpen={onOpenEntity}
-              onMakeRoot={(id) => {
-                previousOrder = [];
-                void loadRoot(id, true);
-              }}
-              onAddRelative={(id, role) => (member = { id, role })}
-              onSelectPerson={selectCanvasPerson}
-              onSelectRelationship={(id) => (selectedRelationshipId = id)}
-              onClose={() => (selectedPersonId = null)} />
-          {/if}
+      <div class="subbar-sep" aria-hidden="true"></div>
+      <div class="subbar-group house-group">
+        <span class="subbar-label">House</span>
+        <div class="house-pills" role="group" aria-label="Filter by house">
+          <button
+            type="button"
+            class="house-pill"
+            class:active={!houseFilterId}
+            aria-pressed={!houseFilterId}
+            onclick={() => (houseFilterId = null)}>All</button>
+          {#each houses as house (house.id)}
+            {@const count = houseCounts.get(house.id) ?? 0}
+            <button
+              type="button"
+              class="house-pill"
+              class:active={houseFilterId === house.id}
+              aria-pressed={houseFilterId === house.id}
+              title={house.name}
+              onclick={() => (houseFilterId = houseFilterId === house.id ? null : house.id)}
+              >{house.name}{count ? ` (${count})` : ""}</button>
+          {/each}
+          <button
+            type="button"
+            class="house-pill pill-new"
+            onclick={() => void createHouseFromToolbar()}
+            title="Create a new house">+ New</button>
         </div>
-      {/if}
+      </div>
+      <div class="subbar-group field-group">
+        <label class="subbar-field">
+          <span>Secondary</span>
+          <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
+            {#each secondaryFields as field (field.key)}
+              <option value={field.key}>{field.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+      <div class="subbar-legend" aria-hidden="true">
+        <span class="legend-swatch solid"></span> Parent
+        <span class="legend-swatch dash-adopt"></span> Adoptive
+        <span class="legend-swatch double"></span> Partner
+      </div>
     </div>
   {/if}
+
+  <!-- Status strip — warnings / errors / limits (consistent with StatusSummary) -->
+  <div class="family-status">
+    {#if error}
+      <div class="status-alert error" role="alert">
+        <span class="status-dot"></span>
+        <span class="status-text">{error}</span>
+        {#if rerootCandidate}
+          <button type="button" class="quiet-button pill" onclick={acceptReroot}
+            >Make {rerootCandidate.name} root</button>
+        {/if}
+        {#if error === BRANCH_TOO_LARGE}
+          <button type="button" class="quiet-button pill" onclick={() => (error = "")}>Dismiss</button>
+        {/if}
+      </div>
+    {/if}
+    {#if layoutFailed}
+      <div class="status-alert warning" role="alert">
+        <span class="status-dot"></span>
+        <span class="status-text">Layout failed. The previous arrangement was kept.</span>
+        <button type="button" class="quiet-button pill" onclick={retryLayout}>Retry</button>
+      </div>
+    {/if}
+    {#if familyTreeLimitsOverBudget(limits)}
+      <div class="status-alert neutral" role="status">
+        <span class="status-dot"></span>
+        <span class="status-text">{LIMITS_OVER_BUDGET}</span>
+      </div>
+    {/if}
+    {#if warnings.length > 0}
+      <div class="status-alert neutral" role="status">
+        <span class="status-dot"></span>
+        <span class="status-text"
+          >{warnings.length} data warning{warnings.length === 1 ? "" : "s"} — unresolved or unknown family edges were skipped.</span>
+      </div>
+    {/if}
+    {#if truncated}
+      <div class="status-alert neutral" role="status">
+        <span class="status-dot"></span>
+        <span class="status-text"
+          >Relationship query truncated — counts show a lower bound ({truncationLowerBound
+            ? `${truncationLowerBound}+`
+            : "99+"}).</span>
+      </div>
+    {/if}
+  </div>
+
+  <div class="family-body">
+    {#if !rootId}
+      <div class="family-empty">
+        <WorkbenchState
+          kind="empty"
+          title="Choose a family member"
+          message="Select a Lore person to inspect their family neighborhood. Recent roots and search live in the bar above once a root is chosen — for now, pick one below." />
+        <div class="empty-picker">
+          <FamilyRootPicker {context} onSelect={selectRoot} />
+        </div>
+      </div>
+    {:else if loading && !positioned}
+      <WorkbenchState
+        kind="loading"
+        title="Loading family neighborhood"
+        message="Fetching people, relationships, and houses…" />
+    {:else if error && !positioned}
+      <WorkbenchState kind="error" title="Could not load family" message={error}>
+        {#snippet actions()}
+          {#if rerootCandidate}
+            <button type="button" class="quiet-button" onclick={acceptReroot}>Make {rerootCandidate.name} root</button>
+          {/if}
+          <button type="button" class="quiet-button" onclick={() => (error = "")}>Dismiss</button>
+        {/snippet}
+      </WorkbenchState>
+    {:else if positioned}
+      <div class="workspace" class:has-dock={dockOpen}>
+        <div class="canvas-wrap">
+          <FamilyTreeCanvas
+            layout={positioned}
+            {people}
+            {rootId}
+            {selectedPersonId}
+            {selectedRelationshipId}
+            {hiddenByPerson}
+            {expandedByPerson}
+            {housesByPerson}
+            memberHouseIds={houseFilterIdsByPerson}
+            {houseFilterId}
+            {avatar}
+            onSelectPerson={selectCanvasPerson}
+            onSelectRelationship={(id) => (selectedRelationshipId = id)}
+            onMakeRoot={(id) => {
+              previousOrder = [];
+              void loadRoot(id, true);
+            }}
+            onToggleBranch={(id, direction) => void toggleBranch(id, direction)}
+            onAddUnionChild={(memberIds) => {
+              const [id, ...coParentIds] = memberIds.filter((personId) => people.has(personId));
+              if (!id) return;
+              member = { id, role: "child", coParentIds };
+            }}
+            onLinkPartners={(memberIds) => {
+              member = { id: memberIds[0], role: "partner", otherId: memberIds[1] };
+            }}
+            {fitToken}
+            fitView={canvasFit}
+            initialViewport={canvasFit ? null : viewport}
+            onViewportChange={(next) => {
+              if (viewport && viewport.x === next.x && viewport.y === next.y && viewport.zoom === next.zoom) return;
+              viewport = next;
+            }} />
+        </div>
+        {#if dockOpen}
+          <div class="dock">
+            {#if selectedRelationship}
+              <FamilyRelationshipPanel
+                docked
+                {context}
+                relationship={selectedRelationship}
+                {people}
+                onClose={() => (selectedRelationshipId = null)}
+                onUpdated={applyRelationshipUpdate}
+                onDeleted={applyRelationshipDelete} />
+            {:else if selectedPerson}
+              <FamilyPersonPanel
+                person={selectedPerson}
+                isRoot={selectedPerson.id === rootId}
+                houses={housesByPerson.get(selectedPerson.id) ?? []}
+                connections={personConnections}
+                onOpen={onOpenEntity}
+                onMakeRoot={(id) => {
+                  previousOrder = [];
+                  void loadRoot(id, true);
+                }}
+                onAddRelative={(id, role) => (member = { id, role })}
+                onSelectPerson={selectCanvasPerson}
+                onSelectRelationship={(id) => (selectedRelationshipId = id)}
+                onClose={() => (selectedPersonId = null)} />
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </div>
+
   {#if member && rootId}
     <FamilyMemberDialog
       {context}
@@ -872,46 +996,302 @@ function applyRelationshipDelete(id: string) {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 12px;
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 12px 16px;
+  background: var(--surface, #f4f5f2);
 }
-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-}
-.overline {
-  display: block;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-}
-h1 {
-  margin: 2px 0 0;
-  color: var(--ink);
-  font: 500 22px/1.15 var(--font-display, Georgia, serif);
-}
-p {
-  margin: 0;
-  color: var(--ink-muted);
-  font:
-    13px/1.45 Inter,
-    ui-sans-serif,
-    system-ui,
-    sans-serif;
-}
-.toolbar,
-.banner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+/* Topbar — aligns to WorkspaceTopbar 10px 18px / 58px */
+.family-topbar {
+  z-index: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--theme-neutral-border, var(--line));
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: 0 1px 8px rgba(30, 37, 31, 0.03);
+  backdrop-filter: blur(8px);
+}
+.family-topbar-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.family-mark {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 31px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--theme-success-bg, var(--accent-bg, #e4ece4));
+  color: var(--theme-success-text, var(--accent-dark, #2f4e35));
+}
+.family-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.family-copy strong {
+  overflow: hidden;
+  color: var(--theme-neutral-text, var(--ink));
+  font: 600 12px/1.2 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.family-copy small {
+  overflow: hidden;
+  color: var(--theme-neutral-text-muted, var(--ink-muted));
+  font-size: 9px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--ink-faint, #899088);
+  font-size: 10px;
+}
+.busy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #d6a35f);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.family-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* Sub-bar — sticky like WorkspaceViewNav */
+.family-subbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 46px;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(14px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.family-subbar::-webkit-scrollbar {
+  display: none;
+}
+.subbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.subbar-label {
+  color: var(--theme-neutral-text-muted, var(--ink-muted));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.subbar-sep {
+  width: 1px;
+  height: 22px;
+  flex: 0 0 1px;
+  background: var(--line);
+}
+.subbar-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.subbar-field span {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.subbar-field select {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+.house-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.house-pill {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft, var(--ink));
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.house-pill:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-muted, var(--surface));
+  color: var(--ink);
+}
+.house-pill.active {
+  border-color: var(--theme-neutral-border-strong, var(--line-strong));
+  background: var(--theme-success-bg, var(--accent-bg, #e4ece4));
+  color: var(--theme-success-text, var(--accent-dark));
+}
+.house-pill.pill-new {
+  border-style: dashed;
+  color: var(--ink-muted);
+}
+.subbar-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--ink);
+  vertical-align: middle;
+}
+.legend-swatch.solid {
+  border-top-style: solid;
+}
+.legend-swatch.dash-adopt {
+  border-top: 2px dashed var(--ink);
+}
+.legend-swatch.double {
+  width: 14px;
+  height: 4px;
+  border: 1.5px solid var(--ink);
+  border-radius: 2px;
+  background: transparent;
+}
+:global(.workspace-topbar-action) {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-neutral-border, #d9ddd6);
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+  color: var(--theme-neutral-text-soft, #4d584f);
+  font: 650 11px/1 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  cursor: pointer;
+}
+:global(.workspace-topbar-action.icon) {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+}
+:global(.workspace-topbar-action:hover),
+:global(.workspace-topbar-action:focus-visible) {
+  border-color: var(--theme-neutral-border-strong, #b9c4ba);
+  background: var(--theme-success-bg, #f2f6f2);
+  color: var(--theme-success-text, #2f4e35);
+  outline: 0;
+}
+/* Status strip */
+.family-status {
+  display: grid;
+  gap: 0;
+}
+.status-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+  font-size: 11px;
+  line-height: 1.45;
+}
+.status-alert.neutral {
+  background: var(--surface-muted, var(--surface));
+  color: var(--ink-muted);
+}
+.status-alert.warning {
+  background: var(--theme-warning-bg, #fff8ee);
+  color: var(--theme-warning-text, #55351f);
+  border-color: var(--theme-warning-border, #d8c3a5);
+}
+.status-alert.error {
+  background: var(--danger-bg, #fff2ee);
+  color: var(--danger, #8a2b2b);
+  border-color: var(--danger-line, #edcec5);
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.9;
+}
+.status-text {
+  flex: 1 1 auto;
+  min-width: 160px;
+}
+.pill {
+  border-radius: 999px !important;
+}
+/* Body */
+.family-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+.family-empty {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+}
+.empty-picker {
+  max-width: 480px;
+  margin: 0 auto;
+  width: 100%;
 }
 .quiet-button {
   padding: 8px 12px;
@@ -922,21 +1302,9 @@ p {
   font-size: 12px;
   cursor: pointer;
 }
-.quiet-button.icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 6px;
-}
 .quiet-button:hover {
   background: var(--surface-muted, var(--surface));
   color: var(--ink);
-}
-.banner {
-  color: var(--theme-warning-text, #55351f);
-}
-.hint {
-  color: var(--ink-muted);
 }
 .workspace {
   display: grid;
@@ -945,9 +1313,10 @@ p {
   gap: 12px;
   min-height: 0;
   height: 100%;
+  padding: 12px 16px;
 }
 .workspace.has-dock {
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
 }
 .canvas-wrap,
 .dock {
@@ -961,22 +1330,24 @@ p {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: var(--surface);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
 }
 .settings {
   position: relative;
 }
 .settings-panel {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   right: 0;
   z-index: 6;
   display: grid;
   gap: 10px;
-  width: 240px;
+  width: 260px;
   padding: 12px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.08));
 }
 .settings-panel .recent,
 .settings-panel .recent.limit {
@@ -987,6 +1358,21 @@ p {
   color: var(--ink-muted);
   font-size: 11px;
   font-weight: 700;
+}
+.settings-panel .recent span em {
+  margin-left: 6px;
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 800;
+}
+.recent input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-dark, var(--accent));
+}
+.settings-footnote small {
+  color: var(--ink-muted);
+  font-size: 10px;
+  line-height: 1.4;
 }
 .recent select,
 .recent input {
@@ -1000,11 +1386,31 @@ p {
 .recent.limit input {
   width: 100%;
 }
-.sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
+@media (max-width: 900px) {
+  .family-topbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .family-subbar {
+    padding-inline: 12px;
+    gap: 10px;
+  }
+  .subbar-legend {
+    display: none;
+  }
+  .workspace {
+    padding: 10px 12px;
+  }
+  .workspace.has-dock {
+    grid-template-columns: 1fr;
+  }
+  .dock {
+    max-height: min(45vh, 520px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .busy-dot {
+    animation: none;
+  }
 }
 </style>

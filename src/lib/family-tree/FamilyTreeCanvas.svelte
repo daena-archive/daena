@@ -1,7 +1,9 @@
 <script lang="ts">
 import {
   Background,
+  BackgroundVariant,
   Controls,
+  MiniMap,
   SvelteFlow,
   type Edge,
   type EdgeTypes,
@@ -69,8 +71,36 @@ const edgeTypes = { family: FamilyRelationshipEdge } as unknown as EdgeTypes;
 const reducedMotion = $derived(
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 );
+let colorMode = $state<"light" | "dark">("light");
+const miniMapBg = $derived(colorMode === "dark" ? "#182720" : "#f4f2ec");
+const miniMapMask = $derived(colorMode === "dark" ? "rgba(242,238,228,0.22)" : "rgba(37,37,31,0.14)");
+const miniMapMaskStroke = $derived(colorMode === "dark" ? "rgba(242,238,228,0.42)" : "rgba(37,37,31,0.22)");
+const miniMapNode = $derived(colorMode === "dark" ? "#b8b1a5" : "#62594e");
+const miniMapNodeStroke = $derived(colorMode === "dark" ? "#31443a" : "#d9cdbd");
 let nodes = $state.raw<Node[]>([]);
 let edges = $state.raw<Edge[]>([]);
+
+$effect(() => {
+  if (typeof document === "undefined" || typeof window === "undefined") return;
+  const update = () => {
+    const attr = document.documentElement.dataset.theme;
+    if (attr === "dark" || attr === "light") colorMode = attr;
+    else colorMode = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  };
+  update();
+  const observer = new MutationObserver(update);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme", "data-theme-preference"],
+  });
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const onMedia = () => update();
+  media.addEventListener?.("change", onMedia);
+  return () => {
+    observer.disconnect();
+    media.removeEventListener?.("change", onMedia);
+  };
+});
 
 function flowNodes(): Node[] {
   return layout.nodes.flatMap((node): Node[] => {
@@ -147,9 +177,21 @@ function flowEdges(): Edge[] {
   }));
 }
 
-$effect.pre(() => {
-  nodes = flowNodes();
-  edges = flowEdges();
+$effect(() => {
+  let frame = 0;
+  const schedule = () => {
+    frame = requestAnimationFrame(() => {
+      nodes = flowNodes();
+      edges = flowEdges();
+    });
+  };
+  // Prefer RAF to keep pan/zoom fluid while layout resolves
+  if (typeof requestAnimationFrame !== "undefined") schedule();
+  else {
+    nodes = flowNodes();
+    edges = flowEdges();
+  }
+  return () => cancelAnimationFrame(frame);
 });
 
 function nearestPerson(fromId: string, key: string) {
@@ -206,8 +248,8 @@ function onCanvasKeydown(event: KeyboardEvent) {
       {nodeTypes}
       {edgeTypes}
       {fitView}
-      colorMode="dark"
-      fitViewOptions={{ duration: reducedMotion ? 0 : 200 }}
+      {colorMode}
+      fitViewOptions={{ duration: reducedMotion ? 0 : 420, padding: 0.18 }}
       initialViewport={initialViewport ?? undefined}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -242,8 +284,20 @@ function onCanvasKeydown(event: KeyboardEvent) {
         onSelectPerson(null);
         onSelectRelationship(null);
       }}>
-      <Controls showLock={false} />
-      <Background />
+      <Controls showLock={false} position="top-right" />
+      <MiniMap
+        position="bottom-left"
+        pannable
+        zoomable
+        bgColor={miniMapBg}
+        nodeColor={miniMapNode}
+        nodeStrokeColor={miniMapNodeStroke}
+        maskColor={miniMapMask}
+        maskStrokeColor={miniMapMaskStroke}
+        nodeStrokeWidth={1.2}
+        nodeBorderRadius={2}
+        style="border:1px solid var(--line-strong); border-radius:8px; overflow:hidden; box-shadow: var(--shadow-sm);" />
+      <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
     </SvelteFlow>
   {/key}
 </div>
@@ -254,10 +308,11 @@ function onCanvasKeydown(event: KeyboardEvent) {
   width: 100%;
   height: 100%;
   min-height: 0;
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
-  background: var(--surface-warm, var(--surface));
+  background: var(--surface, #fff);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
 }
 .canvas :global(.svelte-flow) {
   width: 100%;
@@ -268,17 +323,36 @@ function onCanvasKeydown(event: KeyboardEvent) {
   --xy-controls-button-color-hover: var(--ink);
   --xy-controls-button-border-color: var(--line-strong);
   --xy-controls-box-shadow: none;
+  /* fallback for any internal minimap that still reads vars */
+  --xy-minimap-background-color: color-mix(in srgb, var(--surface) 96%, var(--canvas, var(--surface-muted)));
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--ink) 13%, transparent);
+  --xy-minimap-mask-stroke-color: color-mix(in srgb, var(--ink) 22%, transparent);
   --xy-attribution-background-color: var(--surface);
-  --xy-background-pattern-dots-color: color-mix(in srgb, var(--ink-muted) 55%, transparent);
+  --xy-background-pattern-dots-color: color-mix(in srgb, var(--line-strong) 38%, transparent);
 }
 .canvas :global(.svelte-flow__controls) {
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
+  box-shadow: var(--shadow-sm, 0 1px 4px rgba(0, 0, 0, 0.06));
 }
 .canvas :global(.svelte-flow__controls-button) {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
+}
+.canvas :global(.svelte-flow__minimap) {
+  width: 148px;
+  height: 96px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.canvas :global(.svelte-flow__minimap svg) {
+  background: color-mix(in srgb, var(--surface) 96%, var(--canvas, var(--surface-muted)));
+}
+.canvas :global(.svelte-flow[data-theme="dark"] .svelte-flow__minimap) {
+  border-color: #435a4e;
 }
 .canvas :global(.svelte-flow__attribution) {
   margin: 0;
@@ -287,6 +361,7 @@ function onCanvasKeydown(event: KeyboardEvent) {
   border-bottom: 0;
   border-radius: 8px 0 0 0;
   color: var(--ink-muted);
+  font-size: 10px;
 }
 .canvas :global(.svelte-flow__attribution a) {
   color: var(--ink-muted);
@@ -300,28 +375,43 @@ function onCanvasKeydown(event: KeyboardEvent) {
 }
 .canvas :global(.svelte-flow__node) {
   overflow: visible;
+  transition:
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 160ms ease;
+}
+.canvas.reduced :global(.svelte-flow__node) {
+  transition: none !important;
 }
 .canvas :global(.family-edge-parent) :global(.svelte-flow__edge-path) {
-  stroke: var(--ink-muted);
-  stroke-width: 1.5;
+  stroke: color-mix(in srgb, var(--ink) 42%, transparent);
+  stroke-width: 1.6;
+  /* subtle halo for contrast on warm surface */
+  filter: drop-shadow(0 0 0.6px var(--surface)) drop-shadow(0 0 2px color-mix(in srgb, var(--surface) 85%, transparent));
 }
 .canvas :global(.family-edge-partner) :global(.partner-rail) {
-  stroke: var(--ink);
-  stroke-width: 5;
+  stroke: color-mix(in srgb, var(--ink) 88%, var(--accent) 12%);
+  stroke-width: 5.5;
   stroke-linecap: round;
 }
 .canvas :global(.family-edge-partner) :global(.svelte-flow__edge-path) {
-  stroke: var(--surface-warm, var(--surface));
+  stroke: var(--surface);
   stroke-width: 2;
   stroke-linecap: round;
 }
 .canvas :global(.family-edge.selected) :global(.svelte-flow__edge-path) {
-  stroke-width: 3.2;
+  stroke: var(--accent, #b7793f);
+  stroke-width: 2.2;
 }
 .canvas :global(.family-edge-partner.selected) :global(.partner-rail) {
+  stroke: var(--accent, #b7793f);
   stroke-width: 7;
 }
 .canvas :global(.family-edge-partner.selected) :global(.svelte-flow__edge-path) {
   stroke-width: 3;
+}
+@media (max-width: 760px) {
+  .canvas :global(.svelte-flow__minimap) {
+    display: none;
+  }
 }
 </style>

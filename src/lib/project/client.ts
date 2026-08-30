@@ -65,6 +65,46 @@ export interface ModuleSchemaOverlay {
   fieldTimelineOverrides?: FieldTimelineOverride[];
 }
 
+export type SchemaOverlayChangeKind = "additive" | "hiding-only" | "requires-reassignment";
+
+export interface SchemaOverlayItemIssue {
+  kind: string;
+  id: string;
+  property?: string;
+  message: string;
+}
+
+export interface SchemaOverlayTypeImpact {
+  entityType: string;
+  change: string;
+  entityCount: number;
+}
+
+export interface SchemaOverlayFieldImpact {
+  fieldKey: string;
+  change: string;
+  valueCount: number;
+}
+
+export interface SchemaOverlayPreviewResult {
+  ok: boolean;
+  changeKind: SchemaOverlayChangeKind;
+  requiresAcknowledgement: boolean;
+  errors: SchemaOverlayItemIssue[];
+  warnings: SchemaOverlayItemIssue[];
+  affectedTypes: SchemaOverlayTypeImpact[];
+  affectedFields: SchemaOverlayFieldImpact[];
+  affectedTemplates: string[];
+  relationshipMetadataKeys: string[];
+  compatibilityNotes: string[];
+  unresolvedTypeRemovals: string[];
+}
+
+export interface ModuleSchemaOverlayMutationResult {
+  overlay: ModuleSchemaOverlay;
+  revision: string;
+}
+
 export interface ModuleSchemaEditorState {
   id: string;
   name: string;
@@ -75,6 +115,7 @@ export interface ModuleSchemaEditorState {
   }>;
   templates: EntityTemplate[];
   overlay: ModuleSchemaOverlay;
+  revision: string;
 }
 
 export interface Entity {
@@ -1178,6 +1219,8 @@ export interface ExternalImportCommitReport {
 export interface MutationOptions {
   expectedRevision?: string;
   requestId?: string;
+  /** Required when preview reports live-data impact that must be acknowledged. */
+  acknowledgeImpact?: boolean;
 }
 
 const requestId = (options?: MutationOptions) => options?.requestId ?? crypto.randomUUID();
@@ -1702,8 +1745,16 @@ export const project = {
   getModuleSchemaOverlay: (moduleId: string) => invoke<ModuleSchemaOverlay>("module_schema_overlay_get", { moduleId }),
   loadModuleSchemaEditor: (moduleId: string) =>
     invoke<ModuleSchemaEditorState>("module_schema_editor_load", { moduleId }),
-  setModuleSchemaOverlay: (moduleId: string, overlay: ModuleSchemaOverlay) =>
-    invoke<ModuleSchemaOverlay>("module_schema_overlay_set", { moduleId, overlay }),
+  previewModuleSchemaOverlay: (moduleId: string, overlay: ModuleSchemaOverlay) =>
+    invoke<SchemaOverlayPreviewResult>("module_schema_overlay_preview", { moduleId, overlay }),
+  setModuleSchemaOverlay: (moduleId: string, overlay: ModuleSchemaOverlay, options?: MutationOptions) =>
+    invoke<ModuleSchemaOverlayMutationResult>("module_schema_overlay_set", {
+      moduleId,
+      overlay,
+      expected_revision: options?.expectedRevision ?? null,
+      request_id: requestId(options),
+      acknowledge_impact: options?.acknowledgeImpact ?? null,
+    }),
   enableModule: (id: string, grantedCapabilities?: string[]) =>
     invoke<void>("module_enable", { id, grantedCapabilities }),
   disableModule: (id: string) => invoke<void>("module_disable", { id }),

@@ -9,6 +9,7 @@ import type {
   FieldMetadataOverride,
   MetadataFieldDefinition,
   EntityTypeColor,
+  SchemaOverlayPreviewResult,
 } from "$lib/project/client";
 import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
@@ -54,6 +55,8 @@ import {
 import SchemaTypesPane from "$lib/schema-workbench/SchemaTypesPane.svelte";
 import SchemaFieldsPane from "$lib/schema-workbench/SchemaFieldsPane.svelte";
 import SchemaTemplatesPane from "$lib/schema-workbench/SchemaTemplatesPane.svelte";
+import SchemaImpactReview from "$lib/schema-workbench/SchemaImpactReview.svelte";
+import { MUTATION_STATUS_MESSAGES } from "$lib/ui-ux/vocabulary.ts";
 import {
   Layers,
   TextQuote,
@@ -84,10 +87,16 @@ let {
   pluginId = null,
   busy = false,
   message = "",
+  conflict = false,
+  contentRevision = "",
   projectionLabelsForType = () => [],
   entityCountForType = () => null,
   onReassignEntities,
+  onPreview,
   onSave,
+  onReloadCurrent,
+  onFetchCurrent,
+  onAdoptCurrentRevision,
   onDirtyChange,
 }: {
   projectOpen: boolean;
@@ -97,11 +106,19 @@ let {
   pluginId?: string | null;
   busy?: boolean;
   message?: string;
+  conflict?: boolean;
+  /** Opaque content revision currently expected for CAS saves (display/debug). */
+  contentRevision?: string;
   projectionLabelsForType?: (typeId: string) => string[];
   entityCountForType?: (typeId: string) => number | null;
   /** Reassign live entities of fromTypeId to toTypeId before the overlay type is removed. */
   onReassignEntities?: (fromTypeId: string, toTypeId: string) => Promise<void>;
-  onSave: (overlay: ModuleSchemaOverlay) => Promise<void>;
+  onPreview: (overlay: ModuleSchemaOverlay) => Promise<SchemaOverlayPreviewResult>;
+  onSave: (overlay: ModuleSchemaOverlay, options?: { acknowledgeImpact?: boolean }) => Promise<void>;
+  onReloadCurrent?: () => Promise<void>;
+  onFetchCurrent?: () => Promise<{ overlay: ModuleSchemaOverlay; revision: string }>;
+  /** Keep the local draft; adopt the server's opaque revision for the next CAS save. */
+  onAdoptCurrentRevision?: (revision: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
 } = $props();
 
@@ -169,7 +186,7 @@ function entityTypeLabel(typeId: string): string {
   return name || humanizeId(typeId);
 }
 
-// Remounted by parent `{#key overlayRevision}`; initial overlay is intentional.
+// Remounted by parent `{#key editorRemountKey}`; initial overlay is intentional.
 // svelte-ignore state_referenced_locally
 const baseline = fingerprint(overlay, { pluginId });
 // Plain snapshot — leave checks must not depend on reading $state from external closures.
@@ -187,6 +204,14 @@ let listQuery = $state("");
 let statusFilter = $state<SchemaStatusFilter>("all");
 let showAdvanced = $state(false);
 let selectedItemId = $state<string | null>(null);
+let impactPreview = $state<SchemaOverlayPreviewResult | null>(null);
+let previewError = $state("");
+let conflictCompare = $state<{
+  current: ModuleSchemaOverlay;
+  currentRevision: string;
+  draft: ModuleSchemaOverlay;
+} | null>(null);
+let conflictActionBusy = $state(false);
 let builtinTypesCollapsed = $state(false);
 let builtinFieldsCollapsed = $state(false);
 let builtinTemplatesCollapsed = $state(false);
@@ -918,7 +943,85 @@ function cancelTemplateFieldEdit() {
 }
 
 async function save() {
-  await onSave(normalizeOverlay(draft, { pluginId }));
+  const candidate = normalizeOverlay(draft, { pluginId });
+  previewError = "";
+  try {
+    const preview = await onPreview(candidate);
+    if (!preview.ok || preview.requiresAcknowledgement) {
+      impactPreview = preview;
+      return;
+    }
+    await onSave(candidate);
+  } catch (cause) {
+    previewError = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function confirmImpactSave() {
+  if (!impactPreview?.ok) return;
+  const candidate = normalizeOverlay(draft, { pluginId });
+  impactPreview = null;
+  previewError = "";
+  await onSave(candidate, { acknowledgeImpact: true });
+}
+
+function cancelImpactReview() {
+  impactPreview = null;
+}
+
+async function reloadCurrentOverlay() {
+  if (!onReloadCurrent) return;
+  conflictCompare = null;
+  await onReloadCurrent();
+}
+
+async function compareWithCurrent() {
+  if (!onFetchCurrent) return;
+  conflictActionBusy = true;
+  previewError = "";
+  try {
+    const current = await onFetchCurrent();
+    conflictCompare = {
+      current: current.overlay,
+      currentRevision: current.revision,
+      draft: normalizeOverlay(draft, { pluginId }),
+    };
+  } catch (cause) {
+    previewError = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    conflictActionBusy = false;
+  }
+}
+
+async function reapplyDraftOntoCurrent() {
+  if (!onFetchCurrent || !onAdoptCurrentRevision) return;
+  conflictActionBusy = true;
+  previewError = "";
+  try {
+    const current = await onFetchCurrent();
+    // Keep the local draft; only adopt the server's opaque revision for CAS.
+    onAdoptCurrentRevision(current.revision);
+    conflictCompare = null;
+  } catch (cause) {
+    previewError = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    conflictActionBusy = false;
+  }
+}
+
+function overlaySummary(value: ModuleSchemaOverlay): string {
+  const types = value.customEntityTypes?.length ?? 0;
+  const fields = value.customFields?.length ?? 0;
+  const templates = value.customTemplates?.length ?? 0;
+  const disabledTypes = value.disabledEntityTypes?.length ?? 0;
+  const disabledFields = value.disabledFields?.length ?? 0;
+  return [
+    `custom types ${types}`,
+    `custom fields ${fields}`,
+    `custom templates ${templates}`,
+    `disabled types ${disabledTypes}`,
+    `disabled fields ${disabledFields}`,
+  ].join(" · ");
 }
 
 async function discardChanges() {
@@ -2190,9 +2293,17 @@ function removeCustomTemplate(id: string) {
         {addCustomTemplate} />
     {/if}
 
-    <div class="save-bar" class:has-dirty={dirty} class:is-busy={busy}>
+    <div class="save-bar" class:has-dirty={dirty} class:is-busy={busy} class:has-conflict={conflict}>
       <div class="save-copy">
-        {#if dirty}
+        {#if conflict}
+          <AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />
+          <strong>{MUTATION_STATUS_MESSAGES.conflictTitle}</strong>
+          <span>{message || MUTATION_STATUS_MESSAGES.conflictBody}</span>
+        {:else if previewError}
+          <AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />
+          <strong>Preview failed</strong>
+          <span>{previewError}</span>
+        {:else if dirty}
           <span class="dirty-dot" aria-hidden="true"></span>
           <strong>Unsaved changes</strong>
           <span>Review types, fields, and templates before saving.</span>
@@ -2207,6 +2318,29 @@ function removeCustomTemplate(id: string) {
         {/if}
       </div>
       <div class="save-actions">
+        {#if conflict}
+          {#if onFetchCurrent}
+            <button
+              type="button"
+              class="quiet"
+              disabled={busy || conflictActionBusy}
+              onclick={() => void compareWithCurrent()}>{MUTATION_STATUS_MESSAGES.conflictCompare}</button>
+          {/if}
+          {#if onReloadCurrent}
+            <button
+              type="button"
+              class="quiet"
+              disabled={busy || conflictActionBusy}
+              onclick={() => void reloadCurrentOverlay()}>{MUTATION_STATUS_MESSAGES.conflictReload}</button>
+          {/if}
+          {#if onFetchCurrent && onAdoptCurrentRevision}
+            <button
+              type="button"
+              class="quiet"
+              disabled={busy || conflictActionBusy}
+              onclick={() => void reapplyDraftOntoCurrent()}>{MUTATION_STATUS_MESSAGES.conflictReapply}</button>
+          {/if}
+        {/if}
         <button type="button" class="quiet" disabled={busy || !dirty} onclick={() => void discardChanges()}
           ><X size={14} strokeWidth={1.8} aria-hidden="true" /> Discard</button>
         <button type="button" class="primary save-button" disabled={busy || !dirty} onclick={() => void save()}>
@@ -2217,6 +2351,33 @@ function removeCustomTemplate(id: string) {
         </button>
       </div>
     </div>
+    {#if conflictCompare}
+      <details class="schema-conflict-compare" open>
+        <summary>Compare current vs draft</summary>
+        <div class="compare-grid">
+          <div>
+            <strong>Current</strong>
+            <p class="compare-meta">{conflictCompare.currentRevision || "unknown revision"}</p>
+            <p>{overlaySummary(conflictCompare.current)}</p>
+            <pre>{JSON.stringify(conflictCompare.current, null, 2)}</pre>
+          </div>
+          <div>
+            <strong>Draft</strong>
+            <p class="compare-meta">{contentRevision || "pending revision"}</p>
+            <p>{overlaySummary(conflictCompare.draft)}</p>
+            <pre>{JSON.stringify(conflictCompare.draft, null, 2)}</pre>
+          </div>
+        </div>
+      </details>
+    {/if}
+  {/if}
+
+  {#if impactPreview}
+    <SchemaImpactReview
+      preview={impactPreview}
+      {busy}
+      onCancel={cancelImpactReview}
+      onConfirm={() => void confirmImpactSave()} />
   {/if}
 
   {#if typeRemovalPrompt}
@@ -2721,6 +2882,45 @@ code {
 .save-bar.has-dirty {
   border-color: var(--danger-line);
   background: linear-gradient(var(--surface), var(--theme-danger-bg, #fff6f1));
+}
+.schema-conflict-compare {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.schema-conflict-compare summary {
+  cursor: pointer;
+  font:
+    600 12.5px Inter,
+    sans-serif;
+}
+.compare-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin-top: 10px;
+}
+.compare-grid pre {
+  max-height: 14rem;
+  overflow: auto;
+  margin: 0.4rem 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  font:
+    400 11px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.compare-meta {
+  margin: 0.2rem 0;
+  color: var(--ink-muted);
+  font:
+    400 11.5px Inter,
+    sans-serif;
 }
 .save-copy {
   display: flex;

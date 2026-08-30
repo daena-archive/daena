@@ -7,9 +7,11 @@ use std::fmt;
 pub mod catalog;
 pub mod rpc;
 pub mod schema_overlay;
+pub mod schema_preview;
 pub use catalog::*;
 pub use rpc::*;
 pub use schema_overlay::*;
+pub use schema_preview::*;
 
 pub const MANIFEST_VERSION: u32 = 1;
 pub const RPC_VERSION: u32 = 1;

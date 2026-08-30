@@ -775,16 +775,25 @@ Exit gate: overlay normalize is idempotent (byte-equivalent on re-normalize), an
 all current schema features remain editable. Contract lock:
 `npm run test:schema-workbench`.
 
-### Slice 6: safe schema preview and concurrency
+### Slice 6: safe schema preview and concurrency — **done**
 
-1. Add typed preview result models in Rust and TypeScript.
-2. Count live entities/fields with bounded SQL queries.
-3. Add overlay revisions and idempotent request IDs.
-4. Render item-level errors and a final impact review.
-5. Require explicit resolution for type removal/reassignment.
+1. Typed preview models in `crates/daena-plugin-api/src/schema_preview.rs` and
+   TypeScript `SchemaOverlayPreviewResult`.
+2. Trusted-core `preview_module_schema_overlay` with bounded SQL entity/field
+   counts; unresolved type removals with live entities block Save.
+3. Opaque overlay revisions on editor load (`contentRevision`); Save uses
+   `expectedRevision` + idempotent request IDs minted at preview time
+   (`ModuleSchemaOverlayMutationResult`). Editor remount uses a separate integer key.
+4. `SchemaImpactReview` shows item-level errors/warnings and live impact before
+   risky saves; conflict UI offers Compare / Reload / Reapply.
+5. Type removal reassignment is required; core rejects unresolved type removals
+   even if the UI is bypassed. Tauri set also requires `acknowledgeImpact` when
+   preview reports live-data impact.
 
 Exit gate: no schema change with live-data impact can be saved without showing
 the impact, and conflicting editors cannot silently overwrite each other.
+Contract lock: `npm run test:schema-workbench` plus
+`schema_overlay_preview_counts_and_revision_cas_are_idempotent`.
 
 ### Slice 7: module compatibility
 

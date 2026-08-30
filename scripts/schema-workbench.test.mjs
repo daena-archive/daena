@@ -218,6 +218,7 @@ assert.match(cardinalityBad.cardinality ?? "", /one or many/);
 const componentPaths = [
   "src/lib/schema-workbench/SchemaFieldInput.svelte",
   "src/lib/schema-workbench/SchemaTemplatePreview.svelte",
+  "src/lib/schema-workbench/SchemaImpactReview.svelte",
   "src/lib/schema-workbench/SchemaTypesPane.svelte",
   "src/lib/schema-workbench/SchemaFieldsPane.svelte",
   "src/lib/schema-workbench/SchemaTemplatesPane.svelte",
@@ -239,6 +240,10 @@ assert.match(panel, /showAdvanced|statusFilter|listQuery/);
 assert.doesNotMatch(panel, /mintTypeId\(editTypeValue/);
 assert.match(panel, /applyTypeRemovalPlan/);
 assert.match(panel, /onReassignEntities|entityDisposition|Reassign entities/);
+assert.match(panel, /SchemaImpactReview|impactPreview|onPreview/);
+assert.match(panel, /conflictCompare|conflictReapply|onAdoptCurrentRevision|onFetchCurrent/);
+assert.match(panel, /acknowledgeImpact|Preview failed|previewError/);
+assert.doesNotMatch(panel, /onReviewDraft/);
 
 const typesPane = await read("src/lib/schema-workbench/SchemaTypesPane.svelte");
 const fieldsPane = await read("src/lib/schema-workbench/SchemaFieldsPane.svelte");
@@ -253,10 +258,25 @@ assert.match(`${typesPane}\n${fieldsPane}\n${templatesPane}`, /workbench-list/);
 const settings = await read("src/lib/SchemaSettingsPanel.svelte");
 assert.match(settings, /Customized|Managed by extension|typeCount|fieldCount|managedPlugins/);
 assert.match(settings, /validationStatus/);
+assert.match(settings, /onPreview|onReloadCurrent|conflict|editorRemountKey|contentRevision/);
+assert.match(settings, /onFetchCurrent|onAdoptCurrentRevision/);
+
+const impact = await read("src/lib/schema-workbench/SchemaImpactReview.svelte");
+assert.match(impact, /Review schema impact|requiresAcknowledgement|affectedTypes|Confirm save/);
 
 const fieldInput = await read("src/lib/schema-workbench/SchemaFieldInput.svelte");
 assert.match(fieldInput, /RelationshipPicker/);
 assert.match(fieldInput, /DateEditor/);
+
+const client = await read("src/lib/project/client.ts");
+assert.match(client, /SchemaOverlayPreviewResult/);
+assert.match(client, /previewModuleSchemaOverlay/);
+assert.match(client, /ModuleSchemaOverlayMutationResult/);
+assert.match(client, /acknowledgeImpact|acknowledge_impact/);
+assert.match(client, /expected_revision.*request_id|setModuleSchemaOverlay/);
+
+const vocabulary = await read("src/lib/ui-ux/vocabulary.ts");
+assert.match(vocabulary, /conflictCompare|conflictReapply/);
 
 const page = await read("src/routes/+page.svelte");
 assert.match(page, /SchemaFieldInput|schema-workbench\/SchemaFieldInput/);
@@ -268,5 +288,9 @@ assert.match(page, /typeCount:\s*counts\.types/);
 assert.match(page, /validationStatus:\s*validation\.status/);
 assert.match(page, /reassignSchemaEntities|onReassignEntities/);
 assert.match(page, /schemaEntityCountForType/);
+assert.match(page, /previewModuleSchemaOverlay|moduleSchemaContentRevision/);
+assert.match(page, /moduleSchemaConflict|expectedRevision:\s*moduleSchemaContentRevision/);
+assert.match(page, /acknowledgeImpact|onAdoptCurrentRevision|editorRemountKey/);
+assert.match(page, /moduleSchemaSaveRequestId = crypto\.randomUUID/);
 
 console.log("schema-workbench tests passed");

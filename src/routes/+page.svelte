@@ -519,6 +519,9 @@ let moduleSchemaPackage = $state<{
 let moduleSchemaBusy = $state(false);
 let moduleSchemaMessage = $state("");
 let moduleSchemaRevision = $state(0);
+let moduleSchemaContentRevision = $state("");
+let moduleSchemaConflict = $state(false);
+let moduleSchemaSaveRequestId = $state<string | null>(null);
 let schemaPluginId = $state<string | null>(null);
 let schemaPluginName = $state("");
 let schemaEditorDirty = $state(false);
@@ -5843,9 +5846,12 @@ async function refreshModuleSchemaEditor(moduleId: string) {
     schemaPluginName = editor.name;
     moduleSchemaPackage = { schemas: editor.schemas, templates: editor.templates };
     moduleSchemaOverlay = editor.overlay;
+    moduleSchemaContentRevision = editor.revision;
     schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: editor.overlay };
     moduleSchemaRevision += 1;
     moduleSchemaMessage = "";
+    moduleSchemaConflict = false;
+    moduleSchemaSaveRequestId = null;
     void refreshSchemaEntityCounts();
   } catch (cause) {
     if (token !== schemaOverlayLoadToken || schemaPluginId !== moduleId) return;
@@ -5905,18 +5911,25 @@ function selectSchemaPlugin(moduleId: string | null) {
     schemaPluginName = "";
     moduleSchemaPackage = null;
     moduleSchemaMessage = "";
+    moduleSchemaConflict = false;
+    moduleSchemaContentRevision = "";
+    moduleSchemaSaveRequestId = null;
     return;
   }
   schemaPluginId = moduleId;
   moduleSchemaMessage = "";
+  moduleSchemaConflict = false;
+  moduleSchemaSaveRequestId = null;
   if (!moduleId) {
     schemaPluginName = "";
     moduleSchemaPackage = null;
+    moduleSchemaContentRevision = "";
     return;
   }
   schemaPluginName = schemaOverlayCandidates().find((candidate) => candidate.id === moduleId)?.name ?? moduleId;
   moduleSchemaPackage = { schemas: [], templates: [] };
   moduleSchemaOverlay = { version: 1 };
+  moduleSchemaContentRevision = "";
   moduleSchemaRevision += 1;
   void refreshModuleSchemaEditor(moduleId);
 }
@@ -5928,7 +5941,29 @@ $effect(() => {
     moduleSchemaPackage = null;
   }
 });
-async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
+async function previewModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
+  if (!schemaPluginId) {
+    return {
+      ok: false,
+      changeKind: "additive" as const,
+      requiresAcknowledgement: false,
+      errors: [{ kind: "overlay", id: "overlay", message: "No plugin selected." }],
+      warnings: [],
+      affectedTypes: [],
+      affectedFields: [],
+      affectedTemplates: [],
+      relationshipMetadataKeys: [],
+      compatibilityNotes: [],
+      unresolvedTypeRemovals: [],
+    };
+  }
+  if (!moduleSchemaSaveRequestId) {
+    moduleSchemaSaveRequestId = crypto.randomUUID();
+  }
+  return project.previewModuleSchemaOverlay(schemaPluginId, overlay);
+}
+
+async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay, options?: { acknowledgeImpact?: boolean }) {
   if (!schemaPluginId) {
     moduleSchemaMessage = "Could not save: no plugin selected.";
     return;
@@ -5936,17 +5971,36 @@ async function saveModuleSchemaOverlay(overlay: ModuleSchemaOverlay) {
   const moduleId = schemaPluginId;
   moduleSchemaBusy = true;
   moduleSchemaMessage = "";
+  const requestId = moduleSchemaSaveRequestId ?? crypto.randomUUID();
+  moduleSchemaSaveRequestId = requestId;
   try {
-    const saved = await project.setModuleSchemaOverlay(moduleId, overlay);
+    const saved = await project.setModuleSchemaOverlay(moduleId, overlay, {
+      expectedRevision: moduleSchemaContentRevision || undefined,
+      requestId,
+      acknowledgeImpact: options?.acknowledgeImpact,
+    });
     if (schemaPluginId !== moduleId) return;
-    moduleSchemaOverlay = saved;
-    schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: saved };
+    moduleSchemaOverlay = saved.overlay;
+    moduleSchemaContentRevision = saved.revision;
+    schemaOverlayCache = { ...schemaOverlayCache, [moduleId]: saved.overlay };
     moduleSchemaRevision += 1;
     schemaEditorDirty = false;
+    moduleSchemaConflict = false;
+    moduleSchemaSaveRequestId = null;
     modules = await project.listModuleManifests();
     moduleSchemaMessage = "Saved.";
+    void refreshSchemaEntityCounts();
   } catch (cause) {
-    moduleSchemaMessage = `Could not save: ${friendlyError(cause)}`;
+    if (isRevisionConflict(cause)) {
+      moduleSchemaConflict = true;
+      moduleSchemaMessage =
+        "Compare current vs draft, reload current values, or reapply the draft onto the current revision.";
+    } else {
+      moduleSchemaConflict = false;
+      moduleSchemaMessage = `Could not save: ${friendlyError(cause)}`;
+      // Keep request id only for revision conflicts so retries stay idempotent.
+      moduleSchemaSaveRequestId = null;
+    }
   } finally {
     moduleSchemaBusy = false;
   }
@@ -6268,7 +6322,10 @@ function resetProjectSessionState() {
   schemaPluginName = "";
   moduleSchemaPackage = null;
   moduleSchemaOverlay = { version: 1 };
+  moduleSchemaContentRevision = "";
   moduleSchemaMessage = "";
+  moduleSchemaConflict = false;
+  moduleSchemaSaveRequestId = null;
   schemaEditorDirty = false;
   schemaOverlayLoadToken += 1;
   ready = false;
@@ -7262,13 +7319,30 @@ onMount(() => {
             packageManifest={moduleSchemaPackage}
             overlay={moduleSchemaOverlay}
             referenceEntityTypes={schemaReferenceEntityTypes(schemaPluginId)}
-            overlayRevision={moduleSchemaRevision}
+            editorRemountKey={moduleSchemaRevision}
+            contentRevision={moduleSchemaContentRevision}
             busy={moduleSchemaBusy}
             message={moduleSchemaMessage}
+            conflict={moduleSchemaConflict}
             entityCountForType={schemaEntityCountForType}
             onReassignEntities={reassignSchemaEntities}
             onSelectPlugin={selectSchemaPlugin}
+            onPreview={previewModuleSchemaOverlay}
             onSave={saveModuleSchemaOverlay}
+            onReloadCurrent={async () => {
+              moduleSchemaSaveRequestId = null;
+              if (schemaPluginId) await refreshModuleSchemaEditor(schemaPluginId);
+            }}
+            onFetchCurrent={async () => {
+              if (!schemaPluginId) throw new Error("No plugin selected.");
+              const editor = await project.loadModuleSchemaEditor(schemaPluginId);
+              return { overlay: editor.overlay, revision: editor.revision };
+            }}
+            onAdoptCurrentRevision={(revision) => {
+              moduleSchemaContentRevision = revision;
+              moduleSchemaConflict = false;
+              moduleSchemaMessage = "Draft kept on the current revision. Save to reapply.";
+            }}
             onDirtyChange={setSchemaEditorDirty} />
         {/snippet}
         {#snippet snapshots()}

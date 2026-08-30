@@ -30,6 +30,14 @@ const EXTERNAL_IMPORT_SOURCE_NAMESPACE: &str = "daena.core";
 const EXTERNAL_IMPORT_SOURCE_KEY_PREFIX: &str = "externalImportSource.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModuleSchemaOverlayReceipt {
+    module_id: String,
+    overlay: serde_json::Value,
+    revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntity {
     pub name: String,
     pub entity_type: Option<String>,
@@ -12327,34 +12335,242 @@ impl ProjectStore {
         Ok(overlay_json.and_then(|json| serde_json::from_str(&json).ok()))
     }
 
+    /// Opaque content revision for a module schema overlay (empty overlay included).
+    pub fn revision_for_module_schema_overlay(
+        &self,
+        module_id: &str,
+    ) -> Result<String, CoreError> {
+        let value = self
+            .module_schema_overlay(module_id)?
+            .unwrap_or_else(|| serde_json::json!({}));
+        self.revision_digest(&("module_schema_overlay", module_id, value))
+    }
+
+    pub const SCHEMA_OVERLAY_COUNT_LIMIT: usize = 256;
+
+    /// Bounded live entity counts for the given types (`deleted=0` only).
+    /// Returns `(counts, truncated)` when more than [`SCHEMA_OVERLAY_COUNT_LIMIT`] ids were requested.
+    pub fn count_live_entities_by_types(
+        &self,
+        entity_types: &[String],
+    ) -> Result<(BTreeMap<String, u64>, bool), CoreError> {
+        let mut counts = BTreeMap::new();
+        if entity_types.is_empty() {
+            return Ok((counts, false));
+        }
+        let truncated = entity_types.len() > Self::SCHEMA_OVERLAY_COUNT_LIMIT;
+        let limited: Vec<&String> = entity_types
+            .iter()
+            .take(Self::SCHEMA_OVERLAY_COUNT_LIMIT)
+            .collect();
+        let placeholders = std::iter::repeat_n("?", limited.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT entity_type, COUNT(*) FROM entities WHERE deleted=0 AND entity_type IN ({placeholders}) GROUP BY entity_type"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(limited.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (entity_type, count) = row?;
+            counts.insert(entity_type, u64::try_from(count).unwrap_or_default());
+        }
+        for entity_type in limited {
+            counts.entry(entity_type.clone()).or_insert(0);
+        }
+        Ok((counts, truncated))
+    }
+
+    /// Bounded live stored field-value counts by key (`deleted=0` entities only).
+    /// Returns `(counts, truncated)` when more than [`SCHEMA_OVERLAY_COUNT_LIMIT`] keys were requested.
+    pub fn count_live_field_values_by_keys(
+        &self,
+        field_keys: &[String],
+    ) -> Result<(BTreeMap<String, u64>, bool), CoreError> {
+        let mut counts = BTreeMap::new();
+        if field_keys.is_empty() {
+            return Ok((counts, false));
+        }
+        let truncated = field_keys.len() > Self::SCHEMA_OVERLAY_COUNT_LIMIT;
+        let limited: Vec<&String> = field_keys
+            .iter()
+            .take(Self::SCHEMA_OVERLAY_COUNT_LIMIT)
+            .collect();
+        let placeholders = std::iter::repeat_n("?", limited.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT ef.key, COUNT(*) FROM entity_fields ef
+             INNER JOIN entities e ON e.id = ef.entity_id AND e.deleted=0
+             WHERE ef.key IN ({placeholders})
+             GROUP BY ef.key"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(limited.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (key, count) = row?;
+            counts.insert(key, u64::try_from(count).unwrap_or_default());
+        }
+        for key in limited {
+            counts.entry(key.clone()).or_insert(0);
+        }
+        Ok((counts, truncated))
+    }
+
+    /// Reject removing custom types that still have live entities.
+    pub fn ensure_module_schema_overlay_type_removals_resolved(
+        &self,
+        module_id: &str,
+        candidate: Option<&serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let current_value = self
+            .module_schema_overlay(module_id)?
+            .unwrap_or_else(|| serde_json::json!({}));
+        let current = daena_plugin_api::parse_module_overlay(&current_value)
+            .map_err(CoreError::Validation)?;
+        let next_value = candidate
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let next =
+            daena_plugin_api::parse_module_overlay(&next_value).map_err(CoreError::Validation)?;
+        let next_ids: BTreeSet<&str> = next
+            .custom_entity_types
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        let removed: Vec<String> = current
+            .custom_entity_types
+            .iter()
+            .map(|item| item.id.clone())
+            .filter(|id| !next_ids.contains(id.as_str()))
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        let (counts, truncated) = self.count_live_entities_by_types(&removed)?;
+        let mut unresolved = removed
+            .into_iter()
+            .filter(|id| counts.get(id).copied().unwrap_or(0) > 0)
+            .collect::<Vec<_>>();
+        if truncated {
+            // Cap hit: refuse rather than risk orphaning uncounded types.
+            return Err(CoreError::Validation(
+                "cannot remove schema types while live entity counts are incomplete; reassign entities in smaller batches"
+                    .into(),
+            ));
+        }
+        unresolved.sort();
+        if unresolved.is_empty() {
+            return Ok(());
+        }
+        Err(CoreError::Validation(format!(
+            "cannot remove schema types still used by entities: {}",
+            unresolved.join(", ")
+        )))
+    }
+
+    /// Read-only impact preview for a candidate overlay against the installed package.
+    pub fn preview_module_schema_overlay(
+        &self,
+        module_id: &str,
+        package: &PluginManifest,
+        candidate: &daena_plugin_api::ModuleSchemaOverlay,
+    ) -> Result<daena_plugin_api::SchemaOverlayPreviewResult, CoreError> {
+        let current_value = self
+            .module_schema_overlay(module_id)?
+            .unwrap_or_else(|| serde_json::json!({}));
+        let current = daena_plugin_api::parse_module_overlay(&current_value)
+            .map_err(CoreError::Validation)?;
+        let normalized = match daena_plugin_api::normalize_candidate_overlay(package, candidate) {
+            Ok(overlay) => overlay,
+            Err(errors) => {
+                return Ok(daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
+                    &daena_plugin_api::SchemaOverlayDiff::default(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    errors,
+                    false,
+                    false,
+                ));
+            }
+        };
+        let diff = daena_plugin_api::diff_module_schema_overlays(&current, &normalized);
+        let (type_counts, types_truncated) =
+            self.count_live_entities_by_types(&diff.type_ids_needing_counts())?;
+        let (field_counts, fields_truncated) =
+            self.count_live_field_values_by_keys(&diff.field_keys_needing_counts())?;
+        Ok(daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
+            &diff,
+            &type_counts,
+            &field_counts,
+            Vec::new(),
+            types_truncated,
+            fields_truncated,
+        ))
+    }
+
     pub fn set_module_schema_overlay(
         &self,
         module_id: String,
         overlay: Option<serde_json::Value>,
-    ) -> Result<(), CoreError> {
-        self.set_module_schema_overlay_with_request(module_id, overlay, None)
+    ) -> Result<String, CoreError> {
+        self.set_module_schema_overlay_with_request(module_id, overlay, None, None)
     }
 
     pub fn set_module_schema_overlay_with_request(
         &self,
         module_id: String,
         overlay: Option<serde_json::Value>,
+        expected_revision: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<(), CoreError> {
-        if self
-            .committed_mutation::<serde_json::Value>(request_id)?
-            .is_some()
+    ) -> Result<String, CoreError> {
+        let input_fingerprint = digest_bytes(
+            &serde_json::to_vec(&(
+                &module_id,
+                overlay
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null),
+            ))
+            .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(previous) = self
+            .committed_mutation_with_fingerprint::<ModuleSchemaOverlayReceipt>(
+                request_id,
+                Some(&input_fingerprint),
+            )?
         {
-            return Ok(());
+            return Ok(previous.revision);
         }
         if module_id.trim().is_empty() {
             return Err(CoreError::Validation("module id is required".into()));
         }
+        self.ensure_module_schema_overlay_type_removals_resolved(
+            &module_id,
+            overlay.as_ref(),
+        )?;
+        let current_revision = self.revision_for_module_schema_overlay(&module_id)?;
+        Self::ensure_expected_revision(
+            expected_revision,
+            current_revision,
+            "module schema overlay",
+        )?;
         let request_id = self.request_id(request_id)?;
-        let transaction = self.begin_mutation(
+        let receipt = ModuleSchemaOverlayReceipt {
+            module_id: module_id.clone(),
+            overlay: overlay.clone().unwrap_or(serde_json::Value::Null),
+            revision: String::new(),
+        };
+        let result = serde_json::to_value(&receipt)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let transaction = self.begin_mutation_with_fingerprint(
             &request_id,
-            Some(&serde_json::Value::Null),
+            Some(&result),
             &[format!("plugins/{module_id}.json")],
+            &input_fingerprint,
         )?;
         transaction.execute(
             "INSERT OR IGNORE INTO module_versions(module_id,version) VALUES (?1,0)",
@@ -12378,7 +12594,16 @@ impl ProjectStore {
         }
         transaction.commit()?;
         self.notify_export_worker()?;
-        Ok(())
+        let revision = self.revision_for_module_schema_overlay(&module_id)?;
+        let final_receipt = ModuleSchemaOverlayReceipt {
+            module_id,
+            overlay: receipt.overlay,
+            revision: revision.clone(),
+        };
+        let final_value = serde_json::to_value(&final_receipt)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.write_mutation_result(&request_id, &final_value)?;
+        Ok(revision)
     }
 
     pub fn set_module_package_version(

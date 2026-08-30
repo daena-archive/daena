@@ -148,9 +148,11 @@ Groups:
   → shared Preview create form.
 - Multi-namespace package schemas flattened; shell uses `primarySchemaNamespace`.
 - Scenarios: `empty-project`, `custom-schema-live-data`, `revision-conflict`.
-- Remaining Slice 6: live entity counts in impact preview, overlay revision
-  conflicts.
-
+- Slice 6: trusted-core impact preview with live entity/field counts; Save shows
+  `SchemaImpactReview` when acknowledgement is required; overlay load/save uses
+  opaque `contentRevision` + request ID (editor remount key is separate);
+  conflict offers Compare / Reload / Reapply; core rejects unresolved type
+  removals even if the UI is bypassed.
 ## Scenario → surface matrix
 
 | Scenario | Primary surfaces |

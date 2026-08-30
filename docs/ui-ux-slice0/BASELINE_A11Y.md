@@ -41,9 +41,9 @@ treat these as accepted permanent behavior.
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
 | ~~`A11Y-SCHEMA-01`~~ | Medium | **Resolved in Slice 5.** Search + status filters on Types/Fields/Templates lists. | workbench toolbar |
-| `A11Y-SCHEMA-02` | Medium | Validation errors often appear only after Save as unstructured text, not as field-linked announcements. | save path in schema panel; Slice 6 |
-| `A11Y-SCHEMA-03` | Low | Builtin enable chips duplicate detailed rows, producing redundant focus stops for the same field. | Fields tab |
-| `A11Y-SCHEMA-04` | Medium | No live-data impact summary before destructive overlay changes; SR users only learn counts after failure or surprise confirmations. | plan §3.7; Slice 6 target |
+| ~~`A11Y-SCHEMA-02`~~ | Medium | **Resolved in Slice 6.** Preview returns item-level errors; impact dialog lists kind/id/property before Save. | `SchemaOverlayPreviewResult` / `SchemaImpactReview` |
+| ~~`A11Y-SCHEMA-03`~~ | Low | **Resolved in Slice 5.** Builtin fields use one row with status + Enable (no duplicate chips). | `SchemaFieldsPane` |
+| ~~`A11Y-SCHEMA-04`~~ | Medium | **Resolved in Slice 6.** Live entity/field counts and impact review gate risky overlay saves. | `preview_module_schema_overlay` / `SchemaImpactReview` |
 
 ## Minimum interactive target / motion
 

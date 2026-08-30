@@ -51,6 +51,8 @@ export const MUTATION_STATUS_MESSAGES = {
   conflictBody: "Reload current values, keep reviewing your draft, or retry after resolving the conflict.",
   conflictReload: "Reload current values",
   conflictReviewDraft: "Review draft",
+  conflictCompare: "Compare current vs draft",
+  conflictReapply: "Reapply draft onto current",
   failedTitle: "The change could not be saved",
   retry: "Retry",
   revisionConflictCode: "revision-conflict",

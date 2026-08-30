@@ -190,6 +190,16 @@ pub struct ModuleSchemaEditorState {
     pub schemas: Vec<crate::SchemaContribution>,
     pub templates: Vec<EntityTemplate>,
     pub overlay: ModuleSchemaOverlay,
+    /// Opaque content revision for compare-and-swap overlay saves.
+    pub revision: String,
+}
+
+/// Result of an overlay save, including the new opaque revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleSchemaOverlayMutationResult {
+    pub overlay: ModuleSchemaOverlay,
+    pub revision: String,
 }
 
 fn default_overlay_version() -> u32 {

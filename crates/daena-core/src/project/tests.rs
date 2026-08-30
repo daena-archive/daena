@@ -2791,6 +2791,149 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
 }
 
 #[test]
+fn schema_overlay_preview_counts_and_revision_cas_are_idempotent() {
+    let root = std::env::temp_dir().join(format!("daena-overlay-preview-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let package: daena_plugin_api::PluginManifest = daena_plugin_api::parse_manifest(include_str!(
+        "../../../../packages/modules/lore/manifest.json"
+    ))
+    .unwrap();
+
+    let custom_type = "daena.lore:knightly-order";
+    let overlay = serde_json::json!({
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
+        "customEntityTypes": [{
+            "id": custom_type,
+            "name": "Knightly order",
+            "icon": { "kind": "catalog", "id": "unknown" },
+            "iconColor": { "kind": "preset", "id": "brass" }
+        }],
+        "customFields": [{
+            "key": "motto",
+            "label": "Motto",
+            "type": "text",
+            "entityTypes": [custom_type]
+        }]
+    });
+    let revision = store
+        .set_module_schema_overlay("daena.lore".into(), Some(overlay.clone()))
+        .unwrap();
+    assert!(!revision.is_empty());
+    assert_eq!(
+        store.revision_for_module_schema_overlay("daena.lore").unwrap(),
+        revision
+    );
+
+    store
+        .create_entity(CreateEntity {
+            name: "Order of Ash".into(),
+            entity_type: Some(custom_type.into()),
+        })
+        .unwrap();
+    store
+        .create_entity(CreateEntity {
+            name: "Order of Rivers".into(),
+            entity_type: Some(custom_type.into()),
+        })
+        .unwrap();
+
+    let candidate = daena_plugin_api::ModuleSchemaOverlay::default();
+    let preview = store
+        .preview_module_schema_overlay("daena.lore", &package, &candidate)
+        .unwrap();
+    assert!(!preview.ok);
+    assert_eq!(preview.unresolved_type_removals, vec![custom_type.to_string()]);
+    assert_eq!(
+        preview
+            .affected_types
+            .iter()
+            .find(|item| item.entity_type == custom_type)
+            .map(|item| item.entity_count),
+        Some(2)
+    );
+    assert!(preview.requires_acknowledgement);
+
+    let stale = store.set_module_schema_overlay_with_request(
+        "daena.lore".into(),
+        Some(overlay.clone()),
+        Some("sha256:not-the-revision"),
+        None,
+    );
+    assert!(matches!(
+        stale,
+        Err(CoreError::Conflict(message)) if message.contains("revision conflict")
+    ));
+
+    let mut request_id = Uuid::new_v4().to_string();
+    let empty = serde_json::json!({
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION
+    });
+    // Core must refuse clearing custom types while live entities still use them.
+    let blocked = store.set_module_schema_overlay_with_request(
+        "daena.lore".into(),
+        Some(empty.clone()),
+        Some(&revision),
+        Some(&request_id),
+    );
+    assert!(matches!(
+        blocked,
+        Err(CoreError::Validation(message)) if message.contains("still used by entities")
+    ));
+
+    for entity in store
+        .query_entities(EntityListQuery {
+            entity_types: vec![custom_type.into()],
+            ..EntityListQuery::default()
+        })
+        .unwrap()
+        .items
+    {
+        store
+            .update_entity_with_options(
+                entity.id.clone(),
+                Some(entity.name.clone()),
+                Some("daena.lore:person".into()),
+                Some(&entity.revision),
+                None,
+            )
+            .unwrap();
+    }
+
+    // Fresh request id after the blocked attempt (no receipt was written).
+    request_id = Uuid::new_v4().to_string();
+    let cleared_revision = store
+        .set_module_schema_overlay_with_request(
+            "daena.lore".into(),
+            Some(empty.clone()),
+            Some(&revision),
+            Some(&request_id),
+        )
+        .unwrap();
+    let retry = store
+        .set_module_schema_overlay_with_request(
+            "daena.lore".into(),
+            Some(empty),
+            Some(&revision),
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(cleared_revision, retry);
+    assert_ne!(cleared_revision, revision);
+
+    let after_clear = store
+        .preview_module_schema_overlay(
+            "daena.lore",
+            &package,
+            &daena_plugin_api::ModuleSchemaOverlay::default(),
+        )
+        .unwrap();
+    assert!(after_clear.ok);
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn timeline_schema_overlay_survives_directory_reopen_and_checkpoint() {
     let root = std::env::temp_dir().join(format!("daena-timeline-overlay-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

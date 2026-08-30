@@ -39,11 +39,19 @@ let {
   packageManifest = null,
   referenceEntityTypes = [],
   overlay,
-  overlayRevision = 0,
+  /** Remount key only — not the opaque CAS revision. */
+  editorRemountKey = 0,
+  /** Opaque content revision from editor load / last save. */
+  contentRevision = "",
   busy = false,
   message = "",
+  conflict = false,
   onSelectPlugin,
+  onPreview,
   onSave,
+  onReloadCurrent,
+  onFetchCurrent,
+  onAdoptCurrentRevision,
   onDirtyChange,
   entityCountForType,
   onReassignEntities,
@@ -59,11 +67,19 @@ let {
   packageManifest?: PackageManifestSlice | null;
   referenceEntityTypes?: Array<{ id: string; name: string }>;
   overlay: ModuleSchemaOverlay;
-  overlayRevision?: number;
+  /** Integer remount token when the editor should reset its draft baseline. */
+  editorRemountKey?: number;
+  /** Opaque CAS revision for the loaded/saved overlay. */
+  contentRevision?: string;
   busy?: boolean;
   message?: string;
+  conflict?: boolean;
   onSelectPlugin: (id: string | null) => void;
-  onSave: (overlay: ModuleSchemaOverlay) => Promise<void>;
+  onPreview: (overlay: ModuleSchemaOverlay) => Promise<import("$lib/project/client").SchemaOverlayPreviewResult>;
+  onSave: (overlay: ModuleSchemaOverlay, options?: { acknowledgeImpact?: boolean }) => Promise<void>;
+  onReloadCurrent?: () => Promise<void>;
+  onFetchCurrent?: () => Promise<{ overlay: ModuleSchemaOverlay; revision: string }>;
+  onAdoptCurrentRevision?: (revision: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
   entityCountForType?: (typeId: string) => number | null;
   onReassignEntities?: (fromTypeId: string, toTypeId: string) => Promise<void>;
@@ -199,7 +215,7 @@ function handleDirtyChange(next: boolean) {
       {/if}
     </div>
 
-    {#key `${selectedPluginId}:${overlayRevision}`}
+    {#key `${selectedPluginId}:${editorRemountKey}`}
       <ModuleSchemaPanel
         {projectOpen}
         {packageManifest}
@@ -208,9 +224,15 @@ function handleDirtyChange(next: boolean) {
         pluginId={selectedPluginId}
         {busy}
         {message}
+        {conflict}
+        {contentRevision}
         {entityCountForType}
         {onReassignEntities}
+        {onPreview}
         {onSave}
+        {onReloadCurrent}
+        {onFetchCurrent}
+        {onAdoptCurrentRevision}
         onDirtyChange={handleDirtyChange} />
     {/key}
   {/if}

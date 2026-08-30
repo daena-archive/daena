@@ -66,15 +66,19 @@ assert.match(canvas, /prefers-reduced-motion/);
 assert.match(canvas, /media\.addEventListener/);
 assert.match(canvas, /TREE_KEYBOARD\.canvasDescribedById/);
 assert.match(canvas, /role="group"/);
+assert.match(canvas, /openRelationshipAround|key === \"r\"/);
 assert.match(canvas, /focusPersonCard/);
 assert.doesNotMatch(canvas, /role="application"/);
 
 assert.match(personPanel, /ENTITY_ACTIONS\.editIdentity/);
 assert.match(personPanel, /ENTITY_ACTIONS\.archive/);
 assert.match(personPanel, /data-dock-focus/);
+assert.match(personPanel, /Edit relationship/);
 
 const personNode = await read("src/lib/family-tree/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);
+assert.match(personNode, /branchTabIndex/);
+assert.match(personNode, /Tab for branch controls/);
 assert.match(personNode, /--control-min-height/);
 
 assert.match(relationshipPanel, /formatRelationshipTitle/);
@@ -82,6 +86,15 @@ assert.match(relationshipPanel, /formatRelationshipTypeLabel/);
 
 const relationshipEdge = await read("src/lib/family-tree/FamilyRelationshipEdge.svelte");
 assert.match(relationshipEdge, /data-relationship-id/);
+assert.match(relationshipEdge, /onActivate|onkeydown=\{activateEdge\}/);
+assert.match(relationshipEdge, /edgeTabIndex/);
+
+const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
+assert.match(landing, /aria-activedescendant/);
+assert.match(landing, /role="combobox"/);
+
+assert.match(TREE_KEYBOARD.helpText, /R opens a relationship|Tab moves to branch/);
+assert.equal(TREE_KEYBOARD.keys.openRelationship, "r");
 
 assert.match(shell, /onEditPersonIdentity=/);
 assert.match(shell, /onArchivePerson=/);

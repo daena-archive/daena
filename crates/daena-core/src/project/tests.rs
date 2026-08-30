@@ -2820,7 +2820,9 @@ fn schema_overlay_preview_counts_and_revision_cas_are_idempotent() {
         .unwrap();
     assert!(!revision.is_empty());
     assert_eq!(
-        store.revision_for_module_schema_overlay("daena.lore").unwrap(),
+        store
+            .revision_for_module_schema_overlay("daena.lore")
+            .unwrap(),
         revision
     );
 
@@ -2842,7 +2844,10 @@ fn schema_overlay_preview_counts_and_revision_cas_are_idempotent() {
         .preview_module_schema_overlay("daena.lore", &package, &candidate)
         .unwrap();
     assert!(!preview.ok);
-    assert_eq!(preview.unresolved_type_removals, vec![custom_type.to_string()]);
+    assert_eq!(
+        preview.unresolved_type_removals,
+        vec![custom_type.to_string()]
+    );
     assert_eq!(
         preview
             .affected_types

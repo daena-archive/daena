@@ -43,6 +43,56 @@ let housesToken = 0;
 
 const emptyPeople = $derived(!peopleBusy && people.length === 0 && !peopleQuery.trim() && peopleTotal === 0);
 const emptyHouses = $derived(!housesBusy && houses.length === 0 && !housesQuery.trim() && housesTotal === 0);
+let peopleActiveIndex = $state(-1);
+let housesActiveIndex = $state(-1);
+const peopleListId = "landing-people-listbox";
+const housesListId = "landing-houses-listbox";
+
+$effect(() => {
+  void people;
+  peopleActiveIndex = people.length > 0 ? 0 : -1;
+});
+
+$effect(() => {
+  void houses;
+  housesActiveIndex = houses.length > 0 ? 0 : -1;
+});
+
+function onPeopleSearchKeydown(event: KeyboardEvent) {
+  if (people.length === 0) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    peopleActiveIndex = (peopleActiveIndex + 1) % people.length;
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    peopleActiveIndex = (peopleActiveIndex - 1 + people.length) % people.length;
+    return;
+  }
+  if (event.key === "Enter" && peopleActiveIndex >= 0 && people[peopleActiveIndex]) {
+    event.preventDefault();
+    pickPerson(people[peopleActiveIndex]);
+  }
+}
+
+function onHousesSearchKeydown(event: KeyboardEvent) {
+  if (houses.length === 0) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    housesActiveIndex = (housesActiveIndex + 1) % houses.length;
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    housesActiveIndex = (housesActiveIndex - 1 + houses.length) % houses.length;
+    return;
+  }
+  if (event.key === "Enter" && housesActiveIndex >= 0 && houses[housesActiveIndex]) {
+    event.preventDefault();
+    onSelectHouse(houses[housesActiveIndex]);
+  }
+}
 
 async function searchPeople(nextOffset = 0) {
   const request = ++peopleToken;
@@ -154,18 +204,36 @@ $effect(() => {
       <label class="search-field">
         <span class="input-wrap">
           <span class="input-icon" aria-hidden="true"><Search size={14} strokeWidth={1.8} /></span>
-          <input type="search" bind:value={peopleQuery} placeholder="Search people" aria-label="Search people" />
+          <input
+            type="search"
+            bind:value={peopleQuery}
+            placeholder="Search people"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls={peopleListId}
+            aria-activedescendant={peopleActiveIndex >= 0 ? `${peopleListId}-option-${peopleActiveIndex}` : undefined}
+            aria-label="Search people"
+            onkeydown={onPeopleSearchKeydown} />
         </span>
       </label>
-      <div class="panel-list" role="listbox" aria-label="People">
+      <div class="panel-list" id={peopleListId} role="listbox" aria-label="People">
         {#if peopleError}<p class="error" role="alert">{peopleError}</p>{/if}
         {#if peopleBusy && people.length === 0}<p class="hint">Loading people…</p>
         {:else if emptyPeople}
           <p class="hint">No people yet. Use {ENTITY_ACTIONS.newPerson} above — they also appear in Lore.</p>
         {:else if people.length === 0}<p class="hint">No people match this search.</p>
         {:else}
-          {#each people as person (person.id)}
-            <button type="button" class="collection-item" onclick={() => pickPerson(person)}>
+          {#each people as person, index (person.id)}
+            <button
+              type="button"
+              id={`${peopleListId}-option-${index}`}
+              role="option"
+              aria-selected={index === peopleActiveIndex}
+              class="collection-item"
+              class:active={index === peopleActiveIndex}
+              onmousemove={() => (peopleActiveIndex = index)}
+              onclick={() => pickPerson(person)}>
               {#if avatar}
                 <span class="item-glyph">{@render avatar(person.id, person.name)}</span>
               {:else}
@@ -203,10 +271,20 @@ $effect(() => {
       <label class="search-field">
         <span class="input-wrap">
           <span class="input-icon" aria-hidden="true"><Search size={14} strokeWidth={1.8} /></span>
-          <input type="search" bind:value={housesQuery} placeholder="Search houses" aria-label="Search houses" />
+          <input
+            type="search"
+            bind:value={housesQuery}
+            placeholder="Search houses"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls={housesListId}
+            aria-activedescendant={housesActiveIndex >= 0 ? `${housesListId}-option-${housesActiveIndex}` : undefined}
+            aria-label="Search houses"
+            onkeydown={onHousesSearchKeydown} />
         </span>
       </label>
-      <div class="panel-list" role="listbox" aria-label="Houses">
+      <div class="panel-list" id={housesListId} role="listbox" aria-label="Houses">
         {#if housesError}<p class="error" role="alert">{housesError}</p>{/if}
         {#if housesBusy && houses.length === 0}
           <p class="hint">Loading houses…</p>
@@ -215,9 +293,17 @@ $effect(() => {
         {:else if houses.length === 0}
           <p class="hint">No houses match this search.</p>
         {:else}
-          {#each houses as house (house.id)}
+          {#each houses as house, index (house.id)}
             {@const summary = houseSummaries.get(house.id)}
-            <button type="button" class="collection-item" onclick={() => onSelectHouse(house)}>
+            <button
+              type="button"
+              id={`${housesListId}-option-${index}`}
+              role="option"
+              aria-selected={index === housesActiveIndex}
+              class="collection-item"
+              class:active={index === housesActiveIndex}
+              onmousemove={() => (housesActiveIndex = index)}
+              onclick={() => onSelectHouse(house)}>
               <span class="item-glyph house" aria-hidden="true"><Castle size={16} strokeWidth={1.8} /></span>
               <span class="item-copy"
                 ><strong>{house.name}</strong><small
@@ -376,9 +462,13 @@ $effect(() => {
   text-align: left;
   cursor: pointer;
 }
-.collection-item:hover {
+.collection-item:hover,
+.collection-item.active {
   border-color: var(--theme-warning-border, #e5d8c6);
   box-shadow: var(--shadow-sm);
+}
+.collection-item.active {
+  border-color: var(--accent-soft, var(--accent));
 }
 .collection-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.25);

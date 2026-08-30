@@ -41,6 +41,26 @@ export {
   validateMetadataDrafts,
 } from "./model";
 
+export {
+  HOUSES_PLUGIN_ID,
+  LANGUAGE_PLUGIN_ID,
+  LANGUAGE_SCHEMA_OVERLAY_READY,
+  LORE_PLUGIN_ID,
+  MANAGED_EXPECTED_PLUGIN_IDS,
+  MAPS_PLUGIN_ID,
+  OVERLAY_EXPECTED_PLUGIN_IDS,
+  TIMELINE_PLUGIN_ID,
+  TREE_HOUSE_TYPE,
+  TREE_PERSON_TYPE,
+  WRITING_PLUGIN_ID,
+  housesTypeTreeRole,
+  isTreeCompatibleHouseType,
+  isTreeCompatiblePersonType,
+  managedSchemaPluginReason,
+  projectionLabelsForModuleType,
+  schemaOverlayWorkbenchAllowed,
+} from "./module-compatibility";
+
 export type {
   AdvancedControlId,
   EntityRemovalDisposition,
@@ -60,3 +80,5 @@ export type {
   TypeEditorUsage,
   TypeRemovalPlan,
 } from "./model";
+
+export type { HousesTypeTreeRole } from "./module-compatibility";

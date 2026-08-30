@@ -1385,6 +1385,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_language_without_schema_overlay_capability() {
+        let package = parse_manifest(include_str!(
+            "../../../packages/modules/language/manifest.json"
+        ))
+        .expect("language manifest");
+        assert!(!supports_schema_overlay(&package));
+    }
+
+    #[test]
     fn family_tree_supports_schema_overlay() {
         assert!(supports_schema_overlay(&family_tree_manifest()));
     }

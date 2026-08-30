@@ -120,7 +120,7 @@ async function archivePerson() {
             <button
               type="button"
               class="quiet-button ghost small"
-              onclick={() => onSelectRelationship(connection.relationshipId)}>Edit</button>
+              onclick={() => onSelectRelationship(connection.relationshipId)}>Edit relationship</button>
           </li>
         {/each}
       </ul>

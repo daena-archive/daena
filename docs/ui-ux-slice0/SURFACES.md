@@ -91,7 +91,8 @@ Surface IDs match `SURFACE_IDS` in `src/lib/ui-ux/fixtures.ts`.
 - Dock: Open in Lore, Edit identity, Make root, Add parent/child/partner, house labels with
   roles, Archive Person, visible connections.
 - Keyboard: Tab to Person cards; arrows move selection + DOM focus; Enter opens dock;
-  Shift+Enter makes root; Escape closes dock/popover with focus return.
+  Shift+Enter makes root; R opens/cycles relationships; Tab within card reaches branch
+  chips; Escape closes dock and returns focus.
 - Scenarios: `multiple-memberships`, `malformed-edge`, `revision-conflict`.
 
 ### `workspace.houses.tree.open-house`
@@ -130,7 +131,10 @@ Groups:
 - Project Center → Fields & Types plugin cards (`SchemaSettingsPanel`).
 - Cards show **active** Type/Field/Template counts, Default vs Customized, and
   validation Error badge when overlay status is error.
-- Language/Maps appear as Managed by extension (no overlay editor).
+- Language/Maps appear as Managed by extension (no overlay editor) with explicit
+  reasons (Language: packaged Overview fields; Maps: provider/internal schema).
+- Houses type projections distinguish Tree-compatible House vs collection-only
+  custom types (`MODULE_SCHEMA_COMPATIBILITY.md`).
 
 ### `project.fields.types` / `project.fields.fields` / `project.fields.templates`
 

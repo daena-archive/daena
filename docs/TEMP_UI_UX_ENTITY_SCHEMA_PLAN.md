@@ -1,7 +1,10 @@
 # Temporary UI/UX plan: Houses, Tree, entities, and Fields & Types
 
-Status: temporary implementation plan. Remove or fold the durable decisions into
-the architecture and feature documentation after the work ships.
+Status: temporary implementation plan. **Slices 0–7 are done.** Durable decisions
+are folded into [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`STORAGE.md`](./STORAGE.md),
+[`FAMILY_TREE_PLUGIN_IMPLEMENTATION.md`](./FAMILY_TREE_PLUGIN_IMPLEMENTATION.md),
+and [`ui-ux-slice0/`](./ui-ux-slice0/README.md). Remove this file once reviewers no
+longer need the slice narrative.
 
 ## 1. Purpose
 
@@ -795,16 +798,24 @@ the impact, and conflicting editors cannot silently overwrite each other.
 Contract lock: `npm run test:schema-workbench` plus
 `schema_overlay_preview_counts_and_revision_cas_are_idempotent`.
 
-### Slice 7: module compatibility
+### Slice 7: module compatibility — **done**
 
-1. Verify each module against the policy in section 5.8.
-2. Keep Maps technical schema unavailable.
-3. Decide whether Language's specialized workspace is ready to consume merged
-   schema; only then add overlay capability.
-4. Document Tree-compatible versus collection-only custom Houses types.
+1. Verified §5.8: Lore, Timeline, Writing, and Houses declare `schema.overlay`;
+   Language and Maps do not.
+2. Maps technical/provider schema remains unavailable (no overlay capability;
+   managed card explains why).
+3. Language overlay **not** enabled: Overview still reads packaged field
+   definitions (`LANGUAGE_SCHEMA_OVERLAY_READY = false`). Managed reason documents
+   the gate.
+4. Tree-compatible vs collection-only Houses types documented and labeled in the
+   type editor via `module-compatibility.ts` (`Houses collection` + `Tree` vs
+   `Houses collection only`). See
+   [`docs/ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`](./ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md).
 
 Exit gate: every enabled module either offers a consistent schema editor or a
 clear reason that its structure is managed by the extension.
+Contract lock: `npm run test:schema-workbench` (manifest overlay policy + Tree
+compat helpers).
 
 ## 8. Verification requirements
 
@@ -868,5 +879,5 @@ The work is complete when:
 - overlay saves are revision-aware and idempotent;
 - multi-namespace manifests are represented correctly;
 - storage round trips and clean rebuild remain valid; and
-- this temporary document is either deleted or reconciled into the durable
-  product/architecture documentation.
+- this temporary document's durable decisions are folded into architecture /
+  storage / Family Tree / ui-ux-slice0 docs (slice narrative may then be deleted).

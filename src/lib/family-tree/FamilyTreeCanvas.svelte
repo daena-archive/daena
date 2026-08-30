@@ -201,12 +201,41 @@ function flowEdges(): Edge[] {
       start: edge.start,
       end: edge.end,
       relationshipId: edge.relationshipId,
+      onActivate: (relationshipId: string) => onSelectRelationship(relationshipId),
     },
     selected: Boolean(edge.relationshipId && edge.relationshipId === selectedRelationshipId),
     ariaLabel: edge.label || undefined,
     selectable: true,
     focusable: true,
   }));
+}
+
+function relationshipIdsAroundPerson(personId: string): string[] {
+  const relatedNodeIds = new Set<string>();
+  for (const node of layout.nodes) {
+    if (node.kind === "person" && node.personId === personId) relatedNodeIds.add(node.id);
+    if (node.kind === "union" && node.memberIds?.includes(personId)) relatedNodeIds.add(node.id);
+  }
+  if (relatedNodeIds.size === 0) return [];
+  const ids: string[] = [];
+  for (const edge of layout.edges) {
+    if (!edge.relationshipId) continue;
+    if (relatedNodeIds.has(edge.source) || relatedNodeIds.has(edge.target)) ids.push(edge.relationshipId);
+  }
+  return [...new Set(ids)];
+}
+
+function openRelationshipAround(personId: string) {
+  const ids = relationshipIdsAroundPerson(personId);
+  if (ids.length === 0) return false;
+  const current = selectedRelationshipId ? ids.indexOf(selectedRelationshipId) : -1;
+  const next = ids[(current + 1) % ids.length];
+  onSelectRelationship(next);
+  queueMicrotask(() => {
+    const edge = canvasEl?.querySelector(`[data-relationship-id="${CSS.escape(next)}"]`);
+    if (edge instanceof HTMLElement) edge.focus({ preventScroll: true });
+  });
+  return true;
 }
 
 $effect(() => {
@@ -257,6 +286,12 @@ function onCanvasKeydown(event: KeyboardEvent) {
     event.preventDefault();
     if (event.shiftKey) onMakeRoot(originId);
     else onSelectPerson(originId);
+    return;
+  }
+  if (event.key === "r" || event.key === "R") {
+    if (openRelationshipAround(originId)) {
+      event.preventDefault();
+    }
     return;
   }
   if (event.key.startsWith("Arrow")) {

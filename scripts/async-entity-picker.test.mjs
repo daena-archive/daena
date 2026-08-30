@@ -139,6 +139,9 @@ const richText = await read("src/lib/editor/RichTextEditor.svelte");
 
 assert.match(picker, /runAsyncEntitySearch/);
 assert.match(picker, /createRequestGate|gate/);
+assert.match(picker, /role="combobox"/);
+assert.match(picker, /aria-activedescendant/);
+assert.match(picker, /aria-controls=\{listboxId\}/);
 assert.match(relationship, /AsyncEntityPicker/);
 assert.match(relationship, /excludedEntityTypes/);
 assert.match(relationship, /search:/);

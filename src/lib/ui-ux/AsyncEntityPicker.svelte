@@ -62,12 +62,64 @@ let busy = $state(false);
 let error = $state("");
 let page = $state<AsyncEntitySearchPage>(emptyAsyncEntityPage(pageSize));
 let rootEl = $state<HTMLElement | null>(null);
+let activeIndex = $state(-1);
+const listboxId = `async-entity-listbox-${Math.random().toString(36).slice(2, 9)}`;
 const gate = createRequestGate();
 
 const selected = $derived(new Set(selectedIds));
 const excluded = $derived(new Set(excludeIds));
 const showMenu = $derived(!dropdown || open);
 const showRecents = $derived(showMenu && !query.trim() && recents.length > 0);
+const optionItems = $derived.by(() => {
+  if (!showMenu) return [] as Array<{ key: string; entity: AsyncEntityOption }>;
+  const items: Array<{ key: string; entity: AsyncEntityOption }> = [];
+  if (showRecents) {
+    for (const entry of recents) {
+      items.push({
+        key: `recent:${entry.id}`,
+        entity: { id: entry.id, name: entry.name, entityType: entry.entityType ?? null },
+      });
+    }
+  }
+  for (const entity of page.items) {
+    items.push({ key: `result:${entity.id}`, entity });
+  }
+  return items;
+});
+const activeOptionId = $derived(
+  activeIndex >= 0 && activeIndex < optionItems.length ? `${listboxId}-option-${activeIndex}` : undefined,
+);
+
+$effect(() => {
+  void optionItems;
+  if (!showMenu || optionItems.length === 0) {
+    activeIndex = -1;
+    return;
+  }
+  if (activeIndex < 0 || activeIndex >= optionItems.length) activeIndex = 0;
+});
+
+function optionDomId(index: number) {
+  return `${listboxId}-option-${index}`;
+}
+
+function moveActive(delta: number) {
+  if (optionItems.length === 0) {
+    activeIndex = -1;
+    return;
+  }
+  if (activeIndex < 0) {
+    activeIndex = delta > 0 ? 0 : optionItems.length - 1;
+  } else {
+    activeIndex = (activeIndex + delta + optionItems.length) % optionItems.length;
+  }
+  document.getElementById(optionDomId(activeIndex))?.scrollIntoView({ block: "nearest" });
+}
+
+function activateActive() {
+  if (activeIndex < 0 || activeIndex >= optionItems.length) return;
+  choose(optionItems[activeIndex].entity);
+}
 
 async function load(nextOffset = 0) {
   if (disabled) return;
@@ -161,10 +213,16 @@ $effect(() => {
     <span aria-hidden="true"><Search size={14} strokeWidth={1.8} /></span>
     <input
       type="search"
+      role="combobox"
       aria-label={ariaLabel}
+      aria-expanded={showMenu}
+      aria-autocomplete="list"
+      aria-controls={listboxId}
+      aria-activedescendant={activeOptionId}
       {placeholder}
       {disabled}
       value={query}
+      autocomplete="off"
       onfocus={() => {
         if (openOnFocus) open = true;
       }}
@@ -176,51 +234,74 @@ $effect(() => {
         if (event.key === "Escape" && dropdown) {
           event.preventDefault();
           open = false;
+          return;
+        }
+        if (!showMenu) {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            open = true;
+          }
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          moveActive(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          moveActive(-1);
+          return;
+        }
+        if (event.key === "Home" && optionItems.length > 0) {
+          event.preventDefault();
+          activeIndex = 0;
+          return;
+        }
+        if (event.key === "End" && optionItems.length > 0) {
+          event.preventDefault();
+          activeIndex = optionItems.length - 1;
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          activateActive();
         }
       }} />
   </div>
   {#if showMenu}
-    <div class="async-entity-menu" role="listbox" aria-label={ariaLabel}>
+    <div class="async-entity-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>
       {#if error}
         <p class="async-entity-error" role="alert">{error}</p>
       {/if}
       {#if showRecents}
         <span class="async-entity-section">Recent</span>
-        {#each recents as entry (entry.id)}
-          <button
-            type="button"
-            role="option"
-            aria-selected={isSelected(entry.id)}
-            {disabled}
-            onpointerdown={(event) => {
-              event.preventDefault();
-              choose({
-                id: entry.id,
-                name: entry.name,
-                entityType: entry.entityType ?? null,
-              });
-            }}>{entry.name}</button>
-        {/each}
-        <span class="async-entity-section">People</span>
       {/if}
-      {#if busy && page.items.length === 0}
+      {#if busy && page.items.length === 0 && !showRecents}
         <p class="async-entity-hint">{searchingMessage}</p>
-      {:else if page.items.length === 0}
+      {:else if optionItems.length === 0}
         <p class="async-entity-hint">{emptyMessage}</p>
       {:else}
-        {#each page.items as entity (entity.id)}
+        {#each optionItems as item, index (item.key)}
+          {#if showRecents && index === recents.length}
+            <span class="async-entity-section">People</span>
+          {/if}
           <button
             type="button"
+            id={optionDomId(index)}
             role="option"
-            aria-selected={isSelected(entity.id)}
-            class:selected={isSelected(entity.id)}
+            tabindex="-1"
+            aria-selected={isSelected(item.entity.id) || index === activeIndex}
+            class:selected={isSelected(item.entity.id)}
+            class:active={index === activeIndex}
             {disabled}
+            onmousemove={() => (activeIndex = index)}
             onpointerdown={(event) => {
               event.preventDefault();
-              choose(entity);
+              choose(item.entity);
             }}>
-            <span><strong>{entity.name}</strong><small>{entity.entityType ?? "Uncategorized"}</small></span>
-            {#if isSelected(entity.id)}<b aria-hidden="true">✓</b>{/if}
+            <span><strong>{item.entity.name}</strong><small>{item.entity.entityType ?? "Uncategorized"}</small></span>
+            {#if isSelected(item.entity.id)}<b aria-hidden="true">✓</b>{/if}
           </button>
         {/each}
         {#if page.total > page.items.length || page.hasMore || page.offset > 0}
@@ -305,7 +386,8 @@ $effect(() => {
   cursor: pointer;
 }
 .async-entity-menu button[role="option"]:hover,
-.async-entity-menu button[role="option"].selected {
+.async-entity-menu button[role="option"].selected,
+.async-entity-menu button[role="option"].active {
   background: var(--surface-muted);
   color: var(--ink);
 }

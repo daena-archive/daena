@@ -1,18 +1,18 @@
 # Baseline keyboard and screen-reader issues (Slice 0)
 
 Recorded against the August 2026 codebase before shared lifecycle and Tree
-accessibility work. Use this list to measure Slice 1 / Slice 4 progress; do not
-treat these as accepted permanent behavior.
+accessibility work. Use this list to measure later-slice progress; do not treat
+open rows as accepted permanent behavior.
 
 ## Shell and collections
 
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
-| `A11Y-SHELL-01` | Medium | Collection rows expose selection only; common actions require opening the entity first, so keyboard users cannot Archive / Edit identity from the list. | `CollectionPane` / shell list rendering; plan §3.1 |
-| `A11Y-SHELL-02` | Medium | Post-archive focus clears selection without a **View Archive** follow-up, leaving keyboard users without a recovery path. | `archiveSelected` in `+page.svelte` |
-| `A11Y-SHELL-03` | Low | Global New and mobile FAB use **New entry**; plan vocabulary standardizes on **New** / contextual labels. | `AppSidebar`, mobile create button |
-| `A11Y-SHELL-04` | Medium | Identity dialog kicker/title still say **EDIT ENTRY** / **Edit {name}** rather than **Edit identity**. | entity edit dialog in `+page.svelte` |
-| `A11Y-SHELL-05` | Medium | Language Overview archive uses different confirmation copy and pending text (`Archiving…`) than the shell Archive confirm. | `packages/modules/language/src/panes/Overview.svelte` |
+| ~~`A11Y-SHELL-01`~~ | Medium | **Resolved in Slice 1.** Collection rows expose Open / Edit identity / Archive / Open tree via `EntityRowActions`. | `EntityRowActions.svelte`, shell collection |
+| ~~`A11Y-SHELL-02`~~ | Medium | **Resolved in Slice 1.** Post-archive offers **View Archive** follow-up with focus return. | `+page.svelte` archive feedback |
+| ~~`A11Y-SHELL-03`~~ | Low | **Resolved in Slice 1.** Global New uses **New** / contextual labels (`ENTITY_ACTIONS`). | sidebar / workspace headers |
+| ~~`A11Y-SHELL-04`~~ | Medium | **Resolved in Slice 1.** Identity dialog uses **Edit identity**. | `EntityIdentityDialog.svelte` |
+| ~~`A11Y-SHELL-05`~~ | Medium | **Resolved in Slice 1.** Language Overview uses shared `archiveConfirmOptions` / `archivePendingLabel`. | `Overview.svelte` |
 
 ## Tree canvas and focus
 
@@ -22,9 +22,9 @@ treat these as accepted permanent behavior.
 | ~~`A11Y-TREE-02`~~ | High | **Resolved in Slice 4.** Hidden help via `aria-describedby={TREE_KEYBOARD.canvasDescribedById}`. | Canvas + `TREE_KEYBOARD` |
 | ~~`A11Y-TREE-03`~~ | Medium | **Resolved in Slice 4.** Dock focuses Close on open; Escape returns focus to the origin card. | `FamilyPersonPanel`, `closeDock` |
 | ~~`A11Y-TREE-04`~~ | Medium | **Resolved in Slice 4.** More menu: Escape, initial focus, focus return to trigger. | `FamilyTreeSurface` settings |
-| `A11Y-TREE-05` | Medium | Root / landing listboxes lack full combobox keyboard patterns (active descendant, typeahead announcements). | `FamilyTreeLanding`, `FamilyRootPicker` |
-| `A11Y-TREE-06` | Low | Relationship edge captions live on SVG `<g aria-label>` without a guaranteed keyboard path to open the relationship dock. | `FamilyRelationshipEdge.svelte` |
-| `A11Y-TREE-07` | Medium | Branch chips are tabbable, but there is no announced model for moving between nodes vs activating branch controls. | `FamilyPersonNode.svelte` |
+| ~~`A11Y-TREE-05`~~ | Medium | **Resolved in wrap-up.** Root picker / AsyncEntityPicker and Tree landing searches use combobox + `aria-activedescendant` arrow/Enter patterns. | `AsyncEntityPicker`, `FamilyTreeLanding`, `FamilyRootPicker` |
+| ~~`A11Y-TREE-06`~~ | Low | **Resolved in wrap-up.** `R` cycles relationships of the focused person; selected edges are keyboard-activatable; person dock offers **Edit relationship**. | `FamilyTreeCanvas`, `FamilyRelationshipEdge`, `FamilyPersonPanel` |
+| ~~`A11Y-TREE-07`~~ | Medium | **Resolved in wrap-up.** Person cards announce Tab-for-branches; branch chips are only tabbable on the focused person; help text documents Arrow vs Tab. | `FamilyPersonNode`, `TREE_KEYBOARD` |
 | ~~`A11Y-TREE-08`~~ | Low | **Resolved in Slice 4.** Legend is no longer `aria-hidden`; scope vocabulary is readable. | `FamilyTreeSurface.svelte` |
 
 ## Tree information architecture (affects SR understanding)
@@ -52,7 +52,11 @@ treat these as accepted permanent behavior.
 | ~~`A11Y-CHROME-01`~~ | Low | **Resolved in Slice 4.** Tree icon controls use 34px minimum target. | canvas controls / topbar |
 | ~~`A11Y-CHROME-02`~~ | Low | **Resolved in Slice 4.** Fit / layout transitions honor `prefers-reduced-motion`. | `FamilyTreeCanvas` |
 
-## Resolved in Slice 4
+## Status
 
-- `A11Y-TREE-01` … `A11Y-TREE-04`, `A11Y-TREE-08` … `A11Y-TREE-12`, `A11Y-CHROME-01`, `A11Y-CHROME-02`.
-- Remaining Tree gaps: root picker combobox patterns (`A11Y-TREE-05`), edge keyboard path (`A11Y-TREE-06`), branch vs node announcement (`A11Y-TREE-07`).
+All recorded Slice 0 baseline IDs are resolved. Remaining product deferrals (Language
+overlay readiness, Maps author schema, EntityCreateDialog extract, warm-cache
+mentions migration) are tracked in
+[`TEMP_UI_UX_ENTITY_SCHEMA_PLAN.md`](../TEMP_UI_UX_ENTITY_SCHEMA_PLAN.md) §7
+deferred notes and [`MODULE_SCHEMA_COMPATIBILITY.md`](./MODULE_SCHEMA_COMPATIBILITY.md),
+not as open a11y baseline rows.

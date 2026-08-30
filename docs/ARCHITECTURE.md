@@ -219,6 +219,20 @@ capabilities, schemas, templates, views, commands, dependencies, namespaces,
 and migrations. The Rust plugin API is the source for generated JSON Schemas,
 TypeScript declarations, and contract fixtures.
 
+### Schema overlays and Fields & Types
+
+Project authors customize Types, Fields, and Templates through a project-owned
+`schemaOverlay` on overlay-capable modules (`schema.overlay` capability). Lore,
+Timeline, Writing, and Houses offer the Fields & Types workbench. Language and
+Maps stay managed by the extension until specialized surfaces are ready (Language
+Overview must render merged schema before overlay is enabled; Maps provider
+fields are never exposed as author schema). Houses custom Types are
+collection-only; Tree only hydrates `daena.lore:person` and `daena.houses:house`.
+Overlay saves use opaque content revisions, idempotent request IDs, and a
+trusted-core impact preview. See
+[`ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`](./ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md)
+and [`STORAGE.md`](./STORAGE.md).
+
 The host aggregates enabled module templates and views into the workspace, but
 the module does not receive a database handle, filesystem handle, raw Tauri
 invoke function, or private host API. Views mount into a host-provided surface

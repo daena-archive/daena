@@ -96,20 +96,19 @@ Target contract (implement in Slice 4; baseline gaps in `BASELINE_A11Y.md`):
 | Arrow keys | Move visual selection **and** DOM focus to the nearest Person |
 | Enter | Opens the Person dock |
 | Shift+Enter | Makes the Person the root |
+| R | Opens / cycles a relationship of the focused person (relationship dock) |
 | Escape | Closes dock/popover and returns focus to the origin |
-| Tab within card | Branch controls remain separately tabbable |
+| Tab within card | Branch controls remain separately tabbable on the focused person |
 
 Supporting requirements:
 
 - hidden help text referenced with `aria-describedby` (`family-tree-keyboard-help`);
 - popovers (View settings, root picker) implement Escape, initial focus, and focus return;
+- root / landing search fields use combobox + `aria-activedescendant` patterns;
 - icon-only controls have stable labels and meet the repository minimum target size;
 - reduced motion disables layout/viewport animation durations;
 - re-evaluate `role="application"` after the focus model lands; prefer ordinary
   grouped buttons if application semantics do not help screen readers.
-
-Current code already maps Enter / Shift+Enter / arrows on the canvas container,
-but does not move DOM focus onto the newly selected Person card.
 
 ## 6. Tree scope vocabulary
 

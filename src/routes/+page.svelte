@@ -128,7 +128,13 @@ import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
 import SchemaFieldInput from "$lib/schema-workbench/SchemaFieldInput.svelte";
-import { overlayValidationStatus, primarySchemaNamespace, summarizePackageCounts } from "$lib/schema-workbench";
+import {
+  overlayValidationStatus,
+  primarySchemaNamespace,
+  summarizePackageCounts,
+  managedSchemaPluginReason,
+  schemaOverlayWorkbenchAllowed,
+} from "$lib/schema-workbench";
 import { allowLeaveSchemaEditor, isSchemaEditorDirty } from "$lib/schemaEditorGuard";
 import GitSettingsPanel from "$lib/GitSettingsPanel.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
@@ -531,7 +537,6 @@ let schemaEntityCountsByType = $state<Record<string, number>>({});
 let schemaEntityCountsLoaded = $state(false);
 let displayVersion = $state(appVersionSyncFallback());
 
-const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
 const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
 const MAP_HOST_SURFACE = "daena.maps/editor";
 
@@ -556,7 +561,7 @@ function schemaOverlayCandidates() {
     .filter(
       (module) =>
         module.enabled &&
-        (module.capabilities ?? []).includes(SCHEMA_OVERLAY_CAPABILITY) &&
+        schemaOverlayWorkbenchAllowed(module.id, module.capabilities) &&
         (module.schemas ?? []).some((schema) => (schema.entityTypes?.length ?? 0) > 0),
     )
     .map((module) => {
@@ -586,7 +591,7 @@ function managedSchemaPlugins() {
     .filter(
       (module) =>
         module.enabled &&
-        !(module.capabilities ?? []).includes(SCHEMA_OVERLAY_CAPABILITY) &&
+        !schemaOverlayWorkbenchAllowed(module.id, module.capabilities) &&
         (module.schemas ?? []).some(
           (schema) => (schema.entityTypes?.length ?? 0) > 0 || (schema.fields?.length ?? 0) > 0,
         ),
@@ -594,11 +599,7 @@ function managedSchemaPlugins() {
     .map((module) => ({
       id: module.id,
       name: module.name,
-      reason: module.id.includes("maps")
-        ? "Maps provider fields stay extension-managed."
-        : module.id.includes("language")
-          ? "Language keeps a specialized workspace until merged schema rendering is ready."
-          : "Schema structure is owned by this extension.",
+      reason: managedSchemaPluginReason(module.id),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }

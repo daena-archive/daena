@@ -12336,10 +12336,7 @@ impl ProjectStore {
     }
 
     /// Opaque content revision for a module schema overlay (empty overlay included).
-    pub fn revision_for_module_schema_overlay(
-        &self,
-        module_id: &str,
-    ) -> Result<String, CoreError> {
+    pub fn revision_for_module_schema_overlay(&self, module_id: &str) -> Result<String, CoreError> {
         let value = self
             .module_schema_overlay(module_id)?
             .unwrap_or_else(|| serde_json::json!({}));
@@ -12432,9 +12429,7 @@ impl ProjectStore {
             .unwrap_or_else(|| serde_json::json!({}));
         let current = daena_plugin_api::parse_module_overlay(&current_value)
             .map_err(CoreError::Validation)?;
-        let next_value = candidate
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
+        let next_value = candidate.cloned().unwrap_or_else(|| serde_json::json!({}));
         let next =
             daena_plugin_api::parse_module_overlay(&next_value).map_err(CoreError::Validation)?;
         let next_ids: BTreeSet<&str> = next
@@ -12488,14 +12483,16 @@ impl ProjectStore {
         let normalized = match daena_plugin_api::normalize_candidate_overlay(package, candidate) {
             Ok(overlay) => overlay,
             Err(errors) => {
-                return Ok(daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
-                    &daena_plugin_api::SchemaOverlayDiff::default(),
-                    &BTreeMap::new(),
-                    &BTreeMap::new(),
-                    errors,
-                    false,
-                    false,
-                ));
+                return Ok(
+                    daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
+                        &daena_plugin_api::SchemaOverlayDiff::default(),
+                        &BTreeMap::new(),
+                        &BTreeMap::new(),
+                        errors,
+                        false,
+                        false,
+                    ),
+                );
             }
         };
         let diff = daena_plugin_api::diff_module_schema_overlays(&current, &normalized);
@@ -12503,14 +12500,16 @@ impl ProjectStore {
             self.count_live_entities_by_types(&diff.type_ids_needing_counts())?;
         let (field_counts, fields_truncated) =
             self.count_live_field_values_by_keys(&diff.field_keys_needing_counts())?;
-        Ok(daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
-            &diff,
-            &type_counts,
-            &field_counts,
-            Vec::new(),
-            types_truncated,
-            fields_truncated,
-        ))
+        Ok(
+            daena_plugin_api::assemble_schema_overlay_preview_with_bounds(
+                &diff,
+                &type_counts,
+                &field_counts,
+                Vec::new(),
+                types_truncated,
+                fields_truncated,
+            ),
+        )
     }
 
     pub fn set_module_schema_overlay(
@@ -12531,9 +12530,7 @@ impl ProjectStore {
         let input_fingerprint = digest_bytes(
             &serde_json::to_vec(&(
                 &module_id,
-                overlay
-                    .as_ref()
-                    .unwrap_or(&serde_json::Value::Null),
+                overlay.as_ref().unwrap_or(&serde_json::Value::Null),
             ))
             .map_err(|error| CoreError::Serialization(error.to_string()))?,
         );
@@ -12548,10 +12545,7 @@ impl ProjectStore {
         if module_id.trim().is_empty() {
             return Err(CoreError::Validation("module id is required".into()));
         }
-        self.ensure_module_schema_overlay_type_removals_resolved(
-            &module_id,
-            overlay.as_ref(),
-        )?;
+        self.ensure_module_schema_overlay_type_removals_resolved(&module_id, overlay.as_ref())?;
         let current_revision = self.revision_for_module_schema_overlay(&module_id)?;
         Self::ensure_expected_revision(
             expected_revision,

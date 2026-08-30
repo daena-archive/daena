@@ -68,10 +68,11 @@ export const TREE_KEYBOARD = {
     moveSelection: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],
     openPersonDock: "Enter",
     makeRoot: "Shift+Enter",
+    openRelationship: "r",
     closeDockOrPopover: "Escape",
   },
   helpText:
-    "Arrow keys move between people. Enter opens details. Shift+Enter makes the selected person the root. Escape closes the dock or popover.",
+    "Arrow keys move between people. Enter opens details. Shift+Enter makes the selected person the root. R opens a relationship of the selected person. Tab moves to branch controls on the focused person. Escape closes the dock or popover.",
 } as const;
 
 export const TREE_SCOPES = {

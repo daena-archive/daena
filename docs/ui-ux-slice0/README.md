@@ -35,3 +35,4 @@ inventory plus fixtures are the review authority for layout and copy.
 - Slice 2+: use `LARGE_PROJECT.scale` and `synthesizeLargeProjectPeople`.
 - Slice 3–4: drive House/Tree tests from `DISCONNECTED_HOUSE`, `MULTIPLE_MEMBERSHIPS`, `MALFORMED_EDGE`.
 - Slice 5–6: drive schema impact/conflict tests from `CUSTOM_SCHEMA_LIVE_DATA` and `REVISION_CONFLICT`.
+- Slice 7: module overlay vs managed policy and Houses Tree vs collection-only types in [`MODULE_SCHEMA_COMPATIBILITY.md`](./MODULE_SCHEMA_COMPATIBILITY.md).

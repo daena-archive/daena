@@ -3,9 +3,7 @@
 //! Live entity/field counts are filled by the trusted core; this module only
 //! classifies overlay deltas and structures validation/impact results.
 
-use crate::schema_overlay::{
-    ModuleSchemaOverlay, qualify_module_overlay, validate_module_overlay,
-};
+use crate::schema_overlay::{qualify_module_overlay, validate_module_overlay, ModuleSchemaOverlay};
 use crate::PluginManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -391,9 +389,15 @@ fn classify_validation_message(message: &str) -> Vec<SchemaOverlayItemIssue> {
     {
         ("type", extract_trailing_token(message).unwrap_or("overlay"))
     } else if lower.contains("template") {
-        ("template", extract_trailing_token(message).unwrap_or("overlay"))
+        (
+            "template",
+            extract_trailing_token(message).unwrap_or("overlay"),
+        )
     } else if lower.contains("field") {
-        ("field", extract_trailing_token(message).unwrap_or("overlay"))
+        (
+            "field",
+            extract_trailing_token(message).unwrap_or("overlay"),
+        )
     } else {
         ("overlay", "overlay")
     };
@@ -408,7 +412,10 @@ fn classify_validation_message(message: &str) -> Vec<SchemaOverlayItemIssue> {
 fn infer_validation_property(lower: &str) -> Option<String> {
     const RULES: &[(&str, &str)] = &[
         ("disabledentitytypes", "disabledEntityTypes"),
-        ("cannot disable unknown builtin entity type", "disabledEntityTypes"),
+        (
+            "cannot disable unknown builtin entity type",
+            "disabledEntityTypes",
+        ),
         ("disabledfields", "disabledFields"),
         ("disabledtemplates", "disabledTemplates"),
         ("customentitytypes", "customEntityTypes"),
@@ -417,7 +424,10 @@ fn infer_validation_property(lower: &str) -> Option<String> {
         ("fieldscopeoverrides", "fieldScopeOverrides"),
         ("templateoverrides", "templateOverrides"),
         ("fieldmetadataoverrides", "fieldMetadataOverrides"),
-        ("entitytypeappearanceoverrides", "entityTypeAppearanceOverrides"),
+        (
+            "entitytypeappearanceoverrides",
+            "entityTypeAppearanceOverrides",
+        ),
         ("fieldtimelineoverrides", "fieldTimelineOverrides"),
         ("relationshiptype", "relationshipType"),
         ("relationship type", "relationshipType"),
@@ -506,10 +516,7 @@ pub fn assemble_schema_overlay_preview_with_bounds(
         });
     }
     for id in &diff.appearance_types {
-        if affected_types
-            .iter()
-            .any(|item| item.entity_type == *id)
-        {
+        if affected_types.iter().any(|item| item.entity_type == *id) {
             continue;
         }
         affected_types.push(SchemaOverlayTypeImpact {
@@ -594,13 +601,13 @@ pub fn assemble_schema_overlay_preview_with_bounds(
         );
     }
     if !diff.disabled_fields.is_empty() {
-        compatibility_notes.push(
-            "Disabled fields stay stored on entities; values are hidden, not purged.".into(),
-        );
+        compatibility_notes
+            .push("Disabled fields stay stored on entities; values are hidden, not purged.".into());
     }
     if !diff.removed_custom_fields.is_empty() {
         compatibility_notes.push(
-            "Removed custom fields leave existing stored values until cleaned up separately.".into(),
+            "Removed custom fields leave existing stored values until cleaned up separately."
+                .into(),
         );
     }
     if !diff.metadata_changed_fields.is_empty() {
@@ -631,7 +638,8 @@ pub fn assemble_schema_overlay_preview_with_bounds(
         .iter()
         .filter(|item| {
             item.change == "removed"
-                && (item.entity_count > 0 || (types_truncated && !type_counts.contains_key(&item.entity_type)))
+                && (item.entity_count > 0
+                    || (types_truncated && !type_counts.contains_key(&item.entity_type)))
         })
         .map(|item| item.entity_type.clone())
         .collect::<Vec<_>>();
@@ -741,9 +749,7 @@ mod tests {
                 icon: IconRef::Catalog {
                     id: "unknown".into(),
                 },
-                icon_color: crate::EntityTypeColor::Preset {
-                    id: "brass".into(),
-                },
+                icon_color: crate::EntityTypeColor::Preset { id: "brass".into() },
             }],
             ..ModuleSchemaOverlay::default()
         }
@@ -754,8 +760,14 @@ mod tests {
         let current = overlay_with_type("daena.lore:order");
         let candidate = ModuleSchemaOverlay::default();
         let diff = diff_module_schema_overlays(&current, &candidate);
-        assert_eq!(diff.removed_custom_types, vec!["daena.lore:order".to_string()]);
-        assert_eq!(diff.change_kind(), SchemaOverlayChangeKind::RequiresReassignment);
+        assert_eq!(
+            diff.removed_custom_types,
+            vec!["daena.lore:order".to_string()]
+        );
+        assert_eq!(
+            diff.change_kind(),
+            SchemaOverlayChangeKind::RequiresReassignment
+        );
     }
 
     #[test]
@@ -768,7 +780,10 @@ mod tests {
         counts.insert("daena.lore:order".into(), 2);
         let preview = assemble_schema_overlay_preview(&diff, &counts, &BTreeMap::new(), Vec::new());
         assert!(!preview.ok);
-        assert_eq!(preview.unresolved_type_removals, vec!["daena.lore:order".to_string()]);
+        assert_eq!(
+            preview.unresolved_type_removals,
+            vec!["daena.lore:order".to_string()]
+        );
         assert!(preview.requires_acknowledgement);
     }
 
@@ -800,7 +815,10 @@ mod tests {
             false,
         );
         assert!(!preview.ok);
-        assert!(preview.errors.iter().any(|issue| issue.property.as_deref() == Some("affectedTypes")));
+        assert!(preview
+            .errors
+            .iter()
+            .any(|issue| issue.property.as_deref() == Some("affectedTypes")));
     }
 
     #[test]

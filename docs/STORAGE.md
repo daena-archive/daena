@@ -200,6 +200,14 @@ overlay disables packaged builtins and adds custom entity types, fields, and
 templates for that project only. Package manifest defaults remain immutable;
 see [`adr/0002-rust-owned-public-contracts.md`](./adr/0002-rust-owned-public-contracts.md).
 
+Overlay load/save uses an opaque content revision (compare-and-swap) and an
+idempotent mutation request ID. Risky changes require a trusted-core
+`preview_module_schema_overlay` result: unresolved type removals with live
+entities are rejected even if the UI is bypassed, and saves that report live-data
+impact require explicit acknowledgement. Module compatibility policy (which
+plugins may overlay, Tree-compatible vs collection-only Houses types) lives in
+[`ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`](./ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md).
+
 Search indexes, map projections, relationship indexes, Atlas render
 intermediates under `.daena/cache/atlas/`, accepted physical-world physics
 under `.daena/cache/physical-derived/`, and similar structures are derived

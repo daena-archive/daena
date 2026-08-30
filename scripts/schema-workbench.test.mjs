@@ -25,6 +25,25 @@ const {
   validateFieldForm,
 } = await import("../src/lib/schema-workbench/model.ts");
 
+const {
+  HOUSES_PLUGIN_ID,
+  LANGUAGE_PLUGIN_ID,
+  LANGUAGE_SCHEMA_OVERLAY_READY,
+  LORE_PLUGIN_ID,
+  MANAGED_EXPECTED_PLUGIN_IDS,
+  MAPS_PLUGIN_ID,
+  OVERLAY_EXPECTED_PLUGIN_IDS,
+  TIMELINE_PLUGIN_ID,
+  TREE_HOUSE_TYPE,
+  TREE_PERSON_TYPE,
+  WRITING_PLUGIN_ID,
+  housesTypeTreeRole,
+  isTreeCompatibleHouseType,
+  managedSchemaPluginReason,
+  projectionLabelsForModuleType,
+  schemaOverlayWorkbenchAllowed,
+} = await import("../src/lib/schema-workbench/module-compatibility.ts");
+
 const empty = { version: 1 };
 const once = normalizeOverlay(empty, { pluginId: "daena.lore" });
 const twice = normalizeOverlay(once, { pluginId: "daena.lore" });
@@ -260,6 +279,7 @@ assert.match(settings, /Customized|Managed by extension|typeCount|fieldCount|man
 assert.match(settings, /validationStatus/);
 assert.match(settings, /onPreview|onReloadCurrent|conflict|editorRemountKey|contentRevision/);
 assert.match(settings, /onFetchCurrent|onAdoptCurrentRevision/);
+assert.match(settings, /projectionLabelsForModuleType|projectionLabelsForType/);
 
 const impact = await read("src/lib/schema-workbench/SchemaImpactReview.svelte");
 assert.match(impact, /Review schema impact|requiresAcknowledgement|affectedTypes|Confirm save/);
@@ -281,6 +301,8 @@ assert.match(vocabulary, /conflictCompare|conflictReapply/);
 const page = await read("src/routes/+page.svelte");
 assert.match(page, /SchemaFieldInput|schema-workbench\/SchemaFieldInput/);
 assert.match(page, /managedSchemaPlugins/);
+assert.match(page, /managedSchemaPluginReason/);
+assert.match(page, /schemaOverlayWorkbenchAllowed/);
 assert.doesNotMatch(page, /schemas\[0\]/);
 assert.match(page, /summarizePackageCounts/);
 assert.match(page, /overlayValidationStatus/);
@@ -292,5 +314,42 @@ assert.match(page, /previewModuleSchemaOverlay|moduleSchemaContentRevision/);
 assert.match(page, /moduleSchemaConflict|expectedRevision:\s*moduleSchemaContentRevision/);
 assert.match(page, /acknowledgeImpact|onAdoptCurrentRevision|editorRemountKey/);
 assert.match(page, /moduleSchemaSaveRequestId = crypto\.randomUUID/);
+
+assert.match(typesPane, /Houses collection only|tree-compat-note/);
+assert.doesNotMatch(typesPane, /Custom Houses types appear in the Houses collection only/);
+
+assert.equal(LANGUAGE_SCHEMA_OVERLAY_READY, false);
+assert.equal(schemaOverlayWorkbenchAllowed(LANGUAGE_PLUGIN_ID, ["schema.overlay"]), false);
+assert.equal(schemaOverlayWorkbenchAllowed(LORE_PLUGIN_ID, ["schema.overlay"]), true);
+assert.ok(isTreeCompatibleHouseType(TREE_HOUSE_TYPE));
+assert.ok(isTreeCompatibleHouseType("house"));
+assert.equal(housesTypeTreeRole("daena.houses:clan"), "collection-only");
+assert.equal(housesTypeTreeRole(TREE_PERSON_TYPE), "collection-only");
+assert.deepEqual(projectionLabelsForModuleType(HOUSES_PLUGIN_ID, TREE_HOUSE_TYPE), ["Houses collection", "Tree"]);
+assert.deepEqual(projectionLabelsForModuleType(HOUSES_PLUGIN_ID, "daena.houses:clan"), ["Houses collection only"]);
+assert.deepEqual(projectionLabelsForModuleType(HOUSES_PLUGIN_ID, TREE_PERSON_TYPE), ["Houses collection only"]);
+assert.deepEqual(projectionLabelsForModuleType(LORE_PLUGIN_ID, TREE_PERSON_TYPE), ["Library", "Wiki", "Graph", "Tree"]);
+assert.deepEqual(projectionLabelsForModuleType(LORE_PLUGIN_ID, "daena.lore:place"), ["Library", "Wiki", "Graph"]);
+assert.deepEqual(projectionLabelsForModuleType(TIMELINE_PLUGIN_ID, "event"), ["Timeline"]);
+assert.deepEqual(projectionLabelsForModuleType(WRITING_PLUGIN_ID, "manuscript"), ["Writing Studio"]);
+assert.match(managedSchemaPluginReason(LANGUAGE_PLUGIN_ID), /packaged fields|merged schema/i);
+assert.match(managedSchemaPluginReason(MAPS_PLUGIN_ID), /provider|extension-managed/i);
+
+for (const pluginId of OVERLAY_EXPECTED_PLUGIN_IDS) {
+  const manifest = JSON.parse(await read(`packages/modules/${pluginId.replace("daena.", "")}/manifest.json`));
+  assert.ok((manifest.capabilities ?? []).includes("schema.overlay"), `${pluginId} must declare schema.overlay`);
+}
+for (const pluginId of MANAGED_EXPECTED_PLUGIN_IDS) {
+  const folder = pluginId.replace("daena.", "");
+  const manifest = JSON.parse(await read(`packages/modules/${folder}/manifest.json`));
+  assert.ok(
+    !(manifest.capabilities ?? []).includes("schema.overlay"),
+    `${pluginId} must remain without schema.overlay`,
+  );
+}
+
+const languageOverview = await read("packages/modules/language/src/panes/Overview.svelte");
+assert.match(languageOverview, /manifest\.schemas/);
+assert.doesNotMatch(languageOverview, /schema\.overlay|loadModuleSchemaEditor|mergedSchema/);
 
 console.log("schema-workbench tests passed");

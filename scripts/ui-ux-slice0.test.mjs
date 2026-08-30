@@ -142,9 +142,14 @@ assert.match(docs[1], /Members \+ immediate family/);
 assert.match(docs[2], /workspace\.houses\.tree\.landing/);
 assert.match(docs[2], /project\.fields\.types/);
 assert.match(docs[3], /A11Y-TREE-01/);
-assert.match(docs[3], /Resolved in Slice 4|role="group"|A11Y-SCHEMA-01/);
+assert.match(docs[3], /Resolved in Slice 4|Resolved in wrap-up|A11Y-SCHEMA-01/);
+assert.match(docs[3], /A11Y-TREE-05/);
+assert.match(docs[3], /A11Y-TREE-06/);
+assert.match(docs[3], /A11Y-TREE-07/);
+assert.match(docs[3], /All recorded Slice 0 baseline IDs are resolved/);
 assert.match(docs[3], /A11Y-SCHEMA-01/);
 assert.match(docs[4], /docs\/ui-ux-slice0/);
+assert.match(docs[4], /Slices 0–7 are done|folded into/);
 
 const requiredSurfaceDocs = [
   "workspace.lore.library",

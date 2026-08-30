@@ -2,6 +2,7 @@
 import ModuleSchemaPanel from "$lib/ModuleSchemaPanel.svelte";
 import type { EntityTemplate, EntityTypeDefinition, FieldDefinition, ModuleSchemaOverlay } from "$lib/project/client";
 import { allowLeaveSchemaEditor } from "$lib/schemaEditorGuard";
+import { projectionLabelsForModuleType } from "$lib/schema-workbench";
 import { AlertTriangle, Puzzle, ChevronLeft, ChevronRight, SlidersHorizontal, Layers } from "@lucide/svelte";
 
 export type SchemaPluginCandidate = {
@@ -89,6 +90,7 @@ let editorDirty = $state(false);
 
 const selectedInList = $derived(candidates.some((plugin) => plugin.id === selectedPluginId));
 const showEditor = $derived(Boolean(selectedPluginId && selectedInList && packageManifest));
+const projectionLabelsForType = $derived((typeId: string) => projectionLabelsForModuleType(selectedPluginId, typeId));
 
 async function selectPlugin(id: string) {
   if (!candidates.some((plugin) => plugin.id === id)) return;
@@ -226,6 +228,7 @@ function handleDirtyChange(next: boolean) {
         {message}
         {conflict}
         {contentRevision}
+        {projectionLabelsForType}
         {entityCountForType}
         {onReassignEntities}
         {onPreview}

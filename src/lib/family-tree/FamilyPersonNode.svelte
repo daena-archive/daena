@@ -58,6 +58,22 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
   event.stopPropagation();
   data.onToggleBranch?.(person.id, direction);
 }
+
+const branchTabIndex = $derived(cardTabIndex === 0 ? 0 : -1);
+const cardAriaLabel = $derived.by(() => {
+  if (!person) return "";
+  const hasBranches =
+    Boolean(data.hidden) &&
+    ((data.hidden?.parents ?? 0) > 0 ||
+      (data.hidden?.children ?? 0) > 0 ||
+      (data.hidden?.siblings ?? 0) > 0 ||
+      (data.hidden?.partners ?? 0) > 0 ||
+      Boolean(data.expanded?.parents) ||
+      Boolean(data.expanded?.children) ||
+      Boolean(data.expanded?.siblings) ||
+      Boolean(data.expanded?.partners));
+  return hasBranches ? `${person.name}. Tab for branch controls` : person.name;
+});
 </script>
 
 {#if person}
@@ -68,7 +84,8 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
     data-person-id={person.id}
     tabindex={cardTabIndex}
     role="button"
-    aria-label={person.name}
+    aria-label={cardAriaLabel}
+    aria-roledescription="person"
     aria-current={data.isRoot ? "true" : undefined}
     onkeydown={onCardKeydown}>
     <Handle id="north" type="target" position={Position.Top} isConnectable={false} />
@@ -90,12 +107,12 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
       {#if data.isRoot}<em class="root-badge">Root</em>{/if}
     </div>
     {#if data.hidden}
-      <div class="branches" role="group" aria-label="Branch controls">
+      <div class="branches" role="group" aria-label="Branch controls" aria-roledescription="branch controls">
         {#if data.hidden.parents > 0 || data.expanded?.parents}
           <button
             type="button"
             class="chip nodrag nopan"
-            tabindex={cardTabIndex}
+            tabindex={branchTabIndex}
             aria-pressed={Boolean(data.expanded?.parents)}
             aria-label={data.expanded?.parents ? "Hide parents" : `Show ${data.hidden.parents} hidden parents`}
             onclick={(event) => toggle(event, "parents")}>
@@ -108,7 +125,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
-            tabindex={cardTabIndex}
+            tabindex={branchTabIndex}
             aria-pressed={Boolean(data.expanded?.children)}
             aria-label={data.expanded?.children ? "Hide children" : `Show ${data.hidden.children} hidden children`}
             onclick={(event) => toggle(event, "children")}>
@@ -121,7 +138,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
-            tabindex={cardTabIndex}
+            tabindex={branchTabIndex}
             aria-pressed={Boolean(data.expanded?.siblings)}
             aria-label={data.expanded?.siblings ? "Hide siblings" : `Show ${data.hidden.siblings} hidden siblings`}
             onclick={(event) => toggle(event, "siblings")}>
@@ -134,7 +151,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
-            tabindex={cardTabIndex}
+            tabindex={branchTabIndex}
             aria-pressed={Boolean(data.expanded?.partners)}
             aria-label={data.expanded?.partners ? "Hide partners" : `Show ${data.hidden.partners} hidden partners`}
             onclick={(event) => toggle(event, "partners")}>

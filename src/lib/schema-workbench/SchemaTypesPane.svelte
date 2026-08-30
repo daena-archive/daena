@@ -5,7 +5,7 @@ import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
 import TypeAppearancePicker from "$lib/entity-colors/TypeAppearancePicker.svelte";
 import TypeColorPicker from "$lib/entity-colors/TypeColorPicker.svelte";
 import IconPicker from "$lib/entity-icons/IconPicker.svelte";
-import { summarizeTypeUsage, type FlattenedPackageSchema } from "$lib/schema-workbench";
+import { HOUSES_PLUGIN_ID, summarizeTypeUsage, type FlattenedPackageSchema } from "$lib/schema-workbench";
 import "./schema-pane.css";
 import {
   Check,
@@ -305,6 +305,13 @@ function selectBuiltinType(typeId: string) {
               </div>{/if}
           {/if}
         </dl>
+        {#if pluginId === HOUSES_PLUGIN_ID && usage.projectionLabels.includes("Houses collection only")}
+          <p class="subtle-note tree-compat-note">
+            Tree only shows Person and House. This custom type stays in the Houses collection and is not a Tree node.
+          </p>
+        {:else if pluginId === HOUSES_PLUGIN_ID && usage.projectionLabels.includes("Tree")}
+          <p class="subtle-note tree-compat-note">Available in the Houses collection and as a Tree root.</p>
+        {/if}
         {#if !isBuiltin}
           <div class="edit-actions">
             <button type="button" class="action" onclick={commitTypeEdit}

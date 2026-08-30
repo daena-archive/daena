@@ -30,11 +30,21 @@ let {
     start: unknown;
     end: unknown;
     relationshipId?: string | null;
+    onActivate?: (relationshipId: string) => void;
   };
 } = $props();
 
 const partner = $derived(data?.role === "partner");
 const relationshipId = $derived(data?.relationshipId ?? null);
+const edgeTabIndex = $derived(relationshipId && selected ? 0 : relationshipId ? -1 : undefined);
+
+function activateEdge(event: KeyboardEvent) {
+  if (!relationshipId) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  event.stopPropagation();
+  data?.onActivate?.(relationshipId);
+}
 const caption = $derived.by(() => {
   const label = data?.label?.trim() || (partner ? "Partner" : "Parent");
   const start = data?.start ? formatCalendarDate(data.start) : "";
@@ -97,8 +107,10 @@ const [path, labelX, labelY] = $derived(
     class="family-edge family-edge-partner"
     class:selected
     data-relationship-id={relationshipId}
-    tabindex={relationshipId ? -1 : undefined}
-    aria-label={caption}>
+    tabindex={edgeTabIndex}
+    role={relationshipId ? "button" : undefined}
+    aria-label={caption}
+    onkeydown={activateEdge}>
     <title>{caption}</title>
     <path d={path} class="partner-rail" fill="none" />
     <BaseEdge {id} {path} {labelX} {labelY} interactionWidth={20} />
@@ -113,8 +125,10 @@ const [path, labelX, labelY] = $derived(
     class="family-edge family-edge-parent"
     class:selected
     data-relationship-id={relationshipId}
-    tabindex={relationshipId ? -1 : undefined}
-    aria-label={caption}>
+    tabindex={edgeTabIndex}
+    role={relationshipId ? "button" : undefined}
+    aria-label={caption}
+    onkeydown={activateEdge}>
     <title>{caption}</title>
     <!-- halo for contrast on light/warm backgrounds -->
     <path

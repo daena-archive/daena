@@ -205,6 +205,11 @@ flowchart TD
 Family Tree accepts only active, non-deleted entities whose type is
 `daena.lore:person`.
 
+Custom entity types authored under the Houses `schema.overlay` are
+**collection-only**: they appear in the Houses collection and editor, but never
+as Tree nodes. Tree roots and membership remain limited to
+`daena.houses:house`. See `docs/ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`.
+
 The card data contract is:
 
 ```ts

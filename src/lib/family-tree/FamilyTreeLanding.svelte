@@ -2,6 +2,7 @@
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { Castle, ChevronRight, Plus, Search, UserPlus } from "@lucide/svelte";
+import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
 import { PERSON_TYPE } from "./model.ts";
 import { houseMemberCounts, listHouses } from "./fetch.ts";
 import { createHouse, createMinimalPerson } from "./mutations.ts";
@@ -11,11 +12,15 @@ let {
   avatar,
   onSelect,
   onSelectHouse,
+  onNewPerson,
+  onNewHouse,
 }: {
   context: ModuleContext;
   avatar?: Snippet<[string, string]>;
   onSelect: (person: EntitySummary) => void;
   onSelectHouse: (house: { id: string; name: string }) => void;
+  onNewPerson?: () => void;
+  onNewHouse?: () => void;
 } = $props();
 
 const pageSize = 20;
@@ -43,7 +48,8 @@ const visibleHouses = $derived.by(() => {
   if (!needle) return houses;
   return houses.filter((house) => house.name.toLowerCase().includes(needle));
 });
-const showCreatePerson = $derived(!peopleBusy && people.length === 0 && !peopleQuery.trim() && peopleTotal === 0);
+const emptyPeople = $derived(!peopleBusy && people.length === 0 && !peopleQuery.trim() && peopleTotal === 0);
+const emptyHouses = $derived(!housesBusy && houses.length === 0 && !housesQuery.trim());
 
 async function searchPeople(nextOffset = 0) {
   const request = ++peopleToken;
@@ -100,6 +106,7 @@ async function createPerson() {
   peopleError = "";
   try {
     const person = await createMinimalPerson(context, createName, crypto.randomUUID());
+    createName = "";
     onSelect(person);
   } catch (cause) {
     peopleError = cause instanceof Error ? cause.message : String(cause);
@@ -138,9 +145,8 @@ function pickPerson(person: { id: string; name: string; revision?: string | null
 }
 
 $effect(() => {
-  void peopleQuery;
-  const timer = setTimeout(() => void searchPeople(0), 180);
-  return () => clearTimeout(timer);
+  peopleQuery;
+  void searchPeople(0);
 });
 
 $effect(() => {
@@ -150,9 +156,17 @@ $effect(() => {
 
 <section class="landing">
   <header class="landing-copy">
-    <span class="overline">TREE</span>
-    <h1>Choose a root</h1>
-    <p>Open a person neighborhood, or the kinship tree of a house.</p>
+    <div>
+      <span class="overline">TREE</span>
+      <h1>Choose a root</h1>
+      <p>Open a person neighborhood, or the kinship tree of a house.</p>
+    </div>
+    <div class="landing-create" role="group" aria-label="Create">
+      <button type="button" class="primary-button" onclick={() => (onNewPerson ? onNewPerson() : undefined)}
+        ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newPerson}</button>
+      <button type="button" class="quiet-button" onclick={() => (onNewHouse ? onNewHouse() : undefined)}
+        ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newHouse}</button>
+    </div>
   </header>
 
   <div class="columns">
@@ -172,7 +186,7 @@ $effect(() => {
       <div class="panel-list" role="listbox" aria-label="People">
         {#if peopleError}<p class="error" role="alert">{peopleError}</p>{/if}
         {#if peopleBusy && people.length === 0}<p class="hint">Loading people…</p>
-        {:else if showCreatePerson}
+        {:else if emptyPeople && !onNewPerson}
           <div class="create-cta">
             <p class="hint">No people yet. Create one — they also appear in Lore.</p>
             <label class="field">Name <input bind:value={createName} placeholder="Person name" /></label>
@@ -181,8 +195,10 @@ $effect(() => {
               class="primary-button"
               disabled={creatingPerson || !createName.trim()}
               onclick={() => void createPerson()}
-              ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> Create person</button>
+              ><UserPlus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newPerson}</button>
           </div>
+        {:else if emptyPeople}
+          <p class="hint">No people yet. Use {ENTITY_ACTIONS.newPerson} above — they also appear in Lore.</p>
         {:else if people.length === 0}<p class="hint">No people match this search.</p>
         {:else}
           {#each people as person (person.id)}
@@ -231,7 +247,7 @@ $effect(() => {
         {#if housesError}<p class="error" role="alert">{housesError}</p>{/if}
         {#if housesBusy && houses.length === 0}
           <p class="hint">Loading houses…</p>
-        {:else if houses.length === 0}
+        {:else if emptyHouses && !onNewHouse}
           <div class="create-cta">
             <p class="hint">No houses yet. Create one to group people as a starting point.</p>
             <label class="field">Name <input bind:value={createHouseName} placeholder="House name" /></label>
@@ -240,8 +256,10 @@ $effect(() => {
               class="primary-button"
               disabled={creatingHouse || !createHouseName.trim()}
               onclick={() => void addHouse()}
-              ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> Create house</button>
+              ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> {ENTITY_ACTIONS.newHouse}</button>
           </div>
+        {:else if emptyHouses}
+          <p class="hint">No houses yet. Use {ENTITY_ACTIONS.newHouse} above to start a lineage.</p>
         {:else if visibleHouses.length === 0}
           <p class="hint">No houses match this search.</p>
         {:else}
@@ -269,6 +287,18 @@ $effect(() => {
   height: 100%;
   gap: 18px;
   padding: 22px 24px 24px;
+}
+.landing-copy {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.landing-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .landing-copy h1 {
   margin: 4px 0 0;

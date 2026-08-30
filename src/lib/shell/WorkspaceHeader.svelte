@@ -54,6 +54,11 @@ let {
   display: flex;
   gap: 7px;
 }
+.heading-actions :global(.heading-create-group) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
 
 @media (max-width: 1040px) {
   .workspace-heading {

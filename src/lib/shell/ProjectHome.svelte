@@ -78,7 +78,7 @@ function sectionIcon(section: WorkspaceSection) {
     <div class="project-home-actions">
       {#if workspaces.length > 0}
         <button type="button" class="primary-button" onclick={onNewEntry}
-          ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> New entry</button>
+          ><Plus size={14} strokeWidth={1.8} aria-hidden="true" /> New</button>
       {/if}
       <button type="button" class="quiet-button" onclick={onSnapshots}
         ><GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots</button>

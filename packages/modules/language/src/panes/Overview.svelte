@@ -2,6 +2,9 @@
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
+import { confirmDialog } from "../../../../../src/lib/dialogs.svelte";
+import { archiveConfirmOptions, archivePendingLabel } from "../../../../../src/lib/ui-ux/archive.ts";
+import { MUTATION_STATUS } from "../../../../../src/lib/ui-ux/vocabulary.ts";
 import { confirm } from "../confirm.svelte";
 import manifestJson from "../../manifest.json";
 
@@ -293,10 +296,8 @@ async function saveOverview(automatic = false): Promise<boolean> {
 async function archiveOverviewLanguage() {
   if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
   const name = selectedLanguage.name;
-  const message = overviewDirty
-    ? `Archive "${name}"? Unsaved language details will be discarded.`
-    : `Archive "${name}"? It will be removed from the active language list.`;
-  if (!(await confirm("Archive language", message))) return;
+  const dirtyNote = overviewDirty ? "Unsaved language details will be discarded." : undefined;
+  if (!(await confirmDialog(archiveConfirmOptions(name, { dirtyNote })))) return;
   clearOverviewAutosave();
   overviewDeleting = true;
   overviewError = "";
@@ -330,14 +331,12 @@ let status = $derived.by(() => {
     text: hasError
       ? "Changes need attention"
       : overviewDeleting
-        ? "Archiving language…"
+        ? MUTATION_STATUS.working
         : overviewSaving
-          ? overviewSavingAutomatically
-            ? "Saving automatically…"
-            : "Saving language details…"
+          ? MUTATION_STATUS.saving
           : overviewDirty
             ? "Changes save automatically"
-            : "All changes saved",
+            : MUTATION_STATUS.saved,
   };
 });
 </script>
@@ -382,7 +381,7 @@ let status = $derived.by(() => {
           type="button"
           class="language-button secondary language-danger language-overview-archive-btn"
           disabled={overviewSaving || overviewDeleting}
-          onclick={archiveOverviewLanguage}>{overviewDeleting ? "Archiving…" : "Archive language"}</button>
+          onclick={archiveOverviewLanguage}>{archivePendingLabel(overviewDeleting)}</button>
       </div>
       <label class="language-field">
         <span>Language name</span>

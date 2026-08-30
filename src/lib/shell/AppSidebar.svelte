@@ -136,8 +136,8 @@ function workspaceIcon(section: WorkspaceSection) {
     </button>
 
     {#if workspaces.length > 0}
-      <button aria-expanded={createOpen} class="rail-create-button" title="New entry" onclick={onCreate}
-        ><span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>New entry</span></button>
+      <button aria-expanded={createOpen} class="rail-create-button" title="New" onclick={onCreate}
+        ><span class="rail-icon"><Plus size={16} strokeWidth={1.8} /></span><span>New</span></button>
       <div class="rail-label">WORKSPACES</div>
       <nav class="workspace-nav" aria-label="Workspace sections">
         {#each workspaces as item (item.key)}

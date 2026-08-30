@@ -144,8 +144,23 @@ import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import housesManifestJson from "../../packages/modules/houses/manifest.json";
 import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
-import { familyTreeHistoryKey, sameFamilyTreeSession, type FamilyTreeSession } from "$lib/family-tree/model.ts";
+import {
+  familyTreeHistoryKey,
+  sameFamilyTreeSession,
+  HOUSE_TYPE,
+  PERSON_TYPE,
+  type FamilyTreeSession,
+} from "$lib/family-tree/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
+import EntityArchiveAction from "$lib/ui-ux/EntityArchiveAction.svelte";
+import EntityEmptyState from "$lib/ui-ux/EntityEmptyState.svelte";
+import EntityIdentityDialog from "$lib/ui-ux/EntityIdentityDialog.svelte";
+import EntityRowActions from "$lib/ui-ux/EntityRowActions.svelte";
+import MutationStatus from "$lib/ui-ux/MutationStatus.svelte";
+import { archivedToastMessage } from "$lib/ui-ux/archive.ts";
+import { createMutationController } from "$lib/ui-ux/mutationState.ts";
+import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
+import type { MutationSnapshot } from "$lib/ui-ux/mutationState.ts";
 import {
   Pencil,
   Map as MapIcon,
@@ -332,6 +347,16 @@ let assets = $state<Asset[]>([]);
 let assetBusyId = $state<string | null>(null);
 let assetDialog = $state<Asset | null>(null);
 let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
+let entityMutationSnapshot = $state<MutationSnapshot>({ phase: "idle", message: "", detail: "" });
+const entityMutation = createMutationController({
+  get: () => entityMutationSnapshot,
+  set: (next) => {
+    entityMutationSnapshot = next;
+  },
+});
+type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
+let lifecycleToast = $state<LifecycleToast | null>(null);
+let lifecycleToastTimer = 0;
 let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
@@ -663,6 +688,19 @@ let dateCalendarByField = $state<Record<string, string>>({});
 const toastDurationMs = 3500;
 function showToast(message: string) {
   error = message;
+}
+function showLifecycleToast(toast: LifecycleToast) {
+  if (lifecycleToastTimer) window.clearTimeout(lifecycleToastTimer);
+  lifecycleToast = toast;
+  lifecycleToastTimer = window.setTimeout(() => {
+    lifecycleToast = null;
+    lifecycleToastTimer = 0;
+  }, toastDurationMs);
+}
+function dismissLifecycleToast() {
+  if (lifecycleToastTimer) window.clearTimeout(lifecycleToastTimer);
+  lifecycleToastTimer = 0;
+  lifecycleToast = null;
 }
 $effect(() => {
   if (!error) return;
@@ -4457,6 +4495,32 @@ function openFocusedCreate(optionKey?: string, initialName = "") {
   else activate();
 }
 
+function createOptionKeyForEntityType(entityType: string) {
+  return (
+    createOptions().find((option) => option.template.entityType === entityType)?.key ??
+    createOptions().find((option) => option.template.entityType.endsWith(`:${entityType.split(":").at(-1)}`))?.key ??
+    null
+  );
+}
+
+function openNewPerson() {
+  const key = createOptionKeyForEntityType(PERSON_TYPE);
+  if (!key) {
+    error = "Enable Lore with a Person template to create people.";
+    return;
+  }
+  openFocusedCreate(key);
+}
+
+function openNewHouse() {
+  const key = createOptionKeyForEntityType(HOUSE_TYPE) ?? createOptionKeyForEntityType("house");
+  if (!key) {
+    error = "Enable Houses with a House template to create houses.";
+    return;
+  }
+  openFocusedCreate(key);
+}
+
 function openCreationMenu() {
   const options = createOptions();
   if (options.length === 0) {
@@ -4470,6 +4534,10 @@ function openCreationMenu() {
 }
 
 function openContextualCreate() {
+  if (section === "houses" && housesView === "tree") {
+    openNewPerson();
+    return;
+  }
   const options = createOptions();
   if (options.length === 0) {
     error = "Enable a module with a creation template to get started.";
@@ -4819,21 +4887,44 @@ async function saveDocument(): Promise<boolean> {
   saveQueued = false;
   return shouldSaveQueuedChanges ? saveDocument() : result;
 }
-async function openEntityEditDialog() {
+async function openEntityEditDialog(target: Entity | null = selected) {
   if (projectDiagnostics.length > 0) return;
-  if (!selected) return;
-  if (!(await flushAutoSave())) return;
+  if (!target) return;
+  if (selected?.id === target.id) {
+    if (!(await flushAutoSave())) return;
+  } else {
+    await selectEntity(target);
+    if (!(await flushAutoSave())) return;
+  }
   try {
     await loadEntities();
   } catch {}
-  const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
+  const current = entities.find((entity) => entity.id === target.id) ?? selected ?? target;
   entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
-  // Focus name field after mount
+  entityMutation.reset();
   setTimeout(() => document.getElementById("entity-edit-name")?.focus(), 0);
 }
 function closeEntityEditDialog() {
   entityEditDialog = null;
+  entityMutation.reset();
+  clearSavedMutationTimer();
 }
+
+let savedMutationTimer: ReturnType<typeof setTimeout> | null = null;
+function clearSavedMutationTimer() {
+  if (savedMutationTimer) {
+    clearTimeout(savedMutationTimer);
+    savedMutationTimer = null;
+  }
+}
+function scheduleClearSavedMutation() {
+  clearSavedMutationTimer();
+  savedMutationTimer = setTimeout(() => {
+    savedMutationTimer = null;
+    if (entityMutation.phase === "saved") entityMutation.reset();
+  }, 1800);
+}
+
 async function saveEntityEditDialog() {
   if (!entityEditDialog) return;
   const trimmed = entityEditDialog.name.trim();
@@ -4858,67 +4949,131 @@ async function saveEntityEditDialog() {
       error = "The entity revision is unavailable. Reload the project and try again.";
       return;
     }
-    // use refreshed for save
     entityEditDialog.entity = refreshed;
   }
   const target = entities.find((e) => e.id === current.id) ?? fresh;
   entityEditDialog.busy = true;
-  try {
-    const updated = await project.updateEntity(
+  const result = await entityMutation.run(async () => {
+    return project.updateEntity(
       target.id,
       nameChanged ? trimmed : null,
-      typeChanged ? (entityEditDialog.entityType ?? null) : null,
+      typeChanged ? (entityEditDialog!.entityType ?? null) : null,
       { expectedRevision: target.revision },
     );
-    entities = entities.map((entity) => (entity.id === updated.id ? updated : entity));
-    selected = updated;
-    // Move section if type changed to a different workspace
-    if (typeChanged) {
-      const newSection = sectionForEntityType(updated.entity_type);
-      if (newSection && newSection !== section) section = newSection;
-      applyCollectionTabForEntityType(updated.entity_type);
-      await loadSelectedState(updated);
-    } else {
-      // Name-only change keeps inspector but refreshes collection
-      await loadSelectedState(updated).catch(() => {});
-    }
-    closeEntityEditDialog();
-  } catch (cause) {
-    error = friendlyError(cause);
-  } finally {
+  }, trimmed);
+  if (!result.ok) {
+    error = friendlyError(result.error);
     if (entityEditDialog) entityEditDialog.busy = false;
+    return;
   }
+  const updated = result.value;
+  entities = entities.map((entity) => (entity.id === updated.id ? updated : entity));
+  selected = updated;
+  if (typeChanged) {
+    const newSection = sectionForEntityType(updated.entity_type);
+    if (newSection && newSection !== section) section = newSection;
+    applyCollectionTabForEntityType(updated.entity_type);
+    await loadSelectedState(updated);
+  } else {
+    await loadSelectedState(updated).catch(() => {});
+  }
+  // Keep Saved chrome in the editor footer briefly; cancel path still resets via closeEntityEditDialog.
+  entityEditDialog = null;
+  scheduleClearSavedMutation();
 }
 async function renameSelected() {
   return openEntityEditDialog();
 }
 
-async function archiveSelected() {
+async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; returnFocus?: HTMLElement | null }) {
   if (projectDiagnostics.length > 0) return;
-  if (!(await flushAutoSave())) return;
-  if (
-    !selected ||
-    !(await confirmDialog({
-      title: `Archive ${selected.name}?`,
-      message: `${selected.name} will be archived and hidden from the workspace.`,
-      confirmLabel: "Archive",
-      danger: true,
-    }))
-  )
+  if (selected?.id === target.id && !(await flushAutoSave())) return;
+  const owning = contextOwningEntityType(target.entity_type ?? "");
+  const result = await entityMutation.run(async () => {
+    await loadEntities();
+    const current = entities.find((entity) => entity.id === target.id) ?? target;
+    if (!current.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+    await owning.entities.delete(current.id as UUID, { expectedRevision: current.revision });
+    return current.name;
+  }, target.name);
+  if (!result.ok) {
+    error = friendlyError(result.error);
+    queueMicrotask(() => options?.returnFocus?.focus());
     return;
+  }
+  // Toast is the success signal for archive; do not leave a lingering Saved chrome.
+  entityMutation.reset();
+  const wasSelected = selected?.id === target.id;
+  if (wasSelected) clearSelection();
+  await loadEntities();
+  await refreshArchivedCount();
+  showLifecycleToast({
+    message: archivedToastMessage(result.value),
+    actionLabel: ENTITY_ACTIONS.viewArchive,
+    onAction: () => {
+      dismissLifecycleToast();
+      void openProjectCenter("archive");
+    },
+  });
+  await tick();
+  const nextFocus =
+    options?.returnFocus && document.contains(options.returnFocus)
+      ? options.returnFocus
+      : (collectionListElement?.querySelector<HTMLElement>(".collection-item-main, .row-actions-trigger") ??
+        collectionPaneElement?.querySelector<HTMLElement>("button, [href], input") ??
+        null);
+  nextFocus?.focus();
+}
+
+async function archiveSelected() {
+  if (!selected) return;
+  return archiveEntity(selected, {
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  });
+}
+
+async function reloadEntityEditFromServer() {
+  if (!entityEditDialog) return;
   try {
-    await loadEntities();
-    const current = entities.find((entity) => entity.id === selected?.id);
-    if (!current?.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
-    await contextOwningEntityType(current.entity_type ?? "").entities.delete(current.id as UUID, {
-      expectedRevision: current.revision,
-    });
-    clearSelection();
-    await loadEntities();
-    await refreshArchivedCount();
+    const loaded = await project.getEntity(entityEditDialog.entity.id);
+    if (!loaded || loaded.deleted) {
+      error = "This entry is no longer available.";
+      closeEntityEditDialog();
+      return;
+    }
+    entities = entities.map((entity) => (entity.id === loaded.id ? loaded : entity));
+    if (selected?.id === loaded.id) selected = loaded;
+    entityEditDialog = {
+      entity: loaded,
+      name: loaded.name,
+      entityType: loaded.entity_type,
+      busy: false,
+    };
+    entityMutation.reset();
   } catch (cause) {
     error = friendlyError(cause);
   }
+}
+
+async function openHouseTree(entity: Entity) {
+  if (entity.entity_type !== HOUSE_TYPE) return;
+  if (!(await flushAutoSave())) return;
+  const departure = currentShellLocation();
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
+  section = "houses";
+  housesView = "tree";
+  familyTreeRootId = entity.id;
+  familyTreeSession = {
+    expansions: [],
+    selectedPersonId: null,
+    selectedRelationshipId: null,
+    viewport: null,
+    houseId: entity.id,
+  };
+  familyTreeRestoreNonce += 1;
+  clearSelection();
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
   if (!selected || !definition.relationshipType) return [];
@@ -5993,7 +6148,8 @@ onMount(() => {
       else openQuickOpen();
     } else if (key === "n" && !quickOpenOpen && !showCreateForm && !entityEditDialog && !showExternalImport) {
       event.preventDefault();
-      openContextualCreate();
+      // Global New (⌘/Ctrl+N) opens the full template gallery.
+      openCreationMenu();
     }
   };
   const handleWorkbenchResize = () => {
@@ -7049,6 +7205,8 @@ onMount(() => {
           initialSession={familyTreeSession}
           restoreNonce={familyTreeRestoreNonce}
           avatar={familyTreeAvatar}
+          onNewPerson={openNewPerson}
+          onNewHouse={openNewHouse}
           onRootChange={(id) => {
             if (id === familyTreeRootId) return;
             recordShellDeparture(currentShellLocation());
@@ -7131,13 +7289,28 @@ onMount(() => {
                       ></span>
                   </div>
                 </div>{/if}
-            </div>{/if}
+            </div>
+          {:else if section === "houses"}
+            <div class="heading-create-group" role="group" aria-label="Create">
+              <button class="primary-button" type="button" aria-label={ENTITY_ACTIONS.newHouse} onclick={openNewHouse}
+                >{ENTITY_ACTIONS.newHouse}</button>
+            </div>
+          {:else}
+            <button
+              class="primary-button"
+              type="button"
+              aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
+              onclick={openContextualCreate}
+              ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                ><Plus size={14} strokeWidth={1.8} /></span>
+              {ENTITY_ACTIONS.new}</button>
+          {/if}
         {/snippet}
         <WorkspaceHeader
           kicker={workspaceHeadingKicker()}
           title={sectionLabel()}
           description={workspaceHeadingDescription()}
-          actions={section === "maps" ? workspaceHeaderActions : undefined} />
+          actions={workspaceHeaderActions} />
         <nav class="workbench-layout-controls" aria-label="Workbench panes">
           <span>Layout</span><button
             type="button"
@@ -7238,69 +7411,74 @@ onMount(() => {
           {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
           {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
               Loading {collectionLabel()}…
-            </div>{:else if collectionResult().total === 0}<div class="list-empty" role="status">
-              <span class="empty-mark" aria-hidden="true">✦</span><strong
-                >{collectionQuery.textSearch
+            </div>{:else if collectionResult().total === 0}
+            {#if section === "maps"}
+              <EntityEmptyState
+                title={collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
-                  : `No ${collectionLabel()} yet.`}</strong>
-              <p>
-                {collectionQuery.textSearch
+                  : `No ${collectionLabel()} yet.`}
+                message={collectionQuery.textSearch
                   ? "Try another search or create something new."
-                  : section === "maps"
-                    ? "Create a map through an installed map integration."
-                    : `Create your first ${createLabel()} to begin building this collection.`}
-              </p>
-              {#if section === "maps"}<div class="empty-create-actions">
-                  <button
-                    class="empty-create"
-                    type="button"
-                    aria-haspopup="menu"
-                    aria-expanded={mapProviderMenuOpen === "empty"}
-                    onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
-                    ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                      ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
-                  {#if mapProviderMenuOpen === "empty"}<div
-                      class="map-provider-menu empty-map-provider-menu"
-                      role="menu">
-                      <div class="map-provider-row">
-                        <button type="button" role="menuitem" onclick={() => void createMap("physical")}
-                          >Generate physical world</button
-                        ><span class="map-help-wrapper"
-                          ><button type="button" class="map-help" aria-label="Help for Generate physical world"
-                            >?</button
-                          ><span class="map-help-tooltip" role="tooltip"
-                            >Create a whole world from scratch — continents, oceans, climate and hazards are generated.
-                            The base world can't be edited directly; copy any part you want to change into an editable
-                            layer.</span
-                          ></span>
-                      </div>
-                      <div class="map-provider-row">
-                        <button type="button" role="menuitem" onclick={() => void createMap("vector")}
-                          >Import vector map</button
-                        ><span class="map-help-wrapper"
-                          ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
-                          ><span class="map-help-tooltip" role="tooltip"
-                            >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
-                          ></span>
-                      </div>
-                      <div class="map-provider-row">
-                        <button type="button" role="menuitem" onclick={() => void createMap("image")}
-                          >Import image map</button
-                        ><span class="map-help-wrapper"
-                          ><button type="button" class="map-help" aria-label="Help for Import image map">?</button><span
-                            class="map-help-tooltip"
-                            role="tooltip"
-                            >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
-                          ></span>
-                      </div>
-                    </div>{/if}
-                </div>
-              {:else}<button class="empty-create" type="button" onclick={openContextualCreate}
-                  ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
-                    ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span>
-                  Create {createLabel()}</button
-                >{/if}
-            </div>{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
+                  : "Create a map through an installed map integration."}
+                maps>
+                {#snippet actions()}
+                  <div class="empty-create-actions">
+                    <button
+                      class="empty-create"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={mapProviderMenuOpen === "empty"}
+                      onclick={() => (mapProviderMenuOpen = mapProviderMenuOpen === "empty" ? null : "empty")}
+                      ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                        ><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span> Create map</button>
+                    {#if mapProviderMenuOpen === "empty"}<div
+                        class="map-provider-menu empty-map-provider-menu"
+                        role="menu">
+                        <div class="map-provider-row">
+                          <button type="button" role="menuitem" onclick={() => void createMap("physical")}
+                            >Generate physical world</button
+                          ><span class="map-help-wrapper"
+                            ><button type="button" class="map-help" aria-label="Help for Generate physical world"
+                              >?</button
+                            ><span class="map-help-tooltip" role="tooltip"
+                              >Create a whole world from scratch — continents, oceans, climate and hazards are
+                              generated. The base world can't be edited directly; copy any part you want to change into
+                              an editable layer.</span
+                            ></span>
+                        </div>
+                        <div class="map-provider-row">
+                          <button type="button" role="menuitem" onclick={() => void createMap("vector")}
+                            >Import vector map</button
+                          ><span class="map-help-wrapper"
+                            ><button type="button" class="map-help" aria-label="Help for Import vector map">?</button
+                            ><span class="map-help-tooltip" role="tooltip"
+                              >Import a GeoJSON file. Draw places, borders and routes as shapes you can edit.</span
+                            ></span>
+                        </div>
+                        <div class="map-provider-row">
+                          <button type="button" role="menuitem" onclick={() => void createMap("image")}
+                            >Import image map</button
+                          ><span class="map-help-wrapper"
+                            ><button type="button" class="map-help" aria-label="Help for Import image map">?</button
+                            ><span class="map-help-tooltip" role="tooltip"
+                              >Use any picture (PNG, JPG, SVG) as a background and draw your map on top of it.</span
+                            ></span>
+                        </div>
+                      </div>{/if}
+                  </div>
+                {/snippet}
+              </EntityEmptyState>
+            {:else}
+              <EntityEmptyState
+                title={collectionQuery.textSearch
+                  ? `No ${collectionLabel()} match that search.`
+                  : `No ${collectionLabel()} yet.`}
+                message={collectionQuery.textSearch
+                  ? "Try another search or create something new."
+                  : `Create your first ${createLabel()} to begin building this collection.`}
+                createLabel={createLabel()}
+                onCreate={openContextualCreate} />
+            {/if}{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
                 iconForEntityType(group.type === "__uncategorized" ? null : group.type)}
               <div class="collection-group">
                 <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
@@ -7319,38 +7497,46 @@ onMount(() => {
                     size={16}
                     box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
                 >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
-                      iconForEntityType(entity.entity_type)}<button
-                      class:selected={selected?.id === entity.id}
-                      class="collection-item"
-                      onclick={() => selectEntity(entity)}
-                      ><EntityGlyph
-                        icon={rowIcon.icon}
-                        iconColor={rowIcon.iconColor}
-                        pluginId={rowIcon.pluginId}
-                        size={16}
-                        box={40} /><span class="item-copy"
-                        ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                      ><span class="item-arrow" aria-hidden="true"
-                        ><ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" /></span
-                      ></button
-                    >{/each}{/if}
+                      iconForEntityType(entity.entity_type)}
+                    <div class:selected={selected?.id === entity.id} class="collection-item">
+                      <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                        <EntityGlyph
+                          icon={rowIcon.icon}
+                          iconColor={rowIcon.iconColor}
+                          pluginId={rowIcon.pluginId}
+                          size={16}
+                          box={40} /><span class="item-copy"
+                          ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
+                      </button>
+                      <EntityRowActions
+                        entityName={entity.name}
+                        openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
+                        onOpen={() => void selectEntity(entity)}
+                        onEditIdentity={() => void openEntityEditDialog(entity)}
+                        onArchive={() => void archiveEntity(entity)}
+                        onOpenTree={() => void openHouseTree(entity)} />
+                    </div>{/each}{/if}
               </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
                 entity.entity_type,
-              )}<button
-                class:selected={selected?.id === entity.id}
-                class="collection-item"
-                onclick={() => selectEntity(entity)}
-                ><EntityGlyph
-                  icon={rowIcon.icon}
-                  iconColor={rowIcon.iconColor}
-                  pluginId={rowIcon.pluginId}
-                  size={16}
-                  box={40} /><span class="item-copy"
-                  ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span
-                ><span class="item-arrow" aria-hidden="true"
-                  ><ChevronRight size={16} strokeWidth={1.8} aria-hidden="true" /></span
-                ></button
-              >{/each}{/if}
+              )}
+              <div class:selected={selected?.id === entity.id} class="collection-item">
+                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                  <EntityGlyph
+                    icon={rowIcon.icon}
+                    iconColor={rowIcon.iconColor}
+                    pluginId={rowIcon.pluginId}
+                    size={16}
+                    box={40} /><span class="item-copy"
+                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
+                </button>
+                <EntityRowActions
+                  entityName={entity.name}
+                  openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
+                  onOpen={() => void selectEntity(entity)}
+                  onEditIdentity={() => void openEntityEditDialog(entity)}
+                  onArchive={() => void archiveEntity(entity)}
+                  onOpenTree={() => void openHouseTree(entity)} />
+              </div>{/each}{/if}
         {/snippet}
         {#snippet collectionFooter()}
           {#if collectionResult().total > 0}<nav class="collection-pagination" aria-label="Collection pages">
@@ -7514,8 +7700,8 @@ onMount(() => {
                     {#if selected}<button
                         class="quiet-button editor-rename-button"
                         type="button"
-                        aria-label={`Edit ${selected.name}`}
-                        title="Edit name and type"
+                        aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
+                        title={ENTITY_ACTIONS.editIdentity}
                         onclick={() => void openEntityEditDialog()}
                         ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button
                       >{/if}
@@ -7717,9 +7903,23 @@ onMount(() => {
                     {/key}
                   {/if}
                   <div class="editor-footer">
-                    <div></div>
                     <div>
-                      <button class="quiet-button" disabled={selectedLoading} onclick={archiveSelected}>Archive</button>
+                      {#if entityMutation.phase !== "idle"}
+                        <MutationStatus
+                          snapshot={entityMutation.snapshot}
+                          onRetry={() => void archiveSelected()}
+                          onReload={() => void reloadEntityEditFromServer()}
+                          onReviewDraft={() => entityMutation.reset()} />
+                      {/if}
+                    </div>
+                    <div>
+                      {#if selected}
+                        <EntityArchiveAction
+                          entityName={selected.name}
+                          busy={entityMutation.busy}
+                          disabled={selectedLoading || projectDiagnostics.length > 0}
+                          onArchive={() => void archiveSelected()} />
+                      {/if}
                     </div>
                   </div>
                 {/if}
@@ -8122,13 +8322,22 @@ onMount(() => {
         {error}<button aria-label="Dismiss" onclick={() => (error = "")}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
+    {#if lifecycleToast}<div class="toast lifecycle-toast" role="status" aria-live="polite">
+        <span>{lifecycleToast.message}</span>
+        {#if lifecycleToast.actionLabel && lifecycleToast.onAction}
+          <button type="button" class="toast-action" onclick={() => lifecycleToast?.onAction?.()}
+            >{lifecycleToast.actionLabel}</button>
+        {/if}
+        <button aria-label="Dismiss" onclick={dismissLifecycleToast}
+          ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+      </div>{/if}
   </section>
   {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
     <button
       class="mobile-create-button"
-      aria-label="New entry"
+      aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
       aria-expanded={showCreateForm}
-      onclick={toggleCreateForm}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
+      onclick={openContextualCreate}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
 </main>
 {#if metadataDialog}
@@ -8161,87 +8370,33 @@ onMount(() => {
     onClose={() => (showExternalImport = false)} />
 {/if}
 {#if entityEditDialog}
-  {@const edit = entityEditDialog}
-  {@const warning = editTypeWarning()}
-  <div
-    class="modal-backdrop"
-    role="presentation"
-    onclick={() => {
-      if (!edit.busy) closeEntityEditDialog();
+  <EntityIdentityDialog
+    entityName={entityEditDialog.entity.name}
+    bind:name={entityEditDialog.name}
+    bind:entityType={entityEditDialog.entityType}
+    originalType={entityEditDialog.entity.entity_type}
+    typeGroups={groupedEditTypes()}
+    typeLabel={entityTypeLabel}
+    workspaceLabel={(type) => {
+      const owner = sectionForEntityType(type);
+      if (owner) return workspaceSectionLabel(owner);
+      return type ? "Other" : "Uncategorized";
     }}
-    onkeydown={(e) => {
-      if (e.key === "Escape" && !edit.busy) closeEntityEditDialog();
-    }}
-    tabindex="-1">
-    <div
-      class="dialog entity-edit-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="entity-edit-title"
-      tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}>
-      <div class="new-form-heading">
-        <div>
-          <span class="panel-kicker">EDIT ENTRY</span><strong id="entity-edit-title">Edit {edit.entity.name}</strong>
-        </div>
-        <button
-          type="button"
-          class="new-form-close"
-          aria-label="Close edit dialog"
-          onclick={closeEntityEditDialog}
-          disabled={edit.busy}><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
-      </div>
-      <p class="dialog-body-copy">
-        Change the name and type. The stable ID stays the same, so links and assets follow.
-      </p>
-      <label class="create-input-field" for="entity-edit-name"
-        ><span>Name</span><input
-          id="entity-edit-name"
-          type="text"
-          bind:value={edit.name}
-          placeholder="Entity name"
-          disabled={edit.busy}
-          onkeydown={(e) => {
-            if (e.key === "Enter" && !edit.busy && edit.name.trim()) void saveEntityEditDialog();
-            if (e.key === "Escape" && !edit.busy) closeEntityEditDialog();
-          }} /></label>
-      <label class="create-input-field" for="entity-edit-type"
-        ><span>Type</span><select
-          id="entity-edit-type"
-          class="entity-edit-select"
-          bind:value={edit.entityType}
-          disabled={edit.busy}
-          aria-label="Entity type">
-          {#if edit.entity.entity_type == null}<option value={null}>Uncategorized — no template</option>{/if}
-          {#each groupedEditTypes() as group}
-            <optgroup label={group.heading.toUpperCase()}>
-              {#each group.types as t}<option value={t}>{entityTypeLabel(t)}</option>{/each}
-            </optgroup>
-          {/each}
-        </select>
-        <small class="field-hint"
-          >Workspace: {sectionForEntityType(edit.entityType)
-            ? workspaceSectionLabel(sectionForEntityType(edit.entityType)!)
-            : edit.entityType
-              ? "Other"
-              : "Uncategorized"}</small
-        ></label>
-      {#if warning}<p class="plugin-warning entity-edit-warning" role="note">{warning}</p>{/if}
-      <div class="new-form-actions">
-        <button type="button" class="quiet-button" onclick={closeEntityEditDialog} disabled={edit.busy}>Cancel</button>
-        <button
-          type="button"
-          class="primary-button"
-          onclick={() => void saveEntityEditDialog()}
-          disabled={edit.busy ||
-            !edit.name.trim() ||
-            (edit.name.trim() === edit.entity.name && (edit.entityType ?? null) === (edit.entity.entity_type ?? null))}>
-          {edit.busy ? "Saving…" : "Save"}
-        </button>
-      </div>
-    </div>
-  </div>
+    warning={editTypeWarning()}
+    busy={entityEditDialog.busy || entityMutation.busy}
+    allowUncategorized={entityEditDialog.entity.entity_type == null}
+    onSave={() => void saveEntityEditDialog()}
+    onClose={closeEntityEditDialog}>
+    {#snippet mutation()}
+      {#if entityMutation.phase === "conflict" || entityMutation.phase === "failed" || entityMutation.phase === "saving"}
+        <MutationStatus
+          snapshot={entityMutation.snapshot}
+          onRetry={() => void saveEntityEditDialog()}
+          onReload={() => void reloadEntityEditFromServer()}
+          onReviewDraft={() => entityMutation.reset()} />
+      {/if}
+    {/snippet}
+  </EntityIdentityDialog>
 {/if}
 <DialogHost />
 
@@ -9609,7 +9764,10 @@ onMount(() => {
   right: 24px;
   bottom: 24px;
   z-index: 60;
+  display: flex;
   max-width: 430px;
+  align-items: center;
+  gap: 8px;
   padding: 13px 14px;
   border: 1px solid var(--theme-warning-border, #e5d4ba);
   border-radius: 9px;
@@ -9618,13 +9776,27 @@ onMount(() => {
   color: var(--theme-warning-text, #765a39);
   font-size: 12px;
 }
+.lifecycle-toast {
+  border-color: var(--success-line);
+  background: var(--success-bg);
+  color: var(--success);
+}
 .toast button {
-  margin-left: 10px;
+  margin-left: 0;
   border: 0;
   background: none;
   color: inherit;
   cursor: pointer;
   font-size: 17px;
+}
+.toast .toast-action {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid currentColor;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 650;
 }
 @media (max-width: 1180px) {
   .workspace-grid {
@@ -9968,13 +10140,13 @@ onMount(() => {
 .collection-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 4px;
   width: 100%;
   height: 58px;
   min-height: 58px;
   max-height: 58px;
   margin: 0;
-  padding: 9px 10px;
+  padding: 4px 6px 4px 4px;
   overflow: hidden;
   border: 1px solid var(--theme-warning-border, #ebe7de);
   border-radius: 9px;
@@ -9984,7 +10156,26 @@ onMount(() => {
   line-height: 1.2;
   text-align: left;
   text-decoration: none;
+}
+.collection-item-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  height: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+}
+.collection-item-main:focus-visible {
+  outline: 3px solid rgba(180, 119, 63, 0.25);
+  outline-offset: 0;
 }
 .collection-item:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.25);
@@ -10022,19 +10213,6 @@ onMount(() => {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
-}
-.collection-item .item-arrow {
-  flex: 0 0 10px;
-  width: 10px;
-  margin-left: auto;
-  color: var(--theme-warning-text, #c3b6a4);
-  font-size: 18px;
-  line-height: 1;
-  text-align: right;
-}
-.collection-item:hover .item-arrow,
-.collection-item.selected .item-arrow {
-  color: var(--accent);
 }
 .new-form-heading {
   display: flex;

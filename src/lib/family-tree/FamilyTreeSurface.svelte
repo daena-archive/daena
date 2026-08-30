@@ -2,8 +2,9 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
+import { ArrowLeft, Maximize2, Plus, RotateCcw, Settings2, UserPlus, UsersRound } from "@lucide/svelte";
 import { promptDialog } from "$lib/dialogs.svelte";
+import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
 import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
@@ -73,6 +74,8 @@ let {
   onOpenEntity,
   onRootChange,
   onSessionChange,
+  onNewPerson,
+  onNewHouse,
 }: {
   context: ModuleContext;
   projectId: string;
@@ -83,6 +86,8 @@ let {
   onOpenEntity: (entityId: string) => void;
   onRootChange?: (rootId: string | null) => void;
   onSessionChange?: (session: FamilyTreeSession | null) => void;
+  onNewPerson?: () => void;
+  onNewHouse?: () => void;
 } = $props();
 
 let rootId = $state<string | null>(null);
@@ -871,11 +876,25 @@ function applyRelationshipDelete(id: string) {
                       : "99+"}).</small>
                 {/if}
               </div>
-              <button type="button" class="quiet-button pill" onclick={() => void createHouseFromToolbar()}
-                >New house</button>
             </div>
           {/if}
         </div>
+        {#if onNewPerson || onNewHouse}
+          <div class="family-topbar-create" role="group" aria-label="Create">
+            {#if onNewPerson}
+              <button type="button" class="workspace-topbar-action" onclick={() => onNewPerson?.()}>
+                <UserPlus size={14} strokeWidth={1.8} aria-hidden="true" />
+                {ENTITY_ACTIONS.newPerson}
+              </button>
+            {/if}
+            {#if onNewHouse}
+              <button type="button" class="workspace-topbar-action" onclick={() => onNewHouse?.()}>
+                <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
+                {ENTITY_ACTIONS.newHouse}
+              </button>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -933,7 +952,13 @@ function applyRelationshipDelete(id: string) {
 
   <div class="family-body">
     {#if !rootId}
-      <FamilyTreeLanding {context} {avatar} onSelect={selectRoot} onSelectHouse={selectHouse} />
+      <FamilyTreeLanding
+        {context}
+        {avatar}
+        onSelect={selectRoot}
+        onSelectHouse={selectHouse}
+        {onNewPerson}
+        {onNewHouse} />
     {:else if loading && !positioned}
       <WorkbenchState
         kind="loading"
@@ -1157,6 +1182,12 @@ function applyRelationshipDelete(id: string) {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+.family-topbar-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 /* Sub-bar — sticky like WorkspaceViewNav */
 .family-subbar {

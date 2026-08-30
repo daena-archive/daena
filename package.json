@@ -46,7 +46,9 @@
     "test:plugins": "npm run check:plugin-contract && npm run check:manifest-fixtures && npm run check:plugin-isolation && npm run test:plugin-conformance && npm run test:plugin-declarative && npm run test:plugin-cli && npm run test:plugin-transport",
     "test:shell": "node --experimental-strip-types scripts/navigation-history.test.mjs && node --experimental-strip-types scripts/quick-open.test.mjs && node scripts/shell-ui.test.mjs",
     "test:theme": "node --experimental-strip-types scripts/theme.test.mjs",
-    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:family-tree && npm run test:git-ui"
+    "test:ui-ux-slice0": "node --experimental-strip-types scripts/ui-ux-slice0.test.mjs",
+    "test:entity-lifecycle": "node --experimental-strip-types scripts/entity-lifecycle.test.mjs",
+    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:family-tree && npm run test:git-ui && npm run test:ui-ux-slice0 && npm run test:entity-lifecycle"
   },
   "license": "Apache-2.0",
   "dependencies": {

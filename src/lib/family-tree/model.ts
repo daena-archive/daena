@@ -1,7 +1,7 @@
 import type { CalendarDate } from "$lib/date.ts";
 
 export const PERSON_TYPE = "daena.lore:person";
-export const HOUSE_TYPE = "daena.family-tree:house";
+export const HOUSE_TYPE = "daena.houses:house";
 export const PARENT_RELATIONSHIP = "family_parent_of";
 export const PARTNER_RELATIONSHIP = "family_partner_with";
 export const MEMBERSHIP_RELATIONSHIP = "family_member_of";
@@ -160,6 +160,7 @@ export interface FamilyTreeSession {
   selectedPersonId: string | null;
   selectedRelationshipId: string | null;
   viewport?: FamilyViewport | null;
+  houseId?: string | null;
 }
 
 export interface FamilyPerson {
@@ -301,6 +302,7 @@ export function familyTreeHistoryKey(session: FamilyTreeSession | null | undefin
     expansions: session.expansions,
     selectedPersonId: session.selectedPersonId ?? null,
     selectedRelationshipId: session.selectedRelationshipId ?? null,
+    houseId: session.houseId ?? null,
   });
 }
 

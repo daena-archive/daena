@@ -2,13 +2,14 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
+import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
 import { promptDialog } from "$lib/dialogs.svelte";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
 import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
 import FamilyRelationshipPanel from "./FamilyRelationshipPanel.svelte";
 import FamilyRootPicker from "./FamilyRootPicker.svelte";
+import FamilyTreeLanding from "./FamilyTreeLanding.svelte";
 import FamilyTreeCanvas from "./FamilyTreeCanvas.svelte";
 import {
   isNeighborhoodAbort,
@@ -17,6 +18,7 @@ import {
   loadExpansionLayer,
   loadGenealogyNeighborhood,
   loadHouseMemberships,
+  loadHouseNeighborhood,
 } from "./fetch.ts";
 import { requestElkLayout, terminateElkLayout } from "./elk.ts";
 import { buildElkGraph, LayoutGeneration, placeUnions, positionedFromElk } from "./layout";
@@ -116,7 +118,8 @@ let rawPeople: FamilyPerson[] = [];
 let rawRelationships: Relationship[] = [];
 let collected = new Map<string, Relationship>();
 let houses = $state<{ id: string; name: string }[]>([]);
-let houseFilterId = $state<string | null>(null);
+let houseId = $state<string | null>(null);
+let houseName = $state("");
 let memberships = $state<Map<string, { houseId: string; houseName: string }[]>>(new Map());
 
 const graph = $derived(normalizeGenealogy(rawPeople, rawRelationships).graph);
@@ -126,7 +129,8 @@ const selectedRelationship = $derived(
 const selectedPerson = $derived(selectedPersonId ? (people.get(selectedPersonId) ?? null) : null);
 const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson));
 const subtitle = $derived.by(() => {
-  if (!rootId) return "Choose a Lore person to explore their family neighborhood.";
+  if (!rootId) return "Choose a person or house to explore a family neighborhood.";
+  if (houseId) return houseName ? `${houseName} · ${people.size} members` : `${people.size} members`;
   const parts: string[] = [`${people.size} in view`];
   if (truncated) parts.push(`truncated ${truncationLowerBound ? `(${truncationLowerBound}+)` : ""}`.trim());
   if (warnings.length) parts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
@@ -183,23 +187,6 @@ const housesByPerson = $derived.by(() => {
   }
   return map;
 });
-const houseFilterIdsByPerson = $derived.by(() => {
-  const map = new Map<string, string[]>();
-  for (const [personId, entries] of memberships) {
-    map.set(
-      personId,
-      entries.map((entry) => entry.houseId),
-    );
-  }
-  return map;
-});
-const houseCounts = $derived.by(() => {
-  const counts = new Map<string, number>();
-  for (const entries of memberships.values()) {
-    for (const entry of entries) counts.set(entry.houseId, (counts.get(entry.houseId) ?? 0) + 1);
-  }
-  return counts;
-});
 const expandedByPerson = $derived.by(() => {
   const map = new Map<string, Record<BranchDirection, boolean>>();
   for (const id of people.keys()) {
@@ -253,15 +240,9 @@ async function createHouseFromToolbar() {
     }
     await refreshHouses();
     await refreshMemberships([...people.keys()]);
-    houseFilterId = created.id;
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
-}
-
-function onHouseFilterChange(event: Event) {
-  const value = (event.currentTarget as HTMLSelectElement).value;
-  houseFilterId = value || null;
 }
 
 function cancelLoad() {
@@ -304,7 +285,9 @@ function mergeRecords(nextPeople: FamilyPerson[], nextRelationships: Relationshi
 function applyVisible(nextExpansions: string[], fit: boolean, protect: string[] = []) {
   if (!rootId) return false;
   const { graph: nextGraph, warnings: graphWarnings } = normalizeGenealogy(rawPeople, rawRelationships);
-  const { visible } = visibleFromExpansions(nextGraph, rootId, nextExpansions, protect);
+  const { visible } = houseId
+    ? { visible: new Set(nextGraph.people.keys()) }
+    : visibleFromExpansions(nextGraph, rootId, nextExpansions, protect);
   const candidate = buildLayoutGraph(nextGraph, visible);
   if (wouldExceedVisibleLimit(visible.size, limits.visiblePersonLimit) || layoutGraphExceedsLimits(candidate, limits)) {
     error = BRANCH_TOO_LARGE;
@@ -395,6 +378,8 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
     rootId = id;
     selectedPersonId = restored ? (initialSession?.selectedPersonId ?? id) : id;
     selectedRelationshipId = restored ? (initialSession?.selectedRelationshipId ?? null) : null;
+    houseId = null;
+    houseName = "";
     rememberRecentRoot(projectId, id);
     onRootChange?.(id);
     void refreshRecent();
@@ -416,9 +401,84 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
   }
 }
 
+async function loadHouse(id: string, fit = true, restored = false, name = "") {
+  cancelLoad();
+  abort = new AbortController();
+  const signal = abort.signal;
+  loading = true;
+  error = "";
+  layoutFailed = false;
+  try {
+    let resolvedName = name || houses.find((house) => house.id === id)?.name || "";
+    if (!resolvedName) {
+      try {
+        const entity = await context.entities.get(id as UUID);
+        if (entity && !entity.deleted) resolvedName = entity.name;
+      } catch {
+        resolvedName = "";
+      }
+    }
+    const loaded = await loadHouseNeighborhood(context, id, secondaryField, signal);
+    if (signal.aborted) return;
+    collected = new Map(loaded.relationships.map((relationship) => [relationship.id, relationship]));
+    rawPeople = loaded.people;
+    rawRelationships = loaded.relationships;
+    truncated = loaded.truncated;
+    truncationLowerBound = loaded.truncationLowerBound;
+    const { graph: nextGraph, warnings: graphWarnings } = normalizeGenealogy(loaded.people, loaded.relationships);
+    const visible = new Set(nextGraph.people.keys());
+    const candidate = buildLayoutGraph(nextGraph, visible);
+    if (
+      wouldExceedVisibleLimit(visible.size, limits.visiblePersonLimit) ||
+      layoutGraphExceedsLimits(candidate, limits)
+    ) {
+      error = BRANCH_TOO_LARGE;
+      rerootCandidate = null;
+      return;
+    }
+    rerootCandidate = null;
+    people = new Map(
+      [...visible].flatMap((personId) => {
+        const person = nextGraph.people.get(personId);
+        return person ? [[personId, person] as const] : [];
+      }),
+    );
+    warnings = [...loaded.warnings, ...graphWarnings];
+    latestLayoutGraph = visible.size > 0 ? candidate : null;
+    expansions = [];
+    rootId = id;
+    houseId = id;
+    houseName = resolvedName;
+    selectedPersonId = restored ? (initialSession?.selectedPersonId ?? null) : null;
+    selectedRelationshipId = restored ? (initialSession?.selectedRelationshipId ?? null) : null;
+    onRootChange?.(id);
+    canvasFit = fit;
+    if (fit) {
+      viewport = null;
+      fitToken += 1;
+    } else if (restored && initialSession?.viewport) {
+      viewport = initialSession.viewport;
+    }
+    if (visible.size > 0) requestLayout();
+    else positioned = null;
+    void refreshHouses();
+    void refreshMemberships([...people.keys()]);
+  } catch (cause) {
+    if (signal.aborted || isNeighborhoodAbort(cause)) return;
+    error = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (!signal.aborted) loading = false;
+  }
+}
+
 function selectRoot(person: EntitySummary) {
   previousOrder = [];
   void loadRoot(person.id, true);
+}
+
+function selectHouse(house: { id: string; name: string }) {
+  previousOrder = [];
+  void loadHouse(house.id, true, false, house.name);
 }
 
 function retryLayout() {
@@ -448,7 +508,8 @@ function acceptReroot() {
 function resetView() {
   if (!rootId) return;
   previousOrder = [];
-  void loadRoot(rootId, true);
+  if (houseId) void loadHouse(houseId, true, false, houseName);
+  else void loadRoot(rootId, true);
 }
 
 function onSecondaryChange(event: Event) {
@@ -456,7 +517,8 @@ function onSecondaryChange(event: Event) {
   secondaryField = value;
   if (rootId) {
     previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
-    void loadRoot(rootId, false, expansions);
+    if (houseId) void loadHouse(houseId, false, false, houseName);
+    else void loadRoot(rootId, false, expansions);
   }
 }
 
@@ -464,8 +526,10 @@ function applyLimits(next: Partial<FamilyTreeLimits>, reload: boolean) {
   limits = writeFamilyTreeLimits(next);
   if (!rootId) return;
   previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
-  if (reload) void loadRoot(rootId, true);
-  else applyVisible(expansions, false);
+  if (reload) {
+    if (houseId) void loadHouse(houseId, true, false, houseName);
+    else void loadRoot(rootId, true);
+  } else applyVisible(expansions, false);
 }
 
 function onAncestorChange(event: Event) {
@@ -487,7 +551,7 @@ function onPersonCapChange(event: Event) {
 }
 
 async function toggleBranch(personId: string, direction: BranchDirection) {
-  if (!rootId) return;
+  if (!rootId || houseId) return;
   const key = expansionKey(personId, direction);
   if (expansions.includes(key)) {
     applyVisible(
@@ -565,7 +629,8 @@ async function afterLink() {
     nextExpansions.push(expansionKey(parentId, "partners"));
   }
   previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
-  await loadRoot(rootId, false, nextExpansions);
+  if (houseId) await loadHouse(houseId, false, false, houseName);
+  else await loadRoot(rootId, false, nextExpansions);
 }
 
 $effect(() => {
@@ -593,14 +658,56 @@ $effect(() => {
   void refreshRecent();
 });
 
+function goToLanding() {
+  if (!rootId) return;
+  previousOrder = [];
+  clearView();
+  onRootChange?.(null);
+}
+
+function clearView() {
+  cancelLoad();
+  loading = false;
+  error = "";
+  layoutFailed = false;
+  rootId = null;
+  houseId = null;
+  houseName = "";
+  selectedPersonId = null;
+  selectedRelationshipId = null;
+  people = new Map();
+  warnings = [];
+  positioned = null;
+  latestLayoutGraph = null;
+  expansions = [];
+  truncated = false;
+  truncationLowerBound = 0;
+  rawPeople = [];
+  rawRelationships = [];
+  collected = new Map();
+  rerootCandidate = null;
+  viewport = null;
+  member = null;
+  previousOrder = [];
+  appliedInitial = null;
+}
+
 $effect(() => {
   const next = initialRootId;
-  if (!next) return;
   if (restoreNonce !== appliedRestore) {
     appliedRestore = restoreNonce;
-    appliedInitial = next;
+    appliedInitial = next ?? null;
     previousOrder = [];
-    void loadRoot(next, !initialSession?.viewport, initialSession?.expansions ?? null);
+    if (!next) {
+      clearView();
+      return;
+    }
+    if (initialSession?.houseId === next) void loadHouse(next, !initialSession?.viewport, true);
+    else void loadRoot(next, !initialSession?.viewport, initialSession?.expansions ?? null);
+    return;
+  }
+  if (!next) {
+    if (rootId) clearView();
     return;
   }
   if (next === rootId || next === appliedInitial) return;
@@ -616,6 +723,7 @@ $effect(() => {
         selectedPersonId,
         selectedRelationshipId,
         viewport,
+        houseId,
       }
     : null;
   untrack(() => onSessionChange?.(session));
@@ -667,7 +775,12 @@ function applyRelationshipDelete(id: string) {
     <div class="family-topbar-main">
       <span class="family-mark" aria-hidden="true"><UsersRound size={16} strokeWidth={1.8} /></span>
       <div class="family-copy">
-        <strong>{rootId ? (people.get(rootId)?.name ?? "Family Tree") : "Family Tree"}</strong>
+        <strong
+          >{houseId
+            ? houseName || "House"
+            : rootId
+              ? (people.get(rootId)?.name ?? "Family Tree")
+              : "Family Tree"}</strong>
         <small title={subtitle}>{subtitle}</small>
       </div>
       {#if loading && positioned}
@@ -678,6 +791,9 @@ function applyRelationshipDelete(id: string) {
     </div>
     {#if rootId}
       <div class="family-topbar-actions" role="toolbar" aria-label="Tree view actions">
+        <button type="button" class="workspace-topbar-action" onclick={goToLanding} title="Back to people and houses">
+          <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" /> Trees
+        </button>
         <button type="button" class="workspace-topbar-action" onclick={fitView} title="Fit to view">
           <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" /> Fit
         </button>
@@ -740,6 +856,20 @@ function applyRelationshipDelete(id: string) {
                 <small
                   >Partners and siblings are included with each visible person. Raising the cap keeps more of the
                   neighborhood in view.</small>
+                {#if familyTreeLimitsOverBudget(limits)}
+                  <small>{LIMITS_OVER_BUDGET}</small>
+                {/if}
+                {#if warnings.length > 0}
+                  <small
+                    >{warnings.length} data warning{warnings.length === 1 ? "" : "s"} — unresolved or unknown family edges
+                    were skipped.</small>
+                {/if}
+                {#if truncated}
+                  <small
+                    >Relationship query truncated — counts show a lower bound ({truncationLowerBound
+                      ? `${truncationLowerBound}+`
+                      : "99+"}).</small>
+                {/if}
               </div>
               <button type="button" class="quiet-button pill" onclick={() => void createHouseFromToolbar()}
                 >New house</button>
@@ -758,33 +888,6 @@ function applyRelationshipDelete(id: string) {
         <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
       </div>
       <div class="subbar-sep" aria-hidden="true"></div>
-      <div class="subbar-group house-group">
-        <span class="subbar-label">House</span>
-        <div class="house-pills" role="group" aria-label="Filter by house">
-          <button
-            type="button"
-            class="house-pill"
-            class:active={!houseFilterId}
-            aria-pressed={!houseFilterId}
-            onclick={() => (houseFilterId = null)}>All</button>
-          {#each houses as house (house.id)}
-            {@const count = houseCounts.get(house.id) ?? 0}
-            <button
-              type="button"
-              class="house-pill"
-              class:active={houseFilterId === house.id}
-              aria-pressed={houseFilterId === house.id}
-              title={house.name}
-              onclick={() => (houseFilterId = houseFilterId === house.id ? null : house.id)}
-              >{house.name}{count ? ` (${count})` : ""}</button>
-          {/each}
-          <button
-            type="button"
-            class="house-pill pill-new"
-            onclick={() => void createHouseFromToolbar()}
-            title="Create a new house">+ New</button>
-        </div>
-      </div>
       <div class="subbar-group field-group">
         <label class="subbar-field">
           <span>Secondary</span>
@@ -803,63 +906,34 @@ function applyRelationshipDelete(id: string) {
     </div>
   {/if}
 
-  <!-- Status strip — warnings / errors / limits (consistent with StatusSummary) -->
-  <div class="family-status">
-    {#if error}
-      <div class="status-alert error" role="alert">
-        <span class="status-dot"></span>
-        <span class="status-text">{error}</span>
-        {#if rerootCandidate}
-          <button type="button" class="quiet-button pill" onclick={acceptReroot}
-            >Make {rerootCandidate.name} root</button>
-        {/if}
-        {#if error === BRANCH_TOO_LARGE}
-          <button type="button" class="quiet-button pill" onclick={() => (error = "")}>Dismiss</button>
-        {/if}
-      </div>
-    {/if}
-    {#if layoutFailed}
-      <div class="status-alert warning" role="alert">
-        <span class="status-dot"></span>
-        <span class="status-text">Layout failed. The previous arrangement was kept.</span>
-        <button type="button" class="quiet-button pill" onclick={retryLayout}>Retry</button>
-      </div>
-    {/if}
-    {#if familyTreeLimitsOverBudget(limits)}
-      <div class="status-alert neutral" role="status">
-        <span class="status-dot"></span>
-        <span class="status-text">{LIMITS_OVER_BUDGET}</span>
-      </div>
-    {/if}
-    {#if warnings.length > 0}
-      <div class="status-alert neutral" role="status">
-        <span class="status-dot"></span>
-        <span class="status-text"
-          >{warnings.length} data warning{warnings.length === 1 ? "" : "s"} — unresolved or unknown family edges were skipped.</span>
-      </div>
-    {/if}
-    {#if truncated}
-      <div class="status-alert neutral" role="status">
-        <span class="status-dot"></span>
-        <span class="status-text"
-          >Relationship query truncated — counts show a lower bound ({truncationLowerBound
-            ? `${truncationLowerBound}+`
-            : "99+"}).</span>
-      </div>
-    {/if}
-  </div>
+  {#if rootId && (error || layoutFailed)}
+    <div class="family-status">
+      {#if error}
+        <div class="status-alert error" role="alert">
+          <span class="status-dot"></span>
+          <span class="status-text">{error}</span>
+          {#if rerootCandidate}
+            <button type="button" class="quiet-button pill" onclick={acceptReroot}
+              >Make {rerootCandidate.name} root</button>
+          {/if}
+          {#if error === BRANCH_TOO_LARGE}
+            <button type="button" class="quiet-button pill" onclick={() => (error = "")}>Dismiss</button>
+          {/if}
+        </div>
+      {/if}
+      {#if layoutFailed}
+        <div class="status-alert warning" role="alert">
+          <span class="status-dot"></span>
+          <span class="status-text">Layout failed. The previous arrangement was kept.</span>
+          <button type="button" class="quiet-button pill" onclick={retryLayout}>Retry</button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <div class="family-body">
     {#if !rootId}
-      <div class="family-empty">
-        <WorkbenchState
-          kind="empty"
-          title="Choose a family member"
-          message="Select a Lore person to inspect their family neighborhood. Recent roots and search live in the bar above once a root is chosen — for now, pick one below." />
-        <div class="empty-picker">
-          <FamilyRootPicker {context} onSelect={selectRoot} />
-        </div>
-      </div>
+      <FamilyTreeLanding {context} {avatar} onSelect={selectRoot} onSelectHouse={selectHouse} />
     {:else if loading && !positioned}
       <WorkbenchState
         kind="loading"
@@ -874,6 +948,11 @@ function applyRelationshipDelete(id: string) {
           <button type="button" class="quiet-button" onclick={() => (error = "")}>Dismiss</button>
         {/snippet}
       </WorkbenchState>
+    {:else if houseId && people.size === 0}
+      <WorkbenchState
+        kind="empty"
+        title="This house has no members"
+        message="Add people from a person neighborhood, then open the house again to see its kinship tree." />
     {:else if positioned}
       <div class="workspace" class:has-dock={dockOpen}>
         <div class="canvas-wrap">
@@ -886,8 +965,6 @@ function applyRelationshipDelete(id: string) {
             {hiddenByPerson}
             {expandedByPerson}
             {housesByPerson}
-            memberHouseIds={houseFilterIdsByPerson}
-            {houseFilterId}
             {avatar}
             onSelectPerson={selectCanvasPerson}
             onSelectRelationship={(id) => (selectedRelationshipId = id)}
@@ -1144,38 +1221,6 @@ function applyRelationshipDelete(id: string) {
   color: var(--ink);
   font-size: 12px;
 }
-.house-pills {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.house-pill {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink-soft, var(--ink));
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.house-pill:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-muted, var(--surface));
-  color: var(--ink);
-}
-.house-pill.active {
-  border-color: var(--theme-neutral-border-strong, var(--line-strong));
-  background: var(--theme-success-bg, var(--accent-bg, #e4ece4));
-  color: var(--theme-success-text, var(--accent-dark));
-}
-.house-pill.pill-new {
-  border-style: dashed;
-  color: var(--ink-muted);
-}
 .subbar-legend {
   display: flex;
   align-items: center;
@@ -1283,16 +1328,6 @@ function applyRelationshipDelete(id: string) {
   min-height: 0;
   overflow: auto;
 }
-.family-empty {
-  display: grid;
-  gap: 18px;
-  padding: 18px;
-}
-.empty-picker {
-  max-width: 480px;
-  margin: 0 auto;
-  width: 100%;
-}
 .quiet-button {
   padding: 8px 12px;
   border: 1px solid var(--line-strong);
@@ -1368,6 +1403,10 @@ function applyRelationshipDelete(id: string) {
 .recent input[type="range"] {
   width: 100%;
   accent-color: var(--accent-dark, var(--accent));
+}
+.settings-footnote {
+  display: grid;
+  gap: 6px;
 }
 .settings-footnote small {
   color: var(--ink-muted);

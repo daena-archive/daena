@@ -1257,7 +1257,7 @@ mod tests {
 
     fn family_tree_manifest() -> PluginManifest {
         parse_manifest(include_str!(
-            "../../../packages/modules/family-tree/manifest.json"
+            "../../../packages/modules/houses/manifest.json"
         ))
         .expect("family tree manifest")
     }

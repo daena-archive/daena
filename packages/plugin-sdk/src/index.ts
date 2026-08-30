@@ -1167,9 +1167,9 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   errors.push(...validateMigrationChain(migrations as PluginManifest["migrations"], namespaceList));
   if (!hasUiEntrypoint && !hasWasmEntrypoint) {
     const viewsList = Array.isArray(views) ? views : [];
-    const allHostSurface =
-      viewsList.length > 0 &&
-      viewsList.every((view) => isRecord(view) && isRecord(view.renderer) && view.renderer.type === "host-surface");
+    const allHostSurface = viewsList.every(
+      (view) => isRecord(view) && isRecord(view.renderer) && view.renderer.type === "host-surface",
+    );
     if (value.kind !== "declarative") errors.push("empty entrypoints require a declarative plugin");
     else if (isRecord(services) && Array.isArray(services.provides) && services.provides.length > 0)
       errors.push("empty entrypoints cannot declare a provided service");

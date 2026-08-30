@@ -59,5 +59,9 @@ assert.deepEqual(
   workspaceSectionViewNav("lore", TYPES).map((view) => view.id),
   ["library", "wiki", "graph"],
 );
+assert.deepEqual(
+  workspaceSectionViewNav("houses", TYPES).map((view) => view.id),
+  ["houses", "tree"],
+);
 
 console.log("writing tabs fixtures passed");

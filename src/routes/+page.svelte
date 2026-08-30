@@ -142,7 +142,7 @@ import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
-import familyTreeManifestJson from "../../packages/modules/family-tree/manifest.json";
+import housesManifestJson from "../../packages/modules/houses/manifest.json";
 import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
 import { familyTreeHistoryKey, sameFamilyTreeSession, type FamilyTreeSession } from "$lib/family-tree/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
@@ -277,7 +277,7 @@ function saveWorkbenchLayout(sec: WorkspaceSection, layout: WorkbenchLayoutPrefs
   }
 }
 
-type NavigationRenderer = "workspace" | "maps" | "family-tree" | "host" | "webview";
+type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
   plugin: PluginAdminEntry;
@@ -315,6 +315,7 @@ let section = $state<WorkspaceSection>("lore");
 let writingView = $state<WritingView>("manuscripts");
 let timelineView = $state<TimelineView>("events");
 let languagePane = $state<LanguagePane>("overview");
+let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 let entities = $state<Entity[]>([]);
 let selected = $state<Entity | null>(null);
@@ -482,7 +483,6 @@ let displayVersion = $state(appVersionSyncFallback());
 const SCHEMA_OVERLAY_CAPABILITY = "schema.overlay";
 const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
 const MAP_HOST_SURFACE = "daena.maps/editor";
-const FAMILY_TREE_HOST_SURFACE = "daena.family-tree/editor";
 
 function enabledServices() {
   return new Set(
@@ -608,7 +608,7 @@ let hostView = $state<{ plugin: PluginAdminEntry; view: PluginAdminEntry["views"
 let sandboxView = $state<{
   plugin: PluginAdminEntry;
   view: PluginAdminEntry["views"][number] | null;
-  renderer: "maps" | "family-tree" | "webview";
+  renderer: "maps" | "webview";
 } | null>(null);
 let familyTreeRootId = $state<string | null>(null);
 let familyTreeSession = $state<FamilyTreeSession | null>(null);
@@ -741,7 +741,9 @@ const activeModuleId = () =>
         ? "daena.writing"
         : section === "language"
           ? "daena.language"
-          : "daena.maps";
+          : section === "houses"
+            ? "daena.houses"
+            : "daena.maps";
 const activeManifest = () => {
   const fromProject = modules.find((module) => module.id === activeModuleId());
   if (fromProject) return fromProject as unknown as ModuleManifest;
@@ -753,9 +755,11 @@ const activeManifest = () => {
         ? writingManifestJson
         : section === "language"
           ? languageManifestJson
-          : null) as unknown as ModuleManifest | null;
+          : section === "houses"
+            ? housesManifestJson
+            : null) as unknown as ModuleManifest | null;
 };
-const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "language", "maps"];
+const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "language", "maps", "houses"];
 function workspaceDescription(target: WorkspaceSection) {
   return workspaceSectionDescription(target);
 }
@@ -767,6 +771,7 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
   if (target === "timeline") return timelineManifestJson as unknown as ModuleManifest;
   if (target === "writing") return writingManifestJson as unknown as ModuleManifest;
   if (target === "language") return languageManifestJson as unknown as ModuleManifest;
+  if (target === "houses") return housesManifestJson as unknown as ModuleManifest;
   return null;
 }
 function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
@@ -811,7 +816,9 @@ function workspaceSectionLabel(target: WorkspaceSection) {
         ? "Writing Studio"
         : target === "language"
           ? "Languages"
-          : "Maps";
+          : target === "houses"
+            ? "Houses"
+            : "Maps";
 }
 function entityTypePresentation(entityType: string | null): {
   definition: EntityTypeDefinition;
@@ -859,7 +866,6 @@ function viewRenderer(
 ): Exclude<NavigationRenderer, "workspace"> {
   if (view.renderer?.type === "host-surface") {
     if (view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1) return "maps";
-    if (view.renderer.id === FAMILY_TREE_HOST_SURFACE && view.renderer.major === 1) return "family-tree";
     return "webview";
   }
   if (view.renderer?.type === "sandboxed") return "webview";
@@ -1400,7 +1406,9 @@ function contextFor(currentSection = section): ModuleContext {
           ? "daena.writing"
           : currentSection === "language"
             ? "daena.language"
-            : "daena.maps";
+            : currentSection === "houses"
+              ? "daena.houses"
+              : "daena.maps";
   const fromProject = modules.find((module) => module.id === moduleId);
   const fallback =
     currentSection === "lore"
@@ -1409,7 +1417,11 @@ function contextFor(currentSection = section): ModuleContext {
         ? timelineManifestJson
         : currentSection === "writing"
           ? writingManifestJson
-          : languageManifestJson;
+          : currentSection === "language"
+            ? languageManifestJson
+            : currentSection === "houses"
+              ? housesManifestJson
+              : languageManifestJson;
   return buildModuleContext((fromProject ?? fallback) as unknown as ModuleManifest, projectInfo.root, {
     availableServices: enabledServices(),
   });
@@ -1503,11 +1515,14 @@ function currentWorkspaceLocationView(): WorkspaceLocationView {
     return timelineView;
   }
   if (section === "writing") return writingView;
+  if (section === "houses") return housesView;
   return "default";
 }
 
 function currentModuleState(): Record<string, unknown> | null {
   if (section === "language") return { pane: languagePane };
+  if (section === "houses" && housesView === "tree")
+    return (familyTreeSession as Record<string, unknown> | null) ?? null;
   return null;
 }
 
@@ -1521,6 +1536,9 @@ function restoreModuleState(section: WorkspaceSection, state: Record<string, unk
       }
     }
     languagePane = "overview";
+  }
+  if (section === "houses") {
+    familyTreeSession = (state as FamilyTreeSession | null) ?? null;
   }
 }
 
@@ -1667,13 +1685,19 @@ function specializedSurfaceKey(): string | null {
   if (loreWikiOpen) return "workspace:lore:wiki";
   if (projectionView?.kind === "graph") return "workspace:lore:graph";
   if (projectionView?.kind === "timeline") return "workspace:timeline:timeline";
+  if (section === "houses" && housesView === "tree") return "workspace:houses:tree";
   return null;
 }
 
 function specializedSurfaceKeyForLocation(location: ShellLocation): string | null {
   if (location.kind === "plugin") return `plugin:${location.key}`;
   if (location.kind !== "workspace") return null;
-  if (location.view === "wiki" || location.view === "graph" || location.view === "timeline") {
+  if (
+    location.view === "wiki" ||
+    location.view === "graph" ||
+    location.view === "timeline" ||
+    location.view === "tree"
+  ) {
     return `workspace:${location.section}:${location.view}`;
   }
   return null;
@@ -1726,17 +1750,16 @@ function currentShellLocation(): ShellLocation {
       kind: "plugin",
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
       section,
-      entityId: sandboxView.renderer === "family-tree" ? familyTreeRootId : (selected?.id ?? null),
+      entityId: selected?.id ?? null,
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
-      moduleState:
-        sandboxView.renderer === "family-tree" ? (familyTreeSession as Record<string, unknown> | null) : null,
+      moduleState: null,
     };
   }
   return {
     kind: "workspace",
     section,
     view: currentWorkspaceLocationView(),
-    entityId: selected?.id ?? null,
+    entityId: section === "houses" && housesView === "tree" ? familyTreeRootId : (selected?.id ?? null),
     writingView,
     timelineView,
     collection: currentWorkspaceCollectionLocation(),
@@ -1884,20 +1907,6 @@ async function openPluginView(item: PluginNavigationItem, departure = currentShe
       : { plugin: item.plugin, view: null, renderer: "maps" };
     if (mapId) mapsEditorKey = mapId;
     else if (!sandboxView.view) mapsEditorKey = "welcome";
-    return;
-  }
-  if (item.renderer === "family-tree") {
-    if (sandboxView?.renderer === "family-tree" && !shellNavigationRestoring) return;
-    if (!(await dismissSettings())) return;
-    if (!(await leavePluginView())) return;
-    recordShellDeparture(departure);
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    if (!shellNavigationRestoring) {
-      familyTreeRootId = null;
-      familyTreeSession = null;
-    }
-    sandboxView = { plugin: item.plugin, view: item.view, renderer: "family-tree" };
     return;
   }
   if (item.renderer === "host") {
@@ -2317,6 +2326,26 @@ async function switchTimelineView(next: TimelineView) {
   collectionQuery.textSearch = "";
 }
 
+async function switchHousesView(next: WorkspaceLocationView) {
+  const allowed: WorkspaceLocationView[] = ["houses", "tree"];
+  const resolved = allowed.includes(next) ? next : "houses";
+  if (!(await flushAutoSave())) return;
+  if (section === "houses" && housesView === resolved && !projectHomeOpen) {
+    if (resolved === "tree" && familyTreeRootId) {
+      recordShellDeparture(currentShellLocation());
+      familyTreeRootId = null;
+      familyTreeSession = null;
+    }
+    return;
+  }
+  const departure = currentShellLocation();
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
+  if (section !== "houses") section = "houses";
+  housesView = resolved;
+}
+
 async function switchLanguagePane(next: LanguagePane) {
   if (!(await flushAutoSave())) return;
   if (languagePane === next && !projectHomeOpen && section === "language") return;
@@ -2379,7 +2408,9 @@ function sectionLabel() {
         ? "Writing Studio"
         : section === "language"
           ? "Languages"
-          : "Maps";
+          : section === "houses"
+            ? "Houses"
+            : "Maps";
 }
 
 function breadcrumbItems() {
@@ -2401,14 +2432,17 @@ function workspaceHeadingKicker() {
       ? "CHRONOLOGY"
       : section === "maps"
         ? "MAP ATLAS"
-        : section === "language"
-          ? "LANGUAGE WORKSHOP"
-          : "DRAFTING DESK";
+        : section === "houses"
+          ? "HOUSES"
+          : section === "language"
+            ? "LANGUAGE WORKSHOP"
+            : "DRAFTING DESK";
 }
 
 function workspaceHeadingDescription() {
   if (section === "lore") return "A living reference for every person, place, and power.";
   if (section === "maps") return "Keep every map beside its notes, links, and provider source.";
+  if (section === "houses") return "Manage Houses and explore kinship in the family tree.";
   if (section === "language") return "Words, sounds, writing, and grammar for every language of your world.";
   const tab = activeCollectionTab();
   if (section === "timeline") {
@@ -2427,6 +2461,7 @@ function collectionLabel() {
   if (section === "lore") return "entries";
   if (section === "language") return "languages";
   if (section === "maps") return "maps";
+  if (section === "houses") return "houses";
   const tab = activeCollectionTab();
   if (!tab) return "entries";
   if (tab.id === "reference") return "reference pages";
@@ -2436,6 +2471,7 @@ function collectionLabel() {
 function collectionKicker() {
   if (section === "lore") return "LORE LIBRARY";
   if (section === "maps") return "MAPS";
+  if (section === "houses") return "HOUSES";
   if (section === "language") return "LANGUAGES";
   const tab = activeCollectionTab();
   if (section === "timeline" && (tab?.id === "events" || !tab)) return "TIMELINE";
@@ -2448,6 +2484,7 @@ function createLabel() {
   if (section === "lore") return "entry";
   if (section === "language") return "language";
   if (section === "maps") return "map";
+  if (section === "houses") return "house";
   const tab = activeCollectionTab();
   if (!tab) return "entry";
   if (tab.id === "events") return "event";
@@ -2460,6 +2497,7 @@ function createLabel() {
 function emptyEditorKicker() {
   if (section === "lore") return "LORE ENTRY";
   if (section === "maps") return "MAP";
+  if (section === "houses") return "HOUSE";
   const tab = activeCollectionTab();
   if (!tab) return "ENTRY";
   if (tab.id === "events") return "TIMELINE EVENT";
@@ -2549,12 +2587,14 @@ async function openWorkspaceView(view: WorkspaceLocationView) {
   if (view === "library") return openLoreLibrary();
   if (view === "wiki") return openLoreWiki();
   if (view === "graph" || view === "timeline") return openProjection();
+  if (view === "houses" || view === "tree") return switchHousesView(view);
   if (section === "timeline" && collectionTabsFor("timeline").some((tab) => tab.id === view)) {
     return switchTimelineView(view);
   }
   if (section === "writing" && collectionTabsFor("writing").some((tab) => tab.id === view)) {
     return switchWritingView(view);
   }
+  if (section === "houses") return switchHousesView(view);
 }
 
 async function restoreShellEntity(entityId: string | null) {
@@ -2593,15 +2633,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await openProjectCenter(target.section);
     } else if (target.kind === "plugin") {
       await switchSection(target.section);
-      if (pluginItem?.renderer === "family-tree") {
-        familyTreeRootId = target.entityId;
-        familyTreeSession = (target.moduleState as FamilyTreeSession | null) ?? null;
-        familyTreeRestoreNonce += 1;
-        await openPluginView(pluginItem);
-      } else {
-        await restoreShellEntity(target.entityId);
-        await openPluginView(pluginItem!);
-      }
+      await restoreShellEntity(target.entityId);
+      await openPluginView(pluginItem!);
       await restoreSpecializedSurfaceScroll(target);
     } else {
       await switchSection(target.section);
@@ -2611,18 +2644,29 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
         await switchTimelineView(target.timelineView);
       } else if (target.section === "writing") {
         await switchWritingView(target.writingView);
+      } else if (target.section === "houses") {
+        if (target.view === "tree") {
+          familyTreeRootId = target.entityId;
+          familyTreeRestoreNonce += 1;
+        }
+        restoreModuleState(target.section, target.moduleState);
+        await switchHousesView(target.view);
       } else if (target.section === "language") {
         restoreModuleState(target.section, target.moduleState);
       }
       await tick();
       await applyWorkspaceCollectionLocation(target.collection);
-      const restoredEntity = await restoreShellEntity(target.entityId);
+      const restoredEntity =
+        target.section === "houses" && target.view === "tree" ? null : await restoreShellEntity(target.entityId);
       if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
         await openWorkspaceView(target.view);
       }
       await restoreWorkspacePaneDimensions(target.panes);
       await restoreSpecializedSurfaceScroll(target);
-      const expected = restoredEntity || !target.entityId ? target : { ...target, entityId: null };
+      const expected =
+        (target.section === "houses" && target.view === "tree") || restoredEntity || !target.entityId
+          ? target
+          : { ...target, entityId: null };
       return sameShellLocation(currentShellLocation(), expected);
     }
     return sameShellLocation(currentShellLocation(), target);
@@ -4866,7 +4910,9 @@ async function archiveSelected() {
     await loadEntities();
     const current = entities.find((entity) => entity.id === selected?.id);
     if (!current?.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
-    await contextFor().entities.delete(current.id as UUID, { expectedRevision: current.revision });
+    await contextOwningEntityType(current.entity_type ?? "").entities.delete(current.id as UUID, {
+      expectedRevision: current.revision,
+    });
     clearSelection();
     await loadEntities();
     await refreshArchivedCount();
@@ -5130,21 +5176,26 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
         }),
       ),
     );
-    const created = await Promise.all(
-      toAdd.map(async (otherId) => {
-        const endpoints = endpointsForCreate(selected!.id, otherId, definition);
-        const createdRelationship = await context.relationships.create(
-          {
-            sourceId: endpoints.sourceId as UUID,
-            targetId: endpoints.targetId as UUID,
-            type: definition.relationshipType!,
-            metadata: defaultRelationshipMetadata(definition),
-          },
-          { expectedRevision: selected!.revision, requestId: crypto.randomUUID() },
-        );
-        return toHostRelationship(createdRelationship);
-      }),
-    );
+    const created = [];
+    for (const otherId of toAdd) {
+      const endpoints = endpointsForCreate(selected!.id, otherId, definition);
+      const source =
+        selected.id === endpoints.sourceId && selected.revision
+          ? selected
+          : await project.getEntity(endpoints.sourceId);
+      const sourceRevision = source?.revision ?? "";
+      if (!sourceRevision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+      const createdRelationship = await context.relationships.create(
+        {
+          sourceId: endpoints.sourceId as UUID,
+          targetId: endpoints.targetId as UUID,
+          type: definition.relationshipType!,
+          metadata: defaultRelationshipMetadata(definition),
+        },
+        { expectedRevision: sourceRevision, requestId: crypto.randomUUID() },
+      );
+      created.push(toHostRelationship(createdRelationship));
+    }
     const removedIds = new Set(toRemove.map((relationship) => relationship.id));
     relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
     if (isEraRelationshipField(definition)) {
@@ -6558,7 +6609,7 @@ onMount(() => {
         </div>
       </div>
     {/if}
-    {#if ready && !showSettings && !projectHomeOpen && !hostView && !sandboxView && (section === "lore" || section === "timeline" || section === "writing")}
+    {#if ready && !showSettings && !projectHomeOpen && !hostView && !sandboxView && (section === "lore" || section === "timeline" || section === "writing" || section === "houses")}
       <WorkspaceViewNav
         label={`${section} views`}
         views={workspaceViewNavItems()}
@@ -6980,17 +7031,17 @@ onMount(() => {
             if (ent) void selectEntity(ent);
           }} />
       </SpecializedSurface>
-    {:else if sandboxView?.renderer === "family-tree" && sandboxView.view}
+    {:else if section === "houses" && housesView === "tree"}
       {#snippet familyTreeAvatar(entityId: string, name: string)}
         <EntityAvatar {entityId} {name} />
       {/snippet}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "family-tree"}
+        restoreKey={specializedSurfaceKey() ?? "workspace:houses:tree"}
         restoreScrollTop={currentSpecializedSurfaceScrollTop()}
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
         <FamilyTreeSurface
-          context={buildModuleContext(familyTreeManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
+          context={buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
             availableServices: enabledServices(),
           })}
           projectId={projectInfo?.root ?? ""}
@@ -7002,12 +7053,15 @@ onMount(() => {
             if (id === familyTreeRootId) return;
             recordShellDeparture(currentShellLocation());
             familyTreeRootId = id;
+            familyTreeSession = null;
           }}
           onSessionChange={(session) => {
             if (sameFamilyTreeSession(familyTreeSession, session)) return;
             const historyChanged = familyTreeHistoryKey(familyTreeSession) !== familyTreeHistoryKey(session);
+            if (historyChanged && familyTreeRootId && familyTreeSession) {
+              recordShellDeparture(currentShellLocation());
+            }
             familyTreeSession = session;
-            if (historyChanged && familyTreeRootId) recordShellDeparture(currentShellLocation());
           }}
           onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)} />
       </SpecializedSurface>

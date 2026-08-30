@@ -15,10 +15,10 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const lore = JSON.parse(readFileSync(join(root, "packages/modules/lore/manifest.json"), "utf8"));
-const family = JSON.parse(readFileSync(join(root, "packages/modules/family-tree/manifest.json"), "utf8"));
+const family = JSON.parse(readFileSync(join(root, "packages/modules/houses/manifest.json"), "utf8"));
 
 const person = "daena.lore:person";
-const enabledTypes = new Set([person, "daena.lore:place", "daena.lore:faction", "house", "daena.family-tree:house"]);
+const enabledTypes = new Set([person, "daena.lore:place", "daena.lore:faction", "house", "daena.houses:house"]);
 const familyEnabled = { ...family, enabled: true };
 
 const parents = family.schemas[0].fields.find((field) => field.key === "parents");
@@ -96,6 +96,7 @@ const memberEdge = {
 assert.equal(counterpartId(childId, memberEdge, houses), houseId);
 assert.equal(counterpartId(houseId, memberEdge, members), childId);
 assert.deepEqual(endpointsForCreate(childId, houseId, houses), { sourceId: childId, targetId: houseId });
+assert.deepEqual(endpointsForCreate(houseId, childId, members), { sourceId: childId, targetId: houseId });
 
 const named = [parents, children, partners, houses, members];
 const childCovered = coveredRelationshipIds(childId, [parentEdge, partnerEdge, memberEdge], named);

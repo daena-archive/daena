@@ -372,6 +372,97 @@ export async function listHouses(
   return page.items.filter((entity) => !entity.deleted).map((entity) => ({ id: entity.id, name: entity.name }));
 }
 
+export async function houseMemberCounts(
+  context: ModuleContext,
+  houseIds: string[],
+  signal?: AbortSignal,
+): Promise<Map<string, number>> {
+  const unique = [...new Set(houseIds.filter(Boolean))];
+  const counts = new Map<string, number>(unique.map((id) => [id, 0]));
+  if (unique.length === 0) return counts;
+  const collected = new Map<string, Relationship>();
+  await queryPaged(context, unique, [MEMBERSHIP_RELATIONSHIP], "incoming", collected, signal);
+  const peopleByHouse = new Map<string, Set<string>>();
+  for (const relationship of collected.values()) {
+    if (relationship.type !== MEMBERSHIP_RELATIONSHIP || !unique.includes(relationship.targetId)) continue;
+    const members = peopleByHouse.get(relationship.targetId) ?? new Set<string>();
+    members.add(relationship.sourceId);
+    peopleByHouse.set(relationship.targetId, members);
+  }
+  for (const id of unique) counts.set(id, peopleByHouse.get(id)?.size ?? 0);
+  return counts;
+}
+
+export async function listHouseMembers(
+  context: ModuleContext,
+  houseId: string,
+  signal?: AbortSignal,
+): Promise<{ id: string; name: string }[]> {
+  if (!houseId) return [];
+  const collected = new Map<string, Relationship>();
+  await queryPaged(context, [houseId], [MEMBERSHIP_RELATIONSHIP], "incoming", collected, signal);
+  const personIds = [
+    ...new Set(
+      [...collected.values()]
+        .filter((relationship) => relationship.type === MEMBERSHIP_RELATIONSHIP && relationship.targetId === houseId)
+        .map((relationship) => relationship.sourceId),
+    ),
+  ];
+  if (personIds.length === 0) return [];
+  const records: { id: string; name: string }[] = [];
+  for (let index = 0; index < personIds.length; index += ENTITY_GET_MANY_LIMIT) {
+    throwIfAborted(signal);
+    const batch = personIds.slice(index, index + ENTITY_GET_MANY_LIMIT);
+    for (const entity of await context.entities.getMany(batch as UUID[])) {
+      if (!entity.deleted && entity.type === PERSON_TYPE) records.push({ id: entity.id, name: entity.name });
+    }
+  }
+  return records.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+}
+
+export async function loadHouseNeighborhood(
+  context: ModuleContext,
+  houseId: string,
+  secondaryField = DEFAULT_SECONDARY_FIELD,
+  signal?: AbortSignal,
+): Promise<{
+  people: FamilyPerson[];
+  relationships: Relationship[];
+  warnings: GenealogyWarning[];
+  truncated: boolean;
+  truncationLowerBound: number;
+}> {
+  const members = await listHouseMembers(context, houseId, signal);
+  const memberIds = members.map((member) => member.id);
+  const known = new Set(memberIds);
+  const collected = new Map<string, Relationship>();
+  let truncated = false;
+  let truncationLowerBound = 0;
+  const recordPage = (page: { truncated: boolean; lowerBound: number }) => {
+    truncated = truncated || page.truncated;
+    truncationLowerBound = Math.max(truncationLowerBound, page.lowerBound);
+  };
+  if (memberIds.length > 0) {
+    recordPage(
+      await queryPaged(context, memberIds, [PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP], "any", collected, signal),
+    );
+  }
+  const relationships = [...collected.values()].filter((relationship) => {
+    if (relationship.type !== PARENT_RELATIONSHIP && relationship.type !== PARTNER_RELATIONSHIP) return false;
+    return known.has(relationship.sourceId) && known.has(relationship.targetId);
+  });
+  const hydrated = await hydratePeople(context, memberIds, secondaryField, signal);
+  const warnings = [...hydrated.warnings];
+  if (truncated) warnings.push(truncationWarning(truncationLowerBound));
+  return {
+    people: hydrated.people,
+    relationships,
+    warnings,
+    truncated,
+    truncationLowerBound,
+  };
+}
+
 export async function loadHouseMemberships(
   context: ModuleContext,
   personIds: string[],

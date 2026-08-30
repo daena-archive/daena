@@ -1,22 +1,20 @@
 {
   "manifestVersion": 1,
-  "id": "daena.family-tree",
-  "name": "Family Tree",
+  "id": "daena.houses",
+  "name": "Houses",
   "version": "0.1.0",
   "publisher": "daena-archive",
-  "enabledByDefault": false,
-  "stability": "beta",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "declarative",
   "entrypoints": {},
   "capabilities": [
     "entity.read",
     "entity.write",
+    "entity.delete",
     "field.read:shared",
     "relationship.read",
     "relationship.write",
-    "schema.overlay",
-    "host.surface:daena.family-tree/editor@1"
+    "schema.overlay"
   ],
   "dependencies": {
     "daena.lore": {
@@ -182,15 +180,17 @@
       ]
     }
   ],
-  "templates": [],
-  "views": [
+  "templates": [
     {
-      "id": "family-tree",
-      "title": "Family Tree",
-      "renderer": { "type": "host-surface", "id": "daena.family-tree/editor", "major": 1 },
-      "components": []
+      "id": "house",
+      "name": "House",
+      "entityType": "house",
+      "description": "A lineage, dynasty, or household that binds people together.",
+      "requiredFields": [],
+      "fields": {}
     }
   ],
+  "views": [],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },

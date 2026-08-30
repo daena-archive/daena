@@ -1920,11 +1920,10 @@ fn validate_empty_entrypoints(manifest: &PluginManifest) -> Result<(), ContractE
             "empty entrypoints cannot declare a provided service".into(),
         ));
     }
-    if manifest.views.is_empty()
-        || !manifest
-            .views
-            .iter()
-            .all(|view| matches!(view.renderer, ViewRenderer::HostSurface { .. }))
+    if !manifest
+        .views
+        .iter()
+        .all(|view| matches!(view.renderer, ViewRenderer::HostSurface { .. }))
     {
         return Err(ContractError(
             "empty entrypoints require every view to use a host-surface renderer".into(),

@@ -3,13 +3,14 @@ import type { Entity, EntityPage } from "$lib/project/client";
 export type WritingView = string;
 export type TimelineView = string;
 export type LanguagePane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
-export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps";
+export type WorkspaceSection = "lore" | "timeline" | "writing" | "language" | "maps" | "houses";
 export const WORKSPACE_MODULE_IDS = {
   lore: "daena.lore",
   timeline: "daena.timeline",
   writing: "daena.writing",
   language: "daena.language",
   maps: "daena.maps",
+  houses: "daena.houses",
 } as const satisfies Record<WorkspaceSection, string>;
 
 export function workspaceSectionDescription(section: WorkspaceSection): string {
@@ -17,6 +18,7 @@ export function workspaceSectionDescription(section: WorkspaceSection): string {
   if (section === "timeline") return "Events, eras, calendars, and the chronology of your world.";
   if (section === "writing") return "Manuscripts and reference pages beside the world they draw from.";
   if (section === "language") return "Sounds, writing systems, vocabulary, and grammar.";
+  if (section === "houses") return "Houses, lineages, and the kinship that binds people together.";
   return "Maps, world surfaces, locations, and geographic links.";
 }
 
@@ -119,6 +121,12 @@ export function workspaceSectionViewNav(
   }
   if (section === "writing") {
     return workspaceCollectionTabs(section, types).map((tab) => ({ id: tab.id, label: tab.label }));
+  }
+  if (section === "houses") {
+    return [
+      { id: "houses", label: "Houses" },
+      { id: "tree", label: "Tree" },
+    ];
   }
   return [];
 }

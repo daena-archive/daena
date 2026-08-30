@@ -2255,15 +2255,15 @@ fn grant_bundled(host: &mut PluginHost, plugin_id: &str) {
 }
 
 #[test]
-fn family_tree_activation_requires_active_lore() {
+fn houses_activation_requires_active_lore() {
     let mut host = PluginHost::new();
     host.register_bundled_json(include_str!(
-        "../../../packages/modules/family-tree/manifest.json"
+        "../../../packages/modules/houses/manifest.json"
     ))
     .unwrap();
-    grant_bundled(&mut host, "daena.family-tree");
+    grant_bundled(&mut host, "daena.houses");
     let error = host
-        .activate_bundled("project", "daena.family-tree")
+        .activate_bundled("project", "daena.houses")
         .unwrap_err();
     assert!(
         error.0.contains("daena.lore")
@@ -2275,7 +2275,7 @@ fn family_tree_activation_requires_active_lore() {
 }
 
 #[test]
-fn family_tree_activates_when_lore_is_active() {
+fn houses_activates_when_lore_is_active() {
     let mut host = PluginHost::new();
     host.register_bundled_json(include_str!(
         "../../../packages/modules/language/manifest.json"
@@ -2284,17 +2284,16 @@ fn family_tree_activates_when_lore_is_active() {
     host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))
         .unwrap();
     host.register_bundled_json(include_str!(
-        "../../../packages/modules/family-tree/manifest.json"
+        "../../../packages/modules/houses/manifest.json"
     ))
     .unwrap();
-    for plugin_id in ["daena.language", "daena.lore", "daena.family-tree"] {
+    for plugin_id in ["daena.language", "daena.lore", "daena.houses"] {
         grant_bundled(&mut host, plugin_id);
     }
-    host.activate_bundled("project", "daena.family-tree")
-        .unwrap();
+    host.activate_bundled("project", "daena.houses").unwrap();
     assert_eq!(
-        host.lifecycle.state("project", "daena.family-tree").state,
+        host.lifecycle.state("project", "daena.houses").state,
         LifecycleState::Active
     );
-    host.deactivate_bundled("project", "daena.family-tree");
+    host.deactivate_bundled("project", "daena.houses");
 }

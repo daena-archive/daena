@@ -39,7 +39,7 @@ The current product direction includes:
 
 - shared entities with stable identity, prose documents, typed fields,
   relationships, and assets;
-- first-party Lore, Timeline, Writing Studio, and Maps experiences backed by
+- first-party Lore, Timeline, Writing Studio, Maps, and Houses experiences backed by
   the same core records;
 - optional runtime plugins that use the same public contracts as bundled
   modules;

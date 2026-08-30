@@ -1355,7 +1355,7 @@ fn bundled_manifests_supply_generic_migrations() {
     let timeline = host.catalog.get("daena.timeline").unwrap();
     let writing = host.catalog.get("daena.writing").unwrap();
     let language = host.catalog.get("daena.language").unwrap();
-    let family_tree = host.catalog.get("daena.family-tree").unwrap();
+    let houses = host.catalog.get("daena.houses").unwrap();
     assert_eq!(
         core_migration(&lore.manifest).unwrap().unwrap().id,
         "lore-v1"
@@ -1373,7 +1373,7 @@ fn bundled_manifests_supply_generic_migrations() {
         "language-v1"
     );
     assert_eq!(
-        core_migration(&family_tree.manifest).unwrap().unwrap().id,
+        core_migration(&houses.manifest).unwrap().unwrap().id,
         "family-tree-v1"
     );
 }
@@ -1386,6 +1386,7 @@ fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
         "daena.timeline",
         "daena.writing",
         "daena.language",
+        "daena.houses",
     ] {
         assert!(
             host.catalog

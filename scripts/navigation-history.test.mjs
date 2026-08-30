@@ -91,40 +91,43 @@ assert.equal(
   false,
   "plugin surface scroll is part of a plugin location",
 );
+
+const tree = {
+  ...lore,
+  section: "houses",
+  view: "tree",
+  entityId: "root-person",
+  moduleState: {
+    expansions: ["root:children"],
+    selectedPersonId: "a",
+    viewport: { x: 0, y: 0, zoom: 1 },
+  },
+};
 assert.equal(
-  sameShellLocation(plugin, { ...plugin, moduleState: { expansions: ["root:children"] } }),
+  sameShellLocation(tree, { ...tree, moduleState: { ...tree.moduleState, expansions: ["root:parents"] } }),
   false,
-  "family-tree expansion keys are part of a plugin location",
+  "houses tree expansion keys are part of a workspace location",
 );
 assert.equal(
-  sameShellLocation(
-    { ...plugin, moduleState: { expansions: ["root:children"], selectedPersonId: "a" } },
-    { ...plugin, moduleState: { expansions: ["root:children"], selectedPersonId: "b" } },
-  ),
+  sameShellLocation(tree, { ...tree, moduleState: { ...tree.moduleState, selectedPersonId: "b" } }),
   false,
-  "family-tree selection is part of a plugin location",
+  "houses tree selection is part of a workspace location",
 );
 assert.equal(
-  sameShellLocation(
-    {
-      ...plugin,
-      moduleState: {
-        expansions: ["root:children"],
-        selectedPersonId: "a",
-        viewport: { x: 0, y: 0, zoom: 1 },
-      },
+  sameShellLocation(tree, { ...tree, entityId: null, moduleState: null }),
+  false,
+  "houses tree landing is distinct from a rooted tree",
+);
+assert.equal(
+  sameShellLocation(tree, {
+    ...tree,
+    moduleState: {
+      ...tree.moduleState,
+      viewport: { x: 40, y: -12, zoom: 1.4 },
     },
-    {
-      ...plugin,
-      moduleState: {
-        expansions: ["root:children"],
-        selectedPersonId: "a",
-        viewport: { x: 40, y: -12, zoom: 1.4 },
-      },
-    },
-  ),
+  }),
   true,
-  "family-tree viewport is stored without adding a history step",
+  "houses tree viewport is stored without adding a history step",
 );
 
 const back = shellHistoryBack(history, graph);

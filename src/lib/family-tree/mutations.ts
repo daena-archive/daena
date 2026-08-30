@@ -93,6 +93,11 @@ export async function createMembership(
   sourceRevision: string,
   requestId: string,
 ) {
+  let revision = sourceRevision;
+  if (!revision) {
+    const person = await context.entities.get(personId as UUID);
+    revision = person?.revision ?? "";
+  }
   return context.relationships.create(
     {
       sourceId: personId as UUID,
@@ -100,7 +105,7 @@ export async function createMembership(
       type: MEMBERSHIP_RELATIONSHIP,
       metadata: { role: "member" },
     },
-    { expectedRevision: sourceRevision, requestId },
+    { expectedRevision: revision, requestId },
   );
 }
 

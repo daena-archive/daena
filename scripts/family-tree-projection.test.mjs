@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { loadExpansionLayer, loadGenealogyNeighborhood } from "../src/lib/family-tree/fetch.ts";
+import {
+  houseMemberCounts,
+  listHouseMembers,
+  loadExpansionLayer,
+  loadGenealogyNeighborhood,
+  loadHouseNeighborhood,
+} from "../src/lib/family-tree/fetch.ts";
 import {
   LayoutGeneration,
   buildElkGraph,
@@ -10,6 +16,7 @@ import {
 import {
   PERSON_NODE_HEIGHT,
   PERSON_NODE_WIDTH,
+  MEMBERSHIP_RELATIONSHIP,
   PERSON_TYPE,
   UNION_NODE_HEIGHT,
   UNION_NODE_WIDTH,
@@ -821,6 +828,7 @@ const sessionA = {
 };
 const sessionB = { ...sessionA, viewport: { x: 8, y: 2, zoom: 1.2 } };
 assert.equal(familyTreeHistoryKey(sessionA), familyTreeHistoryKey(sessionB));
+assert.notEqual(familyTreeHistoryKey(sessionA), familyTreeHistoryKey({ ...sessionA, houseId: "h1" }));
 assert.equal(sameFamilyTreeSession(sessionA, sessionB), false);
 assert.equal(sameFamilyTreeSession(sessionA, { ...sessionA, viewport: { x: 0, y: 0, zoom: 1 } }), true);
 
@@ -844,6 +852,67 @@ assert.equal(
 assert.equal(
   siblingContext.calls.some((call) => call.direction === "outgoing" && call.entityIds.includes(mother.id)),
   true,
+);
+
+const houseContext = fakeContext(
+  [person("p1", "Ada"), person("p2", "Bea")],
+  [
+    {
+      id: "m1",
+      sourceId: "p1",
+      targetId: "h1",
+      type: MEMBERSHIP_RELATIONSHIP,
+      metadata: {},
+      revision: "1",
+    },
+    {
+      id: "m2",
+      sourceId: "p2",
+      targetId: "h1",
+      type: MEMBERSHIP_RELATIONSHIP,
+      metadata: {},
+      revision: "1",
+    },
+  ],
+);
+const membershipCounts = await houseMemberCounts(houseContext, ["h1", "h2"]);
+assert.equal(membershipCounts.get("h1"), 2);
+assert.equal(membershipCounts.get("h2"), 0);
+const members = await listHouseMembers(houseContext, "h1");
+assert.deepEqual(
+  members.map((entry) => entry.name),
+  ["Ada", "Bea"],
+);
+
+const houseTreeContext = fakeContext(
+  [person("p1", "Ada"), person("p2", "Bea"), person("p3", "Cal"), person("p4", "Dee")],
+  [
+    {
+      id: "m1",
+      sourceId: "p1",
+      targetId: "h1",
+      type: MEMBERSHIP_RELATIONSHIP,
+      metadata: {},
+      revision: "1",
+    },
+    {
+      id: "m2",
+      sourceId: "p2",
+      targetId: "h1",
+      type: MEMBERSHIP_RELATIONSHIP,
+      metadata: {},
+      revision: "1",
+    },
+    parent("hp1", "p1", "p2"),
+    partner("hr1", "p1", "p3"),
+    parent("hp2", "p4", "p1"),
+  ],
+);
+const houseTree = await loadHouseNeighborhood(houseTreeContext, "h1");
+assert.deepEqual(houseTree.people.map((entry) => entry.id).sort(), ["p1", "p2"]);
+assert.deepEqual(
+  houseTree.relationships.map((entry) => entry.id),
+  ["hp1"],
 );
 
 console.log("family-tree projection checks passed");

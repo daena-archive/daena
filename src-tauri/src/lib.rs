@@ -1350,9 +1350,7 @@ fn plugin_asset_response(
             "daena.language" => {
                 include_str!("../../packages/modules/language/manifest.json")
             }
-            "daena.family-tree" => {
-                include_str!("../../packages/modules/family-tree/manifest.json")
-            }
+            "daena.houses" => include_str!("../../packages/modules/houses/manifest.json"),
             _ => return None,
         };
         serde_json::from_str::<PluginManifest>(manifest).ok()
@@ -4089,7 +4087,7 @@ fn bundled_plugin_host(core: SharedCore) -> Result<PluginHost, String> {
             None,
         ),
         (
-            include_str!("../../packages/modules/family-tree/manifest.json"),
+            include_str!("../../packages/modules/houses/manifest.json"),
             None,
         ),
     ] {

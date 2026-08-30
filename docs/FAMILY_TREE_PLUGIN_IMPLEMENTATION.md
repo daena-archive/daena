@@ -1,10 +1,10 @@
-# Family Tree plugin implementation
+# Houses module implementation
 
 ## Status and authority
 
-This document is the implementation authority for the first release of the
-Daena Family Tree plugin. It turns the Family Tree product specification into a
-repository-specific delivery guide.
+This document is the implementation authority for the first-party Houses
+module, including its Tree view. It turns the Family Tree product specification
+into a repository-specific delivery guide.
 
 The documents have this precedence:
 
@@ -21,11 +21,12 @@ update this document and any higher-level authority affected by the correction.
 
 ## 1. Required outcome
 
-The first release is an optional bundled plugin with ID
-`daena.family-tree`. Once enabled, it contributes one Family Tree view. A user
-can select a Lore person, inspect a bounded family subgraph, expand branches,
-re-root the view, add or link relatives, edit or remove family relationships,
-and open a person in the normal Lore inspector.
+The first release is a bundled workspace module with ID `daena.houses`. It
+owns House entities and kinship fields, and contributes two host-owned
+workspace views: Houses (collection) and Tree (family neighborhood). A user
+can manage houses, select a Lore person, inspect a bounded family subgraph,
+expand branches, re-root the view, add or link relatives, edit or remove family
+relationships, and open a person in the normal Lore inspector.
 
 The implementation must have these properties:
 
@@ -39,7 +40,7 @@ The implementation must have these properties:
 - All durable mutations pass through revision-aware Rust services.
 - The visible graph is bounded. The entire project is never loaded or rendered
   by default.
-- Disabling the plugin hides the view without deleting or changing shared
+- Disabling the module hides Houses and Tree without deleting or changing shared
   entities and relationships.
 - A clean portable checkpoint can rebuild the same family data after
   `.daena/` is removed.
@@ -50,7 +51,7 @@ The implementation must have these properties:
 
 V1 includes:
 
-1. bundled plugin registration, dependency resolution, enablement, and view;
+1. bundled Houses module registration, Lore dependency, enablement, Houses collection, and Tree view;
 2. root-person search and selection;
 3. a Svelte Flow canvas with pan, zoom, fit, reset, and selection;
 4. ELK layered layout;
@@ -85,7 +86,7 @@ Do not include the following in v1:
 - date plausibility warnings;
 - configurable biological age rules;
 - duplicate-detection diagnostics beyond exact duplicate edge prevention;
-- houses, dynasties, clans, lineage, or succession views;
+- dynasties, clans, lineage, or succession views beyond House membership;
 - GEDCOM, image, PDF, print, or other import/export;
 - genetic, reproductive, inheritance, or succession simulation;
 - a mandatory Family entity;
@@ -101,13 +102,13 @@ them.
 
 ## 3. Architecture decisions
 
-### 3.1 Use a host-rendered plugin surface
+### 3.1 Use a host-owned workspace view
 
-Family Tree is a declarative bundled plugin that requests the versioned host
-surface `daena.family-tree/editor@1`. Its Svelte implementation runs in the
-trusted application shell, following the existing Maps host-surface pattern.
-The plugin manifest controls registration, dependency resolution,
-capabilities, enablement, and lifecycle.
+Houses is a declarative bundled module. Its Tree view is a host-owned
+workspace surface, like Lore Wiki and Graph: the manifest does not declare a
+plugin navigation view. `FamilyTreeSurface` runs in the trusted application
+shell. The manifest controls registration, dependency resolution, capabilities,
+enablement, and lifecycle.
 
 This is deliberate:
 
@@ -118,13 +119,11 @@ This is deliberate:
   third-party webview; and
 - no duplicate “Daena-like” component library is required.
 
-The host surface is specific and closed. A manifest may select it only by its
-registered ID and major version. The surface must still perform project reads
-and writes through a `ModuleContext` built for `daena.family-tree`, so data
-operations remain attributed to the active plugin and broker capability checks
-still run. Host-only presentation work, such as rendering an entity avatar or
-opening the shell inspector, does not expose asset bytes or shell handles to
-plugin code.
+The Tree surface must still perform project reads and writes through a
+`ModuleContext` built for `daena.houses`, so data operations remain attributed
+to the active module and broker capability checks still run. Host-only
+presentation work, such as rendering an entity avatar or opening the shell
+inspector, does not expose asset bytes or shell handles to plugin code.
 
 Do not implement Family Tree as:
 
@@ -138,8 +137,8 @@ Do not implement Family Tree as:
 
 The package contains a manifest and migration declaration, but no executable
 UI or Wasm entrypoint. The manifest contract must permit an empty
-`entrypoints` object when all contributed views are registered host surfaces
-and the plugin provides no runtime service.
+`entrypoints` object for a declarative schema module with no runtime service,
+including when `views` is empty because the host owns workspace navigation.
 
 This removes the need for a fake `dist/ui/index.html` or an unused webview
 bootstrap. A sandboxed view or Wasm service must continue to require its
@@ -147,7 +146,7 @@ matching entrypoint.
 
 ### 3.3 Depend on Lore
 
-`daena.family-tree` has a required dependency on `daena.lore`:
+`daena.houses` has a required dependency on `daena.lore`:
 
 ```json
 {
@@ -160,7 +159,7 @@ matching entrypoint.
 }
 ```
 
-Family Tree cannot activate unless Lore is installed, compatible, enabled, and
+Houses cannot activate unless Lore is installed, compatible, enabled, and
 active. It must not define a fallback person type when Lore is missing.
 
 ### 3.4 Use public shared data
@@ -411,17 +410,18 @@ its two core relationship types.
 Complete this section before building the Family Tree UI. These are generic
 contract corrections or graph primitives, not Family Tree-specific bypasses.
 
-### 5.1 Permit host-surface-only declarative plugins
+### 5.1 Permit empty-entrypoint declarative plugins
 
 Update the Rust-owned manifest contract so `entrypoints` may be empty only
 when:
 
 - the plugin kind is `declarative`;
-- every view uses a registered `host-surface` renderer; and
+- every declared view uses a registered `host-surface` renderer, or `views`
+  is empty because the host owns workspace navigation; and
 - the plugin declares no provided service requiring Wasm.
 
 Keep entrypoints mandatory for sandboxed UI and Wasm execution. Regenerate
-JSON Schemas and TypeScript declarations. Do not add a fake Family Tree HTML
+JSON Schemas and TypeScript declarations. Do not add a fake Houses HTML
 file.
 
 Primary files:
@@ -585,21 +585,19 @@ Primary files:
 
 ## 6. Plugin manifest and registration
 
-Create `packages/modules/family-tree/manifest.json` with:
+Create `packages/modules/houses/manifest.json` with:
 
-- `id`: `daena.family-tree`;
-- `name`: `Family Tree`;
+- `id`: `daena.houses`;
+- `name`: `Houses`;
 - `publisher`: `daena-archive`;
 - `version`: `0.1.0`;
 - `hostApi`: `>=1.0.0 <2.0.0`;
 - `kind`: `declarative`;
 - `entrypoints`: `{}`;
-- `enabledByDefault`: `false`;
-- `stability`: `beta`;
 - required Lore dependency;
 - namespace `family-tree`;
-- the two relationship declarations from section 4;
-- one host-surface view with ID `family-tree`;
+- House entity type plus kinship and membership fields from section 4;
+- empty `views` (host-owned Houses and Tree navigation);
 - no commands, records, services, or events; and
 - one `0 -> 1` backup migration that creates the `family-tree` namespace.
 
@@ -609,24 +607,23 @@ Request only:
 [
   "entity.read",
   "entity.write",
+  "entity.delete",
   "field.read:shared",
   "relationship.read",
   "relationship.write",
-  "host.surface:daena.family-tree/editor@1"
+  "schema.overlay"
 ]
 ```
 
-Do not request entity deletion, document access, field writes, assets, search,
-records, AI, network, filesystem, or shell capabilities.
+Do not request document access, field writes, assets, search, records, AI,
+network, filesystem, or shell capabilities.
 
 Register the manifest in the Rust bundled catalog alongside Lore, Timeline,
 Writing, Maps, and Language. Add it to the canonical manifest positive
 controls and plugin conformance suite.
 
-The view appears in plugin navigation only when its lifecycle state is
-`active`. Do not add Family Tree to the fixed `WorkspaceSection` union or
-hardcode an always-visible rail item. Its manifest-contributed view is its
-entry point.
+Houses is a fixed `WorkspaceSection`. Its rail item appears when the module is
+enabled and active. Tree is a workspace view, not a plugin-tool view.
 
 ## 7. Frontend structure
 
@@ -656,13 +653,12 @@ Add `@xyflow/svelte` and `elkjs` through npm. Do not copy either library into
 the repository or pin a fabricated version. Commit the package manager's
 resolved versions and lockfile changes when implementation is committed.
 
-Extend the existing host-surface renderer selection in `src/routes/+page.svelte`
-with a distinct `family-tree` renderer for
-`daena.family-tree/editor@1`. Render `FamilyTreeSurface` with:
+Mount `FamilyTreeSurface` as the Houses workspace Tree view in
+`src/routes/+page.svelte`. Render it with:
 
-- a `ModuleContext` built for the Family Tree manifest;
+- a `ModuleContext` built for the Houses manifest;
 - the current project ID;
-- an `onOpenEntity(entityId)` callback that leaves the plugin surface and runs
+- an `onOpenEntity(entityId)` callback that leaves the Tree view and runs
   the normal Lore `selectEntity` path; and
 - shell-history state callbacks for the current root.
 
@@ -1074,7 +1070,7 @@ object URLs when cards unmount.
 
 Implement:
 
-- host-surface-only declarative manifests;
+- empty-entrypoint declarative manifests, including empty host-owned `views`;
 - dependency-qualified source/target entity types;
 - dependency-owned entity creation;
 - relationship constraints and typed errors;
@@ -1095,9 +1091,9 @@ Exit gate:
 
 Implement:
 
-- Family Tree manifest, dependency, migration, bundled registration, and
+- Houses manifest, dependency, migration, bundled registration, and
   conformance coverage;
-- host-surface renderer registration;
+- host-owned Houses and Tree workspace views;
 - root picker and search;
 - batched genealogy projection;
 - virtual unions;
@@ -1133,7 +1129,7 @@ Exit gate:
 - cycles and duplicates produce typed errors;
 - create-then-link partial failure is explicit and recoverable;
 - collapsing shared paths does not remove still-reachable people; and
-- disabled plugin data remains visible as ordinary relationships elsewhere in
+- disabled module data remains visible as ordinary relationships elsewhere in
   Daena.
 
 ### Phase 3: Native and storage hardening
@@ -1161,7 +1157,7 @@ Exit gate:
 
 Add Rust and TypeScript tests for:
 
-- host-surface-only entrypoint acceptance and all invalid variants;
+- empty-entrypoint declarative acceptance, including empty `views`, and all invalid variants;
 - required dependency-qualified source and target types;
 - missing/disabled/incompatible dependency failure;
 - foreign entity creation allowed only through a required dependency;
@@ -1258,11 +1254,10 @@ phase exit gate.
 
 V1 is complete only when all items below are demonstrated:
 
-- [ ] `daena.family-tree` installs as a bundled plugin and is disabled by
-      default.
+- [ ] `daena.houses` installs as a bundled workspace module.
 - [ ] Enabling it succeeds only with its required Lore dependency active and
-      contributes one Family Tree view.
-- [ ] Disabling it removes the view without deleting shared data.
+      contributes Houses and Tree workspace views.
+- [ ] Disabling it removes the workspace without deleting shared data.
 - [ ] A user can select an existing Lore person as root.
 - [ ] The initial view shows two ancestor and two descendant generations,
       immediate siblings, and relevant partners.
@@ -1294,10 +1289,11 @@ V1 is complete only when all items below are demonstrated:
 
 The work is done when the acceptance checklist passes and the implementation
 still obeys the core boundary: Daena owns durable people and relationships;
-Family Tree adds genealogy meaning and a specialized view; ELK owns only
-coordinates; Svelte Flow owns only canvas rendering and interaction.
+Houses adds house entities, genealogy meaning, and a specialized Tree view;
+ELK owns only coordinates; Svelte Flow owns only canvas rendering and
+interaction.
 
 Any proposal to persist virtual unions, cache a second family graph, bypass
-broker attribution, load all people by default, or create a Family Tree person
+broker attribution, load all people by default, or create a Houses person
 type is an architecture regression and must be rejected rather than hidden
 behind a compatibility shim.

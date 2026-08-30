@@ -5,10 +5,10 @@ fn canonical_bundled_manifests_validate() {
     let lore = include_str!("../../../packages/modules/lore/manifest.json");
     let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
     let maps = include_str!("../../../packages/modules/maps/manifest.json");
-    let family_tree = include_str!("../../../packages/modules/family-tree/manifest.json");
+    let houses = include_str!("../../../packages/modules/houses/manifest.json");
     assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
     assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
-    assert_eq!(parse_manifest(family_tree).unwrap().id, "daena.family-tree");
+    assert_eq!(parse_manifest(houses).unwrap().id, "daena.houses");
     let maps = parse_manifest(maps).unwrap();
     assert_eq!(
         maps.views[0].renderer,
@@ -378,14 +378,15 @@ fn host_surface_only_declarative_plugins_may_omit_entrypoints() {
 }
 
 #[test]
-fn family_tree_manifest_is_a_valid_host_surface_plugin() {
+fn houses_manifest_is_a_valid_declarative_workspace_plugin() {
     let manifest = parse_manifest(include_str!(
-        "../../../packages/modules/family-tree/manifest.json"
+        "../../../packages/modules/houses/manifest.json"
     ))
     .unwrap();
-    validate_manifest(&manifest).expect("family tree manifest must validate");
+    validate_manifest(&manifest).expect("houses manifest must validate");
     assert!(manifest.entrypoints.ui.is_none());
     assert!(manifest.entrypoints.wasm.is_none());
+    assert!(manifest.views.is_empty());
     let parents = manifest.schemas[0]
         .fields
         .iter()
@@ -401,10 +402,14 @@ fn family_tree_manifest_is_a_valid_host_surface_plugin() {
         .capabilities
         .iter()
         .any(|capability| capability == "schema.overlay"));
+    assert!(manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "entity.delete"));
     assert!(manifest.schemas[0]
         .entity_types
         .iter()
-        .any(|entity_type| entity_type.id == "daena.family-tree:house"));
+        .any(|entity_type| entity_type.id == "daena.houses:house"));
     assert!(manifest.schemas[0].fields.iter().any(|field| {
         field.key == "houses" && field.relationship_type.as_deref() == Some("family_member_of")
     }));
@@ -422,7 +427,7 @@ fn empty_entrypoints_reject_invalid_variants() {
 
     let mut manifest = host_surface_only_manifest();
     manifest.views.clear();
-    assert!(validate_manifest(&manifest).is_err());
+    assert!(validate_manifest(&manifest).is_ok());
 
     let mut manifest = host_surface_only_manifest();
     manifest.services.provides.push(Service {

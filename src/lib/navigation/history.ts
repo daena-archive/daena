@@ -72,6 +72,12 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 }
 
+function moduleStateHistoryKey(state: Record<string, unknown> | null | undefined): string {
+  if (!state) return "null";
+  const { viewport: _viewport, ...rest } = state;
+  return stableStringify(rest);
+}
+
 export function shellLocationKey(location: ShellLocation): string {
   if (location.kind === "home") return "home";
   if (location.kind === "settings") return `settings:${location.section}`;
@@ -98,7 +104,7 @@ export function shellLocationKey(location: ShellLocation): string {
       ...location.collection,
       scrollTop: Math.round(location.collection.scrollTop),
     },
-    moduleState: location.moduleState ? stableStringify(location.moduleState) : "null",
+    moduleState: moduleStateHistoryKey(location.moduleState),
   })}`;
 }
 

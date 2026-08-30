@@ -13,7 +13,7 @@ const fixturePaths = [
   "packages/modules/timeline/manifest.json",
   "packages/modules/writing/manifest.json",
   "packages/modules/maps/manifest.json",
-  "packages/modules/family-tree/manifest.json",
+  "packages/modules/houses/manifest.json",
 ];
 let brokerChecks = 0;
 let manifest;

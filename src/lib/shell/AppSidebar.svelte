@@ -4,6 +4,7 @@ import ProjectSwitcher from "./ProjectSwitcher.svelte";
 import {
   CalendarRange,
   Boxes,
+  Castle,
   Home,
   Languages,
   Library,
@@ -94,6 +95,7 @@ function workspaceIcon(section: WorkspaceSection) {
   if (section === "timeline") return CalendarRange;
   if (section === "writing") return Pencil;
   if (section === "language") return Languages;
+  if (section === "houses") return Castle;
   return MapIcon;
 }
 </script>

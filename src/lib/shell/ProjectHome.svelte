@@ -5,6 +5,7 @@ import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
 import {
   CalendarRange,
   Boxes,
+  Castle,
   ChevronRight,
   Clock3,
   GitBranch,
@@ -62,6 +63,7 @@ function sectionIcon(section: WorkspaceSection) {
   if (section === "timeline") return CalendarRange;
   if (section === "writing") return Pencil;
   if (section === "language") return Languages;
+  if (section === "houses") return Castle;
   return MapIcon;
 }
 </script>

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { BaseEdge, getSmoothStepPath, getStraightPath, type Position } from "@xyflow/svelte";
+import { BaseEdge, getSmoothStepPath, getStraightPath, Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import type { ParentKind, PartnerKind } from "./model";
 
@@ -55,8 +55,9 @@ const dash = $derived.by(() => {
       return undefined;
   }
 });
+const sideways = $derived(sourcePosition === Position.Left || sourcePosition === Position.Right);
 const [path, labelX, labelY] = $derived(
-  partner
+  partner || sideways
     ? getStraightPath({ sourceX, sourceY, targetX, targetY })
     : getSmoothStepPath({
         sourceX,

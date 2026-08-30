@@ -27,6 +27,7 @@ let {
   excludeIds,
   coParentIds = [],
   coParentName = "",
+  otherPerson = null,
   wouldCycle = () => false,
   onLinked,
   onCreatedPerson,
@@ -41,6 +42,7 @@ let {
   excludeIds: string[];
   coParentIds?: string[];
   coParentName?: string;
+  otherPerson?: EntitySummary | null;
   wouldCycle?: (otherId: string) => boolean | string | null;
   onLinked: (relationshipId: string) => void;
   onCreatedPerson: (person: EntitySummary) => void;
@@ -78,7 +80,9 @@ const title = $derived(
       ? coParentName
         ? `Add child of ${currentName} and ${coParentName}`
         : `Add child of ${currentName}`
-      : `Add partner of ${currentName}`,
+      : otherPerson
+        ? `Add partnership of ${currentName} and ${otherPerson.name}`
+        : `Add partner of ${currentName}`,
 );
 
 function metadata() {
@@ -232,7 +236,7 @@ function onKeydown(event: KeyboardEvent) {
 
 $effect(() => {
   void query;
-  if (mode !== "link") return;
+  if (mode !== "link" || otherPerson) return;
   const timer = setTimeout(() => void search(0), 180);
   return () => clearTimeout(timer);
 });
@@ -273,12 +277,14 @@ $effect(() => {
         <button type="button" class="quiet-button" disabled={saving} onclick={onClose}>Cancel</button>
       </div>
     {:else}
-      <div class="tabs">
-        <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
-          >Link existing</button>
-        <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
-          >Create person</button>
-      </div>
+      {#if !otherPerson}
+        <div class="tabs">
+          <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
+            >Link existing</button>
+          <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
+            >Create person</button>
+        </div>
+      {/if}
       {#if role !== "partner"}
         <label>
           Parent type
@@ -307,7 +313,11 @@ $effect(() => {
       {#if role === "child" && coParentName}
         <p class="hint">Also links {coParentName} as a parent so the child hangs from this marriage.</p>
       {/if}
-      {#if mode === "link"}
+      {#if otherPerson}
+        <p class="hint">These two people already share a child. Save to record a partnership.</p>
+        <button type="button" class="primary-button" disabled={saving} onclick={() => void linkPerson(otherPerson)}
+          >Save partnership</button>
+      {:else if mode === "link"}
         <label>Search <input type="search" bind:value={query} /></label>
         {#if busy && results.length === 0}<p class="hint">Searching…</p>
         {:else if results.length === 0}<p class="hint">No matching people.</p>

@@ -14,6 +14,8 @@ import type { Snippet } from "svelte";
 import FamilyPersonNode from "./FamilyPersonNode.svelte";
 import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";
+import { familyEdgeHandles } from "./layout.ts";
+import { coupleClickAction, unionClickAction } from "./unions.ts";
 import type {
   BranchDirection,
   FamilyPerson,
@@ -39,6 +41,7 @@ let {
   onToggleBranch,
   onAddRelative,
   onAddUnionChild,
+  onLinkPartners,
   fitToken = 0,
   fitView = true,
   initialViewport = null,
@@ -59,6 +62,7 @@ let {
   onToggleBranch: (id: string, direction: BranchDirection) => void;
   onAddRelative: (id: string, role: RelativeRole) => void;
   onAddUnionChild: (memberIds: string[]) => void;
+  onLinkPartners: (memberIds: [string, string]) => void;
   fitToken?: number;
   fitView?: boolean;
   initialViewport?: Viewport | null;
@@ -123,16 +127,8 @@ function flowNodes(): Node[] {
   });
 }
 
-function portHandles(edge: LayoutEdge): { sourceHandle: string; targetHandle: string } {
-  if (edge.role === "partner") {
-    const source = layout.nodes.find((node) => node.id === edge.source);
-    const target = layout.nodes.find((node) => node.id === edge.target);
-    const sourceMid = (source?.x ?? 0) + (source?.width ?? 0) / 2;
-    const targetMid = (target?.x ?? 0) + (target?.width ?? 0) / 2;
-    if (sourceMid <= targetMid) return { sourceHandle: "east", targetHandle: "west" };
-    return { sourceHandle: "west", targetHandle: "east" };
-  }
-  return { sourceHandle: "south", targetHandle: "north" };
+function portHandles(edge: LayoutEdge) {
+  return familyEdgeHandles(edge, layout.nodes);
 }
 
 function flowEdges(): Edge[] {
@@ -252,11 +248,26 @@ function onCanvasKeydown(event: KeyboardEvent) {
       maxZoom={2}
       onmoveend={(_event, next) => onViewportChange?.(next)}
       onnodeclick={({ node }) => {
-        onSelectPerson(node.type === "person" ? node.id : null);
+        if (node.type === "person") {
+          onSelectPerson(node.id);
+          return;
+        }
+        onSelectPerson(null);
+        const action = unionClickAction(node.id, layout.nodes, layout.edges);
+        if (action && "relationshipId" in action) onSelectRelationship(action.relationshipId);
+        else if (action && "memberIds" in action) onLinkPartners(action.memberIds);
+        else onSelectRelationship(null);
       }}
       onedgeclick={({ edge }) => {
-        const relationshipId = layout.edges.find((item) => item.id === edge.id)?.relationshipId ?? null;
-        onSelectRelationship(relationshipId);
+        const layoutEdge = layout.edges.find((item) => item.id === edge.id);
+        if (!layoutEdge) {
+          onSelectRelationship(null);
+          return;
+        }
+        const action = coupleClickAction(layoutEdge, layout.nodes, layout.edges);
+        if (action && "relationshipId" in action) onSelectRelationship(action.relationshipId);
+        else if (action && "memberIds" in action) onLinkPartners(action.memberIds);
+        else onSelectRelationship(null);
       }}
       onpaneclick={() => {
         onSelectPerson(null);

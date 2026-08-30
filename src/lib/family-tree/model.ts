@@ -22,7 +22,15 @@ export const RELATIONSHIP_QUERY_PAGE = 200;
 export const RELATIONSHIP_QUERY_FETCH_CAP = 500;
 export const ENTITY_GET_MANY_LIMIT = 500;
 export const MAX_EXPANSION_DEPTH = 6;
+export const MAX_ANCESTOR_GENERATIONS = 12;
+export const MAX_DESCENDANT_GENERATIONS = 12;
+export const MAX_VISIBLE_PERSON_LIMIT = 2000;
+export const MAX_VISIBLE_UNION_LIMIT = 1200;
+export const MAX_VISIBLE_EDGE_LIMIT = 4000;
+export const MAX_EXPANSION_DEPTH_LIMIT = 24;
 export const BRANCH_TOO_LARGE = "This branch is too large to display at once. Re-root on a nearby person to continue.";
+export const LIMITS_OVER_BUDGET =
+  "Above the recommended 2 generations / 250 people. Layout may hitch; raise the cap only if you need it.";
 export const BRANCH_TOO_DEEP = BRANCH_TOO_LARGE;
 export const BRANCH_DIRECTIONS = ["parents", "children", "siblings", "partners"] as const;
 
@@ -51,6 +59,89 @@ export interface FamilyViewport {
   x: number;
   y: number;
   zoom: number;
+}
+
+export interface FamilyTreeLimits {
+  ancestorGenerations: number;
+  descendantGenerations: number;
+  visiblePersonLimit: number;
+  visibleUnionLimit: number;
+  visibleEdgeLimit: number;
+  maxExpansionDepth: number;
+}
+
+export const DEFAULT_FAMILY_TREE_LIMITS: FamilyTreeLimits = {
+  ancestorGenerations: INITIAL_ANCESTOR_GENERATIONS,
+  descendantGenerations: INITIAL_DESCENDANT_GENERATIONS,
+  visiblePersonLimit: VISIBLE_PERSON_LIMIT,
+  visibleUnionLimit: VISIBLE_UNION_LIMIT,
+  visibleEdgeLimit: VISIBLE_EDGE_LIMIT,
+  maxExpansionDepth: MAX_EXPANSION_DEPTH,
+};
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const next = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(next)));
+}
+
+export function clampFamilyTreeLimits(input: Partial<FamilyTreeLimits> | null | undefined): FamilyTreeLimits {
+  const ancestorGenerations = clampInt(
+    input?.ancestorGenerations,
+    1,
+    MAX_ANCESTOR_GENERATIONS,
+    DEFAULT_FAMILY_TREE_LIMITS.ancestorGenerations,
+  );
+  const descendantGenerations = clampInt(
+    input?.descendantGenerations,
+    1,
+    MAX_DESCENDANT_GENERATIONS,
+    DEFAULT_FAMILY_TREE_LIMITS.descendantGenerations,
+  );
+  const visiblePersonLimit = clampInt(
+    input?.visiblePersonLimit,
+    1,
+    MAX_VISIBLE_PERSON_LIMIT,
+    DEFAULT_FAMILY_TREE_LIMITS.visiblePersonLimit,
+  );
+  const scale = visiblePersonLimit / VISIBLE_PERSON_LIMIT;
+  const visibleUnionLimit = clampInt(
+    input?.visibleUnionLimit ?? Math.round(VISIBLE_UNION_LIMIT * scale),
+    1,
+    MAX_VISIBLE_UNION_LIMIT,
+    DEFAULT_FAMILY_TREE_LIMITS.visibleUnionLimit,
+  );
+  const visibleEdgeLimit = clampInt(
+    input?.visibleEdgeLimit ?? Math.round(VISIBLE_EDGE_LIMIT * scale),
+    1,
+    MAX_VISIBLE_EDGE_LIMIT,
+    DEFAULT_FAMILY_TREE_LIMITS.visibleEdgeLimit,
+  );
+  const maxExpansionDepth = clampInt(
+    input?.maxExpansionDepth ?? Math.max(MAX_EXPANSION_DEPTH, ancestorGenerations, descendantGenerations),
+    1,
+    MAX_EXPANSION_DEPTH_LIMIT,
+    DEFAULT_FAMILY_TREE_LIMITS.maxExpansionDepth,
+  );
+  return {
+    ancestorGenerations,
+    descendantGenerations,
+    visiblePersonLimit,
+    visibleUnionLimit,
+    visibleEdgeLimit,
+    maxExpansionDepth,
+  };
+}
+
+export function familyTreeLimitsOverBudget(limits: FamilyTreeLimits): boolean {
+  return (
+    limits.ancestorGenerations > INITIAL_ANCESTOR_GENERATIONS ||
+    limits.descendantGenerations > INITIAL_DESCENDANT_GENERATIONS ||
+    limits.visiblePersonLimit > VISIBLE_PERSON_LIMIT ||
+    limits.visibleUnionLimit > VISIBLE_UNION_LIMIT ||
+    limits.visibleEdgeLimit > VISIBLE_EDGE_LIMIT ||
+    limits.maxExpansionDepth > MAX_EXPANSION_DEPTH
+  );
 }
 
 export interface FamilyTreeSession {
@@ -165,8 +256,16 @@ export function truncationWarning(lowerBound: number): GenealogyWarning {
   return { message: `Relationship query truncated (${shown}). Counts may be a lower bound.` };
 }
 
-export function layoutExceedsLimits(people: number, unions: number, edges: number): boolean {
-  return people > VISIBLE_PERSON_LIMIT || unions > VISIBLE_UNION_LIMIT || edges > VISIBLE_EDGE_LIMIT;
+export function layoutExceedsLimits(
+  people: number,
+  unions: number,
+  edges: number,
+  limits: Pick<
+    FamilyTreeLimits,
+    "visiblePersonLimit" | "visibleUnionLimit" | "visibleEdgeLimit"
+  > = DEFAULT_FAMILY_TREE_LIMITS,
+): boolean {
+  return people > limits.visiblePersonLimit || unions > limits.visibleUnionLimit || edges > limits.visibleEdgeLimit;
 }
 
 export function expansionKey(id: string, direction: BranchDirection): ExpansionKey {

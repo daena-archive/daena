@@ -229,12 +229,16 @@ function shareVisibleChild(graph: GenealogyGraph, left: string, right: string, v
   return false;
 }
 
-export function initialNeighborhood(graph: GenealogyGraph, rootId: string): Set<string> {
+export function initialNeighborhood(
+  graph: GenealogyGraph,
+  rootId: string,
+  ancestorGenerations = INITIAL_ANCESTOR_GENERATIONS,
+  descendantGenerations = INITIAL_DESCENDANT_GENERATIONS,
+): Set<string> {
   const visible = new Set<string>([rootId]);
   if (!graph.people.has(rootId)) return visible;
-  for (const id of walk([rootId], INITIAL_ANCESTOR_GENERATIONS, (id) => graph.parentsByChild.get(id))) visible.add(id);
-  for (const id of walk([rootId], INITIAL_DESCENDANT_GENERATIONS, (id) => graph.childrenByParent.get(id)))
-    visible.add(id);
+  for (const id of walk([rootId], ancestorGenerations, (id) => graph.parentsByChild.get(id))) visible.add(id);
+  for (const id of walk([rootId], descendantGenerations, (id) => graph.childrenByParent.get(id))) visible.add(id);
   for (const parent of graph.parentsByChild.get(rootId) ?? []) {
     for (const sibling of graph.childrenByParent.get(parent) ?? []) visible.add(sibling);
   }
@@ -260,8 +264,8 @@ export function visiblePeople(graph: GenealogyGraph, ids: Iterable<string>): Fam
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function wouldExceedVisibleLimit(count: number): boolean {
-  return count > VISIBLE_PERSON_LIMIT;
+export function wouldExceedVisibleLimit(count: number, limit = VISIBLE_PERSON_LIMIT): boolean {
+  return count > limit;
 }
 
 export function summariesToPeople(
@@ -315,18 +319,35 @@ function partnerIncluded(
   return explicit;
 }
 
-export function seedInitialExpansions(graph: GenealogyGraph, rootId: string): Set<string> {
+export function seedInitialExpansions(
+  graph: GenealogyGraph,
+  rootId: string,
+  ancestorGenerations = INITIAL_ANCESTOR_GENERATIONS,
+  descendantGenerations = INITIAL_DESCENDANT_GENERATIONS,
+): Set<string> {
   const keys = new Set<string>([
     expansionKey(rootId, "parents"),
     expansionKey(rootId, "children"),
     expansionKey(rootId, "siblings"),
   ]);
-  for (const parent of graph.parentsByChild.get(rootId) ?? []) {
-    keys.add(expansionKey(parent, "parents"));
-    keys.add(expansionKey(parent, "children"));
+  let ancestors = [...(graph.parentsByChild.get(rootId) ?? [])];
+  for (let generation = 1; generation < ancestorGenerations; generation += 1) {
+    const upcoming: string[] = [];
+    for (const id of ancestors) {
+      keys.add(expansionKey(id, "parents"));
+      if (generation === 1) keys.add(expansionKey(id, "children"));
+      upcoming.push(...(graph.parentsByChild.get(id) ?? []));
+    }
+    ancestors = upcoming;
   }
-  for (const child of graph.childrenByParent.get(rootId) ?? []) {
-    keys.add(expansionKey(child, "children"));
+  let descendants = [...(graph.childrenByParent.get(rootId) ?? [])];
+  for (let generation = 1; generation < descendantGenerations; generation += 1) {
+    const upcoming: string[] = [];
+    for (const id of descendants) {
+      keys.add(expansionKey(id, "children"));
+      upcoming.push(...(graph.childrenByParent.get(id) ?? []));
+    }
+    descendants = upcoming;
   }
   return keys;
 }
@@ -434,9 +455,10 @@ export function expansionBlocked(
   rootId: string,
   personId: string,
   direction: BranchDirection,
+  maxExpansionDepth = MAX_EXPANSION_DEPTH,
 ): boolean {
   if (direction !== "parents" && direction !== "children") return false;
-  return generationDistance(graph, rootId, personId, direction) >= MAX_EXPANSION_DEPTH;
+  return generationDistance(graph, rootId, personId, direction) >= maxExpansionDepth;
 }
 
 export function wouldCreateParentCycle(graph: GenealogyGraph, parentId: string, childId: string): boolean {

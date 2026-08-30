@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { loadExpansionLayer, loadGenealogyNeighborhood } from "../src/lib/family-tree/fetch.ts";
-import { LayoutGeneration, buildElkGraph, isCurrentGeneration, placeUnions } from "../src/lib/family-tree/layout.ts";
+import {
+  LayoutGeneration,
+  buildElkGraph,
+  familyEdgeHandles,
+  isCurrentGeneration,
+  placeUnions,
+} from "../src/lib/family-tree/layout.ts";
 import {
   PERSON_NODE_HEIGHT,
   PERSON_NODE_WIDTH,
@@ -10,6 +16,8 @@ import {
   VISIBLE_EDGE_LIMIT,
   VISIBLE_PERSON_LIMIT,
   VISIBLE_UNION_LIMIT,
+  clampFamilyTreeLimits,
+  familyTreeLimitsOverBudget,
   layoutExceedsLimits,
   truncationWarning,
 } from "../src/lib/family-tree/model.ts";
@@ -29,9 +37,21 @@ import {
   visibleFromExpansions,
   wouldCreateDuplicate,
   wouldCreateParentCycle,
+  wouldExceedVisibleLimit,
 } from "../src/lib/family-tree/projection.ts";
-import { rememberRecentRoot, recentRoots, replaceRecentRoots } from "../src/lib/family-tree/state.ts";
-import { buildLayoutGraph, layoutGraphExceedsLimits } from "../src/lib/family-tree/unions.ts";
+import {
+  readFamilyTreeLimits,
+  rememberRecentRoot,
+  recentRoots,
+  replaceRecentRoots,
+  writeFamilyTreeLimits,
+} from "../src/lib/family-tree/state.ts";
+import {
+  buildLayoutGraph,
+  coupleClickAction,
+  layoutGraphExceedsLimits,
+  unionClickAction,
+} from "../src/lib/family-tree/unions.ts";
 
 function person(id, name = id) {
   return { id, name, revision: "1", birth: null, death: null, secondaryLabel: null };
@@ -157,6 +177,25 @@ assert.deepEqual(
   layoutAgain.edges.map((edge) => edge.id),
 );
 
+const { graph: unmarriedParents } = normalizeGenealogy(
+  [person("mom"), person("dad"), person("kid")],
+  [parent("u1", "mom", "kid"), parent("u2", "dad", "kid")],
+);
+const unmarriedLayout = buildLayoutGraph(unmarriedParents, ["mom", "dad", "kid"]);
+const unmarriedEdge = unmarriedLayout.edges.find((edge) => edge.role === "parent");
+assert.deepEqual(coupleClickAction(unmarriedEdge, unmarriedLayout.nodes, unmarriedLayout.edges), {
+  memberIds: ["dad", "mom"],
+});
+const unmarriedUnion = unmarriedLayout.nodes.find((node) => node.kind === "union");
+assert.deepEqual(unionClickAction(unmarriedUnion.id, unmarriedLayout.nodes, unmarriedLayout.edges), {
+  memberIds: ["dad", "mom"],
+});
+const marriedEdge = layout.edges.find((edge) => edge.role === "partner" && edge.relationshipId === "r2");
+assert.deepEqual(coupleClickAction(marriedEdge, layout.nodes, layout.edges), { relationshipId: "r2" });
+assert.deepEqual(unionClickAction("union:parents:partner-b:root", layout.nodes, layout.edges), {
+  relationshipId: "r2",
+});
+
 const elk = buildElkGraph(layout);
 assert.equal(
   (elk.children ?? []).some((node) => node.id.startsWith("union:")),
@@ -167,6 +206,11 @@ assert.equal(
   (elk.edges ?? []).some((edge) => edge.sources.includes("root") && edge.targets.includes("child")),
   true,
   "ELK uses parent-to-child edges for couple offspring",
+);
+assert.equal(
+  (elk.edges ?? []).some((edge) => edge.sources.includes("mother") && edge.targets.includes("partner-b")),
+  true,
+  "ELK keeps a spouse on the same layer as the blood relative",
 );
 
 function blankEdge(id, source, target, role) {
@@ -260,6 +304,64 @@ assert.ok(
   "married child is not forced under the parent union",
 );
 
+const inLawFloated = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "g", kind: "person", personId: "g", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 200 },
+    { id: "b", kind: "person", personId: "b", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 400, y: 0 },
+    { id: "u", kind: "union", memberIds: ["a", "b"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "c", kind: "person", personId: "c", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 80, y: 400 },
+  ],
+  edges: [
+    blankEdge("d1", "g", "a", "direct-parent"),
+    blankEdge("p1", "a", "u", "partner"),
+    blankEdge("p2", "b", "u", "partner"),
+    blankEdge("k1", "u", "c", "child"),
+  ],
+});
+const floatedG = inLawFloated.nodes.find((node) => node.id === "g");
+const floatedA = inLawFloated.nodes.find((node) => node.id === "a");
+const floatedB = inLawFloated.nodes.find((node) => node.id === "b");
+const floatedC = inLawFloated.nodes.find((node) => node.id === "c");
+assert.equal(floatedA.y, floatedB.y, "in-law shares the blood relative row");
+assert.ok(floatedA.y > floatedG.y, "adding a partner does not lift the couple above their parents");
+assert.ok(floatedC.y > floatedA.y + floatedA.height, "children stay below the marriage");
+
+const coparents = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "b", kind: "person", personId: "b", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 400, y: 0 },
+    { id: "u", kind: "union", memberIds: ["a", "b"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "k", kind: "person", personId: "k", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 80, y: 300 },
+  ],
+  edges: [blankEdge("p1", "a", "u", "parent"), blankEdge("p2", "b", "u", "parent"), blankEdge("k1", "u", "k", "child")],
+});
+const coparentLeft = coparents.nodes.find((node) => node.id === "a");
+const coparentUnion = coparents.nodes.find((node) => node.id === "u");
+const coparentRight = coparents.nodes.find((node) => node.id === "b");
+const leftToUnion = familyEdgeHandles({ role: "parent", source: "a", target: "u" }, coparents.nodes);
+const rightToUnion = familyEdgeHandles({ role: "parent", source: "b", target: "u" }, coparents.nodes);
+const unionToChild = familyEdgeHandles({ role: "child", source: "u", target: "k" }, coparents.nodes);
+assert.equal(coparentLeft.y, coparentRight.y, "unmarried coparents share a row");
+assert.ok(coparentUnion.x > coparentLeft.x + coparentLeft.width, "union sits after the left coparent");
+assert.ok(coparentUnion.x + coparentUnion.width < coparentRight.x, "union sits before the right coparent");
+assert.deepEqual(leftToUnion, { sourceHandle: "east", targetHandle: "west" });
+assert.deepEqual(rightToUnion, { sourceHandle: "west", targetHandle: "east" });
+assert.deepEqual(unionToChild, { sourceHandle: "south", targetHandle: "north" });
+
+const trio = [
+  { id: "a", x: 0, y: 0, width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT },
+  { id: "b", x: 240, y: 0, width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT },
+  { id: "c", x: 480, y: 0, width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT },
+  { id: "u", x: 350, y: PERSON_NODE_HEIGHT + 24, width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT },
+];
+assert.deepEqual(familyEdgeHandles({ role: "parent", source: "a", target: "u" }, trio), {
+  sourceHandle: "south",
+  targetHandle: "north",
+});
+
 function overlappingPeople(nodes) {
   const people = nodes.filter((node) => node.kind === "person");
   for (let left = 0; left < people.length; left += 1) {
@@ -297,6 +399,137 @@ const stackedSiblings = placeUnions({
   ],
 });
 assert.equal(overlappingPeople(stackedSiblings.nodes), null, "no two person cards share space");
+
+const twoMarriages = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "b", kind: "person", personId: "b", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 700, y: 0 },
+    { id: "c", kind: "person", personId: "c", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1400, y: 0 },
+    { id: "u1", kind: "union", memberIds: ["a", "b"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "u2", kind: "union", memberIds: ["b", "c"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "k1", kind: "person", personId: "k1", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 40, y: 300 },
+    { id: "k2", kind: "person", personId: "k2", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 80, y: 300 },
+    { id: "k3", kind: "person", personId: "k3", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1200, y: 300 },
+    { id: "k4", kind: "person", personId: "k4", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1500, y: 300 },
+  ],
+  edges: [
+    blankEdge("p1", "a", "u1", "partner"),
+    blankEdge("p2", "b", "u1", "partner"),
+    blankEdge("p3", "b", "u2", "partner"),
+    blankEdge("p4", "c", "u2", "partner"),
+    blankEdge("c1", "u1", "k1", "child"),
+    blankEdge("c2", "u1", "k2", "child"),
+    blankEdge("c3", "u2", "k3", "child"),
+    blankEdge("c4", "u2", "k4", "child"),
+  ],
+});
+const tmA = twoMarriages.nodes.find((node) => node.id === "a");
+const tmB = twoMarriages.nodes.find((node) => node.id === "b");
+const tmC = twoMarriages.nodes.find((node) => node.id === "c");
+const tmU1 = twoMarriages.nodes.find((node) => node.id === "u1");
+const tmU2 = twoMarriages.nodes.find((node) => node.id === "u2");
+const tmK1 = twoMarriages.nodes.find((node) => node.id === "k1");
+const tmK2 = twoMarriages.nodes.find((node) => node.id === "k2");
+const tmK3 = twoMarriages.nodes.find((node) => node.id === "k3");
+const tmK4 = twoMarriages.nodes.find((node) => node.id === "k4");
+assert.equal(tmA.y, tmB.y, "serial spouses share a row");
+assert.equal(tmB.y, tmC.y, "both marriages stay on one row");
+assert.ok(tmU1.x > tmA.x + tmA.width && tmU1.x + tmU1.width < tmB.x, "first union sits between its spouses");
+assert.ok(tmU2.x > tmB.x + tmB.width && tmU2.x + tmU2.width < tmC.x, "second union sits between its spouses");
+assert.ok(tmU1.x - (tmA.x + tmA.width) < 40, "first marriage line does not run through other cards");
+assert.ok(tmC.x - (tmU2.x + tmU2.width) < 40, "second marriage line does not run through other cards");
+assert.equal(overlappingPeople(twoMarriages.nodes), null, "serial-marriage children do not overlap");
+assert.ok(tmK2.x + tmK2.width <= tmK3.x, "children of different marriages do not share an x-range");
+assert.ok(
+  Math.abs((tmK1.x + tmK2.x + tmK2.width) / 2 - (tmU1.x + tmU1.width / 2)) < 2,
+  "first marriage children stay under their union",
+);
+assert.ok(
+  Math.abs((tmK3.x + tmK4.x + tmK4.width) / 2 - (tmU2.x + tmU2.width / 2)) < 2,
+  "second marriage children stay under their union",
+);
+
+const intruder = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "b", kind: "person", personId: "b", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 900, y: 0 },
+    { id: "u1", kind: "union", memberIds: ["a", "b"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "d", kind: "person", personId: "d", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 300, y: 0 },
+    { id: "e", kind: "person", personId: "e", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 520, y: 0 },
+    { id: "u2", kind: "union", memberIds: ["d", "e"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "c", kind: "person", personId: "c", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1100, y: 0 },
+    { id: "u3", kind: "union", memberIds: ["b", "c"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+  ],
+  edges: [
+    blankEdge("p1", "a", "u1", "partner"),
+    blankEdge("p2", "b", "u1", "partner"),
+    blankEdge("p3", "d", "u2", "partner"),
+    blankEdge("p4", "e", "u2", "partner"),
+    blankEdge("p5", "b", "u3", "partner"),
+    blankEdge("p6", "c", "u3", "partner"),
+  ],
+});
+const inA = intruder.nodes.find((node) => node.id === "a");
+const inC = intruder.nodes.find((node) => node.id === "c");
+const inD = intruder.nodes.find((node) => node.id === "d");
+const inE = intruder.nodes.find((node) => node.id === "e");
+const chainLeft = inA.x;
+const chainRight = inC.x + inC.width;
+const otherLeft = Math.min(inD.x, inE.x);
+const otherRight = Math.max(inD.x + inD.width, inE.x + inE.width);
+assert.ok(
+  otherRight <= chainLeft || otherLeft >= chainRight,
+  "another couple cannot sit inside a serial marriage chain",
+);
+
+const manyChildren = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "z", kind: "person", personId: "z", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "k", kind: "person", personId: "k", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 400, y: 0 },
+    { id: "f", kind: "person", personId: "f", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 800, y: 0 },
+    { id: "u1", kind: "union", memberIds: ["z", "k"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "u2", kind: "union", memberIds: ["k", "f"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "h", kind: "person", personId: "h", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 40, y: 200 },
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 200, y: 360 },
+    { id: "s", kind: "person", personId: "s", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 480, y: 360 },
+    { id: "ua", kind: "union", memberIds: ["a", "s"], width: UNION_NODE_WIDTH, height: UNION_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "m1", kind: "person", personId: "m1", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 500, y: 200 },
+    { id: "m2", kind: "person", personId: "m2", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 760, y: 200 },
+    { id: "m3", kind: "person", personId: "m3", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1020, y: 200 },
+    { id: "m4", kind: "person", personId: "m4", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1280, y: 200 },
+    { id: "m5", kind: "person", personId: "m5", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1540, y: 200 },
+  ],
+  edges: [
+    blankEdge("p1", "z", "u1", "partner"),
+    blankEdge("p2", "k", "u1", "partner"),
+    blankEdge("p3", "k", "u2", "partner"),
+    blankEdge("p4", "f", "u2", "partner"),
+    blankEdge("c1", "u1", "h", "child"),
+    blankEdge("c2", "u1", "a", "child"),
+    blankEdge("pa", "a", "ua", "partner"),
+    blankEdge("ps", "s", "ua", "partner"),
+    blankEdge("d1", "u2", "m1", "child"),
+    blankEdge("d2", "u2", "m2", "child"),
+    blankEdge("d3", "u2", "m3", "child"),
+    blankEdge("d4", "u2", "m4", "child"),
+    blankEdge("d5", "u2", "m5", "child"),
+  ],
+});
+const mcA = manyChildren.nodes.find((node) => node.id === "a");
+const mcH = manyChildren.nodes.find((node) => node.id === "h");
+const mcS = manyChildren.nodes.find((node) => node.id === "s");
+const mcM1 = manyChildren.nodes.find((node) => node.id === "m1");
+const mcM5 = manyChildren.nodes.find((node) => node.id === "m5");
+assert.equal(mcA.y, mcH.y, "married child stays on the same row as hanging siblings");
+assert.equal(mcA.y, mcM1.y, "married child stays on the same row as the other marriage's children");
+assert.equal(mcA.y, mcS.y, "spouse stays on the married child's row");
+assert.equal(overlappingPeople(manyChildren.nodes), null, "many children do not overlap cards");
+assert.ok(mcA.x + mcA.width <= mcM1.x, "first marriage's children stay left of the second marriage's children");
+assert.ok(mcH.x + mcH.width <= mcM1.x, "hanging sibling stays left of the other marriage");
+assert.ok(mcM1.x + mcM1.width <= mcM5.x, "second marriage children stay ordered");
 
 const gpa = person("gpa");
 const pa = person("pa");
@@ -355,6 +588,25 @@ assert.equal(layoutExceedsLimits(VISIBLE_PERSON_LIMIT + 1, 1, 1), true);
 assert.equal(layoutExceedsLimits(1, VISIBLE_UNION_LIMIT + 1, 1), true);
 assert.equal(layoutExceedsLimits(1, 1, VISIBLE_EDGE_LIMIT + 1), true);
 assert.equal(layoutExceedsLimits(VISIBLE_PERSON_LIMIT, VISIBLE_UNION_LIMIT, VISIBLE_EDGE_LIMIT), false);
+assert.equal(
+  layoutExceedsLimits(300, 1, 1, { visiblePersonLimit: 300, visibleUnionLimit: 200, visibleEdgeLimit: 800 }),
+  false,
+);
+assert.equal(wouldExceedVisibleLimit(251), true);
+assert.equal(wouldExceedVisibleLimit(251, 300), false);
+assert.equal(familyTreeLimitsOverBudget(clampFamilyTreeLimits({})), false);
+assert.equal(familyTreeLimitsOverBudget(clampFamilyTreeLimits({ ancestorGenerations: 4 })), true);
+assert.equal(clampFamilyTreeLimits({ ancestorGenerations: 99 }).ancestorGenerations, 12);
+assert.equal(clampFamilyTreeLimits({ visiblePersonLimit: 500 }).visibleUnionLimit, 300);
+const memory = { value: "" };
+const fakeStorage = {
+  getItem: () => memory.value || null,
+  setItem: (_key, value) => {
+    memory.value = value;
+  },
+};
+assert.equal(writeFamilyTreeLimits({ ancestorGenerations: 4 }, fakeStorage).ancestorGenerations, 4);
+assert.equal(readFamilyTreeLimits(fakeStorage).ancestorGenerations, 4);
 assert.equal(layoutGraphExceedsLimits(layout), false);
 assert.equal(truncationWarning(0).message.includes("99+"), true);
 assert.equal(truncationWarning(1200).message.includes("1200+"), true);
@@ -520,6 +772,34 @@ const deepGraph = normalizeGenealogy(deepPeople, deep).graph;
 assert.equal(generationDistance(deepGraph, "d0", "d8", "children"), 8);
 assert.equal(expansionBlocked(deepGraph, "d0", "d6", "children"), true);
 assert.equal(expansionBlocked(deepGraph, "d0", "d5", "children"), false);
+assert.equal(expansionBlocked(deepGraph, "d0", "d6", "children", 8), false);
+
+const g3 = person("g3");
+const g2 = person("g2");
+const g1 = person("g1");
+const r = person("r");
+const c1 = person("c1");
+const c2 = person("c2");
+const { graph: chain } = normalizeGenealogy(
+  [g3, g2, g1, r, c1, c2],
+  [
+    parent("n1", g3.id, g2.id),
+    parent("n2", g2.id, g1.id),
+    parent("n3", g1.id, r.id),
+    parent("n4", r.id, c1.id),
+    parent("n5", c1.id, c2.id),
+  ],
+);
+const twoHop = initialNeighborhood(chain, r.id, 2, 2);
+assert.equal(twoHop.has(g3.id), false);
+assert.equal(twoHop.has(g2.id), true);
+assert.equal(twoHop.has(c2.id), true);
+const threeHop = initialNeighborhood(chain, r.id, 3, 3);
+assert.equal(threeHop.has(g3.id), true);
+assert.deepEqual(
+  [...visibleFromExpansions(chain, r.id, seedInitialExpansions(chain, r.id, 3, 3)).visible].sort(),
+  [...threeHop].sort(),
+);
 
 assert.equal(classifyMutationError(new Error("relationship would introduce a cycle")).code, "relationship.cycle");
 assert.equal(classifyMutationError({ code: "relationship.cycle", message: "cycle" }).code, "relationship.cycle");

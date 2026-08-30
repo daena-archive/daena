@@ -129,10 +129,13 @@ export function buildLayoutGraph(graph: GenealogyGraph, visibleIds: Iterable<str
   return { nodes: [...nodes, ...unionNodes], edges: keptEdges };
 }
 
-export function layoutGraphExceedsLimits(graph: LayoutGraph): boolean {
+export function layoutGraphExceedsLimits(
+  graph: LayoutGraph,
+  limits?: Parameters<typeof layoutExceedsLimits>[3],
+): boolean {
   const people = graph.nodes.filter((node) => node.kind === "person").length;
   const unions = graph.nodes.filter((node) => node.kind === "union").length;
-  return layoutExceedsLimits(people, unions, graph.edges.length);
+  return layoutExceedsLimits(people, unions, graph.edges.length, limits);
 }
 
 function samePair(members: string[] | undefined, left: string, right: string) {
@@ -164,4 +167,35 @@ function attachPartner(edges: LayoutEdge[], relationship: FamilyRelationship, un
 
 export function parentSetKey(parentIds: string[]): string {
   return parentUnionId(parentIds);
+}
+
+export function coupleClickAction(
+  edge: LayoutEdge,
+  nodes: LayoutNode[],
+  edges: LayoutEdge[],
+): { relationshipId: string } | { memberIds: [string, string] } | null {
+  if (edge.relationshipId) return { relationshipId: edge.relationshipId };
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const source = byId.get(edge.source);
+  const target = byId.get(edge.target);
+  const union = source?.kind === "union" ? source : target?.kind === "union" ? target : null;
+  const members = union?.memberIds?.filter((id) => byId.get(id)?.kind === "person") ?? [];
+  if (members.length !== 2 || edge.role !== "parent") return null;
+  const [left, right] = [...members].sort(compareId);
+  return { memberIds: [left, right] as [string, string] };
+}
+
+export function unionClickAction(
+  unionId: string,
+  nodes: LayoutNode[],
+  edges: LayoutEdge[],
+): { relationshipId: string } | { memberIds: [string, string] } | null {
+  const union = nodes.find((node) => node.id === unionId && node.kind === "union");
+  const members =
+    union?.memberIds?.filter((id) => nodes.some((node) => node.id === id && node.kind === "person")) ?? [];
+  if (members.length !== 2) return null;
+  const partner = edges.find((edge) => edge.role === "partner" && edge.target === unionId && edge.relationshipId);
+  if (partner?.relationshipId) return { relationshipId: partner.relationshipId };
+  const [left, right] = [...members].sort(compareId);
+  return { memberIds: [left, right] as [string, string] };
 }

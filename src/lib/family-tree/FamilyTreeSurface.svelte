@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { EntitySummary, ModuleContext, Relationship } from "../../../packages/module-api/src/index";
+import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
 import { trapModalTab } from "$lib/shell/modalFocus";
@@ -18,11 +18,17 @@ import { buildElkGraph, LayoutGeneration, placeUnions, positionedFromElk } from 
 import {
   BRANCH_TOO_LARGE,
   DEFAULT_SECONDARY_FIELD,
+  LIMITS_OVER_BUDGET,
+  MAX_ANCESTOR_GENERATIONS,
+  MAX_DESCENDANT_GENERATIONS,
+  MAX_VISIBLE_PERSON_LIMIT,
   PERSON_TYPE,
   expansionKey,
+  familyTreeLimitsOverBudget,
   type BranchDirection,
   type FamilyPerson,
   type FamilyRelationship,
+  type FamilyTreeLimits,
   type FamilyTreeSession,
   type FamilyViewport,
   type GenealogyWarning,
@@ -40,7 +46,13 @@ import {
   visibleFromExpansions,
   wouldExceedVisibleLimit,
 } from "./projection.ts";
-import { recentRoots, rememberRecentRoot, replaceRecentRoots } from "./state.ts";
+import {
+  readFamilyTreeLimits,
+  recentRoots,
+  rememberRecentRoot,
+  replaceRecentRoots,
+  writeFamilyTreeLimits,
+} from "./state.ts";
 import { buildLayoutGraph, layoutGraphExceedsLimits } from "./unions.ts";
 
 let {
@@ -83,10 +95,11 @@ let pickerOpen = $state(false);
 let recentMenu = $state<{ id: string; name: string }[]>([]);
 let secondaryField = $state(DEFAULT_SECONDARY_FIELD);
 let secondaryFields = $state<{ key: string; label: string }[]>([{ key: DEFAULT_SECONDARY_FIELD, label: "Occupation" }]);
+let limits = $state<FamilyTreeLimits>(readFamilyTreeLimits());
 let overlayEl = $state<HTMLElement | null>(null);
 let expansions = $state<string[]>([]);
 let truncated = $state(false);
-let member = $state<{ id: string; role: RelativeRole; coParentIds?: string[] } | null>(null);
+let member = $state<{ id: string; role: RelativeRole; coParentIds?: string[]; otherId?: string } | null>(null);
 let abort: AbortController | null = null;
 const generations = new LayoutGeneration();
 let previousOrder: string[] = [];
@@ -162,7 +175,7 @@ function applyVisible(nextExpansions: string[], fit: boolean, protect: string[] 
   const { graph: nextGraph, warnings: graphWarnings } = normalizeGenealogy(rawPeople, rawRelationships);
   const { visible } = visibleFromExpansions(nextGraph, rootId, nextExpansions, protect);
   const candidate = buildLayoutGraph(nextGraph, visible);
-  if (wouldExceedVisibleLimit(visible.size) || layoutGraphExceedsLimits(candidate)) {
+  if (wouldExceedVisibleLimit(visible.size, limits.visiblePersonLimit) || layoutGraphExceedsLimits(candidate, limits)) {
     error = BRANCH_TOO_LARGE;
     return false;
   }
@@ -214,7 +227,7 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
   error = "";
   layoutFailed = false;
   try {
-    const loaded = await loadGenealogyNeighborhood(context, id, secondaryField, signal);
+    const loaded = await loadGenealogyNeighborhood(context, id, secondaryField, signal, limits);
     if (signal.aborted) return;
     collected = new Map(loaded.relationships.map((relationship) => [relationship.id, relationship]));
     rawPeople = loaded.people;
@@ -222,12 +235,17 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
     truncated = loaded.truncated;
     truncationLowerBound = loaded.truncationLowerBound;
     const { graph: nextGraph, warnings: graphWarnings } = normalizeGenealogy(loaded.people, loaded.relationships);
-    const nextExpansions = restored ?? [...seedInitialExpansions(nextGraph, id)];
+    const nextExpansions = restored ?? [
+      ...seedInitialExpansions(nextGraph, id, limits.ancestorGenerations, limits.descendantGenerations),
+    ];
     const visible = restored
       ? visibleFromExpansions(nextGraph, id, nextExpansions).visible
-      : initialNeighborhood(nextGraph, id);
+      : initialNeighborhood(nextGraph, id, limits.ancestorGenerations, limits.descendantGenerations);
     const candidate = buildLayoutGraph(nextGraph, visible);
-    if (wouldExceedVisibleLimit(visible.size) || layoutGraphExceedsLimits(candidate)) {
+    if (
+      wouldExceedVisibleLimit(visible.size, limits.visiblePersonLimit) ||
+      layoutGraphExceedsLimits(candidate, limits)
+    ) {
       error = BRANCH_TOO_LARGE;
       rerootCandidate = { id, name: loaded.people.find((person) => person.id === id)?.name ?? id };
       return;
@@ -313,6 +331,32 @@ function onSecondaryChange(event: Event) {
   }
 }
 
+function applyLimits(next: Partial<FamilyTreeLimits>, reload: boolean) {
+  limits = writeFamilyTreeLimits(next);
+  if (!rootId) return;
+  previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
+  if (reload) void loadRoot(rootId, true);
+  else applyVisible(expansions, false);
+}
+
+function onAncestorChange(event: Event) {
+  const value = Number((event.currentTarget as HTMLInputElement).value);
+  applyLimits({ ...limits, ancestorGenerations: value, maxExpansionDepth: undefined }, true);
+}
+
+function onDescendantChange(event: Event) {
+  const value = Number((event.currentTarget as HTMLInputElement).value);
+  applyLimits({ ...limits, descendantGenerations: value, maxExpansionDepth: undefined }, true);
+}
+
+function onPersonCapChange(event: Event) {
+  const value = Number((event.currentTarget as HTMLInputElement).value);
+  applyLimits(
+    { ...limits, visiblePersonLimit: value, visibleUnionLimit: undefined, visibleEdgeLimit: undefined },
+    false,
+  );
+}
+
 async function toggleBranch(personId: string, direction: BranchDirection) {
   if (!rootId) return;
   const key = expansionKey(personId, direction);
@@ -324,7 +368,7 @@ async function toggleBranch(personId: string, direction: BranchDirection) {
     );
     return;
   }
-  if (expansionBlocked(graph, rootId, personId, direction)) {
+  if (expansionBlocked(graph, rootId, personId, direction, limits.maxExpansionDepth)) {
     error = BRANCH_TOO_LARGE;
     offerReroot(personId);
     return;
@@ -493,6 +537,40 @@ $effect(() => {
             {/each}
           </select>
         </label>
+        <label class="recent limit">
+          <span class="sr">Ancestor generations</span>
+          ↑
+          <input
+            type="number"
+            min="1"
+            max={MAX_ANCESTOR_GENERATIONS}
+            value={limits.ancestorGenerations}
+            aria-label="Ancestor generations"
+            onchange={onAncestorChange} />
+        </label>
+        <label class="recent limit">
+          <span class="sr">Descendant generations</span>
+          ↓
+          <input
+            type="number"
+            min="1"
+            max={MAX_DESCENDANT_GENERATIONS}
+            value={limits.descendantGenerations}
+            aria-label="Descendant generations"
+            onchange={onDescendantChange} />
+        </label>
+        <label class="recent limit">
+          <span class="sr">Visible people cap</span>
+          Cap
+          <input
+            type="number"
+            min="1"
+            max={MAX_VISIBLE_PERSON_LIMIT}
+            step="50"
+            value={limits.visiblePersonLimit}
+            aria-label="Visible people cap"
+            onchange={onPersonCapChange} />
+        </label>
         <button type="button" class="quiet-button" onclick={fitView}>Fit</button>
         <button type="button" class="quiet-button" onclick={resetView}>Reset</button>
         <button type="button" class="quiet-button" onclick={changeRoot}>Change root</button>
@@ -512,6 +590,9 @@ $effect(() => {
       Layout failed. The previous arrangement was kept.
       <button type="button" class="quiet-button" onclick={retryLayout}>Retry</button>
     </p>
+  {/if}
+  {#if familyTreeLimitsOverBudget(limits)}
+    <p class="hint">{LIMITS_OVER_BUDGET}</p>
   {/if}
   {#if warnings.length > 0}
     <p class="hint">
@@ -547,6 +628,9 @@ $effect(() => {
             const [id, ...coParentIds] = memberIds.filter((personId) => people.has(personId));
             if (!id) return;
             member = { id, role: "child", coParentIds };
+          }}
+          onLinkPartners={(memberIds) => {
+            member = { id: memberIds[0], role: "partner", otherId: memberIds[1] };
           }}
           {fitToken}
           fitView={canvasFit}
@@ -636,6 +720,15 @@ $effect(() => {
       coParentName={member.role === "child"
         ? (people.get((member.coParentIds ?? coParentsFor(member.id))[0] ?? "")?.name ?? "")
         : ""}
+      otherPerson={member.otherId
+        ? {
+            id: member.otherId as UUID,
+            name: people.get(member.otherId)?.name ?? member.otherId,
+            type: PERSON_TYPE,
+            deleted: false,
+            revision: people.get(member.otherId)?.revision ?? "",
+          }
+        : null}
       wouldCycle={(otherId) => {
         const path =
           member!.role === "parent"
@@ -739,13 +832,24 @@ p {
   min-height: 0;
   height: 100%;
 }
-.recent select {
+.recent select,
+.recent input {
   min-height: 32px;
   padding: 4px 8px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
+}
+.recent.limit {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.recent.limit input {
+  width: 4.5rem;
 }
 .sr {
   position: absolute;

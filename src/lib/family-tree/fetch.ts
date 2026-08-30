@@ -21,6 +21,7 @@ import {
   truncationWarning,
   type BranchDirection,
   type FamilyPerson,
+  type FamilyTreeLimits,
   type GenealogyWarning,
 } from "./model.ts";
 import { personFromRecord } from "./projection.ts";
@@ -135,6 +136,7 @@ export async function loadGenealogyNeighborhood(
   rootId: string,
   secondaryField = DEFAULT_SECONDARY_FIELD,
   signal?: AbortSignal,
+  generations?: Pick<FamilyTreeLimits, "ancestorGenerations" | "descendantGenerations">,
 ): Promise<{
   people: FamilyPerson[];
   relationships: Relationship[];
@@ -152,8 +154,10 @@ export async function loadGenealogyNeighborhood(
     truncationLowerBound = Math.max(truncationLowerBound, page.lowerBound);
   };
 
+  const ancestorGenerations = generations?.ancestorGenerations ?? INITIAL_ANCESTOR_GENERATIONS;
+  const descendantGenerations = generations?.descendantGenerations ?? INITIAL_DESCENDANT_GENERATIONS;
   let ancestorFrontier = [rootId];
-  for (let generation = 0; generation < INITIAL_ANCESTOR_GENERATIONS && ancestorFrontier.length > 0; generation += 1) {
+  for (let generation = 0; generation < ancestorGenerations && ancestorFrontier.length > 0; generation += 1) {
     const page = await queryPaged(context, ancestorFrontier, [PARENT_RELATIONSHIP], "incoming", collected, signal);
     recordPage(page);
     ancestorFrontier = uniqueIds(
@@ -164,11 +168,7 @@ export async function loadGenealogyNeighborhood(
   }
 
   let descendantFrontier = [rootId];
-  for (
-    let generation = 0;
-    generation < INITIAL_DESCENDANT_GENERATIONS && descendantFrontier.length > 0;
-    generation += 1
-  ) {
+  for (let generation = 0; generation < descendantGenerations && descendantFrontier.length > 0; generation += 1) {
     const page = await queryPaged(context, descendantFrontier, [PARENT_RELATIONSHIP], "outgoing", collected, signal);
     recordPage(page);
     descendantFrontier = uniqueIds(

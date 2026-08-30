@@ -29,10 +29,12 @@ let {
     label: string;
     start: unknown;
     end: unknown;
+    relationshipId?: string | null;
   };
 } = $props();
 
 const partner = $derived(data?.role === "partner");
+const relationshipId = $derived(data?.relationshipId ?? null);
 const caption = $derived.by(() => {
   const label = data?.label?.trim() || (partner ? "Partner" : "Parent");
   const start = data?.start ? formatCalendarDate(data.start) : "";
@@ -91,7 +93,12 @@ const [path, labelX, labelY] = $derived(
 </script>
 
 {#if partner}
-  <g class="family-edge family-edge-partner" class:selected aria-label={caption}>
+  <g
+    class="family-edge family-edge-partner"
+    class:selected
+    data-relationship-id={relationshipId}
+    tabindex={relationshipId ? -1 : undefined}
+    aria-label={caption}>
     <title>{caption}</title>
     <path d={path} class="partner-rail" fill="none" />
     <BaseEdge {id} {path} {labelX} {labelY} interactionWidth={20} />
@@ -102,7 +109,12 @@ const [path, labelX, labelY] = $derived(
     {/if}
   </g>
 {:else}
-  <g class="family-edge family-edge-parent" class:selected aria-label={caption}>
+  <g
+    class="family-edge family-edge-parent"
+    class:selected
+    data-relationship-id={relationshipId}
+    tabindex={relationshipId ? -1 : undefined}
+    aria-label={caption}>
     <title>{caption}</title>
     <!-- halo for contrast on light/warm backgrounds -->
     <path
@@ -152,6 +164,11 @@ const [path, labelX, labelY] = $derived(
 {/if}
 
 <style>
+:global(.family-edge:focus),
+:global(.family-edge:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .edge-pill {
   position: absolute;
   padding: 2px 6px;

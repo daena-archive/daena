@@ -87,6 +87,36 @@ export function formatMembershipRole(role: string | null | undefined, customLabe
   return customLabel?.trim() ? `${label} · ${customLabel.trim()}` : label;
 }
 
+/** Undirected partnerships use “A and B”; directed parent links keep “A → B”. */
+export function formatRelationshipTitle(
+  kind: FamilyRelationshipKind | "parent" | "partner",
+  sourceName: string,
+  targetName: string,
+): string {
+  if (kind === "partner") return `${sourceName} and ${targetName}`;
+  return `${sourceName} → ${targetName}`;
+}
+
+export function formatRelationshipTypeLabel(relationship: {
+  kind: FamilyRelationshipKind | "parent" | "partner";
+  label?: string | null;
+  parentKind?: string | null;
+  partnerKind?: string | null;
+  customLabel?: string | null;
+}): string {
+  const custom = relationship.customLabel?.trim();
+  if (custom) return custom;
+  if (relationship.label?.trim()) return relationship.label.trim();
+  if (relationship.kind === "partner") {
+    const kind = relationship.partnerKind?.trim() || "partnership";
+    return kind.charAt(0).toUpperCase() + kind.slice(1);
+  }
+  const kind = relationship.parentKind?.trim() || "parent";
+  return `${kind.charAt(0).toUpperCase() + kind.slice(1)} parent`;
+}
+
+export type HouseTreeScope = "members-only" | "members-plus-immediate-family";
+
 export function isLeadershipRole(role: string | null | undefined): boolean {
   return role === "head" || role === "heir" || role === "founder" || role === "consort";
 }

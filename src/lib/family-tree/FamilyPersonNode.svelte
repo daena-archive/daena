@@ -19,10 +19,14 @@ let {
     houses?: string[];
     roleBadge?: string | null;
     dimmed?: boolean;
+    reducedDetail?: boolean;
+    tabIndex?: number;
   };
 } = $props();
 
 const person = $derived(data.person);
+const showSecondary = $derived(!data.reducedDetail);
+const cardTabIndex = $derived(data.tabIndex ?? 0);
 
 function countLabel(count: number, truncated: boolean, lowerBound = 0) {
   if (!truncated) return String(count);
@@ -62,9 +66,10 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
     class:is-root={data.isRoot}
     class:is-dimmed={data.dimmed}
     data-person-id={person.id}
-    tabindex="0"
+    tabindex={cardTabIndex}
     role="button"
     aria-label={person.name}
+    aria-current={data.isRoot ? "true" : undefined}
     onkeydown={onCardKeydown}>
     <Handle id="north" type="target" position={Position.Top} isConnectable={false} />
     <Handle id="west" type="source" position={Position.Left} isConnectable={false} />
@@ -76,8 +81,8 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
     </div>
     <div class="copy">
       <strong>{person.name}</strong>
-      {#if lifeSpan(person)}<span class="lifespan">{lifeSpan(person)}</span>{/if}
-      {#if person.secondaryLabel}<span class="secondary">{person.secondaryLabel}</span>{/if}
+      {#if showSecondary && lifeSpan(person)}<span class="lifespan">{lifeSpan(person)}</span>{/if}
+      {#if showSecondary && person.secondaryLabel}<span class="secondary">{person.secondaryLabel}</span>{/if}
       {#if data.houses?.length}
         <span class="house">{data.houses[0]}{data.houses.length > 1 ? ` +${data.houses.length - 1}` : ""}</span>
       {/if}
@@ -90,6 +95,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
+            tabindex={cardTabIndex}
             aria-pressed={Boolean(data.expanded?.parents)}
             aria-label={data.expanded?.parents ? "Hide parents" : `Show ${data.hidden.parents} hidden parents`}
             onclick={(event) => toggle(event, "parents")}>
@@ -102,6 +108,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
+            tabindex={cardTabIndex}
             aria-pressed={Boolean(data.expanded?.children)}
             aria-label={data.expanded?.children ? "Hide children" : `Show ${data.hidden.children} hidden children`}
             onclick={(event) => toggle(event, "children")}>
@@ -114,6 +121,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
+            tabindex={cardTabIndex}
             aria-pressed={Boolean(data.expanded?.siblings)}
             aria-label={data.expanded?.siblings ? "Hide siblings" : `Show ${data.hidden.siblings} hidden siblings`}
             onclick={(event) => toggle(event, "siblings")}>
@@ -126,6 +134,7 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
           <button
             type="button"
             class="chip nodrag nopan"
+            tabindex={cardTabIndex}
             aria-pressed={Boolean(data.expanded?.partners)}
             aria-label={data.expanded?.partners ? "Hide partners" : `Show ${data.hidden.partners} hidden partners`}
             onclick={(event) => toggle(event, "partners")}>
@@ -264,9 +273,10 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
 .chip {
   display: inline-flex;
   align-items: center;
-  min-height: 28px;
-  min-width: 0;
-  padding: 0 9px;
+  justify-content: center;
+  min-height: var(--control-min-height, 34px);
+  min-width: var(--control-min-height, 34px);
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
@@ -280,6 +290,12 @@ function toggle(event: MouseEvent, direction: BranchDirection) {
     background 140ms ease,
     border-color 140ms ease,
     color 140ms ease;
+}
+@media (pointer: coarse) {
+  .chip {
+    min-height: var(--touch-target-min, 44px);
+    min-width: var(--touch-target-min, 44px);
+  }
 }
 .chip:hover {
   border-color: var(--line-strong);

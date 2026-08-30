@@ -2,7 +2,15 @@
 import type { MetadataFieldDefinition, ModuleContext } from "../../../packages/module-api/src/index";
 import DateEditor from "$lib/date/DateEditor.svelte";
 import { confirmDialog } from "$lib/dialogs.svelte";
-import { PARENT_KINDS, PARTNER_KINDS, PARTNER_STATUSES, type FamilyPerson, type FamilyRelationship } from "./model.ts";
+import {
+  PARENT_KINDS,
+  PARTNER_KINDS,
+  PARTNER_STATUSES,
+  formatRelationshipTitle,
+  formatRelationshipTypeLabel,
+  type FamilyPerson,
+  type FamilyRelationship,
+} from "./model.ts";
 import { parseFamilyRelationship } from "./projection.ts";
 import {
   classifyMutationError,
@@ -41,7 +49,8 @@ let currentRevision = $state("");
 
 const sourceName = $derived(people.get(relationship.sourceId)?.name ?? relationship.sourceId);
 const targetName = $derived(people.get(relationship.targetId)?.name ?? relationship.targetId);
-const relationshipTitle = $derived(`${sourceName} → ${targetName}`);
+const relationshipTitle = $derived(formatRelationshipTitle(relationship.kind, sourceName, targetName));
+const relationshipTypeLabel = $derived(formatRelationshipTypeLabel(relationship));
 const fields = $derived(metadataFieldsFor(context, relationship.type, relationship.kind));
 
 function metadataFieldsFor(
@@ -202,7 +211,7 @@ async function remove() {
     <div>
       <span class="kicker">RELATIONSHIP</span>
       <strong class="title">{relationshipTitle}</strong>
-      <span class="subtitle">{relationship.label}</span>
+      <span class="subtitle">{relationshipTypeLabel}</span>
     </div>
     <button type="button" class="quiet-button ghost" onclick={onClose}>Close</button>
   </header>

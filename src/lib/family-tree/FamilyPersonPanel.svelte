@@ -1,6 +1,9 @@
 <script lang="ts">
+import { Archive, Crown, ExternalLink, GitBranch, Heart, Pencil, UserPlus } from "@lucide/svelte";
+import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
+import { archiveConfirmOptions } from "$lib/ui-ux/archive.ts";
+import { confirmDialog } from "$lib/dialogs.svelte";
 import { formatCalendarDate } from "$lib/date";
-import { Crown, ExternalLink, GitBranch, Heart, UserPlus } from "@lucide/svelte";
 import type { FamilyPerson, RelativeRole } from "./model.ts";
 
 let {
@@ -14,6 +17,8 @@ let {
   onAddRelative,
   onSelectPerson,
   onSelectRelationship,
+  onEditIdentity,
+  onArchive,
   onClose,
 }: {
   person: FamilyPerson;
@@ -26,8 +31,20 @@ let {
   onAddRelative: (id: string, role: RelativeRole) => void;
   onSelectPerson: (id: string) => void;
   onSelectRelationship: (id: string) => void;
+  onEditIdentity?: (id: string) => void | Promise<void>;
+  onArchive?: (id: string) => void | Promise<void>;
   onClose: () => void;
 } = $props();
+
+let panelEl = $state<HTMLElement | null>(null);
+
+$effect(() => {
+  void person.id;
+  queueMicrotask(() => {
+    const closeBtn = panelEl?.querySelector<HTMLElement>("[data-dock-focus]");
+    closeBtn?.focus();
+  });
+});
 
 function lifeSpan(value: FamilyPerson) {
   const birth = value.birth ? formatCalendarDate(value.birth) : "";
@@ -36,9 +53,16 @@ function lifeSpan(value: FamilyPerson) {
   if (birth && death) return `${birth} – ${death}`;
   return birth || death;
 }
+
+async function archivePerson() {
+  if (!onArchive) return;
+  const ok = await confirmDialog(archiveConfirmOptions(person.name));
+  if (!ok) return;
+  await onArchive(person.id);
+}
 </script>
 
-<aside class="panel" aria-label={person.name}>
+<aside class="panel" aria-label={person.name} bind:this={panelEl}>
   <header class="panel-head">
     <div class="head-copy">
       <span class="kicker">{isRoot ? "ROOT PERSON" : "PERSON"}</span>
@@ -47,16 +71,25 @@ function lifeSpan(value: FamilyPerson) {
       {#if person.secondaryLabel}<span class="meta secondary">{person.secondaryLabel}</span>{/if}
       {#if houses.length}<span class="houses">{houses.join(" · ")}</span>{/if}
     </div>
-    <button type="button" class="quiet-button ghost" onclick={onClose} aria-label="Close details">Close</button>
+    <button type="button" class="quiet-button ghost" data-dock-focus onclick={onClose} aria-label="Close details"
+      >Close</button>
   </header>
 
   <div class="panel-actions" role="group" aria-label="Primary actions">
     <button type="button" class="quiet-button pill" onclick={() => onOpen(person.id)}>
-      <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" /> Open in Lore
+      <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" />
+      {ENTITY_ACTIONS.openInLore}
     </button>
+    {#if onEditIdentity}
+      <button type="button" class="quiet-button pill" onclick={() => void onEditIdentity(person.id)}>
+        <Pencil size={13} strokeWidth={1.8} aria-hidden="true" />
+        {ENTITY_ACTIONS.editIdentity}
+      </button>
+    {/if}
     {#if !isRoot}
       <button type="button" class="quiet-button pill" onclick={() => onMakeRoot(person.id)}>
-        <Crown size={13} strokeWidth={1.8} aria-hidden="true" /> Make root
+        <Crown size={13} strokeWidth={1.8} aria-hidden="true" />
+        {ENTITY_ACTIONS.makeRoot}
       </button>
     {/if}
   </div>
@@ -92,6 +125,15 @@ function lifeSpan(value: FamilyPerson) {
         {/each}
       </ul>
     </section>
+  {/if}
+
+  {#if onArchive}
+    <div class="destructive" role="group" aria-label="Destructive actions">
+      <button type="button" class="quiet-button danger" onclick={() => void archivePerson()}>
+        <Archive size={13} strokeWidth={1.8} aria-hidden="true" />
+        {ENTITY_ACTIONS.archive}
+      </button>
+    </div>
   {/if}
 </aside>
 
@@ -200,34 +242,21 @@ function lifeSpan(value: FamilyPerson) {
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.connection-main:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-muted);
+.connection-main:hover,
+.connection-main:focus-visible {
+  border-color: var(--accent);
+  outline: 0;
 }
-.quiet-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink-soft, var(--ink));
-  font-size: 12px;
-  cursor: pointer;
+.destructive {
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft, var(--line));
 }
-.quiet-button:hover {
-  background: var(--surface-muted, var(--surface));
-  color: var(--ink);
+.danger {
+  color: var(--theme-danger-text, #8a3b2d);
+  border-color: var(--theme-danger-border, #e2c4bb);
 }
-@media (prefers-reduced-motion: reduce) {
-  .panel,
-  .quiet-button {
-    transition: none;
-  }
+.danger:hover {
+  background: var(--theme-danger-bg, #f8ece8);
 }
 </style>

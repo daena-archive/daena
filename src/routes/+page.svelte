@@ -7411,6 +7411,21 @@ onMount(() => {
           }}
           onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)}
           onMembershipChanged={() => bumpCollectionRefresh()}
+          onEditPersonIdentity={(personId) => {
+            void (async () => {
+              const entity = entities.find((item) => item.id === personId) ?? (await project.getEntity(personId));
+              if (!entity) return;
+              upsertEntityInCache(entity);
+              await openEntityEditDialog(entity);
+            })();
+          }}
+          onArchivePerson={(personId) => {
+            void (async () => {
+              const entity = entities.find((item) => item.id === personId) ?? (await project.getEntity(personId));
+              if (!entity) return;
+              await archiveEntity(entity, { skipConfirm: true });
+            })();
+          }}
           onBack={() => {
             const current = currentShellLocation();
             const transition = shellHistoryBack(shellNavigationHistory, current);

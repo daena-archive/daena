@@ -6,6 +6,7 @@ import type {
   UUID,
 } from "../../../packages/module-api/src/index";
 import {
+  DEFAULT_FAMILY_TREE_LIMITS,
   DEFAULT_SECONDARY_FIELD,
   ENTITY_GET_MANY_LIMIT,
   FIELD_HYDRATE_BATCH,
@@ -28,6 +29,7 @@ import {
   type HouseMemberRecord,
   type HouseMembership,
   type HouseMemberSummary,
+  type HouseTreeScope,
 } from "./model.ts";
 import { personFromRecord } from "./projection.ts";
 
@@ -558,16 +560,24 @@ export async function loadHouseNeighborhood(
   houseId: string,
   secondaryField = DEFAULT_SECONDARY_FIELD,
   signal?: AbortSignal,
+  options?: {
+    scope?: HouseTreeScope;
+    visiblePersonLimit?: number;
+  },
 ): Promise<{
   people: FamilyPerson[];
   relationships: Relationship[];
+  memberIds: string[];
   warnings: GenealogyWarning[];
   truncated: boolean;
   truncationLowerBound: number;
+  scopeTruncated: boolean;
 }> {
+  const scope: HouseTreeScope = options?.scope ?? "members-only";
+  const visiblePersonLimit = options?.visiblePersonLimit ?? DEFAULT_FAMILY_TREE_LIMITS.visiblePersonLimit;
   const members = await listHouseMembers(context, houseId, signal);
   const memberIds = members.map((member) => member.id);
-  const known = new Set(memberIds);
+  const memberSet = new Set(memberIds);
   const collected = new Map<string, Relationship>();
   let truncated = false;
   let truncationLowerBound = 0;
@@ -580,19 +590,56 @@ export async function loadHouseNeighborhood(
       await queryPaged(context, memberIds, [PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP], "any", collected, signal),
     );
   }
-  const relationships = [...collected.values()].filter((relationship) => {
-    if (relationship.type !== PARENT_RELATIONSHIP && relationship.type !== PARTNER_RELATIONSHIP) return false;
-    return known.has(relationship.sourceId) && known.has(relationship.targetId);
-  });
-  const hydrated = await hydratePeople(context, memberIds, secondaryField, signal);
+
+  const kinship = [...collected.values()].filter(
+    (relationship) => relationship.type === PARENT_RELATIONSHIP || relationship.type === PARTNER_RELATIONSHIP,
+  );
+
+  let hydrateIds: string[];
+  let relationships: Relationship[];
+  let scopeTruncated = false;
+
+  if (scope === "members-plus-immediate-family") {
+    const candidateEdges = kinship.filter(
+      (relationship) => memberSet.has(relationship.sourceId) || memberSet.has(relationship.targetId),
+    );
+    const outsiders = new Set<string>();
+    for (const relationship of candidateEdges) {
+      if (!memberSet.has(relationship.sourceId)) outsiders.add(relationship.sourceId);
+      if (!memberSet.has(relationship.targetId)) outsiders.add(relationship.targetId);
+    }
+    const outsiderBudget = Math.max(0, visiblePersonLimit - memberIds.length);
+    const sortedOutsiders = [...outsiders].sort((left, right) => left.localeCompare(right));
+    const keptOutsiders = sortedOutsiders.slice(0, outsiderBudget);
+    scopeTruncated = sortedOutsiders.length > keptOutsiders.length;
+    const kept = new Set([...memberIds, ...keptOutsiders]);
+    relationships = candidateEdges.filter(
+      (relationship) => kept.has(relationship.sourceId) && kept.has(relationship.targetId),
+    );
+    hydrateIds = [...kept];
+  } else {
+    relationships = kinship.filter(
+      (relationship) => memberSet.has(relationship.sourceId) && memberSet.has(relationship.targetId),
+    );
+    hydrateIds = memberIds;
+  }
+
+  const hydrated = await hydratePeople(context, hydrateIds, secondaryField, signal);
   const warnings = [...hydrated.warnings];
   if (truncated) warnings.push(truncationWarning(truncationLowerBound));
+  if (scopeTruncated) {
+    warnings.push({
+      message: `Immediate-family view hit the visible-people cap (${visiblePersonLimit}). Some relatives outside the house were omitted.`,
+    });
+  }
   return {
     people: hydrated.people,
     relationships,
+    memberIds,
     warnings,
     truncated,
     truncationLowerBound,
+    scopeTruncated,
   };
 }
 

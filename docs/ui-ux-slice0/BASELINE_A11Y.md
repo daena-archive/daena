@@ -18,23 +18,23 @@ treat these as accepted permanent behavior.
 
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
-| `A11Y-TREE-01` | High | Canvas declares `role="application"` while arrow-key selection updates React/Svelte state without moving DOM focus to the newly selected Person card. Visual selection and keyboard focus desync. | `FamilyTreeCanvas.svelte` `onCanvasKeydown` + `nearestPerson` |
-| `A11Y-TREE-02` | High | No documented `aria-describedby` keyboard help for the application canvas. | Canvas root lacks described-by |
-| `A11Y-TREE-03` | Medium | Enter opens/selects and Shift+Enter re-roots, but focus does not move into the Person dock; Escape dock/popover lifecycle is incomplete for View settings. | `FamilyTreeCanvas`, `FamilyTreeSurface` settings panel |
-| `A11Y-TREE-04` | Medium | View settings popover is `role="dialog"` toggled in place; no initial focus move, no focus trap, outside-pointer close only. | `FamilyTreeSurface.svelte` settings panel |
+| ~~`A11Y-TREE-01`~~ | High | **Resolved in Slice 4.** Arrow selection moves DOM focus onto the Person card (`focusPersonCard`). | `FamilyTreeCanvas.svelte` |
+| ~~`A11Y-TREE-02`~~ | High | **Resolved in Slice 4.** Hidden help via `aria-describedby={TREE_KEYBOARD.canvasDescribedById}`. | Canvas + `TREE_KEYBOARD` |
+| ~~`A11Y-TREE-03`~~ | Medium | **Resolved in Slice 4.** Dock focuses Close on open; Escape returns focus to the origin card. | `FamilyPersonPanel`, `closeDock` |
+| ~~`A11Y-TREE-04`~~ | Medium | **Resolved in Slice 4.** More menu: Escape, initial focus, focus return to trigger. | `FamilyTreeSurface` settings |
 | `A11Y-TREE-05` | Medium | Root / landing listboxes lack full combobox keyboard patterns (active descendant, typeahead announcements). | `FamilyTreeLanding`, `FamilyRootPicker` |
 | `A11Y-TREE-06` | Low | Relationship edge captions live on SVG `<g aria-label>` without a guaranteed keyboard path to open the relationship dock. | `FamilyRelationshipEdge.svelte` |
 | `A11Y-TREE-07` | Medium | Branch chips are tabbable, but there is no announced model for moving between nodes vs activating branch controls. | `FamilyPersonNode.svelte` |
-| `A11Y-TREE-08` | Low | Subbar legend is `aria-hidden`, so scope/emphasis meaning is visual-only once scope lands. | `FamilyTreeSurface.svelte` |
+| ~~`A11Y-TREE-08`~~ | Low | **Resolved in Slice 4.** Legend is no longer `aria-hidden`; scope vocabulary is readable. | `FamilyTreeSurface.svelte` |
 
 ## Tree information architecture (affects SR understanding)
 
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
-| `A11Y-TREE-09` | Medium | Duplicate **Secondary field** control in subbar and View settings increases tab stops without new information. | `FamilyTreeSurface.svelte` |
-| `A11Y-TREE-10` | Medium | **New house** sits inside View settings, mixing domain mutation with rendering limits. | settings panel |
-| `A11Y-TREE-11` | Medium | Malformed/skipped edges surface mainly as counts in settings, hard to investigate with SR. | Tree warnings / settings footnote patterns |
-| `A11Y-TREE-12` | Low | Partnership titles use directional arrows unsuitable for undirected relationships. | relationship dock / edge captions |
+| ~~`A11Y-TREE-09`~~ | Medium | **Resolved in Slice 4.** Duplicate Secondary field removed. | Toolbar View group |
+| ~~`A11Y-TREE-10`~~ | Medium | **Resolved in Slice 4.** New house lives in Create group, not More. | Toolbar |
+| ~~`A11Y-TREE-11`~~ | Medium | **Resolved in Slice 4.** Expandable warning list in More menu. | settings panel |
+| ~~`A11Y-TREE-12`~~ | Low | **Resolved in Slice 4.** Partnerships use “A and B”; parents keep “A → B”. | `formatRelationshipTitle` |
 
 ## Fields & Types
 
@@ -49,13 +49,10 @@ treat these as accepted permanent behavior.
 
 | ID | Severity | Issue | Evidence |
 | --- | --- | --- | --- |
-| `A11Y-CHROME-01` | Low | Shell `controls.css` defines coarse-pointer and reduced-motion rules; Tree settings icon button and some chips still need audit against the shared minimum target size. | `src/lib/shell/controls.css`, Tree icon controls |
-| `A11Y-CHROME-02` | Low | Canvas fit animation respects reduced motion in places; confirm all ELK/viewport transitions after Slice 4. | `FamilyTreeCanvas` fitViewOptions |
+| ~~`A11Y-CHROME-01`~~ | Low | **Resolved in Slice 4.** Tree icon controls use 34px minimum target. | canvas controls / topbar |
+| ~~`A11Y-CHROME-02`~~ | Low | **Resolved in Slice 4.** Fit / layout transitions honor `prefers-reduced-motion`. | `FamilyTreeCanvas` |
 
-## Acceptance for clearing an issue
+## Resolved in Slice 4
 
-An issue may be marked resolved only when:
-
-1. the target behavior in `INTERACTION_SPEC.md` is implemented;
-2. a focused automated or rendered check covers the path; and
-3. the issue ID is struck through here or moved to a “Resolved” section with the slice number.
+- `A11Y-TREE-01` … `A11Y-TREE-04`, `A11Y-TREE-08` … `A11Y-TREE-12`, `A11Y-CHROME-01`, `A11Y-CHROME-02`.
+- Remaining Tree gaps: root picker combobox patterns (`A11Y-TREE-05`), edge keyboard path (`A11Y-TREE-06`), branch vs node announcement (`A11Y-TREE-07`).

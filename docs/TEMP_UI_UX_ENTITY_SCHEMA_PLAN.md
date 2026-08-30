@@ -721,10 +721,8 @@ Tree session when invoked from Tree. Membership mutations bump collection refres
 Tree Back prefers shell history when entered from Houses. Contract lock:
 `npm run test:houses-management`.
 
-Explicitly deferred / Slice 4:
+Explicitly deferred / later:
 
-- Members + immediate family scope control and full legend copy for scope rules.
-- Toolbar regrouping and Person-dock Edit identity/Archive.
 - Membership “Create person” tab still uses create-and-add (`createMinimalPerson`) so the
   new person is linked in one step; full template fields remain on header New person.
 - Houses inspector shows leadership summary + Open tree; rich membership editing stays in
@@ -741,6 +739,15 @@ heir, edit membership, open the Tree, and remove a member without leaving the
 Houses module or deleting a Person.
 
 ### Slice 4: Tree interaction and accessibility
+
+Status: **done**. Toolbar regrouped into Navigation / View / Expansion / More / Create;
+duplicate Secondary control removed. House trees expose Members only vs Members +
+immediate family (capped, muted outsiders via `houseFilterId`). Canvas uses
+`role="group"` with `aria-describedby` keyboard help; arrow selection moves DOM
+focus onto Person cards; Escape closes dock/popovers with focus return. Person
+dock adds Edit identity + Archive. Partnership titles use “A and B”; warning
+details expand in More. Minimap / reduced-detail toggles and reduced-motion
+fit durations land. Contract lock: `npm run test:tree-interaction`.
 
 1. Reorganize toolbar and remove duplicate controls.
 2. Implement scope controls and bounded Members + immediate family loading.

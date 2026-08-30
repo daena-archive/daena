@@ -13,6 +13,7 @@ import {
 } from "@xyflow/svelte";
 import "@xyflow/svelte/dist/style.css";
 import type { Snippet } from "svelte";
+import { TREE_KEYBOARD } from "$lib/ui-ux/vocabulary.ts";
 import FamilyPersonNode from "./FamilyPersonNode.svelte";
 import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";
@@ -43,6 +44,8 @@ let {
   fitView = true,
   initialViewport = null,
   onViewportChange,
+  showMinimap = true,
+  reducedDetail = false,
 }: {
   layout: PositionedGraph;
   people: Map<string, FamilyPerson>;
@@ -66,11 +69,13 @@ let {
   fitView?: boolean;
   initialViewport?: Viewport | null;
   onViewportChange?: (viewport: Viewport) => void;
+  showMinimap?: boolean;
+  reducedDetail?: boolean;
 } = $props();
 
 const nodeTypes = { person: FamilyPersonNode, union: FamilyUnionNode } as unknown as NodeTypes;
 const edgeTypes = { family: FamilyRelationshipEdge } as unknown as EdgeTypes;
-const reducedMotion = $derived(
+let reducedMotion = $state(
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 );
 let colorMode = $state<"light" | "dark">("light");
@@ -81,6 +86,19 @@ const miniMapNode = $derived(colorMode === "dark" ? "#b8b1a5" : "#62594e");
 const miniMapNodeStroke = $derived(colorMode === "dark" ? "#31443a" : "#d9cdbd");
 let nodes = $state.raw<Node[]>([]);
 let edges = $state.raw<Edge[]>([]);
+let canvasEl = $state<HTMLElement | null>(null);
+const activePersonId = $derived(selectedPersonId ?? rootId);
+
+$effect(() => {
+  if (typeof window === "undefined") return;
+  const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const update = () => {
+    reducedMotion = media.matches;
+  };
+  update();
+  media.addEventListener?.("change", update);
+  return () => media.removeEventListener?.("change", update);
+});
 
 $effect(() => {
   if (typeof document === "undefined" || typeof window === "undefined") return;
@@ -104,6 +122,14 @@ $effect(() => {
   };
 });
 
+function focusPersonCard(personId: string | null) {
+  if (!personId || typeof document === "undefined") return;
+  queueMicrotask(() => {
+    const card = canvasEl?.querySelector(`[data-person-id="${CSS.escape(personId)}"]`);
+    if (card instanceof HTMLElement) card.focus({ preventScroll: true });
+  });
+}
+
 function flowNodes(): Node[] {
   return layout.nodes.flatMap((node): Node[] => {
     if (node.kind === "person") {
@@ -125,9 +151,11 @@ function flowNodes(): Node[] {
             onSelect: onSelectPerson,
             onMakeRoot,
             onToggleBranch,
-            houses: housesByPerson.get(personId) ?? [],
+            houses: reducedDetail ? [] : (housesByPerson.get(personId) ?? []),
             roleBadge: rolesByPerson.get(personId) ?? null,
             dimmed: Boolean(houseFilterId) && !(memberHouseIds.get(personId) ?? []).includes(houseFilterId ?? ""),
+            reducedDetail,
+            tabIndex: personId === activePersonId ? 0 : -1,
           },
           selected: node.personId === selectedPersonId,
           draggable: false,
@@ -172,6 +200,7 @@ function flowEdges(): Edge[] {
       label: edge.label,
       start: edge.start,
       end: edge.end,
+      relationshipId: edge.relationshipId,
     },
     selected: Boolean(edge.relationshipId && edge.relationshipId === selectedRelationshipId),
     ariaLabel: edge.label || undefined,
@@ -188,7 +217,6 @@ $effect(() => {
       edges = flowEdges();
     });
   };
-  // Prefer RAF to keep pan/zoom fluid while layout resolves
   if (typeof requestAnimationFrame !== "undefined") schedule();
   else {
     nodes = flowNodes();
@@ -218,31 +246,39 @@ function nearestPerson(fromId: string, key: string) {
 }
 
 function onCanvasKeydown(event: KeyboardEvent) {
-  if (!selectedPersonId) return;
+  const originId =
+    selectedPersonId ??
+    (event.target instanceof HTMLElement
+      ? event.target.closest("[data-person-id]")?.getAttribute("data-person-id")
+      : null) ??
+    rootId;
+  if (!originId) return;
   if (event.key === "Enter") {
     event.preventDefault();
-    if (event.shiftKey) onMakeRoot(selectedPersonId);
-    else onSelectPerson(selectedPersonId);
+    if (event.shiftKey) onMakeRoot(originId);
+    else onSelectPerson(originId);
     return;
   }
   if (event.key.startsWith("Arrow")) {
-    const next = nearestPerson(selectedPersonId, event.key);
+    const next = nearestPerson(originId, event.key);
     if (next) {
       event.preventDefault();
       onSelectPerson(next);
+      focusPersonCard(next);
     }
   }
 }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<p id={TREE_KEYBOARD.canvasDescribedById} class="sr-only">{TREE_KEYBOARD.helpText}</p>
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
   class="canvas"
   class:reduced={reducedMotion}
-  tabindex="0"
-  role="application"
-  aria-label="Family tree canvas"
+  bind:this={canvasEl}
+  role="group"
+  aria-label={TREE_KEYBOARD.canvasAriaLabel}
+  aria-describedby={TREE_KEYBOARD.canvasDescribedById}
   onkeydown={onCanvasKeydown}>
   {#key `${fitToken}:${rootId}`}
     <SvelteFlow
@@ -264,6 +300,7 @@ function onCanvasKeydown(event: KeyboardEvent) {
       onnodeclick={({ node }) => {
         if (node.type === "person") {
           onSelectPerson(node.id);
+          focusPersonCard(node.id);
           return;
         }
         onSelectPerson(null);
@@ -288,24 +325,37 @@ function onCanvasKeydown(event: KeyboardEvent) {
         onSelectRelationship(null);
       }}>
       <Controls showLock={false} position="top-right" />
-      <MiniMap
-        position="bottom-left"
-        pannable
-        zoomable
-        bgColor={miniMapBg}
-        nodeColor={miniMapNode}
-        nodeStrokeColor={miniMapNodeStroke}
-        maskColor={miniMapMask}
-        maskStrokeColor={miniMapMaskStroke}
-        nodeStrokeWidth={1.2}
-        nodeBorderRadius={2}
-        style="border:1px solid var(--line-strong); border-radius:8px; overflow:hidden; box-shadow: var(--shadow-sm);" />
+      {#if showMinimap}
+        <MiniMap
+          position="bottom-left"
+          pannable
+          zoomable
+          bgColor={miniMapBg}
+          nodeColor={miniMapNode}
+          nodeStrokeColor={miniMapNodeStroke}
+          maskColor={miniMapMask}
+          maskStrokeColor={miniMapMaskStroke}
+          nodeStrokeWidth={1.2}
+          nodeBorderRadius={2}
+          style="border:1px solid var(--line-strong); border-radius:8px; overflow:hidden; box-shadow: var(--shadow-sm);" />
+      {/if}
       <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
     </SvelteFlow>
   {/key}
 </div>
 
 <style>
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .canvas {
   flex: 1 1 auto;
   width: 100%;
@@ -326,7 +376,6 @@ function onCanvasKeydown(event: KeyboardEvent) {
   --xy-controls-button-color-hover: var(--ink);
   --xy-controls-button-border-color: var(--line-strong);
   --xy-controls-box-shadow: none;
-  /* fallback for any internal minimap that still reads vars */
   --xy-minimap-background-color: color-mix(in srgb, var(--surface) 96%, var(--canvas, var(--surface-muted)));
   --xy-minimap-mask-background-color: color-mix(in srgb, var(--ink) 13%, transparent);
   --xy-minimap-mask-stroke-color: color-mix(in srgb, var(--ink) 22%, transparent);
@@ -340,8 +389,10 @@ function onCanvasKeydown(event: KeyboardEvent) {
   box-shadow: var(--shadow-sm, 0 1px 4px rgba(0, 0, 0, 0.06));
 }
 .canvas :global(.svelte-flow__controls-button) {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
 }
 .canvas :global(.svelte-flow__minimap) {
   width: 148px;
@@ -357,64 +408,23 @@ function onCanvasKeydown(event: KeyboardEvent) {
 .canvas :global(.svelte-flow[data-theme="dark"] .svelte-flow__minimap) {
   border-color: #435a4e;
 }
-.canvas :global(.svelte-flow__attribution) {
-  margin: 0;
-  border: 1px solid var(--line-strong);
-  border-right: 0;
-  border-bottom: 0;
-  border-radius: 8px 0 0 0;
-  color: var(--ink-muted);
-  font-size: 10px;
-}
-.canvas :global(.svelte-flow__attribution a) {
-  color: var(--ink-muted);
-}
-.canvas:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.canvas.reduced :global(.svelte-flow__node) {
-  transition: none;
-}
-.canvas :global(.svelte-flow__node) {
-  overflow: visible;
-  transition:
-    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 160ms ease;
-}
-.canvas.reduced :global(.svelte-flow__node) {
+.canvas.reduced :global(.svelte-flow__node),
+.canvas.reduced :global(.svelte-flow__edge-path),
+.canvas.reduced :global(.svelte-flow__controls-button),
+.canvas.reduced :global(.svelte-flow__minimap) {
   transition: none !important;
+  animation: none !important;
 }
-.canvas :global(.family-edge-parent) :global(.svelte-flow__edge-path) {
-  stroke: color-mix(in srgb, var(--ink) 42%, transparent);
-  stroke-width: 1.6;
-  /* subtle halo for contrast on warm surface */
-  filter: drop-shadow(0 0 0.6px var(--surface)) drop-shadow(0 0 2px color-mix(in srgb, var(--surface) 85%, transparent));
+@media (prefers-reduced-motion: reduce) {
+  .canvas :global(.svelte-flow__node),
+  .canvas :global(.svelte-flow__edge-path) {
+    transition: none !important;
+  }
 }
-.canvas :global(.family-edge-partner) :global(.partner-rail) {
-  stroke: color-mix(in srgb, var(--ink) 88%, var(--accent) 12%);
-  stroke-width: 5.5;
-  stroke-linecap: round;
-}
-.canvas :global(.family-edge-partner) :global(.svelte-flow__edge-path) {
-  stroke: var(--surface);
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-.canvas :global(.family-edge.selected) :global(.svelte-flow__edge-path) {
-  stroke: var(--accent, #b7793f);
-  stroke-width: 2.2;
-}
-.canvas :global(.family-edge-partner.selected) :global(.partner-rail) {
-  stroke: var(--accent, #b7793f);
-  stroke-width: 7;
-}
-.canvas :global(.family-edge-partner.selected) :global(.svelte-flow__edge-path) {
-  stroke-width: 3;
-}
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .canvas :global(.svelte-flow__minimap) {
-    display: none;
+    width: 112px;
+    height: 72px;
   }
 }
 </style>

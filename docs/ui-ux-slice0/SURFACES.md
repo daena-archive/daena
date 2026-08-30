@@ -88,35 +88,39 @@ Surface IDs match `SURFACE_IDS` in `src/lib/ui-ux/fixtures.ts`.
 ### `workspace.houses.tree.open-person`
 
 - Canvas + Person dock.
-- Dock today: Open in Lore, Make root, Add parent/child/partner, house labels with roles.
-- Gaps (Slice 4): Edit identity, Archive Person, richer membership editor on Person dock.
+- Dock: Open in Lore, Edit identity, Make root, Add parent/child/partner, house labels with
+  roles, Archive Person, visible connections.
+- Keyboard: Tab to Person cards; arrows move selection + DOM focus; Enter opens dock;
+  Shift+Enter makes root; Escape closes dock/popover with focus return.
 - Scenarios: `multiple-memberships`, `malformed-edge`, `revision-conflict`.
 
 ### `workspace.houses.tree.open-house`
 
-- House neighborhood via `loadHouseNeighborhood` (members + intra-member kinship only).
+- House neighborhood via `loadHouseNeighborhood` with scope control:
+  - Members only (default): members + intra-member kinship.
+  - Members + immediate family: one-hop parents/partners/children outside the house,
+    muted, capped by visible-people limit.
 - House dock: members list/search/role filter, Add existing / Create person, edit/remove
   membership (conflict reload), Open full entry, Archive House.
 - Empty-house copy invites in-place membership; disconnected components show “N family groups”.
 - Role badges on leadership roles. Trees Back prefers shell history when entered from Houses.
-- Scope control (members + immediate family) is Slice 4.
+- Legend includes scope vocabulary (member emphasis, muted outsider, role badge).
 - Scenarios: `disconnected-house`, `multiple-memberships`.
+
 ### `workspace.houses.tree.relationship-dock`
 
 - Metadata editor with Save / Delete and conflict reload.
-- Gap: titles use directional arrows for undirected partnerships.
+- Titles: “A and B” for partnerships; “A → B” for parent links; author-language type label.
 - Scenarios: `revision-conflict`, `malformed-edge`.
 
 ### Tree toolbar (open states)
 
-Current groups are flat: Trees (back) · Fit · Reset · View settings (limits + New house) · duplicate Secondary field in subbar.
+Groups:
 
-Target groups (Slice 4):
-
-1. Navigation: Back, current Person/House selector
-2. View: scope, secondary label, Fit
+1. Navigation: Back, current Person selector (person trees)
+2. View: scope (house trees), secondary label, Fit
 3. Expansion: Reset branches
-4. More: generation limits, person cap, minimap, reduced detail
+4. More: generation limits (person trees), person cap, minimap, reduced detail, warning details
 5. Create: New person, New house
 
 ## Fields & Types

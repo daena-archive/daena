@@ -914,5 +914,26 @@ assert.deepEqual(
   houseTree.relationships.map((entry) => entry.id),
   ["hp1"],
 );
+assert.deepEqual(houseTree.memberIds.sort(), ["p1", "p2"]);
+assert.equal(houseTree.scopeTruncated, false);
+
+const houseTreeWide = await loadHouseNeighborhood(houseTreeContext, "h1", "occupation", undefined, {
+  scope: "members-plus-immediate-family",
+});
+assert.deepEqual(houseTreeWide.people.map((entry) => entry.id).sort(), ["p1", "p2", "p3", "p4"]);
+assert.deepEqual(houseTreeWide.relationships.map((entry) => entry.id).sort(), ["hp1", "hp2", "hr1"]);
+assert.deepEqual(houseTreeWide.memberIds.sort(), ["p1", "p2"]);
+
+const houseTreeCapped = await loadHouseNeighborhood(houseTreeContext, "h1", "occupation", undefined, {
+  scope: "members-plus-immediate-family",
+  visiblePersonLimit: 3,
+});
+assert.equal(houseTreeCapped.people.length, 3);
+assert.equal(houseTreeCapped.scopeTruncated, true);
+assert.ok(
+  houseTreeCapped.people.every((entry) => ["p1", "p2"].includes(entry.id) || entry.id === "p3" || entry.id === "p4"),
+);
+assert.ok(houseTreeCapped.people.some((entry) => entry.id === "p1"));
+assert.ok(houseTreeCapped.people.some((entry) => entry.id === "p2"));
 
 console.log("family-tree projection checks passed");

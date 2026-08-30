@@ -16,14 +16,7 @@ import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";
 import { familyEdgeHandles } from "./layout.ts";
 import { coupleClickAction, unionClickAction } from "./unions.ts";
-import type {
-  BranchDirection,
-  FamilyPerson,
-  HiddenCounts,
-  LayoutEdge,
-  PositionedGraph,
-  RelativeRole,
-} from "./model.ts";
+import type { BranchDirection, FamilyPerson, HiddenCounts, LayoutEdge, PositionedGraph } from "./model.ts";
 
 let {
   layout,
@@ -36,12 +29,13 @@ let {
   avatar,
   onSelectPerson,
   onSelectRelationship,
-  onOpenEntity,
   onMakeRoot,
   onToggleBranch,
-  onAddRelative,
   onAddUnionChild,
   onLinkPartners,
+  housesByPerson = new Map(),
+  memberHouseIds = new Map(),
+  houseFilterId = null,
   fitToken = 0,
   fitView = true,
   initialViewport = null,
@@ -57,12 +51,13 @@ let {
   avatar?: Snippet<[string, string]>;
   onSelectPerson: (id: string | null) => void;
   onSelectRelationship: (id: string | null) => void;
-  onOpenEntity: (id: string) => void;
   onMakeRoot: (id: string) => void;
   onToggleBranch: (id: string, direction: BranchDirection) => void;
-  onAddRelative: (id: string, role: RelativeRole) => void;
   onAddUnionChild: (memberIds: string[]) => void;
   onLinkPartners: (memberIds: [string, string]) => void;
+  housesByPerson?: Map<string, string[]>;
+  memberHouseIds?: Map<string, string[]>;
+  houseFilterId?: string | null;
   fitToken?: number;
   fitView?: boolean;
   initialViewport?: Viewport | null;
@@ -95,12 +90,11 @@ function flowNodes(): Node[] {
             hidden: hiddenByPerson.get(personId),
             expanded: expandedByPerson.get(personId),
             avatar,
-            onOpen: onOpenEntity,
             onSelect: onSelectPerson,
             onMakeRoot,
             onToggleBranch,
-            onAddRelative,
-            hideAddChild: layout.edges.some((edge) => edge.role === "partner" && edge.source === personId),
+            houses: housesByPerson.get(personId) ?? [],
+            dimmed: Boolean(houseFilterId) && !(memberHouseIds.get(personId) ?? []).includes(houseFilterId ?? ""),
           },
           selected: node.personId === selectedPersonId,
           draggable: false,
@@ -157,31 +151,6 @@ $effect.pre(() => {
   nodes = flowNodes();
   edges = flowEdges();
 });
-
-const connections = $derived.by(() => {
-  if (!selectedPersonId)
-    return [] as { id: string; label: string; otherId: string | null; relationshipId: string | null }[];
-  return layout.edges
-    .filter((edge) => edge.source === selectedPersonId || edge.target === selectedPersonId)
-    .map((edge) => ({
-      id: edge.id,
-      label: connectionLabel(edge, selectedPersonId),
-      otherId: otherPerson(edge, selectedPersonId),
-      relationshipId: edge.relationshipId,
-    }));
-});
-
-function connectionLabel(edge: LayoutEdge, personId: string) {
-  const other = otherPerson(edge, personId);
-  const name = other ? (people.get(other)?.name ?? other) : edge.role;
-  return edge.label ? `${edge.label} — ${name}` : name;
-}
-
-function otherPerson(edge: LayoutEdge, personId: string) {
-  if (people.has(edge.source) && edge.source !== personId) return edge.source;
-  if (people.has(edge.target) && edge.target !== personId) return edge.target;
-  return null;
-}
 
 function nearestPerson(fromId: string, key: string) {
   const from = layout.nodes.find((node) => node.personId === fromId);
@@ -278,27 +247,6 @@ function onCanvasKeydown(event: KeyboardEvent) {
     </SvelteFlow>
   {/key}
 </div>
-{#if selectedPersonId && connections.length > 0}
-  <ul class="connections" aria-label="Connections for selected person">
-    {#each connections as connection (connection.id)}
-      <li>
-        {#if connection.otherId}
-          <button
-            type="button"
-            class="quiet-button"
-            onclick={() => {
-              onSelectPerson(connection.otherId);
-              if (connection.relationshipId) onSelectRelationship(connection.relationshipId);
-            }}>
-            {connection.label}
-          </button>
-        {:else}
-          <span>{connection.label}</span>
-        {/if}
-      </li>
-    {/each}
-  </ul>
-{/if}
 
 <style>
 .canvas {
@@ -375,22 +323,5 @@ function onCanvasKeydown(event: KeyboardEvent) {
 }
 .canvas :global(.family-edge-partner.selected) :global(.svelte-flow__edge-path) {
   stroke-width: 3;
-}
-.connections {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.connections :global(.quiet-button) {
-  padding: 6px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink-soft, var(--ink));
-  font-size: 12px;
-  cursor: pointer;
 }
 </style>

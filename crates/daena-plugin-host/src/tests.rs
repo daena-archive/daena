@@ -55,6 +55,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
         }],
         templates: vec![],

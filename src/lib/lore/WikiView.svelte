@@ -27,9 +27,16 @@ import { formatCalendarDate, parseCalendarDate } from "$lib/date";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
 import WikiSidebar from "./WikiSidebar.svelte";
+import {
+  contributedRelationshipFields,
+  counterpartId,
+  coveredRelationshipIds,
+  type ManifestLike,
+} from "$lib/modules/contributed-fields";
 
 let {
   manifest,
+  enabledManifests = [],
   initialEntityId = null as string | null,
   projectId,
   aiEnabled,
@@ -39,6 +46,7 @@ let {
   onSelectEntity = (_id: string) => {},
 }: {
   manifest: ModuleManifest;
+  enabledManifests?: ManifestLike[];
   initialEntityId?: string | null;
   projectId: string;
   aiEnabled: boolean;
@@ -92,8 +100,24 @@ function labelForType(type: string | null) {
 }
 
 function fieldsForType(entityType: string | null) {
-  if (!entityType) return allFields;
-  return allFields.filter((field: any) => !field.entityTypes || field.entityTypes.includes(entityType));
+  const own = !entityType
+    ? allFields
+    : allFields.filter((field: any) => !field.entityTypes || field.entityTypes.includes(entityType));
+  const enabledTypes = new Set(
+    (enabledManifests.length ? enabledManifests : [manifest]).flatMap((candidate) =>
+      (candidate.schemas ?? []).flatMap((schema) =>
+        (schema.entityTypes ?? []).map((entityTypeDef) => entityTypeDef.id),
+      ),
+    ),
+  );
+  const merged = contributedRelationshipFields(
+    manifest,
+    entityType,
+    enabledManifests.length ? enabledManifests : [manifest],
+    enabledTypes,
+  );
+  const keys = new Set(own.map((field: any) => field.key));
+  return [...own, ...merged.filter((field) => field.type === "relationship" && !keys.has(field.key))];
 }
 
 function isEmptyValue(value: unknown) {
@@ -187,8 +211,21 @@ const recent = $derived(
     typeLabel: labelForType(candidate.entity_type),
   })),
 );
-const outbound = $derived(relationships.filter((relationship: any) => relationship.source_id === currentId));
-const inbound = $derived(relationships.filter((relationship: any) => relationship.target_id === currentId));
+const namedRelationshipIds = $derived(
+  currentId
+    ? coveredRelationshipIds(currentId, relationships, fieldsForType(entity?.entity_type ?? null))
+    : new Set<string>(),
+);
+const outbound = $derived(
+  relationships.filter(
+    (relationship: any) => relationship.source_id === currentId && !namedRelationshipIds.has(relationship.id),
+  ),
+);
+const inbound = $derived(
+  relationships.filter(
+    (relationship: any) => relationship.target_id === currentId && !namedRelationshipIds.has(relationship.id),
+  ),
+);
 const profileAssetAny = $derived(
   assets.find((asset) => manifest.namespaces.includes(asset.namespace) && asset.role === "profile") ?? null,
 );
@@ -214,13 +251,17 @@ const visibleFields = $derived(
 const visibleRelationshipFields = $derived(
   (() => {
     if (!entity) return [];
+    const entityId = entity.id;
     return fieldsForType(entity.entity_type)
       .filter((definition: any) => definition.type === "relationship")
       .map((definition: any) => ({
         label: definition.label,
-        targets: outbound
-          .filter((relationship: any) => relationship.relationship_type === definition.relationshipType)
-          .map((relationship: any) => ({ id: relationship.target_id, name: entityName(relationship.target_id) })),
+        targets: relationships
+          .map((relationship: any) => {
+            const id = counterpartId(entityId, relationship, definition);
+            return id ? { id, name: entityName(id) } : null;
+          })
+          .filter((target: { id: string; name: string } | null) => target !== null),
       }))
       .filter((row: any) => row.targets.length > 0);
   })(),

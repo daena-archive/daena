@@ -24,6 +24,7 @@ let {
   selectedPluginId = null,
   selectedPluginName = "",
   packageManifest = null,
+  referenceEntityTypes = [],
   overlay,
   overlayRevision = 0,
   busy = false,
@@ -39,6 +40,7 @@ let {
   selectedPluginName?: string;
   /** Packaged (unmerged) schemas/templates for the selected plugin. */
   packageManifest?: PackageManifestSlice | null;
+  referenceEntityTypes?: Array<{ id: string; name: string }>;
   overlay: ModuleSchemaOverlay;
   overlayRevision?: number;
   busy?: boolean;
@@ -142,6 +144,7 @@ function handleDirtyChange(next: boolean) {
       <ModuleSchemaPanel
         {projectOpen}
         {packageManifest}
+        {referenceEntityTypes}
         {overlay}
         pluginId={selectedPluginId}
         {busy}

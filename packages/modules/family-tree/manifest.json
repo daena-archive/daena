@@ -15,6 +15,7 @@
     "field.read:shared",
     "relationship.read",
     "relationship.write",
+    "schema.overlay",
     "host.surface:daena.family-tree/editor@1"
   ],
   "dependencies": {
@@ -27,13 +28,49 @@
   "schemas": [
     {
       "namespace": "family-tree",
-      "entityTypes": [],
+      "entityTypes": [
+        {
+          "id": "house",
+          "name": "House",
+          "icon": { "kind": "catalog", "id": "castle" },
+          "iconColor": { "kind": "preset", "id": "gold" }
+        }
+      ],
       "fields": [
         {
           "key": "parents",
           "label": "Parents",
           "type": "relationship",
           "relationshipType": "family_parent_of",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Parent type",
+              "type": "enum",
+              "required": true,
+              "options": ["biological", "adoptive", "legal", "guardian", "step", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "children",
+          "label": "Children",
+          "type": "relationship",
+          "relationshipType": "family_parent_of",
+          "relationshipDirection": "outgoing",
           "entityTypes": ["daena.lore:person"],
           "targetEntityTypes": ["daena.lore:person"],
           "cardinality": "many",
@@ -61,6 +98,7 @@
           "label": "Partners",
           "type": "relationship",
           "relationshipType": "family_partner_with",
+          "relationshipDirection": "undirected",
           "entityTypes": ["daena.lore:person"],
           "targetEntityTypes": ["daena.lore:person"],
           "cardinality": "many",
@@ -86,6 +124,58 @@
             },
             { "key": "start", "label": "Starts", "type": "date" },
             { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "houses",
+          "label": "Houses",
+          "type": "relationship",
+          "relationshipType": "family_member_of",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["house"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "required": true,
+              "options": ["member", "head", "consort", "heir", "founder", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "members",
+          "label": "Members",
+          "type": "relationship",
+          "relationshipType": "family_member_of",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "required": true,
+              "options": ["member", "head", "consort", "heir", "founder", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
             { "key": "notes", "label": "Notes", "type": "text" }
           ]
         }

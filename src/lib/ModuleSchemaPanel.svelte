@@ -69,6 +69,7 @@ type MetadataFieldDraft = {
 let {
   projectOpen,
   packageManifest,
+  referenceEntityTypes = [],
   overlay,
   pluginId = null,
   busy = false,
@@ -78,6 +79,7 @@ let {
 }: {
   projectOpen: boolean;
   packageManifest: PackageManifest;
+  referenceEntityTypes?: Array<{ id: string; name: string }>;
   overlay: ModuleSchemaOverlay;
   pluginId?: string | null;
   busy?: boolean;
@@ -166,7 +168,8 @@ function humanizeId(value: string): string {
 function entityTypeLabel(typeId: string): string {
   const defined =
     packageTypeDefinitions.find((type) => type.id === typeId) ??
-    (draft.customEntityTypes ?? []).find((type) => type.id === typeId);
+    (draft.customEntityTypes ?? []).find((type) => type.id === typeId) ??
+    referenceEntityTypes.find((type) => type.id === typeId);
   const name = defined?.name.trim();
   return name || humanizeId(typeId);
 }
@@ -734,6 +737,12 @@ function effectiveTypes() {
     ...packageTypes.filter((type) => !isDisabled(draft.disabledEntityTypes, type)),
     ...(draft.customEntityTypes ?? []).map((entityType) => entityType.id),
   ];
+}
+
+function fieldScopeTypes() {
+  const owned = effectiveTypes();
+  const extras = referenceEntityTypes.map((type) => type.id).filter((id) => !owned.includes(id));
+  return [...owned, ...extras];
 }
 
 function builtinFieldScope(field: FieldDefinition): string[] {
@@ -2379,7 +2388,7 @@ function removeCustomTemplate(id: string) {
                     <div class="type-select" role="group" aria-label={`Entity types for ${field.label}`}>
                       <span class="type-select-label">Applies to</span>
                       <div class="chip-row compact">
-                        {#each effectiveTypes() as type}
+                        {#each fieldScopeTypes() as type}
                           <button
                             type="button"
                             class="chip select"
@@ -2688,7 +2697,7 @@ function removeCustomTemplate(id: string) {
                       <div class="type-select" role="group" aria-label="Target entity types">
                         <span class="type-select-label">Target types <em>(required)</em></span>
                         <div class="chip-row compact">
-                          {#each effectiveTypes() as type}
+                          {#each fieldScopeTypes() as type}
                             <button
                               type="button"
                               class="chip select"
@@ -2826,7 +2835,7 @@ function removeCustomTemplate(id: string) {
                     <div class="type-select" role="group" aria-label="Applies to entity types">
                       <span class="type-select-label">Applies to <em>(optional)</em></span>
                       <div class="chip-row compact">
-                        {#each effectiveTypes() as type}
+                        {#each fieldScopeTypes() as type}
                           <button
                             type="button"
                             class="chip select"
@@ -2938,7 +2947,7 @@ function removeCustomTemplate(id: string) {
             <div class="type-select" role="group" aria-label="Target entity types">
               <span class="type-select-label">Target types <em>(required)</em></span>
               <div class="chip-row compact">
-                {#each effectiveTypes() as type}
+                {#each fieldScopeTypes() as type}
                   <button
                     type="button"
                     class="chip select"
@@ -3062,7 +3071,7 @@ function removeCustomTemplate(id: string) {
           <div class="type-select" role="group" aria-label="Applies to entity types">
             <span class="type-select-label">Applies to <em>(optional)</em></span>
             <div class="chip-row compact">
-              {#each effectiveTypes() as type}
+              {#each fieldScopeTypes() as type}
                 <button
                   type="button"
                   class="chip select"

@@ -386,6 +386,28 @@ fn family_tree_manifest_is_a_valid_host_surface_plugin() {
     validate_manifest(&manifest).expect("family tree manifest must validate");
     assert!(manifest.entrypoints.ui.is_none());
     assert!(manifest.entrypoints.wasm.is_none());
+    let parents = manifest.schemas[0]
+        .fields
+        .iter()
+        .find(|field| field.key == "parents")
+        .expect("parents");
+    assert_eq!(parents.relationship_direction.as_deref(), Some("incoming"));
+    assert!(manifest.schemas[0]
+        .fields
+        .iter()
+        .any(|field| field.key == "children"
+            && field.relationship_type.as_deref() == Some("family_parent_of")));
+    assert!(manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "schema.overlay"));
+    assert!(manifest.schemas[0]
+        .entity_types
+        .iter()
+        .any(|entity_type| entity_type.id == "daena.family-tree:house"));
+    assert!(manifest.schemas[0].fields.iter().any(|field| {
+        field.key == "houses" && field.relationship_type.as_deref() == Some("family_member_of")
+    }));
 }
 
 #[test]
@@ -435,6 +457,7 @@ fn field_entity_types_may_reference_declared_dependencies() {
         metadata_fields: None,
         timeline: None,
         relationship_constraints: None,
+        relationship_direction: None,
     });
     assert!(validate_manifest(&manifest).is_err());
 }
@@ -478,6 +501,7 @@ fn relationship_constraints_are_relationship_only_and_must_agree() {
             acyclic: false,
             unique: RelationshipUniqueness::None,
         }),
+        relationship_direction: None,
     });
     assert!(validate_manifest(&manifest).is_err());
 }

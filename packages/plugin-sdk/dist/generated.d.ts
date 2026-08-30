@@ -77,6 +77,7 @@ export interface FieldDefinition {
     oneOf?: OneOfVariant[];
     options?: string[] | null;
     relationshipConstraints?: RelationshipConstraints;
+    relationshipDirection?: "outgoing" | "incoming" | "undirected";
     relationshipType?: string;
     required?: boolean | null;
     shared?: boolean;

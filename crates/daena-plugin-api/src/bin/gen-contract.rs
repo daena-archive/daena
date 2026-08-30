@@ -349,6 +349,12 @@ fn manifest_schema() -> Value {
     set_prop(
         &mut root,
         "FieldDefinition",
+        "relationshipDirection",
+        json!({"type": "string", "enum": ["outgoing", "incoming", "undirected"]}),
+    );
+    set_prop(
+        &mut root,
+        "FieldDefinition",
         "oneOf",
         json!({"type": "array", "items": ref_to("OneOfVariant")}),
     );

@@ -10,6 +10,7 @@ let {
   onChange,
   placeholder = "Search and select entities…",
   hideChips = false,
+  onCreate,
 }: {
   field: FieldDefinition;
   entities: Entity[];
@@ -17,10 +18,12 @@ let {
   onChange: (ids: string[]) => void;
   placeholder?: string;
   hideChips?: boolean;
+  onCreate?: (name: string) => Promise<string | null>;
 } = $props();
 
 let query = $state("");
 let open = $state(false);
+let creating = $state(false);
 
 function candidates() {
   const normalizedQuery = query.trim().toLowerCase();
@@ -60,6 +63,25 @@ function remove(id: string) {
 
 function entityFor(id: string) {
   return entities.find((entity) => entity.id === id);
+}
+
+const createLabel = $derived(query.trim());
+const canCreate = $derived(
+  Boolean(onCreate) &&
+    createLabel.length > 0 &&
+    !creating &&
+    !candidates().some((entity) => entity.name.toLowerCase() === createLabel.toLowerCase()),
+);
+
+async function createNamed() {
+  if (!onCreate || !canCreate) return;
+  creating = true;
+  try {
+    const id = await onCreate(createLabel);
+    if (id) toggle(id);
+  } finally {
+    creating = false;
+  }
 }
 </script>
 
@@ -129,6 +151,15 @@ function entityFor(id: string) {
       {:else}
         <small class="relationship-empty">No matching entities.</small>
       {/each}
+      {#if canCreate}
+        <button
+          type="button"
+          class="relationship-create"
+          onpointerdown={(event) => {
+            event.preventDefault();
+            void createNamed();
+          }}>{creating ? "Creating…" : `Create “${createLabel}”`}</button>
+      {/if}
     </div>
   {/if}
 </div>

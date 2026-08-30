@@ -2,16 +2,20 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { trapModalTab } from "$lib/shell/modalFocus";
+import { Settings2 } from "@lucide/svelte";
+import { promptDialog } from "$lib/dialogs.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
+import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
 import FamilyRelationshipPanel from "./FamilyRelationshipPanel.svelte";
 import FamilyRootPicker from "./FamilyRootPicker.svelte";
 import FamilyTreeCanvas from "./FamilyTreeCanvas.svelte";
 import {
   isNeighborhoodAbort,
   listPersonSecondaryFields,
+  listHouses,
   loadExpansionLayer,
   loadGenealogyNeighborhood,
+  loadHouseMemberships,
 } from "./fetch.ts";
 import { requestElkLayout, terminateElkLayout } from "./elk.ts";
 import { buildElkGraph, LayoutGeneration, placeUnions, positionedFromElk } from "./layout";
@@ -53,6 +57,7 @@ import {
   replaceRecentRoots,
   writeFamilyTreeLimits,
 } from "./state.ts";
+import { createHouse, createMembership } from "./mutations.ts";
 import { buildLayoutGraph, layoutGraphExceedsLimits } from "./unions.ts";
 
 let {
@@ -91,12 +96,12 @@ let canvasFit = $state(true);
 let viewport = $state<FamilyViewport | null>(null);
 let rerootCandidate = $state<{ id: string; name: string } | null>(null);
 let truncationLowerBound = $state(0);
-let pickerOpen = $state(false);
 let recentMenu = $state<{ id: string; name: string }[]>([]);
 let secondaryField = $state(DEFAULT_SECONDARY_FIELD);
 let secondaryFields = $state<{ key: string; label: string }[]>([{ key: DEFAULT_SECONDARY_FIELD, label: "Occupation" }]);
 let limits = $state<FamilyTreeLimits>(readFamilyTreeLimits());
-let overlayEl = $state<HTMLElement | null>(null);
+let settingsOpen = $state(false);
+let settingsEl = $state<HTMLElement | null>(null);
 let expansions = $state<string[]>([]);
 let truncated = $state(false);
 let member = $state<{ id: string; role: RelativeRole; coParentIds?: string[]; otherId?: string } | null>(null);
@@ -109,15 +114,74 @@ let appliedRestore = 0;
 let rawPeople: FamilyPerson[] = [];
 let rawRelationships: Relationship[] = [];
 let collected = new Map<string, Relationship>();
+let houses = $state<{ id: string; name: string }[]>([]);
+let houseFilterId = $state<string | null>(null);
+let memberships = $state<Map<string, { houseId: string; houseName: string }[]>>(new Map());
 
 const graph = $derived(normalizeGenealogy(rawPeople, rawRelationships).graph);
 const selectedRelationship = $derived(
   selectedRelationshipId ? (graph.relationships.get(selectedRelationshipId) ?? null) : null,
 );
+const selectedPerson = $derived(selectedPersonId ? (people.get(selectedPersonId) ?? null) : null);
+const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson));
+const personConnections = $derived.by(() => {
+  if (!selectedPersonId) return [] as Array<{ id: string; label: string; otherId: string; relationshipId: string }>;
+  const items: Array<{ id: string; label: string; otherId: string; relationshipId: string }> = [];
+  for (const rel of graph.parentRelationshipsByChild.get(selectedPersonId) ?? []) {
+    if (!people.has(rel.sourceId)) continue;
+    items.push({
+      id: rel.id,
+      label: `Parent · ${people.get(rel.sourceId)?.name ?? rel.sourceId}`,
+      otherId: rel.sourceId,
+      relationshipId: rel.id,
+    });
+  }
+  for (const rel of graph.relationships.values()) {
+    if (rel.kind !== "parent" || rel.sourceId !== selectedPersonId || !people.has(rel.targetId)) continue;
+    items.push({
+      id: rel.id,
+      label: `Child · ${people.get(rel.targetId)?.name ?? rel.targetId}`,
+      otherId: rel.targetId,
+      relationshipId: rel.id,
+    });
+  }
+  const seen = new Set<string>();
+  for (const rel of graph.partnerRelationshipsByPerson.get(selectedPersonId) ?? []) {
+    if (seen.has(rel.id)) continue;
+    seen.add(rel.id);
+    const other = rel.sourceId === selectedPersonId ? rel.targetId : rel.sourceId;
+    if (!people.has(other)) continue;
+    items.push({
+      id: rel.id,
+      label: `Partner · ${people.get(other)?.name ?? other}`,
+      otherId: other,
+      relationshipId: rel.id,
+    });
+  }
+  return items;
+});
 const hiddenByPerson = $derived.by(() => {
   const visible = new Set(people.keys());
   const map = new Map<string, HiddenCounts>();
   for (const id of visible) map.set(id, hiddenCounts(graph, id, visible, truncated, truncationLowerBound));
+  return map;
+});
+const housesByPerson = $derived.by(() => {
+  const map = new Map<string, string[]>();
+  for (const [personId, entries] of memberships) {
+    const names = [...new Set(entries.map((entry) => entry.houseName))];
+    if (names.length) map.set(personId, names);
+  }
+  return map;
+});
+const houseFilterIdsByPerson = $derived.by(() => {
+  const map = new Map<string, string[]>();
+  for (const [personId, entries] of memberships) {
+    map.set(
+      personId,
+      entries.map((entry) => entry.houseId),
+    );
+  }
   return map;
 });
 const expandedByPerson = $derived.by(() => {
@@ -132,6 +196,57 @@ const expandedByPerson = $derived.by(() => {
   }
   return map;
 });
+
+async function refreshHouses() {
+  try {
+    houses = await listHouses(context);
+  } catch {
+    houses = [];
+  }
+}
+
+async function refreshMemberships(ids: string[]) {
+  try {
+    const loaded = await loadHouseMemberships(context, ids);
+    const next = new Map<string, { houseId: string; houseName: string }[]>();
+    for (const entry of loaded) {
+      const list = next.get(entry.personId) ?? [];
+      list.push({ houseId: entry.houseId, houseName: entry.houseName });
+      next.set(entry.personId, list);
+    }
+    memberships = next;
+  } catch {
+    memberships = new Map();
+  }
+}
+
+async function createHouseFromToolbar() {
+  const name = await promptDialog({
+    title: "New house",
+    message: "Create a house to group people. Membership does not change the tree layout.",
+    placeholder: "House name",
+    confirmLabel: "Create",
+  });
+  if (!name?.trim()) return;
+  try {
+    const created = await createHouse(context, name.trim(), crypto.randomUUID());
+    const personId = selectedPersonId ?? rootId;
+    const person = personId ? people.get(personId) : null;
+    if (person) {
+      await createMembership(context, person.id, created.id, person.revision, crypto.randomUUID());
+    }
+    await refreshHouses();
+    await refreshMemberships([...people.keys()]);
+    houseFilterId = created.id;
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+function onHouseFilterChange(event: Event) {
+  const value = (event.currentTarget as HTMLSelectElement).value;
+  houseFilterId = value || null;
+}
 
 function cancelLoad() {
   abort?.abort();
@@ -191,6 +306,7 @@ function applyVisible(nextExpansions: string[], fit: boolean, protect: string[] 
   latestLayoutGraph = candidate;
   if (fit) fitToken += 1;
   requestLayout();
+  void refreshMemberships([...people.keys()]);
   return true;
 }
 
@@ -263,7 +379,6 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
     rootId = id;
     selectedPersonId = restored ? (initialSession?.selectedPersonId ?? id) : id;
     selectedRelationshipId = restored ? (initialSession?.selectedRelationshipId ?? null) : null;
-    pickerOpen = false;
     rememberRecentRoot(projectId, id);
     onRootChange?.(id);
     void refreshRecent();
@@ -275,6 +390,8 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
       viewport = initialSession.viewport;
     }
     requestLayout();
+    void refreshHouses();
+    void refreshMemberships([...people.keys()]);
   } catch (cause) {
     if (signal.aborted || isNeighborhoodAbort(cause)) return;
     error = cause instanceof Error ? cause.message : String(cause);
@@ -291,10 +408,6 @@ function selectRoot(person: EntitySummary) {
 function retryLayout() {
   if (!latestLayoutGraph) return;
   requestLayout();
-}
-
-function changeRoot() {
-  pickerOpen = true;
 }
 
 function fitView() {
@@ -439,16 +552,14 @@ async function afterLink() {
   await loadRoot(rootId, false, nextExpansions);
 }
 
-function onOverlayKeydown(event: KeyboardEvent) {
-  trapModalTab(event, overlayEl);
-  if (event.key === "Escape") {
-    event.preventDefault();
-    pickerOpen = false;
-  }
-}
-
 $effect(() => {
-  if (pickerOpen) overlayEl?.focus();
+  if (!settingsOpen) return;
+  function onPointer(event: PointerEvent) {
+    if (settingsEl?.contains(event.target as Node)) return;
+    settingsOpen = false;
+  }
+  window.addEventListener("pointerdown", onPointer);
+  return () => window.removeEventListener("pointerdown", onPointer);
 });
 
 $effect(() => {
@@ -500,6 +611,38 @@ $effect(() => {
     terminateElkLayout();
   };
 });
+
+function selectCanvasPerson(id: string | null) {
+  selectedPersonId = id;
+  if (id) selectedRelationshipId = null;
+}
+
+function applyRelationshipUpdate(relationship: FamilyRelationship) {
+  collected.set(relationship.id, {
+    id: relationship.id as Relationship["id"],
+    sourceId: relationship.sourceId as Relationship["sourceId"],
+    targetId: relationship.targetId as Relationship["targetId"],
+    type: relationship.type,
+    metadata: {
+      kind: relationship.parentKind ?? relationship.partnerKind,
+      customLabel: relationship.customLabel,
+      status: relationship.status,
+      start: relationship.start,
+      end: relationship.end,
+      notes: relationship.notes,
+    },
+    revision: relationship.revision,
+  });
+  rawRelationships = [...collected.values()];
+  applyVisible(expansions, false);
+}
+
+function applyRelationshipDelete(id: string) {
+  collected.delete(id);
+  rawRelationships = [...collected.values()];
+  selectedRelationshipId = null;
+  applyVisible(expansions, false);
+}
 </script>
 
 <section class="surface">
@@ -507,73 +650,79 @@ $effect(() => {
     <div>
       <span class="overline">FAMILY TREE</span>
       <h1>{rootId ? (people.get(rootId)?.name ?? "Family Tree") : "Family Tree"}</h1>
-      <p>
-        {rootId
-          ? "A bounded neighborhood of Lore people and family relationships."
-          : "Choose a Lore person to inspect their family neighborhood."}
-      </p>
+      {#if !rootId}
+        <p>Choose a Lore person to inspect their family neighborhood.</p>
+      {/if}
     </div>
     {#if rootId}
       <div class="toolbar">
-        <button type="button" class="quiet-button" onclick={changeRoot}>Search root</button>
-        {#if recentMenu.length > 0}
-          <label class="recent">
-            <span class="sr">Recent roots</span>
-            <select
-              aria-label="Recent roots"
-              onchange={(event) => void loadRoot((event.currentTarget as HTMLSelectElement).value, true)}>
-              <option value="" disabled selected>Recent roots</option>
-              {#each recentMenu as entry (entry.id)}
-                <option value={entry.id}>{entry.name}</option>
-              {/each}
-            </select>
-          </label>
-        {/if}
+        <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
         <label class="recent">
-          <span class="sr">Secondary field</span>
-          <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
-            {#each secondaryFields as field (field.key)}
-              <option value={field.key}>{field.label}</option>
+          <span class="sr">Filter by house</span>
+          <select aria-label="Filter by house" value={houseFilterId ?? ""} onchange={onHouseFilterChange}>
+            <option value="">All houses</option>
+            {#each houses as house (house.id)}
+              <option value={house.id}>{house.name}</option>
             {/each}
           </select>
         </label>
-        <label class="recent limit">
-          <span class="sr">Ancestor generations</span>
-          ↑
-          <input
-            type="number"
-            min="1"
-            max={MAX_ANCESTOR_GENERATIONS}
-            value={limits.ancestorGenerations}
-            aria-label="Ancestor generations"
-            onchange={onAncestorChange} />
-        </label>
-        <label class="recent limit">
-          <span class="sr">Descendant generations</span>
-          ↓
-          <input
-            type="number"
-            min="1"
-            max={MAX_DESCENDANT_GENERATIONS}
-            value={limits.descendantGenerations}
-            aria-label="Descendant generations"
-            onchange={onDescendantChange} />
-        </label>
-        <label class="recent limit">
-          <span class="sr">Visible people cap</span>
-          Cap
-          <input
-            type="number"
-            min="1"
-            max={MAX_VISIBLE_PERSON_LIMIT}
-            step="50"
-            value={limits.visiblePersonLimit}
-            aria-label="Visible people cap"
-            onchange={onPersonCapChange} />
-        </label>
+        <div class="settings" bind:this={settingsEl}>
+          <button
+            type="button"
+            class="quiet-button icon"
+            aria-expanded={settingsOpen}
+            aria-label="View settings"
+            onclick={() => (settingsOpen = !settingsOpen)}>
+            <Settings2 size={16} />
+          </button>
+          {#if settingsOpen}
+            <div class="settings-panel" role="dialog" aria-label="View settings">
+              <label class="recent">
+                <span>Secondary field</span>
+                <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
+                  {#each secondaryFields as field (field.key)}
+                    <option value={field.key}>{field.label}</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="recent limit">
+                <span>Ancestor generations</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={MAX_ANCESTOR_GENERATIONS}
+                  value={limits.ancestorGenerations}
+                  aria-label="Ancestor generations"
+                  onchange={onAncestorChange} />
+              </label>
+              <label class="recent limit">
+                <span>Descendant generations</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={MAX_DESCENDANT_GENERATIONS}
+                  value={limits.descendantGenerations}
+                  aria-label="Descendant generations"
+                  onchange={onDescendantChange} />
+              </label>
+              <label class="recent limit">
+                <span>Visible people cap</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={MAX_VISIBLE_PERSON_LIMIT}
+                  step="50"
+                  value={limits.visiblePersonLimit}
+                  aria-label="Visible people cap"
+                  onchange={onPersonCapChange} />
+              </label>
+              <button type="button" class="quiet-button" onclick={() => void createHouseFromToolbar()}
+                >New house</button>
+            </div>
+          {/if}
+        </div>
         <button type="button" class="quiet-button" onclick={fitView}>Fit</button>
         <button type="button" class="quiet-button" onclick={resetView}>Reset</button>
-        <button type="button" class="quiet-button" onclick={changeRoot}>Change root</button>
       </div>
     {/if}
   </header>
@@ -604,7 +753,7 @@ $effect(() => {
   {:else if loading && !positioned}
     <p class="hint">Loading family neighborhood…</p>
   {:else if positioned}
-    <div class="workspace">
+    <div class="workspace" class:has-dock={dockOpen}>
       <div class="canvas-wrap">
         <FamilyTreeCanvas
           layout={positioned}
@@ -614,16 +763,17 @@ $effect(() => {
           {selectedRelationshipId}
           {hiddenByPerson}
           {expandedByPerson}
+          {housesByPerson}
+          memberHouseIds={houseFilterIdsByPerson}
+          {houseFilterId}
           {avatar}
-          {onOpenEntity}
-          onSelectPerson={(id) => (selectedPersonId = id)}
+          onSelectPerson={selectCanvasPerson}
           onSelectRelationship={(id) => (selectedRelationshipId = id)}
           onMakeRoot={(id) => {
             previousOrder = [];
             void loadRoot(id, true);
           }}
           onToggleBranch={(id, direction) => void toggleBranch(id, direction)}
-          onAddRelative={(id, role) => (member = { id, role })}
           onAddUnionChild={(memberIds) => {
             const [id, ...coParentIds] = memberIds.filter((personId) => people.has(personId));
             if (!id) return;
@@ -640,72 +790,35 @@ $effect(() => {
             viewport = next;
           }} />
       </div>
-    </div>
-  {/if}
-  {#if selectedRelationship}
-    <div
-      class="overlay"
-      tabindex="-1"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Relationship"
-      onclick={(event) => {
-        if (event.target === event.currentTarget) selectedRelationshipId = null;
-      }}
-      onkeydown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          selectedRelationshipId = null;
-        }
-      }}>
-      <FamilyRelationshipPanel
-        {context}
-        relationship={selectedRelationship}
-        {people}
-        onClose={() => (selectedRelationshipId = null)}
-        onUpdated={(relationship: FamilyRelationship) => {
-          collected.set(relationship.id, {
-            id: relationship.id as Relationship["id"],
-            sourceId: relationship.sourceId as Relationship["sourceId"],
-            targetId: relationship.targetId as Relationship["targetId"],
-            type: relationship.type,
-            metadata: {
-              kind: relationship.parentKind ?? relationship.partnerKind,
-              customLabel: relationship.customLabel,
-              status: relationship.status,
-              start: relationship.start,
-              end: relationship.end,
-              notes: relationship.notes,
-            },
-            revision: relationship.revision,
-          });
-          rawRelationships = [...collected.values()];
-          applyVisible(expansions, false);
-        }}
-        onDeleted={(id) => {
-          collected.delete(id);
-          rawRelationships = [...collected.values()];
-          selectedRelationshipId = null;
-          applyVisible(expansions, false);
-        }} />
-    </div>
-  {/if}
-  {#if pickerOpen && rootId}
-    <div
-      class="overlay"
-      bind:this={overlayEl}
-      tabindex="-1"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Choose a new root"
-      onkeydown={onOverlayKeydown}>
-      <div class="overlay-card">
-        <header>
-          <strong>Change root</strong>
-          <button type="button" class="quiet-button" onclick={() => (pickerOpen = false)}>Close</button>
-        </header>
-        <FamilyRootPicker {context} compact onSelect={selectRoot} />
-      </div>
+      {#if dockOpen}
+        <div class="dock">
+          {#if selectedRelationship}
+            <FamilyRelationshipPanel
+              docked
+              {context}
+              relationship={selectedRelationship}
+              {people}
+              onClose={() => (selectedRelationshipId = null)}
+              onUpdated={applyRelationshipUpdate}
+              onDeleted={applyRelationshipDelete} />
+          {:else if selectedPerson}
+            <FamilyPersonPanel
+              person={selectedPerson}
+              isRoot={selectedPerson.id === rootId}
+              houses={housesByPerson.get(selectedPerson.id) ?? []}
+              connections={personConnections}
+              onOpen={onOpenEntity}
+              onMakeRoot={(id) => {
+                previousOrder = [];
+                void loadRoot(id, true);
+              }}
+              onAddRelative={(id, role) => (member = { id, role })}
+              onSelectPerson={selectCanvasPerson}
+              onSelectRelationship={(id) => (selectedRelationshipId = id)}
+              onClose={() => (selectedPersonId = null)} />
+          {/if}
+        </div>
+      {/if}
     </div>
   {/if}
   {#if member && rootId}
@@ -759,17 +872,18 @@ $effect(() => {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 28px 32px;
+  padding: 12px 16px;
 }
 header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
 }
 .overline {
   display: block;
@@ -779,9 +893,9 @@ header {
   letter-spacing: 0.18em;
 }
 h1 {
-  margin: 8px 0 4px;
+  margin: 2px 0 0;
   color: var(--ink);
-  font: 500 32px/1 var(--font-display, Georgia, serif);
+  font: 500 22px/1.15 var(--font-display, Georgia, serif);
 }
 p {
   margin: 0;
@@ -808,6 +922,12 @@ p {
   font-size: 12px;
   cursor: pointer;
 }
+.quiet-button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
 .quiet-button:hover {
   background: var(--surface-muted, var(--surface));
   color: var(--ink);
@@ -821,16 +941,52 @@ p {
 .workspace {
   display: grid;
   flex: 1 1 auto;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   height: 100%;
 }
-.canvas-wrap {
+.workspace.has-dock {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
+}
+.canvas-wrap,
+.dock {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
+}
+.dock {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.settings {
+  position: relative;
+}
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 6;
+  display: grid;
+  gap: 10px;
+  width: 240px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.settings-panel .recent,
+.settings-panel .recent.limit {
+  display: grid;
+  gap: 4px;
+}
+.settings-panel .recent span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 .recent select,
 .recent input {
@@ -841,15 +997,8 @@ p {
   background: var(--surface);
   color: var(--ink);
 }
-.recent.limit {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  color: var(--ink-muted);
-  font-size: 12px;
-}
 .recent.limit input {
-  width: 4.5rem;
+  width: 100%;
 }
 .sr {
   position: absolute;
@@ -857,24 +1006,5 @@ p {
   height: 1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
-}
-.overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: start center;
-  padding: 48px 24px;
-  background: color-mix(in srgb, var(--ink) 28%, transparent);
-}
-.overlay-card {
-  width: min(420px, 100%);
-  padding: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--surface);
-}
-.overlay-card header {
-  margin-bottom: 12px;
 }
 </style>

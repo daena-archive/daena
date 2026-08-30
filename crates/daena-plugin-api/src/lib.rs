@@ -523,6 +523,15 @@ pub struct FieldDefinition {
     pub timeline: Option<TimelineFieldContribution>,
     #[serde(rename = "relationshipConstraints", default)]
     pub relationship_constraints: Option<RelationshipConstraints>,
+    /// How this field views the relationship from the selected entity.
+    /// Omitted defaults to outgoing. Incoming is parent-of-this-entity;
+    /// undirected matches either endpoint.
+    #[serde(
+        rename = "relationshipDirection",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub relationship_direction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1325,6 +1334,20 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 if card != "one" && card != "many" {
                     return Err(ContractError(format!(
                         "field {}: cardinality must be 'one' or 'many'",
+                        field.key
+                    )));
+                }
+            }
+            if let Some(direction) = &field.relationship_direction {
+                if field.field_type != "relationship" {
+                    return Err(ContractError(format!(
+                        "field {}: relationshipDirection is only allowed for relationship fields",
+                        field.key
+                    )));
+                }
+                if direction != "outgoing" && direction != "incoming" && direction != "undirected" {
+                    return Err(ContractError(format!(
+                        "field {}: relationshipDirection must be 'outgoing', 'incoming', or 'undirected'",
                         field.key
                     )));
                 }

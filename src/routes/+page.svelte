@@ -39,6 +39,16 @@ import type {
 import { buildModuleContext } from "$lib/modules/context";
 import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
 import {
+  contributedRelationshipFields,
+  counterpartId,
+  counterpartIds,
+  coveredRelationshipIds,
+  defaultRelationshipMetadata,
+  endpointsForCreate,
+  manifestOwningRelationshipType,
+  relationshipsForField,
+} from "$lib/modules/contributed-fields";
+import {
   emptyShellNavigationHistory,
   recordShellLocation,
   sameShellLocation,
@@ -505,6 +515,29 @@ function schemaOverlayCandidates() {
 function moduleSupportsSchemaOverlay(moduleId: string) {
   return schemaOverlayCandidates().some((candidate) => candidate.id === moduleId);
 }
+
+function schemaReferenceEntityTypes(moduleId: string | null) {
+  if (!moduleId) return [];
+  const module = modules.find((candidate) => candidate.id === moduleId);
+  if (!module) return [];
+  const required = Object.entries(module.dependencies ?? {})
+    .filter(([, dependency]) => dependency.required)
+    .map(([id]) => id);
+  const types: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const dependencyId of required) {
+    const dependency = modules.find((candidate) => candidate.id === dependencyId && candidate.enabled);
+    if (!dependency) continue;
+    for (const schema of dependency.schemas ?? []) {
+      for (const entityType of schema.entityTypes ?? []) {
+        if (seen.has(entityType.id)) continue;
+        seen.add(entityType.id);
+        types.push({ id: entityType.id, name: entityType.name });
+      }
+    }
+  }
+  return types;
+}
 let aiSettings = $state<AiSettings>({
   provider: {
     id: "lm-studio",
@@ -946,10 +979,14 @@ const definitions = () => {
   const entityType =
     selected?.entity_type ??
     (section === "timeline" || section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
-  return (
-    activeManifest()
-      ?.schemas.filter((schema) => !entityType || schemaEntityTypeIds(schema).includes(entityType))
-      .flatMap((schema) => schema.fields.filter((field) => fieldAppliesToEntity(field, entityType))) ?? []
+  const active = activeManifest();
+  if (!active) return [];
+  return contributedRelationshipFields<FieldDefinition>(
+    active,
+    entityType,
+    modules.filter((module) => module.enabled),
+    modules.length === 0 ? null : enabledEntityTypes(),
+    schemaPluginId === active.id ? moduleSchemaOverlay : null,
   );
 };
 function namespaceForField(definition: FieldDefinition): string {
@@ -4839,18 +4876,11 @@ async function archiveSelected() {
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
   if (!selected || !definition.relationshipType) return [];
-  return relationships
-    .filter(
-      (relationship) =>
-        relationship.source_id === selected!.id && relationship.relationship_type === definition.relationshipType,
-    )
-    .map((relationship) => relationship.target_id);
+  return counterpartIds(selected.id, relationships, definition);
 }
 function relationshipsForDefinition(definition: FieldDefinition) {
-  return relationships.filter(
-    (relationship) =>
-      relationship.source_id === selected?.id && relationship.relationship_type === definition.relationshipType,
-  );
+  if (!selected) return [];
+  return relationshipsForField(selected.id, relationships, definition);
 }
 function relationshipDefinitions() {
   return definitions().filter((candidate) => candidate.type === "relationship");
@@ -4928,7 +4958,11 @@ function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
   }
 }
 function backlinkRelationships() {
-  return relationships.filter((relationship) => relationship.target_id === selected?.id);
+  if (!selected) return [];
+  const covered = coveredRelationshipIds(selected.id, relationships, otherRelationshipDefinitions());
+  return relationships.filter(
+    (relationship) => relationship.target_id === selected!.id && !covered.has(relationship.id),
+  );
 }
 function relationshipSourceName(relationship: Relationship) {
   return entities.find((entity) => entity.id === relationship.source_id)?.name ?? relationship.source_id;
@@ -4952,8 +4986,12 @@ function definitionForRelationship(relationship: Relationship): FieldDefinition 
   }
   return null;
 }
-function relationshipTargetName(relationship: Relationship) {
-  return entities.find((entity) => entity.id === relationship.target_id)?.name ?? relationship.target_id;
+function relationshipOtherId(definition: FieldDefinition, relationship: Relationship) {
+  return counterpartId(selected?.id ?? "", relationship, definition) ?? relationship.target_id;
+}
+function relationshipTargetName(relationship: Relationship, definition?: FieldDefinition) {
+  const id = definition && selected ? relationshipOtherId(definition, relationship) : relationship.target_id;
+  return entities.find((entity) => entity.id === id)?.name ?? id;
 }
 function relationshipMetadataSummary(relationship: Relationship, definition: FieldDefinition | null) {
   let metadata: Record<string, unknown> = {};
@@ -4994,7 +5032,7 @@ async function saveRelationshipMetadata(relationship: Relationship, metadata: Re
   relationships = relationships.map((current) => (current.id === updated.id ? updated : current));
 }
 async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
-  const target = relationshipTargetName(relationship);
+  const target = relationshipTargetName(relationship, definition);
   const label = definition.label ?? relationship.relationship_type;
   if (
     !(await confirmDialog({
@@ -5005,23 +5043,86 @@ async function confirmRemoveRelationship(definition: FieldDefinition, relationsh
     }))
   )
     return;
+  const otherId = relationshipOtherId(definition, relationship);
   await updateRelationshipField(
     definition,
-    selectedRelationshipIds(definition).filter((id) => id !== relationship.target_id),
+    selectedRelationshipIds(definition).filter((id) => id !== otherId),
   );
+}
+function contextOwningRelationshipType(relationshipType: string): ModuleContext {
+  const owner = manifestOwningRelationshipType(
+    relationshipType,
+    modules.filter((module) => module.enabled),
+  );
+  if (owner && projectInfo?.root) {
+    return buildModuleContext(owner as unknown as ModuleManifest, projectInfo.root, {
+      availableServices: enabledServices(),
+    });
+  }
+  return contextFor();
+}
+function contextOwningEntityType(entityType: string): ModuleContext {
+  const owner = modules.find(
+    (module) =>
+      module.enabled &&
+      (module.schemas ?? []).some((schema) => (schema.entityTypes ?? []).some((type) => type.id === entityType)),
+  );
+  if (owner && projectInfo?.root) {
+    return buildModuleContext(owner as unknown as ModuleManifest, projectInfo.root, {
+      availableServices: enabledServices(),
+    });
+  }
+  return contextFor();
+}
+async function createRelationshipTarget(definition: FieldDefinition, name: string): Promise<string | null> {
+  const targetType = definition.targetEntityTypes?.[0];
+  if (!targetType || projectDiagnostics.length > 0) return null;
+  try {
+    const created = await contextOwningEntityType(targetType).entities.create(
+      { name: name.trim(), type: targetType },
+      { requestId: crypto.randomUUID() },
+    );
+    await loadEntities();
+    return created.id;
+  } catch (cause) {
+    error = friendlyError(cause);
+    return null;
+  }
+}
+function toHostRelationship(relationship: {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  type: string;
+  metadata: Record<string, unknown>;
+  revision: string;
+}): Relationship {
+  return {
+    id: relationship.id,
+    source_id: relationship.sourceId,
+    target_id: relationship.targetId,
+    relationship_type: relationship.type,
+    metadata: JSON.stringify(relationship.metadata ?? {}),
+    revision: relationship.revision,
+  };
 }
 async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
   if (projectDiagnostics.length > 0) return;
   if (!selected || !definition.relationshipType) return;
   const desired = new Set(targetIds);
-  const current = relationships.filter(
-    (relationship) =>
-      relationship.source_id === selected!.id && relationship.relationship_type === definition.relationshipType,
+  const current = relationshipsForDefinition(definition);
+  const currentIds = new Set(
+    current
+      .map((relationship) => counterpartId(selected!.id, relationship, definition))
+      .filter((id): id is string => Boolean(id)),
   );
-  const toRemove = current.filter((relationship) => !desired.has(relationship.target_id));
-  const toAdd = [...desired].filter((targetId) => !current.some((relationship) => relationship.target_id === targetId));
+  const toRemove = current.filter((relationship) => {
+    const otherId = counterpartId(selected!.id, relationship, definition);
+    return !otherId || !desired.has(otherId);
+  });
+  const toAdd = [...desired].filter((targetId) => !currentIds.has(targetId));
   try {
-    const context = contextFor();
+    const context = contextOwningRelationshipType(definition.relationshipType);
     await Promise.all(
       toRemove.map((relationship) =>
         context.relationships.delete(relationship.id as UUID, relationship.relationship_type, {
@@ -5030,7 +5131,19 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       ),
     );
     const created = await Promise.all(
-      toAdd.map((targetId) => project.createRelationship(selected!.id, targetId, definition.relationshipType!, {})),
+      toAdd.map(async (otherId) => {
+        const endpoints = endpointsForCreate(selected!.id, otherId, definition);
+        const createdRelationship = await context.relationships.create(
+          {
+            sourceId: endpoints.sourceId as UUID,
+            targetId: endpoints.targetId as UUID,
+            type: definition.relationshipType!,
+            metadata: defaultRelationshipMetadata(definition),
+          },
+          { expectedRevision: selected!.revision, requestId: crypto.randomUUID() },
+        );
+        return toHostRelationship(createdRelationship);
+      }),
     );
     const removedIds = new Set(toRemove.map((relationship) => relationship.id));
     relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
@@ -6753,6 +6866,7 @@ onMount(() => {
             selectedPluginName={schemaPluginName}
             packageManifest={moduleSchemaPackage}
             overlay={moduleSchemaOverlay}
+            referenceEntityTypes={schemaReferenceEntityTypes(schemaPluginId)}
             overlayRevision={moduleSchemaRevision}
             busy={moduleSchemaBusy}
             message={moduleSchemaMessage}
@@ -6854,6 +6968,7 @@ onMount(() => {
         onScroll={rememberSpecializedSurfaceScroll}>
         <WikiView
           manifest={manifestForWorkspaceSection("lore")!}
+          enabledManifests={modules.filter((module) => module.enabled)}
           initialEntityId={loreWikiEntityId}
           projectId={projectInfo?.root ?? ""}
           aiEnabled={projectInfo?.aiEnabled ?? false}
@@ -7809,7 +7924,10 @@ onMount(() => {
                     {entities}
                     selectedIds={selectedRelationshipIds(definition)}
                     hideChips
-                    onChange={(ids) => void updateRelationshipField(definition, ids)} />
+                    onChange={(ids) => void updateRelationshipField(definition, ids)}
+                    onCreate={definition.relationshipType === "family_member_of"
+                      ? (name) => createRelationshipTarget(definition, name)
+                      : undefined} />
                   {#if relationshipsForDefinition(definition).length > 0}<div
                       class="relationship-detail-list"
                       aria-label={`${definition.label} details`}>
@@ -7820,12 +7938,12 @@ onMount(() => {
                           <button
                             type="button"
                             class="relationship-detail-copy related-item-trigger"
-                            data-entity-id={relationship.target_id}
-                            aria-label={`Preview ${relationshipTargetName(relationship)}`}>
-                            <strong>{relationshipTargetName(relationship)}</strong>
+                            data-entity-id={relationshipOtherId(definition, relationship)}
+                            aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
+                            <strong>{relationshipTargetName(relationship, definition)}</strong>
                             <small
-                              >{entities.find((entity) => entity.id === relationship.target_id)?.entity_type ??
-                                "Entity"}{#if summary}
+                              >{entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
+                                ?.entity_type ?? "Entity"}{#if summary}
                                 · {summary}{/if}</small>
                           </button>
                           <div class="relationship-detail-actions">
@@ -7833,14 +7951,14 @@ onMount(() => {
                               <button
                                 class="quiet-button relationship-details-button"
                                 type="button"
-                                aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship)}`}
+                                aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship, definition)}`}
                                 onclick={() => openRelationshipMetadata(relationship)}
                                 ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                             {/if}
                             <button
                               class="quiet-button relationship-remove-button"
                               type="button"
-                              aria-label={`Remove ${relationshipTargetName(relationship)} from ${definition.label}`}
+                              aria-label={`Remove ${relationshipTargetName(relationship, definition)} from ${definition.label}`}
                               onclick={() => void confirmRemoveRelationship(definition, relationship)}
                               ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
                           </div>

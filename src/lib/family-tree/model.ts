@@ -1,8 +1,10 @@
 import type { CalendarDate } from "$lib/date.ts";
 
 export const PERSON_TYPE = "daena.lore:person";
+export const HOUSE_TYPE = "daena.family-tree:house";
 export const PARENT_RELATIONSHIP = "family_parent_of";
 export const PARTNER_RELATIONSHIP = "family_partner_with";
+export const MEMBERSHIP_RELATIONSHIP = "family_member_of";
 export const LORE_NAMESPACE = "lore";
 export const DEFAULT_SECONDARY_FIELD = "occupation";
 export const PERSON_NODE_WIDTH = 220;
@@ -37,10 +39,19 @@ export const BRANCH_DIRECTIONS = ["parents", "children", "siblings", "partners"]
 export const PARENT_KINDS = ["biological", "adoptive", "legal", "guardian", "step", "custom"] as const;
 export const PARTNER_KINDS = ["marriage", "partnership", "betrothal", "concubinage", "custom"] as const;
 export const PARTNER_STATUSES = ["active", "ended", "planned", "unknown"] as const;
+export const MEMBER_ROLES = ["member", "head", "consort", "heir", "founder", "custom"] as const;
 
 export type ParentKind = (typeof PARENT_KINDS)[number];
 export type PartnerKind = (typeof PARTNER_KINDS)[number];
 export type PartnerStatus = (typeof PARTNER_STATUSES)[number];
+export type MemberRole = (typeof MEMBER_ROLES)[number];
+
+export interface HouseMembership {
+  personId: string;
+  houseId: string;
+  houseName: string;
+  role: string | null;
+}
 export type FamilyRelationshipKind = "parent" | "partner";
 export type BranchDirection = (typeof BRANCH_DIRECTIONS)[number];
 export type ExpansionKey = `${string}:${BranchDirection}`;

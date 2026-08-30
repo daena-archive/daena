@@ -552,6 +552,7 @@ export function validatePluginManifest(manifest) {
                         "multiple",
                         "oneOf",
                         "relationshipConstraints",
+                        "relationshipDirection",
                     ], errors);
                     if (field.shared !== undefined && typeof field.shared !== "boolean")
                         errors.push(`field ${String(field.key)} shared must be boolean`);
@@ -575,6 +576,14 @@ export function validatePluginManifest(manifest) {
                                 errors.push(`field ${String(field.key)} timeline contribution label is invalid`);
                             if (field.timeline.layer !== undefined && !["dates", "lifelines"].includes(String(field.timeline.layer)))
                                 errors.push(`field ${String(field.key)} timeline contribution layer is invalid`);
+                        }
+                    }
+                    if (field.relationshipDirection !== undefined) {
+                        if (field.type !== "relationship") {
+                            errors.push(`non-relationship field ${String(field.key)} cannot declare relationshipDirection`);
+                        }
+                        else if (!["outgoing", "incoming", "undirected"].includes(String(field.relationshipDirection))) {
+                            errors.push(`field ${String(field.key)} relationshipDirection is invalid`);
                         }
                     }
                     if (field.relationshipConstraints !== undefined) {
@@ -986,9 +995,7 @@ export function validatePluginManifest(manifest) {
     if (!hasUiEntrypoint && !hasWasmEntrypoint) {
         const viewsList = Array.isArray(views) ? views : [];
         const allHostSurface = viewsList.length > 0 &&
-            viewsList.every((view) => isRecord(view) &&
-                isRecord(view.renderer) &&
-                view.renderer.type === "host-surface");
+            viewsList.every((view) => isRecord(view) && isRecord(view.renderer) && view.renderer.type === "host-surface");
         if (value.kind !== "declarative")
             errors.push("empty entrypoints require a declarative plugin");
         else if (isRecord(services) && Array.isArray(services.provides) && services.provides.length > 0)

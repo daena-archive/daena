@@ -1,5 +1,12 @@
 import type { ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
-import { PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP, PERSON_TYPE, type RelativeRole } from "./model.ts";
+import {
+  HOUSE_TYPE,
+  MEMBERSHIP_RELATIONSHIP,
+  PARENT_RELATIONSHIP,
+  PARTNER_RELATIONSHIP,
+  PERSON_TYPE,
+  type RelativeRole,
+} from "./model.ts";
 
 export type MutationCode =
   "relationship.cycle" | "relationship.duplicate" | "relationship.self" | "revision-conflict" | "unknown";
@@ -73,6 +80,28 @@ export function canonicalPair(left: string, right: string): [string, string] {
 
 export async function createMinimalPerson(context: ModuleContext, name: string, requestId: string) {
   return context.entities.create({ name: name.trim(), type: PERSON_TYPE }, { requestId });
+}
+
+export async function createHouse(context: ModuleContext, name: string, requestId: string) {
+  return context.entities.create({ name: name.trim(), type: HOUSE_TYPE }, { requestId });
+}
+
+export async function createMembership(
+  context: ModuleContext,
+  personId: string,
+  houseId: string,
+  sourceRevision: string,
+  requestId: string,
+) {
+  return context.relationships.create(
+    {
+      sourceId: personId as UUID,
+      targetId: houseId as UUID,
+      type: MEMBERSHIP_RELATIONSHIP,
+      metadata: { role: "member" },
+    },
+    { expectedRevision: sourceRevision, requestId },
+  );
 }
 
 export async function createFamilyRelationship(

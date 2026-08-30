@@ -18,6 +18,7 @@ let {
   onUpdated,
   onDeleted,
   onClose,
+  docked = false,
 }: {
   context: ModuleContext;
   relationship: FamilyRelationship;
@@ -25,6 +26,7 @@ let {
   onUpdated: (relationship: FamilyRelationship) => void;
   onDeleted: (id: string) => void;
   onClose: () => void;
+  docked?: boolean;
 } = $props();
 
 let draft = $state<Record<string, unknown>>({});
@@ -194,7 +196,7 @@ async function remove() {
 }
 </script>
 
-<aside class="panel" aria-label="Relationship">
+<aside class="panel" class:docked aria-label="Relationship">
   <header>
     <div>
       <strong>{sourceName} → {targetName}</strong>
@@ -270,6 +272,7 @@ async function remove() {
 <style>
 .panel {
   display: grid;
+  align-content: start;
   gap: 8px;
   width: min(420px, 100%);
   max-height: min(80vh, 720px);
@@ -278,6 +281,14 @@ async function remove() {
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: var(--surface);
+}
+.panel.docked {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  padding: 14px;
+  border: none;
+  border-radius: 0;
 }
 header {
   display: flex;

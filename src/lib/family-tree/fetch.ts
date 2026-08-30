@@ -11,7 +11,9 @@ import {
   FIELD_HYDRATE_BATCH,
   INITIAL_ANCESTOR_GENERATIONS,
   INITIAL_DESCENDANT_GENERATIONS,
+  HOUSE_TYPE,
   LORE_NAMESPACE,
+  MEMBERSHIP_RELATIONSHIP,
   PARENT_RELATIONSHIP,
   PARTNER_RELATIONSHIP,
   PERSON_TYPE,
@@ -23,6 +25,7 @@ import {
   type FamilyPerson,
   type FamilyTreeLimits,
   type GenealogyWarning,
+  type HouseMembership,
 } from "./model.ts";
 import { personFromRecord } from "./projection.ts";
 
@@ -352,4 +355,55 @@ export async function loadExpansionLayer(
     truncated,
     truncationLowerBound,
   };
+}
+
+export async function listHouses(
+  context: ModuleContext,
+  signal?: AbortSignal,
+): Promise<{ id: string; name: string }[]> {
+  throwIfAborted(signal);
+  const page = await context.entities.query({
+    type: HOUSE_TYPE,
+    sortField: "name",
+    sortDirection: "asc",
+    limit: 200,
+  });
+  throwIfAborted(signal);
+  return page.items.filter((entity) => !entity.deleted).map((entity) => ({ id: entity.id, name: entity.name }));
+}
+
+export async function loadHouseMemberships(
+  context: ModuleContext,
+  personIds: string[],
+  signal?: AbortSignal,
+): Promise<HouseMembership[]> {
+  const uniquePeople = [...new Set(personIds.filter(Boolean))];
+  if (uniquePeople.length === 0) return [];
+  const collected = new Map<string, Relationship>();
+  await queryPaged(context, uniquePeople, [MEMBERSHIP_RELATIONSHIP], "outgoing", collected, signal);
+  const memberships = [...collected.values()].filter(
+    (relationship) => relationship.type === MEMBERSHIP_RELATIONSHIP && uniquePeople.includes(relationship.sourceId),
+  );
+  const houseIds = [...new Set(memberships.map((relationship) => relationship.targetId))];
+  const houses = new Map<string, string>();
+  for (let index = 0; index < houseIds.length; index += ENTITY_GET_MANY_LIMIT) {
+    throwIfAborted(signal);
+    const batch = houseIds.slice(index, index + ENTITY_GET_MANY_LIMIT);
+    for (const entity of await context.entities.getMany(batch as UUID[])) {
+      if (!entity.deleted && entity.type === HOUSE_TYPE) houses.set(entity.id, entity.name);
+    }
+  }
+  return memberships.flatMap((relationship) => {
+    const houseName = houses.get(relationship.targetId);
+    if (!houseName) return [];
+    const role = relationship.metadata?.role;
+    return [
+      {
+        personId: relationship.sourceId,
+        houseId: relationship.targetId,
+        houseName,
+        role: typeof role === "string" ? role : null,
+      } satisfies HouseMembership,
+    ];
+  });
 }

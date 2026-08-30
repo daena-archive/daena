@@ -417,6 +417,14 @@
         "relationshipConstraints": {
           "$ref": "#/$defs/RelationshipConstraints"
         },
+        "relationshipDirection": {
+          "enum": [
+            "outgoing",
+            "incoming",
+            "undirected"
+          ],
+          "type": "string"
+        },
         "relationshipType": {
           "pattern": "^[a-z][a-z0-9_-]*$",
           "type": "string"

@@ -283,6 +283,44 @@ fn qualify_type_ids(plugin_id: &str, ids: &mut [String]) -> Result<(), String> {
     Ok(())
 }
 
+fn qualify_field_type_id(plugin_id: &str, id: &str) -> Result<String, String> {
+    if let Some((prefix, _)) = id.split_once(':') {
+        if prefix != plugin_id {
+            if !is_entity_type_id(id) {
+                return Err(format!("invalid entity type id: {id}"));
+            }
+            return Ok(id.to_string());
+        }
+    }
+    qualify_type_id(plugin_id, id)
+}
+
+fn qualify_field_type_ids(plugin_id: &str, ids: &mut [String]) -> Result<(), String> {
+    for id in ids {
+        *id = qualify_field_type_id(plugin_id, id)?;
+    }
+    Ok(())
+}
+
+fn overlay_entity_type_allowed(
+    package: &PluginManifest,
+    effective_types: &BTreeSet<&str>,
+    id: &str,
+) -> bool {
+    if effective_types.contains(id) {
+        return true;
+    }
+    let Some((prefix, _)) = id.split_once(':') else {
+        return false;
+    };
+    prefix != package.id
+        && crate::is_identifier(prefix)
+        && package
+            .dependencies
+            .get(prefix)
+            .is_some_and(|dependency| dependency.required)
+}
+
 fn qualify_overlay_entity_types(
     plugin_id: &str,
     overlay: &mut ModuleSchemaOverlay,
@@ -293,17 +331,17 @@ fn qualify_overlay_entity_types(
     }
     for field in &mut overlay.custom_fields {
         if let Some(entity_types) = &mut field.entity_types {
-            qualify_type_ids(plugin_id, entity_types)?;
+            qualify_field_type_ids(plugin_id, entity_types)?;
         }
         if let Some(targets) = &mut field.target_entity_types {
-            qualify_type_ids(plugin_id, targets)?;
+            qualify_field_type_ids(plugin_id, targets)?;
         }
     }
     for template in &mut overlay.custom_templates {
         template.entity_type = qualify_type_id(plugin_id, &template.entity_type)?;
     }
     for scope in &mut overlay.field_scope_overrides {
-        qualify_type_ids(plugin_id, &mut scope.entity_types)?;
+        qualify_field_type_ids(plugin_id, &mut scope.entity_types)?;
     }
     for appearance in &mut overlay.entity_type_appearance_overrides {
         appearance.entity_type_id = qualify_type_id(plugin_id, &appearance.entity_type_id)?;
@@ -487,7 +525,7 @@ pub fn validate_module_overlay(
             ));
         }
         for entity_type in &scope.entity_types {
-            if !effective_types.contains(entity_type.as_str()) {
+            if !overlay_entity_type_allowed(package, &effective_types, entity_type) {
                 return Err(format!(
                     "field scope override {} references unknown entity type: {entity_type}",
                     scope.field_key
@@ -521,7 +559,7 @@ pub fn validate_module_overlay(
         }
         if let Some(entity_types) = &field.entity_types {
             for entity_type in entity_types {
-                if !effective_types.contains(entity_type.as_str()) {
+                if !overlay_entity_type_allowed(package, &effective_types, entity_type) {
                     return Err(format!(
                         "custom field {} references unknown entity type: {entity_type}",
                         field.key
@@ -555,7 +593,7 @@ pub fn validate_module_overlay(
                 ));
             }
             for target in targets {
-                if !effective_types.contains(target.as_str()) {
+                if !overlay_entity_type_allowed(package, &effective_types, target) {
                     return Err(format!(
                         "custom field {} references unknown target type: {target}",
                         field.key
@@ -613,6 +651,20 @@ pub fn validate_module_overlay(
             if card != "one" && card != "many" {
                 return Err(format!(
                     "field {}: cardinality must be 'one' or 'many'",
+                    field.key
+                ));
+            }
+        }
+        if let Some(direction) = &field.relationship_direction {
+            if field.field_type != "relationship" {
+                return Err(format!(
+                    "field {}: relationshipDirection is only allowed for relationship fields",
+                    field.key
+                ));
+            }
+            if direction != "outgoing" && direction != "incoming" && direction != "undirected" {
+                return Err(format!(
+                    "field {}: relationshipDirection must be 'outgoing', 'incoming', or 'undirected'",
                     field.key
                 ));
             }
@@ -1203,6 +1255,13 @@ mod tests {
         .expect("timeline manifest")
     }
 
+    fn family_tree_manifest() -> PluginManifest {
+        parse_manifest(include_str!(
+            "../../../packages/modules/family-tree/manifest.json"
+        ))
+        .expect("family tree manifest")
+    }
+
     fn writing_manifest() -> PluginManifest {
         parse_manifest(include_str!(
             "../../../packages/modules/writing/manifest.json"
@@ -1231,6 +1290,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1260,6 +1320,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1287,6 +1348,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1310,10 +1372,69 @@ mod tests {
         let package = parse_manifest(include_str!("../../../packages/modules/maps/manifest.json"))
             .expect("maps manifest");
         assert!(!supports_schema_overlay(&package));
-        let overlay = ModuleSchemaOverlay::default();
+    }
+
+    #[test]
+    fn family_tree_supports_schema_overlay() {
+        assert!(supports_schema_overlay(&family_tree_manifest()));
+    }
+
+    #[test]
+    fn allows_family_tree_custom_kinship_on_lore_person() {
+        let package = family_tree_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_fields: vec![FieldDefinition {
+                key: "godparents".into(),
+                label: "Godparents".into(),
+                field_type: "relationship".into(),
+                required: None,
+                options: None,
+                entity_types: Some(vec!["daena.lore:person".into()]),
+                relationship_type: Some("family_godparent_of".into()),
+                target_entity_types: Some(vec!["daena.lore:person".into()]),
+                shared: false,
+                multiple: false,
+                cardinality: Some("many".into()),
+                one_of: None,
+                metadata_fields: None,
+                timeline: None,
+                relationship_constraints: None,
+                relationship_direction: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
+        assert!(validate_module_overlay(&package, &overlay).is_ok());
+    }
+
+    #[test]
+    fn rejects_family_tree_custom_field_on_undeclared_dependency() {
+        let package = family_tree_manifest();
+        let overlay = ModuleSchemaOverlay {
+            version: SCHEMA_OVERLAY_VERSION,
+            custom_fields: vec![FieldDefinition {
+                key: "ghosts".into(),
+                label: "Ghosts".into(),
+                field_type: "text".into(),
+                required: None,
+                options: None,
+                entity_types: Some(vec!["daena.ghost:ghost".into()]),
+                relationship_type: None,
+                target_entity_types: None,
+                shared: false,
+                multiple: false,
+                cardinality: None,
+                one_of: None,
+                metadata_fields: None,
+                timeline: None,
+                relationship_constraints: None,
+                relationship_direction: None,
+            }],
+            ..ModuleSchemaOverlay::default()
+        };
         assert!(validate_module_overlay(&package, &overlay)
             .unwrap_err()
-            .contains("not supported"));
+            .contains("unknown entity type"));
     }
 
     #[test]
@@ -1348,6 +1469,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "species".into(),
@@ -1451,6 +1573,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1560,6 +1683,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             custom_templates: vec![EntityTemplate {
                 id: "chapter".into(),
@@ -1748,6 +1872,7 @@ mod tests {
                     layer: Some(TimelineFieldLayer::Dates),
                 }),
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             ..ModuleSchemaOverlay::default()
         };
@@ -1825,6 +1950,7 @@ mod tests {
                 metadata_fields: None,
                 timeline: None,
                 relationship_constraints: None,
+                relationship_direction: None,
             }],
             field_timeline_overrides: vec![FieldTimelineOverride {
                 field_key: "founded".into(),

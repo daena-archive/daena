@@ -707,6 +707,7 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
               "multiple",
               "oneOf",
               "relationshipConstraints",
+              "relationshipDirection",
             ],
             errors,
           );
@@ -734,6 +735,13 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
                 errors.push(`field ${String(field.key)} timeline contribution label is invalid`);
               if (field.timeline.layer !== undefined && !["dates", "lifelines"].includes(String(field.timeline.layer)))
                 errors.push(`field ${String(field.key)} timeline contribution layer is invalid`);
+            }
+          }
+          if (field.relationshipDirection !== undefined) {
+            if (field.type !== "relationship") {
+              errors.push(`non-relationship field ${String(field.key)} cannot declare relationshipDirection`);
+            } else if (!["outgoing", "incoming", "undirected"].includes(String(field.relationshipDirection))) {
+              errors.push(`field ${String(field.key)} relationshipDirection is invalid`);
             }
           }
           if (field.relationshipConstraints !== undefined) {

@@ -8,14 +8,20 @@ let {
   context,
   onSelect,
   compact = false,
+  dropdown = false,
+  recents = [],
 }: {
   context: ModuleContext;
   onSelect: (person: EntitySummary) => void;
   compact?: boolean;
+  dropdown?: boolean;
+  recents?: { id: string; name: string }[];
 } = $props();
 
 let createName = $state("");
 let creating = $state(false);
+let open = $state(false);
+let rootEl = $state<HTMLElement | null>(null);
 
 let query = $state("");
 let results = $state<EntitySummary[]>([]);
@@ -66,51 +72,102 @@ async function createPerson() {
   }
 }
 
+function pick(person: EntitySummary) {
+  open = false;
+  onSelect(person);
+}
+
+function pickRecent(entry: { id: string; name: string }) {
+  pick({
+    id: entry.id as EntitySummary["id"],
+    name: entry.name,
+    type: PERSON_TYPE,
+    deleted: false,
+    revision: "",
+  });
+}
+
 $effect(() => {
   void query;
   const timer = setTimeout(() => void search(0), 180);
   return () => clearTimeout(timer);
 });
+
+$effect(() => {
+  if (!dropdown || !open) return;
+  function onPointer(event: PointerEvent) {
+    if (rootEl?.contains(event.target as Node)) return;
+    open = false;
+  }
+  window.addEventListener("pointerdown", onPointer);
+  return () => window.removeEventListener("pointerdown", onPointer);
+});
+
+const showMenu = $derived(!dropdown || open);
+const showCreate = $derived(!dropdown && results.length === 0 && !query.trim() && total === 0);
+const showRecents = $derived(dropdown && open && !query.trim() && recents.length > 0);
 </script>
 
-<div class="picker" class:compact>
+<div class="picker" class:compact class:dropdown bind:this={rootEl}>
   <label>
     {#if !compact}<span class="overline">Root person</span>{/if}
-    <input type="search" bind:value={query} placeholder="Search Lore people" aria-label="Search Lore people" />
+    <input
+      type="search"
+      bind:value={query}
+      placeholder="Search Lore people"
+      aria-label="Search Lore people"
+      onfocus={() => {
+        if (dropdown) open = true;
+      }} />
   </label>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  {#if busy && results.length === 0}<p class="hint">Searching…</p>
-  {:else if results.length === 0 && !query.trim() && total === 0}
-    <p class="hint">No Lore people yet. Create a person — they will also appear in Lore.</p>
-    <label>Name <input bind:value={createName} /></label>
-    <button
-      type="button"
-      class="primary-button"
-      disabled={creating || !createName.trim()}
-      onclick={() => void createPerson()}>Create person</button>
-  {:else if results.length === 0}<p class="hint">No Lore people match this search.</p>
-  {:else}
-    <ul>
-      {#each results as person (person.id)}
-        <li>
-          <button type="button" onclick={() => onSelect(person)}>{person.name}</button>
-        </li>
-      {/each}
-    </ul>
-    {#if total > results.length}
-      <div class="pager">
+  {#if showMenu}
+    <div class="menu">
+      {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if showRecents}
+        <span class="section">Recent</span>
+        <ul>
+          {#each recents as entry (entry.id)}
+            <li>
+              <button type="button" onclick={() => pickRecent(entry)}>{entry.name}</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if busy && results.length === 0}<p class="hint">Searching…</p>
+      {:else if showCreate}
+        <p class="hint">No Lore people yet. Create a person — they will also appear in Lore.</p>
+        <label>Name <input bind:value={createName} /></label>
         <button
           type="button"
-          class="quiet-button"
-          disabled={offset === 0}
-          onclick={() => void search(Math.max(0, offset - pageSize))}>Previous</button>
-        <button
-          type="button"
-          class="quiet-button"
-          disabled={offset + results.length >= total}
-          onclick={() => void search(offset + pageSize)}>Next</button>
-      </div>
-    {/if}
+          class="primary-button"
+          disabled={creating || !createName.trim()}
+          onclick={() => void createPerson()}>Create person</button>
+      {:else if results.length === 0}<p class="hint">No Lore people match this search.</p>
+      {:else}
+        {#if showRecents}<span class="section">People</span>{/if}
+        <ul>
+          {#each results as person (person.id)}
+            <li>
+              <button type="button" onclick={() => pick(person)}>{person.name}</button>
+            </li>
+          {/each}
+        </ul>
+        {#if total > results.length}
+          <div class="pager">
+            <button
+              type="button"
+              class="quiet-button"
+              disabled={offset === 0}
+              onclick={() => void search(Math.max(0, offset - pageSize))}>Previous</button>
+            <button
+              type="button"
+              class="quiet-button"
+              disabled={offset + results.length >= total}
+              onclick={() => void search(offset + pageSize)}>Next</button>
+          </div>
+        {/if}
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -122,6 +179,27 @@ $effect(() => {
 }
 .picker.compact {
   max-width: none;
+}
+.picker.dropdown {
+  position: relative;
+  min-width: 220px;
+  max-width: 280px;
+  gap: 0;
+}
+.picker.dropdown .menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: 6;
+  display: grid;
+  gap: 6px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
 }
 .overline {
   display: block;
@@ -140,6 +218,10 @@ input {
   background: var(--surface);
   color: var(--ink);
 }
+.picker.dropdown input {
+  min-height: 32px;
+  padding: 4px 8px;
+}
 ul {
   display: grid;
   gap: 6px;
@@ -156,6 +238,13 @@ button {
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+}
+.section {
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .hint,
 .error {

@@ -35,6 +35,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 mod ai;
+mod app_update;
 mod atlas_jobs;
 mod atlas_studio;
 mod external_import_jobs;
@@ -6721,8 +6722,7 @@ async fn project_git_restore_from_upstream(
 
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
-    let allowed = url == "https://git-scm.com/downloads" || url.starts_with("https://git-scm.com/");
-    if !allowed {
+    if !app_update::allowed_external_url(&url) {
         return Err("external URL is not allowlisted".into());
     }
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|error| error.to_string())
@@ -9639,6 +9639,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             app_version,
+            app_update::app_check_update,
             settings_get,
             settings_update,
             ai::ai_provider_status,

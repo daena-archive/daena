@@ -7019,6 +7019,7 @@ onMount(() => {
     {#if showSettings && settingsSurface === "application"}
       <SettingsView
         bind:section={settingsSection}
+        version={displayVersion}
         {recentProjects}
         {themePreference}
         onThemeChange={updateThemePreference}

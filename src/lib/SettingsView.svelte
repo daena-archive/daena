@@ -1,6 +1,19 @@
 <script lang="ts">
-import { X, Settings2, FolderOpen, Sparkles, Bot, ChevronLeft, Globe, Sun, Moon, Monitor } from "@lucide/svelte";
+import {
+  X,
+  Settings2,
+  FolderOpen,
+  Sparkles,
+  Bot,
+  ChevronLeft,
+  Globe,
+  Sun,
+  Moon,
+  Monitor,
+  Download,
+} from "@lucide/svelte";
 import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
+import { checkAppUpdate, openDownloadPage } from "$lib/appUpdate";
 import type { ThemePreference } from "$lib/theme";
 
 type SettingsSection = "general" | "ai";
@@ -47,6 +60,7 @@ const aiProviderPresets: AiProviderPreset[] = [
 
 let {
   section = $bindable("general" as SettingsSection),
+  version,
   recentProjects,
   themePreference,
   onThemeChange,
@@ -68,6 +82,7 @@ let {
   onAiModelsLoad,
 }: {
   section?: SettingsSection;
+  version: string;
   recentProjects: RecentProject[];
   themePreference: ThemePreference;
   onThemeChange: (preference: ThemePreference) => void;
@@ -127,6 +142,30 @@ let modelPickerOpen = $state<"chat" | "embedding" | null>(null);
 let embeddingSectionOpen = $state(false);
 let credentialInput = $state("");
 let credentialBusy = $state(false);
+let updateBusy = $state(false);
+let updateMessage = $state("");
+
+async function checkForUpdate() {
+  if (updateBusy) return;
+  updateBusy = true;
+  updateMessage = "";
+  try {
+    const result = await checkAppUpdate();
+    updateMessage = result.newer ? `Update available: ${result.latest}` : `You're up to date (${result.current})`;
+  } catch (cause) {
+    updateMessage = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    updateBusy = false;
+  }
+}
+
+async function openUpdatesPage() {
+  try {
+    await openDownloadPage();
+  } catch (cause) {
+    updateMessage = cause instanceof Error ? cause.message : String(cause);
+  }
+}
 
 async function saveRemoteCredential() {
   const key = credentialInput.trim();
@@ -300,6 +339,22 @@ async function handleClose() {
               <Monitor size={16} strokeWidth={1.8} aria-hidden="true" />
               <span><strong>System</strong><small>Match this computer</small></span>
             </button>
+          </div>
+        </div>
+
+        <div class="block elevated">
+          <div class="block-heading">
+            <div class="heading-left">
+              <span class="heading-icon"><Download size={14} strokeWidth={1.8} aria-hidden="true" /></span>
+              <h4>About</h4>
+            </div>
+            <span class="block-hint">v{version}</span>
+          </div>
+          <div class="ai-settings-actions">
+            <button type="button" class="primary" onclick={() => void checkForUpdate()} disabled={updateBusy}
+              >{updateBusy ? "Checking…" : "Check for update"}</button>
+            <button type="button" class="quiet" onclick={() => void openUpdatesPage()}>Open download page</button>
+            {#if updateMessage}<span class="ai-status">{updateMessage}</span>{/if}
           </div>
         </div>
 

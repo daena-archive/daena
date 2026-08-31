@@ -295,7 +295,7 @@ assert.match(client, /ModuleSchemaOverlayMutationResult/);
 assert.match(client, /acknowledgeImpact|acknowledge_impact/);
 assert.match(client, /expected_revision.*request_id|setModuleSchemaOverlay/);
 
-const vocabulary = await read("src/lib/ui-ux/vocabulary.ts");
+const vocabulary = await read("src/lib/entity-lifecycle/vocabulary.ts");
 assert.match(vocabulary, /conflictCompare|conflictReapply/);
 
 const page = await read("src/routes/+page.svelte");

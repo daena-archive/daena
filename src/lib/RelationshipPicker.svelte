@@ -1,13 +1,13 @@
 <script lang="ts">
 import { X } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
-import AsyncEntityPicker from "./ui-ux/AsyncEntityPicker.svelte";
+import AsyncEntityPicker from "./entity-lifecycle/AsyncEntityPicker.svelte";
 import {
   type AsyncEntityOption,
   type AsyncEntityResolveFn,
   type AsyncEntitySearchFn,
   type AsyncEntitySearchQuery,
-} from "./ui-ux/asyncEntityQuery.ts";
+} from "./entity-lifecycle/asyncEntityQuery.ts";
 
 let {
   field,

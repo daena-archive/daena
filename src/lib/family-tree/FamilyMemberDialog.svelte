@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, UUID } from "../../../packages/module-api/src/index";
 import { trapModalTab } from "$lib/shell/modalFocus";
-import AsyncEntityPicker from "$lib/ui-ux/AsyncEntityPicker.svelte";
-import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/ui-ux/asyncEntityQuery.ts";
+import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
+import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import {
   PARENT_KINDS,
   PARTNER_KINDS,

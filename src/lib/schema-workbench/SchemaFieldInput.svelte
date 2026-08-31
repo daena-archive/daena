@@ -3,7 +3,11 @@ import type { FieldDefinition } from "$lib/project/client";
 import DateEditor from "$lib/date/DateEditor.svelte";
 import RelationshipPicker from "$lib/RelationshipPicker.svelte";
 import { GREGORIAN_CALENDAR_ID } from "$lib/date";
-import type { AsyncEntityResolveFn, AsyncEntitySearchFn, AsyncEntitySearchPage } from "$lib/ui-ux/asyncEntityQuery";
+import type {
+  AsyncEntityResolveFn,
+  AsyncEntitySearchFn,
+  AsyncEntitySearchPage,
+} from "$lib/entity-lifecycle/asyncEntityQuery";
 
 export type SchemaFieldValue = unknown;
 

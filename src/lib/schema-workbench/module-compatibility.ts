@@ -1,5 +1,5 @@
 /**
- * Module schema-overlay compatibility (plan §5.8 / Slice 7).
+ * Module schema-overlay compatibility.
  *
  * Overlay-capable modules offer the workbench. Language and Maps stay
  * "Managed by extension" until their specialized surfaces are ready (or forever

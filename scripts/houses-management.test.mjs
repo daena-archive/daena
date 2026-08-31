@@ -11,7 +11,7 @@ const { countKinshipFamilyGroups, formatHouseMemberSummary, houseMemberSummaries
 const { formatMembershipRole, isLeadershipRole, MEMBERSHIP_RELATIONSHIP, PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP } =
   await import("../src/lib/family-tree/model.ts");
 const { membershipMetadataFields, defaultMembershipDraft } = await import("../src/lib/family-tree/membershipFields.ts");
-const { ENTITY_ACTION_CONFIRM, TREE_LEGEND } = await import("../src/lib/ui-ux/vocabulary.ts");
+const { ENTITY_ACTION_CONFIRM, TREE_LEGEND } = await import("../src/lib/entity-lifecycle/vocabulary.ts");
 
 const componentPaths = [
   "src/lib/family-tree/FamilyHousePanel.svelte",
@@ -29,7 +29,7 @@ const housePanel = await read("src/lib/family-tree/FamilyHousePanel.svelte");
 const membershipDialog = await read("src/lib/family-tree/FamilyMembershipDialog.svelte");
 const personNode = await read("src/lib/family-tree/FamilyPersonNode.svelte");
 const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
-const rowActions = await read("src/lib/ui-ux/EntityRowActions.svelte");
+const rowActions = await read("src/lib/entity-lifecycle/EntityRowActions.svelte");
 
 assert.equal(formatMembershipRole("head"), "Head");
 assert.equal(formatMembershipRole("custom", "Steward"), "Steward");

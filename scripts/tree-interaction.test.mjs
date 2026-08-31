@@ -7,7 +7,7 @@ const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(resolve(root, path), "utf8");
 
 const { formatRelationshipTitle, formatRelationshipTypeLabel } = await import("../src/lib/family-tree/model.ts");
-const { TREE_KEYBOARD, TREE_LEGEND, TREE_SCOPES } = await import("../src/lib/ui-ux/vocabulary.ts");
+const { TREE_KEYBOARD, TREE_LEGEND, TREE_SCOPES } = await import("../src/lib/entity-lifecycle/vocabulary.ts");
 
 const componentPaths = [
   "src/lib/family-tree/FamilyTreeCanvas.svelte",

@@ -56,7 +56,7 @@ import SchemaTypesPane from "$lib/schema-workbench/SchemaTypesPane.svelte";
 import SchemaFieldsPane from "$lib/schema-workbench/SchemaFieldsPane.svelte";
 import SchemaTemplatesPane from "$lib/schema-workbench/SchemaTemplatesPane.svelte";
 import SchemaImpactReview from "$lib/schema-workbench/SchemaImpactReview.svelte";
-import { MUTATION_STATUS_MESSAGES } from "$lib/ui-ux/vocabulary.ts";
+import { MUTATION_STATUS_MESSAGES } from "$lib/entity-lifecycle/vocabulary.ts";
 import {
   Layers,
   TextQuote,

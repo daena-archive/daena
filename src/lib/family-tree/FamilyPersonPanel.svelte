@@ -1,7 +1,7 @@
 <script lang="ts">
 import { Archive, Crown, ExternalLink, GitBranch, Heart, Pencil, UserPlus } from "@lucide/svelte";
-import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
-import { archiveConfirmOptions } from "$lib/ui-ux/archive.ts";
+import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
+import { archiveConfirmOptions } from "$lib/entity-lifecycle/archive.ts";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { formatCalendarDate } from "$lib/date";
 import type { FamilyPerson, RelativeRole } from "./model.ts";

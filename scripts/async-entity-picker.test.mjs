@@ -14,10 +14,10 @@ const {
   toShellSortDirection,
   runAsyncEntitySearch,
   emptyAsyncEntityPage,
-} = await import("../src/lib/ui-ux/asyncEntityQuery.ts");
+} = await import("../src/lib/entity-lifecycle/asyncEntityQuery.ts");
 
 const componentPaths = [
-  "src/lib/ui-ux/AsyncEntityPicker.svelte",
+  "src/lib/entity-lifecycle/AsyncEntityPicker.svelte",
   "src/lib/RelationshipPicker.svelte",
   "src/lib/family-tree/FamilyRootPicker.svelte",
   "src/lib/family-tree/FamilyMemberDialog.svelte",
@@ -133,7 +133,7 @@ const shell = await read("src/routes/+page.svelte");
 const relationship = await read("src/lib/RelationshipPicker.svelte");
 const rootPicker = await read("src/lib/family-tree/FamilyRootPicker.svelte");
 const memberDialog = await read("src/lib/family-tree/FamilyMemberDialog.svelte");
-const picker = await read("src/lib/ui-ux/AsyncEntityPicker.svelte");
+const picker = await read("src/lib/entity-lifecycle/AsyncEntityPicker.svelte");
 const referenceDialog = await read("src/lib/editor/EntityReferenceDialog.svelte");
 const richText = await read("src/lib/editor/RichTextEditor.svelte");
 

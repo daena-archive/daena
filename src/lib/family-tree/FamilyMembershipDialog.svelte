@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { ModuleContext } from "../../../packages/module-api/src/index";
-import AsyncEntityPicker from "$lib/ui-ux/AsyncEntityPicker.svelte";
-import { toAsyncEntityPage } from "$lib/ui-ux/asyncEntityQuery.ts";
-import { ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES } from "$lib/ui-ux/vocabulary.ts";
+import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
+import { toAsyncEntityPage } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
+import { ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES } from "$lib/entity-lifecycle/vocabulary.ts";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { MEMBERSHIP_RELATIONSHIP, PERSON_TYPE, type HouseMemberRecord } from "./model.ts";
 import { defaultMembershipDraft, membershipMetadataFields } from "./membershipFields.ts";

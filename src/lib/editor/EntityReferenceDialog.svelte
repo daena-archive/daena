@@ -9,7 +9,7 @@ import {
   type AsyncEntityOption,
   type AsyncEntitySearchFn,
   type AsyncEntitySearchPage,
-} from "$lib/ui-ux/asyncEntityQuery.ts";
+} from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 
 export let open = false;
 export let search: AsyncEntitySearchFn = async () => emptyAsyncEntityPage();

@@ -13,7 +13,7 @@ import {
 } from "@xyflow/svelte";
 import "@xyflow/svelte/dist/style.css";
 import type { Snippet } from "svelte";
-import { TREE_KEYBOARD } from "$lib/ui-ux/vocabulary.ts";
+import { TREE_KEYBOARD } from "$lib/entity-lifecycle/vocabulary.ts";
 import FamilyPersonNode from "./FamilyPersonNode.svelte";
 import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";

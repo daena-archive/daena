@@ -3,8 +3,8 @@ import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from 
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
 import { confirmDialog } from "../../../../../src/lib/dialogs.svelte";
-import { archiveConfirmOptions, archivePendingLabel } from "../../../../../src/lib/ui-ux/archive.ts";
-import { MUTATION_STATUS } from "../../../../../src/lib/ui-ux/vocabulary.ts";
+import { archiveConfirmOptions, archivePendingLabel } from "../../../../../src/lib/entity-lifecycle/archive.ts";
+import { MUTATION_STATUS } from "../../../../../src/lib/entity-lifecycle/vocabulary.ts";
 import { confirm } from "../confirm.svelte";
 import manifestJson from "../../manifest.json";
 

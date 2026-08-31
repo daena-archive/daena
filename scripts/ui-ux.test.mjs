@@ -20,10 +20,10 @@ const {
   scenarioById,
   CONTEXTUAL_NEW_DEFAULTS,
   TREE_KEYBOARD_CONTRACT,
-} = await import("../src/lib/ui-ux/fixtures.ts");
+} = await import("../src/lib/entity-lifecycle/fixtures.ts");
 
 const { ENTITY_ACTIONS, ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES, TREE_KEYBOARD, TREE_SCOPES } =
-  await import("../src/lib/ui-ux/vocabulary.ts");
+  await import("../src/lib/entity-lifecycle/vocabulary.ts");
 
 const requiredScenarioIds = [
   "empty-project",
@@ -124,32 +124,17 @@ assert.ok(CONTEXTUAL_NEW_DEFAULTS.lore);
 assert.deepEqual(CONTEXTUAL_NEW_DEFAULTS["houses.tree"], [ENTITY_ACTIONS.newPerson, ENTITY_ACTIONS.newHouse]);
 assert.equal(CONTEXTUAL_NEW_DEFAULTS.maps, "provider-menu");
 
-const docs = await Promise.all([
-  read("docs/ui-ux-slice0/README.md"),
-  read("docs/ui-ux-slice0/INTERACTION_SPEC.md"),
-  read("docs/ui-ux-slice0/SURFACES.md"),
-  read("docs/ui-ux-slice0/BASELINE_A11Y.md"),
-  read("docs/TEMP_UI_UX_ENTITY_SCHEMA_PLAN.md"),
-]);
+const uiUx = await read("docs/UI_UX.md");
 
-for (const [index, name] of ["README", "INTERACTION_SPEC", "SURFACES", "BASELINE_A11Y"].entries()) {
-  assert.ok(docs[index].includes("Slice 0") || docs[index].includes("slice 0") || name === "SURFACES");
-}
-
-assert.match(docs[1], /Edit identity/);
-assert.match(docs[1], /Shift\+Enter/);
-assert.match(docs[1], /Members \+ immediate family/);
-assert.match(docs[2], /workspace\.houses\.tree\.landing/);
-assert.match(docs[2], /project\.fields\.types/);
-assert.match(docs[3], /A11Y-TREE-01/);
-assert.match(docs[3], /Resolved in Slice 4|Resolved in wrap-up|A11Y-SCHEMA-01/);
-assert.match(docs[3], /A11Y-TREE-05/);
-assert.match(docs[3], /A11Y-TREE-06/);
-assert.match(docs[3], /A11Y-TREE-07/);
-assert.match(docs[3], /All recorded Slice 0 baseline IDs are resolved/);
-assert.match(docs[3], /A11Y-SCHEMA-01/);
-assert.match(docs[4], /docs\/ui-ux-slice0/);
-assert.match(docs[4], /Slices 0–7 are done|folded into/);
+assert.match(uiUx, /Edit identity/);
+assert.match(uiUx, /Shift\+Enter/);
+assert.match(uiUx, /Members \+ immediate family/);
+assert.match(uiUx, /workspace\.houses\.tree\.landing/);
+assert.match(uiUx, /project\.fields\.types/);
+assert.match(uiUx, /Managed by extension/);
+assert.match(uiUx, /collection-only/);
+assert.match(uiUx, /src\/lib\/entity-lifecycle/);
+assert.doesNotMatch(uiUx, /Slice 0|TEMP_UI_UX_ENTITY_SCHEMA_PLAN|ui-ux-slice0/);
 
 const requiredSurfaceDocs = [
   "workspace.lore.library",
@@ -160,7 +145,7 @@ const requiredSurfaceDocs = [
   "project.fields.templates",
 ];
 for (const surface of requiredSurfaceDocs) {
-  assert.match(docs[2], new RegExp(surface.replaceAll(".", "\\.")));
+  assert.match(uiUx, new RegExp(surface.replaceAll(".", "\\.")));
 }
 
-console.log(`ui-ux-slice0: ${UI_UX_SCENARIOS.length} scenarios, ${SURFACE_IDS.length} surfaces ok`);
+console.log(`ui-ux: ${UI_UX_SCENARIOS.length} scenarios, ${SURFACE_IDS.length} surfaces ok`);

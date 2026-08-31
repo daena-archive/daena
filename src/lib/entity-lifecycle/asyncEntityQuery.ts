@@ -1,5 +1,5 @@
 /**
- * Shared helpers for backend-paged entity search (Slice 2).
+ * Shared helpers for backend-paged entity search.
  * Pickers must not filter a full in-memory entity list.
  */
 

@@ -63,7 +63,7 @@ import {
 import { onMount, tick } from "svelte";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import type { Asset, Entity } from "$lib/project/client";
-import type { AsyncEntityOption, AsyncEntitySearchFn } from "$lib/ui-ux/asyncEntityQuery.ts";
+import type { AsyncEntityOption, AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
 import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";

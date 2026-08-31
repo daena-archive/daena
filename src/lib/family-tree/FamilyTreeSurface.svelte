@@ -3,7 +3,7 @@ import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
 import { ArrowLeft, Maximize2, Plus, RotateCcw, Settings2, UserPlus, UsersRound } from "@lucide/svelte";
-import { ENTITY_ACTIONS, TREE_LEGEND, TREE_SCOPES } from "$lib/ui-ux/vocabulary.ts";
+import { ENTITY_ACTIONS, TREE_LEGEND, TREE_SCOPES } from "$lib/entity-lifecycle/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyHousePanel from "./FamilyHousePanel.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";

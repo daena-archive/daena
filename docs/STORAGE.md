@@ -206,7 +206,7 @@ idempotent mutation request ID. Risky changes require a trusted-core
 entities are rejected even if the UI is bypassed, and saves that report live-data
 impact require explicit acknowledgement. Module compatibility policy (which
 plugins may overlay, Tree-compatible vs collection-only Houses types) lives in
-[`ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`](./ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md).
+[`UI_UX.md`](./UI_UX.md).
 
 Search indexes, map projections, relationship indexes, Atlas render
 intermediates under `.daena/cache/atlas/`, accepted physical-world physics

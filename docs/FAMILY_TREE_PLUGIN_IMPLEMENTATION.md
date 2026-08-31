@@ -12,7 +12,7 @@ The documents have this precedence:
 2. [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) and
    [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) define plugin contracts and lifecycle.
 3. [`STORAGE.md`](./STORAGE.md) defines durable and portable project data.
-4. The Family Tree product specification defines user-facing behavior.
+4. [`UI_UX.md`](./UI_UX.md) defines author-facing Houses/Tree and entity lifecycle.
 5. This document decides how to implement that behavior within those
    boundaries.
 
@@ -208,7 +208,7 @@ Family Tree accepts only active, non-deleted entities whose type is
 Custom entity types authored under the Houses `schema.overlay` are
 **collection-only**: they appear in the Houses collection and editor, but never
 as Tree nodes. Tree roots and membership remain limited to
-`daena.houses:house`. See `docs/ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`.
+`daena.houses:house`. See [`UI_UX.md`](./UI_UX.md).
 
 The card data contract is:
 

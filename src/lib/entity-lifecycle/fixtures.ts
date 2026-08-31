@@ -1,6 +1,6 @@
 /**
- * Representative UI/UX scenarios for Houses, Tree, entity lifecycle, and schema.
- * These are review fixtures for later slices — not a second data model.
+ * Representative scenarios for Houses, Tree, entity lifecycle, and schema.
+ * Review fixtures only — not a second data model.
  */
 
 import { ENTITY_ACTIONS, MUTATION_STATUS, MUTATION_STATUS_MESSAGES, TREE_KEYBOARD, TREE_SCOPES } from "./vocabulary.ts";

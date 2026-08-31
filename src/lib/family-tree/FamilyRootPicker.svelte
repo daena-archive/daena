@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import { UserPlus } from "@lucide/svelte";
-import AsyncEntityPicker from "$lib/ui-ux/AsyncEntityPicker.svelte";
-import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/ui-ux/asyncEntityQuery.ts";
+import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
+import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { PERSON_TYPE } from "./model";
 import { createMinimalPerson } from "./mutations";
 

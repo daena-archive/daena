@@ -23,6 +23,8 @@ contracts remain in the focused plans below:
 - [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
 - [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the
   reviewable external-source migration pipeline and importer boundary.
+- [`UI_UX.md`](./UI_UX.md) defines entity lifecycle, Houses/Tree, and Fields &
+  Types author experience.
 
 Those documents may add detail but must not contradict the boundaries here.
 The consolidated [`ADR index`](./adr/README.md) records narrower decisions and
@@ -230,8 +232,7 @@ fields are never exposed as author schema). Houses custom Types are
 collection-only; Tree only hydrates `daena.lore:person` and `daena.houses:house`.
 Overlay saves use opaque content revisions, idempotent request IDs, and a
 trusted-core impact preview. See
-[`ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md`](./ui-ux-slice0/MODULE_SCHEMA_COMPATIBILITY.md)
-and [`STORAGE.md`](./STORAGE.md).
+[`UI_UX.md`](./UI_UX.md) and [`STORAGE.md`](./STORAGE.md).
 
 The host aggregates enabled module templates and views into the workspace, but
 the module does not receive a database handle, filesystem handle, raw Tauri

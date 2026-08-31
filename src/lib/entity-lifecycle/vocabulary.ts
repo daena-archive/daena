@@ -1,6 +1,5 @@
 /**
  * Shared entity-lifecycle vocabulary for Houses / Tree / Fields & Types work.
- * Slice 0 locks these strings so later slices implement against one contract.
  */
 
 export const ENTITY_ACTIONS = {
@@ -58,7 +57,7 @@ export const MUTATION_STATUS_MESSAGES = {
   revisionConflictCode: "revision-conflict",
 } as const;
 
-/** Tree keyboard contract (target). Current gaps are recorded in BASELINE_A11Y. */
+/** Tree keyboard contract. Author-facing model: docs/UI_UX.md. */
 export const TREE_KEYBOARD = {
   canvasRolePreference: "grouped-buttons-or-application-after-focus-model",
   canvasAriaLabel: "Family tree canvas",

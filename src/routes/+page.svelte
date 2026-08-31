@@ -162,12 +162,12 @@ import {
   type HouseMemberSummary,
 } from "$lib/family-tree/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
-import EntityArchiveAction from "$lib/ui-ux/EntityArchiveAction.svelte";
-import EntityEmptyState from "$lib/ui-ux/EntityEmptyState.svelte";
-import EntityIdentityDialog from "$lib/ui-ux/EntityIdentityDialog.svelte";
-import EntityRowActions from "$lib/ui-ux/EntityRowActions.svelte";
-import MutationStatus from "$lib/ui-ux/MutationStatus.svelte";
-import { archivedToastMessage } from "$lib/ui-ux/archive.ts";
+import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
+import EntityEmptyState from "$lib/entity-lifecycle/EntityEmptyState.svelte";
+import EntityIdentityDialog from "$lib/entity-lifecycle/EntityIdentityDialog.svelte";
+import EntityRowActions from "$lib/entity-lifecycle/EntityRowActions.svelte";
+import MutationStatus from "$lib/entity-lifecycle/MutationStatus.svelte";
+import { archivedToastMessage } from "$lib/entity-lifecycle/archive.ts";
 import {
   toAsyncEntityPage,
   toShellSortDirection,
@@ -175,10 +175,10 @@ import {
   type AsyncEntityOption,
   type AsyncEntitySearchFn,
   type AsyncEntitySearchQuery,
-} from "$lib/ui-ux/asyncEntityQuery.ts";
-import { createMutationController } from "$lib/ui-ux/mutationState.ts";
-import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
-import type { MutationSnapshot } from "$lib/ui-ux/mutationState.ts";
+} from "$lib/entity-lifecycle/asyncEntityQuery.ts";
+import { createMutationController } from "$lib/entity-lifecycle/mutationState.ts";
+import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
+import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState.ts";
 import {
   Pencil,
   Map as MapIcon,

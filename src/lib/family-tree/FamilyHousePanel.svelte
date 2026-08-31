@@ -1,8 +1,8 @@
 <script lang="ts">
 import type { ModuleContext } from "../../../packages/module-api/src/index";
 import { Archive, ExternalLink, Pencil, Plus, Search, UserPlus } from "@lucide/svelte";
-import { ENTITY_ACTIONS, ENTITY_ACTION_CONFIRM } from "$lib/ui-ux/vocabulary.ts";
-import { archiveConfirmOptions } from "$lib/ui-ux/archive.ts";
+import { ENTITY_ACTIONS, ENTITY_ACTION_CONFIRM } from "$lib/entity-lifecycle/vocabulary.ts";
+import { archiveConfirmOptions } from "$lib/entity-lifecycle/archive.ts";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { formatMembershipRole, type HouseMemberRecord } from "./model.ts";
 import FamilyMembershipDialog from "./FamilyMembershipDialog.svelte";

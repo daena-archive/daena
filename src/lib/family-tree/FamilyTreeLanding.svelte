@@ -2,8 +2,8 @@
 import type { EntitySummary, ModuleContext } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { Castle, ChevronRight, Plus, Search, UserPlus } from "@lucide/svelte";
-import { ENTITY_ACTIONS } from "$lib/ui-ux/vocabulary.ts";
-import { toAsyncEntityPage } from "$lib/ui-ux/asyncEntityQuery.ts";
+import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
+import { toAsyncEntityPage } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { PERSON_TYPE } from "./model.ts";
 import { houseMemberSummaries, listHouses, formatHouseMemberSummary } from "./fetch.ts";
 import type { HouseMemberSummary } from "./model.ts";

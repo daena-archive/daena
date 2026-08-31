@@ -7,17 +7,17 @@ const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(resolve(root, path), "utf8");
 
 const { ENTITY_ACTIONS, ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES } =
-  await import("../src/lib/ui-ux/vocabulary.ts");
+  await import("../src/lib/entity-lifecycle/vocabulary.ts");
 const { archiveConfirmOptions, archivePendingLabel, archivedToastMessage } =
-  await import("../src/lib/ui-ux/archive.ts");
-const { createMutationController } = await import("../src/lib/ui-ux/mutationState.ts");
+  await import("../src/lib/entity-lifecycle/archive.ts");
+const { createMutationController } = await import("../src/lib/entity-lifecycle/mutationState.ts");
 
 const componentPaths = [
-  "src/lib/ui-ux/EntityIdentityDialog.svelte",
-  "src/lib/ui-ux/EntityRowActions.svelte",
-  "src/lib/ui-ux/EntityArchiveAction.svelte",
-  "src/lib/ui-ux/EntityEmptyState.svelte",
-  "src/lib/ui-ux/MutationStatus.svelte",
+  "src/lib/entity-lifecycle/EntityIdentityDialog.svelte",
+  "src/lib/entity-lifecycle/EntityRowActions.svelte",
+  "src/lib/entity-lifecycle/EntityArchiveAction.svelte",
+  "src/lib/entity-lifecycle/EntityEmptyState.svelte",
+  "src/lib/entity-lifecycle/MutationStatus.svelte",
 ];
 
 for (const path of componentPaths) {
@@ -29,10 +29,10 @@ const shell = await read("src/routes/+page.svelte");
 const overview = await read("packages/modules/language/src/panes/Overview.svelte");
 const archivePanel = await read("src/lib/ArchivedDocumentsPanel.svelte");
 const sidebar = await read("src/lib/shell/AppSidebar.svelte");
-const identity = await read("src/lib/ui-ux/EntityIdentityDialog.svelte");
-const rowActions = await read("src/lib/ui-ux/EntityRowActions.svelte");
-const archiveAction = await read("src/lib/ui-ux/EntityArchiveAction.svelte");
-const mutationStatus = await read("src/lib/ui-ux/MutationStatus.svelte");
+const identity = await read("src/lib/entity-lifecycle/EntityIdentityDialog.svelte");
+const rowActions = await read("src/lib/entity-lifecycle/EntityRowActions.svelte");
+const archiveAction = await read("src/lib/entity-lifecycle/EntityArchiveAction.svelte");
+const mutationStatus = await read("src/lib/entity-lifecycle/MutationStatus.svelte");
 const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
 const treeSurface = await read("src/lib/family-tree/FamilyTreeSurface.svelte");
 

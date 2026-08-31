@@ -303,19 +303,25 @@ jobs:
           set -euo pipefail
 
           cat > release-notes.md <<'EOF'
-          > These builds are currently unsigned. Windows SmartScreen and macOS Gatekeeper may display security warnings.
 
-          ## SHA-256 checksums
+          ### First Launch
 
-          | Artifact | SHA-256 |
-          | --- | --- |
+          Daena Archive is currently distributed without a code-signing certificate, so your operating system may warn you when launching it.
+
+          **macOS**
+
+          If macOS blocks the application, run the following command in Terminal:
+
+          ```bash
+          sudo xattr -cr "/Applications/Daena Archive.app"
+          ```
+
+          Then launch Daena Archive normally.
+
+          **Windows**
+
+          Windows may display a **Microsoft Defender SmartScreen** warning because the application is not yet code-signed. Click **More info**, then **Run anyway** to launch Daena Archive.
           EOF
-
-          while IFS= read -r file; do
-            name="$(basename "$file")"
-            hash="$(sha256sum "$file" | awk '{print $1}')"
-            printf '| `%s` | `%s` |\n' "$name" "$hash" >> release-notes.md
-          done < <(find release-files -maxdepth 1 -type f -print | sort)
 
       - name: Publish release atomically
         shell: bash

@@ -98,7 +98,7 @@ export function buildElkGraph(layout: LayoutGraph, previousOrder: string[] = [])
   }
   edges.sort((left, right) => left.id.localeCompare(right.id));
   return {
-    id: "family-tree",
+    id: "houses",
     width: 0,
     height: 0,
     layoutOptions: { ...ELK_LAYOUT_OPTIONS },

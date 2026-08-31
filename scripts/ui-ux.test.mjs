@@ -116,7 +116,7 @@ assert.deepEqual(TREE_KEYBOARD.keys.moveSelection, ["ArrowUp", "ArrowDown", "Arr
 assert.equal(TREE_KEYBOARD.keys.openPersonDock, "Enter");
 assert.equal(TREE_KEYBOARD.keys.makeRoot, "Shift+Enter");
 assert.equal(TREE_KEYBOARD.keys.closeDockOrPopover, "Escape");
-assert.equal(TREE_KEYBOARD_CONTRACT.canvasAriaLabel, "Family tree canvas");
+assert.equal(TREE_KEYBOARD_CONTRACT.canvasAriaLabel, "Tree canvas");
 assert.equal(TREE_SCOPES.membersOnly.id, "members-only");
 assert.equal(TREE_SCOPES.membersPlusImmediateFamily.id, "members-plus-immediate-family");
 

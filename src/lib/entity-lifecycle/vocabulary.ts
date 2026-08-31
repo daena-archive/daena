@@ -60,8 +60,8 @@ export const MUTATION_STATUS_MESSAGES = {
 /** Tree keyboard contract. Author-facing model: docs/UI_UX.md. */
 export const TREE_KEYBOARD = {
   canvasRolePreference: "grouped-buttons-or-application-after-focus-model",
-  canvasAriaLabel: "Family tree canvas",
-  canvasDescribedById: "family-tree-keyboard-help",
+  canvasAriaLabel: "Tree canvas",
+  canvasDescribedById: "tree-keyboard-help",
   keys: {
     tabIntoCanvas: "Tab",
     moveSelection: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],

@@ -1374,7 +1374,7 @@ fn bundled_manifests_supply_generic_migrations() {
     );
     assert_eq!(
         core_migration(&houses.manifest).unwrap().unwrap().id,
-        "family-tree-v1"
+        "houses-v1"
     );
 }
 

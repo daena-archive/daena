@@ -22,10 +22,10 @@
       "required": true
     }
   },
-  "namespaces": ["family-tree"],
+  "namespaces": ["houses"],
   "schemas": [
     {
-      "namespace": "family-tree",
+      "namespace": "houses",
       "entityTypes": [
         {
           "id": "house",
@@ -196,11 +196,11 @@
   "events": { "publishes": [], "subscribes": [] },
   "migrations": [
     {
-      "id": "family-tree-v1",
+      "id": "houses-v1",
       "from": 0,
       "to": 1,
       "recovery": "backup",
-      "operations": [{ "kind": "create-namespace", "namespace": "family-tree" }]
+      "operations": [{ "kind": "create-namespace", "namespace": "houses" }]
     }
   ]
 }

@@ -11,8 +11,8 @@ import FamilyMembershipDialog from "./FamilyMembershipDialog.svelte";
 import FamilyPersonPanel from "./FamilyPersonPanel.svelte";
 import FamilyRelationshipPanel from "./FamilyRelationshipPanel.svelte";
 import FamilyRootPicker from "./FamilyRootPicker.svelte";
-import FamilyTreeLanding from "./FamilyTreeLanding.svelte";
-import FamilyTreeCanvas from "./FamilyTreeCanvas.svelte";
+import TreeLanding from "./TreeLanding.svelte";
+import TreeCanvas from "./TreeCanvas.svelte";
 import {
   countKinshipFamilyGroups,
   isNeighborhoodAbort,
@@ -35,14 +35,14 @@ import {
   MAX_VISIBLE_PERSON_LIMIT,
   PERSON_TYPE,
   expansionKey,
-  familyTreeLimitsOverBudget,
+  treeLimitsOverBudget,
   formatMembershipRole,
   isLeadershipRole,
   type BranchDirection,
   type FamilyPerson,
   type FamilyRelationship,
-  type FamilyTreeLimits,
-  type FamilyTreeSession,
+  type TreeLimits,
+  type TreeSession,
   type FamilyViewport,
   type GenealogyWarning,
   type HiddenCounts,
@@ -61,13 +61,7 @@ import {
   visibleFromExpansions,
   wouldExceedVisibleLimit,
 } from "./projection.ts";
-import {
-  readFamilyTreeLimits,
-  recentRoots,
-  rememberRecentRoot,
-  replaceRecentRoots,
-  writeFamilyTreeLimits,
-} from "./state.ts";
+import { readTreeLimits, recentRoots, rememberRecentRoot, replaceRecentRoots, writeTreeLimits } from "./state.ts";
 import { buildLayoutGraph, layoutGraphExceedsLimits } from "./unions.ts";
 
 let {
@@ -93,7 +87,7 @@ let {
   context: ModuleContext;
   projectId: string;
   initialRootId?: string | null;
-  initialSession?: FamilyTreeSession | null;
+  initialSession?: TreeSession | null;
   restoreNonce?: number;
   avatar?: Snippet<[string, string]>;
   onOpenEntity: (entityId: string) => void;
@@ -101,7 +95,7 @@ let {
   onArchiveHouse?: (houseId: string) => void | Promise<void>;
   onRenameHouse?: (houseId: string, name: string) => void | Promise<void>;
   onRootChange?: (rootId: string | null) => void;
-  onSessionChange?: (session: FamilyTreeSession | null) => void;
+  onSessionChange?: (session: TreeSession | null) => void;
   onNewPerson?: () => void;
   onNewHouse?: () => void;
   onBack?: () => void | Promise<void>;
@@ -127,7 +121,7 @@ let truncationLowerBound = $state(0);
 let recentMenu = $state<{ id: string; name: string }[]>([]);
 let secondaryField = $state(DEFAULT_SECONDARY_FIELD);
 let secondaryFields = $state<{ key: string; label: string }[]>([{ key: DEFAULT_SECONDARY_FIELD, label: "Occupation" }]);
-let limits = $state<FamilyTreeLimits>(readFamilyTreeLimits());
+let limits = $state<TreeLimits>(readTreeLimits());
 let settingsOpen = $state(false);
 let settingsEl = $state<HTMLElement | null>(null);
 let settingsButtonEl = $state<HTMLButtonElement | null>(null);
@@ -202,7 +196,7 @@ const subtitle = $derived.by(() => {
   const parts: string[] = [`${people.size} in view`];
   if (truncated) parts.push(`truncated ${truncationLowerBound ? `(${truncationLowerBound}+)` : ""}`.trim());
   if (warnings.length) parts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
-  if (familyTreeLimitsOverBudget(limits)) parts.push("over budget");
+  if (treeLimitsOverBudget(limits)) parts.push("over budget");
   return parts.join(" · ");
 });
 const personConnections = $derived.by(() => {
@@ -340,7 +334,7 @@ function cancelLoad() {
 
 function logLayoutFailure(generation: number, message?: string) {
   const bounded = (message ?? "layout-worker").replace(/\s+/g, " ").slice(0, 200);
-  console.info("family-tree.layout.failed", { generation, code: "layout-worker", message: bounded });
+  console.info("houses.tree.layout.failed", { generation, code: "layout-worker", message: bounded });
 }
 
 function requestLayout() {
@@ -739,8 +733,8 @@ function onSurfaceKeydown(event: KeyboardEvent) {
   }
 }
 
-function applyLimits(next: Partial<FamilyTreeLimits>, reload: boolean) {
-  limits = writeFamilyTreeLimits(next);
+function applyLimits(next: Partial<TreeLimits>, reload: boolean) {
+  limits = writeTreeLimits(next);
   if (!rootId) return;
   previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
   if (reload) {
@@ -1006,12 +1000,7 @@ function applyRelationshipDelete(id: string) {
     <div class="family-topbar-main">
       <span class="family-mark" aria-hidden="true"><UsersRound size={16} strokeWidth={1.8} /></span>
       <div class="family-copy">
-        <strong
-          >{houseId
-            ? houseName || "House"
-            : rootId
-              ? (people.get(rootId)?.name ?? "Family Tree")
-              : "Family Tree"}</strong>
+        <strong>{houseId ? houseName || "House" : rootId ? (people.get(rootId)?.name ?? "Houses") : "Houses"}</strong>
         <small title={subtitle}>{subtitle}</small>
       </div>
       {#if loading && positioned}
@@ -1123,7 +1112,7 @@ function applyRelationshipDelete(id: string) {
                   <small>{TREE_SCOPES.membersOnly.description}</small>
                   <small>{TREE_SCOPES.membersPlusImmediateFamily.description}</small>
                 {/if}
-                {#if familyTreeLimitsOverBudget(limits)}
+                {#if treeLimitsOverBudget(limits)}
                   <small>{LIMITS_OVER_BUDGET}</small>
                 {/if}
                 {#if truncated}
@@ -1176,7 +1165,7 @@ function applyRelationshipDelete(id: string) {
 
   {#if rootId}
     <div class="family-subbar" role="toolbar" aria-label="Tree legend">
-      <div class="subbar-legend" id="family-tree-legend">
+      <div class="subbar-legend" id="tree-legend">
         <span class="legend-swatch solid"></span> Parent
         <span class="legend-swatch dash-adopt"></span> Adoptive
         <span class="legend-swatch double"></span> Partner
@@ -1219,13 +1208,7 @@ function applyRelationshipDelete(id: string) {
 
   <div class="family-body">
     {#if !rootId}
-      <FamilyTreeLanding
-        {context}
-        {avatar}
-        onSelect={selectRoot}
-        onSelectHouse={selectHouse}
-        {onNewPerson}
-        {onNewHouse} />
+      <TreeLanding {context} {avatar} onSelect={selectRoot} onSelectHouse={selectHouse} {onNewPerson} {onNewHouse} />
     {:else if loading && !positioned}
       <WorkbenchState
         kind="loading"
@@ -1289,7 +1272,7 @@ function applyRelationshipDelete(id: string) {
               Immediate family hit the visible-people cap. Some relatives outside the house were omitted.
             </div>
           {/if}
-          <FamilyTreeCanvas
+          <TreeCanvas
             layout={positioned}
             {people}
             {rootId}

@@ -106,4 +106,4 @@ assert.equal(childCovered.has("rel-house"), true);
 assert.equal(coveredRelationshipIds(parentId, [parentEdge, partnerEdge], named).has("rel-parent"), true);
 assert.equal(coveredRelationshipIds(parentId, [parentEdge, partnerEdge], named).has("rel-partner"), false);
 
-console.log("family-tree lore field contribution checks passed");
+console.log("houses lore field contribution checks passed");

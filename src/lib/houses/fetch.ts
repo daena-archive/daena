@@ -6,7 +6,7 @@ import type {
   UUID,
 } from "../../../packages/module-api/src/index";
 import {
-  DEFAULT_FAMILY_TREE_LIMITS,
+  DEFAULT_TREE_LIMITS,
   DEFAULT_SECONDARY_FIELD,
   ENTITY_GET_MANY_LIMIT,
   FIELD_HYDRATE_BATCH,
@@ -24,7 +24,7 @@ import {
   truncationWarning,
   type BranchDirection,
   type FamilyPerson,
-  type FamilyTreeLimits,
+  type TreeLimits,
   type GenealogyWarning,
   type HouseMemberRecord,
   type HouseMembership,
@@ -182,7 +182,7 @@ export async function loadGenealogyNeighborhood(
   rootId: string,
   secondaryField = DEFAULT_SECONDARY_FIELD,
   signal?: AbortSignal,
-  generations?: Pick<FamilyTreeLimits, "ancestorGenerations" | "descendantGenerations">,
+  generations?: Pick<TreeLimits, "ancestorGenerations" | "descendantGenerations">,
 ): Promise<{
   people: FamilyPerson[];
   relationships: Relationship[];
@@ -574,7 +574,7 @@ export async function loadHouseNeighborhood(
   scopeTruncated: boolean;
 }> {
   const scope: HouseTreeScope = options?.scope ?? "members-only";
-  const visiblePersonLimit = options?.visiblePersonLimit ?? DEFAULT_FAMILY_TREE_LIMITS.visiblePersonLimit;
+  const visiblePersonLimit = options?.visiblePersonLimit ?? DEFAULT_TREE_LIMITS.visiblePersonLimit;
   const members = await listHouseMembers(context, houseId, signal);
   const memberIds = members.map((member) => member.id);
   const memberSet = new Set(memberIds);

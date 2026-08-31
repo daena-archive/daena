@@ -1,12 +1,7 @@
-import {
-  RECENT_ROOT_LIMIT,
-  clampFamilyTreeLimits,
-  DEFAULT_FAMILY_TREE_LIMITS,
-  type FamilyTreeLimits,
-} from "./model.ts";
+import { RECENT_ROOT_LIMIT, clampTreeLimits, DEFAULT_TREE_LIMITS, type TreeLimits } from "./model.ts";
 
 const recentByProject = new Map<string, string[]>();
-const LIMITS_STORAGE_KEY = "daena:family-tree.limits";
+const LIMITS_STORAGE_KEY = "daena:houses.tree.limits";
 
 export function rememberRecentRoot(projectId: string, rootId: string): string[] {
   if (!projectId || !rootId) return recentRoots(projectId);
@@ -27,23 +22,23 @@ export function replaceRecentRoots(projectId: string, ids: string[]): string[] {
   return next;
 }
 
-export function readFamilyTreeLimits(storage: Pick<Storage, "getItem"> | null = defaultStorage()): FamilyTreeLimits {
-  if (!storage) return { ...DEFAULT_FAMILY_TREE_LIMITS };
+export function readTreeLimits(storage: Pick<Storage, "getItem"> | null = defaultStorage()): TreeLimits {
+  if (!storage) return { ...DEFAULT_TREE_LIMITS };
   try {
     const raw = storage.getItem(LIMITS_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_FAMILY_TREE_LIMITS };
-    const parsed = JSON.parse(raw) as Partial<FamilyTreeLimits>;
-    return clampFamilyTreeLimits(parsed);
+    if (!raw) return { ...DEFAULT_TREE_LIMITS };
+    const parsed = JSON.parse(raw) as Partial<TreeLimits>;
+    return clampTreeLimits(parsed);
   } catch {
-    return { ...DEFAULT_FAMILY_TREE_LIMITS };
+    return { ...DEFAULT_TREE_LIMITS };
   }
 }
 
-export function writeFamilyTreeLimits(
-  limits: Partial<FamilyTreeLimits>,
+export function writeTreeLimits(
+  limits: Partial<TreeLimits>,
   storage: Pick<Storage, "setItem"> | null = defaultStorage(),
-): FamilyTreeLimits {
-  const next = clampFamilyTreeLimits(limits);
+): TreeLimits {
+  const next = clampTreeLimits(limits);
   if (!storage) return next;
   try {
     storage.setItem(LIMITS_STORAGE_KEY, JSON.stringify(next));

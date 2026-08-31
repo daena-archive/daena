@@ -19,8 +19,8 @@ const {
 const componentPaths = [
   "src/lib/entity-lifecycle/AsyncEntityPicker.svelte",
   "src/lib/RelationshipPicker.svelte",
-  "src/lib/family-tree/FamilyRootPicker.svelte",
-  "src/lib/family-tree/FamilyMemberDialog.svelte",
+  "src/lib/houses/FamilyRootPicker.svelte",
+  "src/lib/houses/FamilyMemberDialog.svelte",
   "src/lib/editor/EntityReferenceDialog.svelte",
 ];
 
@@ -131,8 +131,8 @@ assert.deepEqual(emptyAsyncEntityPage(25).limit, 25);
 
 const shell = await read("src/routes/+page.svelte");
 const relationship = await read("src/lib/RelationshipPicker.svelte");
-const rootPicker = await read("src/lib/family-tree/FamilyRootPicker.svelte");
-const memberDialog = await read("src/lib/family-tree/FamilyMemberDialog.svelte");
+const rootPicker = await read("src/lib/houses/FamilyRootPicker.svelte");
+const memberDialog = await read("src/lib/houses/FamilyMemberDialog.svelte");
 const picker = await read("src/lib/entity-lifecycle/AsyncEntityPicker.svelte");
 const referenceDialog = await read("src/lib/editor/EntityReferenceDialog.svelte");
 const richText = await read("src/lib/editor/RichTextEditor.svelte");

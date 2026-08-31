@@ -4,7 +4,7 @@ This document is the UI/UX record for entity lifecycle, Houses and Tree, and
 Fields & Types. Product architecture and storage remain in
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`STORAGE.md`](./STORAGE.md). Tree
 data contracts remain in
-[`FAMILY_TREE_PLUGIN_IMPLEMENTATION.md`](./FAMILY_TREE_PLUGIN_IMPLEMENTATION.md).
+[`HOUSES.md`](./HOUSES.md).
 
 Author-facing labels in the app must match this vocabulary. Do not invent
 parallel names for the same actions. Shared host chrome for these actions lives

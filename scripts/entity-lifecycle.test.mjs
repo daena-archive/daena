@@ -33,8 +33,8 @@ const identity = await read("src/lib/entity-lifecycle/EntityIdentityDialog.svelt
 const rowActions = await read("src/lib/entity-lifecycle/EntityRowActions.svelte");
 const archiveAction = await read("src/lib/entity-lifecycle/EntityArchiveAction.svelte");
 const mutationStatus = await read("src/lib/entity-lifecycle/MutationStatus.svelte");
-const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
-const treeSurface = await read("src/lib/family-tree/FamilyTreeSurface.svelte");
+const landing = await read("src/lib/houses/TreeLanding.svelte");
+const treeSurface = await read("src/lib/houses/TreeSurface.svelte");
 
 assert.equal(ENTITY_ACTIONS.editIdentity, "Edit identity");
 assert.equal(ENTITY_ACTIONS.viewArchive, "View Archive");

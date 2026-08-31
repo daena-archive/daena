@@ -140,7 +140,7 @@ export interface FamilyViewport {
   zoom: number;
 }
 
-export interface FamilyTreeLimits {
+export interface TreeLimits {
   ancestorGenerations: number;
   descendantGenerations: number;
   visiblePersonLimit: number;
@@ -149,7 +149,7 @@ export interface FamilyTreeLimits {
   maxExpansionDepth: number;
 }
 
-export const DEFAULT_FAMILY_TREE_LIMITS: FamilyTreeLimits = {
+export const DEFAULT_TREE_LIMITS: TreeLimits = {
   ancestorGenerations: INITIAL_ANCESTOR_GENERATIONS,
   descendantGenerations: INITIAL_DESCENDANT_GENERATIONS,
   visiblePersonLimit: VISIBLE_PERSON_LIMIT,
@@ -164,43 +164,43 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   return Math.min(max, Math.max(min, Math.floor(next)));
 }
 
-export function clampFamilyTreeLimits(input: Partial<FamilyTreeLimits> | null | undefined): FamilyTreeLimits {
+export function clampTreeLimits(input: Partial<TreeLimits> | null | undefined): TreeLimits {
   const ancestorGenerations = clampInt(
     input?.ancestorGenerations,
     1,
     MAX_ANCESTOR_GENERATIONS,
-    DEFAULT_FAMILY_TREE_LIMITS.ancestorGenerations,
+    DEFAULT_TREE_LIMITS.ancestorGenerations,
   );
   const descendantGenerations = clampInt(
     input?.descendantGenerations,
     1,
     MAX_DESCENDANT_GENERATIONS,
-    DEFAULT_FAMILY_TREE_LIMITS.descendantGenerations,
+    DEFAULT_TREE_LIMITS.descendantGenerations,
   );
   const visiblePersonLimit = clampInt(
     input?.visiblePersonLimit,
     1,
     MAX_VISIBLE_PERSON_LIMIT,
-    DEFAULT_FAMILY_TREE_LIMITS.visiblePersonLimit,
+    DEFAULT_TREE_LIMITS.visiblePersonLimit,
   );
   const scale = visiblePersonLimit / VISIBLE_PERSON_LIMIT;
   const visibleUnionLimit = clampInt(
     input?.visibleUnionLimit ?? Math.round(VISIBLE_UNION_LIMIT * scale),
     1,
     MAX_VISIBLE_UNION_LIMIT,
-    DEFAULT_FAMILY_TREE_LIMITS.visibleUnionLimit,
+    DEFAULT_TREE_LIMITS.visibleUnionLimit,
   );
   const visibleEdgeLimit = clampInt(
     input?.visibleEdgeLimit ?? Math.round(VISIBLE_EDGE_LIMIT * scale),
     1,
     MAX_VISIBLE_EDGE_LIMIT,
-    DEFAULT_FAMILY_TREE_LIMITS.visibleEdgeLimit,
+    DEFAULT_TREE_LIMITS.visibleEdgeLimit,
   );
   const maxExpansionDepth = clampInt(
     input?.maxExpansionDepth ?? Math.max(MAX_EXPANSION_DEPTH, ancestorGenerations, descendantGenerations),
     1,
     MAX_EXPANSION_DEPTH_LIMIT,
-    DEFAULT_FAMILY_TREE_LIMITS.maxExpansionDepth,
+    DEFAULT_TREE_LIMITS.maxExpansionDepth,
   );
   return {
     ancestorGenerations,
@@ -212,7 +212,7 @@ export function clampFamilyTreeLimits(input: Partial<FamilyTreeLimits> | null | 
   };
 }
 
-export function familyTreeLimitsOverBudget(limits: FamilyTreeLimits): boolean {
+export function treeLimitsOverBudget(limits: TreeLimits): boolean {
   return (
     limits.ancestorGenerations > INITIAL_ANCESTOR_GENERATIONS ||
     limits.descendantGenerations > INITIAL_DESCENDANT_GENERATIONS ||
@@ -223,7 +223,7 @@ export function familyTreeLimitsOverBudget(limits: FamilyTreeLimits): boolean {
   );
 }
 
-export interface FamilyTreeSession {
+export interface TreeSession {
   expansions: string[];
   selectedPersonId: string | null;
   selectedRelationshipId: string | null;
@@ -340,10 +340,7 @@ export function layoutExceedsLimits(
   people: number,
   unions: number,
   edges: number,
-  limits: Pick<
-    FamilyTreeLimits,
-    "visiblePersonLimit" | "visibleUnionLimit" | "visibleEdgeLimit"
-  > = DEFAULT_FAMILY_TREE_LIMITS,
+  limits: Pick<TreeLimits, "visiblePersonLimit" | "visibleUnionLimit" | "visibleEdgeLimit"> = DEFAULT_TREE_LIMITS,
 ): boolean {
   return people > limits.visiblePersonLimit || unions > limits.visibleUnionLimit || edges > limits.visibleEdgeLimit;
 }
@@ -364,7 +361,7 @@ export function isBranchDirection(value: string): value is BranchDirection {
   return (BRANCH_DIRECTIONS as readonly string[]).includes(value);
 }
 
-export function familyTreeHistoryKey(session: FamilyTreeSession | null | undefined): string {
+export function treeHistoryKey(session: TreeSession | null | undefined): string {
   if (!session) return "";
   return JSON.stringify({
     expansions: session.expansions,
@@ -374,13 +371,10 @@ export function familyTreeHistoryKey(session: FamilyTreeSession | null | undefin
   });
 }
 
-export function sameFamilyTreeSession(
-  left: FamilyTreeSession | null | undefined,
-  right: FamilyTreeSession | null | undefined,
-): boolean {
+export function sameTreeSession(left: TreeSession | null | undefined, right: TreeSession | null | undefined): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
-  if (familyTreeHistoryKey(left) !== familyTreeHistoryKey(right)) return false;
+  if (treeHistoryKey(left) !== treeHistoryKey(right)) return false;
   const lv = left.viewport;
   const rv = right.viewport;
   if (!lv && !rv) return true;

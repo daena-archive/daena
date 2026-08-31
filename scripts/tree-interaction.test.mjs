@@ -6,14 +6,14 @@ import { compile } from "svelte/compiler";
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(resolve(root, path), "utf8");
 
-const { formatRelationshipTitle, formatRelationshipTypeLabel } = await import("../src/lib/family-tree/model.ts");
+const { formatRelationshipTitle, formatRelationshipTypeLabel } = await import("../src/lib/houses/model.ts");
 const { TREE_KEYBOARD, TREE_LEGEND, TREE_SCOPES } = await import("../src/lib/entity-lifecycle/vocabulary.ts");
 
 const componentPaths = [
-  "src/lib/family-tree/FamilyTreeCanvas.svelte",
-  "src/lib/family-tree/FamilyPersonPanel.svelte",
-  "src/lib/family-tree/FamilyRelationshipPanel.svelte",
-  "src/lib/family-tree/FamilyTreeSurface.svelte",
+  "src/lib/houses/TreeCanvas.svelte",
+  "src/lib/houses/FamilyPersonPanel.svelte",
+  "src/lib/houses/FamilyRelationshipPanel.svelte",
+  "src/lib/houses/TreeSurface.svelte",
 ];
 
 for (const path of componentPaths) {
@@ -28,14 +28,14 @@ assert.equal(formatRelationshipTypeLabel({ kind: "parent", parentKind: "adoptive
 
 assert.equal(TREE_SCOPES.membersOnly.id, "members-only");
 assert.equal(TREE_SCOPES.membersPlusImmediateFamily.id, "members-plus-immediate-family");
-assert.equal(TREE_KEYBOARD.canvasDescribedById, "family-tree-keyboard-help");
+assert.equal(TREE_KEYBOARD.canvasDescribedById, "tree-keyboard-help");
 assert.match(TREE_KEYBOARD.helpText, /Arrow keys/);
 assert.equal(TREE_LEGEND.outsider, "Muted = relative outside the house");
 
-const surface = await read("src/lib/family-tree/FamilyTreeSurface.svelte");
-const canvas = await read("src/lib/family-tree/FamilyTreeCanvas.svelte");
-const personPanel = await read("src/lib/family-tree/FamilyPersonPanel.svelte");
-const relationshipPanel = await read("src/lib/family-tree/FamilyRelationshipPanel.svelte");
+const surface = await read("src/lib/houses/TreeSurface.svelte");
+const canvas = await read("src/lib/houses/TreeCanvas.svelte");
+const personPanel = await read("src/lib/houses/FamilyPersonPanel.svelte");
+const relationshipPanel = await read("src/lib/houses/FamilyRelationshipPanel.svelte");
 const shell = await read("src/routes/+page.svelte");
 
 assert.match(surface, /TREE_SCOPES\.membersPlusImmediateFamily/);
@@ -75,7 +75,7 @@ assert.match(personPanel, /ENTITY_ACTIONS\.archive/);
 assert.match(personPanel, /data-dock-focus/);
 assert.match(personPanel, /Edit relationship/);
 
-const personNode = await read("src/lib/family-tree/FamilyPersonNode.svelte");
+const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);
 assert.match(personNode, /branchTabIndex/);
 assert.match(personNode, /Tab for branch controls/);
@@ -84,12 +84,12 @@ assert.match(personNode, /--control-min-height/);
 assert.match(relationshipPanel, /formatRelationshipTitle/);
 assert.match(relationshipPanel, /formatRelationshipTypeLabel/);
 
-const relationshipEdge = await read("src/lib/family-tree/FamilyRelationshipEdge.svelte");
+const relationshipEdge = await read("src/lib/houses/FamilyRelationshipEdge.svelte");
 assert.match(relationshipEdge, /data-relationship-id/);
 assert.match(relationshipEdge, /onActivate|onkeydown=\{activateEdge\}/);
 assert.match(relationshipEdge, /edgeTabIndex/);
 
-const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
+const landing = await read("src/lib/houses/TreeLanding.svelte");
 assert.match(landing, /aria-activedescendant/);
 assert.match(landing, /role="combobox"/);
 

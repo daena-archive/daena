@@ -1265,11 +1265,11 @@ mod tests {
         .expect("timeline manifest")
     }
 
-    fn family_tree_manifest() -> PluginManifest {
+    fn houses_manifest() -> PluginManifest {
         parse_manifest(include_str!(
             "../../../packages/modules/houses/manifest.json"
         ))
-        .expect("family tree manifest")
+        .expect("houses manifest")
     }
 
     fn writing_manifest() -> PluginManifest {
@@ -1394,13 +1394,13 @@ mod tests {
     }
 
     #[test]
-    fn family_tree_supports_schema_overlay() {
-        assert!(supports_schema_overlay(&family_tree_manifest()));
+    fn houses_supports_schema_overlay() {
+        assert!(supports_schema_overlay(&houses_manifest()));
     }
 
     #[test]
-    fn allows_family_tree_custom_kinship_on_lore_person() {
-        let package = family_tree_manifest();
+    fn allows_houses_custom_kinship_on_lore_person() {
+        let package = houses_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
             custom_fields: vec![FieldDefinition {
@@ -1427,8 +1427,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_family_tree_custom_field_on_undeclared_dependency() {
-        let package = family_tree_manifest();
+    fn rejects_houses_custom_field_on_undeclared_dependency() {
+        let package = houses_manifest();
         let overlay = ModuleSchemaOverlay {
             version: SCHEMA_OVERLAY_VERSION,
             custom_fields: vec![FieldDefinition {

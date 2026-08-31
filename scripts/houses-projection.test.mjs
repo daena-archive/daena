@@ -5,14 +5,14 @@ import {
   loadExpansionLayer,
   loadGenealogyNeighborhood,
   loadHouseNeighborhood,
-} from "../src/lib/family-tree/fetch.ts";
+} from "../src/lib/houses/fetch.ts";
 import {
   LayoutGeneration,
   buildElkGraph,
   familyEdgeHandles,
   isCurrentGeneration,
   placeUnions,
-} from "../src/lib/family-tree/layout.ts";
+} from "../src/lib/houses/layout.ts";
 import {
   PERSON_NODE_HEIGHT,
   PERSON_NODE_WIDTH,
@@ -23,13 +23,13 @@ import {
   VISIBLE_EDGE_LIMIT,
   VISIBLE_PERSON_LIMIT,
   VISIBLE_UNION_LIMIT,
-  clampFamilyTreeLimits,
-  familyTreeLimitsOverBudget,
+  clampTreeLimits,
+  treeLimitsOverBudget,
   layoutExceedsLimits,
   truncationWarning,
-} from "../src/lib/family-tree/model.ts";
-import { expansionKey, familyTreeHistoryKey, sameFamilyTreeSession } from "../src/lib/family-tree/model.ts";
-import { classifyMutationError } from "../src/lib/family-tree/mutations.ts";
+} from "../src/lib/houses/model.ts";
+import { expansionKey, treeHistoryKey, sameTreeSession } from "../src/lib/houses/model.ts";
+import { classifyMutationError } from "../src/lib/houses/mutations.ts";
 import {
   expansionBlocked,
   formatParentCycleMessage,
@@ -45,20 +45,20 @@ import {
   wouldCreateDuplicate,
   wouldCreateParentCycle,
   wouldExceedVisibleLimit,
-} from "../src/lib/family-tree/projection.ts";
+} from "../src/lib/houses/projection.ts";
 import {
-  readFamilyTreeLimits,
+  readTreeLimits,
   rememberRecentRoot,
   recentRoots,
   replaceRecentRoots,
-  writeFamilyTreeLimits,
-} from "../src/lib/family-tree/state.ts";
+  writeTreeLimits,
+} from "../src/lib/houses/state.ts";
 import {
   buildLayoutGraph,
   coupleClickAction,
   layoutGraphExceedsLimits,
   unionClickAction,
-} from "../src/lib/family-tree/unions.ts";
+} from "../src/lib/houses/unions.ts";
 
 function person(id, name = id) {
   return { id, name, revision: "1", birth: null, death: null, secondaryLabel: null };
@@ -601,10 +601,10 @@ assert.equal(
 );
 assert.equal(wouldExceedVisibleLimit(251), true);
 assert.equal(wouldExceedVisibleLimit(251, 300), false);
-assert.equal(familyTreeLimitsOverBudget(clampFamilyTreeLimits({})), false);
-assert.equal(familyTreeLimitsOverBudget(clampFamilyTreeLimits({ ancestorGenerations: 4 })), true);
-assert.equal(clampFamilyTreeLimits({ ancestorGenerations: 99 }).ancestorGenerations, 12);
-assert.equal(clampFamilyTreeLimits({ visiblePersonLimit: 500 }).visibleUnionLimit, 300);
+assert.equal(treeLimitsOverBudget(clampTreeLimits({})), false);
+assert.equal(treeLimitsOverBudget(clampTreeLimits({ ancestorGenerations: 4 })), true);
+assert.equal(clampTreeLimits({ ancestorGenerations: 99 }).ancestorGenerations, 12);
+assert.equal(clampTreeLimits({ visiblePersonLimit: 500 }).visibleUnionLimit, 300);
 const memory = { value: "" };
 const fakeStorage = {
   getItem: () => memory.value || null,
@@ -612,8 +612,8 @@ const fakeStorage = {
     memory.value = value;
   },
 };
-assert.equal(writeFamilyTreeLimits({ ancestorGenerations: 4 }, fakeStorage).ancestorGenerations, 4);
-assert.equal(readFamilyTreeLimits(fakeStorage).ancestorGenerations, 4);
+assert.equal(writeTreeLimits({ ancestorGenerations: 4 }, fakeStorage).ancestorGenerations, 4);
+assert.equal(readTreeLimits(fakeStorage).ancestorGenerations, 4);
 assert.equal(layoutGraphExceedsLimits(layout), false);
 assert.equal(truncationWarning(0).message.includes("99+"), true);
 assert.equal(truncationWarning(1200).message.includes("1200+"), true);
@@ -827,10 +827,10 @@ const sessionA = {
   viewport: { x: 0, y: 0, zoom: 1 },
 };
 const sessionB = { ...sessionA, viewport: { x: 8, y: 2, zoom: 1.2 } };
-assert.equal(familyTreeHistoryKey(sessionA), familyTreeHistoryKey(sessionB));
-assert.notEqual(familyTreeHistoryKey(sessionA), familyTreeHistoryKey({ ...sessionA, houseId: "h1" }));
-assert.equal(sameFamilyTreeSession(sessionA, sessionB), false);
-assert.equal(sameFamilyTreeSession(sessionA, { ...sessionA, viewport: { x: 0, y: 0, zoom: 1 } }), true);
+assert.equal(treeHistoryKey(sessionA), treeHistoryKey(sessionB));
+assert.notEqual(treeHistoryKey(sessionA), treeHistoryKey({ ...sessionA, houseId: "h1" }));
+assert.equal(sameTreeSession(sessionA, sessionB), false);
+assert.equal(sameTreeSession(sessionA, { ...sessionA, viewport: { x: 0, y: 0, zoom: 1 } }), true);
 
 const siblingContext = fakeContext(
   [root, mother, sibling],
@@ -936,4 +936,4 @@ assert.ok(
 assert.ok(houseTreeCapped.people.some((entry) => entry.id === "p1"));
 assert.ok(houseTreeCapped.people.some((entry) => entry.id === "p2"));
 
-console.log("family-tree projection checks passed");
+console.log("houses projection checks passed");

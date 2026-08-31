@@ -7,16 +7,13 @@ const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFile(resolve(root, path), "utf8");
 
 const { countKinshipFamilyGroups, formatHouseMemberSummary, houseMemberSummaries } =
-  await import("../src/lib/family-tree/fetch.ts");
+  await import("../src/lib/houses/fetch.ts");
 const { formatMembershipRole, isLeadershipRole, MEMBERSHIP_RELATIONSHIP, PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP } =
-  await import("../src/lib/family-tree/model.ts");
-const { membershipMetadataFields, defaultMembershipDraft } = await import("../src/lib/family-tree/membershipFields.ts");
+  await import("../src/lib/houses/model.ts");
+const { membershipMetadataFields, defaultMembershipDraft } = await import("../src/lib/houses/membershipFields.ts");
 const { ENTITY_ACTION_CONFIRM, TREE_LEGEND } = await import("../src/lib/entity-lifecycle/vocabulary.ts");
 
-const componentPaths = [
-  "src/lib/family-tree/FamilyHousePanel.svelte",
-  "src/lib/family-tree/FamilyMembershipDialog.svelte",
-];
+const componentPaths = ["src/lib/houses/FamilyHousePanel.svelte", "src/lib/houses/FamilyMembershipDialog.svelte"];
 
 for (const path of componentPaths) {
   const source = await read(path);
@@ -24,11 +21,11 @@ for (const path of componentPaths) {
 }
 
 const shell = await read("src/routes/+page.svelte");
-const surface = await read("src/lib/family-tree/FamilyTreeSurface.svelte");
-const housePanel = await read("src/lib/family-tree/FamilyHousePanel.svelte");
-const membershipDialog = await read("src/lib/family-tree/FamilyMembershipDialog.svelte");
-const personNode = await read("src/lib/family-tree/FamilyPersonNode.svelte");
-const landing = await read("src/lib/family-tree/FamilyTreeLanding.svelte");
+const surface = await read("src/lib/houses/TreeSurface.svelte");
+const housePanel = await read("src/lib/houses/FamilyHousePanel.svelte");
+const membershipDialog = await read("src/lib/houses/FamilyMembershipDialog.svelte");
+const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
+const landing = await read("src/lib/houses/TreeLanding.svelte");
 const rowActions = await read("src/lib/entity-lifecycle/EntityRowActions.svelte");
 
 assert.equal(formatMembershipRole("head"), "Head");

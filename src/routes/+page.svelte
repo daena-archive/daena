@@ -151,16 +151,16 @@ import timelineManifestJson from "../../packages/modules/timeline/manifest.json"
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import housesManifestJson from "../../packages/modules/houses/manifest.json";
-import FamilyTreeSurface from "$lib/family-tree/FamilyTreeSurface.svelte";
-import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/family-tree/fetch.ts";
+import TreeSurface from "$lib/houses/TreeSurface.svelte";
+import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
 import {
-  familyTreeHistoryKey,
-  sameFamilyTreeSession,
+  treeHistoryKey,
+  sameTreeSession,
   HOUSE_TYPE,
   PERSON_TYPE,
-  type FamilyTreeSession,
+  type TreeSession,
   type HouseMemberSummary,
-} from "$lib/family-tree/model.ts";
+} from "$lib/houses/model.ts";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
 import EntityEmptyState from "$lib/entity-lifecycle/EntityEmptyState.svelte";
@@ -702,9 +702,9 @@ let sandboxView = $state<{
   view: PluginAdminEntry["views"][number] | null;
   renderer: "maps" | "webview";
 } | null>(null);
-let familyTreeRootId = $state<string | null>(null);
-let familyTreeSession = $state<FamilyTreeSession | null>(null);
-let familyTreeRestoreNonce = $state(0);
+let treeRootId = $state<string | null>(null);
+let treeSession = $state<TreeSession | null>(null);
+let treeRestoreNonce = $state(0);
 let projectionView = $state<{
   title: string;
   subtitle: string;
@@ -1625,8 +1625,7 @@ function currentWorkspaceLocationView(): WorkspaceLocationView {
 
 function currentModuleState(): Record<string, unknown> | null {
   if (section === "language") return { pane: languagePane };
-  if (section === "houses" && housesView === "tree")
-    return (familyTreeSession as Record<string, unknown> | null) ?? null;
+  if (section === "houses" && housesView === "tree") return (treeSession as Record<string, unknown> | null) ?? null;
   return null;
 }
 
@@ -1642,7 +1641,7 @@ function restoreModuleState(section: WorkspaceSection, state: Record<string, unk
     languagePane = "overview";
   }
   if (section === "houses") {
-    familyTreeSession = (state as FamilyTreeSession | null) ?? null;
+    treeSession = (state as TreeSession | null) ?? null;
   }
 }
 
@@ -1863,7 +1862,7 @@ function currentShellLocation(): ShellLocation {
     kind: "workspace",
     section,
     view: currentWorkspaceLocationView(),
-    entityId: section === "houses" && housesView === "tree" ? familyTreeRootId : (selected?.id ?? null),
+    entityId: section === "houses" && housesView === "tree" ? treeRootId : (selected?.id ?? null),
     writingView,
     timelineView,
     collection: currentWorkspaceCollectionLocation(),
@@ -1883,7 +1882,7 @@ function recordShellDeparture(location: ShellLocation) {
   shellNavigationHistory = recordShellLocation(shellNavigationHistory, location);
 }
 
-async function openFamilyTreePerson(entityId: string) {
+async function openTreePerson(entityId: string) {
   let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
   if (!entity) {
     try {
@@ -2460,10 +2459,10 @@ async function switchHousesView(next: WorkspaceLocationView) {
   const resolved = allowed.includes(next) ? next : "houses";
   if (!(await flushAutoSave())) return;
   if (section === "houses" && housesView === resolved && !projectHomeOpen) {
-    if (resolved === "tree" && familyTreeRootId) {
+    if (resolved === "tree" && treeRootId) {
       recordShellDeparture(currentShellLocation());
-      familyTreeRootId = null;
-      familyTreeSession = null;
+      treeRootId = null;
+      treeSession = null;
     }
     return;
   }
@@ -2775,8 +2774,8 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
         await switchWritingView(target.writingView);
       } else if (target.section === "houses") {
         if (target.view === "tree") {
-          familyTreeRootId = target.entityId;
-          familyTreeRestoreNonce += 1;
+          treeRootId = target.entityId;
+          treeRestoreNonce += 1;
         }
         restoreModuleState(target.section, target.moduleState);
         await switchHousesView(target.view);
@@ -4608,15 +4607,15 @@ async function createWithOption(
     if (fromTree && (isHouse || isPerson)) {
       section = "houses";
       housesView = "tree";
-      familyTreeRootId = created.id;
-      familyTreeSession = {
+      treeRootId = created.id;
+      treeSession = {
         expansions: [],
         selectedPersonId: null,
         selectedRelationshipId: null,
         viewport: null,
         houseId: isHouse ? created.id : null,
       };
-      familyTreeRestoreNonce += 1;
+      treeRestoreNonce += 1;
       clearSelection();
     } else {
       section =
@@ -5272,15 +5271,15 @@ async function openHouseTree(entity: Entity) {
   projectHomeOpen = false;
   section = "houses";
   housesView = "tree";
-  familyTreeRootId = entity.id;
-  familyTreeSession = {
+  treeRootId = entity.id;
+  treeSession = {
     expansions: [],
     selectedPersonId: null,
     selectedRelationshipId: null,
     viewport: null,
     houseId: entity.id,
   };
-  familyTreeRestoreNonce += 1;
+  treeRestoreNonce += 1;
   clearSelection();
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
@@ -7453,7 +7452,7 @@ onMount(() => {
           }} />
       </SpecializedSurface>
     {:else if section === "houses" && housesView === "tree"}
-      {#snippet familyTreeAvatar(entityId: string, name: string)}
+      {#snippet treeAvatar(entityId: string, name: string)}
         <EntityAvatar {entityId} {name} />
       {/snippet}
       <SpecializedSurface
@@ -7461,15 +7460,15 @@ onMount(() => {
         restoreScrollTop={currentSpecializedSurfaceScrollTop()}
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
-        <FamilyTreeSurface
+        <TreeSurface
           context={buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
             availableServices: enabledServices(),
           })}
           projectId={projectInfo?.root ?? ""}
-          initialRootId={familyTreeRootId}
-          initialSession={familyTreeSession}
-          restoreNonce={familyTreeRestoreNonce}
-          avatar={familyTreeAvatar}
+          initialRootId={treeRootId}
+          initialSession={treeSession}
+          restoreNonce={treeRestoreNonce}
+          avatar={treeAvatar}
           onNewPerson={openNewPerson}
           onNewHouse={openNewHouse}
           onOpenHouseEntry={(houseId) => {
@@ -7479,8 +7478,8 @@ onMount(() => {
               upsertEntityInCache(entity);
               section = "houses";
               housesView = "houses";
-              familyTreeRootId = null;
-              familyTreeSession = null;
+              treeRootId = null;
+              treeSession = null;
               await selectEntity(entity);
             })();
           }}
@@ -7489,8 +7488,8 @@ onMount(() => {
               const entity = entities.find((item) => item.id === houseId) ?? (await project.getEntity(houseId));
               if (!entity) return;
               await archiveEntity(entity, { skipConfirm: true });
-              familyTreeRootId = null;
-              familyTreeSession = null;
+              treeRootId = null;
+              treeSession = null;
             })();
           }}
           onRenameHouse={async (houseId, name) => {
@@ -7503,20 +7502,20 @@ onMount(() => {
             await refreshAfterEntityMutation({ entityId: updated.id });
           }}
           onRootChange={(id) => {
-            if (id === familyTreeRootId) return;
+            if (id === treeRootId) return;
             recordShellDeparture(currentShellLocation());
-            familyTreeRootId = id;
-            familyTreeSession = null;
+            treeRootId = id;
+            treeSession = null;
           }}
           onSessionChange={(session) => {
-            if (sameFamilyTreeSession(familyTreeSession, session)) return;
-            const historyChanged = familyTreeHistoryKey(familyTreeSession) !== familyTreeHistoryKey(session);
-            if (historyChanged && familyTreeRootId && familyTreeSession) {
+            if (sameTreeSession(treeSession, session)) return;
+            const historyChanged = treeHistoryKey(treeSession) !== treeHistoryKey(session);
+            if (historyChanged && treeRootId && treeSession) {
               recordShellDeparture(currentShellLocation());
             }
-            familyTreeSession = session;
+            treeSession = session;
           }}
-          onOpenEntity={(entityId) => void openFamilyTreePerson(entityId)}
+          onOpenEntity={(entityId) => void openTreePerson(entityId)}
           onMembershipChanged={() => bumpCollectionRefresh()}
           onEditPersonIdentity={(personId) => {
             void (async () => {
@@ -7540,9 +7539,9 @@ onMount(() => {
               void navigateShellHistory("back");
               return;
             }
-            familyTreeRootId = null;
-            familyTreeSession = null;
-            familyTreeRestoreNonce += 1;
+            treeRootId = null;
+            treeSession = null;
+            treeRestoreNonce += 1;
           }} />
       </SpecializedSurface>
     {:else if sandboxView && sandboxView.renderer !== "maps"}

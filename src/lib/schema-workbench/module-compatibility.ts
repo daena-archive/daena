@@ -14,7 +14,7 @@ export const LORE_PLUGIN_ID = "daena.lore";
 export const TIMELINE_PLUGIN_ID = "daena.timeline";
 export const WRITING_PLUGIN_ID = "daena.writing";
 
-/** Tree contract types — the only entity types Family Tree hydrates as nodes. */
+/** Tree contract types — the only entity types Houses hydrates as nodes. */
 export const TREE_PERSON_TYPE = "daena.lore:person";
 export const TREE_HOUSE_TYPE = "daena.houses:house";
 

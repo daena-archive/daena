@@ -25,6 +25,7 @@ contracts remain in the focused plans below:
   reviewable external-source migration pipeline and importer boundary.
 - [`UI_UX.md`](./UI_UX.md) defines entity lifecycle, Houses/Tree, and Fields &
   Types author experience.
+- [`HOUSES.md`](./HOUSES.md) defines the Houses module and Tree view contracts.
 
 Those documents may add detail but must not contradict the boundaries here.
 The consolidated [`ADR index`](./adr/README.md) records narrower decisions and

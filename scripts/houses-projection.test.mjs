@@ -40,6 +40,7 @@ import {
   parentCyclePath,
   parseFamilyRelationship,
   personFromRecord,
+  collapseWouldHide,
   seedInitialExpansions,
   visibleFromExpansions,
   wouldCreateDuplicate,
@@ -719,7 +720,52 @@ assert.equal(
   true,
   "co-parent links on known children are fetched",
 );
+assert.equal(
+  neighborhood.people.some((entry) => entry.id === partnerB.id),
+  true,
+  "co-parent of a known child is hydrated",
+);
 assert.ok(fetched.maxInflight() >= 2, "shared fields hydrate in parallel");
+
+const { graph: coparentGraph } = normalizeGenealogy(
+  [root, child, partnerB],
+  [parent("cg1", root.id, child.id), parent("cg2", partnerB.id, child.id)],
+);
+const coparentVisible = initialNeighborhood(coparentGraph, root.id);
+assert.equal(coparentVisible.has(partnerB.id), true, "the other parent of a visible child is included");
+
+const coparentOnly = fakeContext(
+  [root, child, partnerB],
+  [parent("c1", root.id, child.id), parent("c2", partnerB.id, child.id)],
+);
+const coparentNeighborhood = await loadGenealogyNeighborhood(coparentOnly, root.id);
+assert.equal(
+  coparentNeighborhood.people.some((entry) => entry.id === partnerB.id),
+  true,
+  "the other parent of a descendant is hydrated even without a partnership",
+);
+assert.equal(
+  coparentNeighborhood.warnings.some((warning) => warning.message.includes("endpoints are missing")),
+  false,
+);
+
+const expandMom = person("expand-mom", "Expand Mom");
+const expandDad = person("expand-dad", "Expand Dad");
+const expandKid = person("expand-kid", "Expand Kid");
+const expandCtx = fakeContext(
+  [expandMom, expandDad, expandKid],
+  [parent("e1", expandMom.id, expandKid.id), parent("e2", expandDad.id, expandKid.id)],
+);
+const expanded = await loadExpansionLayer(expandCtx, expandMom.id, "children", new Map(), new Set([expandMom.id]));
+assert.equal(
+  expanded.people.some((entry) => entry.id === expandDad.id),
+  true,
+  "expanding children hydrates the other parent",
+);
+assert.equal(
+  expanded.warnings.some((warning) => warning.message.includes("endpoints are missing")),
+  false,
+);
 
 const aborted = fakeContext([root], []);
 const controller = new AbortController();
@@ -737,6 +783,11 @@ assert.equal(
   true,
   "shared parent-child path keeps siblings after collapsing the siblings key",
 );
+assert.equal(
+  collapseWouldHide(graph, root.id, seeded, root.id, "siblings"),
+  false,
+  "sibling chip stays hidden when collapsing it would not remove anyone",
+);
 assert.equal((afterSiblingCollapse.refs.get(sibling.id) ?? 0) > 0, true);
 
 const withoutParentChildren = withoutSiblings.filter(
@@ -748,6 +799,10 @@ const withoutParentChildren = withoutSiblings.filter(
 const isolated = visibleFromExpansions(graph, root.id, withoutParentChildren);
 assert.equal(isolated.visible.has(sibling.id), false, "collapsing every remaining sibling path hides the sibling");
 assert.equal(isolated.visible.has(root.id), true);
+assert.equal(
+  collapseWouldHide(graph, root.id, [...withoutParentChildren, expansionKey(root.id, "siblings")], root.id, "siblings"),
+  true,
+);
 
 const counts = hiddenCounts(graph, root.id, isolated.visible);
 assert.equal(counts.siblings > 0, true);
@@ -768,6 +823,8 @@ assert.equal(wouldCreateDuplicate(graph, "parent", root.id, mother.id), true);
 assert.equal(wouldCreateDuplicate(graph, "partner", root.id, partnerB.id), true);
 assert.equal(wouldCreateDuplicate(graph, "child", root.id, outsider.id), false);
 assert.equal(expansionBlocked(graph, root.id, grandchild.id, "children"), false);
+assert.equal(expansionBlocked(graph, root.id, sibling.id, "parents"), false);
+assert.equal(expansionBlocked(graph, root.id, sibling.id, "children"), false);
 
 const deep = [];
 const deepPeople = [person("d0")];

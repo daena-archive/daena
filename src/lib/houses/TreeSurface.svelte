@@ -2,8 +2,8 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { ArrowLeft, Maximize2, Plus, RotateCcw, Settings2, UserPlus, UsersRound } from "@lucide/svelte";
-import { ENTITY_ACTIONS, TREE_LEGEND, TREE_SCOPES } from "$lib/entity-lifecycle/vocabulary.ts";
+import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
+import { TREE_LEGEND, TREE_SCOPES } from "$lib/entity-lifecycle/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyHousePanel from "./FamilyHousePanel.svelte";
 import FamilyMemberDialog from "./FamilyMemberDialog.svelte";
@@ -27,6 +27,7 @@ import {
 import { requestElkLayout, terminateElkLayout } from "./elk.ts";
 import { buildElkGraph, LayoutGeneration, placeUnions, positionedFromElk } from "./layout";
 import {
+  BRANCH_DIRECTIONS,
   BRANCH_TOO_LARGE,
   DEFAULT_SECONDARY_FIELD,
   LIMITS_OVER_BUDGET,
@@ -51,6 +52,7 @@ import {
   type RelativeRole,
 } from "./model.ts";
 import {
+  collapseWouldHide,
   expansionBlocked,
   formatParentCycleMessage,
   hiddenCounts,
@@ -236,8 +238,9 @@ const personConnections = $derived.by(() => {
   return items;
 });
 const hiddenByPerson = $derived.by(() => {
-  const visible = new Set(people.keys());
   const map = new Map<string, HiddenCounts>();
+  if (houseId) return map;
+  const visible = new Set(people.keys());
   for (const id of visible) map.set(id, hiddenCounts(graph, id, visible, truncated, truncationLowerBound));
   return map;
 });
@@ -268,13 +271,22 @@ const rolesByPerson = $derived.by(() => {
 });
 const expandedByPerson = $derived.by(() => {
   const map = new Map<string, Record<BranchDirection, boolean>>();
+  if (houseId || !rootId) return map;
+  const protect = [rootId, selectedPersonId].filter((id): id is string => Boolean(id));
   for (const id of people.keys()) {
-    map.set(id, {
-      parents: expansions.includes(expansionKey(id, "parents")),
-      children: expansions.includes(expansionKey(id, "children")),
-      siblings: expansions.includes(expansionKey(id, "siblings")),
-      partners: expansions.includes(expansionKey(id, "partners")),
-    });
+    const hidden = hiddenByPerson.get(id);
+    const flags: Record<BranchDirection, boolean> = {
+      parents: false,
+      children: false,
+      siblings: false,
+      partners: false,
+    };
+    for (const direction of BRANCH_DIRECTIONS) {
+      if ((hidden?.[direction] ?? 0) > 0) continue;
+      if (!expansions.includes(expansionKey(id, direction))) continue;
+      flags[direction] = collapseWouldHide(graph, rootId, expansions, id, direction, protect);
+    }
+    map.set(id, flags);
   }
   return map;
 });
@@ -764,8 +776,9 @@ function onPersonCapChange(event: Event) {
 async function toggleBranch(personId: string, direction: BranchDirection) {
   if (!rootId || houseId) return;
   const key = expansionKey(personId, direction);
+  const hidden = hiddenByPerson.get(personId)?.[direction] ?? 0;
   queueFocusPerson(personId);
-  if (expansions.includes(key)) {
+  if (expansions.includes(key) && hidden === 0) {
     applyVisible(
       expansions.filter((item) => item !== key),
       false,
@@ -773,6 +786,7 @@ async function toggleBranch(personId: string, direction: BranchDirection) {
     );
     return;
   }
+  if (hidden === 0) return;
   if (expansionBlocked(graph, rootId, personId, direction, limits.maxExpansionDepth)) {
     error = BRANCH_TOO_LARGE;
     offerReroot(personId);
@@ -798,7 +812,7 @@ async function toggleBranch(personId: string, direction: BranchDirection) {
     mergeRecords(loaded.people, loaded.relationships);
     truncated = truncated || loaded.truncated;
     truncationLowerBound = Math.max(truncationLowerBound, loaded.truncationLowerBound);
-    if (!applyVisible([...expansions, key], false)) {
+    if (!applyVisible([...new Set([...expansions, key])], false)) {
       offerReroot(personId);
       return;
     }
@@ -1143,22 +1157,6 @@ function applyRelationshipDelete(id: string) {
             </div>
           {/if}
         </div>
-        {#if onNewPerson || onNewHouse}
-          <div class="family-topbar-create" role="group" aria-label="Create">
-            {#if onNewPerson}
-              <button type="button" class="workspace-topbar-action" onclick={() => onNewPerson?.()}>
-                <UserPlus size={14} strokeWidth={1.8} aria-hidden="true" />
-                {ENTITY_ACTIONS.newPerson}
-              </button>
-            {/if}
-            {#if onNewHouse}
-              <button type="button" class="workspace-topbar-action" onclick={() => onNewHouse?.()}>
-                <Plus size={14} strokeWidth={1.8} aria-hidden="true" />
-                {ENTITY_ACTIONS.newHouse}
-              </button>
-            {/if}
-          </div>
-        {/if}
       </div>
     {/if}
   </div>
@@ -1546,20 +1544,16 @@ function applyRelationshipDelete(id: string) {
   text-transform: uppercase;
 }
 .toolbar-field select {
+  box-sizing: border-box;
+  height: 34px;
   min-height: 34px;
   min-width: 7.5rem;
-  padding: 4px 8px;
+  padding: 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
   font-size: 12px;
-}
-.family-topbar-create {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 /* Sub-bar — sticky like WorkspaceViewNav */
 .family-subbar {

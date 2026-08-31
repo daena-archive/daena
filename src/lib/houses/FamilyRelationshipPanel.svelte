@@ -373,6 +373,12 @@ select {
   color: var(--ink);
   font-size: 13px;
 }
+input:not([type="checkbox"]):not([type="hidden"]),
+select {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 9px;
+}
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
@@ -398,41 +404,62 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   min-height: 34px;
-  padding: 0 14px;
-  border: 1px solid var(--line-strong);
+  padding: 0 12px;
   border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(48, 45, 38, 0.05);
 }
 .quiet-button {
+  border: 1px solid var(--theme-warning-border, #ded8cd);
   background: var(--surface);
   color: var(--ink-soft, var(--ink));
+}
+.quiet-button:hover {
+  border-color: var(--theme-warning-border, #cbbda9);
+  background: var(--surface-muted);
+  color: var(--ink);
 }
 .quiet-button.ghost {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
 .quiet-button.ghost:hover {
-  border-color: var(--line);
+  border-color: var(--theme-warning-border, #cbbda9);
   background: var(--surface-muted);
 }
 .primary-button {
+  border: 1px solid transparent;
   background: var(--accent-dark, var(--accent));
-  border-color: transparent;
   color: #fff;
 }
+.primary-button:hover {
+  background: #2b4535;
+}
 .danger-button {
-  background: var(--theme-danger-bg, #8a2b2b);
-  border-color: transparent;
-  color: #fff;
+  border: 1px solid var(--theme-danger-border, #e2c4bb);
+  background: var(--surface);
+  color: var(--theme-danger-text, #8a3b2d);
+}
+.danger-button:hover {
+  background: var(--theme-danger-bg, #f8ece8);
+}
+.quiet-button:focus-visible,
+.primary-button:focus-visible,
+.danger-button:focus-visible {
+  outline: 3px solid var(--focus-ring, rgba(180, 119, 63, 0.24));
+  outline-offset: 2px;
 }
 .primary-button:disabled,
 .danger-button:disabled,
 .quiet-button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .panel {

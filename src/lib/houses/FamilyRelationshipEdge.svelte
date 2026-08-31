@@ -2,6 +2,7 @@
 import { BaseEdge, EdgeLabel, getSmoothStepPath, getStraightPath, Position } from "@xyflow/svelte";
 import { formatCalendarDate } from "$lib/date";
 import type { ParentKind, PartnerKind } from "./model";
+import { getTreeCanvasHost } from "./treeCanvasHost.ts";
 
 let {
   id,
@@ -30,9 +31,10 @@ let {
     start: unknown;
     end: unknown;
     relationshipId?: string | null;
-    onActivate?: (relationshipId: string) => void;
   };
 } = $props();
+
+const host = getTreeCanvasHost();
 
 const partner = $derived(data?.role === "partner");
 const relationshipId = $derived(data?.relationshipId ?? null);
@@ -43,7 +45,7 @@ function activateEdge(event: KeyboardEvent) {
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   event.stopPropagation();
-  data?.onActivate?.(relationshipId);
+  host.onSelectRelationship(relationshipId);
 }
 const caption = $derived.by(() => {
   const label = data?.label?.trim() || (partner ? "Partner" : "Parent");

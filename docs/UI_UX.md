@@ -40,8 +40,8 @@ Every first-party workspace uses the same actions:
 | Open tree          | Open tree          | Houses collection and House detail                                         |
 | Open in Lore       | Open in Lore       | Tree Person dock                                                           |
 | Make root          | Make root          | Tree Person dock / Shift+Enter                                             |
-| New person         | New person         | Tree create group                                                          |
-| New house          | New house          | Houses header and Tree create group                                        |
+| New person         | New person         | Tree landing                                                               |
+| New house          | New house          | Houses header and Tree landing                                             |
 
 ### Confirmations
 
@@ -83,7 +83,7 @@ headers default as follows:
 | Writing Studio | Current Manuscripts or Reference tab template           |
 | Language       | Language template via the shared dialog                 |
 | Houses         | House template                                          |
-| Houses / Tree  | Explicit **New person** and **New house**               |
+| Houses / Tree  | **New person** and **New house** on Tree landing        |
 | Maps           | Provider-specific create menu (not a template mutation) |
 
 After creation, route to the owning workspace, select the new entity, and keep
@@ -161,7 +161,6 @@ Open-tree toolbar groups:
 2. View: scope (house trees), secondary label, Fit
 3. Expansion: Reset branches
 4. More: generation limits (person trees), person cap, minimap, reduced detail, warning details
-5. Create: New person, New house
 
 Domain actions do not live in View settings. The secondary-label control appears
 once.

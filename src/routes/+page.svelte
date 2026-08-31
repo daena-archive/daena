@@ -864,7 +864,7 @@ const activeManifest = () => {
             ? housesManifestJson
             : null) as unknown as ModuleManifest | null;
 };
-const workspaceSectionOrder: WorkspaceSection[] = ["lore", "timeline", "writing", "language", "maps", "houses"];
+const workspaceSectionOrder: WorkspaceSection[] = ["lore", "houses", "timeline", "writing", "language", "maps"];
 function workspaceDescription(target: WorkspaceSection) {
   return workspaceSectionDescription(target);
 }

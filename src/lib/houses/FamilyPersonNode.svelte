@@ -1,8 +1,8 @@
 <script lang="ts">
 import { Handle, Position } from "@xyflow/svelte";
-import type { Snippet } from "svelte";
 import { formatCalendarDate } from "$lib/date";
-import type { BranchDirection, FamilyPerson, HiddenCounts } from "./model.ts";
+import { BRANCH_DIRECTIONS, type BranchDirection, type FamilyPerson, type HiddenCounts } from "./model.ts";
+import { getTreeCanvasHost } from "./treeCanvasHost.ts";
 
 let {
   data,
@@ -12,10 +12,6 @@ let {
     isRoot: boolean;
     hidden?: HiddenCounts;
     expanded?: Record<BranchDirection, boolean>;
-    avatar?: Snippet<[string, string]>;
-    onSelect?: (id: string) => void;
-    onMakeRoot: (id: string) => void;
-    onToggleBranch?: (id: string, direction: BranchDirection) => void;
     houses?: string[];
     roleBadge?: string | null;
     dimmed?: boolean;
@@ -24,6 +20,7 @@ let {
   };
 } = $props();
 
+const host = getTreeCanvasHost();
 const person = $derived(data.person);
 const showSecondary = $derived(!data.reducedDetail);
 const cardTabIndex = $derived(data.tabIndex ?? 0);
@@ -48,18 +45,52 @@ function onCardKeydown(event: KeyboardEvent) {
   if (event.key !== "Enter" || !person) return;
   event.preventDefault();
   event.stopPropagation();
-  if (event.shiftKey) data.onMakeRoot(person.id);
-  else data.onSelect?.(person.id);
+  if (event.shiftKey) host.onMakeRoot(person.id);
+  else host.onSelectPerson(person.id);
 }
 
 function toggle(event: MouseEvent, direction: BranchDirection) {
   if (!person) return;
   event.preventDefault();
   event.stopPropagation();
-  data.onToggleBranch?.(person.id, direction);
+  host.onToggleBranch(person.id, direction);
+}
+
+const BRANCH_COPY: Record<BranchDirection, { unit: string; units: string }> = {
+  parents: { unit: "parent", units: "parents" },
+  children: { unit: "child", units: "children" },
+  siblings: { unit: "sibling", units: "siblings" },
+  partners: { unit: "partner", units: "partners" },
+};
+
+function chipCount(direction: BranchDirection) {
+  return data.hidden?.[direction] ?? 0;
+}
+
+function chipHiding(direction: BranchDirection) {
+  return Boolean(data.expanded?.[direction]) && chipCount(direction) === 0;
+}
+
+function chipVisible(direction: BranchDirection) {
+  return chipCount(direction) > 0 || Boolean(data.expanded?.[direction]);
+}
+
+function chipText(direction: BranchDirection) {
+  const { unit, units } = BRANCH_COPY[direction];
+  if (chipHiding(direction)) return `Hide ${units}`;
+  const count = chipCount(direction);
+  const n = countLabel(count, Boolean(data.hidden?.truncated), data.hidden?.lowerBound ?? 0);
+  const word = count === 1 && n === "1" ? unit : units;
+  return `${n} ${word}`;
+}
+
+function chipAria(direction: BranchDirection) {
+  const { units } = BRANCH_COPY[direction];
+  return chipHiding(direction) ? `Hide ${units}` : `Show ${chipText(direction)}`;
 }
 
 const branchTabIndex = $derived(cardTabIndex === 0 ? 0 : -1);
+const hasBranchChips = $derived(Boolean(data.hidden) && BRANCH_DIRECTIONS.some((direction) => chipVisible(direction)));
 const cardAriaLabel = $derived.by(() => {
   if (!person) return "";
   const hasBranches =
@@ -92,8 +123,8 @@ const cardAriaLabel = $derived.by(() => {
     <Handle id="west" type="source" position={Position.Left} isConnectable={false} />
     <Handle id="east" type="source" position={Position.Right} isConnectable={false} />
     <div class="avatar-wrap">
-      {#if data.avatar}
-        {@render data.avatar(person.id, person.name)}
+      {#if host.avatar}
+        {@render host.avatar(person.id, person.name)}
       {/if}
     </div>
     <div class="copy">
@@ -106,60 +137,23 @@ const cardAriaLabel = $derived.by(() => {
       {#if data.roleBadge}<em class="role-badge">{data.roleBadge}</em>{/if}
       {#if data.isRoot}<em class="root-badge">Root</em>{/if}
     </div>
-    {#if data.hidden}
-      <div class="branches" role="group" aria-label="Branch controls" aria-roledescription="branch controls">
-        {#if data.hidden.parents > 0 || data.expanded?.parents}
-          <button
-            type="button"
-            class="chip nodrag nopan"
-            tabindex={branchTabIndex}
-            aria-pressed={Boolean(data.expanded?.parents)}
-            aria-label={data.expanded?.parents ? "Hide parents" : `Show ${data.hidden.parents} hidden parents`}
-            onclick={(event) => toggle(event, "parents")}>
-            {data.expanded?.parents && data.hidden.parents === 0
-              ? "↑ hide"
-              : `↑ ${countLabel(data.hidden.parents, data.hidden.truncated, data.hidden.lowerBound)}`}
-          </button>
-        {/if}
-        {#if data.hidden.children > 0 || data.expanded?.children}
-          <button
-            type="button"
-            class="chip nodrag nopan"
-            tabindex={branchTabIndex}
-            aria-pressed={Boolean(data.expanded?.children)}
-            aria-label={data.expanded?.children ? "Hide children" : `Show ${data.hidden.children} hidden children`}
-            onclick={(event) => toggle(event, "children")}>
-            {data.expanded?.children && data.hidden.children === 0
-              ? "↓ hide"
-              : `↓ ${countLabel(data.hidden.children, data.hidden.truncated, data.hidden.lowerBound)}`}
-          </button>
-        {/if}
-        {#if data.hidden.siblings > 0 || data.expanded?.siblings}
-          <button
-            type="button"
-            class="chip nodrag nopan"
-            tabindex={branchTabIndex}
-            aria-pressed={Boolean(data.expanded?.siblings)}
-            aria-label={data.expanded?.siblings ? "Hide siblings" : `Show ${data.hidden.siblings} hidden siblings`}
-            onclick={(event) => toggle(event, "siblings")}>
-            {data.expanded?.siblings && data.hidden.siblings === 0
-              ? "sib"
-              : `sib ${countLabel(data.hidden.siblings, data.hidden.truncated, data.hidden.lowerBound)}`}
-          </button>
-        {/if}
-        {#if data.hidden.partners > 0 || data.expanded?.partners}
-          <button
-            type="button"
-            class="chip nodrag nopan"
-            tabindex={branchTabIndex}
-            aria-pressed={Boolean(data.expanded?.partners)}
-            aria-label={data.expanded?.partners ? "Hide partners" : `Show ${data.hidden.partners} hidden partners`}
-            onclick={(event) => toggle(event, "partners")}>
-            {data.expanded?.partners && data.hidden.partners === 0
-              ? "par"
-              : `par ${countLabel(data.hidden.partners, data.hidden.truncated, data.hidden.lowerBound)}`}
-          </button>
-        {/if}
+    {#if hasBranchChips}
+      <div class="branches" role="group" aria-label="Hidden relatives" aria-roledescription="branch controls">
+        {#each BRANCH_DIRECTIONS as direction (direction)}
+          {#if chipVisible(direction)}
+            <button
+              type="button"
+              class="chip nodrag nopan"
+              class:is-hide={chipHiding(direction)}
+              tabindex={branchTabIndex}
+              title={chipAria(direction)}
+              aria-pressed={chipHiding(direction)}
+              aria-label={chipAria(direction)}
+              onclick={(event) => toggle(event, direction)}>
+              {chipText(direction)}
+            </button>
+          {/if}
+        {/each}
       </div>
     {/if}
     <Handle id="south" type="source" position={Position.Bottom} isConnectable={false} />
@@ -291,38 +285,28 @@ const cardAriaLabel = $derived.by(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: var(--control-min-height, 34px);
-  min-width: var(--control-min-height, 34px);
-  padding: 0 10px;
+  min-height: 18px;
+  padding: 1px 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink-soft, var(--ink));
-  font: 700 11px/1 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  font: 600 9px/1.2 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
   pointer-events: auto;
   white-space: nowrap;
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  transition:
-    background 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease;
-}
-@media (pointer: coarse) {
-  .chip {
-    min-height: var(--touch-target-min, 44px);
-    min-width: var(--touch-target-min, 44px);
-  }
 }
 .chip:hover {
   border-color: var(--line-strong);
   background: var(--surface-muted, var(--surface));
   color: var(--ink);
 }
+.chip.is-hide,
 .chip[aria-pressed="true"] {
-  background: var(--theme-success-bg, var(--accent-bg));
-  border-color: var(--theme-neutral-border-strong, var(--accent));
-  color: var(--theme-success-text, var(--accent-dark));
+  background: var(--surface-muted, var(--surface));
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 .chip:focus-visible {
   outline: 2px solid var(--accent);

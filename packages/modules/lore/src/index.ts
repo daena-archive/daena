@@ -7,6 +7,7 @@ import {
 } from "../../../module-api/src/index";
 import type { ModuleManifest } from "../../../module-api/src/index";
 import manifestJson from "../manifest.json";
+import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
 
 const manifest = manifestJson as unknown as ModuleManifest;
 
@@ -64,12 +65,21 @@ function createGraphStyles(): HTMLStyleElement {
     .lore-graph-toolbar-actions { display: flex; gap: 7px; }
     .lore-graph-toolbar button { border: 1px solid var(--line-strong); border-radius: 7px; padding: 6px 9px; background: var(--surface); color: var(--ink-muted); font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .lore-graph-toolbar button:hover, .lore-graph-toolbar button:focus-visible { border-color: var(--accent); color: var(--theme-warning-text, #55351f); outline: none; }
-    .lore-graph-legend { display: flex; flex-wrap: wrap; gap: 7px; color: var(--ink-muted); font: 10px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .lore-graph-legend { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; color: var(--ink-muted); font: 10px Inter, ui-sans-serif, system-ui, sans-serif; }
     .lore-graph-legend-item { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 4px 8px; border: 1px solid var(--theme-warning-border, #e4d9c8); border-radius: 999px; background: var(--surface); color: var(--ink-muted); font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
     .lore-graph-legend-item:hover, .lore-graph-legend-item:focus-visible { border-color: var(--accent); color: var(--theme-warning-text, #55351f); outline: none; }
     .lore-graph-legend-item.is-hidden { opacity: 0.45; border-style: dashed; color: var(--ink-muted); }
     .lore-graph-legend-item.is-hidden .lore-graph-legend-swatch { background: transparent !important; }
     .lore-graph-legend-swatch { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; }
+    .lore-graph-relations { position: relative; }
+    .lore-graph-relations summary { list-style: none; border: 1px solid var(--line-strong); border-radius: 7px; padding: 6px 9px; background: var(--surface); color: var(--ink-muted); font: 600 10px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .lore-graph-relations summary::-webkit-details-marker { display: none; }
+    .lore-graph-relations summary:hover, .lore-graph-relations summary:focus-visible { border-color: var(--accent); color: var(--theme-warning-text, #55351f); outline: none; }
+    .lore-graph-relations[open] summary { border-color: var(--accent); color: var(--theme-warning-text, #55351f); }
+    .lore-graph-relations-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 8; display: grid; gap: 2px; min-width: 220px; max-width: min(320px, 70vw); max-height: min(50vh, 320px); overflow: auto; padding: 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); box-shadow: 0 10px 28px color-mix(in srgb, var(--ink, #302c26) 16%, transparent); }
+    .lore-graph-relations-option { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 8px; border-radius: 7px; color: var(--ink-muted); font: 600 11px Inter, ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    .lore-graph-relations-option:hover { background: var(--surface-warm); color: var(--theme-warning-text, #55351f); }
+    .lore-graph-relations-option input { margin: 0; }
     .lore-graph-canvas { position: relative; height: min(58vh, 560px); min-height: 380px; background: radial-gradient(circle at 50% 42%, var(--theme-warning-bg, #fffdf7) 0, var(--theme-warning-bg, #fbf8f0) 52%, var(--surface-warm) 100%); }
     .lore-graph-details { display: grid; gap: 7px; min-height: 55px; padding: 12px 15px; border-top: 1px solid var(--line-soft); background: var(--surface); color: var(--ink-muted); font: 11px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
     .lore-graph-details strong { color: var(--theme-neutral-text, #302c26); font: 500 16px/1.1 var(--font-display, Georgia, serif); }
@@ -180,7 +190,8 @@ function graphElements(
           id: relationship.id,
           source: relationship.sourceId,
           target: relationship.targetId,
-          label: relationship.type.split("_").join(" "),
+          label: relationTypeLabel(relationship.type),
+          relationType: relationship.type,
         },
       })),
   ];
@@ -196,15 +207,20 @@ function renderSelection(
   entities: Map<string, EntitySummary>,
   relationships: Relationship[],
   context: ModuleContext,
+  hiddenRelationTypes: Set<string>,
 ) {
   const entity = isGraphNode(nodeOrEntity) ? entities.get(nodeOrEntity.id()) : nodeOrEntity;
   if (!entity) return;
   const connected = relationships
-    .filter((relationship) => relationship.sourceId === entity.id || relationship.targetId === entity.id)
+    .filter(
+      (relationship) =>
+        !hiddenRelationTypes.has(relationship.type) &&
+        (relationship.sourceId === entity.id || relationship.targetId === entity.id),
+    )
     .map((relationship) => {
       const otherId = relationship.sourceId === entity.id ? relationship.targetId : relationship.sourceId;
       const other = entities.get(otherId);
-      return other ? `${relationship.type.split("_").join(" ")} · ${other.name}` : null;
+      return other ? `${relationTypeLabel(relationship.type)} · ${other.name}` : null;
     })
     .filter((label): label is string => Boolean(label));
   details.replaceChildren();
@@ -243,14 +259,17 @@ function applyNeighborhoodHighlight(graph: Core, node: NodeSingular | null, show
   if (showLabels) node.connectedEdges().not(".type-hidden").addClass("hover-related");
 }
 
-function applyTypeVisibility(graph: Core, hiddenTypes: Set<string>) {
+function applyGraphVisibility(graph: Core, hiddenTypes: Set<string>, hiddenRelationTypes: Set<string>) {
   graph.nodes().forEach((node) => {
     const hidden = hiddenTypes.has(String(node.data("typeLabel") ?? "entity"));
     node.toggleClass("type-hidden", hidden);
     if (hidden) node.removeClass("hovered selected");
   });
   graph.edges().forEach((edge) => {
-    const hidden = edge.source().hasClass("type-hidden") || edge.target().hasClass("type-hidden");
+    const hidden =
+      hiddenRelationTypes.has(String(edge.data("relationType") ?? "")) ||
+      edge.source().hasClass("type-hidden") ||
+      edge.target().hasClass("type-hidden");
     edge.toggleClass("type-hidden", hidden);
     if (hidden) edge.removeClass("related selected hover-related");
   });
@@ -290,6 +309,7 @@ export const lore: DaenaModule = {
       mount: (element: HTMLElement, context: ModuleContext) => {
         let cancelled = false;
         let graph: Core | null = null;
+        const listeners = new AbortController();
         const style = createGraphStyles();
         const render = async () => {
           const entityTypes = context.module.schemas.flatMap((schema) =>
@@ -339,6 +359,8 @@ export const lore: DaenaModule = {
           const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
           const colorsByType = colorsForTypes(typeNames);
           const hiddenTypes = new Set<string>();
+          const relationTypes = [...new Set(relationships.map((relationship) => relationship.type))].sort();
+          const hiddenRelationTypes = defaultHiddenGraphRelations(relationTypes);
           const legendButtons = new Map<string, HTMLButtonElement>();
           for (const type of typeNames) {
             const legendItem = document.createElement("button");
@@ -359,6 +381,46 @@ export const lore: DaenaModule = {
           }
           const actions = document.createElement("div");
           actions.className = "lore-graph-toolbar-actions";
+          const relationInputs = new Map<string, HTMLInputElement>();
+          const relationsMenu = document.createElement("details");
+          const relationsSummary = document.createElement("summary");
+          const syncRelationsSummary = () => {
+            const hiddenCount = hiddenRelationTypes.size;
+            relationsSummary.textContent = hiddenCount > 0 ? `Relations · ${hiddenCount} hidden` : "Relations";
+          };
+          if (relationTypes.length > 0) {
+            relationsMenu.className = "lore-graph-relations";
+            relationsSummary.textContent = "Relations";
+            const menu = document.createElement("div");
+            menu.className = "lore-graph-relations-menu";
+            menu.setAttribute("role", "group");
+            menu.setAttribute("aria-label", "Relations");
+            for (const type of relationTypes) {
+              const option = document.createElement("label");
+              option.className = "lore-graph-relations-option";
+              option.title = type;
+              const input = document.createElement("input");
+              input.type = "checkbox";
+              input.checked = !hiddenRelationTypes.has(type);
+              const label = document.createElement("span");
+              label.textContent = relationTypeLabel(type);
+              option.append(input, label);
+              relationInputs.set(type, input);
+              menu.append(option);
+            }
+            relationsMenu.append(relationsSummary, menu);
+            syncRelationsSummary();
+            document.addEventListener(
+              "pointerdown",
+              (event) => {
+                if (!relationsMenu.open) return;
+                if (event.target instanceof Node && relationsMenu.contains(event.target)) return;
+                relationsMenu.open = false;
+              },
+              { signal: listeners.signal },
+            );
+            actions.append(relationsMenu);
+          }
           const fitButton = document.createElement("button");
           fitButton.type = "button";
           fitButton.textContent = "Fit graph";
@@ -375,7 +437,8 @@ export const lore: DaenaModule = {
           const details = document.createElement("div");
           details.className = "lore-graph-details";
           const hint = document.createElement("small");
-          hint.textContent = "Hover or select an entity to inspect its connections. Click a type to show or hide it.";
+          hint.textContent =
+            "Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.";
           details.append(hint);
           shell.append(details);
           element.append(shell);
@@ -384,8 +447,7 @@ export const lore: DaenaModule = {
           const positions = stablePositions(entities);
           const { default: createCytoscape } = await import("cytoscape");
           if (cancelled) return;
-          const layout = {
-            name: relationships.length > 0 ? ("cose" as const) : ("grid" as const),
+          const layoutOptions = {
             animate: false,
             fit: false,
             padding: 72,
@@ -473,16 +535,16 @@ export const lore: DaenaModule = {
           const visibleElements = () => graph!.elements().not(".type-hidden");
           const arrangeGraph = () => {
             if (!graph) return;
-            graph.layout(layout).run();
+            const hasVisibleEdges = graph.edges().not(".type-hidden").length > 0;
+            graph.layout({ ...layoutOptions, name: hasVisibleEdges ? "cose" : "grid" }).run();
             separateOverlappingNodes(graph);
             const visible = visibleElements();
             if (visible.length > 0) graph.fit(visible, 72);
           };
-          arrangeGraph();
 
-          const syncTypeVisibility = () => {
+          const syncGraphVisibility = (relayout = false) => {
             if (!graph) return;
-            applyTypeVisibility(graph, hiddenTypes);
+            applyGraphVisibility(graph, hiddenTypes, hiddenRelationTypes);
             const selected = graph.nodes("node.selected").not(".type-hidden");
             if (selected.length === 0) {
               graph.elements().removeClass("selected");
@@ -490,8 +552,11 @@ export const lore: DaenaModule = {
               details.replaceChildren(hint);
             } else {
               applyNeighborhoodHighlight(graph, selected[0]);
+              renderSelection(details, selected[0], entityMap, relationships, context, hiddenRelationTypes);
             }
+            if (relayout) arrangeGraph();
           };
+          syncGraphVisibility(true);
 
           for (const [type, legendItem] of legendButtons) {
             legendItem.onclick = () => {
@@ -506,7 +571,15 @@ export const lore: DaenaModule = {
                 legendItem.setAttribute("aria-pressed", "false");
                 legendItem.title = type;
               }
-              syncTypeVisibility();
+              syncGraphVisibility();
+            };
+          }
+          for (const [type, input] of relationInputs) {
+            input.onchange = () => {
+              if (input.checked) hiddenRelationTypes.delete(type);
+              else hiddenRelationTypes.add(type);
+              syncRelationsSummary();
+              syncGraphVisibility(true);
             };
           }
 
@@ -540,7 +613,7 @@ export const lore: DaenaModule = {
             graph!.elements().removeClass("selected");
             node.addClass("selected");
             node.connectedEdges().not(".type-hidden").addClass("selected");
-            renderSelection(details, node, entityMap, relationships, context);
+            renderSelection(details, node, entityMap, relationships, context, hiddenRelationTypes);
             applyNeighborhoodHighlight(graph!, node);
           });
           graph.on("tap", (event) => {
@@ -553,6 +626,7 @@ export const lore: DaenaModule = {
         void render();
         return () => {
           cancelled = true;
+          listeners.abort();
           graph?.destroy();
           graph = null;
           element.replaceChildren();

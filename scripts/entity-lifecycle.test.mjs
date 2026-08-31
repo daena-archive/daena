@@ -115,7 +115,7 @@ assert.match(landing, /ENTITY_ACTIONS\.newHouse/);
 assert.match(landing, /landing-create/);
 assert.match(treeSurface, /onNewPerson/);
 assert.match(treeSurface, /onNewHouse/);
-assert.match(treeSurface, /family-topbar-create/);
+assert.doesNotMatch(treeSurface, /family-topbar-create/);
 assert.doesNotMatch(treeSurface, />New house<\/button>/);
 
 assert.match(overview, /archiveConfirmOptions/);

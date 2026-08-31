@@ -435,6 +435,12 @@ textarea {
   color: var(--ink);
   font-size: 13px;
 }
+input:not([type="checkbox"]):not([type="hidden"]),
+select {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 9px;
+}
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {

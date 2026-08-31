@@ -334,7 +334,9 @@ $effect(() => {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 9px;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--canvas, var(--surface-muted));

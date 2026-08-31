@@ -44,7 +44,7 @@
     "test:plugin-declarative": "node scripts/plugin-declarative.test.mjs",
     "test:plugin-transport": "node scripts/plugin-transport.test.mjs",
     "test:plugins": "npm run check:plugin-contract && npm run check:manifest-fixtures && npm run check:plugin-isolation && npm run test:plugin-conformance && npm run test:plugin-declarative && npm run test:plugin-cli && npm run test:plugin-transport",
-    "test:shell": "node --experimental-strip-types scripts/navigation-history.test.mjs && node --experimental-strip-types scripts/quick-open.test.mjs && node scripts/shell-ui.test.mjs",
+    "test:shell": "node --experimental-strip-types scripts/navigation-history.test.mjs && node --experimental-strip-types scripts/quick-open.test.mjs && node scripts/shell-ui.test.mjs && node --experimental-strip-types scripts/lore-graph.test.mjs",
     "test:theme": "node --experimental-strip-types scripts/theme.test.mjs",
     "test:ui-ux": "node --experimental-strip-types scripts/ui-ux.test.mjs",
     "test:entity-lifecycle": "node --experimental-strip-types scripts/entity-lifecycle.test.mjs",

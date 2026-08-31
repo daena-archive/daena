@@ -239,23 +239,59 @@ async function archiveHouse() {
   flex-wrap: wrap;
   gap: 6px;
 }
-.pill {
-  border-radius: 999px !important;
+.quiet-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-warning-border, #ded8cd);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-soft, var(--ink));
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(48, 45, 38, 0.05);
 }
-.pill.danger {
-  color: var(--theme-danger-text, #b42318);
+.quiet-button:hover {
+  border-color: var(--theme-warning-border, #cbbda9);
+  background: var(--surface-muted);
+  color: var(--ink);
 }
-.ghost {
+.quiet-button:focus-visible {
+  outline: 3px solid var(--focus-ring, rgba(180, 119, 63, 0.24));
+  outline-offset: 2px;
+}
+.quiet-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.quiet-button.pill {
+  border-radius: 999px;
+}
+.quiet-button.ghost {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
 }
-.ghost:hover {
-  border-color: var(--line);
+.quiet-button.ghost:hover {
+  border-color: var(--theme-warning-border, #cbbda9);
   background: var(--surface-muted);
 }
-.small {
-  padding: 6px 8px;
+.quiet-button.small {
+  min-height: 28px;
+  padding: 0 8px;
   font-size: 11px;
+}
+.quiet-button.danger {
+  color: var(--theme-danger-text, #8a3b2d);
+  border-color: var(--theme-danger-border, #e2c4bb);
+}
+.quiet-button.danger:hover {
+  background: var(--theme-danger-bg, #f8ece8);
 }
 .member-toolbar {
   display: grid;
@@ -266,6 +302,8 @@ async function archiveHouse() {
   display: flex;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
+  min-height: 34px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -275,7 +313,9 @@ async function archiveHouse() {
 .filter-field select {
   flex: 1;
   min-width: 0;
-  padding: 8px 0;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--ink);

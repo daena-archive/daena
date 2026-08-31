@@ -15,8 +15,8 @@ export const UNION_NODE_HEIGHT = 12;
 export const VISIBLE_PERSON_LIMIT = 250;
 export const VISIBLE_UNION_LIMIT = 150;
 export const VISIBLE_EDGE_LIMIT = 500;
-export const INITIAL_ANCESTOR_GENERATIONS = 2;
-export const INITIAL_DESCENDANT_GENERATIONS = 2;
+export const INITIAL_ANCESTOR_GENERATIONS = 3;
+export const INITIAL_DESCENDANT_GENERATIONS = 3;
 export const RECENT_ROOT_LIMIT = 10;
 export const FIELD_HYDRATE_BATCH = 20;
 export const RELATIONSHIP_QUERY_ENTITY_LIMIT = 200;
@@ -32,7 +32,7 @@ export const MAX_VISIBLE_EDGE_LIMIT = 4000;
 export const MAX_EXPANSION_DEPTH_LIMIT = 24;
 export const BRANCH_TOO_LARGE = "This branch is too large to display at once. Re-root on a nearby person to continue.";
 export const LIMITS_OVER_BUDGET =
-  "Above the recommended 2 generations / 250 people. Layout may hitch; raise the cap only if you need it.";
+  "Above the recommended 3 generations / 250 people. Layout may hitch; raise the cap only if you need it.";
 export const BRANCH_TOO_DEEP = BRANCH_TOO_LARGE;
 export const BRANCH_DIRECTIONS = ["parents", "children", "siblings", "partners"] as const;
 

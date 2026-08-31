@@ -61,6 +61,7 @@ assert.match(surface, /focusCanvasOrigin/);
 assert.match(surface, /houseMemberIds\.length/);
 assert.doesNotMatch(surface, /\.toolbar-field span \{\s*display:\s*none/);
 
+assert.match(canvas, /const nextNodes = flowNodes\(\)/);
 assert.match(canvas, /tabIndex: personId === activePersonId/);
 assert.match(canvas, /prefers-reduced-motion/);
 assert.match(canvas, /media\.addEventListener/);
@@ -79,7 +80,9 @@ const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);
 assert.match(personNode, /branchTabIndex/);
 assert.match(personNode, /Tab for branch controls/);
-assert.match(personNode, /--control-min-height/);
+assert.match(personNode, /Hide \$\{units\}/);
+assert.match(personNode, /Show \$\{chipText/);
+assert.doesNotMatch(personNode, /--control-min-height/);
 
 assert.match(relationshipPanel, /formatRelationshipTitle/);
 assert.match(relationshipPanel, /formatRelationshipTypeLabel/);

@@ -219,6 +219,22 @@ function walk(ids: Iterable<string>, hops: number, next: (id: string) => Iterabl
   return visible;
 }
 
+function addVisibleCoparents(graph: GenealogyGraph, visible: Set<string>) {
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const child of [...visible]) {
+      const parents = [...(graph.parentsByChild.get(child) ?? [])];
+      if (!parents.some((id) => visible.has(id))) continue;
+      for (const parent of parents) {
+        if (!graph.people.has(parent) || visible.has(parent)) continue;
+        visible.add(parent);
+        grew = true;
+      }
+    }
+  }
+}
+
 function shareVisibleChild(graph: GenealogyGraph, left: string, right: string, visible: Set<string>): boolean {
   const leftChildren = graph.childrenByParent.get(left);
   const rightChildren = graph.childrenByParent.get(right);
@@ -254,6 +270,7 @@ export function initialNeighborhood(
       visible.add(partner);
     }
   }
+  addVisibleCoparents(graph, visible);
   return visible;
 }
 
@@ -381,6 +398,7 @@ export function visibleFromExpansions(
       }
     }
   }
+  addVisibleCoparents(graph, visible);
   for (const id of protectIds) {
     if (graph.people.has(id)) visible.add(id);
   }
@@ -401,6 +419,30 @@ export function visibleFromExpansions(
     }
   }
   return { visible, refs };
+}
+
+export function collapseWouldHide(
+  graph: GenealogyGraph,
+  rootId: string,
+  expansions: Iterable<string>,
+  personId: string,
+  direction: BranchDirection,
+  protectIds: Iterable<string> = [],
+): boolean {
+  const key = expansionKey(personId, direction);
+  const keys = [...expansions];
+  if (!keys.includes(key)) return false;
+  const current = visibleFromExpansions(graph, rootId, keys, protectIds).visible;
+  const next = visibleFromExpansions(
+    graph,
+    rootId,
+    keys.filter((item) => item !== key),
+    [rootId, personId, ...protectIds],
+  ).visible;
+  for (const id of current) {
+    if (!next.has(id)) return true;
+  }
+  return false;
 }
 
 export function hiddenCounts(
@@ -458,7 +500,9 @@ export function expansionBlocked(
   maxExpansionDepth = MAX_EXPANSION_DEPTH,
 ): boolean {
   if (direction !== "parents" && direction !== "children") return false;
-  return generationDistance(graph, rootId, personId, direction) >= maxExpansionDepth;
+  const distance = generationDistance(graph, rootId, personId, direction);
+  if (!Number.isFinite(distance)) return false;
+  return distance >= maxExpansionDepth;
 }
 
 export function wouldCreateParentCycle(graph: GenealogyGraph, parentId: string, childId: string): boolean {

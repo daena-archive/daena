@@ -1,15 +1,16 @@
 <script lang="ts">
 import { Handle, Position } from "@xyflow/svelte";
+import { getTreeCanvasHost } from "./treeCanvasHost.ts";
 
 let {
   data,
 }: {
   data?: {
     memberIds?: string[];
-    onAddChild?: (memberIds: string[]) => void;
   };
 } = $props();
 
+const host = getTreeCanvasHost();
 const members = $derived(data?.memberIds ?? []);
 </script>
 
@@ -17,7 +18,7 @@ const members = $derived(data?.memberIds ?? []);
   <Handle id="north" type="target" position={Position.Top} isConnectable={false} />
   <Handle id="west" type="target" position={Position.Left} isConnectable={false} />
   <Handle id="east" type="target" position={Position.Right} isConnectable={false} />
-  {#if members.length >= 2 && data?.onAddChild}
+  {#if members.length >= 2}
     <button
       type="button"
       class="dot nodrag nopan"
@@ -25,7 +26,7 @@ const members = $derived(data?.memberIds ?? []);
       title="Add child"
       onclick={(event) => {
         event.stopPropagation();
-        data?.onAddChild?.(members);
+        host.onAddUnionChild(members);
       }}>
       <span aria-hidden="true">+</span>
     </button>

@@ -244,7 +244,21 @@ export async function loadGenealogyNeighborhood(
     if (!known.has(relationship.targetId)) known.add(relationship.targetId);
   }
 
-  recordPage(await collectParentsOfKnownChildren(context, collected, known, signal));
+  const coparentPage = await collectParentsOfKnownChildren(context, collected, known, signal);
+  recordPage(coparentPage);
+  const coparents = uniqueIds(
+    coparentPage.added.map((relationship) => relationship.sourceId),
+    known,
+  );
+  for (const id of coparents) known.add(id);
+  if (coparents.length > 0) {
+    const extraPartners = await queryPaged(context, coparents, [PARTNER_RELATIONSHIP], "any", collected, signal);
+    recordPage(extraPartners);
+    for (const relationship of extraPartners.added) {
+      if (!known.has(relationship.sourceId)) known.add(relationship.sourceId);
+      if (!known.has(relationship.targetId)) known.add(relationship.targetId);
+    }
+  }
 
   const hydrated = await hydratePeople(context, [...known], secondaryField, signal);
   const warnings = [...hydrated.warnings];
@@ -344,14 +358,14 @@ export async function loadExpansionLayer(
     const page = await queryPaged(context, [personId], [PARENT_RELATIONSHIP], "outgoing", collected, signal);
     recordPage(page);
     for (const relationship of page.added) discovered.add(relationship.targetId);
-    recordPage(
-      await collectParentsOfKnownChildren(
-        context,
-        collected,
-        new Set([personId, ...knownPeople, ...discovered]),
-        signal,
-      ),
+    const coparentPage = await collectParentsOfKnownChildren(
+      context,
+      collected,
+      new Set([personId, ...knownPeople, ...discovered]),
+      signal,
     );
+    recordPage(coparentPage);
+    for (const relationship of coparentPage.added) discovered.add(relationship.sourceId);
   } else if (direction === "siblings") {
     const parents = await queryPaged(context, [personId], [PARENT_RELATIONSHIP], "incoming", collected, signal);
     recordPage(parents);

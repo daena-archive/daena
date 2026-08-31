@@ -18,6 +18,7 @@ import FamilyPersonNode from "./FamilyPersonNode.svelte";
 import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";
 import { familyEdgeHandles } from "./layout.ts";
+import { setTreeCanvasHost } from "./treeCanvasHost.ts";
 import { coupleClickAction, unionClickAction } from "./unions.ts";
 import type { BranchDirection, FamilyPerson, HiddenCounts, LayoutEdge, PositionedGraph } from "./model.ts";
 
@@ -72,6 +73,17 @@ let {
   showMinimap?: boolean;
   reducedDetail?: boolean;
 } = $props();
+
+setTreeCanvasHost({
+  get avatar() {
+    return avatar;
+  },
+  onSelectPerson: (id) => onSelectPerson(id),
+  onMakeRoot: (id) => onMakeRoot(id),
+  onToggleBranch: (id, direction) => onToggleBranch(id, direction),
+  onAddUnionChild: (memberIds) => onAddUnionChild(memberIds),
+  onSelectRelationship: (id) => onSelectRelationship(id),
+});
 
 const nodeTypes = { person: FamilyPersonNode, union: FamilyUnionNode } as unknown as NodeTypes;
 const edgeTypes = { family: FamilyRelationshipEdge } as unknown as EdgeTypes;
@@ -142,21 +154,17 @@ function flowNodes(): Node[] {
           id: node.id,
           type: node.kind,
           position: { x: node.x, y: node.y },
-          data: {
+          data: $state.snapshot({
             person,
             isRoot: personId === rootId,
             hidden: hiddenByPerson.get(personId),
             expanded: expandedByPerson.get(personId),
-            avatar,
-            onSelect: onSelectPerson,
-            onMakeRoot,
-            onToggleBranch,
             houses: reducedDetail ? [] : (housesByPerson.get(personId) ?? []),
             roleBadge: rolesByPerson.get(personId) ?? null,
             dimmed: Boolean(houseFilterId) && !(memberHouseIds.get(personId) ?? []).includes(houseFilterId ?? ""),
             reducedDetail,
             tabIndex: personId === activePersonId ? 0 : -1,
-          },
+          }),
           selected: node.personId === selectedPersonId,
           draggable: false,
           connectable: false,
@@ -169,10 +177,9 @@ function flowNodes(): Node[] {
         id: node.id,
         type: node.kind,
         position: { x: node.x, y: node.y },
-        data: {
+        data: $state.snapshot({
           memberIds: node.memberIds ?? [],
-          onAddChild: onAddUnionChild,
-        },
+        }),
         selected: false,
         draggable: false,
         connectable: false,
@@ -193,7 +200,7 @@ function flowEdges(): Edge[] {
     source: edge.source,
     target: edge.target,
     ...portHandles(edge),
-    data: {
+    data: $state.snapshot({
       role: edge.role,
       parentKind: edge.parentKind,
       partnerKind: edge.partnerKind,
@@ -201,8 +208,7 @@ function flowEdges(): Edge[] {
       start: edge.start,
       end: edge.end,
       relationshipId: edge.relationshipId,
-      onActivate: (relationshipId: string) => onSelectRelationship(relationshipId),
-    },
+    }),
     selected: Boolean(edge.relationshipId && edge.relationshipId === selectedRelationshipId),
     ariaLabel: edge.label || undefined,
     selectable: true,
@@ -239,18 +245,17 @@ function openRelationshipAround(personId: string) {
 }
 
 $effect(() => {
-  let frame = 0;
-  const schedule = () => {
-    frame = requestAnimationFrame(() => {
-      nodes = flowNodes();
-      edges = flowEdges();
-    });
-  };
-  if (typeof requestAnimationFrame !== "undefined") schedule();
-  else {
-    nodes = flowNodes();
-    edges = flowEdges();
+  const nextNodes = flowNodes();
+  const nextEdges = flowEdges();
+  if (typeof requestAnimationFrame === "undefined") {
+    nodes = nextNodes;
+    edges = nextEdges;
+    return;
   }
+  const frame = requestAnimationFrame(() => {
+    nodes = nextNodes;
+    edges = nextEdges;
+  });
   return () => cancelAnimationFrame(frame);
 });
 

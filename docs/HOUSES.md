@@ -366,14 +366,16 @@ from an older valid checkpoint. Editing requires schema-valid values.
 For a selected person root:
 
 1. Include the root.
-2. Walk incoming `family_parent_of` for two ancestor generations.
-3. Walk outgoing `family_parent_of` for two descendant generations.
+  2. Walk incoming `family_parent_of` for three ancestor generations.
+  3. Walk outgoing `family_parent_of` for three descendant generations.
 4. Include immediate siblings (other children of each direct parent).
-5. Include active, planned, or unknown-status partners of every included
+5. Include the other parent of every included child when that parent record
+   exists. Sharing a child still does not infer a partnership.
+6. Include active, planned, or unknown-status partners of every included
    person.
-6. Include ended partners only when they share a visible child or the user
+7. Include ended partners only when they share a visible child or the user
    expands partners.
-7. Hydrate discovered entity IDs and shared Lore fields in batches.
+8. Hydrate discovered entity IDs and shared Lore fields in batches.
 
 House-rooted Tree uses membership plus an optional immediate-family scope
 (`members-only` or `members-plus-immediate-family`). See [`UI_UX.md`](./UI_UX.md).
@@ -395,9 +397,10 @@ through another parent, partner, or consanguineous path.
 ### Hidden counts
 
 For each visible person, incident relationships yield hidden parents,
-children, siblings, and partners. Controls appear only for non-zero counts.
-If a query page is truncated, the UI shows a lower bound (`99+`) rather than
-an incorrect exact number.
+children, siblings, and partners. Show controls appear only for non-zero
+hidden counts. A Hide control appears only when collapsing that direction
+would actually remove someone from the canvas. If a query page is truncated,
+the UI shows a lower bound (`99+`) rather than an incorrect exact number.
 
 ### Limits
 
@@ -519,13 +522,13 @@ failures are errors and leave the last valid graph visible.
 ## Performance
 
 A several-hundred-person genealogy remains navigable without rendering the
-entire graph. Default projection is two ancestor and two descendant
+entire graph. Default projection is three ancestor and three descendant
 generations.
 
 On the repository's release reference machine, with a 1,000-person /
 1,500-parent / 600-partner fixture:
 
-- initial two-up/two-down projection completes in 200 ms at p95 excluding
+- initial three-up/three-down projection completes in 200 ms at p95 excluding
   first database open;
 - ELK layout for 250 people plus 150 unions completes in 500 ms at p95 in the
   worker;

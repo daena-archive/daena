@@ -423,12 +423,19 @@ function onKeydown(event: KeyboardEvent) {
 .field input,
 .field select,
 .field textarea {
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
   font: 13px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+.field input:not([type="checkbox"]):not([type="hidden"]),
+.field select {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 10px;
 }
 .hint,
 .selected {

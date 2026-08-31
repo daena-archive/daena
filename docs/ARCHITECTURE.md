@@ -26,6 +26,7 @@ contracts remain in the focused plans below:
 - [`UI_UX.md`](./UI_UX.md) defines entity lifecycle, Houses/Tree, and Fields &
   Types author experience.
 - [`HOUSES.md`](./HOUSES.md) defines the Houses module and Tree view contracts.
+- [`LANGUAGE_MODULE.md`](./LANGUAGE_MODULE.md) defines the Language workspace and Grammar contracts.
 
 Those documents may add detail but must not contradict the boundaries here.
 The consolidated [`ADR index`](./adr/README.md) records narrower decisions and

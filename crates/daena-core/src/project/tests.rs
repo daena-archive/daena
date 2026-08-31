@@ -1325,6 +1325,47 @@ fn git_preflight_lists_only_canonical_paths_and_rejects_staged_unrelated_files()
 }
 
 #[test]
+fn git_status_caches_missing_repository_until_reprobe() {
+    let root = std::env::temp_dir().join(format!("daena-git-cache-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert!(!store.git_status().unwrap().repository);
+
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(!store.git_status().unwrap().repository);
+
+    let reader = ProjectStore::open_read_only(&root).unwrap();
+    assert!(!reader.git_status().unwrap().repository);
+
+    assert!(store.git_status_reprobe().unwrap().repository);
+    assert!(reader.git_status().unwrap().repository);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_init_refreshes_cached_missing_repository() {
+    let root = std::env::temp_dir().join(format!("daena-git-init-cache-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert!(!store.git_status().unwrap().repository);
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(!store.git_status().unwrap().repository);
+    assert!(store.git_init().unwrap().repository);
+    assert!(store.git_status().unwrap().repository);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn git_tool_info_reports_system_git() {
     let info = ProjectStore::git_tool_info();
     assert!(info.available, "{:?}", info.error);

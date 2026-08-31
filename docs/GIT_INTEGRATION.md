@@ -92,7 +92,7 @@ and filename are authoritative.
 
 | Boundary | Current source | Consequence |
 | --- | --- | --- |
-| System git CLI wrapper | `crates/daena-core/src/project.rs` (`run_git`, `git_status`, `git_init`, `git_log`, `git_preflight`, `git_commit`) | Keep CLI-based integration; do not introduce a second VCS stack. |
+| System git CLI wrapper | `crates/daena-core/src/project.rs` (`git_command`, `run_git`, `git_status`, `git_status_reprobe`, `git_init`, `git_log`, `git_preflight`, `git_commit`) | Keep CLI-based integration; do not introduce a second VCS stack. Every Git spawn must go through `git_command` (§5.3). |
 | Canonical path allowlist | `ProjectStore::is_canonical_git_path` | Only `project.json`, `.gitignore`, `entities/`, `plugins/`, `assets/`. |
 | Preflight / staging preview | `git_preflight` / `git_staging_preview` | Commit must re-run preflight; block unmerged / noncanonical-staged / stale index. |
 | Tauri commands | `src-tauri/src/lib.rs` (`project_git_*`) | Shell-owned; never on the plugin broker catalog. |
@@ -143,6 +143,16 @@ revised.
    snapshot.
 10. **Plugins never get Git.** No broker methods, no webview invoke of
     `project_git_*`.
+11. **Cache the absent-repository probe.** `git_status` may answer from a
+    cached negative repository probe (keyed by project root, for the life of
+    the process) so background status refreshes — checkpoint export
+    notifications, the status center, project open — never spawn Git. The
+    Settings → Git surface must bypass the cache (`git_status_reprobe`, the
+    `reprobe` option of `project_git_status`) whenever it opens or refreshes,
+    and `git_init` must invalidate it. Detected repositories are never cached
+    positively: every status call re-probes, so an externally removed `.git/`
+    self-heals. Only the "not a repository" answer may be stale, and only
+    until the Git surface re-probes.
 
 ```text
 Rail Git  -->  Settings → Git
@@ -229,6 +239,13 @@ as other Git helpers:
   on PATH” state (existing `git is unavailable: …` errors remain valid for
   other calls).
 
+The probe must never block the app’s main thread: the Tauri command is async
+and executes the spawn on the blocking worker pool (a synchronous command
+would run inline on the main thread and freeze the UI for the duration of the
+subprocess, which is slow on Windows). A successful probe is cached for the
+life of the process (the version cannot change while Daena runs); an
+unavailable probe is never cached, so installing Git and retrying re-probes.
+
 ### 5.2 Install affordance
 
 When unavailable, Settings → Git shows a button that opens
@@ -236,6 +253,16 @@ When unavailable, Settings → Git shows a button that opens
 `https://git-scm.com/downloads`
 
 through `tauri-plugin-opener`. Daena does not bundle or silently download Git.
+
+### 5.3 Headless spawning on Windows
+
+Every Git helper must spawn through `git_command`
+(`crates/daena-core/src/project.rs`), which sets `CREATE_NO_WINDOW` on
+Windows. Release builds are GUI-subsystem processes: spawning a console
+program such as `git.exe` without that flag makes Windows allocate a console
+window that flashes open and closed and steals user focus. Never add a
+`std::process::Command` call for Git outside the `git_command` helper, and
+keep `git_tool_info` on the same path so behavior stays uniform.
 
 ---
 
@@ -335,7 +362,7 @@ must match.
 | Capability | Core responsibility | Notes |
 | --- | --- | --- |
 | `git_tool_info` | `git --version` | `{ available, version, error? }` |
-| `git_status` / `git_init` / `git_preflight` / `git_log` | Existing | Keep; log length may increase |
+| `git_status(reprobe?)` / `git_init` / `git_preflight` / `git_log` | Existing; `git_status` may serve a cached absent-repository probe unless `reprobe` is set (§3, decision 11) | The Git settings surface always passes `reprobe`; background refreshes must not; log length may increase |
 | `git_commit(message, paths?)` | Preflight + subset check + add + commit | `paths` default = all staging paths only if UI sends full set; prefer explicit paths from UI |
 | `git_show_tree(hash)` | Canonical-filtered tree | Read-only |
 | `git_show_file(hash, path)` | Canonical + size/binary guard | Read-only |

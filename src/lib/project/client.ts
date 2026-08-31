@@ -1289,7 +1289,7 @@ export const project = {
     }),
   saveRecoveryCopy: (entityId: string, body: string) =>
     invoke<string>("project_save_recovery_copy", { entityId, body }),
-  gitStatus: () => invoke<GitStatus>("project_git_status"),
+  gitStatus: (reprobe = false) => invoke<GitStatus>("project_git_status", { reprobe }),
   gitPreflight: () => invoke<GitPreflight>("project_git_preflight"),
   gitStagingPreview: () => invoke<GitPreflight>("project_git_staging_preview"),
   gitInit: () => invoke<GitStatus>("project_git_init"),

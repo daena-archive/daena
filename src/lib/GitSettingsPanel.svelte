@@ -708,7 +708,7 @@ async function refresh(resetSelection = false, expectedProjectId = projectId, ex
     tool = nextTool;
     if (!expectedOpen || !nextTool.available) return;
 
-    const nextStatus = await project.gitStatus();
+    const nextStatus = await project.gitStatus(true);
     if (token !== refreshToken || expectedProjectId !== projectId) return;
     notifyStatus(nextStatus);
     if (nextStatus.repository) {

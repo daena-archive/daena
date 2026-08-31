@@ -293,7 +293,11 @@ checkpoint, rejects unresolved conflicts, and presents exact staging paths
 before a commit. The Settings → Git surface supports selective portable
 commits, history browsing, read-only snapshot previews, explicit hard reset,
 remotes, and lease-protected remote recovery. `.daena/` and SQLite files are
-never staged by built-in Git helpers.
+never staged by built-in Git helpers. Git subprocesses spawn headlessly (no
+console window on Windows) and off the app’s main thread, and background
+status refreshes may serve a cached absent-repository answer; the
+Settings → Git surface re-probes repository detection whenever it opens. See
+[`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) for the binding contracts.
 
 Maps are normal shared entities, not a parallel identity table. Provider source
 files remain opaque native assets; map locations, roles, dates, relationships,

@@ -1620,6 +1620,18 @@ fn notify_checkpoint_export_status() {
     }
 }
 
+static GIT_REPOSITORY_PROBES: OnceLock<Mutex<BTreeMap<PathBuf, bool>>> = OnceLock::new();
+
+fn git_repository_probe_slot() -> &'static Mutex<BTreeMap<PathBuf, bool>> {
+    GIT_REPOSITORY_PROBES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+static GIT_TOOL_INFO_CACHE: OnceLock<Mutex<Option<GitToolInfo>>> = OnceLock::new();
+
+fn git_tool_info_slot() -> &'static Mutex<Option<GitToolInfo>> {
+    GIT_TOOL_INFO_CACHE.get_or_init(|| Mutex::new(None))
+}
+
 fn reset_required_error() -> CoreError {
     CoreError::ResetRequired(
         "unsupported Daena runtime storage; close Daena and remove .daena/ before reopening this project".into(),
@@ -1816,6 +1828,20 @@ fn flush_export_worker(
     reply_receiver
         .recv()
         .map_err(|_| CoreError::Conflict("export worker stopped before checkpoint flush".into()))?
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn git_command(args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
 }
 
 impl Drop for ProjectStore {
@@ -3554,24 +3580,46 @@ impl ProjectStore {
 
     fn run_git(&self, args: &[&str]) -> Result<std::process::Output, CoreError> {
         let root = self.project_root()?;
-        Command::new("git")
-            .args(args)
+        git_command(args)
             .current_dir(root)
             .output()
             .map_err(|error| CoreError::NotFound(format!("git is unavailable: {error}")))
     }
 
-    fn git_repository_is_project_root(&self) -> Result<bool, CoreError> {
-        let output = self.run_git(&["rev-parse", "--show-toplevel"])?;
-        if !output.status.success() {
-            return Ok(false);
+    fn git_repository_is_project_root_cached(&self, force: bool) -> Result<bool, CoreError> {
+        let root = self.project_root()?.to_path_buf();
+        if !force {
+            if let Ok(cache) = git_repository_probe_slot().lock() {
+                if cache.get(&root) == Some(&false) {
+                    return Ok(false);
+                }
+            }
         }
-        let repository_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-        let project_root = self.project_root()?;
-        let repository_root = std::fs::canonicalize(&repository_root).unwrap_or(repository_root);
-        let project_root =
-            std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
-        Ok(repository_root == project_root)
+        let output = self.run_git(&["rev-parse", "--show-toplevel"])?;
+        let repository = if !output.status.success() {
+            false
+        } else {
+            let repository_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+            let project_root = self.project_root()?;
+            let repository_root =
+                std::fs::canonicalize(&repository_root).unwrap_or(repository_root);
+            let project_root =
+                std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
+            repository_root == project_root
+        };
+        if let Ok(mut cache) = git_repository_probe_slot().lock() {
+            cache.insert(root, repository);
+        }
+        Ok(repository)
+    }
+
+    fn invalidate_git_repository_probe(&self) {
+        let Some(root) = self.root.as_deref() else {
+            return;
+        };
+        if let Ok(mut cache) = git_repository_probe_slot().lock() {
+            cache.remove(root);
+        }
     }
 
     fn git_status_entries(&self) -> Result<Vec<(u8, u8, String)>, CoreError> {
@@ -3630,10 +3678,27 @@ impl ProjectStore {
         path.starts_with("assets/")
     }
 
+    /// Report snapshot repository status for the project.
+    ///
+    /// The "project is not a git repository" probe is cached per project root
+    /// for the lifetime of the process, so repeated status refreshes do not
+    /// spawn git. The cache is refreshed by [`Self::git_status_reprobe`] (used
+    /// when the snapshots UI is opened) and invalidated by [`Self::git_init`].
+    /// A repository created outside the app is therefore not reported here
+    /// until the snapshots UI re-probes.
     pub fn git_status(&self) -> Result<GitStatus, CoreError> {
+        self.git_status_with_probe(false)
+    }
+
+    /// Report snapshot repository status, bypassing a cached negative probe.
+    pub fn git_status_reprobe(&self) -> Result<GitStatus, CoreError> {
+        self.git_status_with_probe(true)
+    }
+
+    fn git_status_with_probe(&self, force_probe: bool) -> Result<GitStatus, CoreError> {
         // Git walks up parent directories by default. Built-in snapshots must
         // never attach to or mutate a repository that owns a broader worktree.
-        if !self.git_repository_is_project_root()? {
+        if !self.git_repository_is_project_root_cached(force_probe)? {
             return Ok(GitStatus {
                 repository: false,
                 branch: None,
@@ -3679,6 +3744,7 @@ impl ProjectStore {
                 String::from_utf8_lossy(&output.stderr).trim().into(),
             ));
         }
+        self.invalidate_git_repository_probe();
         self.git_status()
     }
 
@@ -3990,9 +4056,20 @@ impl ProjectStore {
         })
     }
 
+    /// Probe the system Git version (`git --version`).
+    ///
+    /// A successful probe is cached for the lifetime of the process: the
+    /// version cannot change while Daena runs, and the probe spawns a
+    /// subprocess, which is slow on Windows. Unavailable probes are never
+    /// cached so an install-then-retry flow re-probes.
     #[must_use]
     pub fn git_tool_info() -> GitToolInfo {
-        match Command::new("git").args(["--version"]).output() {
+        if let Ok(cache) = git_tool_info_slot().lock() {
+            if let Some(cached) = cache.as_ref() {
+                return cached.clone();
+            }
+        }
+        let info = match git_command(&["--version"]).output() {
             Ok(output) if output.status.success() => {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 GitToolInfo {
@@ -4018,7 +4095,13 @@ impl ProjectStore {
                 version: None,
                 error: Some(format!("git is unavailable: {error}")),
             },
+        };
+        if info.available {
+            if let Ok(mut cache) = git_tool_info_slot().lock() {
+                *cache = Some(info.clone());
+            }
         }
+        info
     }
 
     fn git_rev_parse(&self, rev: &str) -> Result<Option<String>, CoreError> {

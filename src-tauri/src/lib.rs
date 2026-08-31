@@ -6523,13 +6523,26 @@ async fn project_save_recovery_copy(
 }
 
 #[tauri::command]
-fn git_tool_info() -> GitToolInfo {
-    ProjectStore::git_tool_info()
+async fn git_tool_info() -> Result<GitToolInfo, String> {
+    tauri::async_runtime::spawn_blocking(ProjectStore::git_tool_info)
+        .await
+        .map_err(|error| format!("git tool info worker failed: {error}"))
 }
 
 #[tauri::command]
-async fn project_git_status(state: tauri::State<'_, SharedCore>) -> Result<GitStatus, String> {
-    with_read_project(state, daena_core::ProjectStore::git_status).await
+async fn project_git_status(
+    state: tauri::State<'_, SharedCore>,
+    reprobe: Option<bool>,
+) -> Result<GitStatus, String> {
+    let force = reprobe.unwrap_or(false);
+    with_read_project(state, move |project| {
+        if force {
+            project.git_status_reprobe()
+        } else {
+            project.git_status()
+        }
+    })
+    .await
 }
 
 #[tauri::command]

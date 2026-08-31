@@ -414,12 +414,10 @@ function selectBuiltinField(field: FieldDefinition) {
               bind:value={newFieldLabel}
               placeholder="Word count"
               onkeydown={(event) => event.key === "Enter" && addCustomField()} />
-            {#if newFieldErrors.name}<small class="field-error">{newFieldErrors.name}</small>{/if}
           </label>
           {#if showAdvancedControl(showAdvanced, "field-key")}
             <label>
               <span>Stable key</span><input value={ensureFieldKey(newFieldLabel)} readonly aria-readonly="true" />
-              {#if newFieldErrors.key}<small class="field-error">{newFieldErrors.key}</small>{/if}
             </label>
           {/if}
           <label>

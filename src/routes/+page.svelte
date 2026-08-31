@@ -11258,8 +11258,8 @@ onMount(() => {
   padding: 9px 11px;
   border: 1px solid var(--theme-warning-border, #d8c3a5);
   border-radius: 8px;
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   font-size: 11px;
   font-weight: 700;
   cursor: pointer;
@@ -11695,8 +11695,8 @@ onMount(() => {
   color: var(--theme-success-text, #3f6b4c);
 }
 .version-tag.selected {
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .version-tag.bundled {
   background: var(--theme-info-bg, #e8e4ee);

@@ -8724,7 +8724,7 @@ impl ProjectStore {
         &mut self,
         constraints: BTreeMap<String, RelationshipConstraints>,
     ) -> Result<(), CoreError> {
-        for (relationship_type, _) in &constraints {
+        for relationship_type in constraints.keys() {
             if relationship_type.trim().is_empty() {
                 return Err(CoreError::Validation(
                     "relationship constraint type cannot be empty".into(),

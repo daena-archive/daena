@@ -218,7 +218,7 @@ pub fn diff_module_schema_overlays(
         .map(|item| (item.entity_type_id.as_str(), item))
         .collect();
     for (id, next) in &next_appearance {
-        if current_appearance.get(id).map(|value| *value) != Some(next) {
+        if current_appearance.get(id).copied() != Some(next) {
             appearance_types.insert((*id).to_string());
         }
     }
@@ -240,7 +240,7 @@ pub fn diff_module_schema_overlays(
         .map(|item| (item.field_key.as_str(), item))
         .collect();
     for (key, next) in &next_scopes {
-        if current_scopes.get(key).map(|value| *value) != Some(next) {
+        if current_scopes.get(key).copied() != Some(next) {
             scope_changed.insert((*key).to_string());
         }
     }
@@ -262,7 +262,7 @@ pub fn diff_module_schema_overlays(
         .map(|item| (item.field_key.as_str(), item))
         .collect();
     for (key, next) in &next_metadata {
-        if current_metadata.get(key).map(|value| *value) != Some(next) {
+        if current_metadata.get(key).copied() != Some(next) {
             metadata_changed.insert((*key).to_string());
         }
     }
@@ -284,7 +284,7 @@ pub fn diff_module_schema_overlays(
         .map(|item| (item.field_key.as_str(), item))
         .collect();
     for (key, next) in &next_timeline {
-        if current_timeline.get(key).map(|value| *value) != Some(next) {
+        if current_timeline.get(key).copied() != Some(next) {
             timeline_changed.insert((*key).to_string());
         }
     }
@@ -306,7 +306,7 @@ pub fn diff_module_schema_overlays(
         .map(|item| (item.template_id.as_str(), item))
         .collect();
     for (id, next) in &next_template_overrides {
-        if current_template_overrides.get(id).map(|value| *value) != Some(next) {
+        if current_template_overrides.get(id).copied() != Some(next) {
             template_overrides_changed.insert((*id).to_string());
         }
     }

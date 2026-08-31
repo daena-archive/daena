@@ -1032,7 +1032,7 @@ pub fn normalize_manifest(manifest: &mut PluginManifest) -> Result<(), ContractE
     // records
     for rec in &mut manifest.records {
         for et in rec.owner_entity_types.iter_mut() {
-            *et = normalize_local_id(&plugin_id, &et)?;
+            *et = normalize_local_id(&plugin_id, et)?;
         }
     }
     // views

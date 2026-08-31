@@ -2858,8 +2858,8 @@ $: inTable = editorState?.isActive("table") ?? false;
 .editor-toolbar button:focus-visible,
 .editor-toolbar button.active {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   outline: 0;
 }
 .editor-toolbar button:disabled {
@@ -3132,8 +3132,8 @@ $: inTable = editorState?.isActive("table") ?? false;
 }
 .image-align-row button.active {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .editor-toolbar button.ai-toolbar-button {
   color: var(--accent-dark);
@@ -3531,14 +3531,14 @@ $: inTable = editorState?.isActive("table") ?? false;
 }
 .search-inline-btn:hover,
 .search-inline-btn:focus-visible {
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   outline: 0;
 }
 .search-inline-btn.active {
-  background: var(--accent-bg);
+  background: var(--accent-dark);
   border-color: var(--theme-warning-border, #d3c0a9);
-  color: var(--accent-dark);
+  color: var(--on-accent);
 }
 .search-inline-btn[aria-label="Match whole word"].active {
   text-decoration: underline;
@@ -3590,8 +3590,8 @@ $: inTable = editorState?.isActive("table") ?? false;
 }
 .search-icon-btn.active {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .search-icon-btn:hover,
 .search-nav:hover,
@@ -3602,8 +3602,8 @@ $: inTable = editorState?.isActive("table") ?? false;
 .search-close:focus-visible,
 .search-action:focus-visible {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   outline: 0;
 }
 .search-nav:disabled,

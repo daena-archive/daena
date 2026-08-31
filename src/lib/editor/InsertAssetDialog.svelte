@@ -1411,9 +1411,9 @@ header h2 {
   min-height: 16px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--accent-bg);
+  background: var(--accent-dark);
   border: 1px solid var(--theme-warning-border, #d3c0a9);
-  color: var(--accent-dark);
+  color: var(--on-accent);
   font: 700 9px/1 var(--font-body, system-ui, sans-serif);
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1862,8 +1862,8 @@ footer .primary:disabled {
 .align-btn.active,
 .align-btn[aria-pressed="true"] {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   box-shadow: inset 0 0 0 1px rgba(211, 192, 169, 0.35);
 }
 .image-lock-btn,
@@ -1897,8 +1897,8 @@ footer .primary:disabled {
 }
 .image-lock-btn[aria-pressed="true"] {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   box-shadow: inset 0 0 0 1px rgba(211, 192, 169, 0.35);
 }
 .image-lock-btn[aria-pressed="false"] {
@@ -1963,8 +1963,8 @@ footer .primary:disabled {
 .image-presets button:hover,
 .image-presets button:focus-visible {
   border-color: var(--theme-warning-border, #d3c0a9);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
   outline: 0;
   transform: translateY(-1px);
 }

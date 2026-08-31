@@ -258,8 +258,8 @@ const cardAriaLabel = $derived.by(() => {
   margin-top: 2px;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--accent-bg, #e4ece4);
-  color: var(--accent-dark, #2f4e35);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.05em;

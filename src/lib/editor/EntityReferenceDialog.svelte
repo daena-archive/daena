@@ -10,6 +10,7 @@ import {
   type AsyncEntitySearchFn,
   type AsyncEntitySearchPage,
 } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
+import { humanizeId } from "$lib/schema-workbench/model.ts";
 
 export let open = false;
 export let search: AsyncEntitySearchFn = async () => emptyAsyncEntityPage();
@@ -227,7 +228,8 @@ $: if (!open && lastFocused) {
               aria-selected={selectedId === entity.id}
               class:selected={selectedId === entity.id}
               onclick={() => select(entity)}>
-              <strong>{entity.name}</strong><small>{entity.entityType ?? "Uncategorized"}</small>
+              <strong>{entity.name}</strong><small
+                >{entity.entityType ? humanizeId(entity.entityType) : "Uncategorized"}</small>
             </button>
           {:else}
             <p>No matching entities.</p>

@@ -201,7 +201,7 @@ const [path, labelX, labelY] = $derived(
 }
 .edge-pill.selected {
   border-color: var(--accent);
-  color: var(--accent-dark);
-  background: var(--accent-bg);
+  color: var(--on-accent);
+  background: var(--accent-dark);
 }
 </style>

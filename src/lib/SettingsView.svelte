@@ -1224,13 +1224,14 @@ async function handleClose() {
 }
 .ai-card-badge {
   flex: 0 0 auto;
-  padding: 5px 9px;
-  border: 1px solid var(--theme-warning-border, #d8c6ad);
+  padding: 5px 8px;
   border-radius: 999px;
-  background: var(--theme-warning-bg, #fbf2e5);
-  color: var(--accent-dark);
+  background: var(--theme-success-bg, #e8f3e8);
+  color: var(--theme-success-text, #407047);
   font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
   white-space: nowrap;
 }
 .ai-field-grid {

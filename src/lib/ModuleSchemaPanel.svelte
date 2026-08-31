@@ -2741,8 +2741,15 @@ function removeCustomTemplate(id: string) {
 }
 .advanced-toggle input {
   margin: 0;
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--accent-dark);
+  flex: 0 0 auto;
 }
-.narrow-back {
+.quiet.narrow-back {
   display: none;
 }
 
@@ -2812,7 +2819,7 @@ label span {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-input,
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
 select {
   box-sizing: border-box;
   min-width: 140px;
@@ -2843,7 +2850,7 @@ select {
     5px 5px;
   background-repeat: no-repeat;
 }
-input:focus,
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):focus,
 select:focus {
   outline: none;
   border-color: var(--accent);
@@ -3151,9 +3158,11 @@ code {
   .workbench-toolbar {
     grid-template-columns: 1fr;
   }
-  .narrow-back {
+  .quiet.narrow-back {
     display: inline-flex;
     justify-self: start;
+    width: auto;
+    max-width: max-content;
   }
   .save-bar {
     flex-direction: column;

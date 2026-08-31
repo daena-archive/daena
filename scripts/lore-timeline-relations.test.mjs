@@ -11,7 +11,11 @@ const timeline = JSON.parse(readFileSync(join(root, "packages/modules/timeline/m
 
 const loreFields = lore.schemas[0].fields;
 const byKey = Object.fromEntries(loreFields.map((field) => [field.key, field]));
-const timelineTypes = new Set(timeline.schemas[0].entityTypes.map((entityType) => entityType.id));
+const timelineNamespace = timeline.schemas[0].namespace;
+const timelineModuleId = timeline.id;
+const timelineTypes = new Set(
+  timeline.schemas[0].entityTypes.map((entityType) => `${timelineModuleId}:${entityType.id}`),
+);
 const loreTypes = new Set(lore.schemas[0].entityTypes.map((entityType) => entityType.id));
 const withTimeline = new Set([...loreTypes, ...timelineTypes]);
 
@@ -28,8 +32,8 @@ assert.equal(byKey.endedAt.type, "date");
 assert.equal(byKey.birth.relationshipType, undefined);
 assert.equal(
   timeline.schemas[0].fields.some((field) => field.key === "calendar"),
-  false,
-  "calendar choice lives on the date, not an event relationship",
+  true,
+  "era declares a calendar relationship for timeline scoping",
 );
 
 assert.equal(fieldAppliesToEntity(byKey.birth, "person", loreTypes), false, "born hides without Timeline");

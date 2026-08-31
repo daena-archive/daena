@@ -2,6 +2,7 @@
 import type { EntityTemplate, FieldDefinition } from "$lib/project/client";
 import SchemaFieldInput from "./SchemaFieldInput.svelte";
 import { defaultFieldValue } from "./model";
+import { Eye } from "@lucide/svelte";
 
 export type PreviewField = {
   field: FieldDefinition;
@@ -49,9 +50,11 @@ $effect(() => {
 });
 </script>
 
-<section class="schema-template-preview" aria-label="Preview create form" data-template-id={template.id}>
+<section class="schema-template-preview is-preview" aria-label="Preview create form" data-template-id={template.id}>
   <header class="preview-heading">
-    <span class="kicker">Preview create form</span>
+    <span class="preview-kicker"
+      ><Eye size={12} strokeWidth={1.8} aria-hidden="true" /> Preview — Create form
+      <span class="preview-badge">Read-only</span></span>
     <strong>{template.name}</strong>
     {#if template.description}
       <p>{template.description}</p>
@@ -135,27 +138,50 @@ $effect(() => {
 <style>
 .schema-template-preview {
   display: grid;
-  gap: 0.85rem;
-  border: 1px solid var(--border, #d5dbd6);
-  border-radius: 12px;
-  padding: 0.9rem 1rem;
-  background: color-mix(in srgb, var(--surface, #fff) 88%, var(--border, #d5dbd6));
+  gap: 0.9rem;
+  border: 1px dashed var(--theme-warning-border, #d3c0a9);
+  border-radius: 11px;
+  padding: 0.85rem 0.95rem;
+  background: var(--surface-quiet, var(--theme-warning-bg, #fdf8ef));
+  box-shadow: inset 0 1px 6px rgba(48, 44, 38, 0.04);
 }
 
 .preview-heading {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.22rem;
 }
 
-.kicker {
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
+.preview-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font:
+    700 9px Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--text-muted, #5c645f);
+  color: var(--ink-faint);
+}
+
+.preview-badge {
+  margin-left: 2px;
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface-warm);
+  color: var(--ink-muted);
+  font:
+    700 8px Inter,
+    sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .preview-heading strong {
   font-size: 0.98rem;
+  color: var(--ink);
 }
 
 .preview-heading p,
@@ -167,7 +193,12 @@ $effect(() => {
 
 .preview-form {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.65rem;
+}
+
+/* Muted preview inputs — convey read-only, not active form */
+.preview-form :global(.schema-field-input) {
+  opacity: 1;
 }
 
 .preview-name {
@@ -189,12 +220,31 @@ $effect(() => {
 .preview-name textarea {
   width: 100%;
   min-height: var(--control-min-height, 34px);
-  border: 1px solid var(--border, #d5dbd6);
+  border: 1px solid var(--line-soft, #e8e0d3);
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
-  background: var(--surface, #fff);
-  color: inherit;
+  background: var(--surface-subtle, #f7f4ef);
+  color: var(--ink-muted);
   font: inherit;
+}
+
+/* Override SchemaFieldInput controls when inside preview */
+.schema-template-preview :global(.schema-field-input input),
+.schema-template-preview :global(.schema-field-input textarea),
+.schema-template-preview :global(.schema-field-input select) {
+  background: var(--surface-subtle, #f7f4ef) !important;
+  border-color: var(--line-soft, #e8e0d3) !important;
+  color: var(--ink-muted) !important;
+}
+
+.schema-template-preview :global(.schema-field-input .schema-field-label span) {
+  color: var(--ink-faint) !important;
+}
+
+.preview-more {
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 0.65rem;
+  margin-top: 0.15rem;
 }
 
 .preview-more summary {
@@ -209,13 +259,27 @@ $effect(() => {
   display: none;
 }
 
+.preview-more summary strong {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
 .preview-more summary small {
   color: var(--text-muted, #5c645f);
+  font-size: 0.76rem;
 }
 
 .preview-more-body {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.65rem;
   margin-top: 0.65rem;
+}
+
+.preview-empty {
+  padding: 10px 11px;
+  border: 1px dashed var(--line-soft);
+  border-radius: 8px;
+  background: transparent;
+  text-align: center;
 }
 </style>

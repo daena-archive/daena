@@ -73,8 +73,8 @@ function handleKeydown(event: KeyboardEvent, index: number) {
 }
 .workspace-view-nav button.active {
   border-color: var(--theme-warning-border, #d8c3a5);
-  background: var(--accent-bg);
-  color: var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .workspace-view-nav + :global(.projection-view-shell),
 .workspace-view-nav + :global(.kb-shell),

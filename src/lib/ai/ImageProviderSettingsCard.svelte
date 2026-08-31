@@ -201,6 +201,10 @@ async function check() {
   background: var(--theme-success-bg, #f4f6f3);
   cursor: pointer;
 }
+.enable-row input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+}
 .enable-row span {
   display: flex;
   flex-direction: column;
@@ -232,6 +236,7 @@ async function check() {
 .fields input,
 .fields select {
   width: 100%;
+  height: 36px;
   min-height: 36px;
   padding: 0 10px;
   border: 1px solid var(--theme-neutral-border, #d4dbd3);
@@ -240,6 +245,7 @@ async function check() {
   color: var(--theme-neutral-text, #2f3931);
   font: inherit;
   font-weight: 500;
+  box-sizing: border-box;
 }
 .actions {
   display: flex;

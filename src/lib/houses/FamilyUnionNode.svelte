@@ -82,8 +82,8 @@ button.dot::before {
 }
 button.dot:hover {
   border-color: var(--accent, #b7793f);
-  background: var(--accent-bg, #e4ece4);
-  color: var(--accent-dark, #2f4e35);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
   transform: scale(1.04);
 }
 button.dot:focus-visible {

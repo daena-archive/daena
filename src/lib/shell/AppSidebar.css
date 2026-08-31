@@ -42,7 +42,7 @@
 }
 .brand-logo {
   display: block;
-  width: min(100%, 220px);
+  width: min(100%, 200px);
   height: auto;
 }
 .brand-icon {

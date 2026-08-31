@@ -1662,7 +1662,7 @@ fn timeline_shared_field_list_returns_lore_birth_and_death() {
             .unwrap();
     assert!(shared_keys.contains("birth"));
     assert!(shared_keys.contains("death"));
-    assert!(!shared_keys.contains("occupation"));
+    assert!(shared_keys.contains("occupation"));
 
     let mut core = CoreService::new();
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();
@@ -1704,7 +1704,10 @@ fn timeline_shared_field_list_returns_lore_birth_and_death() {
         .iter()
         .filter_map(|field| field["key"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(listed, ["birth", "death"].into_iter().collect());
+    assert_eq!(
+        listed,
+        ["birth", "death", "occupation"].into_iter().collect()
+    );
 }
 
 #[test]

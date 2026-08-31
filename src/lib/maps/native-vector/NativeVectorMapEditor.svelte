@@ -3627,8 +3627,8 @@ onMount(() => {
 }
 .studio-open-btn.active {
   border-color: var(--accent-soft, #c99965);
-  background: var(--accent-bg, #f2e4d2);
-  color: var(--accent, #b4773f);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
 }
 .studio-open-btn small {
   padding: 2px 6px;
@@ -3720,8 +3720,8 @@ onMount(() => {
   text-align: center;
 }
 .map-section-group[open] .section-count {
-  background: var(--accent-bg, #f2e4d2);
-  color: var(--accent, #b4773f);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
 }
 .section-body {
   padding: 10px 12px 14px;
@@ -3800,8 +3800,8 @@ onMount(() => {
 }
 .ghost-btn.small.active {
   border-color: var(--line-strong);
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
 .primary-button.small {
   border: 1px solid var(--accent, #b4773f);
@@ -3911,8 +3911,8 @@ onMount(() => {
   color: var(--ink-soft);
 }
 .layer-card.active .layer-kind-icon {
-  background: var(--accent-bg, #f2e4d2);
-  color: var(--accent, #b4773f);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
 }
 .layer-name {
   display: flex;
@@ -4013,8 +4013,8 @@ onMount(() => {
 }
 .mini-icon.customize-btn.active {
   border-color: var(--accent-soft, #c99965);
-  background: var(--accent-bg, #f2e4d2);
-  color: var(--accent, #b4773f);
+  background: var(--accent-dark, #2f4e35);
+  color: var(--on-accent);
 }
 .layer-menu {
   display: grid;

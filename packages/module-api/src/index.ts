@@ -416,3 +416,5 @@ export function isMigrationContiguous(migrations: DeclarativeMigration[], curren
       return valid && migration.to > migration.from;
     });
 }
+
+export * from "./entityTypeLabels";

@@ -1,6 +1,13 @@
 import type { Timeline, DataGroup, DataItem, TimelineOptions } from "vis-timeline";
-import type { FieldRecord, ModuleContext, DaenaModule, EntitySummary } from "../../../module-api/src/index";
-import type { ModuleManifest } from "../../../module-api/src/index";
+import {
+  buildTypeLabelMap,
+  resolveEntityTypeLabel,
+  type FieldRecord,
+  type ModuleContext,
+  type DaenaModule,
+  type EntitySummary,
+  type ModuleManifest,
+} from "../../../module-api/src/index";
 import { parseCalendarDate, type CalendarDate } from "../../../../src/lib/date";
 import {
   CALENDAR_DEFINITION_COLLECTION,
@@ -58,6 +65,7 @@ type LoadedTimelineEntry = {
 type TimelineSourceSnapshot = {
   calendarOptions: CalendarOption[];
   loaded: LoadedTimelineEntry[];
+  typeLabels: Map<string, string>;
 };
 
 type CalendarOption = {
@@ -186,11 +194,6 @@ function eraAtTime(eras: TimelineEvent[], time: Date): TimelineEvent | undefined
   return containing.sort(
     (left, right) => eraEnd(left).getTime() - left.start.getTime() - (eraEnd(right).getTime() - right.start.getTime()),
   )[0];
-}
-
-function entityTypeLabel(type: string | null | undefined): string {
-  if (!type) return "Unknown type";
-  return type.charAt(0).toUpperCase() + type.slice(1).replace(/[-_]+/g, " ");
 }
 
 function hueForId(id: string) {
@@ -508,6 +511,7 @@ function renderSelection(
   context: ModuleContext,
   definitions: ReadonlyMap<string, CalendarDefinition>,
   displayCalendarName: string,
+  typeLabels: ReadonlyMap<string, string>,
 ) {
   const selectionKey = event.id;
   details.dataset.selectionKey = selectionKey;
@@ -519,7 +523,7 @@ function renderSelection(
   name.textContent = event.entity.name;
   const type = document.createElement("small");
   type.className = "timeline-inspector-chip";
-  type.textContent = entityTypeLabel(event.entity.type);
+  type.textContent = resolveEntityTypeLabel(event.entity.type, typeLabels);
   const divider = document.createElement("hr");
   divider.className = "timeline-inspector-divider";
   const range = document.createElement("small");
@@ -567,6 +571,7 @@ function renderOutline(
   definitions: ReadonlyMap<string, CalendarDefinition>,
   selectedId: string | null,
   onSelect: (event: TimelineEvent) => void,
+  typeLabels: ReadonlyMap<string, string>,
 ): void {
   const heading = document.createElement("span");
   heading.className = "timeline-outline-heading";
@@ -596,7 +601,7 @@ function renderOutline(
     kind.className = "timeline-card-kind";
     kind.textContent = layerLabel(event);
     const type = document.createElement("small");
-    type.textContent = entityTypeLabel(event.entity.type);
+    type.textContent = resolveEntityTypeLabel(event.entity.type, typeLabels);
     meta.append(kind, type);
     card.append(name, range, meta);
     card.onclick = () => onSelect(event);
@@ -764,10 +769,15 @@ export const timeline: DaenaModule = {
                   };
                 }),
               );
-              snapshot = { calendarOptions, loaded };
+              snapshot = {
+                calendarOptions,
+                loaded,
+                typeLabels: buildTypeLabelMap([context.module, ...enabledManifests]),
+              };
               sourceSnapshot = snapshot;
             }
-            const { calendarOptions, loaded } = snapshot;
+            const { calendarOptions, loaded, typeLabels } = snapshot;
+            const typeLabel = (type: string | null | undefined) => resolveEntityTypeLabel(type, typeLabels);
             if (!calendarOptions.some((option) => option.id === selectedCalendarId)) selectedCalendarId = "gregorian";
             const selectedCalendarOption =
               calendarOptions.find((option) => option.id === selectedCalendarId) ?? calendarOptions[0];
@@ -874,7 +884,7 @@ export const timeline: DaenaModule = {
                   .map((event) => event.entity.type)
                   .filter((type): type is string => Boolean(type)),
               ),
-            ].sort((left, right) => left.localeCompare(right));
+            ].sort((left, right) => typeLabel(left).localeCompare(typeLabel(right)));
             if (selectedEntityType && !availableEntityTypes.includes(selectedEntityType)) selectedEntityType = "";
             const query = searchQuery.trim().toLocaleLowerCase();
             const plotted = [
@@ -1018,7 +1028,7 @@ export const timeline: DaenaModule = {
               for (const entityType of availableEntityTypes) {
                 const option = document.createElement("option");
                 option.value = entityType;
-                option.textContent = entityTypeLabel(entityType);
+                option.textContent = typeLabel(entityType);
                 option.selected = entityType === selectedEntityType;
                 typeFilter.append(option);
               }
@@ -1143,6 +1153,7 @@ export const timeline: DaenaModule = {
                   context,
                   calendarDefinitions,
                   selectedCalendarOption?.name ?? "Gregorian",
+                  typeLabels,
                 );
               };
               if (visible.length > 0 || yearFilteredEras.length > 0) {
@@ -1163,7 +1174,15 @@ export const timeline: DaenaModule = {
                   }
                 }
                 if (visible.length > 0)
-                  renderOutline(outline, visible, selectedCalendar, calendarDefinitions, selectedEventId, selectEvent);
+                  renderOutline(
+                    outline,
+                    visible,
+                    selectedCalendar,
+                    calendarDefinitions,
+                    selectedEventId,
+                    selectEvent,
+                    typeLabels,
+                  );
               } else {
                 const empty = document.createElement("p");
                 empty.className = "timeline-empty";
@@ -1209,6 +1228,7 @@ export const timeline: DaenaModule = {
                   context,
                   calendarDefinitions,
                   selectedCalendarOption?.name ?? "Gregorian",
+                  typeLabels,
                 );
               shell.append(toolbar, layerbar, workspace);
               element.append(shell);

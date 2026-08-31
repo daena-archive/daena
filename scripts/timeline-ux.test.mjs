@@ -20,6 +20,12 @@ assert.match(
   /createLayerChip\("Project dates", layerCounts\.dates/,
   "project dates expose a counted layer chip",
 );
+assert.match(
+  source,
+  /buildTypeLabelMap\(\[context\.module, \.\.\.enabledManifests\]\)/,
+  "timeline labels types from effective manifests",
+);
+assert.match(source, /resolveEntityTypeLabel\(type, typeLabels\)/, "timeline resolves schema names for type filters");
 assert.match(source, /search\.placeholder = "Name, type, place…"/, "timeline exposes contextual search");
 assert.match(source, /All history/, "timeline can scope to one era or all history");
 assert.match(source, /Unplaced in this era/, "era-only events stay unplaced inside an era scope");

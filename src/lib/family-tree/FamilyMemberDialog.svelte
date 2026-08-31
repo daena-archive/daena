@@ -442,26 +442,6 @@ textarea:focus-visible {
   outline-offset: 1px;
   border-color: var(--accent);
 }
-ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 6px;
-}
-ul button {
-  width: 100%;
-  text-align: left;
-  padding: 8px 10px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-}
-ul button:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-muted);
-}
 .quiet-button,
 .primary-button {
   min-height: 34px;

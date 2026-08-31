@@ -195,6 +195,7 @@ const hasDateValue = $derived(value != null && value !== "");
 .schema-field-input {
   display: grid;
   gap: 0.35rem;
+  margin-top: 10px;
 }
 
 .schema-field-label span {
@@ -215,12 +216,12 @@ const hasDateValue = $derived(value != null && value !== "");
 .schema-field-input :global(input[type="text"]),
 .schema-field-input :global(select) {
   width: 100%;
-  min-height: var(--control-min-height, 34px);
-  border: 1px solid var(--border, #d5dbd6);
+  min-height: var(--control-min-height);
+  border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.45rem 0.65rem;
-  background: var(--surface, #fff);
-  color: inherit;
+  padding: 9px 10px;
+  background: var(--canvas);
+  color: var(--ink);
   font: inherit;
 }
 
@@ -232,17 +233,18 @@ const hasDateValue = $derived(value != null && value !== "");
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  min-height: var(--control-min-height, 34px);
+  min-height: var(--control-min-height);
 }
 
 .date-empty {
   justify-self: start;
-  min-height: var(--control-min-height, 34px);
-  border: 1px dashed var(--border, #d5dbd6);
+  min-height: var(--control-min-height);
+  border: 1px dashed var(--line);
   border-radius: 8px;
-  padding: 0.4rem 0.75rem;
+  padding: 9px 10px;
   background: transparent;
-  color: var(--text-muted, #5c645f);
+  color: var(--accent);
+  font-size: 12px;
   cursor: pointer;
 }
 

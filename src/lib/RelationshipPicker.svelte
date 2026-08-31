@@ -154,7 +154,6 @@ $effect(() => {
 <style>
 .relationship-picker {
   position: relative;
-  margin-top: 10px;
   display: grid;
   gap: 6px;
 }

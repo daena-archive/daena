@@ -14,14 +14,15 @@ let {
   onConfirm: () => void;
 } = $props();
 
-const changeKindLabel =
+const changeKindLabel = $derived(
   preview.changeKind === "requires-reassignment"
     ? "Requires reassignment"
     : preview.changeKind === "hiding-only"
       ? "Hides existing schema"
-      : "Additive";
+      : "Additive",
+);
 
-const canConfirm = preview.ok && preview.unresolvedTypeRemovals.length === 0;
+const canConfirm = $derived(preview.ok && preview.unresolvedTypeRemovals.length === 0);
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->

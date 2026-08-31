@@ -3,6 +3,7 @@ import { onMount, tick } from "svelte";
 import { X, ArrowRight } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 import type { Entity, Relationship } from "$lib/project/client";
+import { humanizeId } from "$lib/schema-workbench";
 import {
   calendarDateToParts,
   daysInCalendarMonth,
@@ -338,7 +339,7 @@ onMount(() => {
     <header class="relationship-metadata-header">
       <div>
         <span class="relationship-metadata-kicker">RELATIONSHIP DETAILS</span>
-        <h2 id={titleId()}>{relationship.relationship_type}</h2>
+        <h2 id={titleId()}>{humanizeId(relationship.relationship_type)}</h2>
         <p>
           <span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
             ><ArrowRight size={12} strokeWidth={1.8} /></span>

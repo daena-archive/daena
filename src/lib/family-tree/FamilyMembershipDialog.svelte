@@ -39,18 +39,25 @@ let {
 } = $props();
 
 const fields = $derived(membershipMetadataFields(context));
+// svelte-ignore state_referenced_locally: initial mode reflects initial props, kept in sync via effect
 let mode = $state<"link" | "create">(editing ? "link" : initialMode);
+// svelte-ignore state_referenced_locally
 let selectedPersonId = $state<string | null>(editing?.personId ?? null);
+// svelte-ignore state_referenced_locally
 let selectedPersonName = $state(editing?.personName ?? "");
 let selectedRevision = $state("");
 let createName = $state("");
 let draft = $state<Record<string, unknown>>(
   defaultMembershipDraft({
+    // svelte-ignore state_referenced_locally
     role: editing?.role,
+    // svelte-ignore state_referenced_locally
     customLabel: editing?.customLabel,
+    // svelte-ignore state_referenced_locally
     notes: editing?.notes,
   }),
 );
+// svelte-ignore state_referenced_locally
 let observedRevision = $state(editing?.revision ?? "");
 let requestId = $state(crypto.randomUUID());
 let lastFingerprint = $state("");

@@ -889,7 +889,7 @@ async function handleSubmit(event: SubmitEvent) {
           </select>
         </label>
         <label class="language-check">
-          <input type="checkbox" bind:checked={homonymsOnly} /> Homonyms only
+          <input type="checkbox" bind:checked={homonymsOnly} />Homonyms only
         </label>
         <datalist id="language-filter-status">
           {#each STATUS_SUGGESTIONS as suggestion}
@@ -1177,13 +1177,13 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .language-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  grid-template-columns: repeat(3, minmax(110px, 1fr)) minmax(120px, auto);
   gap: 10px 12px;
   align-items: end;
 }
 .language-filters .language-check {
-  grid-column: 1/-1;
   padding: 2px 0 0;
+  white-space: nowrap;
 }
 .language-filter-actions {
   display: flex;

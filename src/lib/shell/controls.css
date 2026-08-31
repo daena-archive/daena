@@ -20,6 +20,23 @@
   cursor: not-allowed;
 }
 
+textarea {
+  width: 100%;
+  min-height: var(--control-min-height);
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+  resize: vertical;
+}
+
+textarea::placeholder {
+  color: var(--ink-faint);
+}
+
 @media (pointer: coarse) {
   :where(button, [role="button"], summary, input, select) {
     min-height: var(--touch-target-min);

@@ -8316,8 +8316,7 @@ onMount(() => {
                   >{entityTypeLabel(inspectedEntity.entity_type)}</strong>
               </div>
               <div class="inspector-heading-actions">
-                <span class="inspector-type">{inspectedEntity.entity_type}</span
-                >{#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
+                {#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
                     class="inspector-ai-action"
                     type="button"
                     onclick={() => void fillAiFields()}
@@ -8566,8 +8565,10 @@ onMount(() => {
                             aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
                             <strong>{relationshipTargetName(relationship, definition)}</strong>
                             <small
-                              >{entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
-                                ?.entity_type ?? "Entity"}{#if summary}
+                              >{entityTypeLabel(
+                                entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
+                                  ?.entity_type ?? null,
+                              )}{#if summary}
                                 · {summary}{/if}</small>
                           </button>
                           <div class="relationship-detail-actions">
@@ -9349,16 +9350,6 @@ onMount(() => {
   opacity: 0.6;
   cursor: not-allowed;
 }
-.create-input-field .field-hint {
-  display: block;
-  margin-top: 6px;
-  color: var(--ink-faint);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.entity-edit-dialog .create-input-field + .create-input-field {
-  margin-top: 14px;
-}
 .dialog .new-form-heading + .dialog-body-copy {
   margin-top: 4px;
 }
@@ -9748,15 +9739,7 @@ onMount(() => {
   margin-top: 7px;
   font: 500 20px var(--font-display);
 }
-.inspector-type {
-  padding: 4px 7px;
-  border-radius: 5px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
+
 .inspector-section {
   padding: 18px 16px;
   border-bottom: 1px solid var(--line);
@@ -9831,6 +9814,7 @@ onMount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
   padding: 8px 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -11008,8 +10992,7 @@ onMount(() => {
   display: block;
   margin-top: 17px;
 }
-.create-input-field > span,
-.create-input-field > label > span {
+.create-input-field > span {
   display: block;
   margin-bottom: 6px;
   color: var(--ink-soft);
@@ -11021,11 +11004,7 @@ onMount(() => {
   color: var(--accent);
 }
 .create-input-field > input,
-.create-input-field > textarea,
-.create-input-field > select,
-.create-input-field > label + input,
-.create-input-field > label + textarea,
-.create-input-field > label + select {
+.create-input-field > textarea {
   width: 100%;
   padding: 10px 11px;
   border: 1px solid var(--line-strong);
@@ -11041,13 +11020,9 @@ onMount(() => {
   line-height: 1.5;
 }
 .create-input-field > input:focus,
-.create-input-field > textarea:focus,
-.create-input-field > select:focus {
+.create-input-field > textarea:focus {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
-}
-.create-input-field > label + .create-checkbox {
-  display: flex;
 }
 .create-checkbox {
   align-items: center;
@@ -11055,11 +11030,6 @@ onMount(() => {
   min-height: 38px;
   color: var(--ink-soft);
   font-size: 12px;
-}
-.create-checkbox input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent-dark);
 }
 .create-more-details-toggle {
   display: flex;
@@ -11284,37 +11254,6 @@ onMount(() => {
 .host-view-back {
   margin: 24px 40px 0;
 }
-.list-empty {
-  display: grid;
-  align-content: center;
-  justify-items: start;
-  min-height: 100%;
-  padding: 36px 18px 42px;
-  text-align: left;
-}
-.list-empty .empty-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  margin-bottom: 18px;
-  border-radius: 13px;
-  background: var(--accent-dark);
-  color: var(--on-accent);
-  font-size: 19px;
-}
-.list-empty strong {
-  max-width: 22ch;
-  color: var(--ink);
-  font: 500 23px/1.08 var(--font-display);
-}
-.list-empty p {
-  max-width: 28ch;
-  margin: 10px 0 18px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
-}
 .empty-create {
   padding: 9px 11px;
   border: 1px solid var(--theme-warning-border, #d8c3a5);
@@ -11459,15 +11398,6 @@ onMount(() => {
 }
 .empty-create:hover {
   background: var(--warning-line);
-}
-@media (max-width: 760px) {
-  .list-empty {
-    min-height: 260px;
-    padding: 28px 14px 32px;
-  }
-  .list-empty strong {
-    font-size: 21px;
-  }
 }
 
 .plugins-toolbar {

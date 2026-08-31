@@ -60,6 +60,7 @@ let query = $state("");
 let open = $state(false);
 let busy = $state(false);
 let error = $state("");
+// svelte-ignore state_referenced_locally: initial page reflects initial pageSize prop
 let page = $state<AsyncEntitySearchPage>(emptyAsyncEntityPage(pageSize));
 let rootEl = $state<HTMLElement | null>(null);
 let activeIndex = $state(-1);

@@ -420,8 +420,7 @@ $effect(() => {
   color: var(--ink-muted);
   pointer-events: none;
 }
-.input-wrap input,
-.field input {
+.input-wrap input {
   width: 100%;
   box-sizing: border-box;
   min-height: 34px;
@@ -431,9 +430,6 @@ $effect(() => {
   background: var(--surface);
   color: var(--ink);
   font-size: 13px;
-}
-.field input {
-  padding-left: 10px;
 }
 .panel-list {
   display: grid;
@@ -536,14 +532,6 @@ $effect(() => {
   border-radius: 8px;
   background: var(--danger-bg, #fff2ee);
   color: var(--theme-danger-text, #8a2b2b);
-}
-.create-cta,
-.field {
-  display: grid;
-  gap: 8px;
-}
-.field {
-  font-size: 12px;
 }
 .pager {
   display: flex;

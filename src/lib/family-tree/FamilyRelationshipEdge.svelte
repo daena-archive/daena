@@ -103,6 +103,7 @@ const [path, labelX, labelY] = $derived(
 </script>
 
 {#if partner}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <g
     class="family-edge family-edge-partner"
     class:selected
@@ -121,6 +122,7 @@ const [path, labelX, labelY] = $derived(
     {/if}
   </g>
 {:else}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <g
     class="family-edge family-edge-parent"
     class:selected

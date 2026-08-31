@@ -999,7 +999,8 @@ function applyRelationshipDelete(id: string) {
 }
 </script>
 
-<section class="surface" onkeydown={onSurfaceKeydown}>
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_element_to_interactive_role, a11y_no_redundant_roles -->
+<section class="surface" role="region" aria-label="Family tree workspace" tabindex="-1" onkeydown={onSurfaceKeydown}>
   <!-- Topbar — mirrors WorkspaceTopbar language -->
   <div class="family-topbar" role="banner">
     <div class="family-topbar-main">
@@ -1596,50 +1597,6 @@ function applyRelationshipDelete(id: string) {
 .family-subbar::-webkit-scrollbar {
   display: none;
 }
-.subbar-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-.subbar-label {
-  color: var(--theme-neutral-text-muted, var(--ink-muted));
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.subbar-sep {
-  width: 1px;
-  height: 22px;
-  flex: 0 0 1px;
-  background: var(--line);
-}
-.subbar-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.subbar-field span {
-  color: var(--ink-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.subbar-field select {
-  min-height: 32px;
-  padding: 4px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
-}
 .subbar-legend {
   display: flex;
   align-items: center;
@@ -1708,10 +1665,6 @@ function applyRelationshipDelete(id: string) {
   border-bottom: 1px solid var(--line-soft, var(--line));
   font-size: 11px;
   line-height: 1.45;
-}
-.status-alert.neutral {
-  background: var(--surface-muted, var(--surface));
-  color: var(--ink-muted);
 }
 .status-alert.warning {
   background: var(--theme-warning-bg, #fff8ee);
@@ -1853,7 +1806,6 @@ function applyRelationshipDelete(id: string) {
 .legend-sep {
   opacity: 0.45;
 }
-.recent select,
 .recent input {
   min-height: 32px;
   padding: 4px 8px;

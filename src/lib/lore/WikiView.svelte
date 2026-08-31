@@ -784,8 +784,7 @@ function handleEdit() {
                     <dd>
                       {#each row.targets as target, index}<button type="button" onclick={() => openEntity(target.id)}
                           >{target.name}</button
-                        >{#if index < row.targets.length - 1},
-                        {/if}{/each}
+                        >{#if index < row.targets.length - 1}{", "}{/if}{/each}
                     </dd>
                   </div>{/each}
               </dl>

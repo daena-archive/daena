@@ -295,6 +295,11 @@ export const lore: DaenaModule = {
           const entityTypes = context.module.schemas.flatMap((schema) =>
             schema.entityTypes.map((entityType) => entityType.id),
           );
+          const typeNameMap = new Map(
+            context.module.schemas.flatMap((schema) =>
+              schema.entityTypes.map((entityType) => [entityType.id, entityType.name]),
+            ),
+          );
           const entities = await context.entities.list({ types: entityTypes });
           const relationships = (await Promise.all(entities.map((entity) => context.relationships.list(entity.id))))
             .flat()
@@ -340,14 +345,14 @@ export const lore: DaenaModule = {
             legendItem.type = "button";
             legendItem.className = "lore-graph-legend-item";
             legendItem.setAttribute("aria-pressed", "true");
-            legendItem.title = `Hide ${type}`;
+            legendItem.title = type;
             const swatch = document.createElement("span");
             swatch.className = "lore-graph-legend-swatch";
             const colors = colorsByType.get(type)!;
             swatch.style.color = colors.border;
             swatch.style.background = colors.fill;
             const label = document.createElement("span");
-            label.textContent = type;
+            label.textContent = typeNameMap.get(type) ?? type;
             legendItem.append(swatch, label);
             legendButtons.set(type, legendItem);
             legend.append(legendItem);
@@ -494,12 +499,12 @@ export const lore: DaenaModule = {
                 hiddenTypes.delete(type);
                 legendItem.classList.remove("is-hidden");
                 legendItem.setAttribute("aria-pressed", "true");
-                legendItem.title = `Hide ${type}`;
+                legendItem.title = type;
               } else {
                 hiddenTypes.add(type);
                 legendItem.classList.add("is-hidden");
                 legendItem.setAttribute("aria-pressed", "false");
-                legendItem.title = `Show ${type}`;
+                legendItem.title = type;
               }
               syncTypeVisibility();
             };

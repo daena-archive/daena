@@ -36,6 +36,7 @@ let {
 let memberQuery = $state("");
 let roleFilter = $state("all");
 let editingName = $state(false);
+// svelte-ignore state_referenced_locally: initial draft reflects initial houseName, synced via effect below
 let nameDraft = $state(houseName);
 let membershipDialog = $state<"add" | "create" | HouseMemberRecord | null>(null);
 

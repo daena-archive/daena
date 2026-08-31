@@ -9,9 +9,8 @@
   flex: 0 0 248px;
   flex-direction: column;
   align-self: flex-start;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 23px 15px 18px;
+  overflow: visible;
+  padding: 0;
   background: var(--rail-bg);
   color: var(--rail-text);
   transition:
@@ -19,12 +18,31 @@
     flex-basis 0.2s ease,
     padding 0.2s ease;
 }
+.rail-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 23px 15px 18px;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+  transition: padding 0.2s ease;
+}
+.rail-scroll.menu-open {
+  overflow: visible;
+}
 .rail-collapsed.menu-open {
   /* Above workspace-view-nav (3) and workspace-topbar (20); menu is a sibling-stacking popover. */
   z-index: 40;
   overflow: visible;
 }
 .startup-rail {
+  padding: 0;
+}
+.startup-rail .rail-scroll {
   padding-top: 23px;
 }
 .brand {
@@ -300,8 +318,26 @@
 .rail-collapsed {
   width: 56px;
   flex: 0 0 56px;
-  align-items: center;
+  align-items: stretch;
+  padding: 0;
+}
+.rail-collapsed .rail-scroll {
+  width: 100%;
   padding: 23px 8px 18px;
+  align-items: center;
+}
+.rail-tooltip {
+  position: fixed;
+  z-index: 300;
+  max-width: 240px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--rail-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  color: var(--rail-text);
+  font-size: 11px;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 .rail-collapsed .brand {
   justify-content: center;
@@ -377,22 +413,7 @@
   align-items: center;
   margin-top: 4px;
 }
-.rail-collapsed .rail-button[title]:hover::after {
-  content: attr(title);
-  position: absolute;
-  top: 50%;
-  left: calc(100% + 8px);
-  z-index: 200;
-  padding: 5px 10px;
-  border-radius: 6px;
-  background: var(--rail-bg);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  color: var(--rail-text);
-  font-size: 11px;
-  white-space: nowrap;
-  pointer-events: none;
-  transform: translateY(-50%);
-}
+
 .rail-collapsed ~ .app-main .editor-fullscreen {
   inset: 0 0 0 56px;
 }
@@ -409,9 +430,25 @@
     overflow: visible;
     padding: 12px 14px;
   }
+  .rail-scroll {
+    display: contents;
+    overflow: visible;
+    flex: none;
+    min-height: 0;
+    padding: 0;
+    scrollbar-gutter: auto;
+  }
+  .rail-scroll.menu-open {
+    overflow: visible;
+  }
   .startup-rail {
     min-height: 0;
     padding: 23px 14px 24px;
+  }
+  .startup-rail .rail-scroll {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
   }
   .rail-label,
   .rail-spacer,

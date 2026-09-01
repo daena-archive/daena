@@ -922,6 +922,7 @@ dependencies = [
  "keyring",
  "notify",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

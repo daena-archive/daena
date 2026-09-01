@@ -36,11 +36,23 @@ pub enum ThemePreference {
     System,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannelPreference {
+    #[default]
+    Auto,
+    Stable,
+    Beta,
+    Alpha,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppearanceSettings {
     #[serde(default)]
     pub theme: ThemePreference,
+    #[serde(default)]
+    pub update_channel: UpdateChannelPreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -191,6 +203,7 @@ pub struct GeneralSettingsUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppearanceSettingsUpdate {
     pub theme: Option<ThemePreference>,
+    pub update_channel: Option<UpdateChannelPreference>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -287,6 +300,9 @@ impl SettingsStore {
             if let Some(appearance) = general.appearance {
                 if let Some(theme) = appearance.theme {
                     settings.general.appearance.theme = theme;
+                }
+                if let Some(update_channel) = appearance.update_channel {
+                    settings.general.appearance.update_channel = update_channel;
                 }
             }
         }
@@ -418,6 +434,7 @@ mod tests {
                 }],
                 appearance: AppearanceSettings {
                     theme: ThemePreference::Dark,
+                    ..Default::default()
                 },
             },
             ai: AiSettings::default(),
@@ -478,6 +495,7 @@ mod tests {
                     recent_projects: None,
                     appearance: Some(AppearanceSettingsUpdate {
                         theme: Some(ThemePreference::Dark),
+                        ..Default::default()
                     }),
                 }),
                 ai: None,
@@ -486,6 +504,33 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.general.recent_projects.len(), 1);
         assert_eq!(loaded.general.appearance.theme, ThemePreference::Dark);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn update_persists_update_channel() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-update-channel-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: None,
+                    appearance: Some(AppearanceSettingsUpdate {
+                        theme: None,
+                        update_channel: Some(UpdateChannelPreference::Alpha),
+                    }),
+                }),
+                ai: None,
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.general.appearance.update_channel,
+            UpdateChannelPreference::Alpha
+        );
         let _ = fs::remove_dir_all(directory);
     }
 

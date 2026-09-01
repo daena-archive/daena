@@ -13,7 +13,7 @@ import {
   Download,
 } from "@lucide/svelte";
 import ImageProviderSettingsCard from "$lib/ai/ImageProviderSettingsCard.svelte";
-import { checkAppUpdate, openDownloadPage } from "$lib/appUpdate";
+import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type UpdateChannelPreference } from "$lib/appUpdate";
 import type { ThemePreference } from "$lib/theme";
 
 type SettingsSection = "general" | "ai";
@@ -64,6 +64,8 @@ let {
   recentProjects,
   themePreference,
   onThemeChange,
+  updateChannelPreference,
+  onUpdateChannelChange,
   onRemoveRecent,
   onClose,
   onBeforeNavigate,
@@ -86,6 +88,8 @@ let {
   recentProjects: RecentProject[];
   themePreference: ThemePreference;
   onThemeChange: (preference: ThemePreference) => void;
+  updateChannelPreference: UpdateChannelPreference;
+  onUpdateChannelChange: (preference: UpdateChannelPreference) => void;
   onRemoveRecent: (root: string) => void;
   onClose: () => void;
   /** Return false to cancel leaving the current settings section or closing Settings. */
@@ -150,8 +154,8 @@ async function checkForUpdate() {
   updateBusy = true;
   updateMessage = "";
   try {
-    const result = await checkAppUpdate();
-    updateMessage = result.newer ? `Update available: ${result.latest}` : `You're up to date (${result.current})`;
+    const result = await checkAppUpdate(updateChannelPreference);
+    updateMessage = formatUpdateMessage(result);
   } catch (cause) {
     updateMessage = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -349,6 +353,40 @@ async function handleClose() {
               <h4>About</h4>
             </div>
             <span class="block-hint">v{version}</span>
+          </div>
+          <div class="theme-options update-channel-options" role="group" aria-label="Update channel">
+            <button
+              type="button"
+              class:active={updateChannelPreference === "auto"}
+              aria-pressed={updateChannelPreference === "auto"}
+              onclick={() => onUpdateChannelChange("auto")}>
+              <Monitor size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span><strong>Auto</strong><small>Match this build</small></span>
+            </button>
+            <button
+              type="button"
+              class:active={updateChannelPreference === "stable"}
+              aria-pressed={updateChannelPreference === "stable"}
+              onclick={() => onUpdateChannelChange("stable")}>
+              <Download size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span><strong>Stable</strong><small>Production releases</small></span>
+            </button>
+            <button
+              type="button"
+              class:active={updateChannelPreference === "beta"}
+              aria-pressed={updateChannelPreference === "beta"}
+              onclick={() => onUpdateChannelChange("beta")}>
+              <Download size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span><strong>Beta</strong><small>Beta and stable</small></span>
+            </button>
+            <button
+              type="button"
+              class:active={updateChannelPreference === "alpha"}
+              aria-pressed={updateChannelPreference === "alpha"}
+              onclick={() => onUpdateChannelChange("alpha")}>
+              <Download size={16} strokeWidth={1.8} aria-hidden="true" />
+              <span><strong>Alpha</strong><small>Earliest previews</small></span>
+            </button>
           </div>
           <div class="ai-settings-actions">
             <button type="button" class="primary" onclick={() => void checkForUpdate()} disabled={updateBusy}
@@ -899,6 +937,10 @@ async function handleClose() {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+.update-channel-options {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
 }
 .theme-options button {
   min-width: 0;
@@ -1467,7 +1509,8 @@ async function handleClose() {
   .settings-panel {
     padding: 16px;
   }
-  .theme-options {
+  .theme-options,
+  .update-channel-options {
     grid-template-columns: 1fr;
   }
   .ai-field-grid {

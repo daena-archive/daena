@@ -151,7 +151,12 @@ import timelineManifestJson from "../../packages/modules/timeline/manifest.json"
 import writingManifestJson from "../../packages/modules/writing/manifest.json";
 import languageManifestJson from "../../packages/modules/language/manifest.json";
 import housesManifestJson from "../../packages/modules/houses/manifest.json";
-import TreeSurface from "$lib/houses/TreeSurface.svelte";
+import {
+  cacheUpdateChannelPreference,
+  normalizeUpdateChannelPreference,
+  readUpdateChannelPreference,
+  type UpdateChannelPreference,
+} from "$lib/appUpdate.ts";
 import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
 import { classifyMutationError } from "$lib/houses/mutations.ts";
 import {
@@ -163,6 +168,7 @@ import {
   type TreeSession,
   type HouseMemberSummary,
 } from "$lib/houses/model.ts";
+import TreeSurface from "$lib/houses/TreeSurface.svelte";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
 import EntityEmptyState from "$lib/entity-lifecycle/EntityEmptyState.svelte";
@@ -336,6 +342,8 @@ const recentProjectsKey = "daena.recent-projects";
 let settingsMigrated = false;
 const initialThemePreference = readCachedThemePreference();
 let themePreference = $state<ThemePreference>(initialThemePreference);
+const initialUpdateChannelPreference = readUpdateChannelPreference();
+let updateChannelPreference = $state<UpdateChannelPreference>(initialUpdateChannelPreference);
 applyThemePreference(initialThemePreference);
 
 let ready = $state(false);
@@ -3712,6 +3720,11 @@ function updateThemePreference(preference: ThemePreference) {
   applyThemePreference(preference);
   void project.settingsUpdate({ general: { appearance: { theme: preference } } }).catch(() => {});
 }
+function updateUpdateChannelPreference(preference: UpdateChannelPreference) {
+  updateChannelPreference = preference;
+  cacheUpdateChannelPreference(preference);
+  void project.settingsUpdate({ general: { appearance: { updateChannel: preference } } }).catch(() => {});
+}
 async function loadRecentProjects() {
   try {
     const settings = await project.settingsGet();
@@ -3719,6 +3732,8 @@ async function loadRecentProjects() {
     themePreference = normalizeThemePreference(settings.general.appearance.theme);
     cacheThemePreference(themePreference);
     applyThemePreference(themePreference);
+    updateChannelPreference = normalizeUpdateChannelPreference(settings.general.appearance.updateChannel);
+    cacheUpdateChannelPreference(updateChannelPreference);
     aiSettings = settings.ai;
     await refreshRemoteCredential();
     if (recentProjects.length > 0 || settingsMigrated) return;
@@ -7064,6 +7079,8 @@ onMount(() => {
         {recentProjects}
         {themePreference}
         onThemeChange={updateThemePreference}
+        {updateChannelPreference}
+        onUpdateChannelChange={updateUpdateChannelPreference}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
         onBeforeNavigate={beforeVisibleSettingsNavigate}

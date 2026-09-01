@@ -1,15 +1,26 @@
 use std::time::Duration;
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 pub const DOWNLOAD_PAGE: &str = "https://github.com/daena-archive/daena/releases";
-const RELEASES_URL: &str = "https://api.github.com/repos/daena-archive/daena/releases?per_page=5";
+const RELEASES_URL: &str = "https://api.github.com/repos/daena-archive/daena/releases?per_page=100";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VersionCore {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseChannel {
+    Stable,
+    Beta,
+    Alpha,
+}
+
+impl ReleaseChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+            Self::Alpha => "alpha",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +30,9 @@ pub struct AppUpdateCheck {
     pub latest: String,
     pub newer: bool,
     pub html_url: String,
+    pub release_channel: String,
+    pub latest_prerelease: bool,
+    pub update_channel_preference: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,35 +49,150 @@ pub fn allowed_external_url(url: &str) -> bool {
         || url.starts_with(&format!("{DOWNLOAD_PAGE}/"))
 }
 
-pub fn version_core(raw: &str) -> Option<VersionCore> {
+pub fn parse_version(raw: &str) -> Option<Version> {
     let trimmed = raw.trim().trim_start_matches(['v', 'V']);
-    let numeric = trimmed.split(['-', '+']).next()?.trim();
-    if numeric.is_empty() {
-        return None;
+    Version::parse(trimmed).ok()
+}
+
+pub fn release_channel(version: &Version) -> ReleaseChannel {
+    if version.pre.is_empty() {
+        return ReleaseChannel::Stable;
     }
-    let mut parts = numeric.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next().unwrap_or("0").parse().ok()?;
-    let patch = parts.next().unwrap_or("0").parse().ok()?;
-    Some(VersionCore {
-        major,
-        minor,
-        patch,
-    })
-}
-
-pub fn pick_latest_release(releases: &[GithubRelease]) -> Option<&GithubRelease> {
-    releases.iter().find(|release| !release.draft)
-}
-
-pub fn compare_update(current: &str, latest_tag: &str) -> Option<bool> {
-    Some(version_core(latest_tag)? > version_core(current)?)
-}
-
-pub fn check_update(current: &str) -> Result<AppUpdateCheck, String> {
-    if version_core(current).is_none() {
-        return Err("Current version is invalid.".into());
+    let pre = version.pre.as_str();
+    if pre.starts_with("alpha") {
+        ReleaseChannel::Alpha
+    } else if pre.starts_with("beta") {
+        ReleaseChannel::Beta
+    } else {
+        ReleaseChannel::Beta
     }
+}
+
+pub fn eligible_for_channel(version: &Version, channel: ReleaseChannel) -> bool {
+    if version.pre.is_empty() {
+        return true;
+    }
+    let pre = version.pre.as_str();
+    match channel {
+        ReleaseChannel::Stable => false,
+        ReleaseChannel::Beta => pre.starts_with("beta"),
+        ReleaseChannel::Alpha => true,
+    }
+}
+
+pub fn effective_channel(current: &Version, releases: &[GithubRelease]) -> ReleaseChannel {
+    let channel = release_channel(current);
+    if pick_best_release(releases, channel).is_some() {
+        return channel;
+    }
+    if channel == ReleaseChannel::Stable {
+        if pick_best_release(releases, ReleaseChannel::Beta).is_some() {
+            return ReleaseChannel::Beta;
+        }
+        if pick_best_release(releases, ReleaseChannel::Alpha).is_some() {
+            return ReleaseChannel::Alpha;
+        }
+    }
+    if channel == ReleaseChannel::Beta
+        && pick_best_release(releases, ReleaseChannel::Alpha).is_some()
+    {
+        return ReleaseChannel::Alpha;
+    }
+    channel
+}
+
+pub fn pick_best_release(
+    releases: &[GithubRelease],
+    channel: ReleaseChannel,
+) -> Option<(&GithubRelease, Version)> {
+    releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            let version = parse_version(&release.tag_name)?;
+            if !eligible_for_channel(&version, channel) {
+                return None;
+            }
+            Some((release, version))
+        })
+        .max_by(|(_, left), (_, right)| left.cmp(right))
+        .map(|(release, version)| (release, version))
+}
+
+pub fn compare_update(current: &Version, latest: &Version) -> bool {
+    latest > current
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateChannelPreference {
+    Auto,
+    Stable,
+    Beta,
+    Alpha,
+}
+
+impl UpdateChannelPreference {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "stable" => Self::Stable,
+            "beta" => Self::Beta,
+            "alpha" => Self::Alpha,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+            Self::Alpha => "alpha",
+        }
+    }
+
+    pub fn to_release_channel(self) -> ReleaseChannel {
+        match self {
+            Self::Auto => ReleaseChannel::Stable,
+            Self::Stable => ReleaseChannel::Stable,
+            Self::Beta => ReleaseChannel::Beta,
+            Self::Alpha => ReleaseChannel::Alpha,
+        }
+    }
+}
+
+pub fn resolve_channel(
+    current: &Version,
+    releases: &[GithubRelease],
+    preference: UpdateChannelPreference,
+) -> ReleaseChannel {
+    match preference {
+        UpdateChannelPreference::Auto => effective_channel(current, releases),
+        other => other.to_release_channel(),
+    }
+}
+
+pub fn compare_current_for_update(current: &Version, channel: ReleaseChannel) -> Version {
+    if current.pre.is_empty() && channel != ReleaseChannel::Stable {
+        Version::parse(&format!("{}-alpha.0", current)).unwrap_or_else(|_| current.clone())
+    } else {
+        current.clone()
+    }
+}
+
+pub fn channel_empty_message(channel: ReleaseChannel) -> &'static str {
+    match channel {
+        ReleaseChannel::Stable => {
+            "No stable releases published yet. Try Beta or Alpha in Settings → About."
+        }
+        ReleaseChannel::Beta => "No beta releases published yet. Try Alpha in Settings → About.",
+        ReleaseChannel::Alpha => "Could not read the latest version.",
+    }
+}
+
+pub fn check_update(current: &str, channel_preference: &str) -> Result<AppUpdateCheck, String> {
+    let current_version =
+        parse_version(current).ok_or_else(|| "Current version is invalid.".to_string())?;
+    let preference = UpdateChannelPreference::parse(channel_preference);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
@@ -81,22 +210,32 @@ pub fn check_update(current: &str) -> Result<AppUpdateCheck, String> {
     let releases: Vec<GithubRelease> = response
         .json()
         .map_err(|_| "Could not check for updates.".to_string())?;
-    let release =
-        pick_latest_release(&releases).ok_or_else(|| "No releases published yet.".to_string())?;
-    let newer = compare_update(current, &release.tag_name)
-        .ok_or_else(|| "Could not read the latest version.".to_string())?;
+    if releases.iter().all(|release| release.draft) {
+        return Err("No releases published yet.".into());
+    }
+    let channel = resolve_channel(&current_version, &releases, preference);
+    let current_for_compare = compare_current_for_update(&current_version, channel);
+    let (release, latest_version) = pick_best_release(&releases, channel)
+        .ok_or_else(|| channel_empty_message(channel).to_string())?;
+    let newer = compare_update(&current_for_compare, &latest_version);
     Ok(AppUpdateCheck {
         current: current.to_string(),
         latest: release.tag_name.clone(),
         newer,
         html_url: release.html_url.clone(),
+        release_channel: channel.as_str().to_string(),
+        latest_prerelease: !latest_version.pre.is_empty(),
+        update_channel_preference: preference.as_str().to_string(),
     })
 }
 
 #[tauri::command]
-pub async fn app_check_update() -> Result<AppUpdateCheck, String> {
+pub async fn app_check_update(
+    channel_preference: Option<String>,
+) -> Result<AppUpdateCheck, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    tauri::async_runtime::spawn_blocking(move || check_update(&current))
+    let preference = channel_preference.unwrap_or_else(|| "auto".to_string());
+    tauri::async_runtime::spawn_blocking(move || check_update(&current, &preference))
         .await
         .map_err(|_| "Could not check for updates.".to_string())?
 }
@@ -105,45 +244,112 @@ pub async fn app_check_update() -> Result<AppUpdateCheck, String> {
 mod tests {
     use super::*;
 
+    fn release(tag: &str, draft: bool) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.into(),
+            draft,
+            html_url: format!("https://example.com/{tag}"),
+        }
+    }
+
     #[test]
-    fn version_core_strips_prefix_and_prerelease() {
+    fn parse_version_accepts_prefix_and_prerelease() {
         assert_eq!(
-            version_core("v0.1.0-alpha"),
-            Some(VersionCore {
-                major: 0,
-                minor: 1,
-                patch: 0
-            })
+            parse_version("v0.1.0-alpha.1").map(|v| v.to_string()),
+            Some("0.1.0-alpha.1".into())
         );
         assert_eq!(
-            version_core("0.1.0"),
-            Some(VersionCore {
-                major: 0,
-                minor: 1,
-                patch: 0
-            })
+            parse_version("0.2.0-beta.3").map(|v| v.to_string()),
+            Some("0.2.0-beta.3".into())
+        );
+        assert!(parse_version("0.1").is_none());
+    }
+
+    #[test]
+    fn release_channel_detects_prerelease_kind() {
+        assert_eq!(
+            release_channel(&parse_version("0.1.0").unwrap()),
+            ReleaseChannel::Stable
         );
         assert_eq!(
-            version_core("1.2"),
-            Some(VersionCore {
-                major: 1,
-                minor: 2,
-                patch: 0
-            })
+            release_channel(&parse_version("0.1.0-beta.1").unwrap()),
+            ReleaseChannel::Beta
+        );
+        assert_eq!(
+            release_channel(&parse_version("0.1.0-alpha.2").unwrap()),
+            ReleaseChannel::Alpha
         );
     }
 
     #[test]
-    fn equal_cores_are_not_newer_when_app_omits_suffix() {
-        assert_eq!(compare_update("0.1.0", "v0.1.0-alpha"), Some(false));
-        assert_eq!(compare_update("0.1.0", "v0.1.0"), Some(false));
+    fn beta_prerelease_updates_within_same_core() {
+        let current = parse_version("0.1.0-beta.1").unwrap();
+        let latest = parse_version("0.1.0-beta.2").unwrap();
+        assert!(compare_update(&current, &latest));
+        assert!(!compare_update(&latest, &current));
+    }
+
+    #[test]
+    fn stable_users_ignore_beta_tags_even_when_semver_is_higher() {
+        let releases = [
+            release("v0.3.0-beta.1", false),
+            release("v0.2.1", false),
+            release("v0.2.0", false),
+        ];
+        let picked = pick_best_release(&releases, ReleaseChannel::Stable).unwrap();
+        assert_eq!(picked.1.to_string(), "0.2.1");
+    }
+
+    #[test]
+    fn beta_users_get_beta_and_stable_but_not_alpha() {
+        let releases = [
+            release("v0.3.0-alpha.1", false),
+            release("v0.2.0-beta.2", false),
+            release("v0.2.0", false),
+        ];
+        let current = parse_version("0.2.0-beta.1").unwrap();
+        let picked = pick_best_release(&releases, ReleaseChannel::Beta).unwrap();
+        assert!(compare_update(&current, &picked.1));
+        assert_eq!(picked.0.tag_name, "v0.2.0");
+
+        let only_alpha = [release("v0.3.0-alpha.1", false)];
+        assert!(pick_best_release(&only_alpha, ReleaseChannel::Beta).is_none());
+
+        let beta_only = [
+            release("v0.2.0-beta.1", false),
+            release("v0.2.0-beta.2", false),
+        ];
+        let picked_beta = pick_best_release(&beta_only, ReleaseChannel::Beta).unwrap();
+        assert_eq!(picked_beta.0.tag_name, "v0.2.0-beta.2");
+    }
+
+    #[test]
+    fn alpha_users_consider_alpha_and_beta_prereleases() {
+        let releases = [
+            release("v0.2.0-beta.1", false),
+            release("v0.2.0-alpha.3", false),
+        ];
+        let picked = pick_best_release(&releases, ReleaseChannel::Alpha).unwrap();
+        assert_eq!(picked.0.tag_name, "v0.2.0-beta.1");
+    }
+
+    #[test]
+    fn equal_versions_are_not_newer() {
+        let current = parse_version("0.1.0").unwrap();
+        let latest = parse_version("v0.1.0").unwrap();
+        assert!(!compare_update(&current, &latest));
     }
 
     #[test]
     fn later_patch_is_newer() {
-        assert_eq!(compare_update("0.1.0", "v0.1.1"), Some(true));
-        assert_eq!(compare_update("0.1.0", "v0.2.0-beta"), Some(true));
-        assert_eq!(compare_update("0.2.0", "v0.1.9"), Some(false));
+        assert!(compare_update(
+            &parse_version("0.1.0").unwrap(),
+            &parse_version("v0.1.1").unwrap()
+        ));
+        assert!(!compare_update(
+            &parse_version("0.2.0").unwrap(),
+            &parse_version("v0.1.9").unwrap()
+        ));
     }
 
     #[test]
@@ -158,19 +364,47 @@ mod tests {
     }
 
     #[test]
-    fn pick_latest_skips_drafts() {
+    fn pick_best_skips_drafts() {
+        let releases = [release("v0.2.0", true), release("v0.1.1", false)];
+        assert_eq!(
+            pick_best_release(&releases, ReleaseChannel::Stable)
+                .unwrap()
+                .0
+                .tag_name,
+            "v0.1.1"
+        );
+    }
+
+    #[test]
+    fn dev_stable_version_uses_alpha_releases_when_no_stable_tags_exist() {
         let releases = [
-            GithubRelease {
-                tag_name: "v0.2.0".into(),
-                draft: true,
-                html_url: "https://example.com/2".into(),
-            },
-            GithubRelease {
-                tag_name: "v0.1.1".into(),
-                draft: false,
-                html_url: "https://example.com/1".into(),
-            },
+            release("v0.1.0-alpha.2", false),
+            release("v0.1.0-alpha.1", false),
         ];
-        assert_eq!(pick_latest_release(&releases).unwrap().tag_name, "v0.1.1");
+        let current = parse_version("0.1.0").unwrap();
+        let channel = effective_channel(&current, &releases);
+        assert_eq!(channel, ReleaseChannel::Alpha);
+        let picked = pick_best_release(&releases, channel).unwrap();
+        assert_eq!(picked.0.tag_name, "v0.1.0-alpha.2");
+        let current_for_compare = compare_current_for_update(&current, channel);
+        assert!(compare_update(&current_for_compare, &picked.1));
+    }
+
+    #[test]
+    fn explicit_stable_channel_does_not_fall_back_to_alpha() {
+        let releases = [release("v0.1.0-alpha.2", false)];
+        let current = parse_version("0.1.0").unwrap();
+        let channel = resolve_channel(&current, &releases, UpdateChannelPreference::Stable);
+        assert_eq!(channel, ReleaseChannel::Stable);
+        assert!(pick_best_release(&releases, channel).is_none());
+    }
+
+    #[test]
+    fn explicit_alpha_channel_finds_alpha_release() {
+        let releases = [release("v0.1.0-alpha.2", false)];
+        let current = parse_version("0.1.0").unwrap();
+        let channel = resolve_channel(&current, &releases, UpdateChannelPreference::Alpha);
+        let picked = pick_best_release(&releases, channel).unwrap();
+        assert_eq!(picked.0.tag_name, "v0.1.0-alpha.2");
     }
 }

@@ -779,8 +779,10 @@ export interface GeneralSettings {
   appearance: AppearanceSettings;
 }
 export type ThemePreference = "light" | "dark" | "system";
+export type UpdateChannelPreference = "auto" | "stable" | "beta" | "alpha";
 export interface AppearanceSettings {
   theme: ThemePreference;
+  updateChannel?: UpdateChannelPreference;
 }
 export interface AppSettings {
   formatVersion: number;

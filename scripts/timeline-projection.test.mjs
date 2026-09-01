@@ -105,4 +105,12 @@ assert.equal(yearOnly?.date.getUTCDate(), 1);
 assert.equal(yearOnly?.source.calendar, "calendar-1");
 assert.equal(yearOnly?.source.precision, "year");
 
+// BCE values anchor before the common era (stored as magnitude + era, anchored via signed year).
+const bceAnchor = timelineDateAnchor("-44-3-15");
+assert.equal(bceAnchor?.date.getUTCFullYear(), -44);
+assert.equal(bceAnchor?.date.getUTCMonth(), 2);
+assert.equal(bceAnchor?.date.getUTCDate(), 15);
+const bceObjectAnchor = timelineDateAnchor({ era: "BCE", year: 44, month: 3, day: 15, precision: "day" });
+assert.equal(bceObjectAnchor?.date.getTime(), bceAnchor?.date.getTime());
+
 console.log("timeline field projection fixtures passed");

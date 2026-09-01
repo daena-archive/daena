@@ -1,3 +1,31 @@
+import { formatCalendarDate, parseCalendarDate } from "../date.ts";
+
+const SENTINEL_DATE_STRINGS = new Set(["1-1", "1-1-1"]);
+
+export function isSentinelDateValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return SENTINEL_DATE_STRINGS.has(value.trim());
+  }
+  const parsed = parseCalendarDate(value);
+  if (!parsed) return false;
+  if (
+    parsed.year === 1 &&
+    parsed.month === 1 &&
+    parsed.day === 1 &&
+    parsed.era !== "BCE" &&
+    (!parsed.precision || parsed.precision === "day")
+  ) {
+    return true;
+  }
+  const iso = formatCalendarDate(parsed);
+  return SENTINEL_DATE_STRINGS.has(iso);
+}
+
+export function hasMeaningfulDateValue(value: unknown): boolean {
+  if (isEmptyFieldValue(value) || isSentinelDateValue(value)) return false;
+  return parseCalendarDate(value) !== null;
+}
+
 export function isEmptyFieldValue(value: unknown): boolean {
   return (
     value === undefined ||

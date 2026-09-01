@@ -25,7 +25,7 @@ import {
   type TimelineFieldRole,
   type TimelineLayer,
 } from "./projection";
-import { belongsToEraScope } from "../../../../src/lib/modules/chronology";
+import { belongsToEraScope, resolveChronologyCalendarDefinition } from "../../../../src/lib/modules/chronology";
 import manifestJson from "../manifest.json";
 
 const manifest = manifestJson as unknown as ModuleManifest;
@@ -858,6 +858,10 @@ export const timeline: DaenaModule = {
               }));
             if (selectedEraId && !eraOptions.some((era) => era.id === selectedEraId)) selectedEraId = "";
             const scopedEra = eraOptions.find((era) => era.id === selectedEraId);
+            const eraScopeDefinitions = Object.fromEntries(calendarDefinitions.entries()) as Record<
+              string,
+              CalendarDefinition
+            >;
             const inScope = (event: { eraIds: readonly string[]; startValue?: unknown; endValue?: unknown }) =>
               !scopedEra ||
               belongsToEraScope({
@@ -867,6 +871,11 @@ export const timeline: DaenaModule = {
                 eraId: scopedEra.id,
                 eraStart: scopedEra.start,
                 eraEnd: scopedEra.end,
+                calendarDefinition: resolveChronologyCalendarDefinition(
+                  event.startValue ?? event.endValue,
+                  scopedEra.calendarIds,
+                  eraScopeDefinitions,
+                ),
               });
             const scopedDated = dated.filter(inScope);
             const scopedContributed = contributed.filter(inScope);

@@ -1,3 +1,5 @@
+import { chronologyCompareOrdinal, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar.ts";
+
 export const GREGORIAN_CALENDAR_ID = "gregorian";
 
 export interface CalendarDate {
@@ -22,21 +24,34 @@ function readCalendarId(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.trim() : GREGORIAN_CALENDAR_ID;
 }
 
+/** Gregorian sort/compare year: BCE dates use negative years in ISO strings. */
+export function signedGregorianYear(date: CalendarDate): number {
+  if (date.era === "BCE" && date.year > 0) return -date.year;
+  return date.year;
+}
+
+function normalizeEraYear(date: CalendarDate): CalendarDate {
+  if (date.era === "BCE" && date.year < 0) return { ...date, year: -date.year };
+  return date;
+}
+
 function gregorianIso(date: CalendarDate): string {
+  const normalized = normalizeEraYear(date);
+  const year = signedGregorianYear(normalized);
   const dateParts =
-    date.precision === "year"
-      ? [date.year]
-      : date.precision === "month"
-        ? [date.year, date.month]
-        : [date.year, date.month, date.day];
+    normalized.precision === "year"
+      ? [year]
+      : normalized.precision === "month"
+        ? [year, normalized.month]
+        : [year, normalized.month, normalized.day];
   if (!dateParts.every((part) => typeof part === "number" && Number.isFinite(part))) return "";
-  if (["year", "month", "day"].includes(date.precision ?? "day")) return dateParts.join("-");
+  if (["year", "month", "day"].includes(normalized.precision ?? "day")) return dateParts.join("-");
   const timeParts =
-    date.precision === "hour"
-      ? [date.hour]
-      : date.precision === "minute"
-        ? [date.hour, date.minute]
-        : [date.hour, date.minute, date.second];
+    normalized.precision === "hour"
+      ? [normalized.hour]
+      : normalized.precision === "minute"
+        ? [normalized.hour, normalized.minute]
+        : [normalized.hour, normalized.minute, normalized.second];
   return timeParts.every((part) => typeof part === "number" && Number.isFinite(part))
     ? `${dateParts.join("-")}T${timeParts.join(":")}`
     : "";
@@ -46,9 +61,16 @@ export function parseCalendarDate(value: unknown): CalendarDate | null {
   if (value && typeof value === "object") {
     const date = value as Partial<CalendarDate>;
     if (typeof date.year === "number" && Number.isFinite(date.year)) {
+      const era = date.era ?? "CE";
       const precision =
         date.precision ?? (date.day !== undefined ? "day" : date.month !== undefined ? "month" : "year");
-      return { ...date, calendar: readCalendarId(date.calendar), era: date.era ?? "CE", precision } as CalendarDate;
+      return {
+        ...date,
+        calendar: readCalendarId(date.calendar),
+        era,
+        year: era === "BCE" && date.year < 0 ? -date.year : date.year,
+        precision,
+      } as CalendarDate;
     }
   }
   if (typeof value !== "string") return null;
@@ -57,7 +79,7 @@ export function parseCalendarDate(value: unknown): CalendarDate | null {
   // Normalize year sign + era: keep signed year, preserve BCE era if negative
   const rawYear = Number(match[1]);
   const era: "BCE" | "CE" = rawYear < 0 ? "BCE" : "CE";
-  const year = rawYear;
+  const year = era === "BCE" ? -rawYear : rawYear;
   const precision = match[6]
     ? "second"
     : match[5]
@@ -115,14 +137,23 @@ export function isCompleteCalendarDate(value: unknown): boolean {
   return date.precision === "minute" || Number.isFinite(date.second);
 }
 
-export function compareCalendarDates(left: unknown, right: unknown): number {
+export function compareCalendarDates(
+  left: unknown,
+  right: unknown,
+  calendarDefinition: CalendarDefinition | null = null,
+): number {
+  if (calendarDefinition) {
+    const leftOrdinal = chronologyCompareOrdinal(left, calendarDefinition);
+    const rightOrdinal = chronologyCompareOrdinal(right, calendarDefinition);
+    if (leftOrdinal !== null && rightOrdinal !== null) return leftOrdinal - rightOrdinal;
+  }
   const a = parseCalendarDate(left);
   const b = parseCalendarDate(right);
   if (!a && !b) return 0;
   if (!a) return 1;
   if (!b) return -1;
   return (
-    a.year - b.year ||
+    signedGregorianYear(a) - signedGregorianYear(b) ||
     (a.month ?? 0) - (b.month ?? 0) ||
     (a.day ?? 0) - (b.day ?? 0) ||
     (a.hour ?? 0) - (b.hour ?? 0) ||

@@ -86,15 +86,10 @@ import {
   isEraRelationshipField,
   type EraContext,
 } from "$lib/modules/chronology";
+import * as calendarCache from "$lib/chronology/calendarCache";
+import * as eraContextCache from "$lib/chronology/eraContextCache";
 import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.svelte";
-import {
-  calendarDateToParts,
-  daysInCalendarMonth,
-  formatWithCalendar,
-  normalizeCalendarDefinition,
-  partsToCalendarDate,
-  type CalendarDefinition,
-} from "../../packages/modules/timeline/src/calendar";
+import { formatWithCalendar, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
@@ -142,7 +137,7 @@ import RelationshipMetadataDialog from "$lib/RelationshipMetadataDialog.svelte";
 import AssetDialog from "$lib/AssetDialog.svelte";
 import ExternalImportDialog from "$lib/ExternalImportDialog.svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
-import DateEditor from "$lib/date/DateEditor.svelte";
+import InspectorDateField from "$lib/date/InspectorDateField.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
 import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
 import DialogHost from "$lib/DialogHost.svelte";
@@ -215,7 +210,6 @@ import {
   type ThemePreference,
 } from "$lib/theme";
 import {
-  formatCalendarDate,
   formatRuntimeTimestampLabel,
   GREGORIAN_CALENDAR_ID,
   isCompleteCalendarDate,
@@ -225,7 +219,9 @@ import {
   type CalendarDate,
 } from "$lib/date";
 import {
+  hasMeaningfulDateValue,
   isEmptyFieldValue,
+  isSentinelDateValue,
   isStructuredFieldValue,
   restoreStructuredFieldValue,
   shouldPersistFieldValue,
@@ -487,7 +483,6 @@ $effect(() => {
 let name = $state("");
 let selectedCreateKey = $state("");
 let createFieldValues = $state<Record<string, unknown>>({});
-let createDateEditorOpen = $state<Record<string, boolean>>({});
 let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
@@ -498,10 +493,14 @@ let saveError = $state("");
 let editorFullscreen = $state(false);
 let hasUnsavedChanges = $state(false);
 let autoSaveTimer: number | null = null;
+const dateFieldDirtyTimers: Record<string, number> = {};
 let saveInFlight: Promise<boolean> | null = null;
 let saveQueued = false;
 let autoSaveFailureCount = 0;
 let documentRevision = 0;
+// Inspector definition keys with unsaved edits; persistDocumentSnapshot saves only these
+// (plus the document). Keys match definition.key, unique per selected entity's field set.
+const dirtyFieldKeys = new Set<string>();
 let loadedDocumentRevision = "";
 let loadedFieldRevisions: Record<string, string> = {};
 let loadedStructuredFieldKeys = new Set<string>();
@@ -1315,7 +1314,6 @@ function resetCreateFields(option: CreateOption | null) {
   createFieldValues = Object.fromEntries(
     createFieldsFor(option).map(({ field }) => [field.key, defaultCreateFieldValue(field, option!.template)]),
   );
-  createDateEditorOpen = {};
   createDateCalendarByField = {};
   createEraContexts = [];
   createDocumentBody = option?.template.document ?? "";
@@ -1340,6 +1338,7 @@ function createChronologyWarnings() {
       .filter((item) => item.field.type === "date")
       .map((item) => ({ label: item.field.label, value: createFieldValues[item.field.key] })),
     createEraContexts,
+    calendarDefinitions,
   );
 }
 function setCreateField(key: string, value: unknown) {
@@ -1394,29 +1393,8 @@ function calendarIdForStoredDate(date: Partial<CalendarDate> | null | undefined,
   if (date?.calendar) return date.calendar;
   return fallback || GREGORIAN_CALENDAR_ID;
 }
-function createDateDraftForField(key: string): Partial<CalendarDate> | null {
-  return (
-    createDateForField(key) ??
-    (createDateEditorOpen[key]
-      ? { calendar: calendarIdForStoredDate(null, createDateCalendarByField[key]), era: "CE", precision: "day" }
-      : null)
-  );
-}
 function createCalendarDefinition(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(calendarIdForStoredDate(createDateForField(key), createDateCalendarByField[key]));
-}
-function createDatePartsDraft(key: string) {
-  const stored = createDateForField(key);
-  const calendar = createCalendarDefinition(key);
-  if (stored) return calendarDateToParts(stored, calendar);
-  return createDateEditorOpen[key]
-    ? {
-        year: undefined as number | undefined,
-        month: undefined as number | undefined,
-        day: undefined as number | undefined,
-        precision: "day" as const,
-      }
-    : null;
 }
 function setCreateDateCalendar(key: string, calendarId: string) {
   createDateCalendarByField = { ...createDateCalendarByField, [key]: calendarId };
@@ -1424,88 +1402,8 @@ function setCreateDateCalendar(key: string, calendarId: string) {
   if (!previous) return;
   setCreateField(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
 }
-function openCreateDateEditor(key: string) {
-  createDateEditorOpen = { ...createDateEditorOpen, [key]: true };
-  createDateCalendarByField = {
-    ...createDateCalendarByField,
-    [key]: createDateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID,
-  };
-  setCreateField(key, "");
-}
-function updateCreateDateField(key: string, patch: Partial<CalendarDate>) {
-  const calendar = createCalendarDefinition(key);
-  const calendarId = calendarIdForStoredDate(createDateForField(key), createDateCalendarByField[key]);
-  const previous = createDateForField(key);
-  const currentParts = calendarDateToParts(
-    previous ?? { calendar: calendarId, era: "CE", year: 1, precision: "year" },
-    calendar,
-  ) ?? { year: 1, precision: "year" as const };
-  const nextParts = { ...currentParts, ...patch };
-  if ((patch as Record<string, unknown>).precision === undefined) {
-    const hasMonth = (nextParts as Record<string, unknown>).month !== undefined;
-    const hasDay = (nextParts as Record<string, unknown>).day !== undefined;
-    if (!hasMonth) {
-      nextParts.precision = "year";
-      delete (nextParts as Record<string, unknown>).day;
-    } else if (!hasDay) {
-      nextParts.precision = "month";
-    } else {
-      if (nextParts.precision !== "hour" && nextParts.precision !== "minute" && nextParts.precision !== "second") {
-        nextParts.precision = "day";
-      }
-    }
-  }
-  if (patch.precision === "year") {
-    delete nextParts.month;
-    delete nextParts.day;
-  }
-  if (patch.precision === "month") {
-    delete nextParts.day;
-    if (nextParts.month === undefined) nextParts.month = 1;
-  }
-  if (patch.precision === "day") {
-    nextParts.month ??= 1;
-    nextParts.day ??= 1;
-  }
-  const stored = partsToCalendarDate(nextParts, calendar);
-  stored.calendar = calendarId;
-  if (previous) {
-    stored.hour = patch.hour ?? previous.hour;
-    stored.minute = patch.minute ?? previous.minute;
-    stored.second = patch.second ?? previous.second;
-  } else if (patch.hour !== undefined) {
-    stored.hour = patch.hour;
-    stored.minute = patch.minute;
-    stored.second = patch.second;
-  }
-  if (patch.precision === "hour" || patch.precision === "minute" || patch.precision === "second") {
-    stored.precision = patch.precision;
-  }
-  setCreateField(key, serializeCalendarDate(stored));
-}
-function updateCreateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
-  if (!raw.trim()) {
-    if (part === "month") {
-      updateCreateDateField(key, { precision: "year" });
-    } else if (part === "day") {
-      updateCreateDateField(key, { precision: "month" });
-    } else if (part === "year") {
-      clearCreateDateField(key);
-    }
-    return;
-  }
-  const parsed = Math.floor(Number(raw));
-  if (!Number.isFinite(parsed)) return;
-  updateCreateDateField(key, { [part]: Math.min(max ?? parsed, Math.max(min, parsed)) });
-}
-function updateCreateDateTime(key: string, raw: string) {
-  const [hour, minute, second] = raw.split(":").map(Number);
-  if (![hour, minute, second].every(Number.isFinite)) return;
-  updateCreateDateField(key, { hour, minute, second, precision: "second" });
-}
 function clearCreateDateField(key: string) {
   setCreateField(key, "");
-  createDateEditorOpen = { ...createDateEditorOpen, [key]: false };
   const next = { ...createDateCalendarByField };
   delete next[key];
   createDateCalendarByField = next;
@@ -2867,24 +2765,18 @@ function selectedCalendarId(key: string): string {
 function definitionForDateField(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(selectedCalendarId(key));
 }
-function dateDraftForField(key: string): Partial<CalendarDate> | null {
-  return (
-    dateForField(key) ??
-    (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null)
-  );
+function dateFieldRevisionKey(key: string): string | null {
+  const definition = definitions().find((candidate) => candidate.key === key);
+  if (!definition) return null;
+  return fieldRevisionKey(namespaceForField(definition), key);
 }
-function datePartsDraft(key: string) {
-  const stored = dateForField(key);
-  const calendar = definitionForDateField(key);
-  if (stored) return calendarDateToParts(stored, calendar);
-  return dateEditorOpen[key]
-    ? {
-        year: undefined as number | undefined,
-        month: undefined as number | undefined,
-        day: undefined as number | undefined,
-        precision: "day" as const,
-      }
-    : null;
+function dateFieldHadPersistedValue(key: string): boolean {
+  const revisionKey = dateFieldRevisionKey(key);
+  return revisionKey ? Object.prototype.hasOwnProperty.call(loadedFieldRevisions, revisionKey) : false;
+}
+function updateInspectorDateField(key: string, next: unknown) {
+  fields = { ...fields, [key]: next };
+  scheduleDateFieldDirty(key);
 }
 function setDateCalendar(key: string, calendarId: string) {
   dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
@@ -2893,100 +2785,55 @@ function setDateCalendar(key: string, calendarId: string) {
     dateEditorOpen = { ...dateEditorOpen, [key]: true };
     return;
   }
-  fields = { ...fields, [key]: serializeCalendarDate({ ...previous, calendar: calendarId }) };
-  markEntryDirty();
+  updateInspectorDateField(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
 }
 function openDateEditor(key: string) {
   dateEditorOpen = { ...dateEditorOpen, [key]: true };
   dateCalendarByField = { ...dateCalendarByField, [key]: dateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID };
-  fields = { ...fields, [key]: "" };
-  markEntryDirty();
-}
-function updateDateField(key: string, patch: Partial<CalendarDate>) {
-  if (projectDiagnostics.length > 0) return;
-  const calendar = definitionForDateField(key);
-  const calendarId = selectedCalendarId(key);
-  const previous = dateForField(key);
-  const currentParts = calendarDateToParts(
-    previous ?? { calendar: calendarId, era: "CE", year: 1, precision: "year" },
-    calendar,
-  ) ?? { year: 1, precision: "year" as const };
-  const nextParts = { ...currentParts, ...patch };
-  if ((patch as Record<string, unknown>).precision === undefined) {
-    const hasMonth = (nextParts as Record<string, unknown>).month !== undefined;
-    const hasDay = (nextParts as Record<string, unknown>).day !== undefined;
-    if (!hasMonth) {
-      nextParts.precision = "year";
-      delete (nextParts as Record<string, unknown>).day;
-    } else if (!hasDay) {
-      nextParts.precision = "month";
-    } else {
-      if (nextParts.precision !== "hour" && nextParts.precision !== "minute" && nextParts.precision !== "second") {
-        nextParts.precision = "day";
-      }
-    }
-  }
-  if (patch.precision === "year") {
-    delete nextParts.month;
-    delete nextParts.day;
-  }
-  if (patch.precision === "month") {
-    delete nextParts.day;
-    if (nextParts.month === undefined) nextParts.month = 1;
-  }
-  if (patch.precision === "day") {
-    nextParts.month ??= 1;
-    nextParts.day ??= 1;
-  }
-  const stored = partsToCalendarDate(nextParts, calendar);
-  stored.calendar = calendarId;
-  if (previous) {
-    stored.hour = patch.hour ?? previous.hour;
-    stored.minute = patch.minute ?? previous.minute;
-    stored.second = patch.second ?? previous.second;
-  } else if (patch.hour !== undefined) {
-    stored.hour = patch.hour;
-    stored.minute = patch.minute;
-    stored.second = patch.second;
-  }
-  if (patch.precision === "hour" || patch.precision === "minute" || patch.precision === "second") {
-    stored.precision = patch.precision;
-  }
-  fields = { ...fields, [key]: serializeCalendarDate(stored) };
-  markEntryDirty();
-}
-function updateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
-  if (!raw.trim()) {
-    if (part === "month") {
-      updateDateField(key, { precision: "year" });
-    } else if (part === "day") {
-      updateDateField(key, { precision: "month" });
-    } else if (part === "year") {
-      clearDateField(key);
-    }
-    return;
-  }
-  const parsed = Math.floor(Number(raw));
-  if (!Number.isFinite(parsed)) return;
-  const value = Math.min(max ?? parsed, Math.max(min, parsed));
-  updateDateField(key, { [part]: value });
-}
-function updateDateTime(key: string, raw: string) {
-  const [hour, minute, second] = raw.split(":").map(Number);
-  if (![hour, minute, second].every(Number.isFinite)) return;
-  updateDateField(key, { hour, minute, second, precision: "second" });
-}
-function calendarTimeValue(date: Partial<CalendarDate>): string {
-  if (![date.hour, date.minute, date.second].every((part) => typeof part === "number")) return "";
-  return [date.hour, date.minute, date.second].map((part) => String(part).padStart(2, "0")).join(":");
 }
 function clearDateField(key: string) {
+  cancelDateFieldDirty(key);
   fields = { ...fields, [key]: "" };
   dateEditorOpen = { ...dateEditorOpen, [key]: false };
   const next = { ...dateCalendarByField };
   delete next[key];
   dateCalendarByField = next;
-  markEntryDirty();
+  if (dateFieldHadPersistedValue(key)) markEntryDirty({ fieldKey: key });
+}
+
+function cancelDateFieldDirty(key?: string) {
+  if (key) {
+    const timer = dateFieldDirtyTimers[key];
+    if (timer) {
+      window.clearTimeout(timer);
+      delete dateFieldDirtyTimers[key];
+    }
+    return;
+  }
+  for (const timerKey of Object.keys(dateFieldDirtyTimers)) {
+    window.clearTimeout(dateFieldDirtyTimers[timerKey]);
+    delete dateFieldDirtyTimers[timerKey];
+  }
+}
+function dateFieldDirtyApplies(key: string): boolean {
+  const value = fields[key];
+  return hasMeaningfulDateValue(value) || (dateFieldHadPersistedValue(key) && isEmptyFieldValue(value));
+}
+function scheduleDateFieldDirty(key: string, delay = 500) {
+  cancelDateFieldDirty(key);
+  dateFieldDirtyTimers[key] = window.setTimeout(() => {
+    delete dateFieldDirtyTimers[key];
+    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
+  }, delay);
+}
+/** Apply pending debounced date edits immediately so navigation and manual saves cannot drop them. */
+function flushDateFieldDirty() {
+  const keys = Object.keys(dateFieldDirtyTimers);
+  if (keys.length === 0) return;
+  cancelDateFieldDirty();
+  for (const key of keys) {
+    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
+  }
 }
 
 function cancelAutoSave() {
@@ -3003,17 +2850,21 @@ function scheduleAutoSave(delay = 900) {
     void saveDocument();
   }, delay);
 }
-function markEntryDirty() {
+function clearDirtyTracking() {
+  dirtyFieldKeys.clear();
+}
+function markEntryDirty(opts?: { fieldKey?: string; document?: boolean }) {
   documentRevision += 1;
   hasUnsavedChanges = true;
   savedAt = "";
   autoSaveFailureCount = 0;
+  if (opts?.fieldKey) dirtyFieldKeys.add(opts.fieldKey);
   scheduleAutoSave();
 }
 function updateDocumentBody(value: string) {
   if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
   documentBody = value;
-  markEntryDirty();
+  markEntryDirty({ document: true });
 }
 function setEditorFullscreen(value: boolean) {
   editorFullscreen = value;
@@ -3507,7 +3358,7 @@ async function acceptAiFieldSuggestion(key: string) {
   const remaining = { ...aiFieldSuggestions };
   delete remaining[key];
   aiFieldSuggestions = remaining;
-  markEntryDirty();
+  markEntryDirty({ fieldKey: key });
 }
 async function acceptAllAiFieldSuggestions() {
   for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
@@ -3679,7 +3530,7 @@ async function acceptAiRewrite() {
       error = "The editor position is no longer available. Discard it and try again.";
       return;
     }
-    markEntryDirty();
+    markEntryDirty({ document: true });
     if (await saveDocument()) closeAiRewrite();
     return;
   }
@@ -3690,7 +3541,7 @@ async function acceptAiRewrite() {
   }
   const bodyBefore = documentBody;
   documentBody = nextMarkdown;
-  markEntryDirty();
+  markEntryDirty({ document: true });
   if (await saveDocument()) {
     closeAiRewrite();
   } else {
@@ -3762,7 +3613,22 @@ async function loadRecentProjects() {
 }
 async function loadEntities() {
   entities = await project.listEntities();
-  await refreshCalendarDefinitions();
+}
+
+function syncCalendarCacheState() {
+  const snap = calendarCache.snapshot();
+  calendarDefinitions = snap.definitions;
+  calendarEntities = snap.entities;
+}
+
+async function ensureCalendarCache(force = false) {
+  if (!projectInfo?.root) {
+    calendarCache.invalidate();
+    syncCalendarCacheState();
+    return;
+  }
+  await calendarCache.ensureLoaded(projectInfo.root, project, contextFor("timeline"), upsertEntityInCache, force);
+  syncCalendarCacheState();
 }
 
 function bumpCollectionRefresh() {
@@ -3824,6 +3690,13 @@ async function refreshAfterEntityMutation(options?: { entityId?: string; removed
   }
   bumpCollectionRefresh();
   if (entityAffectsKinshipTree(affectedEntity)) bumpKinshipRefresh();
+  if (affectedEntity?.entity_type === "daena.timeline:calendar") await ensureCalendarCache(true);
+  if (affectedEntity?.entity_type === "daena.timeline:era") {
+    eraContextCache.invalidate(affectedEntity.id);
+    if (selected && eraContexts.some((context) => context.id === affectedEntity.id)) {
+      eraContexts = await loadEraContexts(eraContexts.map((context) => context.id));
+    }
+  }
   await refreshArchivedCount();
 }
 
@@ -3889,38 +3762,6 @@ async function refreshArchivedCount() {
 async function handleArchiveChanged() {
   bumpCollectionRefresh();
   await refreshArchivedCount();
-}
-
-async function refreshCalendarDefinitions() {
-  const next: Record<string, CalendarDefinition> = {};
-  try {
-    if (!projectInfo?.root) {
-      calendarDefinitions = next;
-      calendarEntities = [];
-      return;
-    }
-    const context = contextFor("timeline");
-    const page = await project.queryEntities({
-      entityTypes: ["daena.timeline:calendar"],
-      sortField: "name",
-      sortDirection: "asc",
-      limit: 200,
-    });
-    const calendars = page.items.filter((entity) => !entity.deleted);
-    calendarEntities = calendars;
-    for (const calendar of calendars) upsertEntityInCache(calendar);
-    await Promise.all(
-      calendars.map(async (calendar) => {
-        const records = await context.records.list("calendar-definition", calendar.id as UUID, { limit: 1 });
-        next[calendar.id] = records[0]
-          ? normalizeCalendarDefinition(records[0].value)
-          : normalizeCalendarDefinition({});
-      }),
-    );
-  } catch {
-    // A missing record capability or empty project still leaves Gregorian as the default.
-  }
-  calendarDefinitions = next;
 }
 
 async function refreshGit(epoch = projectStatusEpoch) {
@@ -4125,6 +3966,7 @@ async function finishOpening(info?: ProjectInfo) {
   await reconcileWorkspaceSection();
   rememberProject(projectInfo);
   await loadEntities();
+  await ensureCalendarCache();
   await refreshArchivedCount();
   await refreshGit();
   await refreshAdmin();
@@ -4199,6 +4041,7 @@ async function closeProject() {
 
 async function flushAutoSave() {
   editorRef?.flushPendingChanges();
+  flushDateFieldDirty();
   cancelAutoSave();
   if (!hasUnsavedChanges) return true;
   return saveDocument();
@@ -4223,6 +4066,7 @@ async function loadSelectedState(entity: Entity) {
     loadedDocumentRevision = "";
     loadedFieldRevisions = {};
     loadedStructuredFieldKeys = new Set();
+    clearDirtyTracking();
     const context = contextFor();
     const documents = await project.listDocuments(entityId);
     if (!isCurrent()) return;
@@ -4249,6 +4093,7 @@ async function loadSelectedState(entity: Entity) {
         .map((field) => fieldRevisionKey(field.namespace, field.key)),
     );
     dateEditorOpen = {};
+    cancelDateFieldDirty();
     const nextDateCalendars: Record<string, string> = {};
     fields = Object.fromEntries(
       Object.entries(values).map(([key, value]) => {
@@ -4257,8 +4102,7 @@ async function loadSelectedState(entity: Entity) {
           const date = parseCalendarDate(value);
           if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
           const serialized = date ? serializeCalendarDate(date) : "";
-          const iso = typeof serialized === "string" ? serialized : formatCalendarDate(date);
-          if (iso === "1" || iso === "1-1" || iso === "1-1-1") return [key, ""];
+          if (isSentinelDateValue(serialized) || isSentinelDateValue(date)) return [key, ""];
           return [key, serialized === "" ? String(value ?? "") : serialized];
         }
         if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
@@ -4500,6 +4344,7 @@ async function selectEntity(entity: Entity, recordHistory = true) {
   hasUnsavedChanges = false;
   documentConflict = null;
   documentRevision = 0;
+  clearDirtyTracking();
   saveError = "";
   error = "";
   try {
@@ -4533,6 +4378,7 @@ async function reloadSelectedFromDisk() {
   await loadSelectedState(current);
   hasUnsavedChanges = false;
   documentRevision = 0;
+  clearDirtyTracking();
   documentConflict = null;
   conflictDiskBody = "";
   savedAt = "";
@@ -5015,7 +4861,7 @@ function updateField(definition: FieldDefinition, event: Event) {
     value = target.value;
   }
   fields = { ...fields, [definition.key]: value };
-  markEntryDirty();
+  markEntryDirty({ fieldKey: definition.key });
 }
 function isRevisionConflict(cause: unknown) {
   return friendlyError(cause).toLowerCase().includes("revision conflict");
@@ -5037,6 +4883,7 @@ async function persistDocumentSnapshot(): Promise<boolean> {
   const fieldsSnapshot = { ...fields };
   const definitionsForSave = definitions().filter((definition) => {
     if (definition.type === "relationship") return false;
+    if (!dirtyFieldKeys.has(definition.key)) return false;
     const namespace = namespaceForField(definition);
     const key = fieldRevisionKey(namespace, definition.key);
     return shouldPersistFieldValue(
@@ -5089,10 +4936,22 @@ async function persistDocumentSnapshot(): Promise<boolean> {
     }
     if (selected?.id === entityId && documentRevision === revision) {
       hasUnsavedChanges = false;
+      clearDirtyTracking();
       autoSaveFailureCount = 0;
       saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       void loadProjectStatus(false);
+      if (selected.entity_type === "daena.timeline:era") {
+        eraContextCache.invalidate(entityId);
+      }
+      const loadToken = selectedLoadToken;
+      const linkedEraIds = relationships
+        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
+        .map((relationship) => relationship.target_id);
+      if (linkedEraIds.length > 0) {
+        const nextEraContexts = await loadEraContexts(linkedEraIds);
+        if (loadToken === selectedLoadToken && selected?.id === entityId) eraContexts = nextEraContexts;
+      }
     }
     return true;
   } catch (cause) {
@@ -5354,39 +5213,19 @@ function otherRelationshipDefinitions() {
 function hasChronologySection() {
   return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
 }
-function inspectorChronologyWarnings() {
-  return chronologyWarnings(
+const inspectorChronologyWarnings = $derived(
+  chronologyWarnings(
     chronologyDateDefinitions().map((definition) => ({ label: definition.label, value: fields[definition.key] })),
     eraContexts,
-  );
-}
+    calendarDefinitions,
+  ),
+);
 async function loadEraContexts(eraIds: string[]): Promise<EraContext[]> {
-  const unique = [...new Set(eraIds.filter(Boolean))];
-  return Promise.all(
-    unique.map(async (id) => {
-      let start: unknown;
-      let end: unknown;
-      let calendarIds: string[] = [];
-      try {
-        const stored = await project.listFields(id);
-        start = stored.find((field) => field.key === "startsAt")?.value;
-        end = stored.find((field) => field.key === "endsAt")?.value;
-      } catch {}
-      try {
-        const linked = await project.listRelationships(id);
-        calendarIds = linked
-          .filter((relationship) => relationship.relationship_type === "uses_calendar" && relationship.source_id === id)
-          .map((relationship) => relationship.target_id);
-      } catch {}
-      return {
-        id,
-        name: entities.find((entity) => entity.id === id)?.name ?? id,
-        start,
-        end,
-        calendarIds,
-      };
-    }),
-  );
+  return eraContextCache.getMany(eraIds, {
+    listFields: (entityId) => project.listFields(entityId),
+    listRelationships: (entityId) => project.listRelationships(entityId),
+    entityName: (entityId) => entities.find((entity) => entity.id === entityId)?.name ?? entityId,
+  });
 }
 function hintDateCalendarsFromEras(contexts: EraContext[], persistDates = false) {
   const calendarId = firstEraCalendarId(contexts);
@@ -5397,7 +5236,7 @@ function hintDateCalendarsFromEras(contexts: EraContext[], persistDates = false)
     dateCalendarByField = { ...dateCalendarByField, [definition.key]: calendarId };
     if (persistDates && current) {
       fields = { ...fields, [definition.key]: serializeCalendarDate({ ...current, calendar: calendarId }) };
-      markEntryDirty();
+      markEntryDirty({ fieldKey: definition.key });
     }
   }
 }
@@ -5617,6 +5456,7 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       bumpKinshipRefresh();
     }
     if (isEraRelationshipField(definition)) {
+      eraContextCache.invalidateMany(targetIds);
       eraContexts = await loadEraContexts(targetIds);
       hintDateCalendarsFromEras(eraContexts, true);
     }
@@ -6304,6 +6144,7 @@ function runtimeTimestampLabel(timestamp: string) {
 }
 function clearSelection() {
   cancelAutoSave();
+  cancelDateFieldDirty();
   editorFullscreen = false;
   hasUnsavedChanges = false;
   selected = null;
@@ -6330,6 +6171,8 @@ function resetProjectSessionState() {
   try {
     revokeAllResolvedAssetUrls();
   } catch {}
+  calendarCache.invalidate();
+  eraContextCache.clear();
   selectedLoadToken += 1;
   closeAiFieldFill();
   closeAiRewrite();
@@ -6397,6 +6240,7 @@ async function seedExample() {
     await project.seedExample();
     clearSelection();
     await loadEntities();
+    await ensureCalendarCache(true);
     modules = await project.listModuleManifests();
     error = "Example world seeded.";
   } catch (cause) {
@@ -8461,102 +8305,86 @@ onMount(() => {
                         onChange={(ids) => void updateRelationshipField(eraField, ids)} />
                     </div>
                   {/if}
-                  {#each inspectorChronologyWarnings() as warning}
+                  {#each inspectorChronologyWarnings as warning}
                     <p class="chronology-warning" role="status">{warning}</p>
                   {/each}
                   {#each chronologyDateDefinitions() as definition}
-                    <div class="property-field">
-                      <span
-                        >{definition.label}{#if definition.required}<b>*</b>{/if}</span>
-                      {#if dateForField(definition.key) || dateEditorOpen[definition.key]}
-                        <DateEditor
-                          label={definition.label}
-                          value={fields[definition.key]}
-                          calendar={definitionForDateField(definition.key)}
-                          calendars={worldCalendars() as any}
-                          selectedCalendarId={selectedCalendarId(definition.key)}
-                          onChange={(next) => {
-                            fields = { ...fields, [definition.key]: next };
-                            markEntryDirty();
-                          }}
-                          onClear={() => clearDateField(definition.key)}
-                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)} />
-                      {:else}
-                        <button class="date-empty" type="button" onclick={() => openDateEditor(definition.key)}
-                          >Add a date</button>
-                      {/if}
-                    </div>
+                    <InspectorDateField
+                      label={definition.label}
+                      fieldKey={definition.key}
+                      value={fields[definition.key]}
+                      editorOpen={Boolean(dateEditorOpen[definition.key])}
+                      editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                      calendar={definitionForDateField(definition.key)}
+                      calendars={worldCalendars() as any}
+                      selectedCalendarId={selectedCalendarId(definition.key)}
+                      required={Boolean(definition.required)}
+                      onChange={(next) => updateInspectorDateField(definition.key, next)}
+                      onClear={() => clearDateField(definition.key)}
+                      onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
+                      onOpen={() => openDateEditor(definition.key)} />
                   {/each}
                 </section>
               {/if}
               <section class="inspector-section inspector-section-plain">
                 <h3>Properties</h3>
-                {#each propertyDefinitions() as definition}<div class="property-field">
-                    <span
-                      >{definition.label}{#if definition.required}<b>*</b>{/if}</span
-                    >{#if definition.type === "date"}{#if dateForField(definition.key) || dateEditorOpen[definition.key]}{@const date =
-                          dateDraftForField(definition.key) ?? {
-                            calendar: GREGORIAN_CALENDAR_ID,
-                            era: "CE",
-                            precision: "day",
-                          }}{@const parts = datePartsDraft(definition.key)}{@const calendar = definitionForDateField(
-                          definition.key,
-                        )}{@const months = calendar?.months ?? []}
-                        <DateEditor
-                          label={definition.label}
-                          value={fields[definition.key]}
-                          calendar={definitionForDateField(definition.key)}
-                          calendars={worldCalendars() as any}
-                          selectedCalendarId={selectedCalendarId(definition.key)}
-                          onChange={(next) => {
-                            fields = { ...fields, [definition.key]: next };
-                            markEntryDirty();
-                          }}
-                          onClear={() => clearDateField(definition.key)}
-                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)} />{:else}<button
-                          class="date-empty"
-                          type="button"
-                          onclick={() => openDateEditor(definition.key)}>Add a date</button
-                        >{/if}{:else if definition.type === "boolean"}<input
-                        type="checkbox"
-                        aria-label={definition.label}
-                        checked={fieldInputValue(definition, fields[definition.key]) === true}
-                        onchange={(event) =>
-                          updateField(definition, event)} />{:else if definition.type === "number"}<input
-                        type="number"
-                        aria-label={definition.label}
-                        value={fieldInputValue(definition, fields[definition.key])}
-                        placeholder="Add {definition.label.toLowerCase()}"
-                        onchange={(event) =>
-                          updateField(
-                            definition,
-                            event,
-                          )} />{:else if definition.type === "enum" && definition.options?.length}<select
-                        aria-label={definition.label}
-                        multiple={definition.multiple ?? false}
-                        value={definition.multiple
-                          ? Array.isArray(fields[definition.key])
-                            ? fields[definition.key]
-                            : []
-                          : String(fields[definition.key] ?? "")}
-                        onchange={(event) => updateField(definition, event)}
-                        >{#each definition.options ?? [] as option}<option value={option}>{option}</option
-                          >{/each}</select>
-                      >{:else if (definition as any).type === "oneof"}<select
-                        aria-label={definition.label}
-                        value={String(fields[definition.key] ?? "")}
-                        onchange={(event) => updateField(definition, event)}
-                        ><option value="">Choose {definition.label.toLowerCase()}</option
-                        >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                        {#each (definition as any).oneOf ?? [] as variant}
-                          {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option>{/each}
-                        {/each}</select>
-                      >{:else}<input
-                        type="text"
-                        value={fieldInputValue(definition, fields[definition.key])}
-                        placeholder="Add {definition.label.toLowerCase()}"
-                        oninput={(event) => updateField(definition, event)} />{/if}
-                  </div>{/each}
+                {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
+                      label={definition.label}
+                      fieldKey={definition.key}
+                      value={fields[definition.key]}
+                      editorOpen={Boolean(dateEditorOpen[definition.key])}
+                      editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                      calendar={definitionForDateField(definition.key)}
+                      calendars={worldCalendars() as any}
+                      selectedCalendarId={selectedCalendarId(definition.key)}
+                      required={Boolean(definition.required)}
+                      onChange={(next) => updateInspectorDateField(definition.key, next)}
+                      onClear={() => clearDateField(definition.key)}
+                      onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
+                      onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
+                      <span
+                        >{definition.label}{#if definition.required}<b>*</b>{/if}</span
+                      >{#if definition.type === "boolean"}<input
+                          type="checkbox"
+                          aria-label={definition.label}
+                          checked={fieldInputValue(definition, fields[definition.key]) === true}
+                          onchange={(event) =>
+                            updateField(definition, event)} />{:else if definition.type === "number"}<input
+                          type="number"
+                          aria-label={definition.label}
+                          value={fieldInputValue(definition, fields[definition.key])}
+                          placeholder="Add {definition.label.toLowerCase()}"
+                          onchange={(event) =>
+                            updateField(
+                              definition,
+                              event,
+                            )} />{:else if definition.type === "enum" && definition.options?.length}<select
+                          aria-label={definition.label}
+                          multiple={definition.multiple ?? false}
+                          value={definition.multiple
+                            ? Array.isArray(fields[definition.key])
+                              ? fields[definition.key]
+                              : []
+                            : String(fields[definition.key] ?? "")}
+                          onchange={(event) => updateField(definition, event)}
+                          >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                            >{/each}</select>
+                        >{:else if (definition as any).type === "oneof"}<select
+                          aria-label={definition.label}
+                          value={String(fields[definition.key] ?? "")}
+                          onchange={(event) => updateField(definition, event)}
+                          ><option value="">Choose {definition.label.toLowerCase()}</option
+                          >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                          {#each (definition as any).oneOf ?? [] as variant}
+                            {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
+                              >{/each}
+                          {/each}</select>
+                        >{:else}<input
+                          type="text"
+                          value={fieldInputValue(definition, fields[definition.key])}
+                          placeholder="Add {definition.label.toLowerCase()}"
+                          oninput={(event) => updateField(definition, event)} />{/if}
+                    </div>{/if}{/each}
               </section>
               {#if selected?.entity_type === "daena.timeline:calendar" && projectInfo}
                 <section class="inspector-section inspector-section-plain">
@@ -8564,7 +8392,10 @@ onMount(() => {
                     context={contextFor("timeline")}
                     entityId={inspectedEntity.id as UUID}
                     onsaved={(definition) => {
-                      if (selected) calendarDefinitions = { ...calendarDefinitions, [selected.id]: definition };
+                      if (selected) {
+                        calendarCache.setDefinition(selected.id, definition);
+                        syncCalendarCacheState();
+                      }
                     }}
                     onOpenEra={(eraId) => {
                       const entity = entities.find((candidate) => candidate.id === eraId);
@@ -8797,6 +8628,7 @@ onMount(() => {
     onCommitted={async () => {
       clearSelection();
       await loadEntities();
+      await ensureCalendarCache(true);
     }}
     onClose={() => (showExternalImport = false)} />
 {/if}

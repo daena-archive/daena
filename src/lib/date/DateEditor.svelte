@@ -8,11 +8,11 @@ import {
   serializeCalendarDate,
   type CalendarDate,
 } from "$lib/date";
+import { patchCalendarDate } from "$lib/date/dateField";
 import {
   calendarDateToParts,
   daysInCalendarMonth,
   formatWithCalendar,
-  partsToCalendarDate,
   type CalendarDefinition,
 } from "../../../packages/modules/timeline/src/calendar";
 
@@ -39,12 +39,11 @@ let {
 let allowNegativeYears = $derived(calendar?.allowNegativeYears ?? false);
 
 let rawDate = $derived(parseCalendarDate(value));
-let timeVisible = $state(false);
+let timeDraftOpen = $state(false);
 
-$effect(() => {
-  const d = rawDate as any;
-  if (d?.hour !== undefined && d?.minute !== undefined) timeVisible = true;
-});
+let showTimeFields = $derived(
+  timeDraftOpen || rawDate?.hour !== undefined || rawDate?.minute !== undefined || rawDate?.second !== undefined,
+);
 
 function partsFor(d: CalendarDate | null, cal: CalendarDefinition | null) {
   if (!d) return null;
@@ -53,111 +52,75 @@ function partsFor(d: CalendarDate | null, cal: CalendarDefinition | null) {
 
 let parts = $derived(partsFor(rawDate, calendar));
 let months: any[] = $derived((calendar as any)?.months ?? []);
+// Month/day picks made before a year exists cannot commit yet (patchCalendarDate defers
+// them); keep them locally so the inputs hold the user's choice until the year arrives.
+let draftParts = $state<{ month?: number; day?: number }>({});
+let displayMonth = $derived(parts?.month ?? draftParts.month);
+let displayDay = $derived(parts?.day ?? draftParts.day);
+let maxDay = $derived(
+  daysInCalendarMonth(calendar, parts?.year ?? rawDate?.year ?? 1, displayMonth ?? rawDate?.month ?? 1),
+);
+
+// Discard deferred picks whenever the value is replaced from the outside.
+$effect(() => {
+  value;
+  draftParts = {};
+});
 
 function calendarTimeValue(d: CalendarDate | null): string {
   if (!d || ![d.hour, d.minute, d.second].every((p) => typeof p === "number")) return "";
   return [d.hour, d.minute, d.second].map((p) => String(p).padStart(2, "0")).join(":");
 }
 
+function commitPatch(patch: Partial<CalendarDate> & { calendar?: string }): boolean {
+  const next = patchCalendarDate(value, patch, calendar, selectedCalendarId ?? GREGORIAN_CALENDAR_ID);
+  if (next === null) return false;
+  draftParts = {};
+  onChange(next);
+  return true;
+}
+
 function updatePart(part: "year" | "month" | "day", raw: string, min: number, max?: number) {
   if (!raw.trim()) {
-    if (part === "month") onChange(patchDate({ precision: "year" }));
-    else if (part === "day") onChange(patchDate({ precision: "month" }));
-    else onClear();
+    if (part === "month") {
+      if (!commitPatch({ precision: "year" })) draftParts = { ...draftParts, month: undefined };
+    } else if (part === "day") {
+      if (!commitPatch({ precision: "month" })) draftParts = { ...draftParts, day: undefined };
+    } else onClear();
     return;
   }
   const n = Math.floor(Number(raw));
   if (!Number.isFinite(n)) return;
   const v = Math.min(max ?? n, Math.max(min, n));
-  onChange(patchDate({ [part]: v }));
+  if (part === "year") {
+    commitPatch({ year: v, ...draftParts });
+    return;
+  }
+  if (!commitPatch({ [part]: v })) draftParts = { ...draftParts, [part]: v };
 }
 
-function patchDate(patch: Partial<CalendarDate> & { calendar?: string }): unknown {
-  const calId = (patch as any).calendar ?? selectedCalendarId ?? GREGORIAN_CALENDAR_ID;
-  const prev = rawDate;
-  const currentParts = calendarDateToParts(
-    prev ?? { calendar: calId, era: "CE", year: 1, precision: "year" },
-    calendar,
-  ) ?? {
-    year: 1,
-    precision: "year" as const,
-  };
-  const nextParts: any = { ...currentParts, ...patch };
-  if ((patch as any).precision === undefined) {
-    const hasMonth = nextParts.month !== undefined;
-    const hasDay = nextParts.day !== undefined;
-    if (!hasMonth) {
-      nextParts.precision = "year";
-      delete nextParts.day;
-    } else if (!hasDay) {
-      nextParts.precision = "month";
-    } else if (!["hour", "minute", "second"].includes(nextParts.precision)) {
-      nextParts.precision = "day";
-    }
-  }
-  if (patch.precision === "year") {
-    delete nextParts.month;
-    delete nextParts.day;
-  }
-  if (patch.precision === "month") {
-    delete nextParts.day;
-    if (nextParts.month === undefined) {
-      nextParts.precision = "year";
-      delete nextParts.month;
-    }
-  }
-  if (patch.precision === "day") {
-    if (nextParts.month === undefined) {
-      nextParts.precision = "year";
-      delete nextParts.month;
-      delete nextParts.day;
-    } else if (nextParts.day === undefined) {
-      nextParts.precision = "month";
-      delete nextParts.day;
-    }
-  }
-  const stored = partsToCalendarDate(nextParts, calendar);
-  stored.calendar = calId;
-  if (prev) {
-    stored.hour = (patch as any).hour ?? prev.hour;
-    stored.minute = (patch as any).minute ?? prev.minute;
-    stored.second = (patch as any).second ?? prev.second;
-  } else if ((patch as any).hour !== undefined) {
-    stored.hour = (patch as any).hour;
-    stored.minute = (patch as any).minute;
-    stored.second = (patch as any).second;
-  }
-  if ((patch as any).precision === "hour") {
-    delete stored.minute;
-    delete stored.second;
-  } else if ((patch as any).precision === "minute") {
-    delete stored.second;
-  }
-  if (["hour", "minute", "second"].includes(patch.precision as string)) stored.precision = patch.precision as any;
-  else if (stored.precision === "hour" || stored.precision === "minute" || stored.precision === "second") {
-    // keep existing time precision if not explicitly set
-    if (stored.second !== undefined) stored.precision = "second";
-    else if (stored.minute !== undefined) stored.precision = "minute";
-    else if (stored.hour !== undefined) stored.precision = "hour";
-  }
-  return serializeCalendarDate(stored);
+function applyPatch(patch: Partial<CalendarDate> & { calendar?: string }) {
+  commitPatch(patch);
 }
 
 function updateTime(raw: string) {
   const [h, m, s] = raw.split(":").map(Number);
   if (![h, m, s].every(Number.isFinite)) return;
-  onChange(patchDate({ hour: h, minute: m, second: s, precision: "second" } as any));
+  applyPatch({ hour: h, minute: m, second: s, precision: "second" } as any);
 }
 function removeTime() {
   const cur = rawDate;
-  if (!cur) return;
+  if (!cur) {
+    timeDraftOpen = false;
+    return;
+  }
   const next: any = { ...cur };
   delete next.hour;
   delete next.minute;
   delete next.second;
   if (["hour", "minute", "second"].includes(next.precision)) next.precision = "day";
   onChange(serializeCalendarDate(next));
-  timeVisible = false;
+  timeDraftOpen = false;
 }
 </script>
 
@@ -169,7 +132,7 @@ function removeTime() {
         calendars={calendars as any}
         onSelect={(id) => {
           if (onSelectCalendar) onSelectCalendar(id);
-          else onChange(patchDate({ calendar: id } as any));
+          else applyPatch({ calendar: id } as any);
         }} />
     </div>
   {/if}
@@ -189,7 +152,7 @@ function removeTime() {
       <label
         >Month<select
           aria-label={`${label} month`}
-          value={parts?.month ?? ""}
+          value={displayMonth ?? ""}
           onchange={(e) => updatePart("month", (e.currentTarget as HTMLSelectElement).value, 1, months.length)}
           ><option value="">Month</option>{#each months as month, i}<option value={i + 1}>{month.name}</option
             >{/each}</select
@@ -201,7 +164,7 @@ function removeTime() {
           aria-label={`${label} month`}
           min="1"
           max="12"
-          value={parts?.month ?? (rawDate as any)?.month ?? ""}
+          value={displayMonth ?? (rawDate as any)?.month ?? ""}
           onchange={(e) => updatePart("month", (e.currentTarget as HTMLInputElement).value, 1, 12)} /></label>
     {/if}
     <label
@@ -209,25 +172,11 @@ function removeTime() {
         type="number"
         aria-label={`${label} day`}
         min="1"
-        max={daysInCalendarMonth(
-          calendar,
-          parts?.year ?? (rawDate as any)?.year ?? 1,
-          parts?.month ?? (rawDate as any)?.month ?? 1,
-        )}
-        value={parts?.day ?? (rawDate as any)?.day ?? ""}
-        onchange={(e) =>
-          updatePart(
-            "day",
-            (e.currentTarget as HTMLInputElement).value,
-            1,
-            daysInCalendarMonth(
-              calendar,
-              parts?.year ?? (rawDate as any)?.year ?? 1,
-              parts?.month ?? (rawDate as any)?.month ?? 1,
-            ),
-          )} /></label>
+        max={maxDay}
+        value={displayDay ?? (rawDate as any)?.day ?? ""}
+        onchange={(e) => updatePart("day", (e.currentTarget as HTMLInputElement).value, 1, maxDay)} /></label>
   </div>
-  {#if timeVisible || calendarTimeValue(rawDate) !== ""}
+  {#if showTimeFields}
     {@const maxHour = 23}
     <div class="date-time-row">
       <div class="date-time-fields">
@@ -253,7 +202,7 @@ function removeTime() {
                 }
               } else {
                 const h = Math.max(0, Math.min(maxHour, Math.floor(Number(v))));
-                onChange(patchDate({ hour: h, precision: "hour" } as any));
+                applyPatch({ hour: h, precision: "hour" } as any);
               }
             }} /></label>
         <span class="date-time-sep">:</span>
@@ -269,7 +218,7 @@ function removeTime() {
               const v = (e.currentTarget as HTMLInputElement).value;
               if (!v.trim() && rawDate?.hour === undefined) return;
               const m = v.trim() ? Math.max(0, Math.min(59, Math.floor(Number(v)))) : 0;
-              onChange(patchDate({ hour: rawDate?.hour ?? 0, minute: m, precision: "minute" } as any));
+              applyPatch({ hour: rawDate?.hour ?? 0, minute: m, precision: "minute" } as any);
             }} /></label>
         <span class="date-time-sep">:</span>
         <label
@@ -283,14 +232,12 @@ function removeTime() {
             onchange={(e) => {
               const v = (e.currentTarget as HTMLInputElement).value;
               const s = v.trim() ? Math.max(0, Math.min(59, Math.floor(Number(v)))) : 0;
-              onChange(
-                patchDate({
-                  hour: rawDate?.hour ?? 0,
-                  minute: rawDate?.minute ?? 0,
-                  second: s,
-                  precision: "second",
-                } as any),
-              );
+              applyPatch({
+                hour: rawDate?.hour ?? 0,
+                minute: rawDate?.minute ?? 0,
+                second: s,
+                precision: "second",
+              } as any);
             }} /></label>
       </div>
       <button type="button" class="date-time-remove" aria-label="Remove time" onclick={removeTime}
@@ -300,9 +247,10 @@ function removeTime() {
     <button
       type="button"
       class="date-time-add"
+      disabled={rawDate === null}
+      title={rawDate === null ? "Enter a year first" : undefined}
       onclick={() => {
-        timeVisible = true;
-        onChange(patchDate({ hour: 0, precision: "hour" } as any));
+        timeDraftOpen = true;
       }}>Add time</button>
   {/if}
   <div class="date-editor-footer">
@@ -454,6 +402,10 @@ function removeTime() {
 .date-time-add:hover {
   border-color: var(--accent-soft);
   background: var(--surface-muted);
+}
+.date-time-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .date-time-remove {
   display: grid;

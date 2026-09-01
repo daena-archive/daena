@@ -15,6 +15,7 @@ import {
   gregorianPresetDefinition,
   isDefaultCalendarId,
   matchYearPreset,
+  chronologyCompareOrdinal,
   normalizeCalendarDefinition,
   partsToCalendarDate,
   validateCalendarDefinition,
@@ -69,6 +70,11 @@ assert.equal(roundTrip?.year, 2);
 assert.equal(roundTrip?.month, 2);
 assert.equal(roundTrip?.day, 1);
 assert.equal(formatWithCalendar(stored, named), "2/02/01");
+// BCE custom-calendar dates keep their sign through storage and display as "<magnitude> BCE".
+const bceStored = partsToCalendarDate({ year: -44, month: 2, day: 3, precision: "day" }, named);
+assert.equal(calendarDateToParts(bceStored, named)?.year, -44);
+assert.equal(formatWithCalendar(bceStored, named), "44/02/03 BCE");
+assert.ok(chronologyCompareOrdinal(bceStored, named) < 0, "BCE ordinals sort before the epoch");
 assert.equal(
   formatCalendarParts({ year: 842, month: 2, day: 3, precision: "day" }, { ...named, dateFormat: "D MMMM YYYY" }),
   "3 Thaw 842",
@@ -93,6 +99,15 @@ const afterEpoch = partsToCalendarDate({ year: 1, month: 1, day: 1, precision: "
 assert.equal(afterEpoch.year, 1000);
 assert.equal(afterEpoch.month, 1);
 assert.equal(afterEpoch.day, 1);
+
+// Stored values keep Gregorian-anchored digits; ordinals are computed after mapping them
+// into the calendar's own year space. Custom 2-2-1 of `named` (stored Gregorian 1-5-22) = 141.
+assert.equal(
+  chronologyCompareOrdinal(partsToCalendarDate({ year: 2, month: 2, day: 1, precision: "day" }, named), named),
+  141,
+);
+assert.equal(chronologyCompareOrdinal("1-5-22", named), 141);
+assert.equal(chronologyCompareOrdinal(partsToCalendarDate({ year: 2, precision: "year" }, named), named), 103);
 
 assert.equal("primary" in normalizeCalendarDefinition({ primary: true, months: [] }), false);
 assert.deepEqual(

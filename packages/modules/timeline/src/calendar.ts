@@ -2,6 +2,7 @@ import {
   formatCalendarDate,
   parseCalendarDate,
   serializeCalendarDate,
+  signedGregorianYear,
   type CalendarDate,
 } from "../../../../src/lib/date.ts";
 
@@ -369,6 +370,26 @@ function dayOfYear(definition: CalendarDefinition, month?: number, day?: number)
   return before + Math.max(1, Math.min(monthDays, day ?? 1));
 }
 
+/** Ordinal position within a structured calendar year space; null when Gregorian fallback is required. */
+export function chronologyCompareOrdinal(value: unknown, definition: CalendarDefinition | null): number | null {
+  const date = parseCalendarDate(value);
+  if (!date) return null;
+  if (!definition || !calendarHasStructure(definition) || definition.months.length === 0) return null;
+  const yearLength = computedYearLength(definition);
+  if (!yearLength) return null;
+  // Stored dates keep Gregorian-anchored digits ("absolute values stay Gregorian"); map the
+  // stored value into this calendar's own year space before comparing, the same way the
+  // date editor does when it displays custom-calendar parts.
+  const parts = calendarDateToParts(date, definition);
+  if (!parts || !Number.isFinite(parts.year)) return null;
+  const baseYear = startingYear(definition);
+  if ((parts.precision ?? "year") === "year" || parts.month === undefined) {
+    return (parts.year - baseYear) * yearLength;
+  }
+  const doy = dayOfYear(definition, parts.month, parts.day ?? 1);
+  return (parts.year - baseYear) * yearLength + (doy - 1);
+}
+
 function partsFromDayOfYear(definition: CalendarDefinition, dayOfYearValue: number): { month?: number; day: number } {
   if (definition.months.length === 0) return { day: dayOfYearValue };
   let remaining = dayOfYearValue;
@@ -398,9 +419,11 @@ function seasonName(definition: CalendarDefinition, month?: number, day?: number
 export function calendarDateToParts(value: unknown, definition: CalendarDefinition | null): CalendarParts | null {
   const date = parseCalendarDate(value);
   if (!date) return null;
+  // BCE values store a positive magnitude plus era; day arithmetic needs the signed year.
+  const signedYear = signedGregorianYear(date);
   if (!definition || !calendarHasStructure(definition)) {
     return {
-      year: date.year,
+      year: signedYear,
       month: date.month,
       day: date.day,
       precision: date.precision ?? "year",
@@ -409,18 +432,18 @@ export function calendarDateToParts(value: unknown, definition: CalendarDefiniti
   const yearLength = computedYearLength(definition);
   if (!yearLength) {
     return {
-      year: startingYear(definition) + (date.year - (definition.epoch?.year ?? 1)),
+      year: startingYear(definition) + (signedYear - (definition.epoch?.year ?? 1)),
       precision: "year",
     };
   }
   if ((date.precision ?? "year") === "year" || date.month === undefined) {
     return {
-      year: startingYear(definition) + (date.year - (definition.epoch?.year ?? 1)),
+      year: startingYear(definition) + (signedYear - (definition.epoch?.year ?? 1)),
       precision: "year",
     };
   }
   if ((date.precision ?? "day") === "month" || date.day === undefined) {
-    const storedDay = utcDayNumber(date.year, date.month, 1);
+    const storedDay = utcDayNumber(signedYear, date.month, 1);
     const delta = storedDay - epochDayNumber(definition);
     const yearOffset = Math.floor(delta / yearLength);
     let doy = (delta % yearLength) + 1;
@@ -439,7 +462,7 @@ export function calendarDateToParts(value: unknown, definition: CalendarDefiniti
       precision: "month",
     };
   }
-  const storedDay = utcDayNumber(date.year, date.month, date.day ?? 1);
+  const storedDay = utcDayNumber(signedYear, date.month, date.day ?? 1);
   const delta = storedDay - epochDayNumber(definition);
   const yearOffset = Math.floor(delta / yearLength);
   let doy = (delta % yearLength) + 1;
@@ -497,7 +520,7 @@ export function partsToCalendarDate(parts: CalendarParts, definition: CalendarDe
 }
 
 function eraSuffix(year: number, definition: CalendarDefinition): string {
-  if (year < 1) {
+  if (year < 0) {
     const label = definition.eraLabels?.bce?.trim() || "BCE";
     return label ? ` ${label}` : "";
   }
@@ -510,7 +533,9 @@ export function formatCalendarParts(parts: CalendarParts, definition: CalendarDe
   const month = parts.month !== undefined ? definition.months[parts.month - 1] : undefined;
   const weekday = parts.weekday !== undefined ? definition.weekdays[parts.weekday] : undefined;
   const pad = (value: number) => String(value).padStart(2, "0");
-  const displayYear = parts.year < 1 ? 1 - parts.year : parts.year;
+  // Display mirrors the signed storage year: -44 renders as "44 <BCE label>", matching what
+  // the user typed and what the Gregorian ISO form shows.
+  const displayYear = parts.year < 0 ? -parts.year : parts.year;
   const tokens: Record<string, string> = {
     YYYY: String(displayYear),
     YY: String(Math.abs(displayYear)).slice(-2).padStart(2, "0"),

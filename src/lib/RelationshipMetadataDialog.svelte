@@ -4,22 +4,15 @@ import { X, ArrowRight } from "@lucide/svelte";
 import type { FieldDefinition } from "../../packages/module-api/src/index";
 import type { Entity, Relationship } from "$lib/project/client";
 import { humanizeId } from "$lib/schema-workbench";
+import type { CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import {
-  calendarDateToParts,
-  daysInCalendarMonth,
-  formatWithCalendar,
-  partsToCalendarDate,
-  type CalendarDefinition,
-} from "../../packages/modules/timeline/src/calendar";
-import {
-  formatCalendarDate,
   GREGORIAN_CALENDAR_ID,
   isGregorianCalendarId,
   parseCalendarDate,
   serializeCalendarDate,
   type CalendarDate,
 } from "$lib/date";
-import CalendarPicker from "$lib/CalendarPicker.svelte";
+import DateEditor from "$lib/date/DateEditor.svelte";
 
 type Metadata = Record<string, unknown>;
 type MetadataField = {
@@ -141,24 +134,6 @@ function selectedCalendarId(key: string): string {
 function definitionForDateKey(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(selectedCalendarId(key));
 }
-function dateDraftForKey(key: string): Partial<CalendarDate> | null {
-  return (
-    dateForKey(key) ?? (dateEditorOpen[key] ? { calendar: selectedCalendarId(key), era: "CE", precision: "day" } : null)
-  );
-}
-function datePartsDraft(key: string) {
-  const stored = dateForKey(key);
-  const calendar = definitionForDateKey(key);
-  if (stored) return calendarDateToParts(stored, calendar);
-  return dateEditorOpen[key]
-    ? {
-        year: undefined as number | undefined,
-        month: undefined as number | undefined,
-        day: undefined as number | undefined,
-        precision: "day" as const,
-      }
-    : null;
-}
 function setDateCalendar(key: string, calendarId: string) {
   dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
   const previous = dateForKey(key);
@@ -166,88 +141,11 @@ function setDateCalendar(key: string, calendarId: string) {
     dateEditorOpen = { ...dateEditorOpen, [key]: true };
     return;
   }
-  const next = serializeCalendarDate({ ...previous, calendar: calendarId });
-  setValue(key, next);
+  setValue(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
 }
 function openDateEditor(key: string) {
   dateEditorOpen = { ...dateEditorOpen, [key]: true };
-  dateCalendarByField = { ...dateCalendarByField, [key]: GREGORIAN_CALENDAR_ID };
-  setValue(key, "");
-}
-function updateDateField(key: string, patch: Partial<CalendarDate>) {
-  const calendar = definitionForDateKey(key);
-  const calendarId = selectedCalendarId(key);
-  const previous = dateForKey(key);
-  const currentParts = calendarDateToParts(
-    previous ?? { calendar: calendarId, era: "CE", year: 1, precision: "year" },
-    calendar,
-  ) ?? { year: 1, precision: "year" as const };
-  const nextParts = { ...currentParts, ...patch };
-  if ((patch as Record<string, unknown>).precision === undefined) {
-    const hasMonth = (nextParts as Record<string, unknown>).month !== undefined;
-    const hasDay = (nextParts as Record<string, unknown>).day !== undefined;
-    if (!hasMonth) {
-      nextParts.precision = "year";
-      delete (nextParts as Record<string, unknown>).day;
-    } else if (!hasDay) {
-      nextParts.precision = "month";
-    } else {
-      if (nextParts.precision !== "hour" && nextParts.precision !== "minute" && nextParts.precision !== "second") {
-        nextParts.precision = "day";
-      }
-    }
-  }
-  if (patch.precision === "year") {
-    delete nextParts.month;
-    delete nextParts.day;
-  }
-  if (patch.precision === "month") {
-    delete (nextParts as Record<string, unknown>).day;
-    if (nextParts.month === undefined) nextParts.month = 1;
-  }
-  if (patch.precision === "day") {
-    nextParts.month ??= 1;
-    nextParts.day ??= 1;
-  }
-  const stored = partsToCalendarDate(nextParts, calendar);
-  stored.calendar = calendarId;
-  if (previous) {
-    stored.hour = patch.hour ?? previous.hour;
-    stored.minute = patch.minute ?? previous.minute;
-    stored.second = patch.second ?? previous.second;
-  } else if (patch.hour !== undefined) {
-    stored.hour = patch.hour;
-    stored.minute = patch.minute;
-    stored.second = patch.second;
-  }
-  if (patch.precision === "hour" || patch.precision === "minute" || patch.precision === "second") {
-    stored.precision = patch.precision;
-  }
-  setValue(key, serializeCalendarDate(stored));
-}
-function updateDatePart(key: string, part: "year" | "month" | "day", raw: string, min: number, max?: number) {
-  if (!raw.trim()) {
-    if (part === "month") {
-      updateDateField(key, { precision: "year" });
-    } else if (part === "day") {
-      updateDateField(key, { precision: "month" });
-    } else if (part === "year") {
-      clearDateField(key);
-    }
-    return;
-  }
-  const parsed = Math.floor(Number(raw));
-  if (!Number.isFinite(parsed)) return;
-  updateDateField(key, { [part]: Math.min(max ?? parsed, Math.max(min, parsed)) });
-}
-function updateDateTime(key: string, raw: string) {
-  const [hour, minute, second] = raw.split(":").map(Number);
-  if (![hour, minute, second].every(Number.isFinite)) return;
-  updateDateField(key, { hour, minute, second, precision: "second" });
-}
-function calendarTimeValue(date: Partial<CalendarDate>): string {
-  if (![date.hour, date.minute, date.second].every((part) => typeof part === "number")) return "";
-  return [date.hour, date.minute, date.second].map((part) => String(part).padStart(2, "0")).join(":");
+  dateCalendarByField = { ...dateCalendarByField, [key]: dateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID };
 }
 function clearDateField(key: string) {
   setValue(key, "");
@@ -256,9 +154,6 @@ function clearDateField(key: string) {
   delete next[key];
   dateCalendarByField = next;
 }
-
-// Import partsToCalendarDate that we missed above - need to adjust imports
-// We'll handle by importing directly in script tag; to avoid duplication, we patch import section after.
 
 async function submit() {
   const next = { ...draft };
@@ -374,111 +269,15 @@ onMount(() => {
               <span class="relationship-metadata-field-label"
                 >{field.label}{#if field.required}<b aria-hidden="true"> *</b>{/if}</span>
               {#if dateForKey(field.key) || dateEditorOpen[field.key]}
-                {@const date = dateDraftForKey(field.key) ?? {
-                  calendar: GREGORIAN_CALENDAR_ID,
-                  era: "CE",
-                  precision: "day",
-                }}
-                {@const parts = datePartsDraft(field.key)}
-                {@const calendar = definitionForDateKey(field.key)}
-                {@const months = calendar?.months ?? []}
-                <div class="date-editor">
-                  <CalendarPicker
-                    selectedId={selectedCalendarId(field.key)}
-                    calendars={worldCalendars()}
-                    onSelect={(id) => setDateCalendar(field.key, id)} />
-                  <div class="date-fields">
-                    <label for={`relationship-${relationship.id}-${field.key}-year`}
-                      >Year<input
-                        id={`relationship-${relationship.id}-${field.key}-year`}
-                        aria-label={`${field.label} year`}
-                        type="number"
-                        value={parts?.year ?? date.year ?? ""}
-                        onchange={(event) =>
-                          updateDatePart(
-                            field.key,
-                            "year",
-                            (event.currentTarget as HTMLInputElement).value,
-                            Number.MIN_SAFE_INTEGER,
-                          )} /></label
-                    >{#if months.length > 0}<label for={`relationship-${relationship.id}-${field.key}-month`}
-                        >Month<select
-                          id={`relationship-${relationship.id}-${field.key}-month`}
-                          aria-label={`${field.label} month`}
-                          value={parts?.month ?? ""}
-                          onchange={(event) =>
-                            updateDatePart(
-                              field.key,
-                              "month",
-                              (event.currentTarget as HTMLSelectElement).value,
-                              1,
-                              months.length,
-                            )}
-                          ><option value="">Month</option>{#each months as month, index}<option value={index + 1}
-                              >{month.name}</option
-                            >{/each}</select
-                        ></label
-                      >{:else}<label for={`relationship-${relationship.id}-${field.key}-month`}
-                        >Month<input
-                          id={`relationship-${relationship.id}-${field.key}-month`}
-                          aria-label={`${field.label} month`}
-                          type="number"
-                          min="1"
-                          max="12"
-                          value={parts?.month ?? date.month ?? ""}
-                          onchange={(event) =>
-                            updateDatePart(
-                              field.key,
-                              "month",
-                              (event.currentTarget as HTMLInputElement).value,
-                              1,
-                              12,
-                            )} /></label
-                      >{/if}<label for={`relationship-${relationship.id}-${field.key}-day`}
-                      >Day<input
-                        id={`relationship-${relationship.id}-${field.key}-day`}
-                        aria-label={`${field.label} day`}
-                        type="number"
-                        min="1"
-                        max={daysInCalendarMonth(
-                          calendar,
-                          parts?.year ?? date.year ?? 1,
-                          parts?.month ?? date.month ?? 1,
-                        )}
-                        value={parts?.day ?? date.day ?? ""}
-                        onchange={(event) =>
-                          updateDatePart(
-                            field.key,
-                            "day",
-                            (event.currentTarget as HTMLInputElement).value,
-                            1,
-                            daysInCalendarMonth(
-                              calendar,
-                              parts?.year ?? date.year ?? 1,
-                              parts?.month ?? date.month ?? 1,
-                            ),
-                          )} /></label
-                    ><label class="date-time-field" for={`relationship-${relationship.id}-${field.key}-time`}
-                      >Time<input
-                        id={`relationship-${relationship.id}-${field.key}-time`}
-                        aria-label={`${field.label} time`}
-                        type="time"
-                        step="1"
-                        value={calendarTimeValue(date)}
-                        onchange={(event) =>
-                          updateDateTime(field.key, (event.currentTarget as HTMLInputElement).value)} /></label>
-                  </div>
-                  <small class="date-preview"
-                    >{typeof (parts?.year ?? date.year) === "number"
-                      ? formatWithCalendar(draft[field.key], calendar) !== "Undated"
-                        ? formatWithCalendar(draft[field.key], calendar)
-                        : draft[field.key]
-                          ? formatCalendarDate(draft[field.key])
-                          : "Add a date"
-                      : "Add a date"}</small
-                  ><button class="date-clear" type="button" onclick={() => clearDateField(field.key)}
-                    >Clear date</button>
-                </div>
+                <DateEditor
+                  label={field.label}
+                  value={draft[field.key]}
+                  calendar={definitionForDateKey(field.key)}
+                  calendars={worldCalendars()}
+                  selectedCalendarId={selectedCalendarId(field.key)}
+                  onChange={(next) => setValue(field.key, next)}
+                  onClear={() => clearDateField(field.key)}
+                  onSelectCalendar={(id) => setDateCalendar(field.key, id)} />
               {:else}<button class="date-empty" type="button" onclick={() => openDateEditor(field.key)}
                   >Add a date</button
                 >{/if}
@@ -743,75 +542,17 @@ h2 {
   cursor: wait;
   opacity: 0.55;
 }
-.date-editor {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--theme-warning-bg, #fcf8f1);
-}
-.date-fields {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(108px, 1.6fr);
-  gap: 6px;
-}
-.date-fields label {
-  display: grid;
-  gap: 4px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.date-fields input,
-.date-fields select {
-  min-width: 0;
-  width: 100%;
-  min-height: var(--control-min-height);
-  padding: 8px 6px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
-  color: var(--ink);
-  font-size: 11px;
-  outline: none;
-}
-.date-fields select {
-  appearance: none;
-  -webkit-appearance: none;
-  background-color: var(--canvas);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 8px center;
-  padding-right: 26px;
-  cursor: pointer;
-}
-.date-fields input:focus,
-.date-fields select:focus {
-  border-color: var(--accent-soft);
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-.date-preview {
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-}
-.date-clear,
 .date-empty {
   width: fit-content;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink-faint);
-  font-size: 10px;
-  cursor: pointer;
-}
-.date-empty {
   padding: 8px 10px;
   border: 1px dashed var(--theme-warning-border, #d3c0a9);
   border-radius: 7px;
+  border-width: 1px;
+  border-style: dashed;
+  background: transparent;
   color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
 }
 @media (max-width: 520px) {
   .relationship-metadata-backdrop {
@@ -822,12 +563,6 @@ h2 {
     max-height: calc(100vh - 20px);
     padding: 18px;
     border-radius: 12px 12px 8px 8px;
-  }
-  .date-fields {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .date-time-field {
-    grid-column: 1 / -1;
   }
 }
 </style>

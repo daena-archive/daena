@@ -1,5 +1,5 @@
 import type { FieldRecord, ModuleManifest } from "../../../module-api/src/index";
-import { parseCalendarDate, type CalendarDate } from "../../../../src/lib/date.ts";
+import { parseCalendarDate, signedGregorianYear, type CalendarDate } from "../../../../src/lib/date.ts";
 
 export type TimelineLayer = "dates" | "lifelines";
 export type TimelineFieldRole = "point" | "start" | "end";
@@ -131,7 +131,8 @@ export function timelineDateAnchor(value: unknown): { date: Date; source: Calend
   const source = parseCalendarDate(value);
   if (!source) return null;
   const date = new Date(0);
-  date.setUTCFullYear(source.year, (source.month ?? 1) - 1, source.day ?? 1);
+  // BCE values carry a positive magnitude + era; anchoring needs the signed year.
+  date.setUTCFullYear(signedGregorianYear(source), (source.month ?? 1) - 1, source.day ?? 1);
   date.setUTCHours(source.hour ?? 0, source.minute ?? 0, source.second ?? 0, 0);
   return Number.isFinite(date.getTime()) ? { date, source } : null;
 }

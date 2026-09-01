@@ -64,8 +64,17 @@ export function buildElkGraph(layout: LayoutGraph, previousOrder: string[] = [])
     .sort((left, right) => compareNodes(left, right, order));
   const peopleIds = new Set(people.map((node) => node.id));
   const unions = new Map(layout.nodes.filter((node) => node.kind === "union").map((node) => [node.id, node]));
+  const spousesOf = new Map<string, string[]>();
+  for (const union of unions.values()) {
+    const members = (union.memberIds ?? []).filter((id) => peopleIds.has(id));
+    if (members.length !== 2) continue;
+    const [left, right] = members;
+    spousesOf.set(left, [...(spousesOf.get(left) ?? []), right]);
+    spousesOf.set(right, [...(spousesOf.get(right) ?? []), left]);
+  }
   const edges = layout.edges.flatMap((edge) => {
     if (edge.role === "direct-parent") {
+      if ((spousesOf.get(edge.source) ?? []).includes(edge.target)) return [];
       return [{ id: edge.id, sources: [edge.source], targets: [edge.target] }];
     }
     if (edge.role !== "child") return [];
@@ -76,14 +85,6 @@ export function buildElkGraph(layout: LayoutGraph, previousOrder: string[] = [])
       targets: [edge.target],
     }));
   });
-  const spousesOf = new Map<string, string[]>();
-  for (const union of unions.values()) {
-    const members = (union.memberIds ?? []).filter((id) => peopleIds.has(id));
-    if (members.length !== 2) continue;
-    const [left, right] = members;
-    spousesOf.set(left, [...(spousesOf.get(left) ?? []), right]);
-    spousesOf.set(right, [...(spousesOf.get(right) ?? []), left]);
-  }
   const seen = new Set(edges.map((edge) => `${edge.sources[0]}->${edge.targets[0]}`));
   for (const edge of [...edges]) {
     const target = edge.targets[0];
@@ -404,11 +405,24 @@ function placeChainChildren(unions: PositionedNode[], byId: Map<string, Position
 }
 
 function placeParentGroup(union: PositionedNode, members: PositionedNode[]) {
-  const minX = Math.min(...members.map((node) => node.x));
-  const maxX = Math.max(...members.map((node) => node.x + node.width));
-  const maxBottom = Math.max(...members.map((node) => node.y + node.height));
-  union.x = (minX + maxX) / 2 - union.width / 2;
-  union.y = maxBottom + 24;
+  const sorted = [...members].sort((left, right) => left.x - right.x || left.id.localeCompare(right.id));
+  if (sorted.length === 0) return;
+  const y = Math.max(...sorted.map((node) => node.y));
+  const height = sorted[0]?.height ?? 0;
+  const packed = sorted.reduce((sum, node) => sum + node.width, 0) + COUPLE_PAD * (sorted.length + 1) + union.width;
+  const centroid = sorted.reduce((sum, node) => sum + node.x + node.width / 2, 0) / sorted.length;
+  let x = centroid - packed / 2;
+  const unionAfter = Math.floor((sorted.length - 1) / 2);
+  for (let index = 0; index < sorted.length; index += 1) {
+    const person = sorted[index];
+    person.x = x;
+    person.y = y;
+    x += person.width + COUPLE_PAD;
+    if (index !== unionAfter) continue;
+    union.x = x;
+    union.y = y + Math.max(0, (height - union.height) / 2);
+    x += union.width + COUPLE_PAD;
+  }
 }
 
 type LayoutUnit = { ids: string[]; x: number; y: number; width: number; height: number };
@@ -491,6 +505,29 @@ function resolveCollisions(graph: PositionedGraph, byId: Map<string, PositionedN
   }
 }
 
+function placeExtraParents(graph: PositionedGraph, byId: Map<string, PositionedNode>) {
+  for (const edge of graph.edges) {
+    if (edge.role !== "direct-parent") continue;
+    const parent = byId.get(edge.source);
+    const child = byId.get(edge.target);
+    if (!parent || !child) continue;
+    const unionEdge = graph.edges.find(
+      (candidate) => candidate.role === "child" && candidate.target === edge.target && candidate.source !== edge.source,
+    );
+    if (!unionEdge) continue;
+    const union = byId.get(unionEdge.source);
+    if (union?.kind !== "union") continue;
+    const unionMembers = (union.memberIds ?? [])
+      .map((id) => byId.get(id))
+      .filter((node): node is PositionedNode => Boolean(node));
+    if (unionMembers.length === 0) continue;
+    const rowY = Math.max(...unionMembers.map((node) => node.y));
+    const anchor = unionMembers.reduce((left, right) => (left.x < right.x ? left : right));
+    parent.y = rowY;
+    parent.x = anchor.x - COUPLE_PAD - parent.width;
+  }
+}
+
 export function placeUnions(graph: PositionedGraph): PositionedGraph {
   const nodes = graph.nodes.map((node) => ({ ...node }));
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -517,6 +554,7 @@ export function placeUnions(graph: PositionedGraph): PositionedGraph {
     const unions = ids.map((id) => byId.get(id)).filter((node): node is PositionedNode => node?.kind === "union");
     placeChainChildren(unions, byId, next);
   }
+  placeExtraParents(next, byId);
   resolveCollisions(next, byId);
   return next;
 }

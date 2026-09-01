@@ -5,6 +5,11 @@ export const HOUSE_TYPE = "daena.houses:house";
 export const PARENT_RELATIONSHIP = "family_parent_of";
 export const PARTNER_RELATIONSHIP = "family_partner_with";
 export const MEMBERSHIP_RELATIONSHIP = "family_member_of";
+export const KINSHIP_RELATIONSHIP_TYPES = [PARENT_RELATIONSHIP, PARTNER_RELATIONSHIP, MEMBERSHIP_RELATIONSHIP] as const;
+
+export function isKinshipRelationshipType(type: string): boolean {
+  return (KINSHIP_RELATIONSHIP_TYPES as readonly string[]).includes(type);
+}
 export const LORE_NAMESPACE = "lore";
 export const DEFAULT_SECONDARY_FIELD = "occupation";
 export const PERSON_NODE_WIDTH = 220;

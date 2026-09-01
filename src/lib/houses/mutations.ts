@@ -9,7 +9,12 @@ import {
 } from "./model.ts";
 
 export type MutationCode =
-  "relationship.cycle" | "relationship.duplicate" | "relationship.self" | "revision-conflict" | "unknown";
+  | "relationship.cycle"
+  | "relationship.duplicate"
+  | "relationship.missing"
+  | "relationship.self"
+  | "revision-conflict"
+  | "unknown";
 
 export interface MutationFailure {
   code: MutationCode;
@@ -51,6 +56,9 @@ export function classifyMutationError(error: unknown): MutationFailure {
   }
   if (code.includes("revision") || /revision conflict/i.test(message)) {
     return { code: "revision-conflict", message: message || "This record changed in another view." };
+  }
+  if (/query returned no rows/i.test(message)) {
+    return { code: "relationship.missing", message: "That relationship is no longer in the project." };
   }
   return { code: "unknown", message: message || "The change could not be saved." };
 }

@@ -26,6 +26,7 @@ let {
   onUpdated,
   onDeleted,
   onClose,
+  onMissing,
   docked = false,
 }: {
   context: ModuleContext;
@@ -34,6 +35,7 @@ let {
   onUpdated: (relationship: FamilyRelationship) => void;
   onDeleted: (id: string) => void;
   onClose: () => void;
+  onMissing?: () => void;
   docked?: boolean;
 } = $props();
 
@@ -198,6 +200,11 @@ async function remove() {
     onDeleted(relationship.id);
   } catch (cause) {
     const failure = classifyMutationError(cause);
+    if (failure.code === "relationship.missing") {
+      onDeleted(relationship.id);
+      onMissing?.();
+      return;
+    }
     error = failure.message;
     conflict = failure.code === "revision-conflict";
   } finally {

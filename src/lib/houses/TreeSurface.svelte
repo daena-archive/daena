@@ -72,6 +72,7 @@ let {
   initialRootId = null,
   initialSession = null,
   restoreNonce = 0,
+  kinshipRefreshEpoch = 0,
   avatar,
   onOpenEntity,
   onOpenHouseEntry,
@@ -85,12 +86,15 @@ let {
   onMembershipChanged,
   onEditPersonIdentity,
   onArchivePerson,
+  onKinshipChanged,
 }: {
   context: ModuleContext;
   projectId: string;
   initialRootId?: string | null;
   initialSession?: TreeSession | null;
   restoreNonce?: number;
+  /** Bumped when kinship data changes outside the tree (for example Lore relationship fields). */
+  kinshipRefreshEpoch?: number;
   avatar?: Snippet<[string, string]>;
   onOpenEntity: (entityId: string) => void;
   onOpenHouseEntry?: (houseId: string) => void;
@@ -104,6 +108,7 @@ let {
   onMembershipChanged?: () => void;
   onEditPersonIdentity?: (personId: string) => void | Promise<void>;
   onArchivePerson?: (personId: string) => void | Promise<void>;
+  onKinshipChanged?: () => void;
 } = $props();
 
 let rootId = $state<string | null>(null);
@@ -145,6 +150,7 @@ let previousOrder: string[] = [];
 let latestLayoutGraph: ReturnType<typeof buildLayoutGraph> | null = null;
 let appliedInitial: string | null = null;
 let appliedRestore = 0;
+let appliedKinshipRefresh = -1;
 let rawPeople: FamilyPerson[] = [];
 let rawRelationships: Relationship[] = [];
 let collected = new Map<string, Relationship>();
@@ -714,6 +720,10 @@ function selectCanvasPerson(id: string | null) {
 }
 
 function selectCanvasRelationship(id: string | null) {
+  if (id && !graph.relationships.has(id)) {
+    void refreshKinshipData();
+    return;
+  }
   selectedRelationshipId = id;
   if (!id) return;
   selectedPersonId = null;
@@ -725,6 +735,10 @@ function selectCanvasRelationship(id: string | null) {
       (people.has(relationship.targetId) ? relationship.targetId : null) ??
       focusReturnPersonId;
   }
+}
+
+function notifyKinshipChanged() {
+  onKinshipChanged?.();
 }
 
 function onSurfaceKeydown(event: KeyboardEvent) {
@@ -858,6 +872,7 @@ async function afterLink() {
   queueFocusPerson(parentId ?? selectedPersonId ?? rootId);
   if (houseId) await loadHouse(houseId, false, false, houseName);
   else await loadRoot(rootId, false, nextExpansions);
+  notifyKinshipChanged();
 }
 
 $effect(() => {
@@ -902,6 +917,26 @@ async function reloadActiveHouse(fit = false) {
   await loadHouse(houseId, fit, false, houseName);
   await refreshHouseMembers(houseId);
   onMembershipChanged?.();
+}
+
+async function refreshKinshipData() {
+  if (!rootId && !houseId) return;
+  const savedExpansions = [...expansions];
+  const savedPerson = selectedPersonId;
+  const savedRelationship = selectedRelationshipId;
+  const savedViewport = viewport;
+  previousOrder = [...(positioned?.nodes.map((node) => node.id) ?? [])];
+  if (houseId) {
+    await loadHouse(houseId, false, false, houseName);
+    selectedPersonId = savedPerson;
+    selectedRelationshipId = savedRelationship;
+    viewport = savedViewport;
+  } else if (rootId) {
+    await loadRoot(rootId, false, savedExpansions);
+    selectedPersonId = savedPerson;
+    selectedRelationshipId = savedRelationship;
+    viewport = savedViewport;
+  }
 }
 
 function clearView() {
@@ -979,6 +1014,15 @@ $effect(() => {
   };
 });
 
+$effect(() => {
+  const epoch = kinshipRefreshEpoch;
+  if (epoch === appliedKinshipRefresh) return;
+  const isFirst = appliedKinshipRefresh < 0;
+  appliedKinshipRefresh = epoch;
+  if (isFirst || (!rootId && !houseId)) return;
+  void refreshKinshipData();
+});
+
 function applyRelationshipUpdate(relationship: FamilyRelationship) {
   collected.set(relationship.id, {
     id: relationship.id as Relationship["id"],
@@ -997,6 +1041,7 @@ function applyRelationshipUpdate(relationship: FamilyRelationship) {
   });
   rawRelationships = [...collected.values()];
   applyVisible(expansions, false);
+  notifyKinshipChanged();
 }
 
 function applyRelationshipDelete(id: string) {
@@ -1004,6 +1049,7 @@ function applyRelationshipDelete(id: string) {
   rawRelationships = [...collected.values()];
   selectedRelationshipId = null;
   applyVisible(expansions, false);
+  notifyKinshipChanged();
 }
 </script>
 
@@ -1318,7 +1364,8 @@ function applyRelationshipDelete(id: string) {
                 {people}
                 onClose={closeDock}
                 onUpdated={applyRelationshipUpdate}
-                onDeleted={applyRelationshipDelete} />
+                onDeleted={applyRelationshipDelete}
+                onMissing={() => void refreshKinshipData()} />
             {:else if selectedPerson}
               <FamilyPersonPanel
                 person={selectedPerson}

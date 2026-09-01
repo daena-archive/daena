@@ -101,6 +101,12 @@ assert.equal(TREE_KEYBOARD.keys.openRelationship, "r");
 
 assert.match(shell, /onEditPersonIdentity=/);
 assert.match(shell, /onArchivePerson=/);
+assert.match(shell, /kinshipRefreshEpoch/);
+assert.match(shell, /bumpKinshipRefresh/);
+assert.match(shell, /isKinshipRelationshipType/);
 assert.match(shell, /ENTITY_ACTIONS/);
+
+assert.match(surface, /kinshipRefreshEpoch/);
+assert.match(surface, /refreshKinshipData/);
 
 console.log("tree interaction checks passed");

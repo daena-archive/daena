@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Elk from "elkjs/lib/elk.bundled.js";
 import {
   houseMemberCounts,
   listHouseMembers,
@@ -12,6 +13,7 @@ import {
   familyEdgeHandles,
   isCurrentGeneration,
   placeUnions,
+  positionedFromElk,
 } from "../src/lib/houses/layout.ts";
 import {
   PERSON_NODE_HEIGHT,
@@ -173,6 +175,120 @@ assert.equal(
   layout.nodes.some((node) => node.id === "union:partner:r5"),
   true,
   "childless partnership gets its own union",
+);
+
+const { graph: threeParents } = normalizeGenealogy(
+  [
+    person("arefe", "Arefe Ahmadi Afshar"),
+    person("hasan", "Hasan Afshar"),
+    person("feze"),
+    person("khosrow"),
+    person("hamid"),
+    person("ensie"),
+  ],
+  [
+    parent("p-h", "arefe", "hasan"),
+    parent("p-h1", "khosrow", "hasan"),
+    parent("p-h2", "feze", "hasan"),
+    parent("p-m1", "khosrow", "hamid"),
+    parent("p-m2", "feze", "hamid"),
+    parent("p-e1", "khosrow", "ensie"),
+    parent("p-e2", "feze", "ensie"),
+    partner("r-kf", "feze", "khosrow"),
+  ],
+);
+const threeParentVisible = initialNeighborhood(threeParents, "khosrow");
+const threeParentLayout = buildLayoutGraph(threeParents, threeParentVisible);
+assert.equal(
+  threeParentLayout.nodes.some(
+    (node) => node.kind === "union" && node.memberIds?.includes("arefe") && node.memberIds?.includes("feze"),
+  ),
+  false,
+  "a third parent reuses the existing coparent union instead of creating a three-member union",
+);
+assert.equal(
+  threeParentLayout.edges.some(
+    (edge) => edge.role === "direct-parent" && edge.source === "arefe" && edge.target === "hasan",
+  ),
+  true,
+  "the extra parent keeps a direct link to the child",
+);
+assert.equal(
+  threeParentLayout.edges.some(
+    (edge) => edge.role === "child" && edge.source === "union:parents:feze:khosrow" && edge.target === "hasan",
+  ),
+  true,
+  "the shared coparent union still links to the child",
+);
+const hasanChildEdge = threeParentLayout.edges.find(
+  (edge) => edge.role === "child" && edge.source === "union:parents:feze:khosrow" && edge.target === "hasan",
+);
+assert.notEqual(hasanChildEdge?.relationshipId, "p-h", "coparent child edges must not borrow a third parent's link");
+assert.ok(
+  hasanChildEdge?.relationshipId === "p-h1" || hasanChildEdge?.relationshipId === "p-h2",
+  "coparent child edges reference a parent in the union",
+);
+
+const threeParentElk = buildElkGraph(threeParentLayout);
+const elkEngine = new Elk();
+const threeParentSnapped = placeUnions(positionedFromElk(1, threeParentLayout, await elkEngine.layout(threeParentElk)));
+const byThreeParentId = new Map(threeParentSnapped.nodes.map((node) => [node.id, node]));
+const arefeNode = byThreeParentId.get("arefe");
+const hasanNode = byThreeParentId.get("hasan");
+const fezeNode = byThreeParentId.get("feze");
+const khosrowNode = byThreeParentId.get("khosrow");
+assert.equal(fezeNode?.y, khosrowNode?.y, "coparents stay on one row");
+assert.equal(arefeNode?.y, fezeNode?.y, "the extra parent shares the coparent row");
+assert.ok((hasanNode?.y ?? 0) > (arefeNode?.y ?? 0) + (arefeNode?.height ?? 0), "the child stays below the parents");
+assert.ok(
+  (arefeNode?.x ?? 0) + (arefeNode?.width ?? 0) <= (fezeNode?.x ?? 0),
+  "the extra parent sits beside the coparent union",
+);
+
+const { graph: partnerAndParent } = normalizeGenealogy(
+  [
+    person("hasan", "Hasan Afshar"),
+    person("arefe", "Arefe Ahmadi Afshar"),
+    person("ensie", "Ensie Afshar"),
+    person("masoumi", "Hasan Masoumi"),
+    person("hamid", "Hamid Afshar"),
+  ],
+  [
+    partner("r-ha", "hasan", "arefe"),
+    parent("p-wrong", "arefe", "hasan"),
+    parent("p-h1", "ensie", "hasan"),
+    parent("p-h2", "masoumi", "hasan"),
+    parent("p-m1", "hasan", "hamid"),
+    parent("p-m2", "arefe", "hamid"),
+  ],
+);
+const partnerParentLayout = buildLayoutGraph(partnerAndParent, initialNeighborhood(partnerAndParent, "hasan"));
+assert.equal(
+  partnerParentLayout.edges.some(
+    (edge) => edge.role === "direct-parent" && edge.source === "arefe" && edge.target === "hasan",
+  ),
+  true,
+  "partner and parent links between the same two people are both kept for display",
+);
+assert.equal(
+  partnerParentLayout.edges.some(
+    (edge) => edge.role === "child" && edge.source === "union:parents:arefe:hasan" && edge.target === "hasan",
+  ),
+  false,
+  "a coparent union is not reused as the child's own parent union",
+);
+assert.equal(
+  partnerParentLayout.edges.some(
+    (edge) => edge.role === "child" && edge.target === "hamid" && edge.source === "union:parents:arefe:hasan",
+  ),
+  true,
+  "married coparents still share one union for their child",
+);
+const partnerParentElk = buildElkGraph(partnerParentLayout);
+assert.equal(
+  (partnerParentElk.edges ?? []).some((edge) => edge.sources.includes("arefe") && edge.targets.includes("hasan")),
+  false,
+  "layout positions spouses from the partner union, not a parent-child layer constraint",
 );
 
 const layoutAgain = buildLayoutGraph(graph, visible);
@@ -358,6 +474,41 @@ assert.ok(coparentUnion.x + coparentUnion.width < coparentRight.x, "union sits b
 assert.deepEqual(leftToUnion, { sourceHandle: "east", targetHandle: "west" });
 assert.deepEqual(rightToUnion, { sourceHandle: "west", targetHandle: "east" });
 assert.deepEqual(unionToChild, { sourceHandle: "south", targetHandle: "north" });
+
+const tripleParents = placeUnions({
+  generation: 1,
+  nodes: [
+    { id: "a", kind: "person", personId: "a", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 0, y: 0 },
+    { id: "b", kind: "person", personId: "b", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 500, y: 40 },
+    { id: "c", kind: "person", personId: "c", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 1000, y: 10 },
+    {
+      id: "u",
+      kind: "union",
+      memberIds: ["a", "b", "c"],
+      width: UNION_NODE_WIDTH,
+      height: UNION_NODE_HEIGHT,
+      x: 0,
+      y: 300,
+    },
+    { id: "k", kind: "person", personId: "k", width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT, x: 400, y: 400 },
+  ],
+  edges: [
+    blankEdge("p1", "a", "u", "parent"),
+    blankEdge("p2", "b", "u", "parent"),
+    blankEdge("p3", "c", "u", "parent"),
+    blankEdge("k1", "u", "k", "child"),
+  ],
+});
+const tripleA = tripleParents.nodes.find((node) => node.id === "a");
+const tripleB = tripleParents.nodes.find((node) => node.id === "b");
+const tripleC = tripleParents.nodes.find((node) => node.id === "c");
+const tripleU = tripleParents.nodes.find((node) => node.id === "u");
+assert.equal(tripleA.y, tripleB.y, "three coparents share one row");
+assert.equal(tripleB.y, tripleC.y, "three coparents share one row");
+assert.ok(
+  tripleU.x + tripleU.width > tripleA.x && tripleU.x < tripleC.x + tripleC.width,
+  "the union stays within the coparent row",
+);
 
 const trio = [
   { id: "a", x: 0, y: 0, width: PERSON_NODE_WIDTH, height: PERSON_NODE_HEIGHT },
@@ -876,6 +1027,7 @@ assert.equal(
   classifyMutationError(new Error("relationship revision conflict: expected 1, current 2")).code,
   "revision-conflict",
 );
+assert.equal(classifyMutationError(new Error("database error: Query returned no rows")).code, "relationship.missing");
 
 const sessionA = {
   expansions: ["root:parents"],

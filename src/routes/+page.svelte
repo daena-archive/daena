@@ -153,11 +153,13 @@ import languageManifestJson from "../../packages/modules/language/manifest.json"
 import housesManifestJson from "../../packages/modules/houses/manifest.json";
 import TreeSurface from "$lib/houses/TreeSurface.svelte";
 import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
+import { classifyMutationError } from "$lib/houses/mutations.ts";
 import {
   treeHistoryKey,
   sameTreeSession,
   HOUSE_TYPE,
   PERSON_TYPE,
+  isKinshipRelationshipType,
   type TreeSession,
   type HouseMemberSummary,
 } from "$lib/houses/model.ts";
@@ -422,6 +424,8 @@ let collectionError = $state("");
 let collectionRequest = 0;
 /** Bumped to re-query the visible collection page without reloading every entity. */
 let collectionRefreshEpoch = $state(0);
+/** Bumped when kinship relationships or tree-relevant entities change outside TreeSurface. */
+let kinshipRefreshEpoch = $state(0);
 let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
 let houseSummaryRequest = 0;
 let houseSummariesPending = $state(false);
@@ -3751,6 +3755,31 @@ function bumpCollectionRefresh() {
   collectionRefreshEpoch += 1;
 }
 
+function bumpKinshipRefresh() {
+  kinshipRefreshEpoch += 1;
+  void refreshSelectedKinship();
+}
+
+async function refreshSelectedKinship() {
+  if (!selected || projectDiagnostics.length > 0) return;
+  const entityId = selected.id;
+  const context = contextFor();
+  if (!context.module.capabilities.includes("relationship.read")) return;
+  try {
+    const listed = await context.relationships.list(entityId as UUID);
+    if (selected?.id !== entityId) return;
+    relationships = listed.map((relationship) => toHostRelationship(relationship));
+  } catch {
+    // Keep the prior inspector relationships if the refresh fails.
+  }
+}
+
+function entityAffectsKinshipTree(entity: Entity | null | undefined) {
+  if (!entity?.entity_type) return false;
+  const type = entity.entity_type;
+  return type === PERSON_TYPE || type === HOUSE_TYPE || type.endsWith(":person") || type.endsWith(":house");
+}
+
 function upsertEntityInCache(entity: Entity) {
   const index = entities.findIndex((candidate) => candidate.id === entity.id);
   if (index >= 0) {
@@ -3766,6 +3795,7 @@ function removeEntityFromCache(id: string) {
 
 /** Patch one entity (or drop it) and re-query the current collection page/counts. */
 async function refreshAfterEntityMutation(options?: { entityId?: string; removed?: boolean }) {
+  const affectedEntity = options?.entityId ? entities.find((entity) => entity.id === options.entityId) : undefined;
   if (options?.removed && options.entityId) {
     removeEntityFromCache(options.entityId);
   } else if (options?.entityId) {
@@ -3778,6 +3808,7 @@ async function refreshAfterEntityMutation(options?: { entityId?: string; removed
     }
   }
   bumpCollectionRefresh();
+  if (entityAffectsKinshipTree(affectedEntity)) bumpKinshipRefresh();
   await refreshArchivedCount();
 }
 
@@ -5531,13 +5562,21 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
   const toAdd = [...desired].filter((targetId) => !currentIds.has(targetId));
   try {
     const context = contextOwningRelationshipType(definition.relationshipType);
-    await Promise.all(
-      toRemove.map((relationship) =>
-        context.relationships.delete(relationship.id as UUID, relationship.relationship_type, {
+    const removedIds = new Set<string>();
+    for (const relationship of toRemove) {
+      try {
+        await context.relationships.delete(relationship.id as UUID, relationship.relationship_type, {
           expectedRevision: relationship.revision,
-        }),
-      ),
-    );
+        });
+        removedIds.add(relationship.id);
+      } catch (cause) {
+        if (classifyMutationError(cause).code === "relationship.missing") {
+          removedIds.add(relationship.id);
+          continue;
+        }
+        throw cause;
+      }
+    }
     const created = [];
     for (const otherId of toAdd) {
       const endpoints = endpointsForCreate(selected!.id, otherId, definition);
@@ -5558,8 +5597,10 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       );
       created.push(toHostRelationship(createdRelationship));
     }
-    const removedIds = new Set(toRemove.map((relationship) => relationship.id));
     relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
+    if (definition.relationshipType && isKinshipRelationshipType(definition.relationshipType)) {
+      bumpKinshipRefresh();
+    }
     if (isEraRelationshipField(definition)) {
       eraContexts = await loadEraContexts(targetIds);
       hintDateCalendarsFromEras(eraContexts, true);
@@ -7469,6 +7510,7 @@ onMount(() => {
           initialRootId={treeRootId}
           initialSession={treeSession}
           restoreNonce={treeRestoreNonce}
+          {kinshipRefreshEpoch}
           avatar={treeAvatar}
           onNewPerson={openNewPerson}
           onNewHouse={openNewHouse}
@@ -7518,6 +7560,7 @@ onMount(() => {
           }}
           onOpenEntity={(entityId) => void openTreePerson(entityId)}
           onMembershipChanged={() => bumpCollectionRefresh()}
+          onKinshipChanged={() => void refreshSelectedKinship()}
           onEditPersonIdentity={(personId) => {
             void (async () => {
               const entity = entities.find((item) => item.id === personId) ?? (await project.getEntity(personId));

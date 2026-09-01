@@ -10897,6 +10897,7 @@ onMount(() => {
 }
 .create-input-field > input,
 .create-input-field > textarea {
+  box-sizing: border-box;
   width: 100%;
   padding: 10px 11px;
   border: 1px solid var(--line-strong);
@@ -10905,6 +10906,7 @@ onMount(() => {
   background: var(--canvas);
   color: var(--ink);
   font-size: 12px;
+  line-height: 1.4;
 }
 .create-input-field > textarea {
   min-height: 78px;

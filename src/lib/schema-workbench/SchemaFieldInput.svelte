@@ -202,6 +202,12 @@ const hasDateValue = $derived(value != null && value !== "");
   margin-top: 10px;
 }
 
+.schema-field-input.create-input-field {
+  display: block;
+  margin-top: 17px;
+  gap: 0;
+}
+
 .schema-field-label span {
   display: inline-flex;
   gap: 0.25rem;
@@ -211,8 +217,25 @@ const hasDateValue = $derived(value != null && value !== "");
   color: var(--text-muted, #5c645f);
 }
 
+.schema-field-input.create-input-field .schema-field-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.schema-field-input.create-input-field .schema-field-label span {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
 .schema-field-label b {
   color: var(--danger, #a33);
+}
+
+.schema-field-input.create-input-field .schema-field-label b {
+  margin-left: 3px;
+  color: var(--accent);
 }
 
 .schema-field-input :global(textarea),
@@ -229,8 +252,33 @@ const hasDateValue = $derived(value != null && value !== "");
   font: inherit;
 }
 
+.schema-field-input.create-input-field :global(textarea),
+.schema-field-input.create-input-field :global(input[type="number"]),
+.schema-field-input.create-input-field :global(input[type="text"]),
+.schema-field-input.create-input-field :global(select) {
+  box-sizing: border-box;
+  min-height: auto;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .schema-field-input :global(textarea) {
   resize: vertical;
+}
+
+.schema-field-input.create-input-field :global(textarea) {
+  min-height: 78px;
+  line-height: 1.5;
+}
+
+.schema-field-input.create-input-field :global(textarea:focus),
+.schema-field-input.create-input-field :global(input:focus),
+.schema-field-input.create-input-field :global(select:focus) {
+  border-color: var(--accent-soft);
+  box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
+  outline: 0;
 }
 
 .schema-field-checkbox {
@@ -238,6 +286,12 @@ const hasDateValue = $derived(value != null && value !== "");
   align-items: center;
   gap: 0.45rem;
   min-height: var(--control-min-height);
+}
+
+.schema-field-input.create-input-field .schema-field-checkbox {
+  min-height: 38px;
+  color: var(--ink-soft);
+  font-size: 12px;
 }
 
 .date-empty {
@@ -250,6 +304,13 @@ const hasDateValue = $derived(value != null && value !== "");
   color: var(--accent);
   font-size: 12px;
   cursor: pointer;
+}
+
+.schema-field-input.create-input-field .date-empty {
+  width: fit-content;
+  padding: 8px 10px;
+  border-color: var(--theme-warning-border, #d3c0a9);
+  font-size: 10px;
 }
 
 .is-readonly :global(textarea),

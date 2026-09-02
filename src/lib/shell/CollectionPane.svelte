@@ -7,6 +7,7 @@ interface Props {
   count: number;
   label: string;
   viewMode: CollectionViewMode;
+  groupedAriaLabel?: string;
   controls: Snippet;
   children: Snippet;
   footer?: Snippet;
@@ -23,6 +24,7 @@ let {
   count,
   label,
   viewMode,
+  groupedAriaLabel = "Grouped by type",
   controls,
   children,
   footer,
@@ -52,7 +54,7 @@ let {
       ><button
         type="button"
         class:active={viewMode === "grouped"}
-        aria-label="Grouped by type"
+        aria-label={groupedAriaLabel}
         onclick={() => onViewModeChange("grouped")}>⊟</button>
     </div>
   </div>

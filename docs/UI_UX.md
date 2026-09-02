@@ -236,11 +236,14 @@ Archive restores the entry to its correct tab.
 
 Manuscripts stay one type. Parent, contents, revisions, and world links are
 optional relationships. A sketch or short story is a manuscript with no parent.
-A series is nested with `part_of` only when the author links it. The Manuscripts
-list stays flat until those links exist, then nests children under their parent.
-When a manuscript is selected, **New in this manuscript** creates a child.
-Lore inspector Appearances list the manuscripts that feature the entry and show
-the parent path (for example Book 1 · Chapter 4).
+A series is nested with `part_of` only when the author links it. On Manuscripts,
+**grouped** is a containment outline for the library (series → book → chapter),
+not grouping by entity type. Sketches stay top-level roots. Rows show an inferred
+Series, Book, Chapter, or Manuscript label. Flat is the unscoped paged list.
+Search stays a flat hit list and shows the parent path (for example Book 1 ·
+Chapter 4). When a manuscript is selected, **New in this manuscript** creates a
+child. Lore inspector Appearances list the manuscripts that feature the entry
+and show the parent path.
 
 ### Language
 

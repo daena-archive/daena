@@ -153,7 +153,7 @@ assert.match(referenceDialog, /runAsyncEntitySearch/);
 assert.match(referenceDialog, /AsyncEntitySearchFn/);
 assert.doesNotMatch(referenceDialog, /entities\.filter/);
 assert.match(richText, /searchEntities/);
-assert.match(shell, /showManuscriptOutline/);
+assert.match(shell, /manuscriptStructureMode/);
 assert.match(shell, /openNewManuscriptInSelected/);
 assert.match(shell, /newInManuscript/);
 assert.match(shell, /toShellSortField/);

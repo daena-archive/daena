@@ -5,10 +5,17 @@ import { fileURLToPath } from "node:url";
 import {
   appearanceLabel,
   buildManuscriptOutline,
+  collectOutlineIds,
   collectPartOfEdges,
   containmentNames,
+  defaultExpandedOutlineIds,
   isManuscriptType,
+  MANUSCRIPT_OUTLINE_CAP,
   outlineHasNesting,
+  outlinePathIds,
+  outlineRole,
+  outlineRoleLabel,
+  paginateOutlineRoots,
   parentByChild,
   partOfEdgesFromRelationships,
   WRITING_FEATURES,
@@ -47,9 +54,53 @@ assert.deepEqual(
   ["sketch"],
 );
 
-const childOnPage = buildManuscriptOutline([ch4], [book], edges);
-assert.equal(childOnPage[0].id, "ch4");
-assert.equal(childOnPage[0].children.length, 0);
+const childOnOtherPage = buildManuscriptOutline([ch4], [book, series], edges);
+assert.equal(childOnOtherPage[0].id, "series");
+assert.equal(childOnOtherPage[0].children[0].id, "book");
+assert.equal(childOnOtherPage[0].children[0].children[0].id, "ch4");
+
+const splitPages = buildManuscriptOutline([ch4, sketch], [book, series], edges);
+assert.deepEqual(
+  splitPages.map((node) => node.id),
+  ["sketch", "series"],
+);
+
+const duplicateEdges = buildManuscriptOutline([series, book, ch4], [], [...edges, ...edges]);
+assert.deepEqual(
+  duplicateEdges[0].children[0].children.map((node) => node.id),
+  ["ch4"],
+);
+
+const rootOrder = buildManuscriptOutline([sketch, ch4, series, book], [], edges);
+assert.deepEqual(
+  rootOrder.map((node) => node.id),
+  ["sketch", "series"],
+);
+
+assert.equal(outlineRole(nested[0], false), "series");
+assert.equal(outlineRole(nested[0].children[0], true), "book");
+assert.equal(outlineRole(nested[0].children[0].children[0], true), "chapter");
+assert.equal(outlineRole(flat[0], false), "manuscript");
+assert.equal(outlineRoleLabel(nested[0], false), "Series");
+
+const paged = paginateOutlineRoots(nested, 0, 1);
+assert.deepEqual(
+  paged.items.map((node) => node.id),
+  ["series"],
+);
+assert.equal(paged.total, 2);
+assert.equal(paged.hasMore, true);
+assert.deepEqual(
+  paginateOutlineRoots(nested, 1, 1).items.map((node) => node.id),
+  ["sketch"],
+);
+
+const expanded = defaultExpandedOutlineIds(nested);
+assert.equal(expanded.has("series"), true);
+assert.equal(expanded.has("book"), false);
+assert.deepEqual(outlinePathIds(nested, "ch4"), ["series", "book", "ch4"]);
+assert.equal(collectOutlineIds(nested).size, 5);
+assert.equal(MANUSCRIPT_OUTLINE_CAP, 2000);
 
 const names = new Map([
   ["series", "The Cycle"],
@@ -95,5 +146,16 @@ assert.equal(keys.includes("revises"), true);
 assert.equal(keys.includes("features"), true);
 assert.equal(writing.migrations[0].id, "writing-v1");
 assert.equal(writing.version, "0.1.0");
+
+const pane = readFileSync(join(root, "src/lib/shell/CollectionPane.svelte"), "utf8");
+assert.match(pane, /groupedAriaLabel/);
+assert.match(pane, /Grouped by type/);
+const shell = readFileSync(join(root, "src/routes/+page.svelte"), "utf8");
+assert.match(shell, /manuscriptStructureMode/);
+assert.match(shell, /Grouped by structure/);
+assert.match(shell, /listManuscriptOutlineSummaries/);
+assert.match(shell, /outlineRoleLabel/);
+assert.match(shell, /manuscriptPathLabels/);
+assert.doesNotMatch(shell, /showManuscriptOutline/);
 
 console.log("writing outline and contribution checks passed");

@@ -100,6 +100,7 @@ assert.match(rowActions, /ENTITY_ACTIONS\.editIdentity/);
 assert.match(rowActions, /ENTITY_ACTIONS\.archive/);
 assert.match(rowActions, /ENTITY_ACTIONS\.openTree/);
 assert.match(rowActions, /archiveConfirmOptions/);
+assert.match(rowActions, /position:\s*fixed/);
 assert.match(rowActions, /touch-target-min/);
 assert.match(rowActions, /document\.contains\(triggerEl\)/);
 assert.match(archiveAction, /archiveConfirmOptions/);

@@ -29,6 +29,17 @@ export type OutlineNode = {
   children: OutlineNode[];
 };
 
+export type OutlineRole = "manuscript" | "series" | "book" | "chapter";
+
+export const MANUSCRIPT_OUTLINE_CAP = 2000;
+
+export const OUTLINE_ROLE_LABEL: Record<OutlineRole, string> = {
+  manuscript: "Manuscript",
+  series: "Series",
+  book: "Book",
+  chapter: "Chapter",
+};
+
 export function isManuscriptType(entityType: string | null | undefined): boolean {
   if (!entityType) return false;
   return entityType === MANUSCRIPT_TYPE || entityType === "manuscript" || entityType.endsWith(":manuscript");
@@ -110,15 +121,14 @@ export function buildManuscriptOutline(
 ): OutlineNode[] {
   const byId = new Map<string, OutlineEntity>();
   for (const entity of [...extraEntities, ...pageEntities]) byId.set(entity.id, entity);
-  const pageIds = new Set(pageEntities.map((entity) => entity.id));
   const parents = parentByChild(edges);
   const orderById = new Map<string, number>();
   const childIds = new Map<string, string[]>();
   for (const edge of edges) {
     orderById.set(edge.sourceId, edge.order);
-    const siblings = childIds.get(edge.targetId);
-    if (siblings) siblings.push(edge.sourceId);
-    else childIds.set(edge.targetId, [edge.sourceId]);
+    const siblings = childIds.get(edge.targetId) ?? [];
+    if (!siblings.includes(edge.sourceId)) siblings.push(edge.sourceId);
+    childIds.set(edge.targetId, siblings);
   }
 
   const visiting = new Set<string>();
@@ -144,18 +154,94 @@ export function buildManuscriptOutline(
     return node;
   };
 
+  const loadedRootId = (startId: string): string | null => {
+    if (!byId.has(startId)) return null;
+    let current = startId;
+    const seen = new Set<string>();
+    while (true) {
+      if (seen.has(current)) return current;
+      seen.add(current);
+      const parent = parents.get(current);
+      if (parent && byId.has(parent)) current = parent;
+      else return current;
+    }
+  };
+
   const roots: OutlineNode[] = [];
-  const nestedOnPage = new Set<string>();
+  const seenRoots = new Set<string>();
   for (const entity of pageEntities) {
-    const parent = parents.get(entity.id);
-    if (parent && pageIds.has(parent)) nestedOnPage.add(entity.id);
-  }
-  for (const entity of pageEntities) {
-    if (nestedOnPage.has(entity.id)) continue;
-    const node = toNode(entity.id);
+    const rootId = loadedRootId(entity.id);
+    if (!rootId || seenRoots.has(rootId)) continue;
+    seenRoots.add(rootId);
+    const node = toNode(rootId);
     if (node) roots.push(node);
   }
+  const pageOrder = new Map(pageEntities.map((entity, index) => [entity.id, index]));
+  roots.sort((left, right) => {
+    const leftOrder = pageOrder.get(left.id) ?? Number.POSITIVE_INFINITY;
+    const rightOrder = pageOrder.get(right.id) ?? Number.POSITIVE_INFINITY;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.name.localeCompare(right.name);
+  });
   return roots;
+}
+
+export function outlineRole(node: OutlineNode, hasParent: boolean): OutlineRole {
+  if (!hasParent) {
+    if (node.children.length === 0) return "manuscript";
+    if (node.children.some((child) => child.children.length > 0)) return "series";
+    return "book";
+  }
+  if (node.children.length > 0) return "book";
+  return "chapter";
+}
+
+export function outlineRoleLabel(node: OutlineNode, hasParent: boolean): string {
+  return OUTLINE_ROLE_LABEL[outlineRole(node, hasParent)];
+}
+
+export function paginateOutlineRoots(
+  roots: readonly OutlineNode[],
+  page: number,
+  pageSize: number,
+): { items: OutlineNode[]; total: number; offset: number; hasMore: boolean } {
+  const size = Math.max(1, pageSize);
+  const total = roots.length;
+  const lastPage = Math.max(0, Math.ceil(total / size) - 1);
+  const current = Math.min(Math.max(0, page), lastPage);
+  const offset = current * size;
+  const items = roots.slice(offset, offset + size);
+  return { items, total, offset, hasMore: offset + items.length < total };
+}
+
+export function defaultExpandedOutlineIds(roots: readonly OutlineNode[]): Set<string> {
+  const expanded = new Set<string>();
+  for (const root of roots) {
+    if (root.children.length > 0) expanded.add(root.id);
+  }
+  return expanded;
+}
+
+export function outlinePathIds(roots: readonly OutlineNode[], id: string): string[] | null {
+  const path: string[] = [];
+  const visit = (nodes: readonly OutlineNode[]): boolean => {
+    for (const node of nodes) {
+      path.push(node.id);
+      if (node.id === id) return true;
+      if (visit(node.children)) return true;
+      path.pop();
+    }
+    return false;
+  };
+  return visit(roots) ? path : null;
+}
+
+export function collectOutlineIds(nodes: readonly OutlineNode[], into = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    into.add(node.id);
+    collectOutlineIds(node.children, into);
+  }
+  return into;
 }
 
 export function outlineHasNesting(nodes: readonly OutlineNode[]): boolean {
@@ -168,7 +254,7 @@ export async function collectPartOfEdges(
   maxRounds = 4,
 ): Promise<PartOfEdge[]> {
   const seen = new Set<string>();
-  const edges: PartOfEdge[] = [];
+  const byPair = new Map<string, PartOfEdge>();
   let frontier = [...seedIds];
   for (let round = 0; round < maxRounds && frontier.length > 0; round += 1) {
     const batch = frontier.filter((id) => !seen.has(id));
@@ -178,13 +264,14 @@ export async function collectPartOfEdges(
     for (let index = 0; index < batch.length; index += 200) {
       found.push(...(await query(batch.slice(index, index + 200))));
     }
-    edges.push(...found);
     const next: string[] = [];
     for (const edge of found) {
+      const key = `${edge.sourceId}\0${edge.targetId}`;
+      if (!byPair.has(key)) byPair.set(key, edge);
       if (!seen.has(edge.sourceId)) next.push(edge.sourceId);
       if (!seen.has(edge.targetId)) next.push(edge.targetId);
     }
     frontier = next;
   }
-  return edges;
+  return [...byPair.values()];
 }

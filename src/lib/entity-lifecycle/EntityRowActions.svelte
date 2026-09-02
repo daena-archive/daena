@@ -39,6 +39,8 @@ let menuOpen = $state(false);
 let archiveBusy = $state(false);
 let rootEl = $state<HTMLElement | null>(null);
 let triggerEl = $state<HTMLButtonElement | null>(null);
+let menuTop = $state(0);
+let menuRight = $state(8);
 
 const label = $derived(`Actions for ${entityName}`);
 const openInText = $derived(
@@ -56,8 +58,20 @@ function toggle(event: MouseEvent) {
   event.preventDefault();
   event.stopPropagation();
   if (disabled || archiveBusy) return;
-  menuOpen = !menuOpen;
-  if (menuOpen) queueMicrotask(() => triggerEl?.focus());
+  if (menuOpen) {
+    close({ restoreFocus: false });
+    return;
+  }
+  menuOpen = true;
+  placeMenu();
+  queueMicrotask(() => triggerEl?.focus());
+}
+
+function placeMenu() {
+  if (!triggerEl) return;
+  const rect = triggerEl.getBoundingClientRect();
+  menuTop = rect.bottom + 4;
+  menuRight = Math.max(8, window.innerWidth - rect.right);
 }
 
 async function run(action: () => void | Promise<void>) {
@@ -88,8 +102,14 @@ async function runArchive() {
 
 $effect(() => {
   if (!menuOpen) return;
+  placeMenu();
+  let ignoreOpeningPointer = true;
+  queueMicrotask(() => {
+    ignoreOpeningPointer = false;
+  });
   const onPointer = (event: PointerEvent) => {
-    if (rootEl && !rootEl.contains(event.target as Node)) close();
+    if (ignoreOpeningPointer) return;
+    if (rootEl && !rootEl.contains(event.target as Node)) close({ restoreFocus: false });
   };
   const onKey = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
@@ -97,11 +117,16 @@ $effect(() => {
       close();
     }
   };
+  const onReposition = () => close({ restoreFocus: false });
   window.addEventListener("pointerdown", onPointer, true);
   window.addEventListener("keydown", onKey, true);
+  window.addEventListener("scroll", onReposition, true);
+  window.addEventListener("resize", onReposition);
   return () => {
     window.removeEventListener("pointerdown", onPointer, true);
     window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("scroll", onReposition, true);
+    window.removeEventListener("resize", onReposition);
   };
 });
 </script>
@@ -119,7 +144,7 @@ $effect(() => {
     <MoreHorizontal size={15} strokeWidth={1.8} aria-hidden="true" />
   </button>
   {#if menuOpen}
-    <div class="row-actions-menu" role="menu" aria-label={label}>
+    <div class="row-actions-menu" role="menu" aria-label={label} style="top: {menuTop}px; right: {menuRight}px">
       {#if open}
         <button type="button" role="menuitem" onclick={() => void run(onOpen)}>{ENTITY_ACTIONS.open}</button>
       {/if}
@@ -145,12 +170,17 @@ $effect(() => {
 .row-actions {
   position: relative;
   flex: 0 0 auto;
+  align-self: center;
 }
 .row-actions-trigger {
   display: grid;
-  width: var(--touch-target-min, 44px);
-  min-width: var(--touch-target-min, 44px);
-  min-height: var(--touch-target-min, 44px);
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  max-width: 28px;
+  max-height: 28px;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
@@ -159,11 +189,25 @@ $effect(() => {
   color: var(--ink-faint);
   cursor: pointer;
 }
+.row-actions-trigger :global(svg) {
+  width: 15px;
+  height: 15px;
+}
+@media (pointer: coarse) {
+  .row-actions-trigger {
+    width: var(--touch-target-min, 44px);
+    height: var(--touch-target-min, 44px);
+    min-width: var(--touch-target-min, 44px);
+    min-height: var(--touch-target-min, 44px);
+    max-width: var(--touch-target-min, 44px);
+    max-height: var(--touch-target-min, 44px);
+  }
+}
 .row-actions-trigger:hover,
 .row-actions-trigger:focus-visible,
 .row-actions-trigger[aria-expanded="true"] {
   border-color: var(--line-strong);
-  background: var(--surface);
+  background: var(--canvas);
   color: var(--ink);
   outline: 0;
 }
@@ -172,10 +216,8 @@ $effect(() => {
   cursor: not-allowed;
 }
 .row-actions-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 80;
   display: grid;
   min-width: 168px;
   gap: 2px;
@@ -183,12 +225,13 @@ $effect(() => {
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-md, 0 10px 28px rgba(38, 42, 33, 0.12));
 }
 .row-actions-menu button {
   display: block;
+  box-sizing: border-box;
   width: 100%;
-  min-height: var(--touch-target-min, 44px);
+  min-height: 32px;
   padding: 0 10px;
   border: 0;
   border-radius: 7px;
@@ -198,9 +241,14 @@ $effect(() => {
   cursor: pointer;
   font-size: 12px;
 }
+@media (pointer: coarse) {
+  .row-actions-menu button {
+    min-height: var(--touch-target-min, 44px);
+  }
+}
 .row-actions-menu button:hover,
 .row-actions-menu button:focus-visible {
-  background: var(--surface-muted);
+  background: var(--surface-muted, var(--canvas));
   outline: 0;
 }
 .row-actions-menu button.danger {

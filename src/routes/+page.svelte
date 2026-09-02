@@ -52,10 +52,15 @@ import {
 import {
   appearanceLabel,
   buildManuscriptOutline,
+  collectOutlineIds,
   collectPartOfEdges,
   containmentNames,
+  defaultExpandedOutlineIds,
   isManuscriptType,
-  outlineHasNesting,
+  MANUSCRIPT_OUTLINE_CAP,
+  outlinePathIds,
+  outlineRoleLabel,
+  paginateOutlineRoots,
   parentByChild,
   partOfEdgesFromRelationships,
   WRITING_FEATURES,
@@ -86,6 +91,8 @@ import {
   type SettingsSection,
   type CollectionQuery,
   type CollectionResult,
+  type SortDirection,
+  type SortField,
   type WritingView,
   workspaceCollectionTabs,
   workspaceSectionDescription,
@@ -448,7 +455,13 @@ let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
 let houseSummaryRequest = 0;
 let houseSummariesPending = $state(false);
 let manuscriptOutline = $state<OutlineNode[]>([]);
+let manuscriptOutlineEntities = $state<Entity[]>([]);
 let manuscriptOutlineRequest = 0;
+let manuscriptOutlineLoading = $state(false);
+let manuscriptOutlineTruncated = $state(false);
+let manuscriptOutlineLibraryKey = "";
+let manuscriptExpanded = $state(new Set<string>());
+let manuscriptPathLabels = $state<Record<string, string>>({});
 let pendingManuscriptParentId = $state<string | null>(null);
 let writingAppearanceLabels = $state<Record<string, string>>({});
 
@@ -2177,8 +2190,17 @@ $effect(() => {
   const sortDirection = collectionQuery.sortDir;
   const request = ++collectionRequest;
   collectionError = "";
+  const structureOutline =
+    section === "writing" &&
+    writingView === "manuscripts" &&
+    collectionQuery.viewMode === "grouped" &&
+    !collectionQuery.textSearch.trim();
   if (!active) {
     collectionPage = emptyEntityPage();
+    collectionLoading = false;
+    return;
+  }
+  if (structureOutline) {
     collectionLoading = false;
     return;
   }
@@ -2285,6 +2307,53 @@ async function queryWritingPartOf(entityIds: string[]) {
   );
 }
 
+async function listManuscriptOutlineSummaries(
+  entityTypes: string[],
+  excludedEntityTypes: string[],
+  sortField: SortField,
+  sortDirection: SortDirection,
+): Promise<{ items: Entity[]; truncated: boolean }> {
+  const items: Entity[] = [];
+  let offset = 0;
+  while (items.length < MANUSCRIPT_OUTLINE_CAP) {
+    const limit = Math.min(200, MANUSCRIPT_OUTLINE_CAP - items.length);
+    const page = await project.queryEntities({
+      entityTypes,
+      excludedEntityTypes,
+      sortField,
+      sortDirection,
+      offset,
+      limit,
+    });
+    items.push(...page.items);
+    if (!page.has_more || page.items.length === 0) return { items, truncated: false };
+    offset += page.items.length;
+  }
+  return { items, truncated: true };
+}
+
+async function manuscriptContainmentLabels(seed: string[]): Promise<Record<string, string>> {
+  const edges = await collectPartOfEdges(seed, queryWritingPartOf);
+  const ids = new Set(seed);
+  for (const edge of edges) {
+    ids.add(edge.sourceId);
+    ids.add(edge.targetId);
+  }
+  const names = new Map<string, string>();
+  for (const entity of [...manuscriptOutlineEntities, ...entities, ...collectionPage.items]) {
+    if (ids.has(entity.id)) names.set(entity.id, entity.name);
+  }
+  const missing = [...ids].filter((id) => !names.has(id));
+  for (let index = 0; index < missing.length; index += 500) {
+    const loaded = await contextFor("writing").entities.getMany(missing.slice(index, index + 500) as UUID[]);
+    for (const entity of loaded) names.set(entity.id, entity.name);
+  }
+  const parents = parentByChild(edges);
+  const labels: Record<string, string> = {};
+  for (const id of seed) labels[id] = appearanceLabel(containmentNames(id, parents, names));
+  return labels;
+}
+
 async function refreshWritingAppearanceLabels() {
   if (!selected) {
     writingAppearanceLabels = {};
@@ -2338,65 +2407,131 @@ function relationshipRowTitle(relationship: Relationship, definition: FieldDefin
 }
 
 $effect(() => {
-  const writingManuscripts =
-    ready &&
-    Boolean(projectInfo) &&
-    section === "writing" &&
-    writingView === "manuscripts" &&
-    !collectionQuery.textSearch.trim();
+  const onManuscripts = ready && Boolean(projectInfo) && section === "writing" && writingView === "manuscripts";
+  const search = collectionQuery.textSearch.trim();
+  const grouped = collectionQuery.viewMode === "grouped";
+  const entityTypes = collectionEntityTypes({
+    entityTypes: new Set(sectionEntityTypes()),
+    tabEntityTypes: activeTabEntityTypes(),
+  });
+  const excludedEntityTypes = [...collectionQuery.excludedTypes];
+  const sortField = collectionQuery.sortField;
+  const sortDirection = collectionQuery.sortDir;
   const pageItems = collectionPage.items;
   void collectionRefreshEpoch;
-  if (!writingManuscripts) {
-    if (section !== "writing" || writingView !== "manuscripts") manuscriptOutline = [];
+  if (!onManuscripts) {
+    if (section !== "writing" || writingView !== "manuscripts") {
+      manuscriptOutline = [];
+      manuscriptOutlineEntities = [];
+      manuscriptOutlineTruncated = false;
+      manuscriptOutlineLibraryKey = "";
+      manuscriptPathLabels = {};
+      manuscriptOutlineLoading = false;
+    }
     return;
   }
   const request = ++manuscriptOutlineRequest;
-  const seed = pageItems.map((entity) => entity.id);
-  if (seed.length === 0) {
+  if (search) {
     manuscriptOutline = [];
+    manuscriptOutlineTruncated = false;
+    manuscriptOutlineLoading = false;
+    const seed = pageItems.map((entity) => entity.id);
+    if (seed.length === 0) {
+      manuscriptPathLabels = {};
+      return;
+    }
+    void (async () => {
+      try {
+        const labels = await manuscriptContainmentLabels(seed);
+        if (request !== manuscriptOutlineRequest) return;
+        manuscriptPathLabels = labels;
+      } catch {
+        if (request !== manuscriptOutlineRequest) return;
+        manuscriptPathLabels = {};
+      }
+    })();
     return;
   }
+  manuscriptPathLabels = {};
+  if (!grouped) {
+    manuscriptOutline = [];
+    manuscriptOutlineEntities = [];
+    manuscriptOutlineTruncated = false;
+    manuscriptOutlineLoading = false;
+    return;
+  }
+  if (entityTypes.length === 0) {
+    manuscriptOutline = [];
+    manuscriptOutlineEntities = [];
+    manuscriptOutlineTruncated = false;
+    manuscriptOutlineLoading = false;
+    return;
+  }
+  manuscriptOutlineLoading = true;
   void (async () => {
     try {
-      const edges = await collectPartOfEdges(seed, queryWritingPartOf);
-      const extraIds = new Set<string>();
-      for (const edge of edges) {
-        extraIds.add(edge.sourceId);
-        extraIds.add(edge.targetId);
-      }
-      for (const id of seed) extraIds.delete(id);
-      const extra: Array<{ id: string; name: string; entity_type?: string | null }> = [];
-      const missing: string[] = [];
-      for (const id of extraIds) {
-        const cached = entities.find((entity) => entity.id === id);
-        if (cached) extra.push(cached);
-        else missing.push(id);
-      }
-      if (missing.length > 0) {
-        const loaded = await contextFor("writing").entities.getMany(missing as UUID[]);
-        for (const entity of loaded) {
-          extra.push({
-            id: entity.id,
-            name: entity.name,
-            entity_type: entity.type,
-          });
-        }
-      }
+      const { items, truncated } = await listManuscriptOutlineSummaries(
+        entityTypes,
+        excludedEntityTypes,
+        sortField,
+        sortDirection,
+      );
       if (request !== manuscriptOutlineRequest) return;
-      manuscriptOutline = buildManuscriptOutline(pageItems, extra, edges);
+      const edges = await collectPartOfEdges(
+        items.map((entity) => entity.id),
+        queryWritingPartOf,
+      );
+      if (request !== manuscriptOutlineRequest) return;
+      const roots = buildManuscriptOutline(items, [], edges);
+      const libraryKey = roots.map((node) => node.id).join("\0");
+      if (libraryKey !== manuscriptOutlineLibraryKey) {
+        manuscriptOutlineLibraryKey = libraryKey;
+        manuscriptExpanded = defaultExpandedOutlineIds(roots);
+      } else {
+        const allowed = collectOutlineIds(roots);
+        manuscriptExpanded = new Set([...manuscriptExpanded].filter((id) => allowed.has(id)));
+      }
+      const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, collectionQuery.pageSize)) - 1);
+      if (collectionQuery.page > lastPage) collectionQuery.page = lastPage;
+      manuscriptOutlineEntities = items;
+      manuscriptOutlineTruncated = truncated;
+      manuscriptOutline = roots;
+      for (const entity of items) upsertEntityInCache(entity);
     } catch {
       if (request !== manuscriptOutlineRequest) return;
       manuscriptOutline = [];
+      manuscriptOutlineEntities = [];
+      manuscriptOutlineTruncated = false;
+    } finally {
+      if (request === manuscriptOutlineRequest) manuscriptOutlineLoading = false;
     }
   })();
 });
 
 $effect(() => {
+  const id = selected?.id;
+  if (!id || manuscriptOutline.length === 0) return;
+  const path = outlinePathIds(manuscriptOutline, id);
+  if (!path || path.length < 2) return;
+  const next = new Set(manuscriptExpanded);
+  let changed = false;
+  for (const ancestor of path.slice(0, -1)) {
+    if (!next.has(ancestor)) {
+      next.add(ancestor);
+      changed = true;
+    }
+  }
+  if (changed) manuscriptExpanded = next;
+});
+
+$effect(() => {
   const pending = pendingCollectionScroll;
   void collectionPage.items;
+  void manuscriptOutline;
   if (
     !pending ||
     collectionLoading ||
+    manuscriptOutlineLoading ||
     collectionQuery.section !== pending.section ||
     section !== pending.section ||
     projectHomeOpen ||
@@ -2437,6 +2572,7 @@ function collectionResult(): CollectionResult {
 
 function entityFromOutlineNode(node: OutlineNode): Entity {
   return (
+    manuscriptOutlineEntities.find((entity) => entity.id === node.id) ??
     entities.find((entity) => entity.id === node.id) ??
     collectionPage.items.find((entity) => entity.id === node.id) ?? {
       id: node.id,
@@ -2450,14 +2586,52 @@ function entityFromOutlineNode(node: OutlineNode): Entity {
   );
 }
 
-function showManuscriptOutline() {
+function manuscriptStructureMode() {
   return (
     section === "writing" &&
     writingView === "manuscripts" &&
-    !collectionQuery.textSearch.trim() &&
-    collectionQuery.viewMode !== "grouped" &&
-    outlineHasNesting(manuscriptOutline)
+    collectionQuery.viewMode === "grouped" &&
+    !collectionQuery.textSearch.trim()
   );
+}
+
+function manuscriptOutlinePage() {
+  return paginateOutlineRoots(manuscriptOutline, collectionQuery.page, collectionQuery.pageSize);
+}
+
+function collectionIsEmpty() {
+  if (manuscriptStructureMode()) {
+    return !manuscriptOutlineLoading && manuscriptOutline.length === 0;
+  }
+  return collectionResult().total === 0;
+}
+
+function collectionHeadingCount() {
+  if (manuscriptStructureMode()) return collectOutlineIds(manuscriptOutline).size;
+  return collectionResult().total;
+}
+
+function collectionRowSubtitle(entity: Entity) {
+  if (
+    section === "houses" &&
+    ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
+  ) {
+    return formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
+      pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
+    });
+  }
+  if (section === "writing" && writingView === "manuscripts" && manuscriptPathLabels[entity.id]) {
+    const path = manuscriptPathLabels[entity.id];
+    if (path && path !== entity.name) return path;
+  }
+  return entityTypeLabel(entity.entity_type);
+}
+
+function toggleManuscriptOutlineNode(id: string) {
+  const next = new Set(manuscriptExpanded);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  manuscriptExpanded = next;
 }
 
 async function selectSearchResult(entity: Entity) {
@@ -7884,9 +8058,15 @@ onMount(() => {
         {/snippet}
         {#snippet collectionItems()}
           {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
-          {#if collectionLoading && collectionPage.items.length === 0}<div class="collection-loading" role="status">
+          {#if collectionLoading && collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
+              class="collection-loading"
+              role="status">
               Loading {collectionLabel()}…
-            </div>{:else if collectionResult().total === 0}
+            </div>{:else if manuscriptStructureMode() && manuscriptOutlineLoading && manuscriptOutline.length === 0}<div
+              class="collection-loading"
+              role="status">
+              Loading {collectionLabel()}…
+            </div>{:else if collectionIsEmpty()}
             {#if section === "maps"}
               <EntityEmptyState
                 title={collectionQuery.textSearch
@@ -7953,7 +8133,55 @@ onMount(() => {
                   : `Create your first ${createLabel()} to begin building this collection.`}
                 createLabel={createLabel()}
                 onCreate={openContextualCreate} />
-            {/if}{:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
+            {/if}{:else if manuscriptStructureMode()}
+            {#if manuscriptOutlineTruncated}<p class="collection-loading" role="status">
+                Outline includes the first {MANUSCRIPT_OUTLINE_CAP} manuscripts.
+              </p>{/if}
+            {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number, hasParent: boolean)}
+              {@const entity = entityFromOutlineNode(node)}
+              {@const rowIcon = iconForEntityType(entity.entity_type)}
+              {@const expanded = manuscriptExpanded.has(node.id)}
+              <div
+                class:selected={selected?.id === entity.id}
+                class="collection-item"
+                style={`--outline-depth: ${depth}`}>
+                {#if node.children.length > 0}<button
+                    type="button"
+                    class="outline-toggle"
+                    aria-expanded={expanded}
+                    aria-label={expanded ? `Collapse ${entity.name}` : `Expand ${entity.name}`}
+                    onclick={() => toggleManuscriptOutlineNode(node.id)}
+                    >{#if expanded}<ChevronDown size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<ChevronRight
+                        size={16}
+                        strokeWidth={1.8}
+                        aria-hidden="true" />{/if}</button
+                  >{:else}<span class="outline-toggle-spacer" aria-hidden="true"></span>{/if}
+                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                  <EntityGlyph
+                    icon={rowIcon.icon}
+                    iconColor={rowIcon.iconColor}
+                    pluginId={rowIcon.pluginId}
+                    size={16}
+                    box={40} /><span class="item-copy"
+                    ><strong>{entity.name}</strong><small>{outlineRoleLabel(node, hasParent)}</small></span>
+                </button>
+                <EntityRowActions
+                  entityName={entity.name}
+                  onOpen={() => void selectEntity(entity)}
+                  onEditIdentity={() => void openEntityEditDialog(entity)}
+                  onArchive={() => void archiveEntity(entity)} />
+              </div>
+            {/snippet}
+            {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number, hasParent: boolean)}
+              {#each nodes as node (node.id)}
+                {@render manuscriptCollectionRow(node, depth, hasParent)}
+                {#if node.children.length > 0 && manuscriptExpanded.has(node.id)}
+                  {@render manuscriptOutlineTree(node.children, depth + 1, true)}
+                {/if}
+              {/each}
+            {/snippet}
+            {@render manuscriptOutlineTree(manuscriptOutlinePage().items, 0, false)}
+          {:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
                 iconForEntityType(group.type === "__uncategorized" ? null : group.type)}
               <div class="collection-group">
                 <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
@@ -7981,14 +8209,7 @@ onMount(() => {
                           pluginId={rowIcon.pluginId}
                           size={16}
                           box={40} /><span class="item-copy"
-                          ><strong>{entity.name}</strong><small
-                            >{section === "houses" &&
-                            ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
-                              ? formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
-                                  pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
-                                })
-                              : entityTypeLabel(entity.entity_type)}</small
-                          ></span>
+                          ><strong>{entity.name}</strong><small>{collectionRowSubtitle(entity)}</small></span>
                       </button>
                       <EntityRowActions
                         entityName={entity.name}
@@ -7998,38 +8219,9 @@ onMount(() => {
                         onArchive={() => void archiveEntity(entity)}
                         onOpenTree={() => void openHouseTree(entity)} />
                     </div>{/each}{/if}
-              </div>{/each}{:else if showManuscriptOutline()}
-            {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number)}
-              {@const entity = entityFromOutlineNode(node)}
-              {@const rowIcon = iconForEntityType(entity.entity_type)}
-              <div
-                class:selected={selected?.id === entity.id}
-                class="collection-item"
-                style={`--outline-depth: ${depth}`}>
-                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
-                  <EntityGlyph
-                    icon={rowIcon.icon}
-                    iconColor={rowIcon.iconColor}
-                    pluginId={rowIcon.pluginId}
-                    size={16}
-                    box={40} /><span class="item-copy"
-                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
-                </button>
-                <EntityRowActions
-                  entityName={entity.name}
-                  onOpen={() => void selectEntity(entity)}
-                  onEditIdentity={() => void openEntityEditDialog(entity)}
-                  onArchive={() => void archiveEntity(entity)} />
-              </div>
-            {/snippet}
-            {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number)}
-              {#each nodes as node (node.id)}
-                {@render manuscriptCollectionRow(node, depth)}
-                {@render manuscriptOutlineTree(node.children, depth + 1)}
-              {/each}
-            {/snippet}
-            {@render manuscriptOutlineTree(manuscriptOutline, 0)}
-          {:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(entity.entity_type)}
+              </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
+                entity.entity_type,
+              )}
               <div class:selected={selected?.id === entity.id} class="collection-item">
                 <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
                   <EntityGlyph
@@ -8038,14 +8230,7 @@ onMount(() => {
                     pluginId={rowIcon.pluginId}
                     size={16}
                     box={40} /><span class="item-copy"
-                    ><strong>{entity.name}</strong><small
-                      >{section === "houses" &&
-                      ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
-                        ? formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
-                            pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
-                          })
-                        : entityTypeLabel(entity.entity_type)}</small
-                    ></span>
+                    ><strong>{entity.name}</strong><small>{collectionRowSubtitle(entity)}</small></span>
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
@@ -8057,7 +8242,25 @@ onMount(() => {
               </div>{/each}{/if}
         {/snippet}
         {#snippet collectionFooter()}
-          {#if collectionResult().total > 0}<nav class="collection-pagination" aria-label="Collection pages">
+          {#if manuscriptStructureMode() && manuscriptOutlinePage().total > 0}<nav
+              class="collection-pagination"
+              aria-label="Collection pages">
+              <button
+                type="button"
+                disabled={collectionQuery.page === 0 || manuscriptOutlineLoading}
+                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+              ><span
+                >{manuscriptOutlinePage().offset + 1}–{Math.min(
+                  manuscriptOutlinePage().offset + manuscriptOutlinePage().items.length,
+                  manuscriptOutlinePage().total,
+                )} of {manuscriptOutlinePage().total}</span
+              ><button
+                type="button"
+                disabled={!manuscriptOutlinePage().hasMore || manuscriptOutlineLoading}
+                onclick={() => (collectionQuery.page += 1)}>Next</button>
+            </nav>{:else if collectionResult().total > 0}<nav
+              class="collection-pagination"
+              aria-label="Collection pages">
               <button
                 type="button"
                 disabled={collectionQuery.page === 0 || collectionLoading}
@@ -8075,10 +8278,13 @@ onMount(() => {
         {/snippet}
         {#if workbenchPaneVisibility.collection}<CollectionPane
             kicker={collectionKicker()}
-            count={collectionResult().total}
+            count={collectionHeadingCount()}
             label={collectionLabel()}
             viewMode={collectionQuery.viewMode}
-            allowOverflow={collectionResult().total === 0}
+            groupedAriaLabel={section === "writing" && writingView === "manuscripts"
+              ? "Grouped by structure"
+              : "Grouped by type"}
+            allowOverflow={collectionIsEmpty()}
             controls={collectionControls}
             children={collectionItems}
             footer={collectionFooter}
@@ -10636,7 +10842,6 @@ onMount(() => {
   appearance: none;
   border: 1px solid transparent;
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
-  padding-left: calc(var(--outline-depth, 0) * 14px);
 }
 .collection-item:hover {
   border-color: var(--theme-warning-border, #e5d8c6);
@@ -10699,8 +10904,8 @@ onMount(() => {
   min-height: 58px;
   max-height: 58px;
   margin: 0;
-  padding: 4px 6px 4px 4px;
-  overflow: hidden;
+  padding: 4px 6px 4px calc(4px + var(--outline-depth, 0) * 16px);
+  overflow: visible;
   border: 1px solid var(--theme-warning-border, #ebe7de);
   border-radius: 9px;
   background: var(--surface);
@@ -10725,6 +10930,27 @@ onMount(() => {
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+.outline-toggle,
+.outline-toggle-spacer {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  place-items: center;
+}
+.outline-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.outline-toggle:hover,
+.outline-toggle:focus-visible {
+  color: var(--accent);
+  background: var(--canvas);
 }
 .collection-item-main:focus-visible {
   outline: 3px solid rgba(180, 119, 63, 0.25);

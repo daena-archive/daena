@@ -617,3 +617,784 @@ pub(super) async fn project_unlink_map_location(
     })
     .await
 }
+
+#[tauri::command]
+pub(super) async fn maps_recovery_list(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+) -> Result<Vec<daena_core::maps::MapRecoveryCopy>, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .list_map_recovery_copies(&entity_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn maps_recovery_restore(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    file_name: String,
+    request_id: Option<String>,
+) -> Result<daena_core::MapEditApply, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.restore_map_recovery_copy(
+            &entity_id,
+            &file_name,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_register_asset(
+    state: tauri::State<'_, SharedCore>,
+    input: AssetInput,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.register_asset_with_options(
+            input,
+            expected_revision.as_deref(),
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_register_asset_file(
+    state: tauri::State<'_, SharedCore>,
+    input: AssetFileInput,
+    expected_revision: Option<String>,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .register_asset_file_with_options(
+                input,
+                expected_revision.as_deref(),
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_list_assets(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+) -> Result<Vec<Asset>, String> {
+    with_read_project(state, move |project| project.list_assets(entity_id)).await
+}
+
+#[tauri::command]
+pub(super) async fn project_list_shared_assets(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<Vec<Asset>, String> {
+    with_read_project(state, move |project| project.list_shared_assets()).await
+}
+
+#[tauri::command]
+pub(super) async fn project_import_image_map_file(
+    state: tauri::State<'_, SharedCore>,
+    source_path: String,
+) -> Result<daena_core::ImportedImageMap, String> {
+    let path = PathBuf::from(&source_path);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("image filename is invalid")?
+        .to_string();
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Image map")
+        .to_string();
+    let mime = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        _ => return Err("Choose a PNG, JPEG, or SVG image".into()),
+    }
+    .to_string();
+    let bytes = std::fs::read(&path).map_err(|error| format!("read image: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .import_image_map(name, bytes, mime, filename, None)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_attach_map_raster_asset(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    source_path: String,
+) -> Result<daena_core::AttachedMapRaster, String> {
+    let path = PathBuf::from(&source_path);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("image filename is invalid")?
+        .to_string();
+    let mime = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("svg") => "image/svg+xml",
+        _ => return Err("Choose a PNG, JPEG, or SVG image".into()),
+    }
+    .to_string();
+    let bytes = std::fs::read(&path).map_err(|error| format!("read image: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.attach_map_raster_asset(
+            map_entity_id,
+            bytes,
+            mime,
+            filename,
+            None,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_duplicate_map_raster_asset(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    asset_id: String,
+) -> Result<daena_core::AttachedMapRaster, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .duplicate_map_raster_asset(map_entity_id, asset_id, None)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_import_vector_map_file(
+    state: tauri::State<'_, SharedCore>,
+    source_path: String,
+) -> Result<daena_core::AcceptedVectorMap, String> {
+    let path = PathBuf::from(&source_path);
+    let name = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Vector map")
+        .to_string();
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("geojson" | "json") => {}
+        _ => return Err("Choose a GeoJSON (.geojson or .json) file".into()),
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("read GeoJSON: {error}"))?;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .import_vector_map(name, bytes, None)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_accept_vector_map(
+    state: tauri::State<'_, SharedCore>,
+    name: String,
+    candidate_json: String,
+    generation: serde_json::Value,
+    request_id: Option<String>,
+) -> Result<daena_core::AcceptedVectorMap, String> {
+    let bytes = candidate_json.into_bytes();
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.accept_vector_map(
+            name,
+            bytes,
+            generation,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_replace_vector_source(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    bytes: Vec<u8>,
+    upload_content_hash: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::VectorSourceReplace, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.replace_vector_source(
+            asset_id,
+            bytes,
+            upload_content_hash,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn project_apply_map_edit(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    descriptor: serde_json::Value,
+    layers: serde_json::Value,
+    bytes: Vec<u8>,
+    upload_content_hash: String,
+    expected_map_revision: String,
+    expected_layers_revision: String,
+    expected_source_revision: String,
+    link_mutations: Option<Vec<daena_core::MapLinkMutation>>,
+    request_id: Option<String>,
+) -> Result<daena_core::MapEditApply, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.apply_map_edit(
+            map_entity_id,
+            descriptor,
+            layers,
+            bytes,
+            upload_content_hash,
+            &expected_map_revision,
+            &expected_layers_revision,
+            &expected_source_revision,
+            link_mutations.unwrap_or_default(),
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_create_vector_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    style: Option<serde_json::Value>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_vector_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+            style,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn project_delete_vector_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    expected_source_revision: String,
+    expected_feature_count: i64,
+    request_id: Option<String>,
+) -> Result<daena_core::VectorLayerDelete, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_vector_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            &expected_source_revision,
+            expected_feature_count,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn maps_recovery_export(
+    state: tauri::State<'_, SharedCore>,
+    entity_id: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .save_map_recovery_copy(&entity_id, &bytes)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_read_asset_bytes(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+) -> Result<Vec<u8>, String> {
+    with_read_project(state, move |project| project.asset_bytes(asset_id)).await
+}
+
+#[tauri::command]
+pub(super) async fn project_read_asset_bytes_by_path(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    with_read_project(state, move |project| project.asset_bytes_by_path(path)).await
+}
+
+#[tauri::command]
+pub(super) async fn project_get_asset_by_path(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<Asset, String> {
+    with_read_project(state, move |project| project.asset_by_path(path)).await
+}
+
+#[tauri::command]
+pub(super) async fn project_create_raster_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_raster_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_create_semantic_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    name: String,
+    expected_revision: String,
+    style: Option<serde_json::Value>,
+    selector: Option<serde_json::Value>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.create_semantic_layer(
+            map_entity_id,
+            name,
+            &expected_revision,
+            request_id.as_deref(),
+            style,
+            selector,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_delete_semantic_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_semantic_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn project_update_map_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    name: Option<String>,
+    order: Option<i64>,
+    default_visible: Option<bool>,
+    opacity: Option<f64>,
+    locked: Option<bool>,
+    style: Option<serde_json::Value>,
+    selector: Option<serde_json::Value>,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.update_map_layer(
+            map_entity_id,
+            layer_id,
+            daena_core::RasterLayerUpdate {
+                name,
+                order,
+                default_visible,
+                opacity,
+                locked,
+                style,
+                selector,
+            },
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_delete_raster_layer(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    layer_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<daena_core::RasterLayerChange, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_raster_layer(
+            map_entity_id,
+            layer_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_replace_asset_bytes(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    bytes: Vec<u8>,
+    content_hash: String,
+    mime_type: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    let size = bytes.len() as i64;
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .replace_asset_bytes_with_request(
+                AssetReplaceInput {
+                    asset_id,
+                    content_hash,
+                    size,
+                    mime_type,
+                },
+                bytes,
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_replace_asset_file(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    source_path: String,
+    mime_type: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .replace_asset_file_with_request(
+                AssetFileReplaceInput {
+                    asset_id,
+                    source_path,
+                    mime_type,
+                },
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_update_asset_metadata(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    filename: Option<String>,
+    role: Option<String>,
+    reference_scope: Option<String>,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<Asset, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .update_asset_metadata_with_request(
+                AssetMetadataUpdate {
+                    asset_id,
+                    filename,
+                    role,
+                    reference_scope,
+                },
+                &expected_revision,
+                request_id.as_deref(),
+            )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_delete_asset(
+    state: tauri::State<'_, SharedCore>,
+    asset_id: String,
+    expected_revision: String,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.delete_asset_with_request(
+            asset_id,
+            &expected_revision,
+            request_id.as_deref(),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_map_location_projection(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    with_read_project(state, move |project| {
+        project.map_location_projection(map_entity_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_query_map_locations(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+) -> Result<Vec<serde_json::Value>, String> {
+    with_read_project(state, move |project| {
+        project.query_map_locations(map_entity_id, min_x, min_y, max_x, max_y)
+    })
+    .await
+}
+
+pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(src).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(super) async fn project_backup(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+) -> Result<String, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    flush_project_checkpoint(state.clone(), "portable backup").await?;
+    let backup_path = with_read_project(state, move |project| {
+        project.portable_backup_after_checkpoint(directory)
+    })
+    .await?;
+    let backup_path_buf = PathBuf::from(&backup_path);
+    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+        let folder_path = folder.into_path().map_err(|error| error.to_string())?;
+        if let Some(file_name) = backup_path_buf.file_name() {
+            let dest = folder_path.join(file_name);
+            copy_dir_recursive(&backup_path_buf, &dest)?;
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+    }
+    Ok(backup_path)
+}
+
+#[tauri::command]
+pub(super) async fn project_export_markdown(
+    state: tauri::State<'_, SharedCore>,
+    destination: String,
+) -> Result<String, String> {
+    with_read_project(state, move |project| {
+        project.export_markdown_to(destination)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_export_wiki_page(
+    state: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+    entity_id: String,
+    destination: String,
+    format: WikiPageExportFormat,
+    manifest_id: String,
+) -> Result<String, String> {
+    let plugins = plugins.inner().clone();
+    with_read_project(state, move |project| {
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let manifest = effective_module_manifests(project, &host)?
+            .into_iter()
+            .find_map(|(manifest, enabled)| {
+                (enabled && manifest.id == manifest_id).then_some(manifest)
+            })
+            .ok_or_else(|| CoreError::Validation("wiki manifest is not enabled".into()))?;
+        project.export_wiki_page_to(&entity_id, destination, format, &manifest)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_recovery_backup(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedCore>,
+) -> Result<String, String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let backup_path = with_core(state, move |core| {
+        core.project_mut(trusted_shell())?
+            .recovery_backup_to(directory)
+    })
+    .await?;
+    let backup_path_buf = PathBuf::from(&backup_path);
+    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+        let folder_path = folder.into_path().map_err(|error| error.to_string())?;
+        if let Some(file_name) = backup_path_buf.file_name() {
+            let dest = folder_path.join(file_name);
+            copy_dir_recursive(&backup_path_buf, &dest)?;
+            return Ok(dest.to_string_lossy().into_owned());
+        }
+    }
+    Ok(backup_path)
+}
+
+#[tauri::command]
+pub(super) async fn project_restore_recovery_backup(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?
+            .restore_recovery_backup(path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_restore(
+    state: tauri::State<'_, SharedCore>,
+    path: String,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?.restore(path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_restore_payload(
+    state: tauri::State<'_, SharedCore>,
+    payload: String,
+    request_id: Option<String>,
+) -> Result<(), String> {
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?
+            .restore_payload_with_request(&payload, request_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_rebuild_search(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<(), String> {
+    with_core(state, |core| {
+        core.project(trusted_shell())?.rebuild_search()
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_seed_example(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<usize, String> {
+    with_core(state, |core| {
+        core.project_mut(trusted_shell())?.seed_example()
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn migration_validate(
+    state: tauri::State<'_, SharedCore>,
+    module_id: String,
+    migration: serde_json::Value,
+) -> Result<(), String> {
+    let migration: Migration =
+        serde_json::from_value(migration).map_err(|error| error.to_string())?;
+    if migration.module_id != module_id {
+        return Err("migration module ID does not match command module ID".into());
+    }
+    with_core(state, move |core| {
+        let project = core.project(trusted_shell())?;
+        let current = project.get_module_version(&module_id)?;
+        project.validate_migration(&migration, current)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn migration_apply(
+    state: tauri::State<'_, SharedCore>,
+    module_id: String,
+    migration: serde_json::Value,
+) -> Result<(), String> {
+    let migration: Migration =
+        serde_json::from_value(migration).map_err(|error| error.to_string())?;
+    if migration.module_id != module_id {
+        return Err("migration module ID does not match command module ID".into());
+    }
+    with_core(state, move |core| {
+        core.project_mut(trusted_shell())?
+            .apply_migration(&migration)
+    })
+    .await
+}

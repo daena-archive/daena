@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   isStructuredFieldValue,
   restoreStructuredFieldValue,
   shouldPersistFieldValue,
 } from "../src/lib/fields/persistence.ts";
+import { isMapsProviderField, MAPS_PROVIDER_FIELD_KEYS } from "../src/lib/maps/provider-fields.ts";
 
 const physicalDescriptor = {
   schemaVersion: 1,
@@ -40,6 +44,30 @@ assert.throws(
 assert.throws(
   () => restoreStructuredFieldValue('"scalar"', true, "Map descriptor"),
   /Map descriptor must contain a JSON object or array\./,
+);
+
+assert.equal(isMapsProviderField({ key: "map", type: "text" }), true);
+assert.equal(isMapsProviderField({ key: "layers", type: "text" }), true);
+assert.equal(isMapsProviderField({ key: "detailMap", type: "relationship" }), false);
+assert.equal(isMapsProviderField({ key: "genre", type: "text" }), false);
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const mapsManifest = JSON.parse(readFileSync(join(root, "packages/modules/maps/manifest.json"), "utf8"));
+const mapsTextKeys = mapsManifest.schemas[0].fields
+  .filter((field) => field.type !== "relationship")
+  .map((field) => field.key)
+  .sort();
+assert.deepEqual(mapsTextKeys, [...MAPS_PROVIDER_FIELD_KEYS].sort());
+
+const shell = readFileSync(join(root, "src/routes/+page.svelte"), "utf8");
+assert.match(shell, /isMapsProviderField/);
+assert.match(shell, /propertyDefinitions\(\)\.length > 0/);
+assert.match(shell, /hasDetailsSection/);
+assert.match(shell, /\{#if hasDetailsSection\(\)\}/);
+assert.match(
+  shell,
+  /function emptyInspectorDefinitions\(\)[\s\S]*?isMapsProviderField\(definition\)/,
+  "AI fill must not treat Maps provider JSON as empty Properties",
 );
 
 console.log("structured map field persistence checks passed");

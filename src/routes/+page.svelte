@@ -247,6 +247,7 @@ import {
   restoreStructuredFieldValue,
   shouldPersistFieldValue,
 } from "$lib/fields/persistence";
+import { isMapsProviderField } from "$lib/maps/provider-fields";
 
 type InstalledModule = ProjectModuleManifest;
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
@@ -1312,7 +1313,10 @@ function createFieldsFor(option: CreateOption | null = selectedCreateOption()): 
     .filter((schema) => schemaEntityTypeIds(schema).includes(option.template.entityType))
     .flatMap((schema) =>
       schema.fields
-        .filter((field) => fieldAppliesToEntity(field, option.template.entityType, option.module.id))
+        .filter(
+          (field) =>
+            fieldAppliesToEntity(field, option.template.entityType, option.module.id) && !isMapsProviderField(field),
+        )
         .map((field) => ({
           namespace: schema.namespace,
           field,
@@ -3507,11 +3511,12 @@ function openAiAction(
   aiRewriteOpen = true;
 }
 function emptyInspectorDefinitions() {
-  return definitions().filter((definition) =>
-    definition.type === "relationship"
+  return definitions().filter((definition) => {
+    if (isMapsProviderField(definition)) return false;
+    return definition.type === "relationship"
       ? selectedRelationshipIds(definition).length === 0
-      : isEmptyFieldValue(fields[definition.key]),
-  );
+      : isEmptyFieldValue(fields[definition.key]);
+  });
 }
 function clearAiFieldListener() {
   aiFieldUnlisten?.();
@@ -5598,7 +5603,10 @@ function chronologyDateDefinitions() {
   return definitions().filter((candidate) => candidate.type === "date" && isChronologyDateKey(candidate.key));
 }
 function propertyDefinitions() {
-  return definitions().filter((candidate) => candidate.type !== "relationship" && !isChronologyDateKey(candidate.key));
+  return definitions().filter(
+    (candidate) =>
+      candidate.type !== "relationship" && !isChronologyDateKey(candidate.key) && !isMapsProviderField(candidate),
+  );
 }
 function otherRelationshipDefinitions() {
   return relationshipDefinitions().filter((candidate) => !isEraRelationshipField(candidate));
@@ -5616,6 +5624,12 @@ function relationshipGroupLinkCount(fields: FieldDefinition[]) {
 }
 function hasChronologySection() {
   return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
+}
+function hasCalendarEditorSection() {
+  return selected?.entity_type === "daena.timeline:calendar" && Boolean(projectInfo);
+}
+function hasDetailsSection() {
+  return propertyDefinitions().length > 0 || hasChronologySection() || hasCalendarEditorSection();
 }
 const inspectorChronologyWarnings = $derived(
   chronologyWarnings(
@@ -8773,135 +8787,141 @@ onMount(() => {
                     ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
-            <InspectorSection title="Details" count={propertyDefinitions().length + chronologyDateDefinitions().length}>
-              {#if hasChronologySection()}
-                <section class="inspector-section inspector-section-plain">
-                  <h3>Chronology</h3>
-                  {#if eraRelationshipDefinition()}
-                    {@const eraField = eraRelationshipDefinition()!}
-                    <div class="property-field">
-                      <span>{eraField.label}</span>
-                      <RelationshipPicker
-                        field={eraField}
-                        search={searchEntitiesPaged(eraField)}
-                        resolveSelected={resolveSelectedEntities}
-                        selectedIds={selectedRelationshipIds(eraField)}
-                        placeholder="Search eras…"
-                        onChange={(ids) => void updateRelationshipField(eraField, ids)} />
-                    </div>
-                  {/if}
-                  {#each inspectorChronologyWarnings as warning}
-                    <p class="chronology-warning" role="status">{warning}</p>
-                  {/each}
-                  {#each chronologyDateDefinitions() as definition}
-                    <InspectorDateField
-                      label={definition.label}
-                      fieldKey={definition.key}
-                      value={fields[definition.key]}
-                      editorOpen={Boolean(dateEditorOpen[definition.key])}
-                      editorKey={`${selected?.id ?? ""}:${definition.key}`}
-                      calendar={definitionForDateField(definition.key)}
-                      calendars={worldCalendars() as any}
-                      selectedCalendarId={selectedCalendarId(definition.key)}
-                      required={Boolean(definition.required)}
-                      onChange={(next) => updateInspectorDateField(definition.key, next)}
-                      onClear={() => clearDateField(definition.key)}
-                      onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                      onOpen={() => openDateEditor(definition.key)} />
-                  {/each}
-                </section>
-              {/if}
-              <section class="inspector-section inspector-section-plain">
-                <h3>Properties</h3>
-                {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
-                      label={definition.label}
-                      fieldKey={definition.key}
-                      value={fields[definition.key]}
-                      editorOpen={Boolean(dateEditorOpen[definition.key])}
-                      editorKey={`${selected?.id ?? ""}:${definition.key}`}
-                      calendar={definitionForDateField(definition.key)}
-                      calendars={worldCalendars() as any}
-                      selectedCalendarId={selectedCalendarId(definition.key)}
-                      required={Boolean(definition.required)}
-                      onChange={(next) => updateInspectorDateField(definition.key, next)}
-                      onClear={() => clearDateField(definition.key)}
-                      onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                      onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
-                      <span
-                        >{definition.label}{#if definition.required}<b>*</b>{/if}</span
-                      >{#if definition.type === "boolean"}<input
-                          type="checkbox"
-                          aria-label={definition.label}
-                          checked={fieldInputValue(definition, fields[definition.key]) === true}
-                          onchange={(event) =>
-                            updateField(definition, event)} />{:else if definition.type === "number"}<input
-                          type="number"
-                          aria-label={definition.label}
-                          value={fieldInputValue(definition, fields[definition.key])}
-                          placeholder="Add {definition.label.toLowerCase()}"
-                          onchange={(event) =>
-                            updateField(
-                              definition,
-                              event,
-                            )} />{:else if definition.type === "enum" && definition.options?.length}<select
-                          aria-label={definition.label}
-                          multiple={definition.multiple ?? false}
-                          value={definition.multiple
-                            ? Array.isArray(fields[definition.key])
-                              ? fields[definition.key]
-                              : []
-                            : String(fields[definition.key] ?? "")}
-                          onchange={(event) => updateField(definition, event)}
-                          >{#each definition.options ?? [] as option}<option value={option}>{option}</option
-                            >{/each}</select
-                        >{:else if (definition as any).type === "oneof"}<select
-                          aria-label={definition.label}
-                          value={String(fields[definition.key] ?? "")}
-                          onchange={(event) => updateField(definition, event)}
-                          ><option value="">Choose {definition.label.toLowerCase()}</option
-                          >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
-                          {#each (definition as any).oneOf ?? [] as variant}
-                            {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
-                              >{/each}
-                          {/each}</select
-                        >{:else}<input
-                          type="text"
-                          value={fieldInputValue(definition, fields[definition.key])}
-                          placeholder="Add {definition.label.toLowerCase()}"
-                          oninput={(event) => updateField(definition, event)} />{/if}
-                    </div>{/if}{/each}
-              </section>
-              {#if selected?.entity_type === "daena.timeline:calendar" && projectInfo}
-                <section class="inspector-section inspector-section-plain">
-                  <CalendarEditor
-                    context={contextFor("timeline")}
-                    entityId={inspectedEntity.id as UUID}
-                    onsaved={(definition) => {
-                      if (selected) {
-                        calendarCache.setDefinition(selected.id, definition);
-                        syncCalendarCacheState();
-                      }
-                    }}
-                    onOpenEra={(eraId) => {
-                      const entity = entities.find((candidate) => candidate.id === eraId);
-                      if (entity) void selectEntity(entity);
-                    }}
-                    onEraCreated={(created) => {
-                      void refreshAfterEntityMutation({ entityId: created.id }).then(() =>
-                        selectEntity({
-                          id: created.id,
-                          name: created.name,
-                          entity_type: created.type,
-                          deleted: created.deleted,
-                          created_at: created.createdAt,
-                          updated_at: created.updatedAt,
-                          revision: created.revision,
-                        }),
-                      );
-                    }} />
-                </section>
-              {/if}
-            </InspectorSection>
+            {#if hasDetailsSection()}
+              <InspectorSection
+                title="Details"
+                count={propertyDefinitions().length + chronologyDateDefinitions().length}>
+                {#if hasChronologySection()}
+                  <section class="inspector-section inspector-section-plain">
+                    <h3>Chronology</h3>
+                    {#if eraRelationshipDefinition()}
+                      {@const eraField = eraRelationshipDefinition()!}
+                      <div class="property-field">
+                        <span>{eraField.label}</span>
+                        <RelationshipPicker
+                          field={eraField}
+                          search={searchEntitiesPaged(eraField)}
+                          resolveSelected={resolveSelectedEntities}
+                          selectedIds={selectedRelationshipIds(eraField)}
+                          placeholder="Search eras…"
+                          onChange={(ids) => void updateRelationshipField(eraField, ids)} />
+                      </div>
+                    {/if}
+                    {#each inspectorChronologyWarnings as warning}
+                      <p class="chronology-warning" role="status">{warning}</p>
+                    {/each}
+                    {#each chronologyDateDefinitions() as definition}
+                      <InspectorDateField
+                        label={definition.label}
+                        fieldKey={definition.key}
+                        value={fields[definition.key]}
+                        editorOpen={Boolean(dateEditorOpen[definition.key])}
+                        editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                        calendar={definitionForDateField(definition.key)}
+                        calendars={worldCalendars() as any}
+                        selectedCalendarId={selectedCalendarId(definition.key)}
+                        required={Boolean(definition.required)}
+                        onChange={(next) => updateInspectorDateField(definition.key, next)}
+                        onClear={() => clearDateField(definition.key)}
+                        onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
+                        onOpen={() => openDateEditor(definition.key)} />
+                    {/each}
+                  </section>
+                {/if}
+                {#if propertyDefinitions().length > 0}
+                  <section class="inspector-section inspector-section-plain">
+                    <h3>Properties</h3>
+                    {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
+                          label={definition.label}
+                          fieldKey={definition.key}
+                          value={fields[definition.key]}
+                          editorOpen={Boolean(dateEditorOpen[definition.key])}
+                          editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                          calendar={definitionForDateField(definition.key)}
+                          calendars={worldCalendars() as any}
+                          selectedCalendarId={selectedCalendarId(definition.key)}
+                          required={Boolean(definition.required)}
+                          onChange={(next) => updateInspectorDateField(definition.key, next)}
+                          onClear={() => clearDateField(definition.key)}
+                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
+                          onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
+                          <span
+                            >{definition.label}{#if definition.required}<b>*</b>{/if}</span
+                          >{#if definition.type === "boolean"}<input
+                              type="checkbox"
+                              aria-label={definition.label}
+                              checked={fieldInputValue(definition, fields[definition.key]) === true}
+                              onchange={(event) =>
+                                updateField(definition, event)} />{:else if definition.type === "number"}<input
+                              type="number"
+                              aria-label={definition.label}
+                              value={fieldInputValue(definition, fields[definition.key])}
+                              placeholder="Add {definition.label.toLowerCase()}"
+                              onchange={(event) =>
+                                updateField(
+                                  definition,
+                                  event,
+                                )} />{:else if definition.type === "enum" && definition.options?.length}<select
+                              aria-label={definition.label}
+                              multiple={definition.multiple ?? false}
+                              value={definition.multiple
+                                ? Array.isArray(fields[definition.key])
+                                  ? fields[definition.key]
+                                  : []
+                                : String(fields[definition.key] ?? "")}
+                              onchange={(event) => updateField(definition, event)}
+                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option
+                                >{/each}</select
+                            >{:else if (definition as any).type === "oneof"}<select
+                              aria-label={definition.label}
+                              value={String(fields[definition.key] ?? "")}
+                              onchange={(event) => updateField(definition, event)}
+                              ><option value="">Choose {definition.label.toLowerCase()}</option
+                              >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
+                              {#each (definition as any).oneOf ?? [] as variant}
+                                {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
+                                  >{/each}
+                              {/each}</select
+                            >{:else}<input
+                              type="text"
+                              value={fieldInputValue(definition, fields[definition.key])}
+                              placeholder="Add {definition.label.toLowerCase()}"
+                              oninput={(event) => updateField(definition, event)} />{/if}
+                        </div>{/if}{/each}
+                  </section>
+                {/if}
+                {#if hasCalendarEditorSection()}
+                  <section class="inspector-section inspector-section-plain">
+                    <CalendarEditor
+                      context={contextFor("timeline")}
+                      entityId={inspectedEntity.id as UUID}
+                      onsaved={(definition) => {
+                        if (selected) {
+                          calendarCache.setDefinition(selected.id, definition);
+                          syncCalendarCacheState();
+                        }
+                      }}
+                      onOpenEra={(eraId) => {
+                        const entity = entities.find((candidate) => candidate.id === eraId);
+                        if (entity) void selectEntity(entity);
+                      }}
+                      onEraCreated={(created) => {
+                        void refreshAfterEntityMutation({ entityId: created.id }).then(() =>
+                          selectEntity({
+                            id: created.id,
+                            name: created.name,
+                            entity_type: created.type,
+                            deleted: created.deleted,
+                            created_at: created.createdAt,
+                            updated_at: created.updatedAt,
+                            revision: created.revision,
+                          }),
+                        );
+                      }} />
+                  </section>
+                {/if}
+              </InspectorSection>
+            {/if}
             <InspectorSection
               title="Relationships"
               count={otherRelationshipDefinitions().reduce(

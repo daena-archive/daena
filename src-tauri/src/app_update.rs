@@ -50,7 +50,7 @@ pub fn allowed_external_url(url: &str) -> bool {
 }
 
 pub fn parse_version(raw: &str) -> Option<Version> {
-    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    let trimmed = crate::version::normalize_override(raw)?;
     Version::parse(trimmed).ok()
 }
 

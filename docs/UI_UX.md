@@ -104,9 +104,11 @@ is absent.
 
 ## Inspector
 
-The inspector is one pane. It does not use tabs. Details stay open. Relationships
-stay open so module group headers remain visible. Assets open only when the
-entry has files. Backlinks and Maps locations stay closed until opened.
+The inspector is one pane. It does not use tabs. Details appears only when the
+entry has author-facing properties, chronology, or a calendar editor; when shown
+it stays open. Relationships stay open so module group headers remain visible.
+Assets open only when the entry has files. Backlinks and Maps locations stay
+closed until opened.
 
 Relationship fields are grouped by the module that defines them (Lore, Houses,
 Maps, Timeline, Language), not by the current workspace. Groups with no links

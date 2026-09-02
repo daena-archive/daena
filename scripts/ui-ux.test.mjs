@@ -136,6 +136,7 @@ assert.match(uiUx, /Managed by extension/);
 assert.match(uiUx, /collection-only/);
 assert.match(uiUx, /src\/lib\/entity-lifecycle/);
 assert.match(uiUx, /## Inspector/);
+assert.match(uiUx, /Details appears only when/);
 assert.match(uiUx, /Wiki infobox links use the same module grouping/);
 assert.match(uiUx, /grouped by the module that defines them/);
 assert.match(uiUx, /New in this manuscript/);

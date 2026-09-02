@@ -1,12 +1,12 @@
 //! Atlas capability reporting and immutable snapshot capture.
 
 use daena_atlas::request::{
-    physical_layer_role, AtlasRenderRequest, DetailLevel, ResourceEstimate, ATLAS_LAYER_ROLES,
+    atlas_layer_default_visible, physical_layer_role, AtlasRenderRequest, DetailLevel,
+    ResourceEstimate, ATLAS_DEFAULT_VISIBLE_LAYER_IDS, ATLAS_LAYER_ROLES,
 };
 use daena_atlas::studio::{
     AtlasStudioSceneRequestV1, ATLAS_STUDIO_SESSION_SCHEMA_VERSION, CODE_STUDIO_REQUEST_INVALID,
-    CODE_STUDIO_UNSUPPORTED, STUDIO_MAX_ZOOM, STUDIO_PROJECTION_ID, STUDIO_SPIKE_LAYER_IDS,
-    STUDIO_TILE_SIZE,
+    CODE_STUDIO_UNSUPPORTED, STUDIO_MAX_ZOOM, STUDIO_PROJECTION_ID, STUDIO_TILE_SIZE,
 };
 use daena_atlas::style::{bundled_style_ids, RELIEF_STYLE_ID};
 use daena_physical::history::{
@@ -90,7 +90,7 @@ impl AtlasStudioSessionRequestV1 {
             level: DetailLevel::Detailed,
             variant: 0,
             style_id: RELIEF_STYLE_ID.to_string(),
-            active_layer_ids: STUDIO_SPIKE_LAYER_IDS
+            active_layer_ids: ATLAS_DEFAULT_VISIBLE_LAYER_IDS
                 .iter()
                 .map(|id| (*id).to_string())
                 .collect(),
@@ -151,7 +151,7 @@ impl AtlasStudioSessionRequestV1 {
         }
         let mut layers = self.active_layer_ids.clone();
         if layers.is_empty() {
-            layers = STUDIO_SPIKE_LAYER_IDS
+            layers = ATLAS_DEFAULT_VISIBLE_LAYER_IDS
                 .iter()
                 .map(|id| (*id).to_string())
                 .collect();
@@ -279,7 +279,7 @@ pub fn capabilities_for_descriptor(descriptor: &Value, layers: &Value) -> AtlasR
             id: (*role).to_string(),
             name: role_name(role),
             role: (*role).to_string(),
-            default_visible: matches!(*role, "ocean" | "relief" | "ice" | "graticule"),
+            default_visible: atlas_layer_default_visible(role),
         })
         .collect::<Vec<_>>();
     if let Some(stored) = layers.get("layers").and_then(Value::as_array) {

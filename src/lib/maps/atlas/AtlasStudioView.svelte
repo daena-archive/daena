@@ -22,6 +22,8 @@ import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
+import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
+import { ATLAS_DETAIL_ALGORITHM_VERSION, isAtlasLayerEnabledByDefault } from "./constants.ts";
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -167,7 +169,8 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
   if (!aliases || viewerLayers.length === 0) return null;
   const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
   if (matched.length === 0) return null;
-  return matched.some((layer) => layer.defaultVisible);
+  // Hidden physical-map layers should not disable Atlas defaults.
+  return matched.some((layer) => layer.defaultVisible) ? true : null;
 }
 
 function prefersReducedMotion() {
@@ -257,19 +260,12 @@ function styleLabel(id: string) {
   }
 }
 
-function currentViewExportHeight(west: number, south: number, east: number, north: number, widthPx: number) {
-  const latSpan = Math.max(1, north - south);
-  let lonSpan = (east - west + 360_000_000) % 360_000_000;
-  if (lonSpan === 0) lonSpan = 360_000_000;
-  return Math.max(256, Math.min(2048, Math.round((widthPx * latSpan) / Math.max(1, lonSpan))));
-}
-
 function studioRequest() {
   return {
     schemaVersion: 1,
     mapEntityId: mapId,
     offsetYears,
-    algorithmVersion: 6,
+    algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION,
     level: "detailed" as const,
     variant: 0,
     styleId,
@@ -301,14 +297,11 @@ async function loadCapabilities() {
   }
   layers = capabilities.layers
     .filter((layer) => layer.id !== "frame")
-    .map((layer) => {
-      const enabled = viewerLayerEnabled(layer.id);
-      return {
-        id: layer.id,
-        name: viewerLayerName(layer.id) ?? layer.name,
-        enabled: enabled ?? (layer.defaultVisible && layer.id !== "frame"),
-      };
-    });
+    .map((layer) => ({
+      id: layer.id,
+      name: viewerLayerName(layer.id) ?? layer.name,
+      enabled: viewerLayerEnabled(layer.id) ?? (layer.defaultVisible || isAtlasLayerEnabledByDefault(layer.id)),
+    }));
 }
 
 async function openSession() {
@@ -487,8 +480,48 @@ function prefetchRing(status: AtlasStudioSessionStatus) {
   }
 }
 
+function currentViewExportHeight(west: number, south: number, east: number, north: number, widthPx: number) {
+  const latSpan = Math.max(1, north - south);
+  let lonSpan = (east - west + 360_000_000) % 360_000_000;
+  if (lonSpan === 0) lonSpan = 360_000_000;
+  return Math.max(256, Math.min(2048, Math.round((widthPx * latSpan) / Math.max(1, lonSpan))));
+}
+
+function isWorldOverviewView() {
+  if (!map) return true;
+  return mapZoom() <= applyWorldConstraints() + 0.05;
+}
+
+function worldExportRequest(): AtlasRenderRequest {
+  return {
+    schemaVersion: 1,
+    offsetYears,
+    algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION,
+    level: "detailed",
+    variant: 0,
+    styleId,
+    widthPx: 2048,
+    heightPx: 1024,
+    dpi: 72,
+    format: "png",
+    projection: "equirectangular",
+    extent: {
+      westLonMicro: -180_000_000,
+      southLatMicro: -90_000_000,
+      eastLonMicro: 180_000_000,
+      northLatMicro: 90_000_000,
+    },
+    unlockAspect: false,
+    activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    timeKind,
+    authoredYear: timeKind === "calendar-year" ? authoredYear : null,
+    bindingRevision: null,
+  };
+}
+
 function currentViewExport(): AtlasRenderRequest | null {
   if (!map) return null;
+  if (isWorldOverviewView()) return worldExportRequest();
   const [westDegrees, southDegrees, eastDegrees, northDegrees] = mapLonLatExtent();
   const west = toMicro(westDegrees);
   const east = toMicro(eastDegrees);
@@ -499,7 +532,7 @@ function currentViewExport(): AtlasRenderRequest | null {
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 6,
+    algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION,
     level: "detailed",
     variant: 0,
     styleId,
@@ -809,19 +842,14 @@ onDestroy(() => {
           </label>
         {/if}
       {/if}
-      <div class="layer-toggles" role="group" aria-label="Atlas layers">
-        {#each layers as layer, index}
-          <button
-            class="layer-toggle"
-            type="button"
-            aria-pressed={layer.enabled}
-            onclick={() => {
-              layers[index].enabled = !layer.enabled;
-              layers = layers;
-              scheduleSession();
-            }}>{layer.name}</button>
-        {/each}
-      </div>
+      <MapLayerVisibilityList
+        variant="studio"
+        {layers}
+        onToggle={(index) => {
+          layers[index].enabled = !layers[index].enabled;
+          layers = layers;
+          scheduleSession();
+        }} />
       <section class="place" aria-label="Place" aria-live="polite">
         <strong>Place</strong>
         <dl>
@@ -1002,28 +1030,6 @@ aside input[type="range"] {
   font: 12px system-ui;
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-.layer-toggles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.8rem;
-}
-.layer-toggle {
-  padding: 0.3rem 0.65rem;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 6%);
-  color: #d9d0c3;
-  font-weight: 600;
-}
-.layer-toggle:hover {
-  border-color: rgb(255 255 255 / 28%);
-  background: rgb(255 255 255 / 10%);
-}
-.layer-toggle[aria-pressed="true"] {
-  border-color: var(--theme-warning-border, #c9a96e);
-  background: #c9a96e;
-  color: var(--brass-ink);
 }
 .place {
   display: grid;

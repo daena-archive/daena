@@ -202,8 +202,8 @@ impl ProjectedView {
                 let offset = (i64::from(wrap_lon_micro(i64::from(lon_micro))) - i64::from(west))
                     .rem_euclid(LON_MICRO_SPAN);
                 let x = (offset * i64::from(self.width) / self.extent.lon_span_micro()) as i32;
-                let y = ((i64::from(clamp_lat_micro(i64::from(lat_micro)))
-                    - i64::from(self.extent.south_lat_micro))
+                let y = ((i64::from(self.extent.north_lat_micro)
+                    - i64::from(clamp_lat_micro(i64::from(lat_micro))))
                     * i64::from(self.height)
                     / self.extent.lat_span_micro()) as i32;
                 Some((x, y))
@@ -213,7 +213,7 @@ impl ProjectedView {
                 let xw = mercator_x(lon_micro, self.extent.central_meridian_micro());
                 let yw = mercator_y(lat_micro)?;
                 let x = ((xw - x0) * f64::from(self.width) / x_span).round() as i32;
-                let y = ((yw - y0) * f64::from(self.height) / y_span).round() as i32;
+                let y = ((y0 + y_span - yw) * f64::from(self.height) / y_span).round() as i32;
                 Some((x, y))
             }
         }
@@ -246,8 +246,8 @@ impl ProjectedView {
 
     fn equirect_lat(self, y: u32, height: u32) -> i32 {
         clamp_lat_micro(
-            i64::from(self.extent.south_lat_micro)
-                + (self.extent.lat_span_micro() * (i64::from(y).saturating_mul(2) + 1))
+            i64::from(self.extent.north_lat_micro)
+                - (self.extent.lat_span_micro() * (i64::from(y).saturating_mul(2) + 1))
                     / (i64::from(height) * 2),
         )
     }
@@ -273,7 +273,7 @@ impl ProjectedView {
     fn mercator_pixel_center(self, x: u32, y: u32) -> (i32, i32) {
         let (x0, y0, x_span, y_span) = self.mercator_window();
         let mx = x0 + x_span * (f64::from(x) + 0.5) / f64::from(self.width);
-        let my = y0 + y_span * (f64::from(y) + 0.5) / f64::from(self.height);
+        let my = y0 + y_span - y_span * (f64::from(y) + 0.5) / f64::from(self.height);
         (
             mercator_x_to_lon_micro(mx, self.extent.central_meridian_micro()),
             mercator_y_to_lat_micro(my),
@@ -413,7 +413,7 @@ mod tests {
         );
         assert_eq!(
             pixel_center_lat_micro(0, 32),
-            LAT_MICRO_MIN + (LAT_MICRO_SPAN / 64) as i32
+            90_000_000 - (LAT_MICRO_SPAN / 64) as i32
         );
     }
 

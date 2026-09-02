@@ -27,8 +27,12 @@ export type BackgroundRegistry = {
 
 function sourceUrl(background: RuntimeBackground, onError?: (detail: string) => void): string | null {
   if (background.canvas) {
+    const cached = canvasDataUrls.get(background.canvas);
+    if (cached) return cached;
     try {
-      return background.canvas.toDataURL("image/png");
+      const url = background.canvas.toDataURL("image/png");
+      canvasDataUrls.set(background.canvas, url);
+      return url;
     } catch (cause) {
       onError?.(cause instanceof Error ? cause.message : "OpenLayers could not read the raster canvas.");
       return null;
@@ -36,6 +40,8 @@ function sourceUrl(background: RuntimeBackground, onError?: (detail: string) => 
   }
   return background.url || null;
 }
+
+const canvasDataUrls = new WeakMap<HTMLCanvasElement, string>();
 
 export function createBackgroundRegistry(onError?: (detail: string) => void): BackgroundRegistry {
   const group = new LayerGroup({ layers: [] });

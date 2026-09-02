@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
-import { CircleHelp, Mountain } from "@lucide/svelte";
+import { Mountain } from "@lucide/svelte";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
   project,
@@ -9,7 +9,7 @@ import {
   type PhysicalHydrologyProducts,
   type PhysicalJobStatus,
 } from "$lib/project/client";
-import { paintPhysicalSurface } from "./raster";
+import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "./raster";
 import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
@@ -47,8 +47,9 @@ let raster = $state<HTMLCanvasElement | null>(null);
 let notice = $state("");
 let busy = $state(false);
 let activeJobId: string | null = null;
-let helpSeen = $state(false);
 let preview = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
+let helpOpen = $state(false);
+let helpSeen = $state(false);
 let layers = $state<VectorLayerDefinition[]>([
   {
     id: BASE_LAYER_ID,
@@ -67,7 +68,7 @@ let layers = $state<VectorLayerDefinition[]>([
     kind: "vector",
     name: "Ice",
     order: 1,
-    defaultVisible: true,
+    defaultVisible: false,
     locked: true,
     opacity: 1,
     blendMode: "normal",
@@ -140,8 +141,11 @@ function publish(nextStatus: string, detail: unknown = null) {
   onstate?.(nextStatus, detail);
 }
 
-function overlayLayers() {
-  return layers.filter((layer) => layer.id !== BASE_LAYER_ID);
+function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
+  return {
+    iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? false,
+    lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? false,
+  };
 }
 
 function headline() {
@@ -157,13 +161,27 @@ function destroyPreview() {
   raster = null;
 }
 
-function toggleLayer(layerId: string) {
-  layers = layers.map((layer) => (layer.id === layerId ? { ...layer, defaultVisible: !layer.defaultVisible } : layer));
+function rebuildRaster(products: PhysicalHydrologyProducts | null) {
+  raster = products ? paintPhysicalSurface(products, physicalRasterPaintOptions()) : null;
 }
 
-function rebuildRaster(products: PhysicalHydrologyProducts | null) {
-  raster = products ? paintPhysicalSurface(products) : null;
+function toggleHelp() {
+  helpOpen = !helpOpen;
+  if (helpOpen) helpSeen = true;
 }
+
+function closeHelp() {
+  helpOpen = false;
+}
+
+$effect(() => {
+  if (!helpOpen) return;
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") closeHelp();
+  };
+  window.addEventListener("keydown", onKey);
+  return () => window.removeEventListener("keydown", onKey);
+});
 
 async function mountPreview() {
   await tick();
@@ -322,36 +340,40 @@ onMount(() => {
       <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
     </div>
     {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
-    <div class="physical-layer-controls">
-      <div role="group" aria-label="Physical diagnostic layers">
-        {#each overlayLayers() as layer (layer.id)}
-          <button
-            class="layer-toggle"
-            type="button"
-            aria-pressed={layer.defaultVisible}
-            onclick={() => toggleLayer(layer.id)}>{layer.name}</button>
-        {/each}
-      </div>
-      <span class="physical-map-help">
-        <button
-          type="button"
-          aria-describedby="physical-map-hint"
-          aria-label="About this preview"
-          class:unread={!helpSeen}
-          onmouseenter={() => {
-            helpSeen = true;
-          }}
-          onfocus={() => {
-            helpSeen = true;
-          }}><CircleHelp size={14} strokeWidth={1.8} aria-hidden="true" /></button>
-        <p id="physical-map-hint" role="tooltip">
-          This preview locks the world’s physical shape—coasts, climate, ice, rivers, and the rest. The accepted,
-          exportable map is a high-resolution render with far more detail and quality.
-        </p>
-      </span>
-    </div>
     <div class="native-vector-map">
       <PhysicalWorldView collection={preview} {layers} {raster} showRaster />
+      <div class="physical-map-help-anchor">
+        {#if helpOpen}
+          <button type="button" class="physical-map-help-backdrop" aria-label="Close help" onclick={closeHelp}></button>
+        {/if}
+        <button
+          type="button"
+          class="physical-map-help"
+          class:unread={!helpSeen}
+          aria-expanded={helpOpen}
+          aria-controls="physical-map-help-panel"
+          aria-label="About this preview"
+          onclick={toggleHelp}>?</button>
+        {#if helpOpen}
+          <div
+            id="physical-map-help-panel"
+            class="physical-map-help-panel"
+            role="dialog"
+            aria-labelledby="physical-map-help-title"
+            aria-modal="false">
+            <strong id="physical-map-help-title">About this preview</strong>
+            <p>
+              This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers. Pan
+              and zoom to explore before you accept.
+            </p>
+            <p class="physical-map-help-note">
+              The accepted map is a separate high-resolution render with much more detail. You can’t edit the base world
+              directly; copy any region into an editable layer to change it.
+            </p>
+            <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
+          </div>
+        {/if}
+      </div>
       {#if busy}
         <div class="physical-map-stage" role="status">
           <strong>{status?.stage ?? "Starting"}…</strong>
@@ -425,16 +447,13 @@ onMount(() => {
 }
 
 .physical-map-editor .quiet-button,
-.physical-map-editor .primary-button,
-.physical-map-editor .layer-toggle {
+.physical-map-editor .primary-button {
   cursor: pointer;
   font: inherit;
 }
 
 .physical-map-editor .quiet-button:focus-visible,
-.physical-map-editor .primary-button:focus-visible,
-.physical-map-editor .layer-toggle:focus-visible,
-.physical-map-help button:focus-visible {
+.physical-map-editor .primary-button:focus-visible {
   outline: 2px solid var(--theme-warning-border, #f3d39a);
   outline-offset: 2px;
 }
@@ -471,78 +490,67 @@ onMount(() => {
   opacity: 0.55;
 }
 
-.physical-map-editor .layer-toggle {
-  padding: 0.3rem 0.65rem;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 6%);
-  color: #d9d0c3;
-}
-
-.physical-map-editor .layer-toggle:hover {
-  border-color: rgb(255 255 255 / 28%);
-  background: rgb(255 255 255 / 10%);
-}
-
-.physical-map-editor .layer-toggle[aria-pressed="true"] {
-  border-color: var(--theme-warning-border, #c9a96e);
-  background: #c9a96e;
-  color: var(--brass-ink);
-  font-weight: 600;
-}
-
 .physical-map-editor .map-reconcile-notice {
   margin: 0;
   padding: 0.55rem 1rem;
 }
 
-.physical-layer-controls {
+.native-vector-map {
   position: relative;
-  z-index: 3;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.45rem 0.8rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid rgb(255 255 255 / 8%);
-  color: #d9d0c3;
-  font-size: 0.75rem;
+  min-height: 360px;
+  min-width: 0;
+  flex: 1;
 }
 
-.physical-layer-controls > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.8rem;
+.physical-map-help-anchor {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 4;
+}
+
+.physical-map-help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
 }
 
 .physical-map-help {
   position: relative;
-  margin-left: auto;
-}
-
-.physical-map-help button {
-  position: relative;
+  z-index: 5;
   display: grid;
   place-items: center;
-  width: 1.65rem;
-  height: 1.65rem;
+  width: 1.75rem;
+  height: 1.75rem;
   padding: 0;
-  border: 1px solid rgb(255 255 255 / 18%);
+  border: 1px solid rgb(255 255 255 / 22%);
   border-radius: 999px;
-  background: rgb(255 255 255 / 6%);
-  color: #d9d0c3;
-  font: inherit;
-  cursor: pointer;
-}
-
-.physical-map-help button:hover {
-  border-color: rgb(255 255 255 / 28%);
-  background: rgb(255 255 255 / 10%);
+  background: rgb(13 27 42 / 72%);
+  backdrop-filter: blur(6px);
   color: #f7f0e5;
+  font: 700 0.78rem/1 inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 28%);
 }
 
-.physical-map-help button.unread::after {
+.physical-map-help:hover,
+.physical-map-help:focus-visible {
+  border-color: rgb(255 255 255 / 34%);
+  background: rgb(21 37 54 / 88%);
+  color: #fff;
+}
+
+.physical-map-help:focus-visible {
+  outline: 2px solid var(--theme-warning-border, #f3d39a);
+  outline-offset: 2px;
+}
+
+.physical-map-help.unread::after {
   content: "";
   position: absolute;
   top: -2px;
@@ -554,36 +562,68 @@ onMount(() => {
   box-shadow: 0 0 4px #e8913a;
 }
 
-.physical-map-help p {
+.physical-map-help-panel {
   position: absolute;
-  z-index: 3;
-  right: calc(100% + 0.35rem);
-  top: calc(100% + 0.35rem);
-  display: none;
-  width: min(22rem, calc(100vw - 2.5rem));
-  margin: 0;
-  padding: 0.65rem 0.75rem;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 0.55rem;
+  width: min(18.5rem, calc(100vw - 2.5rem));
+  padding: 0.75rem 0.85rem;
   border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 0.45rem;
+  border-radius: 0.5rem;
   background: #152536;
   color: #f7f0e5;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
+}
+
+.physical-map-help-panel::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 0.65rem;
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid rgb(255 255 255 / 16%);
+  border-left: 1px solid rgb(255 255 255 / 16%);
+  background: #152536;
+  transform: rotate(45deg);
+}
+
+.physical-map-help-panel strong {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.physical-map-help-panel p {
+  margin: 0;
   font-size: 0.78rem;
-  font-weight: 400;
   line-height: 1.45;
+  color: #d9d0c3;
 }
 
-.physical-map-help:hover p,
-.physical-map-help:focus-within p {
-  display: block;
+.physical-map-help-note {
+  color: #c4b8a8 !important;
+  font-size: 0.74rem !important;
 }
 
-.native-vector-map {
-  position: relative;
-  display: flex;
-  min-height: 360px;
-  min-width: 0;
-  flex: 1;
+.physical-map-help-dismiss {
+  justify-self: start;
+  margin-top: 0.15rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.35rem;
+  background: rgb(255 255 255 / 8%);
+  color: #f7f0e5;
+  font: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
+.physical-map-help-dismiss:hover {
+  border-color: rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 12%);
 }
 
 .physical-map-stage {

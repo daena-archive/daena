@@ -29,6 +29,14 @@ pub const ATLAS_LAYER_ROLES: [&str; 14] = [
     "labels",
 ];
 
+pub const ATLAS_DEFAULT_VISIBLE_LAYER_IDS: [&str; 5] =
+    ["ocean", "relief", "ice", "lakes", "graticule"];
+
+#[must_use]
+pub fn atlas_layer_default_visible(role: &str) -> bool {
+    ATLAS_DEFAULT_VISIBLE_LAYER_IDS.contains(&role)
+}
+
 fn default_time_kind() -> String {
     "physical-offset-year".into()
 }

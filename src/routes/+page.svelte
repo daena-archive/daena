@@ -7800,6 +7800,7 @@ onMount(() => {
             count={collectionResult().total}
             label={collectionLabel()}
             viewMode={collectionQuery.viewMode}
+            allowOverflow={collectionResult().total === 0}
             controls={collectionControls}
             children={collectionItems}
             footer={collectionFooter}
@@ -11162,7 +11163,8 @@ onMount(() => {
   position: relative;
   display: grid;
   gap: 8px;
-  width: min(220px, 100%);
+  width: max-content;
+  max-width: 100%;
 }
 .empty-create-actions .empty-create {
   width: 100%;
@@ -11176,7 +11178,9 @@ onMount(() => {
   top: calc(100% + 6px);
   right: 0;
   display: grid;
+  width: max-content;
   min-width: 220px;
+  max-width: min(320px, calc(100vw - 48px));
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -11286,7 +11290,9 @@ onMount(() => {
   pointer-events: auto;
 }
 .empty-map-provider-menu {
-  top: calc(100% + 6px);
+  z-index: 30;
+  top: auto;
+  bottom: calc(100% + 6px);
   right: auto;
   left: 0;
 }

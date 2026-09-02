@@ -11,6 +11,7 @@ interface Props {
   children: Snippet;
   footer?: Snippet;
   hidden?: boolean;
+  allowOverflow?: boolean;
   element?: HTMLElement | null;
   listElement?: HTMLDivElement | null;
   onViewModeChange: (mode: CollectionViewMode) => void;
@@ -26,6 +27,7 @@ let {
   children,
   footer,
   hidden = false,
+  allowOverflow = false,
   element = $bindable(null),
   listElement = $bindable(null),
   onViewModeChange,
@@ -33,7 +35,12 @@ let {
 }: Props = $props();
 </script>
 
-<aside bind:this={element} class:hidden class="collection-panel panel-surface" aria-label={`${label} collection`}>
+<aside
+  bind:this={element}
+  class:hidden
+  class:allow-overflow={allowOverflow}
+  class="collection-panel panel-surface"
+  aria-label={`${label} collection`}>
   <div class="panel-heading">
     <div><span class="panel-kicker">{kicker}</span><strong>{count} {label}</strong></div>
     <div class="view-mode-toggle">
@@ -51,7 +58,7 @@ let {
   </div>
 
   {@render controls()}
-  <div class="collection-list" bind:this={listElement} onscroll={onScroll}>
+  <div class="collection-list" class:allow-overflow={allowOverflow} bind:this={listElement} onscroll={onScroll}>
     {@render children()}
   </div>
   {#if footer}{@render footer()}{/if}
@@ -68,6 +75,11 @@ let {
   border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+/* Empty-state create menus extend past the pane; don't clip them. */
+.collection-panel.allow-overflow,
+.collection-panel:has(:global(.entity-empty)) {
+  overflow: visible;
 }
 .hidden {
   display: none;
@@ -120,6 +132,10 @@ let {
   gap: 8px;
   overflow-y: auto;
   padding: 4px 12px 14px;
+}
+.collection-list.allow-overflow,
+.collection-list:has(:global(.entity-empty)) {
+  overflow: visible;
 }
 @media (max-width: 760px) {
   .collection-panel {

@@ -18,6 +18,7 @@ use crate::{
     AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, ATLAS_DETAIL_ALGORITHM_VERSION,
     ATLAS_REQUEST_SCHEMA_VERSION,
 };
+use crate::request::ATLAS_DEFAULT_VISIBLE_LAYER_IDS;
 
 pub const ATLAS_STUDIO_SESSION_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_STUDIO_TILE_SCHEMA_VERSION: u32 = 1;
@@ -177,7 +178,7 @@ impl AtlasStudioSceneRequestV1 {
     pub fn as_render_request(&self, output_px: u32) -> Result<AtlasRenderRequest, AtlasError> {
         let mut layers = self.active_layer_ids.clone();
         if layers.is_empty() {
-            layers = STUDIO_SPIKE_LAYER_IDS
+            layers = ATLAS_DEFAULT_VISIBLE_LAYER_IDS
                 .iter()
                 .map(|id| (*id).to_string())
                 .collect();
@@ -593,9 +594,8 @@ pub fn render_studio_tile_with_style_overlays(
         overlay_request
             .active_layer_ids
             .retain(|id| id != "frame" && id != "labels");
-        let mut south_origin = flip_rgba_vertical(&buffer, expanded, expanded)?;
         crate::overlay::composite_overlays(
-            &mut south_origin,
+            &mut buffer,
             &overlay_request,
             style,
             &scene.hydrology,
@@ -604,7 +604,6 @@ pub fn render_studio_tile_with_style_overlays(
             overlays,
             &scene.drainage.tributaries,
         );
-        buffer = flip_rgba_vertical(&south_origin, expanded, expanded)?;
         if request.layer_enabled("labels") {
             let n = tile_count(tile.z)?;
             let world_px = n.saturating_mul(output);
@@ -1108,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn north_origin_tile_matches_flipped_export_rows() {
+    fn north_origin_tile_matches_export_rows() {
         let (scene, scene_request) = prepared();
         let tile = render_studio_tile(
             &scene,
@@ -1122,7 +1121,7 @@ mod tests {
         export_request = export_request.normalize().unwrap();
         let view =
             ProjectedView::new(export_request.projection, export_request.extent, 256, 256).unwrap();
-        let mut south_origin = vec![0_u8; 256 * 256 * 4];
+        let mut export_rows = vec![0_u8; 256 * 256 * 4];
         for y in 0..256u32 {
             for x in 0..256u32 {
                 let (lon, lat) = view.pixel_center(x, y);
@@ -1138,29 +1137,9 @@ mod tests {
                     lat,
                 );
                 let offset = (y as usize * 256 + x as usize) * 4;
-                south_origin[offset..offset + 4].copy_from_slice(&rgba);
+                export_rows[offset..offset + 4].copy_from_slice(&rgba);
             }
         }
-        let mut north_origin = vec![0_u8; 256 * 256 * 4];
-        for y in 0..256u32 {
-            for x in 0..256u32 {
-                let (lon, lat) = xyz_world_pixel_center(1, 0, 1, x as i32, y as i32, 256).unwrap();
-                let rgba = pixel_rgba(
-                    &scene.model,
-                    &scene.hydrology,
-                    &scene.sdf,
-                    &scene.style,
-                    &export_request,
-                    &scene.visible_water,
-                    scene.paint_fields(),
-                    lon,
-                    lat,
-                );
-                let offset = (y as usize * 256 + x as usize) * 4;
-                north_origin[offset..offset + 4].copy_from_slice(&rgba);
-            }
-        }
-        let flipped = flip_rgba_vertical(&south_origin, 256, 256).unwrap();
         let (center_lon, center_lat) = xyz_world_pixel_center(1, 0, 1, 128, 128, 256).unwrap();
         let center = pixel_rgba(
             &scene.model,
@@ -1175,7 +1154,8 @@ mod tests {
         );
         let offset = (128usize * 256 + 128) * 4;
         assert_eq!(&tile.rgba[offset..offset + 4], &center);
-        assert_eq!(flipped.len(), north_origin.len());
+        assert_eq!(&export_rows[offset..offset + 4], &center);
+        assert_eq!(export_rows.len(), tile.rgba.len());
         assert_eq!(STUDIO_TILE_HALO, 16);
         assert_eq!(tile.png[0..8], [137, 80, 78, 71, 13, 10, 26, 10]);
         let (_, north_lat) = xyz_world_pixel_center(1, 0, 1, 128, 0, 256).unwrap();

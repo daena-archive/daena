@@ -1,5 +1,10 @@
 import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates.ts";
 
+export type PhysicalRasterPaintOptions = {
+  iceVisible?: boolean;
+  lakesVisible?: boolean;
+};
+
 export type PhysicalRasterProducts = {
   width: number;
   height: number;
@@ -94,7 +99,12 @@ export function classifyPhysicalWater(
   return { ocean, inland };
 }
 
-export function paintPhysicalSurface(products: PhysicalRasterProducts): HTMLCanvasElement {
+export function paintPhysicalSurface(
+  products: PhysicalRasterProducts,
+  options: PhysicalRasterPaintOptions = {},
+): HTMLCanvasElement {
+  const iceVisible = options.iceVisible ?? true;
+  const lakesVisible = options.lakesVisible ?? true;
   const canvas = document.createElement("canvas");
   canvas.width = products.width;
   canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
@@ -117,11 +127,11 @@ export function paintPhysicalSurface(products: PhysicalRasterProducts): HTMLCanv
         red = Math.round((18 + (1 - depth) * 36) * (0.75 + 0.25 * shade));
         green = Math.round((52 + (1 - depth) * 70) * (0.75 + 0.25 * shade));
         blue = Math.round((96 + (1 - depth) * 62) * (0.8 + 0.2 * shade));
-      } else if (products.iceCells?.[index]) {
+      } else if (iceVisible && products.iceCells?.[index]) {
         red = Math.round((228 + 18 * shade) * (0.88 + 0.12 * shade));
         green = Math.round((236 + 12 * shade) * (0.9 + 0.1 * shade));
         blue = Math.round((244 + 8 * shade) * (0.92 + 0.08 * shade));
-      } else if (water.inland[index]) {
+      } else if (lakesVisible && water.inland[index]) {
         red = Math.round(42 * light);
         green = Math.round(132 * light);
         blue = Math.round(138 * light);

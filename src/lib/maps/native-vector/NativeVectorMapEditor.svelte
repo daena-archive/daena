@@ -17,6 +17,7 @@ import {
   Image as ImageIcon,
   Layers,
   Link2,
+  LoaderCircle,
   Lock,
   LockOpen,
   Magnet,
@@ -52,6 +53,7 @@ import {
   type FieldValue,
   type PhysicalHistoricalProgress,
   type PhysicalHistoricalProducts,
+  type PhysicalHydrologyProducts,
   type AtlasRenderRequest,
 } from "$lib/project/client";
 import {
@@ -91,7 +93,7 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
-import { paintPhysicalSurface } from "../physical/raster";
+import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physical/raster";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 import DetachPhysicalLayerDialog from "../physical/DetachPhysicalLayerDialog.svelte";
@@ -194,6 +196,7 @@ let commandStack = $state.raw<CommandStack | null>(null);
 let canUndo = $state(false);
 let canRedo = $state(false);
 let derivedPhysical = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
+let physicalHydrology = $state<PhysicalHydrologyProducts | null>(null);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<MapLayerDefinition[]>([]);
@@ -249,6 +252,7 @@ let atlasSupported = $state(false);
 let studioOpen = $state(false);
 let studioSupported = $state(false);
 let studioExport = $state<AtlasRenderRequest | null>(null);
+let lastExportLayerIds = $state<string[] | null>(null);
 let studioStage = $state("");
 let studioApi = $state<{
   refresh: () => void;
@@ -306,7 +310,7 @@ const selectedOpFeatures = $derived(
 const linkedEntityNames = $derived(
   new Map([...featureLinks].map(([featureId, link]) => [featureId, link.label || link.entityId])),
 );
-const mapSearchIndex = $derived(buildMapSearchIndex(draft, layers, linkedEntityNames));
+const mapSearchIndex = $derived(buildMapSearchIndex(uiFeatureCollection(), layers, linkedEntityNames));
 const mapSearchResults = $derived(searchMapFeatures(mapSearchIndex, featureSearch));
 const selectedFeatures = $derived(
   commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
@@ -379,6 +383,23 @@ function renderedCollection(authored: VectorFeatureCollection): VectorFeatureCol
   };
 }
 
+function physicalDerivedLayersVisible(): boolean {
+  return layers.some((layer) => isPhysicalDerivedLayerId(layer.id) && layer.defaultVisible);
+}
+
+/** OpenLayers only needs derived vectors when a derived layer is visible; the raster paints them otherwise. */
+function openLayersCollection(): VectorFeatureCollection {
+  if (!commandStack) return draft;
+  const authored = commandStack.document.collection;
+  if (!physicalMap || !physicalDerivedLayersVisible()) return authored;
+  return renderedCollection(authored);
+}
+
+function uiFeatureCollection(): VectorFeatureCollection {
+  if (!physicalMap || !commandStack) return draft;
+  return commandStack.document.collection;
+}
+
 function runtimeLayerRasters(): Map<string, RasterLayerSource> {
   const next = new Map<string, RasterLayerSource>();
   for (const layer of layers) {
@@ -431,6 +452,48 @@ function clearRasterAssets() {
   for (const url of objectUrls) URL.revokeObjectURL(url);
   objectUrls.length = 0;
   rasterAssets = new Map();
+  physicalHydrology = null;
+}
+
+function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
+  return {
+    iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
+    lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
+  };
+}
+
+function rebuildPhysicalRaster() {
+  if (!physicalHydrology) return;
+  const canvas = paintPhysicalSurface(physicalHydrology, physicalRasterPaintOptions());
+  rasterAssets = new Map([
+    ["physical", { url: "", width: physicalHydrology.width, height: physicalHydrology.height, canvas }],
+  ]);
+  editor?.syncBackgrounds(runtimeBackgrounds());
+  noteIceLakesVisibility();
+}
+
+const physicalRasterLayerVisibility = $derived.by(() => ({
+  ice: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
+  lakes: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
+}));
+
+function iceLakesVisibilityKey(): string {
+  const { ice, lakes } = physicalRasterLayerVisibility;
+  return `${ice}:${lakes}`;
+}
+
+let lastIceLakesVisibilityKey = "";
+
+function rebuildPhysicalRasterIfIceLakesChanged() {
+  if (!physicalMap || !physicalHydrology || studioOpen) return;
+  const key = iceLakesVisibilityKey();
+  if (key === lastIceLakesVisibilityKey) return;
+  lastIceLakesVisibilityKey = key;
+  rebuildPhysicalRaster();
+}
+
+function noteIceLakesVisibility() {
+  lastIceLakesVisibilityKey = iceLakesVisibilityKey();
 }
 
 function featureFallbackPoint(feature: VectorFeature | null): [number, number] {
@@ -629,7 +692,7 @@ function cloneCollection(collection: VectorFeatureCollection): VectorFeatureColl
   return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
 }
 
-function syncUiFromStack(restoreView = false) {
+function syncUiFromStack(restoreView = false, skipEditorSync = false) {
   if (!commandStack) return;
   const snap = commandStack.snapshot();
   draft = renderedCollection(snap.document.collection);
@@ -643,11 +706,14 @@ function syncUiFromStack(restoreView = false) {
   const nextKey = coordinateSpaceKey(coordinateSpace);
   if (editor && nextKey !== mountedSpaceKey) {
     mountEditor();
-  } else {
-    editor?.syncDocument(draft, layers, runtimeLayerRasters());
+  } else if (!skipEditorSync) {
+    editor?.syncDocument(openLayersCollection(), layers, runtimeLayerRasters());
     editor?.syncBackgrounds(runtimeBackgrounds());
     if (restoreView) editor?.applyView(defaultView.center, defaultView.zoom, defaultView.rotation);
+  } else if (restoreView) {
+    editor?.applyView(defaultView.center, defaultView.zoom, defaultView.rotation);
   }
+  rebuildPhysicalRasterIfIceLakesChanged();
   if (snap.dirty) applyEditorEvent({ type: "document-changed" });
   else applyEditorEvent({ type: "loaded" });
 }
@@ -655,7 +721,7 @@ function syncUiFromStack(restoreView = false) {
 function dispatchCommand(command: MapCommand) {
   if (!commandStack) return;
   commandStack.apply(command);
-  syncUiFromStack(command.kind === "SetCoordinateSpace");
+  syncUiFromStack(command.kind === "SetCoordinateSpace", command.kind === "SetDefaultView");
 }
 
 function resetCommandStack(documentInput: {
@@ -872,18 +938,6 @@ function moveSelectedToLayer(layerId: string) {
   editor.switchLayer(layerId);
 }
 
-function physicalHillshadeCanvas(products: {
-  width: number;
-  height: number;
-  seaLevelMm: number;
-  waterLevelMm: number[];
-  hillshadePpm: number[];
-  bathymetryMm: number[];
-  lakeCells?: boolean[];
-}): HTMLCanvasElement {
-  return paintPhysicalSurface(products);
-}
-
 function applyLayersField(field: FieldValue) {
   layersField = field;
   layersFieldRevision = field.revision;
@@ -904,6 +958,46 @@ function applyLayersField(field: FieldValue) {
 function destroyEditor() {
   editor?.dispose();
   editor = null;
+}
+
+let mountingEditor = false;
+let mountingPhysicalEditor = $state(false);
+
+const mapViewLoading = $derived(
+  busy || epochBusy || mountingPhysicalEditor || (studioOpen && studioSupported && studioStage !== "Ready"),
+);
+
+async function ensurePhysicalEditorMounted() {
+  await tick();
+  if (studioOpen || !host || busy || mountingEditor || editor) {
+    mountingPhysicalEditor = false;
+    return;
+  }
+  mountingEditor = true;
+  try {
+    // Paint the loading overlay before mountEditor blocks the main thread.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (studioOpen || !host || busy) return;
+    mountEditor();
+  } finally {
+    mountingEditor = false;
+    mountingPhysicalEditor = false;
+  }
+}
+
+function setStudioOpen(next: boolean) {
+  if (next === studioOpen) return;
+  if (next && dirty) return;
+  if (!next && physicalMap) mountingPhysicalEditor = true;
+  studioOpen = next;
+  if (next) {
+    studioStage = "Opening Atlas Studio…";
+    destroyEditor();
+    mountingPhysicalEditor = false;
+    return;
+  }
+  void ensurePhysicalEditorMounted();
 }
 
 function formatEpoch(offset: number): string {
@@ -973,10 +1067,8 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   if (!commandStack || commandStack.isDirty()) return;
   const physical = parseDerivedCollection(products.geojson);
   derivedPhysical = physical;
-  const canvas = physicalHillshadeCanvas(products.hydrology);
-  rasterAssets = new Map([
-    ["physical", { url: "", width: products.hydrology.width, height: products.hydrology.height, canvas }],
-  ]);
+  physicalHydrology = products.hydrology;
+  rebuildPhysicalRaster();
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
   syncEpochFields(products.epochOffsetYears);
@@ -1070,7 +1162,7 @@ function mountEditor() {
   mountedSpaceKey = coordinateSpaceKey(coordinateSpace);
   const created = createMapAdapter(host, {
     get draft() {
-      return draft;
+      return openLayersCollection();
     },
     get layers() {
       return layers;
@@ -1249,10 +1341,8 @@ async function load() {
         collection,
       });
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
-      const canvas = physicalHillshadeCanvas(historical.hydrology);
-      rasterAssets = new Map([
-        ["physical", { url: "", width: historical.hydrology.width, height: historical.hydrology.height, canvas }],
-      ]);
+      physicalHydrology = historical.hydrology;
+      rebuildPhysicalRaster();
       epochBusy = false;
       epochPhase = "";
       epochProgress = null;
@@ -1303,7 +1393,7 @@ async function load() {
     notice = "";
     await tick();
     if (generation !== loadGeneration) return;
-    mountEditor();
+    if (!studioOpen) mountEditor();
     await tick();
     if (generation !== loadGeneration) return;
     focusLinkedLocation(focusLinkId);
@@ -1954,7 +2044,7 @@ onMount(() => {
     onfullscreen={(enabled) => void setFullscreen(enabled)}
     {fullscreen} />
 {:else}
-  <section class="native-vector-editor" aria-label="Native vector map editor">
+  <section class="native-vector-editor" class:view-loading={mapViewLoading} aria-label="Native vector map editor">
     <WorkspaceTopbar
       title={studioOpen ? "Atlas Studio" : physicalMap ? "Physical world" : "Vector map"}
       subtitle={studioOpen && studioStage
@@ -1970,6 +2060,23 @@ onMount(() => {
       onBack={() => void requestBack()}
       actionsLabel={physicalMap ? "Physical map actions" : "Vector drawing tools"}>
       <div class="header-actions" data-workspace-topbar-actions>
+        {#if physicalMap && studioSupported}
+          <div class="map-mode-switch" role="group" aria-label="Map view">
+            <button
+              type="button"
+              class:active={!studioOpen}
+              aria-pressed={!studioOpen}
+              disabled={mapViewLoading}
+              onclick={() => setStudioOpen(false)}>Physical map</button>
+            <button
+              type="button"
+              class:active={studioOpen}
+              aria-pressed={studioOpen}
+              disabled={dirty || mapViewLoading}
+              title={dirty ? "Save authored changes before opening Atlas" : "Atlas Studio"}
+              onclick={() => setStudioOpen(true)}>Atlas Studio</button>
+          </div>
+        {/if}
         {#if !studioOpen}
           <button
             type="button"
@@ -2118,7 +2225,6 @@ onMount(() => {
             onclick={() => void save()}><Save {...iconProps} /></button>
         {/if}
         {#if studioOpen}
-          <button type="button" class="text-button" onclick={() => (studioOpen = false)}>Open Physical Map</button>
           <button
             type="button"
             class="icon-button"
@@ -2151,7 +2257,9 @@ onMount(() => {
               if (dirty) return;
               if (studioOpen) {
                 const request = studioApi?.exportView();
-                if (request) studioExport = request;
+                studioExport = request ?? null;
+              } else {
+                studioExport = null;
               }
               atlasOpen = !atlasOpen;
             }}><Download {...iconProps} /></button>
@@ -2205,15 +2313,23 @@ onMount(() => {
         {epochOffsetYears}
         viewerLayers={layers}
         seed={studioExport}
+        {lastExportLayerIds}
+        onlayerschange={(ids) => {
+          lastExportLayerIds = ids;
+        }}
         onclose={() => (atlasOpen = false)} />
     {/if}
-    <div class="editor-body" class:studio={studioOpen} style={`--sidebar-width: ${sidebarWidth}px`}>
+    <div
+      class="editor-body"
+      class:studio={studioOpen}
+      aria-busy={mapViewLoading}
+      style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
         <aside class="map-layers-panel" aria-label="Map layers">
           <div class="map-panel-head">
             <div class="map-panel-head-copy">
               <span class="panel-kicker">Map layers</span>
-              <strong>{listedLayers.length} layers · {draft.features.length} features</strong>
+              <strong>{listedLayers.length} layers · {uiFeatureCollection().features.length} features</strong>
               <small class="map-panel-subtitle"
                 >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} rasters` : ""}</small>
             </div>
@@ -2270,24 +2386,6 @@ onMount(() => {
               {/if}
             </div>
           </div>
-
-          {#if studioSupported}
-            <div class="studio-callout">
-              <button
-                type="button"
-                class="studio-open-btn"
-                class:active={studioOpen}
-                aria-pressed={studioOpen}
-                disabled={dirty}
-                onclick={() => {
-                  if (!dirty) studioOpen = !studioOpen;
-                }}>
-                <span class="studio-open-label">Atlas Studio</span>
-                <small>{studioOpen ? "Close" : dirty ? "Save to open" : "Open"}</small>
-              </button>
-              {#if dirty}<span class="studio-hint">Save authored changes before opening Atlas.</span>{/if}
-            </div>
-          {/if}
 
           <div class="map-panel-body">
             <!-- Layers -->
@@ -3247,41 +3345,51 @@ onMount(() => {
                 onzoom={(zoom) => editor?.setZoom(zoom)}
                 onpan={(x, y) => editor?.panCardinal(x > 0 ? 1 : x < 0 ? -1 : 0, y > 0 ? 1 : y < 0 ? -1 : 0)} />
             {/if}
-            <div class="epoch-control" aria-label="World epoch">
-              <input
-                id="physical-epoch"
-                type="range"
-                min={EPOCH_MIN}
-                max={EPOCH_MAX}
-                step={EPOCH_STEP}
-                value={epochOffsetYears}
-                aria-label="Epoch offset"
-                disabled={busy || epochBusy || dirty}
-                oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
-              <input
-                class="epoch-year"
-                type="text"
-                inputmode="numeric"
-                autocomplete="off"
-                spellcheck="false"
-                value={epochYearsAbs.toLocaleString("en-US")}
-                aria-label="Years from epoch"
-                disabled={busy || epochBusy || dirty}
-                onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
-              <span>
-                {#if epochOffsetYears === 0}
-                  at epoch
-                {:else if epochOffsetYears < 0}
-                  years before epoch
-                {:else}
-                  years after epoch
-                {/if}
-              </span>
+            <div class="epoch-panel">
+              <div class="epoch-control" aria-label="World epoch">
+                <input
+                  id="physical-epoch"
+                  type="range"
+                  min={EPOCH_MIN}
+                  max={EPOCH_MAX}
+                  step={EPOCH_STEP}
+                  value={epochOffsetYears}
+                  aria-label="Epoch offset"
+                  disabled={busy || epochBusy || dirty || mountingPhysicalEditor}
+                  oninput={(event) => commitEpoch(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+                <input
+                  class="epoch-year"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  spellcheck="false"
+                  value={epochYearsAbs.toLocaleString("en-US")}
+                  aria-label="Years from epoch"
+                  disabled={busy || epochBusy || dirty || mountingPhysicalEditor}
+                  onchange={(event) => commitEpochFromExact(parseEpochYears(event.currentTarget.value), epochEra)} />
+                <span>
+                  {#if epochOffsetYears === 0}
+                    at epoch
+                  {:else if epochOffsetYears < 0}
+                    years before epoch
+                  {:else}
+                    years after epoch
+                  {/if}
+                </span>
+              </div>
+              {#if dirty}
+                <p class="epoch-dirty-hint" role="status">
+                  Save or undo authored changes before changing the physical epoch.
+                </p>
+              {/if}
             </div>
-            {#if dirty}<p class="epoch-dirty-hint">
-                Save or undo authored changes before changing the physical epoch.
-              </p>{/if}
-            {#if busy || epochBusy}
+            {#if mountingPhysicalEditor}
+              <div class="map-busy map-busy-opening" role="status" aria-live="polite">
+                <LoaderCircle class="map-busy-spinner" size={28} strokeWidth={1.7} aria-hidden="true" />
+                <strong>Opening Physical map</strong>
+                <span>Preparing the world canvas…</span>
+              </div>
+            {:else if busy || epochBusy}
               <div class="map-busy" role="status">
                 <strong>{epochPhase || (busy ? "Loading…" : "Working…")}</strong>
                 {#if epochProgress}<span>{epochProgress.completed} / {epochProgress.total}</span>{/if}
@@ -3374,12 +3482,49 @@ onMount(() => {
   color: var(--ink);
 }
 
+.native-vector-editor.view-loading {
+  cursor: wait;
+}
+.native-vector-editor.view-loading :global(*) {
+  cursor: wait !important;
+}
+
 /* keep header-actions for topbar */
 .header-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+.map-mode-switch {
+  display: inline-flex;
+  margin-right: 2px;
+  padding: 2px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 8px;
+  background: var(--surface-muted, #f4f2ec);
+}
+.map-mode-switch button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft, #77766d);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.map-mode-switch button:hover:not(:disabled) {
+  color: var(--ink);
+}
+.map-mode-switch button.active {
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(38, 42, 33, 0.06));
+}
+.map-mode-switch button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .editor-body {
@@ -3595,59 +3740,6 @@ onMount(() => {
   color: var(--ink-faint);
   font-size: 11px;
   text-align: center;
-}
-
-/* studio callout */
-.studio-callout {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line, #e4e1d8);
-  background: var(--surface-subtle, #f7f3ec);
-}
-.studio-open-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--line, #e4e1d8);
-  border-radius: 8px;
-  background: var(--surface, #fffefa);
-  color: var(--ink-soft);
-  font-weight: 650;
-  font-size: 11px;
-  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-  cursor: pointer;
-}
-.studio-open-btn:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.studio-open-btn.active {
-  border-color: var(--accent-soft, #c99965);
-  background: var(--accent-dark, #2f4e35);
-  color: var(--on-accent);
-}
-.studio-open-btn small {
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--surface-muted);
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.studio-open-btn.active small {
-  background: var(--surface);
-  color: var(--accent);
-}
-.studio-hint {
-  color: var(--ink-faint);
-  font-size: 10px;
-  line-height: 1.3;
 }
 
 /* body */
@@ -4548,6 +4640,20 @@ onMount(() => {
   text-align: center;
   text-shadow: 0 1px 8px rgb(0 0 0 / 75%);
 }
+.map-busy-opening {
+  gap: 0.55rem;
+  background: rgb(13 27 42 / 84%);
+  backdrop-filter: blur(2px);
+}
+.map-busy-spinner {
+  color: #e8dcc8;
+  animation: map-busy-spin 0.9s linear infinite;
+}
+@keyframes map-busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .map-busy strong {
   font: 600 1.05rem/1.3 inherit;
 }
@@ -4555,22 +4661,39 @@ onMount(() => {
   color: #d9d0c3;
   font-size: 0.8rem;
 }
-.epoch-control {
+.epoch-panel {
   position: absolute;
   z-index: 2;
   top: 10px;
   left: 10px;
+  max-width: min(28rem, calc(100% - 20px));
+}
+.epoch-control {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  max-width: min(28rem, calc(100% - 20px));
   padding: 6px 8px;
   border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
   background: rgb(27 40 34 / 92%);
   color: #d8e3d9;
   font-size: 12px;
+}
+.epoch-dirty-hint {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max(100%, 16rem);
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid rgb(201 169 110 / 55%);
+  border-radius: 8px;
+  background: rgb(27 40 34 / 92%);
+  color: #f3d39a;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
 }
 .epoch-control input[type="range"] {
   width: 140px;

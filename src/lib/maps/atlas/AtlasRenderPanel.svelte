@@ -10,18 +10,24 @@ import {
   type AtlasRenderRequest,
 } from "$lib/project/client";
 import type { MapLayerDefinition } from "../native-vector/types";
+import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
+import { ATLAS_DETAIL_ALGORITHM_VERSION, isAtlasLayerEnabledByDefault } from "./constants.ts";
 
 let {
   mapId,
   epochOffsetYears = 0,
   seed = null,
   viewerLayers = [],
+  lastExportLayerIds = null,
+  onlayerschange,
   onclose,
 }: {
   mapId: string;
   epochOffsetYears?: number;
   seed?: AtlasRenderRequest | null;
   viewerLayers?: Pick<MapLayerDefinition, "id" | "name" | "defaultVisible">[];
+  lastExportLayerIds?: string[] | null;
+  onlayerschange?: (activeLayerIds: string[]) => void;
   onclose?: () => void;
 } = $props();
 
@@ -61,7 +67,8 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
   if (!aliases || viewerLayers.length === 0) return null;
   const matched = viewerLayers.filter((layer) => aliases.includes(layer.id));
   if (matched.length === 0) return null;
-  return matched.some((layer) => layer.defaultVisible);
+  // Hidden physical-map layers should not disable Atlas defaults.
+  return matched.some((layer) => layer.defaultVisible) ? true : null;
 }
 
 function styleLabel(id: string) {
@@ -123,13 +130,29 @@ function applySeed(next: AtlasRenderRequest | null) {
   offsetYears = next.offsetYears;
   timeKind = next.timeKind;
   if (typeof next.authoredYear === "number") authoredYear = next.authoredYear;
-  const ids = new Set(next.activeLayerIds);
-  if (layers.length > 0) {
+  if (layers.length > 0 && next.activeLayerIds != null) {
+    const ids = new Set(next.activeLayerIds);
     layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
   }
   seedProjection = next.projection;
   seedExtent = next.extent;
   seedUnlock = next.unlockAspect;
+}
+
+function notifyLayerSelection() {
+  onlayerschange?.(layers.filter((layer) => layer.enabled).map((layer) => layer.id));
+}
+
+function initialLayerEnabled(layerId: string, capabilityDefault: boolean): boolean {
+  if (seed?.activeLayerIds != null) {
+    return seed.activeLayerIds.includes(layerId);
+  }
+  if (lastExportLayerIds != null) {
+    return lastExportLayerIds.includes(layerId);
+  }
+  const fromViewer = viewerLayerEnabled(layerId);
+  if (fromViewer !== null) return fromViewer;
+  return capabilityDefault || isAtlasLayerEnabledByDefault(layerId);
 }
 
 function parseEpochYears(raw: string) {
@@ -169,11 +192,27 @@ function formatEpoch(offset: number) {
   return "years after epoch";
 }
 
+function previewDimensions(): { width: number; height: number } {
+  const maxWidth = PREVIEW_WIDTH;
+  const maxHeight = PREVIEW_HEIGHT;
+  if (widthPx > 0 && heightPx > 0 && (seedUnlock || seedProjection === "web-mercator")) {
+    const aspect = widthPx / heightPx;
+    let width = maxWidth;
+    let height = Math.max(1, Math.round(width / aspect));
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = Math.max(1, Math.round(height * aspect));
+    }
+    return { width, height };
+  }
+  return { width: maxWidth, height: maxHeight };
+}
+
 function request(width: number, height: number): AtlasRenderRequest {
   return {
     schemaVersion: 1,
     offsetYears,
-    algorithmVersion: 6,
+    algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION,
     level: "detailed",
     variant: 0,
     styleId,
@@ -231,22 +270,13 @@ async function loadCapabilities() {
   if (capabilities.calendarBinding) {
     authoredYear = capabilities.calendarBinding.calendarReferenceYear;
   }
-  layers = capabilities.layers.map((layer) => {
-    const fromViewer = viewerLayerEnabled(layer.id);
-    return {
-      id: layer.id,
-      name: viewerLayerName(layer.id) ?? layer.name,
-      enabled: fromViewer ?? layer.defaultVisible,
-    };
-  });
+  layers = capabilities.layers.map((layer) => ({
+    id: layer.id,
+    name: viewerLayerName(layer.id) ?? layer.name,
+    enabled: initialLayerEnabled(layer.id, layer.defaultVisible),
+  }));
   applySeed(seed);
-  if (viewerLayers.length > 0) {
-    layers = layers.map((layer) => ({
-      ...layer,
-      name: viewerLayerName(layer.id) ?? layer.name,
-      enabled: viewerLayerEnabled(layer.id) ?? layer.enabled,
-    }));
-  }
+  notifyLayerSelection();
   schedulePreview();
 }
 
@@ -265,9 +295,10 @@ async function runPreview() {
   busyPreview = true;
   notice = "";
   try {
+    const { width, height } = previewDimensions();
     const status = await project.atlasPreviewBegin(
       mapId,
-      request(PREVIEW_WIDTH, PREVIEW_HEIGHT),
+      request(width, height),
       previewRequestId as `${string}-${string}-${string}-${string}-${string}`,
     );
     applyStatus(status);
@@ -316,7 +347,7 @@ async function savePreset() {
         timeKind === "calendar-year"
           ? { kind: "calendar-year", authoredYear }
           : { kind: "physical-offset-year", offsetYears },
-      detail: { algorithmVersion: 6, level: "detailed", variant: 0 },
+      detail: { algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION, level: "detailed", variant: 0 },
       style: { id: styleId, version: 1 },
       activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
       viewport: { kind: "world", projection: "equirectangular" },
@@ -358,6 +389,7 @@ async function applyPreset(id: string) {
   if (typeof output?.dpi === "number") dpi = output.dpi;
   const ids = new Set((preset.activeLayerIds as string[] | undefined) ?? []);
   layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
+  notifyLayerSelection();
   schedulePreview();
 }
 
@@ -485,19 +517,16 @@ onDestroy(() => {
       <input bind:value={presetName} aria-label="Preset name" placeholder="Preset name" />
       <button type="button" onclick={() => void savePreset()}>Save preset</button>
     </div>
-    <div class="layer-toggles" role="group" aria-label="Atlas layers">
-      {#each layers as layer, index}
-        <button
-          class="layer-toggle"
-          type="button"
-          aria-pressed={layer.enabled}
-          onclick={() => {
-            layers[index].enabled = !layer.enabled;
-            layers = layers;
-            schedulePreview();
-          }}>{layer.name}</button>
-      {/each}
-    </div>
+    <MapLayerVisibilityList
+      variant="studio"
+      defaultCollapsed
+      {layers}
+      onToggle={(index) => {
+        layers[index].enabled = !layers[index].enabled;
+        layers = layers;
+        notifyLayerSelection();
+        schedulePreview();
+      }} />
     <div class="output-row">
       <label>
         Export size
@@ -656,7 +685,22 @@ img,
   align-items: start;
   gap: 8px;
 }
-.style-row label,
+.style-row select,
+.style-row input {
+  box-sizing: border-box;
+  height: 2.25rem;
+  min-width: 10rem;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px system-ui;
+}
+.style-row label {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
 .output-row label {
   flex: 1 1 12rem;
   min-width: 0;
@@ -674,20 +718,6 @@ img,
 }
 .output-row small {
   color: var(--theme-neutral-text-muted, #aebdb1);
-}
-.style-row input {
-  min-width: 10rem;
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #0f1a16;
-  color: #edf2ec;
-  font: 12px system-ui;
-}
-.layer-toggles {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.8rem;
 }
 label {
   display: grid;
@@ -711,23 +741,6 @@ button {
   color: #edf2ec;
   font: 700 12px system-ui;
   cursor: pointer;
-}
-.layer-toggle {
-  padding: 0.3rem 0.65rem;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 6%);
-  color: #d9d0c3;
-  font-weight: 600;
-}
-.layer-toggle:hover {
-  border-color: rgb(255 255 255 / 28%);
-  background: rgb(255 255 255 / 10%);
-}
-.layer-toggle[aria-pressed="true"] {
-  border-color: var(--theme-warning-border, #c9a96e);
-  background: #c9a96e;
-  color: var(--brass-ink);
 }
 button.primary,
 button:disabled {

@@ -1398,3 +1398,51 @@ pub(super) async fn migration_apply(
     })
     .await
 }
+
+pub(super) fn close_project_for_app(
+    app: &tauri::AppHandle,
+    core: &SharedCore,
+    jobs: &SharedPhysicalJobs,
+    plugins: &SharedPluginHost,
+    ai_runtime: &ai::SharedAiRuntime,
+    watcher: &SharedProjectWatcher,
+    image_jobs: &image_generation::SharedImageGeneration,
+) -> Result<(), String> {
+    cancel_physical_jobs(jobs)?;
+    cancel_external_import_jobs()?;
+    cancel_image_generation_jobs(image_jobs)?;
+    stop_project_watcher(watcher)?;
+    flush_checkpoint_for_shared_core(core, "project lifecycle transition")?;
+    let session = current_session(core)?;
+    let mut service = session
+        .core
+        .lock()
+        .map_err(|_| "core lock poisoned".to_string())?;
+    let Some(project_id) = service.info().map(|info| info.root) else {
+        return Ok(());
+    };
+    service
+        .close_without_flush(trusted_shell())
+        .map_err(|error| error.to_string())?;
+    ai::detach_project_index(ai_runtime);
+    let plugin_ids = {
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        for request_id in host.ai_request_ids_for(&project_id, None) {
+            let _ = ai::cancel_ai_request(ai_runtime, &request_id);
+            let _ = ai::remove_ai_citations(ai_runtime, &request_id);
+            host.remove_ai_request(&request_id);
+        }
+        host.deactivate_project(&project_id);
+        host.catalog
+            .list()
+            .map(|entry| entry.manifest.id.clone())
+            .collect::<Vec<_>>()
+    };
+    drop(service);
+    for plugin_id in plugin_ids {
+        close_plugin_webview(app, &plugin_id);
+    }
+    Ok(())
+}

@@ -1,6 +1,6 @@
 // Binary asset transfers and plugin protocol responses.
-use super::*;
 use super::APP_HANDLE;
+use super::*;
 
 const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
 pub(super) const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
@@ -869,7 +869,10 @@ pub(super) fn binary_asset_response(
     ))
 }
 
-pub(super) fn json_response(value: serde_json::Value, status: u16) -> tauri::http::Response<Vec<u8>> {
+pub(super) fn json_response(
+    value: serde_json::Value,
+    status: u16,
+) -> tauri::http::Response<Vec<u8>> {
     tauri::http::Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
@@ -914,7 +917,10 @@ pub(super) fn plugin_navigation_allowed(
 /// session validation still tie the caller to the plugin. A present but
 /// mismatched Origin is always rejected. GET asset requests never carry an
 /// Origin and stay allowed.
-pub(super) fn plugin_request_origin_matches(request: &tauri::http::Request<Vec<u8>>, plugin_id: &str) -> bool {
+pub(super) fn plugin_request_origin_matches(
+    request: &tauri::http::Request<Vec<u8>>,
+    plugin_id: &str,
+) -> bool {
     if request.method() != tauri::http::Method::POST {
         return true;
     }

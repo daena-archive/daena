@@ -648,7 +648,10 @@ pub(super) fn resolve_import_mapping(
     resolved
 }
 
-pub(super) fn import_field_value_matches(target: &ImportFieldTarget, value: &serde_json::Value) -> bool {
+pub(super) fn import_field_value_matches(
+    target: &ImportFieldTarget,
+    value: &serde_json::Value,
+) -> bool {
     if value.is_null() {
         return !target.required;
     }
@@ -680,7 +683,10 @@ pub(super) fn import_field_value_matches(target: &ImportFieldTarget, value: &ser
     }
 }
 
-pub(super) fn import_field_variant_matches(variant: &ImportFieldVariant, value: &serde_json::Value) -> bool {
+pub(super) fn import_field_variant_matches(
+    variant: &ImportFieldVariant,
+    value: &serde_json::Value,
+) -> bool {
     match variant.field_type.as_str() {
         "text" => value.is_string(),
         "date" => value.is_string() || value.is_object(),
@@ -693,7 +699,10 @@ pub(super) fn import_field_variant_matches(variant: &ImportFieldVariant, value: 
     }
 }
 
-pub(super) fn apply_mapping_decision(target: &mut ImportCandidateMapping, decision: &ImportMappingDecision) {
+pub(super) fn apply_mapping_decision(
+    target: &mut ImportCandidateMapping,
+    decision: &ImportMappingDecision,
+) {
     if let Some(entity_type) = decision
         .entity_type
         .as_deref()

@@ -159,10 +159,31 @@ assert.match(shell, /resolveSelectedEntities/);
 assert.match(shell, /Promise\.all/);
 assert.match(shell, /collectionRefreshEpoch/);
 assert.match(shell, /refreshAfterEntityMutation/);
+assert.match(
+  shell,
+  /const source = await project.getEntity\(endpoints.sourceId\)/,
+  "relationship creates must read the live source revision, not a cached selected.revision",
+);
+assert.doesNotMatch(
+  shell,
+  /selected.id === endpoints.sourceId && selected.revision/,
+  "stale selected.revision must not be reused for relationship OCC",
+);
 assert.match(shell, /bumpCollectionRefresh/);
 assert.match(shell, /queueCollectionScroll/);
 assert.match(shell, /searchEntities=\{searchEntitiesPaged\(\)\}/);
 assert.doesNotMatch(shell, /RelationshipPicker[\s\S]{0,120}\{entities\}/);
+
+const mutationFn = shell.slice(
+  shell.indexOf("async function refreshAfterEntityMutation"),
+  shell.indexOf("function searchEntitiesPaged"),
+);
+assert.match(
+  mutationFn,
+  /upsertEntityInCache\(loaded\);\s*[\s\S]*?affectedEntity = loaded/,
+  "new calendars must refresh the date-picker cache from the loaded entity, not a pre-insert list lookup",
+);
+assert.match(mutationFn, /ensureCalendarCache\(true\)/);
 
 // Hot mutation / map paths must not rematerialize the full entity list.
 const archiveFn = shell.slice(

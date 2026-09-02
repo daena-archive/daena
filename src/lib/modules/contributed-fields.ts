@@ -10,6 +10,7 @@ export type RelationshipFieldLike = SchemaFieldLike & {
   relationshipConstraints?: { unique?: string };
   metadataFields?: Array<{
     key: string;
+    label?: string;
     type: string;
     required?: boolean | null;
     options?: string[] | null;
@@ -23,8 +24,27 @@ export type SchemaLike = {
 
 export type ManifestLike = {
   id: string;
+  name?: string;
   enabled?: boolean;
   schemas?: SchemaLike[];
+};
+
+export type RelationshipFieldGroup<T extends RelationshipFieldLike = RelationshipFieldLike> = {
+  moduleId: string;
+  moduleName: string;
+  fields: T[];
+};
+
+export type RelationshipModuleGroup<T extends RelationshipLike = RelationshipLike> = {
+  moduleId: string;
+  moduleName: string;
+  relationships: T[];
+};
+
+export type RelationshipAttributeRow = {
+  key: string;
+  label: string;
+  raw: unknown;
 };
 
 export type RelationshipLike = {
@@ -186,4 +206,144 @@ export function manifestOwningRelationshipType(
     }
   }
   return null;
+}
+
+function moduleDisplayName(manifest: ManifestLike | null | undefined, fallbackId: string): string {
+  const name = manifest?.name?.trim();
+  return name || fallbackId;
+}
+
+export function groupedRelationshipFields<T extends RelationshipFieldLike>(
+  fields: readonly T[],
+  manifests: readonly ManifestLike[],
+  populatedCount: (field: T) => number,
+  options?: { sortByPopulated?: boolean },
+): RelationshipFieldGroup<T>[] {
+  const sortByPopulated = options?.sortByPopulated !== false;
+  const buckets = new Map<string, RelationshipFieldGroup<T>>();
+  for (const field of fields) {
+    if (field.type !== "relationship") continue;
+    const owner = field.relationshipType ? manifestOwningRelationshipType(field.relationshipType, manifests) : null;
+    const moduleId = owner?.id ?? "unknown";
+    let bucket = buckets.get(moduleId);
+    if (!bucket) {
+      bucket = { moduleId, moduleName: moduleDisplayName(owner, moduleId), fields: [] };
+      buckets.set(moduleId, bucket);
+    }
+    bucket.fields.push(field);
+  }
+  const groups = [...buckets.values()].map((bucket) => ({
+    ...bucket,
+    fields: sortByPopulated
+      ? [...bucket.fields].sort((left, right) => {
+          const leftFilled = populatedCount(left) > 0;
+          const rightFilled = populatedCount(right) > 0;
+          if (leftFilled === rightFilled) return 0;
+          return leftFilled ? -1 : 1;
+        })
+      : bucket.fields,
+  }));
+  groups.sort((left, right) => {
+    if (sortByPopulated) {
+      const leftFilled = left.fields.some((field) => populatedCount(field) > 0);
+      const rightFilled = right.fields.some((field) => populatedCount(field) > 0);
+      if (leftFilled !== rightFilled) return leftFilled ? -1 : 1;
+    }
+    return left.moduleName.localeCompare(right.moduleName);
+  });
+  return groups;
+}
+
+export function parseRelationshipMetadata(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function relationshipFieldForType(
+  relationshipType: string,
+  manifests: readonly ManifestLike[],
+): RelationshipFieldLike | null {
+  let fallback: RelationshipFieldLike | null = null;
+  for (const manifest of manifests) {
+    if (manifest.enabled === false) continue;
+    for (const schema of manifest.schemas ?? []) {
+      for (const field of schema.fields ?? []) {
+        if (field.type !== "relationship" || field.relationshipType !== relationshipType) continue;
+        if (field.metadataFields?.length) return field;
+        fallback ??= field;
+      }
+    }
+  }
+  return fallback;
+}
+
+function metadataValuePresent(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string" && value.trim() === "") return false;
+  if (Array.isArray(value) && value.length === 0) return false;
+  return true;
+}
+
+export function relationshipAttributeRows(
+  metadataRaw: unknown,
+  definition: RelationshipFieldLike | null,
+): RelationshipAttributeRow[] {
+  const metadata = parseRelationshipMetadata(metadataRaw);
+  const fields = definition?.metadataFields ?? [];
+  if (fields.length > 0) {
+    const rows: RelationshipAttributeRow[] = [];
+    for (const field of fields) {
+      const raw = metadata[field.key];
+      if (!metadataValuePresent(raw)) continue;
+      rows.push({
+        key: field.key,
+        label: field.label?.trim() || field.key,
+        raw,
+      });
+    }
+    return rows;
+  }
+  return Object.entries(metadata)
+    .filter(([, raw]) => metadataValuePresent(raw))
+    .map(([key, raw]) => ({ key, label: key, raw }));
+}
+
+export function groupRelationshipsByOwningModule<T extends RelationshipLike>(
+  relationships: readonly T[],
+  manifests: readonly ManifestLike[],
+): RelationshipModuleGroup<T>[] {
+  const buckets = new Map<string, RelationshipModuleGroup<T>>();
+  for (const relationship of relationships) {
+    const type = relationshipTypeOf(relationship);
+    const owner = type ? manifestOwningRelationshipType(type, manifests) : null;
+    const moduleId = owner?.id ?? "unknown";
+    let bucket = buckets.get(moduleId);
+    if (!bucket) {
+      bucket = { moduleId, moduleName: moduleDisplayName(owner, moduleId), relationships: [] };
+      buckets.set(moduleId, bucket);
+    }
+    bucket.relationships.push(relationship);
+  }
+  return [...buckets.values()].sort((left, right) => left.moduleName.localeCompare(right.moduleName));
+}
+
+export function partitionPopulatedFields<T>(
+  fields: readonly T[],
+  populatedCount: (field: T) => number,
+): { filled: T[]; empty: T[] } {
+  const filled: T[] = [];
+  const empty: T[] = [];
+  for (const field of fields) {
+    if (populatedCount(field) > 0) filled.push(field);
+    else empty.push(field);
+  }
+  return { filled, empty };
 }

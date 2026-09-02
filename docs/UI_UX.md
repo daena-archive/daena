@@ -102,6 +102,25 @@ The overflow must not steal the row’s primary selection action. Its accessible
 name includes the entity name (for example `Actions for Aria`). Permanent delete
 is absent.
 
+## Inspector
+
+The inspector is one pane. It does not use tabs. Details stay open. Relationships
+stay open so module group headers remain visible. Assets open only when the
+entry has files. Backlinks and Maps locations stay closed until opened.
+
+Relationship fields are grouped by the module that defines them (Lore, Houses,
+Maps, Timeline, Language), not by the current workspace. Groups with no links
+start collapsed. Field order stays put when a link is added so the picker does
+not jump. Expanding a group keeps it open while editing. Era links stay in
+Details → Chronology.
+
+Map-to-map fields apply only to map types. Entity map pins stay in the Maps
+section.
+
+Wiki infobox links use the same module grouping. Each linked page shows
+relationship attributes when the edge has metadata (for example parent type
+or membership role), including fields defined by Houses and other modules.
+
 ## Houses and Tree
 
 Houses and Tree are two views of the same records, not two products.

@@ -134,6 +134,10 @@ assert.match(uiUx, /project\.fields\.types/);
 assert.match(uiUx, /Managed by extension/);
 assert.match(uiUx, /collection-only/);
 assert.match(uiUx, /src\/lib\/entity-lifecycle/);
+assert.match(uiUx, /## Inspector/);
+assert.match(uiUx, /Wiki infobox links use the same module grouping/);
+assert.match(uiUx, /grouped by the module that defines them/);
+assert.match(uiUx, /Field order stays put/);
 assert.doesNotMatch(uiUx, /Slice 0|TEMP_UI_UX_ENTITY_SCHEMA_PLAN|ui-ux-slice0/);
 
 const requiredSurfaceDocs = [

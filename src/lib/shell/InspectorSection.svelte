@@ -6,13 +6,22 @@ interface Props {
   title: string;
   count?: number;
   open?: boolean;
+  nested?: boolean;
+  /** Keep the author's expand/collapse choice instead of resetting when `open` changes. */
+  sticky?: boolean;
   children: Snippet;
 }
 
-let { title, count, open = true, children }: Props = $props();
+let { title, count, open = true, nested = false, sticky = false, children }: Props = $props();
+// svelte-ignore state_referenced_locally -- sticky groups keep this first `open` until remount
+let expanded = $state(open);
+
+$effect(() => {
+  if (!sticky) expanded = open;
+});
 </script>
 
-<details class="inspector-group" {open}>
+<details class="inspector-group" class:nested bind:open={expanded}>
   <summary>
     <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
     <strong>{title}</strong>
@@ -46,7 +55,7 @@ let { title, count, open = true, children }: Props = $props();
 .inspector-group summary :global(svg) {
   transition: transform 0.16s ease;
 }
-.inspector-group[open] summary :global(svg) {
+.inspector-group[open] > summary :global(svg) {
   transform: rotate(90deg);
 }
 .inspector-group summary strong {
@@ -65,5 +74,19 @@ let { title, count, open = true, children }: Props = $props();
 }
 .inspector-group-body {
   padding: 2px 15px 17px;
+}
+.inspector-group.nested {
+  border-bottom: 0;
+  border-top: 1px solid var(--line);
+}
+.inspector-group.nested:first-child {
+  border-top: 0;
+}
+.inspector-group.nested > summary {
+  min-height: 36px;
+  padding: 0;
+}
+.inspector-group.nested .inspector-group-body {
+  padding: 0 0 12px;
 }
 </style>

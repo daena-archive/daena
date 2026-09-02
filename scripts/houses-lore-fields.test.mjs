@@ -9,7 +9,13 @@ import {
   coveredRelationshipIds,
   defaultRelationshipMetadata,
   endpointsForCreate,
+  groupedRelationshipFields,
+  groupRelationshipsByOwningModule,
+  parseRelationshipMetadata,
+  partitionPopulatedFields,
+  relationshipAttributeRows,
   relationshipDirection,
+  relationshipFieldForType,
   relationshipsForField,
 } from "../src/lib/modules/contributed-fields.ts";
 
@@ -105,5 +111,86 @@ assert.equal(childCovered.has("rel-partner"), true);
 assert.equal(childCovered.has("rel-house"), true);
 assert.equal(coveredRelationshipIds(parentId, [parentEdge, partnerEdge], named).has("rel-parent"), true);
 assert.equal(coveredRelationshipIds(parentId, [parentEdge, partnerEdge], named).has("rel-partner"), false);
+
+const maps = JSON.parse(readFileSync(join(root, "packages/modules/maps/manifest.json"), "utf8"));
+const mapsEnabled = { ...maps, enabled: true };
+const typesWithMaps = new Set([...enabledTypes, "world-map", "daena.maps:world-map"]);
+const personFields = contributedRelationshipFields(lore, person, [lore, familyEnabled, mapsEnabled], typesWithMaps);
+assert.equal(
+  personFields.some((field) => field.key === "detailMap" || field.key === "overviewMap" || field.key === "relatedMap"),
+  false,
+  "map-to-map fields must not appear on Person",
+);
+const mapFields = contributedRelationshipFields(mapsEnabled, "world-map", [mapsEnabled], typesWithMaps);
+assert.equal(
+  mapFields
+    .filter((field) => field.type === "relationship")
+    .map((field) => field.key)
+    .sort()
+    .join(","),
+  "detailMap,overviewMap,relatedMap",
+);
+
+const lorePersonLinks = lore.schemas[0].fields.filter(
+  (field) => field.type === "relationship" && field.entityTypes?.includes("person"),
+);
+const groupingFields = [...lorePersonLinks, parents, children, partners, houses];
+const emptyGroups = groupedRelationshipFields(groupingFields, [lore, familyEnabled, mapsEnabled], () => 0);
+assert.deepEqual(
+  emptyGroups.map((group) => group.moduleName),
+  ["Houses", "Lore"],
+);
+
+const populated = (field) => (field.key === "parents" ? 1 : 0);
+const filledGroups = groupedRelationshipFields(groupingFields, [lore, familyEnabled], populated);
+assert.equal(filledGroups[0].moduleName, "Houses");
+assert.equal(filledGroups[0].fields[0].key, "parents");
+assert.equal(filledGroups[1].moduleName, "Lore");
+const bornInPopulated = (field) => (field.key === "bornIn" ? 1 : 0);
+const loreFilledFirst = groupedRelationshipFields(groupingFields, [lore, familyEnabled], bornInPopulated);
+assert.equal(loreFilledFirst.find((group) => group.moduleName === "Lore")?.fields[0].key, "bornIn");
+const stableLore = groupedRelationshipFields(groupingFields, [lore, familyEnabled], bornInPopulated, {
+  sortByPopulated: false,
+});
+assert.equal(stableLore.find((group) => group.moduleName === "Lore")?.fields[0].key, lorePersonLinks[0].key);
+const { filled, empty } = partitionPopulatedFields(filledGroups[0].fields, populated);
+assert.deepEqual(
+  filled.map((field) => field.key),
+  ["parents"],
+);
+assert.equal(
+  empty.some((field) => field.key === "parents"),
+  false,
+);
+
+assert.deepEqual(parseRelationshipMetadata({ role: "head", notes: "regent" }), { role: "head", notes: "regent" });
+assert.deepEqual(parseRelationshipMetadata('{"kind":"adoptive"}'), { kind: "adoptive" });
+assert.deepEqual(parseRelationshipMetadata(""), {});
+
+const parentDef = relationshipFieldForType("family_parent_of", [lore, familyEnabled]);
+assert.equal(parentDef?.key, "parents");
+assert.equal(parentDef?.metadataFields?.[0]?.label, "Parent type");
+const parentAttrs = relationshipAttributeRows('{"kind":"adoptive","notes":"ward"}', parentDef);
+assert.deepEqual(
+  parentAttrs.map((row) => `${row.label}:${row.raw}`),
+  ["Parent type:adoptive", "Notes:ward"],
+);
+
+const leftover = groupRelationshipsByOwningModule(
+  [
+    { id: "a", relationship_type: "family_member_of" },
+    { id: "b", relationship_type: "affiliated_with" },
+  ],
+  [lore, familyEnabled],
+);
+assert.deepEqual(
+  leftover.map((group) => group.moduleName),
+  ["Houses", "Lore"],
+);
+
+const wikiSource = readFileSync(join(root, "src/lib/lore/WikiView.svelte"), "utf8");
+assert.match(wikiSource, /groupedWikiRelationships/);
+assert.match(wikiSource, /info-rel-group/);
+assert.match(wikiSource, /wikiAttrChips\(target\.attributes\)/);
 
 console.log("houses lore field contribution checks passed");

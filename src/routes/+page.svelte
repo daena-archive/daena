@@ -45,6 +45,7 @@ import {
   coveredRelationshipIds,
   defaultRelationshipMetadata,
   endpointsForCreate,
+  groupedRelationshipFields,
   manifestOwningRelationshipType,
   relationshipsForField,
 } from "$lib/modules/contributed-fields";
@@ -3668,6 +3669,7 @@ function upsertEntityInCache(entity: Entity) {
   } else {
     entities = [...entities, entity];
   }
+  if (selected?.id === entity.id) selected = entity;
 }
 
 function removeEntityFromCache(id: string) {
@@ -3676,14 +3678,21 @@ function removeEntityFromCache(id: string) {
 
 /** Patch one entity (or drop it) and re-query the current collection page/counts. */
 async function refreshAfterEntityMutation(options?: { entityId?: string; removed?: boolean }) {
-  const affectedEntity = options?.entityId ? entities.find((entity) => entity.id === options.entityId) : undefined;
+  let affectedEntity = options?.entityId ? entities.find((entity) => entity.id === options.entityId) : undefined;
   if (options?.removed && options.entityId) {
     removeEntityFromCache(options.entityId);
   } else if (options?.entityId) {
     try {
       const loaded = await project.getEntity(options.entityId);
-      if (!loaded || loaded.deleted) removeEntityFromCache(options.entityId);
-      else upsertEntityInCache(loaded);
+      if (!loaded || loaded.deleted) {
+        removeEntityFromCache(options.entityId);
+        if (loaded) affectedEntity = loaded;
+      } else {
+        upsertEntityInCache(loaded);
+        // Newly created entities are not in `entities` yet; use the loaded row so
+        // calendar/era caches refresh without requiring an app restart.
+        affectedEntity = loaded;
+      }
     } catch {
       // Keep the prior cache entry; collection re-query still runs.
     }
@@ -4941,6 +4950,12 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       void loadProjectStatus(false);
+      try {
+        const loaded = await project.getEntity(entityId);
+        if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
+      } catch {
+        // Relationship OCC still refetches the source revision at create time.
+      }
       if (selected.entity_type === "daena.timeline:era") {
         eraContextCache.invalidate(entityId);
       }
@@ -5210,6 +5225,17 @@ function propertyDefinitions() {
 function otherRelationshipDefinitions() {
   return relationshipDefinitions().filter((candidate) => !isEraRelationshipField(candidate));
 }
+function groupedInspectorRelationships() {
+  return groupedRelationshipFields(
+    otherRelationshipDefinitions(),
+    modules.filter((module) => module.enabled !== false),
+    (field) => selectedRelationshipIds(field).length,
+    { sortByPopulated: false },
+  );
+}
+function relationshipGroupLinkCount(fields: FieldDefinition[]) {
+  return fields.reduce((total, definition) => total + selectedRelationshipIds(definition).length, 0);
+}
 function hasChronologySection() {
   return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
 }
@@ -5414,6 +5440,7 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
     return !otherId || !desired.has(otherId);
   });
   const toAdd = [...desired].filter((targetId) => !currentIds.has(targetId));
+  if (toRemove.length === 0 && toAdd.length === 0) return;
   try {
     const context = contextOwningRelationshipType(definition.relationshipType);
     const removedIds = new Set<string>();
@@ -5434,12 +5461,10 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
     const created = [];
     for (const otherId of toAdd) {
       const endpoints = endpointsForCreate(selected!.id, otherId, definition);
-      const source =
-        selected.id === endpoints.sourceId && selected.revision
-          ? selected
-          : await project.getEntity(endpoints.sourceId);
+      const source = await project.getEntity(endpoints.sourceId);
       const sourceRevision = source?.revision ?? "";
       if (!sourceRevision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
+      if (source) upsertEntityInCache(source);
       const createdRelationship = await context.relationships.create(
         {
           sourceId: endpoints.sourceId as UUID,
@@ -5452,6 +5477,7 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       created.push(toHostRelationship(createdRelationship));
     }
     relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
+    await refreshAfterEntityMutation({ entityId: selected.id });
     if (definition.relationshipType && isKinshipRelationshipType(definition.relationshipType)) {
       bumpKinshipRefresh();
     }
@@ -8426,65 +8452,72 @@ onMount(() => {
               )}>
               {#if otherRelationshipDefinitions().length === 0}<p class="inspector-group-empty">
                   No relationship fields are available for this entry.
-                </p>{/if}
-              {#each otherRelationshipDefinitions() as definition}<section
-                  class="inspector-section inspector-section-plain relationship-field-section">
-                  <div class="section-title">
-                    <h3>{definition.label}</h3>
-                    <span>{selectedRelationshipIds(definition).length}</span>
-                  </div>
-                  <RelationshipPicker
-                    field={definition}
-                    search={searchEntitiesPaged(definition)}
-                    resolveSelected={resolveSelectedEntities}
-                    selectedIds={selectedRelationshipIds(definition)}
-                    hideChips
-                    onChange={(ids) => void updateRelationshipField(definition, ids)}
-                    onCreate={definition.relationshipType === "family_member_of"
-                      ? (name) => createRelationshipTarget(definition, name)
-                      : undefined} />
-                  {#if relationshipsForDefinition(definition).length > 0}<div
-                      class="relationship-detail-list"
-                      aria-label={`${definition.label} details`}>
-                      {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
-                        {@const relDefinition = definitionForRelationship(relationship) ?? definition}
-                        {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
-                        <div class="relationship-detail-row">
-                          <button
-                            type="button"
-                            class="relationship-detail-copy related-item-trigger"
-                            data-entity-id={relationshipOtherId(definition, relationship)}
-                            aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
-                            <strong>{relationshipTargetName(relationship, definition)}</strong>
-                            <small
-                              >{entityTypeLabel(
-                                entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
-                                  ?.entity_type ?? null,
-                              )}{#if summary}
-                                · {summary}{/if}</small>
-                          </button>
-                          <div class="relationship-detail-actions">
-                            {#if relDefinition.metadataFields?.length}
-                              <button
-                                class="quiet-button relationship-details-button"
-                                type="button"
-                                aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship, definition)}`}
-                                onclick={() => openRelationshipMetadata(relationship)}
-                                ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
-                            {/if}
+                </p>{:else}{#snippet inspectorRelationshipField(definition: FieldDefinition)}<section
+                    class="inspector-section inspector-section-plain relationship-field-section">
+                    <div class="section-title">
+                      <h3>{definition.label}</h3>
+                      <span>{selectedRelationshipIds(definition).length}</span>
+                    </div>
+                    <RelationshipPicker
+                      field={definition}
+                      search={searchEntitiesPaged(definition)}
+                      resolveSelected={resolveSelectedEntities}
+                      selectedIds={selectedRelationshipIds(definition)}
+                      hideChips
+                      onChange={(ids) => void updateRelationshipField(definition, ids)}
+                      onCreate={definition.relationshipType === "family_member_of"
+                        ? (name) => createRelationshipTarget(definition, name)
+                        : undefined} />
+                    {#if relationshipsForDefinition(definition).length > 0}<div
+                        class="relationship-detail-list"
+                        aria-label={`${definition.label} details`}>
+                        {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                          {@const relDefinition = definitionForRelationship(relationship) ?? definition}
+                          {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
+                          <div class="relationship-detail-row">
                             <button
-                              class="quiet-button relationship-remove-button"
                               type="button"
-                              aria-label={`Remove ${relationshipTargetName(relationship, definition)} from ${definition.label}`}
-                              onclick={() => void confirmRemoveRelationship(definition, relationship)}
-                              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+                              class="relationship-detail-copy related-item-trigger"
+                              data-entity-id={relationshipOtherId(definition, relationship)}
+                              aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
+                              <strong>{relationshipTargetName(relationship, definition)}</strong>
+                              <small
+                                >{entityTypeLabel(
+                                  entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
+                                    ?.entity_type ?? null,
+                                )}{#if summary}
+                                  · {summary}{/if}</small>
+                            </button>
+                            <div class="relationship-detail-actions">
+                              {#if relDefinition.metadataFields?.length}
+                                <button
+                                  class="quiet-button relationship-details-button"
+                                  type="button"
+                                  aria-label={`Edit details for ${relationship.relationship_type} to ${relationshipTargetName(relationship, definition)}`}
+                                  onclick={() => openRelationshipMetadata(relationship)}
+                                  ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+                              {/if}
+                              <button
+                                class="quiet-button relationship-remove-button"
+                                type="button"
+                                aria-label={`Remove ${relationshipTargetName(relationship, definition)} from ${definition.label}`}
+                                onclick={() => void confirmRemoveRelationship(definition, relationship)}
+                                ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+                            </div>
                           </div>
-                        </div>
-                      {/each}
-                    </div>{/if}
-                </section>{/each}
+                        {/each}
+                      </div>{/if}
+                  </section>{/snippet}
+                {#each groupedInspectorRelationships() as group (`${inspectedEntity?.id ?? ""}:${group.moduleId}`)}
+                  {@const groupCount = relationshipGroupLinkCount(group.fields)}
+                  <InspectorSection title={group.moduleName} count={groupCount} open={groupCount > 0} nested sticky>
+                    {#each group.fields as definition (definition.key)}{@render inspectorRelationshipField(
+                        definition,
+                      )}{/each}
+                  </InspectorSection>
+                {/each}{/if}
             </InspectorSection>
-            <InspectorSection title="Assets" count={assets.length}>
+            <InspectorSection title="Assets" count={assets.length} open={assets.length > 0}>
               <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
                   <h3>Attached files</h3>

@@ -68,6 +68,7 @@
           "label": "Detail map",
           "type": "relationship",
           "relationshipType": "detail-map",
+          "entityTypes": ["world-map"],
           "targetEntityTypes": ["world-map"]
         },
         {
@@ -75,6 +76,7 @@
           "label": "Overview map",
           "type": "relationship",
           "relationshipType": "overview-map",
+          "entityTypes": ["world-map"],
           "targetEntityTypes": ["world-map"]
         },
         {
@@ -82,6 +84,7 @@
           "label": "Related map",
           "type": "relationship",
           "relationshipType": "related-map",
+          "entityTypes": ["world-map"],
           "targetEntityTypes": ["world-map"]
         }
       ]

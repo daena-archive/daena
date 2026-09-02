@@ -31,6 +31,10 @@ import {
   contributedRelationshipFields,
   counterpartId,
   coveredRelationshipIds,
+  groupedRelationshipFields,
+  groupRelationshipsByOwningModule,
+  relationshipAttributeRows,
+  relationshipFieldForType,
   type ManifestLike,
 } from "$lib/modules/contributed-fields";
 
@@ -87,6 +91,9 @@ let wikiSearchKey = "";
 let entityLoadRequest = 0;
 let imageGenerationOpen = $state(false);
 
+type WikiRelationshipAttribute = { key: string; label: string; value: string };
+
+const wikiManifests = $derived(enabledManifests.length ? enabledManifests : [manifest]);
 const schemas = $derived(manifest.schemas ?? []);
 const allEntityTypeDefinitions = $derived(schemas.flatMap((schema: any) => schema.entityTypes));
 const allEntityTypes = $derived(allEntityTypeDefinitions.map((entityType: any) => entityType.id));
@@ -255,37 +262,40 @@ const visibleRelationshipFields = $derived(
     return fieldsForType(entity.entity_type)
       .filter((definition: any) => definition.type === "relationship")
       .map((definition: any) => ({
+        definition,
         label: definition.label,
         targets: relationships
           .map((relationship: any) => {
             const id = counterpartId(entityId, relationship, definition);
-            return id ? { id, name: entityName(id) } : null;
+            if (!id) return null;
+            return {
+              id,
+              name: entityName(id),
+              attributes: attributesForRelationship(relationship, definition),
+            };
           })
-          .filter((target: { id: string; name: string } | null) => target !== null),
+          .filter(
+            (target): target is { id: string; name: string; attributes: WikiRelationshipAttribute[] } =>
+              target !== null,
+          ),
       }))
       .filter((row: any) => row.targets.length > 0);
   })(),
 );
-function parseRelationshipMetadata(raw: unknown): Record<string, unknown> {
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
-}
-function definitionForRelationshipType(type: string): any | null {
-  for (const schema of schemas as any[]) {
-    for (const field of (schema.fields ?? []) as any[]) {
-      if (field.type === "relationship" && field.relationshipType === type) return field;
-    }
-  }
-  return null;
-}
-function formatAttributeValue(value: unknown, field: any | null): string {
+const groupedWikiRelationships = $derived(
+  groupedRelationshipFields(
+    visibleRelationshipFields.map((row) => row.definition),
+    wikiManifests,
+    (field) => visibleRelationshipFields.find((row) => row.definition.key === field.key)?.targets.length ?? 0,
+  ).map((group) => ({
+    moduleId: group.moduleId,
+    moduleName: group.moduleName,
+    rows: group.fields
+      .map((field) => visibleRelationshipFields.find((row) => row.definition.key === field.key))
+      .filter((row): row is (typeof visibleRelationshipFields)[number] => row != null),
+  })),
+);
+function formatAttributeValue(value: unknown, field: { type?: string } | null): string {
   if (field?.type === "date") {
     try {
       if (parseCalendarDate(value)) return formatCalendarDate(value as any);
@@ -293,27 +303,22 @@ function formatAttributeValue(value: unknown, field: any | null): string {
   }
   return fieldDisplay(value);
 }
-function attributesForRelationship(relationship: any): Array<{ key: string; label: string; value: string }> {
-  const metadata = parseRelationshipMetadata(relationship.metadata);
-  const definition = definitionForRelationshipType(relationship.relationship_type);
-  const fields: any[] = definition?.metadataFields ?? [];
-  if (fields.length > 0) {
-    return fields
-      .map((field) => {
-        const raw = metadata[field.key];
-        if (isEmptyValue(raw)) return null;
-        return {
-          key: field.key,
-          label: field.label ?? humanizeType(field.key),
-          value: formatAttributeValue(raw, field),
-        };
-      })
-      .filter((row): row is { key: string; label: string; value: string } => row !== null && row.value !== "");
-  }
-  // Fallback: raw metadata keys when no definition
-  return Object.entries(metadata)
-    .filter(([, v]) => !isEmptyValue(v))
-    .map(([key, raw]) => ({ key, label: humanizeType(key), value: fieldDisplay(raw) }))
+function attributesForRelationship(
+  relationship: any,
+  definition?: { metadataFields?: Array<{ key: string; label?: string; type?: string }> } | null,
+): WikiRelationshipAttribute[] {
+  const resolved = definition ?? relationshipFieldForType(relationship.relationship_type, wikiManifests);
+  const metaFields = resolved?.metadataFields ?? [];
+  return relationshipAttributeRows(relationship.metadata, resolved as any)
+    .filter((row) => !isEmptyValue(row.raw))
+    .map((row) => {
+      const field = metaFields.find((candidate) => candidate.key === row.key) ?? null;
+      return {
+        key: row.key,
+        label: row.label === row.key ? humanizeType(row.key) : row.label,
+        value: formatAttributeValue(row.raw, field),
+      };
+    })
     .filter((row) => row.value !== "");
 }
 const enrichedOutbound = $derived(
@@ -328,6 +333,8 @@ const enrichedInbound = $derived(
     attributes: attributesForRelationship(relationship),
   })),
 );
+const groupedOutbound = $derived(groupRelationshipsByOwningModule(enrichedOutbound, wikiManifests));
+const groupedInbound = $derived(groupRelationshipsByOwningModule(enrichedInbound, wikiManifests));
 const imageContextChoices = $derived(
   (() => {
     if (!entity) return [] as ImageContextChoice[];
@@ -605,6 +612,17 @@ function handleEdit() {
   {/if}
 {/snippet}
 
+{#snippet wikiAttrChips(attributes: WikiRelationshipAttribute[])}
+  {#if attributes.length > 0}
+    <div class="wiki-attr-row" aria-label="Relationship details">
+      {#each attributes as attr}<span class="wiki-attr-chip" title={`${attr.label}: ${attr.value}`}
+          ><strong>{attr.label}</strong>
+          {attr.value}</span
+        >{/each}
+    </div>
+  {/if}
+{/snippet}
+
 <section class="kb-shell" aria-label="Lore knowledge base">
   <WorkspaceTopbar
     title={`${manifest.name} knowledge base`}
@@ -774,21 +792,33 @@ function handleEdit() {
                 <h2>{entity.name}</h2>
                 <p>{labelForType(entity.entity_type)}</p>
               </header>
-              <dl>
-                {#each visibleFields as row}<div>
-                    <dt>{row.label}</dt>
-                    <dd>{row.value}</dd>
-                  </div>{/each}
-                {#each visibleRelationshipFields as row}<div>
-                    <dt>{row.label}</dt>
-                    <dd>
-                      {#each row.targets as target, index}<button type="button" onclick={() => openEntity(target.id)}
-                          >{target.name}</button
-                        >{#if index < row.targets.length - 1}{", "}{/if}{/each}
-                    </dd>
-                  </div>{/each}
-              </dl>
-              {#if visibleFields.length === 0 && visibleRelationshipFields.length === 0}<p class="card-empty">
+              {#if visibleFields.length > 0}
+                <dl>
+                  {#each visibleFields as row}<div>
+                      <dt>{row.label}</dt>
+                      <dd>{row.value}</dd>
+                    </div>{/each}
+                </dl>
+              {/if}
+              {#each groupedWikiRelationships as group (group.moduleId)}
+                <div class="info-rel-group">
+                  <h3>{group.moduleName}</h3>
+                  <dl>
+                    {#each group.rows as row}<div>
+                        <dt>{row.label}</dt>
+                        <dd class="wiki-rel-targets">
+                          {#each row.targets as target}
+                            <div class="wiki-rel-target">
+                              <button type="button" onclick={() => openEntity(target.id)}>{target.name}</button>
+                              {@render wikiAttrChips(target.attributes)}
+                            </div>
+                          {/each}
+                        </dd>
+                      </div>{/each}
+                  </dl>
+                </div>
+              {/each}
+              {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0}<p class="card-empty">
                   No structured details yet.
                 </p>{/if}
             </section>
@@ -809,44 +839,36 @@ function handleEdit() {
               {#if outbound.length === 0 && inbound.length === 0}
                 <p class="card-empty">No linked pages yet.</p>
               {:else}
-                {#if enrichedOutbound.length > 0}<h3>From this page</h3>
-                  <ul>
-                    {#each enrichedOutbound as relationship}<li>
-                        <span>{humanizeType(relationship.relationship_type)}</span><button
-                          type="button"
-                          onclick={() => openEntity(relationship.target_id)}
-                          >{entityName(relationship.target_id)}</button>
-                        {#if relationship.attributes.length > 0}
-                          <div class="wiki-attr-row" aria-label="Relationship details">
-                            {#each relationship.attributes as attr}<span
-                                class="wiki-attr-chip"
-                                title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span
-                              >{/each}
-                          </div>
-                        {/if}
-                      </li>{/each}
-                  </ul>{/if}
-                {#if enrichedInbound.length > 0}<h3>Links here</h3>
-                  <ul>
-                    {#each enrichedInbound as relationship}<li>
-                        <span>{humanizeType(relationship.relationship_type)}</span><button
-                          type="button"
-                          onclick={() => openEntity(relationship.source_id)}
-                          >{entityName(relationship.source_id)}<small
-                            >{entityTypeOf(relationship.source_id)
-                              ? ` · ${labelForType(entityTypeOf(relationship.source_id))}`
-                              : ""}</small
-                          ></button>
-                        {#if relationship.attributes.length > 0}
-                          <div class="wiki-attr-row" aria-label="Relationship details">
-                            {#each relationship.attributes as attr}<span
-                                class="wiki-attr-chip"
-                                title={`${attr.label}: ${attr.value}`}><strong>{attr.label}</strong> {attr.value}</span
-                              >{/each}
-                          </div>
-                        {/if}
-                      </li>{/each}
-                  </ul>{/if}
+                {#if groupedOutbound.length > 0}<h3>From this page</h3>
+                  {#each groupedOutbound as group (group.moduleId)}
+                    {#if groupedOutbound.length > 1}<h4>{group.moduleName}</h4>{/if}
+                    <ul>
+                      {#each group.relationships as relationship}<li>
+                          <span>{humanizeType(relationship.relationship_type)}</span><button
+                            type="button"
+                            onclick={() => openEntity(relationship.target_id)}
+                            >{entityName(relationship.target_id)}</button>
+                          {@render wikiAttrChips(relationship.attributes)}
+                        </li>{/each}
+                    </ul>
+                  {/each}{/if}
+                {#if groupedInbound.length > 0}<h3>Links here</h3>
+                  {#each groupedInbound as group (group.moduleId)}
+                    {#if groupedInbound.length > 1}<h4>{group.moduleName}</h4>{/if}
+                    <ul>
+                      {#each group.relationships as relationship}<li>
+                          <span>{humanizeType(relationship.relationship_type)}</span><button
+                            type="button"
+                            onclick={() => openEntity(relationship.source_id)}
+                            >{entityName(relationship.source_id)}<small
+                              >{entityTypeOf(relationship.source_id)
+                                ? ` · ${labelForType(entityTypeOf(relationship.source_id))}`
+                                : ""}</small
+                            ></button>
+                          {@render wikiAttrChips(relationship.attributes)}
+                        </li>{/each}
+                    </ul>
+                  {/each}{/if}
               {/if}
             </section>
           </aside>
@@ -1265,6 +1287,30 @@ function handleEdit() {
   margin: 0;
   padding: 14px 16px;
 }
+.info-rel-group + .info-rel-group,
+.info-card > dl + .info-rel-group {
+  border-top: 1px solid var(--theme-neutral-border, #e7e9e4);
+}
+.info-rel-group h3 {
+  margin: 0;
+  padding: 12px 16px 0;
+  color: var(--theme-neutral-text-muted, #8b928b);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.info-rel-group dl {
+  padding-top: 8px;
+}
+.wiki-rel-targets {
+  display: grid;
+  gap: 8px;
+}
+.wiki-rel-target {
+  display: grid;
+  gap: 3px;
+}
 .info-card dl div {
   display: grid;
   gap: 3px;
@@ -1333,12 +1379,20 @@ function handleEdit() {
 .outline-card .depth-6 {
   padding-left: 18px;
 }
-.connections-card h3 {
+.connections-card h3,
+.connections-card h4 {
   margin: 12px 0 6px;
   color: var(--theme-neutral-text-muted, #979c96);
   font-size: 8px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.connections-card h4 {
+  margin: 8px 0 4px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 9px;
+  font-weight: 700;
 }
 .connections-card li {
   display: grid;

@@ -78,4 +78,17 @@ assert.match(controls, /@media \(pointer: coarse\)/);
 assert.match(controls, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(controls, /@media \(forced-colors: active\)/);
 
+const inspector = components.get("src/lib/shell/InspectorSection.svelte");
+assert.match(inspector, /nested\?: boolean/);
+assert.match(
+  inspector,
+  /\.inspector-group\[open\] > summary/,
+  "open chevron rotation must not apply to nested relationship groups",
+);
+assert.match(shell, /groupedInspectorRelationships/);
+assert.match(shell, /sortByPopulated: false/);
+assert.match(shell, /sticky/);
+assert.match(shell, /open=\{assets\.length > 0\}/);
+assert.match(inspector, /sticky\?: boolean/);
+
 console.log(`shell UI boundary checks passed (${componentPaths.length + 1} Svelte files compiled)`);

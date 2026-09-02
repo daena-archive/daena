@@ -18,9 +18,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use uuid::Uuid;
 
 const EXTERNAL_IMPORT_SOURCE_NAMESPACE: &str = "daena.core";
@@ -35,6 +34,7 @@ struct ModuleSchemaOverlayReceipt {
 }
 
 mod assets;
+mod checkpoint;
 mod fields;
 mod fs_util;
 mod markdown;
@@ -44,6 +44,8 @@ mod projection;
 mod runtime_assets;
 
 use self::assets::*;
+use self::checkpoint::*;
+pub use self::checkpoint::{set_checkpoint_export_status_listener, CheckpointHandle};
 use self::fields::*;
 pub(crate) use self::fs_util::chrono_like_now;
 use self::fs_util::*;
@@ -74,43 +76,6 @@ use self::runtime_assets::*;
 
 const GIT_SHOW_FILE_MAX_BYTES: usize = 512 * 1024;
 
-const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-const RUNTIME_SCHEMA_VERSION: i64 = 1;
-const EXPORTER_CONTRACT_VERSION: &str = "1";
-const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
-const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);
-
-type CheckpointExportStatusListener = Arc<dyn Fn() + Send + Sync + 'static>;
-
-static CHECKPOINT_EXPORT_STATUS_LISTENER: OnceLock<Mutex<Option<CheckpointExportStatusListener>>> =
-    OnceLock::new();
-
-fn checkpoint_export_status_listener_slot() -> &'static Mutex<Option<CheckpointExportStatusListener>>
-{
-    CHECKPOINT_EXPORT_STATUS_LISTENER.get_or_init(|| Mutex::new(None))
-}
-
-/// Register a listener invoked after the background export worker finishes an
-/// export attempt (success, skip-when-clean, or failure). Used by the shell to
-/// refresh checkpoint status without polling.
-pub fn set_checkpoint_export_status_listener(listener: Option<CheckpointExportStatusListener>) {
-    if let Ok(mut slot) = checkpoint_export_status_listener_slot().lock() {
-        *slot = listener;
-    }
-}
-
-fn notify_checkpoint_export_status() {
-    let listener = {
-        let Ok(slot) = checkpoint_export_status_listener_slot().lock() else {
-            return;
-        };
-        slot.clone()
-    };
-    if let Some(listener) = listener {
-        listener();
-    }
-}
-
 static GIT_REPOSITORY_PROBES: OnceLock<Mutex<BTreeMap<PathBuf, bool>>> = OnceLock::new();
 
 fn git_repository_probe_slot() -> &'static Mutex<BTreeMap<PathBuf, bool>> {
@@ -123,12 +88,6 @@ fn git_tool_info_slot() -> &'static Mutex<Option<GitToolInfo>> {
     GIT_TOOL_INFO_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-fn reset_required_error() -> CoreError {
-    CoreError::ResetRequired(
-        "unsupported Daena runtime storage; close Daena and remove .daena/ before reopening this project".into(),
-    )
-}
-
 pub struct ProjectStore {
     connection: Connection,
     database_epoch: String,
@@ -138,187 +97,6 @@ pub struct ProjectStore {
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
-}
-
-pub struct CheckpointHandle {
-    root: PathBuf,
-    database: PathBuf,
-    export_sender: Option<mpsc::Sender<ExportWorkerCommand>>,
-}
-
-enum ExportWorkerCommand {
-    Wake,
-    Flush(String, mpsc::Sender<Result<Generation, CoreError>>),
-    StopWithoutDrain(mpsc::Sender<Result<(), CoreError>>),
-    Stop(mpsc::Sender<Result<(), CoreError>>),
-}
-
-struct ExportWorker {
-    sender: mpsc::Sender<ExportWorkerCommand>,
-    join: Option<JoinHandle<()>>,
-}
-
-impl ExportWorker {
-    fn start(root: &Path, database: &Path) -> Result<Self, CoreError> {
-        let root = root.to_path_buf();
-        let database = database.to_path_buf();
-        let (sender, receiver) = mpsc::channel();
-        let join = thread::Builder::new()
-            .name("daena-export-worker".into())
-            .spawn(move || {
-                while let Ok(command) = receiver.recv() {
-                    let export = |reason: &str, force: bool| {
-                        let result = (|| {
-                            let worker_store = ProjectStore::open_database(
-                                &database,
-                                Some(root.clone()),
-                                None,
-                                false,
-                                false,
-                            )?;
-                            if force {
-                                worker_store.flush_checkpoint(reason)
-                            } else {
-                                worker_store.flush_checkpoint_if_dirty(reason)
-                            }
-                        })();
-                        notify_checkpoint_export_status();
-                        result
-                    };
-                    match command {
-                        ExportWorkerCommand::Wake => {
-                            let started_at = Instant::now();
-                            let max_deadline = started_at + BACKGROUND_EXPORT_MAX_DELAY;
-                            let mut idle_deadline = started_at + BACKGROUND_EXPORT_IDLE_DELAY;
-                            loop {
-                                let deadline = idle_deadline.min(max_deadline);
-                                let remaining = deadline.saturating_duration_since(Instant::now());
-                                match receiver.recv_timeout(remaining) {
-                                    Ok(ExportWorkerCommand::Wake) => {
-                                        idle_deadline = (Instant::now()
-                                            + BACKGROUND_EXPORT_IDLE_DELAY)
-                                            .min(max_deadline);
-                                    }
-                                    Ok(ExportWorkerCommand::Flush(reason, reply)) => {
-                                        let _ = reply.send(export(&reason, true));
-                                        break;
-                                    }
-                                    Ok(ExportWorkerCommand::Stop(reply)) => {
-                                        let _ = reply.send(
-                                            export("project close checkpoint", false).map(|_| ()),
-                                        );
-                                        return;
-                                    }
-                                    Ok(ExportWorkerCommand::StopWithoutDrain(reply)) => {
-                                        let _ = reply.send(Ok(()));
-                                        return;
-                                    }
-                                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                                        let _ = export("background checkpoint export", false);
-                                        break;
-                                    }
-                                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                                }
-                            }
-                        }
-                        ExportWorkerCommand::Flush(reason, reply) => {
-                            let _ = reply.send(export(&reason, true));
-                        }
-                        ExportWorkerCommand::Stop(reply) => {
-                            let _ =
-                                reply.send(export("project close checkpoint", false).map(|_| ()));
-                            break;
-                        }
-                        ExportWorkerCommand::StopWithoutDrain(reply) => {
-                            let _ = reply.send(Ok(()));
-                            break;
-                        }
-                    }
-                }
-            })
-            .map_err(|source| CoreError::Io {
-                operation: "start export worker",
-                source,
-            })?;
-        Ok(Self {
-            sender,
-            join: Some(join),
-        })
-    }
-
-    fn wake(&self) {
-        let _ = self.sender.send(ExportWorkerCommand::Wake);
-    }
-
-    fn flush(&self, reason: String) -> Result<Generation, CoreError> {
-        let (sender, receiver) = mpsc::channel();
-        self.sender
-            .send(ExportWorkerCommand::Flush(reason, sender))
-            .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
-        receiver
-            .recv()
-            .map_err(|_| CoreError::Conflict("export worker stopped before flush".into()))?
-    }
-
-    fn stop(mut self) -> Result<(), CoreError> {
-        let (sender, receiver) = mpsc::channel();
-        let send_result = self.sender.send(ExportWorkerCommand::Stop(sender));
-        let result = if send_result.is_ok() {
-            receiver
-                .recv()
-                .map_err(|_| CoreError::Conflict("export worker stopped before drain".into()))?
-        } else {
-            Ok(())
-        };
-        if let Some(join) = self.join.take() {
-            join.join()
-                .map_err(|_| CoreError::Conflict("export worker panicked".into()))?;
-        }
-        result
-    }
-
-    fn stop_without_drain(mut self) -> Result<(), CoreError> {
-        let (sender, receiver) = mpsc::channel();
-        let send_result = self
-            .sender
-            .send(ExportWorkerCommand::StopWithoutDrain(sender));
-        let result = if send_result.is_ok() {
-            receiver
-                .recv()
-                .map_err(|_| CoreError::Conflict("export worker stopped before pause".into()))?
-        } else {
-            Ok(())
-        };
-        if let Some(join) = self.join.take() {
-            join.join()
-                .map_err(|_| CoreError::Conflict("export worker panicked".into()))?;
-        }
-        result
-    }
-}
-
-impl CheckpointHandle {
-    pub fn flush_checkpoint(&self, reason: impl Into<String>) -> Result<Generation, CoreError> {
-        let reason = reason.into();
-        if let Some(sender) = &self.export_sender {
-            return flush_export_worker(sender, reason);
-        }
-        let store = ProjectStore::open_checkpoint_writer(&self.database, self.root.clone())?;
-        store.flush_checkpoint(reason)
-    }
-}
-
-fn flush_export_worker(
-    sender: &mpsc::Sender<ExportWorkerCommand>,
-    reason: String,
-) -> Result<Generation, CoreError> {
-    let (reply_sender, reply_receiver) = mpsc::channel();
-    sender
-        .send(ExportWorkerCommand::Flush(reason, reply_sender))
-        .map_err(|_| CoreError::Conflict("export worker is not running".into()))?;
-    reply_receiver
-        .recv()
-        .map_err(|_| CoreError::Conflict("export worker stopped before checkpoint flush".into()))?
 }
 
 #[cfg(windows)]

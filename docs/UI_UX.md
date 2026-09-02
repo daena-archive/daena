@@ -234,6 +234,14 @@ Archive remain available while document autosave is visible. Leaving for an
 identity action flushes or explicitly resolves unsaved text. Returning from
 Archive restores the entry to its correct tab.
 
+Manuscripts stay one type. Parent, contents, revisions, and world links are
+optional relationships. A sketch or short story is a manuscript with no parent.
+A series is nested with `part_of` only when the author links it. The Manuscripts
+list stays flat until those links exist, then nests children under their parent.
+When a manuscript is selected, **New in this manuscript** creates a child.
+Lore inspector Appearances list the manuscripts that feature the entry and show
+the parent path (for example Book 1 · Chapter 4).
+
 ### Language
 
 New Language uses the shared template dialog. Collection row actions and the

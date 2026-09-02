@@ -23,7 +23,12 @@
     "schema.overlay",
     "service.call:daena.maps/navigation"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "daena.lore": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": false
+    }
+  },
   "namespaces": ["writing"],
   "schemas": [
     {
@@ -42,6 +47,132 @@
         },
         { "key": "genre", "label": "Genre", "type": "text", "entityTypes": ["manuscript"] },
         { "key": "synopsis", "label": "Synopsis", "type": "text", "entityTypes": ["manuscript"] },
+        {
+          "key": "parent",
+          "label": "Parent",
+          "type": "relationship",
+          "relationshipType": "part_of",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["manuscript"],
+          "targetEntityTypes": ["manuscript"],
+          "cardinality": "one",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [{ "key": "order", "label": "Order", "type": "number" }]
+        },
+        {
+          "key": "contents",
+          "label": "Contents",
+          "type": "relationship",
+          "relationshipType": "part_of",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["manuscript"],
+          "targetEntityTypes": ["manuscript"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [{ "key": "order", "label": "Order", "type": "number" }]
+        },
+        {
+          "key": "revises",
+          "label": "Revises",
+          "type": "relationship",
+          "relationshipType": "revises",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["manuscript"],
+          "targetEntityTypes": ["manuscript"],
+          "cardinality": "one",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
+        {
+          "key": "revisions",
+          "label": "Revisions",
+          "type": "relationship",
+          "relationshipType": "revises",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["manuscript"],
+          "targetEntityTypes": ["manuscript"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
+        {
+          "key": "features",
+          "label": "World",
+          "type": "relationship",
+          "relationshipType": "features",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["manuscript"],
+          "targetEntityTypes": [
+            "daena.lore:person",
+            "daena.lore:place",
+            "daena.lore:faction",
+            "daena.lore:artifact",
+            "daena.lore:culture",
+            "daena.lore:concept"
+          ],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "options": ["character", "setting", "object", "faction", "idea", "other"]
+            },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "appearances",
+          "label": "Appearances",
+          "type": "relationship",
+          "relationshipType": "features",
+          "relationshipDirection": "incoming",
+          "entityTypes": [
+            "daena.lore:person",
+            "daena.lore:place",
+            "daena.lore:faction",
+            "daena.lore:artifact",
+            "daena.lore:culture",
+            "daena.lore:concept"
+          ],
+          "targetEntityTypes": ["manuscript"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "options": ["character", "setting", "object", "faction", "idea", "other"]
+            },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
         {
           "key": "category",
           "label": "Category",

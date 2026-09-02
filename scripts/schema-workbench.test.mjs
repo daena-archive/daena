@@ -287,6 +287,8 @@ assert.match(impact, /Review schema impact|requiresAcknowledgement|affectedTypes
 const fieldInput = await read("src/lib/schema-workbench/SchemaFieldInput.svelte");
 assert.match(fieldInput, /RelationshipPicker/);
 assert.match(fieldInput, /DateEditor/);
+assert.match(fieldInput, /select:not\(\[multiple\]\)/);
+assert.match(fieldInput, /height: 38px/);
 
 const client = await read("src/lib/project/client.ts");
 assert.match(client, /SchemaOverlayPreviewResult/);
@@ -300,6 +302,8 @@ assert.match(vocabulary, /conflictCompare|conflictReapply/);
 
 const page = await read("src/routes/+page.svelte");
 assert.match(page, /SchemaFieldInput|schema-workbench\/SchemaFieldInput/);
+assert.match(page, /\.property-field select/);
+assert.doesNotMatch(page, /<\/select>\s*>/);
 assert.match(page, /managedSchemaPlugins/);
 assert.match(page, /managedSchemaPluginReason/);
 assert.match(page, /schemaOverlayWorkbenchAllowed/);

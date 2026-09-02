@@ -96,6 +96,7 @@ const requiredActions = [
   "makeRoot",
   "newPerson",
   "newHouse",
+  "newInManuscript",
 ];
 for (const action of requiredActions) {
   assert.equal(typeof ENTITY_ACTIONS[action], "string");
@@ -137,7 +138,8 @@ assert.match(uiUx, /src\/lib\/entity-lifecycle/);
 assert.match(uiUx, /## Inspector/);
 assert.match(uiUx, /Wiki infobox links use the same module grouping/);
 assert.match(uiUx, /grouped by the module that defines them/);
-assert.match(uiUx, /Field order stays put/);
+assert.match(uiUx, /New in this manuscript/);
+assert.match(uiUx, /optional relationships/);
 assert.doesNotMatch(uiUx, /Slice 0|TEMP_UI_UX_ENTITY_SCHEMA_PLAN|ui-ux-slice0/);
 
 const requiredSurfaceDocs = [

@@ -22,7 +22,7 @@
     "check:timeline-calendar": "node --experimental-strip-types scripts/timeline-calendar.test.mjs && node --experimental-strip-types scripts/timeline-projection.test.mjs && node --experimental-strip-types scripts/timeline-tabs.test.mjs && node --experimental-strip-types scripts/chronology.test.mjs && node --experimental-strip-types scripts/date-field.test.mjs && node --experimental-strip-types scripts/lore-timeline-relations.test.mjs && node --experimental-strip-types scripts/entity-type-labels.test.mjs && node scripts/timeline-ux.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "check:houses": "node --experimental-strip-types scripts/houses-projection.test.mjs && node --experimental-strip-types scripts/houses-lore-fields.test.mjs",
-    "check:writing-tabs": "node --experimental-strip-types scripts/writing-tabs.test.mjs",
+    "check:writing-tabs": "node --experimental-strip-types scripts/writing-tabs.test.mjs && node --experimental-strip-types scripts/writing-outline.test.mjs",
     "dev": "vite dev",
     "format": "prettier --write \"src/**/*.{js,ts,svelte}\" \"src-tauri/**/*.{js,ts,svelte}\" \"packages/**/*.{js,ts,svelte}\" \"scripts/**/*.{js,mjs,ts}\"",
     "format:check": "prettier --check \"src/**/*.{js,ts,svelte}\" \"packages/**/*.{js,ts,svelte}\" \"scripts/**/*.{js,mjs,ts}\"",

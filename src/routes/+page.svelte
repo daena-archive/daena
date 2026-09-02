@@ -50,6 +50,19 @@ import {
   relationshipsForField,
 } from "$lib/modules/contributed-fields";
 import {
+  appearanceLabel,
+  buildManuscriptOutline,
+  collectPartOfEdges,
+  containmentNames,
+  isManuscriptType,
+  outlineHasNesting,
+  parentByChild,
+  partOfEdgesFromRelationships,
+  WRITING_FEATURES,
+  WRITING_PART_OF,
+  type OutlineNode,
+} from "$lib/writing/outline";
+import {
   emptyShellNavigationHistory,
   recordShellLocation,
   sameShellLocation,
@@ -434,6 +447,10 @@ let kinshipRefreshEpoch = $state(0);
 let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
 let houseSummaryRequest = 0;
 let houseSummariesPending = $state(false);
+let manuscriptOutline = $state<OutlineNode[]>([]);
+let manuscriptOutlineRequest = 0;
+let pendingManuscriptParentId = $state<string | null>(null);
+let writingAppearanceLabels = $state<Record<string, string>>({});
 
 let collectionScopeKey = "";
 let collectionQueryRestoring = false;
@@ -2234,6 +2251,146 @@ $effect(() => {
     });
 });
 
+async function queryWritingPartOf(entityIds: string[]) {
+  if (entityIds.length === 0 || !projectInfo?.root) return [];
+  const context = contextFor("writing");
+  const items: Array<{
+    id: string;
+    sourceId: string;
+    targetId: string;
+    type: string;
+    metadata?: unknown;
+  }> = [];
+  let offset = 0;
+  while (true) {
+    const page = await context.relationships.query({
+      entityIds: entityIds as UUID[],
+      relationshipTypes: [WRITING_PART_OF],
+      direction: "any",
+      offset,
+      limit: 200,
+    });
+    items.push(...page.items);
+    if (!page.hasMore || page.items.length === 0) break;
+    offset += page.items.length;
+  }
+  return partOfEdgesFromRelationships(
+    items.map((relationship) => ({
+      id: relationship.id,
+      source_id: relationship.sourceId,
+      target_id: relationship.targetId,
+      relationship_type: relationship.type,
+      metadata: relationship.metadata,
+    })),
+  );
+}
+
+async function refreshWritingAppearanceLabels() {
+  if (!selected) {
+    writingAppearanceLabels = {};
+    return;
+  }
+  const sources = [
+    ...new Set(
+      relationships
+        .filter(
+          (relationship) =>
+            relationship.relationship_type === WRITING_FEATURES && relationship.target_id === selected!.id,
+        )
+        .map((relationship) => relationship.source_id),
+    ),
+  ];
+  if (sources.length === 0) {
+    writingAppearanceLabels = {};
+    return;
+  }
+  try {
+    const edges = await collectPartOfEdges(sources, queryWritingPartOf);
+    const ids = new Set(sources);
+    for (const edge of edges) {
+      ids.add(edge.sourceId);
+      ids.add(edge.targetId);
+    }
+    const names = new Map<string, string>();
+    for (const entity of entities) {
+      if (ids.has(entity.id)) names.set(entity.id, entity.name);
+    }
+    const missing = [...ids].filter((id) => !names.has(id));
+    if (missing.length > 0) {
+      const loaded = await contextFor("writing").entities.getMany(missing as UUID[]);
+      for (const entity of loaded) names.set(entity.id, entity.name);
+    }
+    const parents = parentByChild(edges);
+    const labels: Record<string, string> = {};
+    for (const id of sources) labels[id] = appearanceLabel(containmentNames(id, parents, names));
+    writingAppearanceLabels = labels;
+  } catch {
+    writingAppearanceLabels = {};
+  }
+}
+
+function relationshipRowTitle(relationship: Relationship, definition: FieldDefinition) {
+  const otherId = relationshipOtherId(definition, relationship);
+  if (relationship.relationship_type === WRITING_FEATURES && writingAppearanceLabels[otherId]) {
+    return writingAppearanceLabels[otherId];
+  }
+  return relationshipTargetName(relationship, definition);
+}
+
+$effect(() => {
+  const writingManuscripts =
+    ready &&
+    Boolean(projectInfo) &&
+    section === "writing" &&
+    writingView === "manuscripts" &&
+    !collectionQuery.textSearch.trim();
+  const pageItems = collectionPage.items;
+  void collectionRefreshEpoch;
+  if (!writingManuscripts) {
+    if (section !== "writing" || writingView !== "manuscripts") manuscriptOutline = [];
+    return;
+  }
+  const request = ++manuscriptOutlineRequest;
+  const seed = pageItems.map((entity) => entity.id);
+  if (seed.length === 0) {
+    manuscriptOutline = [];
+    return;
+  }
+  void (async () => {
+    try {
+      const edges = await collectPartOfEdges(seed, queryWritingPartOf);
+      const extraIds = new Set<string>();
+      for (const edge of edges) {
+        extraIds.add(edge.sourceId);
+        extraIds.add(edge.targetId);
+      }
+      for (const id of seed) extraIds.delete(id);
+      const extra: Array<{ id: string; name: string; entity_type?: string | null }> = [];
+      const missing: string[] = [];
+      for (const id of extraIds) {
+        const cached = entities.find((entity) => entity.id === id);
+        if (cached) extra.push(cached);
+        else missing.push(id);
+      }
+      if (missing.length > 0) {
+        const loaded = await contextFor("writing").entities.getMany(missing as UUID[]);
+        for (const entity of loaded) {
+          extra.push({
+            id: entity.id,
+            name: entity.name,
+            entity_type: entity.type,
+          });
+        }
+      }
+      if (request !== manuscriptOutlineRequest) return;
+      manuscriptOutline = buildManuscriptOutline(pageItems, extra, edges);
+    } catch {
+      if (request !== manuscriptOutlineRequest) return;
+      manuscriptOutline = [];
+    }
+  })();
+});
+
 $effect(() => {
   const pending = pendingCollectionScroll;
   void collectionPage.items;
@@ -2276,6 +2433,31 @@ function toggleGroup(type: string) {
 
 function collectionResult(): CollectionResult {
   return presentCollectionPage(collectionPage, collectionQuery.viewMode, entityTypeLabel);
+}
+
+function entityFromOutlineNode(node: OutlineNode): Entity {
+  return (
+    entities.find((entity) => entity.id === node.id) ??
+    collectionPage.items.find((entity) => entity.id === node.id) ?? {
+      id: node.id,
+      name: node.name,
+      entity_type: node.entityType,
+      deleted: false,
+      created_at: "",
+      updated_at: "",
+      revision: "",
+    }
+  );
+}
+
+function showManuscriptOutline() {
+  return (
+    section === "writing" &&
+    writingView === "manuscripts" &&
+    !collectionQuery.textSearch.trim() &&
+    collectionQuery.viewMode !== "grouped" &&
+    outlineHasNesting(manuscriptOutline)
+  );
 }
 
 async function selectSearchResult(entity: Entity) {
@@ -4159,6 +4341,7 @@ async function loadSelectedState(entity: Entity) {
     if (!isCurrent()) return;
     mapLocations = nextMapLocations;
     savedAt = "";
+    void refreshWritingAppearanceLabels();
   } catch (cause) {
     if (isCurrent()) selectedLoadError = friendlyError(cause);
     throw cause;
@@ -4561,6 +4744,7 @@ function closeCreateForm() {
     showCreateForm = false;
     createDialogView = "templates";
     name = "";
+    pendingManuscriptParentId = null;
     resetCreateFields(null);
     const returnFocus = createDialogReturnFocus;
     createDialogReturnFocus = null;
@@ -4580,6 +4764,15 @@ function activateCreateOption(option: CreateOption, initialName = "") {
     selectedCreateKey = option.key;
     resetCreateFields(option);
   } else if (initialName) name = initialName;
+  if (
+    pendingManuscriptParentId &&
+    (option.template.entityType === "daena.writing:manuscript" ||
+      option.template.entityType === "manuscript" ||
+      option.template.entityType.endsWith(":manuscript"))
+  ) {
+    setCreateRelationshipValues("parent", [pendingManuscriptParentId]);
+    pendingManuscriptParentId = null;
+  }
   createDialogView = "form";
   showCreateForm = true;
   setTimeout(() => document.getElementById("new-entity")?.focus(), 0);
@@ -4597,6 +4790,17 @@ function openFocusedCreate(optionKey?: string, initialName = "") {
   const activate = () => activateCreateOption(option, initialName);
   if (option.key !== selectedCreateKey && hasCreateValues()) requestCreateDiscard(activate);
   else activate();
+}
+
+function openNewManuscriptInSelected() {
+  if (!selected || !isManuscriptType(selected.entity_type)) return;
+  const key = createOptionKeyForEntityType("daena.writing:manuscript") ?? createOptionKeyForEntityType("manuscript");
+  if (!key) {
+    error = "Enable Writing Studio with a Manuscript template to create manuscripts.";
+    return;
+  }
+  pendingManuscriptParentId = selected.id;
+  openFocusedCreate(key);
 }
 
 function createOptionKeyForEntityType(entityType: string) {
@@ -5486,6 +5690,7 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
       eraContexts = await loadEraContexts(targetIds);
       hintDateCalendarsFromEras(eraContexts, true);
     }
+    void refreshWritingAppearanceLabels();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -7542,6 +7747,24 @@ onMount(() => {
                   </div>
                 </div>{/if}
             </div>
+          {:else if section === "writing" && writingView === "manuscripts"}
+            <div class="heading-create-group" role="group" aria-label="Create">
+              <button
+                class="primary-button"
+                type="button"
+                aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
+                onclick={openContextualCreate}
+                ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
+                  ><Plus size={14} strokeWidth={1.8} /></span>
+                {ENTITY_ACTIONS.new}</button>
+              {#if selected && isManuscriptType(selected.entity_type)}
+                <button
+                  class="quiet-button"
+                  type="button"
+                  aria-label={ENTITY_ACTIONS.newInManuscript}
+                  onclick={openNewManuscriptInSelected}>{ENTITY_ACTIONS.newInManuscript}</button>
+              {/if}
+            </div>
           {:else if section === "houses"}
             <div class="heading-create-group" role="group" aria-label="Create">
               <button class="primary-button" type="button" aria-label={ENTITY_ACTIONS.newHouse} onclick={openNewHouse}
@@ -7775,9 +7998,38 @@ onMount(() => {
                         onArchive={() => void archiveEntity(entity)}
                         onOpenTree={() => void openHouseTree(entity)} />
                     </div>{/each}{/if}
-              </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
-                entity.entity_type,
-              )}
+              </div>{/each}{:else if showManuscriptOutline()}
+            {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number)}
+              {@const entity = entityFromOutlineNode(node)}
+              {@const rowIcon = iconForEntityType(entity.entity_type)}
+              <div
+                class:selected={selected?.id === entity.id}
+                class="collection-item"
+                style={`--outline-depth: ${depth}`}>
+                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                  <EntityGlyph
+                    icon={rowIcon.icon}
+                    iconColor={rowIcon.iconColor}
+                    pluginId={rowIcon.pluginId}
+                    size={16}
+                    box={40} /><span class="item-copy"
+                    ><strong>{entity.name}</strong><small>{entityTypeLabel(entity.entity_type)}</small></span>
+                </button>
+                <EntityRowActions
+                  entityName={entity.name}
+                  onOpen={() => void selectEntity(entity)}
+                  onEditIdentity={() => void openEntityEditDialog(entity)}
+                  onArchive={() => void archiveEntity(entity)} />
+              </div>
+            {/snippet}
+            {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number)}
+              {#each nodes as node (node.id)}
+                {@render manuscriptCollectionRow(node, depth)}
+                {@render manuscriptOutlineTree(node.children, depth + 1)}
+              {/each}
+            {/snippet}
+            {@render manuscriptOutlineTree(manuscriptOutline, 0)}
+          {:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(entity.entity_type)}
               <div class:selected={selected?.id === entity.id} class="collection-item">
                 <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
                   <EntityGlyph
@@ -8395,7 +8647,7 @@ onMount(() => {
                             : String(fields[definition.key] ?? "")}
                           onchange={(event) => updateField(definition, event)}
                           >{#each definition.options ?? [] as option}<option value={option}>{option}</option
-                            >{/each}</select>
+                            >{/each}</select
                         >{:else if (definition as any).type === "oneof"}<select
                           aria-label={definition.label}
                           value={String(fields[definition.key] ?? "")}
@@ -8405,7 +8657,7 @@ onMount(() => {
                           {#each (definition as any).oneOf ?? [] as variant}
                             {#each variant.options ?? [] as opt}<option value={opt}>{variant.label}: {opt}</option
                               >{/each}
-                          {/each}</select>
+                          {/each}</select
                         >{:else}<input
                           type="text"
                           value={fieldInputValue(definition, fields[definition.key])}
@@ -8480,7 +8732,7 @@ onMount(() => {
                               class="relationship-detail-copy related-item-trigger"
                               data-entity-id={relationshipOtherId(definition, relationship)}
                               aria-label={`Preview ${relationshipTargetName(relationship, definition)}`}>
-                              <strong>{relationshipTargetName(relationship, definition)}</strong>
+                              <strong>{relationshipRowTitle(relationship, definition)}</strong>
                               <small
                                 >{entityTypeLabel(
                                   entities.find((entity) => entity.id === relationshipOtherId(definition, relationship))
@@ -9707,17 +9959,37 @@ onMount(() => {
   margin-left: 3px;
   color: var(--accent);
 }
-.property-field input {
+.property-field input:not([type="checkbox"]),
+.property-field select {
+  box-sizing: border-box;
   width: 100%;
-  padding: 8px 9px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 7px;
   outline: 0;
   background: var(--canvas);
   color: var(--ink);
   font-size: 11px;
+  line-height: 1.4;
 }
-.property-field input:focus {
+.property-field select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
+.property-field select[multiple] {
+  height: auto;
+  min-height: 64px;
+  padding: 6px 9px;
+}
+.property-field input:focus,
+.property-field select:focus {
   border-color: var(--accent-soft);
   box-shadow: 0 0 0 3px rgba(180, 119, 63, 0.1);
 }
@@ -10364,6 +10636,7 @@ onMount(() => {
   appearance: none;
   border: 1px solid transparent;
   box-shadow: 0 1px 2px rgba(38, 42, 33, 0.03);
+  padding-left: calc(var(--outline-depth, 0) * 14px);
 }
 .collection-item:hover {
   border-color: var(--theme-warning-border, #e5d8c6);
@@ -10628,7 +10901,8 @@ onMount(() => {
   overflow-wrap: anywhere;
 }
 .collection-search,
-.property-field input {
+.property-field input,
+.property-field select {
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease;
@@ -10941,6 +11215,11 @@ onMount(() => {
   color: var(--ink);
   font-size: 12px;
   line-height: 1.4;
+}
+.create-input-field > input {
+  height: 38px;
+  min-height: 38px;
+  padding: 0 11px;
 }
 .create-input-field > textarea {
   min-height: 78px;

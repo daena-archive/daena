@@ -16,6 +16,7 @@ export const ENTITY_ACTIONS = {
   makeRoot: "Make root",
   newPerson: "New person",
   newHouse: "New house",
+  newInManuscript: "New in this manuscript",
 } as const;
 
 export const ENTITY_ACTION_CONFIRM = {

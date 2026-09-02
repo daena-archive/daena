@@ -242,6 +242,7 @@ const hasDateValue = $derived(value != null && value !== "");
 .schema-field-input :global(input[type="number"]),
 .schema-field-input :global(input[type="text"]),
 .schema-field-input :global(select) {
+  box-sizing: border-box;
   width: 100%;
   min-height: var(--control-min-height);
   border: 1px solid var(--line);
@@ -250,6 +251,18 @@ const hasDateValue = $derived(value != null && value !== "");
   background: var(--canvas);
   color: var(--ink);
   font: inherit;
+}
+
+.schema-field-input :global(select:not([multiple])) {
+  appearance: none;
+  -webkit-appearance: none;
+  height: var(--control-min-height);
+  padding: 0 10px;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
 }
 
 .schema-field-input.create-input-field :global(textarea),
@@ -262,6 +275,18 @@ const hasDateValue = $derived(value != null && value !== "");
   border: 1px solid var(--line-strong);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.schema-field-input.create-input-field :global(input[type="number"]),
+.schema-field-input.create-input-field :global(input[type="text"]),
+.schema-field-input.create-input-field :global(select:not([multiple])) {
+  height: 38px;
+  min-height: 38px;
+  padding: 0 11px;
+}
+
+.schema-field-input.create-input-field :global(select:not([multiple])) {
+  padding-right: 30px;
 }
 
 .schema-field-input :global(textarea) {

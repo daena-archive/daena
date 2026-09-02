@@ -55,6 +55,11 @@ jobs:
         with:
           ref: ${{ steps.ref.outputs.tag }}
 
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Validate tag against application version
         id: release
         shell: bash
@@ -62,25 +67,7 @@ jobs:
           TAG: ${{ steps.ref.outputs.tag }}
         run: |
           set -euo pipefail
-
-          tauri_version="$(jq -r '.version' src-tauri/tauri.conf.json)"
-          package_version="$(jq -r '.version' package.json)"
-
-          tag_core="${TAG#v}"
-          tag_core="${tag_core%%[-+]*}"
-          tauri_core="${tauri_version%%[-+]*}"
-          package_core="${package_version%%[-+]*}"
-
-          if [[ "$tag_core" != "$tauri_core" ]]; then
-            echo "::error::Tag '$TAG' base '$tag_core' does not match Tauri version '$tauri_version' base '$tauri_core'. Expected core '$tauri_core'."
-            exit 1
-          fi
-
-          if [[ "$package_core" != "$tauri_core" ]]; then
-            echo "::error::package.json version '$package_version' base '$package_core' does not match Tauri version '$tauri_version' base '$tauri_core'."
-            exit 1
-          fi
-
+          deno run --allow-read --allow-write --allow-env scripts/apply-release-version.mjs check "$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   build:
@@ -163,6 +150,15 @@ jobs:
       - name: Install frontend dependencies
         shell: bash
         run: deno install --node-modules-dir=auto
+
+      - name: Apply release version
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(deno run --allow-read --allow-write --allow-env scripts/apply-release-version.mjs apply "$TAG")"
+          echo "DAENA_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Build Tauri bundle
         shell: bash

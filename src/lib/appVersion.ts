@@ -10,7 +10,7 @@ export async function appVersion(): Promise<string> {
   if (cached !== null) return cached;
   if (inflight !== null) return inflight;
   inflight = (async () => {
-    // 1. Dedicated Tauri command — single runtime source (CARGO_PKG_VERSION / tauri.conf.json)
+    // 1. Dedicated Tauri command — compile-time DAENA_APP_VERSION (release tag or Cargo.toml)
     try {
       const v = await invoke<string>("app_version");
       if (v) {

@@ -230,7 +230,7 @@ pub fn check_update(current: &str, channel_preference: &str) -> Result<AppUpdate
 pub async fn app_check_update(
     channel_preference: Option<String>,
 ) -> Result<AppUpdateCheck, String> {
-    let current = env!("CARGO_PKG_VERSION").to_string();
+    let current = crate::version::current().to_string();
     let preference = channel_preference.unwrap_or_else(|| "auto".to_string());
     tauri::async_runtime::spawn_blocking(move || check_update(&current, &preference))
         .await
@@ -328,6 +328,15 @@ mod tests {
         ];
         let picked = pick_best_release(&releases, ReleaseChannel::Alpha).unwrap();
         assert_eq!(picked.0.tag_name, "v0.2.0-beta.1");
+    }
+
+    #[test]
+    fn matching_prerelease_is_not_newer() {
+        let current = parse_version("0.1.0-alpha.2").unwrap();
+        let latest = parse_version("v0.1.0-alpha.2").unwrap();
+        let current_for_compare = compare_current_for_update(&current, ReleaseChannel::Alpha);
+        assert_eq!(current_for_compare, current);
+        assert!(!compare_update(&current_for_compare, &latest));
     }
 
     #[test]

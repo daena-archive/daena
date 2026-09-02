@@ -8,8 +8,13 @@ const host = process.env.TAURI_DEV_HOST;
 
 let appVersion = "0.0.0";
 try {
-  const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
-  if (pkg?.version) appVersion = String(pkg.version);
+  const fromEnv = typeof process !== "undefined" ? process.env?.DAENA_VERSION : undefined;
+  if (fromEnv && String(fromEnv).trim()) {
+    appVersion = String(fromEnv).trim().replace(/^[vV]/, "");
+  } else {
+    const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
+    if (pkg?.version) appVersion = String(pkg.version);
+  }
 } catch {
   // ignore — fallback to 0.0.0 for web preview
 }

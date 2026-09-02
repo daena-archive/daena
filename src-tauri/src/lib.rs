@@ -41,6 +41,7 @@ mod atlas_studio;
 mod external_import_jobs;
 mod image_generation;
 mod settings;
+mod version;
 
 use settings::{AppSettings, AppSettingsUpdate, SettingsStore};
 
@@ -3339,7 +3340,7 @@ async fn plugin_rpc(
     let current_project = current_info(&core)?.map(|info| info.root);
     let event_project_id = session.project_id.clone();
     let result = if method == "app.version" {
-        Ok(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }))
+        Ok(serde_json::json!({ "version": crate::version::current() }))
     } else if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
     } else if matches!(
@@ -4043,7 +4044,7 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 fn app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    crate::version::current().to_string()
 }
 
 #[tauri::command]

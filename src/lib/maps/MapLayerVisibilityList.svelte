@@ -17,6 +17,7 @@ let {
   label?: string;
 } = $props();
 
+// svelte-ignore state_referenced_locally
 let collapsed = $state(defaultCollapsed);
 const enabledCount = $derived(layers.filter((layer) => layer.enabled).length);
 </script>

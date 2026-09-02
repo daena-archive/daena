@@ -61,8 +61,6 @@ pub fn release_channel(version: &Version) -> ReleaseChannel {
     let pre = version.pre.as_str();
     if pre.starts_with("alpha") {
         ReleaseChannel::Alpha
-    } else if pre.starts_with("beta") {
-        ReleaseChannel::Beta
     } else {
         ReleaseChannel::Beta
     }
@@ -116,7 +114,6 @@ pub fn pick_best_release(
             Some((release, version))
         })
         .max_by(|(_, left), (_, right)| left.cmp(right))
-        .map(|(release, version)| (release, version))
 }
 
 pub fn compare_update(current: &Version, latest: &Version) -> bool {

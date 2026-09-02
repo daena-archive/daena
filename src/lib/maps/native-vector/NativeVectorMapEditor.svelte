@@ -4645,7 +4645,7 @@ onMount(() => {
   background: rgb(13 27 42 / 84%);
   backdrop-filter: blur(2px);
 }
-.map-busy-spinner {
+:global(.map-busy-spinner) {
   color: #e8dcc8;
   animation: map-busy-spin 0.9s linear infinite;
 }

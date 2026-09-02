@@ -13,12 +13,12 @@ use crate::projection::{
 #[cfg(test)]
 use crate::render::pixel_rgba;
 use crate::render::{pixel_rgba_with_shade, studio_shade_ppm, RasterOptions};
+use crate::request::ATLAS_DEFAULT_VISIBLE_LAYER_IDS;
 use crate::request::{AtlasFormat, AtlasRenderRequest, DetailLevel};
 use crate::{
     AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, ATLAS_DETAIL_ALGORITHM_VERSION,
     ATLAS_REQUEST_SCHEMA_VERSION,
 };
-use crate::request::ATLAS_DEFAULT_VISIBLE_LAYER_IDS;
 
 pub const ATLAS_STUDIO_SESSION_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_STUDIO_TILE_SCHEMA_VERSION: u32 = 1;

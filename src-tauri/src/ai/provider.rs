@@ -225,9 +225,11 @@ pub(super) fn project_provider<'a>(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "Open a project to configure AI".to_string())?;
-    settings.ai.project_bindings.get(project_id).ok_or_else(|| {
-        "Configure an AI provider for this project first".to_string()
-    })
+    settings
+        .ai
+        .project_bindings
+        .get(project_id)
+        .ok_or_else(|| "Configure an AI provider for this project first".to_string())
 }
 
 pub(super) fn resolve_ai_provider_with_credential(
@@ -399,7 +401,8 @@ pub fn ai_remote_set_consent(
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?;
     let active_provider = store.load()?.ai.binding(&project_id);
-    if active_provider.endpoint.trim().is_empty() || !endpoint_is_remote(&active_provider.endpoint)? {
+    if active_provider.endpoint.trim().is_empty() || !endpoint_is_remote(&active_provider.endpoint)?
+    {
         return Err("The active provider is local; remote consent is not applicable".into());
     }
     validate_remote_endpoint(&active_provider.endpoint)?;

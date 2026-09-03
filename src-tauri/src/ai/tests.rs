@@ -112,12 +112,7 @@ fn provider_resolution_requires_consent_before_credential_lookup() {
     let mut settings = crate::settings::AppSettings::default();
     settings.ai.project_bindings.insert(
         "/project".into(),
-        test_binding(
-            "provider",
-            "https://api.example.com/v1",
-            "model",
-            vec![],
-        ),
+        test_binding("provider", "https://api.example.com/v1", "model", vec![]),
     );
     let error = resolve_ai_provider(&settings, Some("/project"), true).unwrap_err();
     assert_eq!(error, AiError::RemoteContextDenied.to_string());

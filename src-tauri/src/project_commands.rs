@@ -21,7 +21,8 @@ pub(super) async fn project_ai_prompts_set(
     overlay: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     with_core(state, move |core| {
-        core.project(trusted_shell())?.set_ai_prompt_overlay(overlay)
+        core.project(trusted_shell())?
+            .set_ai_prompt_overlay(overlay)
     })
     .await
 }

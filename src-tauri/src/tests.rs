@@ -522,7 +522,8 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
         root
     });
     let settings = SETTINGS.get_or_init(|| {
-        let directory = std::env::temp_dir().join(format!("daena-ai-broker-settings-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("daena-ai-broker-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let store = SettingsStore::new(&directory);
         let mut configured = AppSettings::default();

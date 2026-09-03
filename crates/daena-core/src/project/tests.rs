@@ -4404,7 +4404,10 @@ fn ai_prompt_overlay_round_trips() {
     let overlay = serde_json::json!({
         "templates": [{ "id": "rewrite", "instruction": "Keep it dry." }]
     });
-    assert_eq!(store.set_ai_prompt_overlay(overlay.clone()).unwrap(), overlay);
+    assert_eq!(
+        store.set_ai_prompt_overlay(overlay.clone()).unwrap(),
+        overlay
+    );
     assert_eq!(store.ai_prompt_overlay().unwrap(), overlay);
     drop(store);
     std::fs::remove_dir_all(root).unwrap();

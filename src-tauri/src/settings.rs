@@ -166,8 +166,6 @@ pub struct RemoteConsent {
     pub endpoint: String,
 }
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppSettings {
@@ -315,11 +313,7 @@ impl SettingsStore {
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| "projectId is required to update an AI provider".to_string())?
                     .to_string();
-                let entry = settings
-                    .ai
-                    .project_bindings
-                    .entry(project_id)
-                    .or_default();
+                let entry = settings.ai.project_bindings.entry(project_id).or_default();
                 if let Some(id) = provider.id {
                     entry.id = id;
                 }
@@ -430,11 +424,7 @@ fn normalize_provider(mut provider: AiProviderSettings) -> AiProviderSettings {
     } else {
         provider.adapter.trim().to_string()
     };
-    provider.endpoint = provider
-        .endpoint
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+    provider.endpoint = provider.endpoint.trim().trim_end_matches('/').to_string();
     provider.model = provider.model.trim().to_string();
     provider.embedding_model = provider.embedding_model.trim().to_string();
     provider.capabilities = provider

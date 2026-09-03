@@ -76,13 +76,17 @@ impl ProjectStore {
             )
             .optional()?;
         match value {
-            Some(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw)
-                .map_err(|error| CoreError::Validation(format!("AI prompt overlay is invalid: {error}"))),
+            Some(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw).map_err(|error| {
+                CoreError::Validation(format!("AI prompt overlay is invalid: {error}"))
+            }),
             _ => Ok(serde_json::json!({ "templates": [] })),
         }
     }
 
-    pub fn set_ai_prompt_overlay(&self, overlay: serde_json::Value) -> Result<serde_json::Value, CoreError> {
+    pub fn set_ai_prompt_overlay(
+        &self,
+        overlay: serde_json::Value,
+    ) -> Result<serde_json::Value, CoreError> {
         if !overlay.is_object() {
             return Err(CoreError::Validation(
                 "AI prompt overlay must be a JSON object".into(),

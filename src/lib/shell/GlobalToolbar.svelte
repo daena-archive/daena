@@ -15,7 +15,7 @@ let {
   status,
 }: {
   ready: boolean;
-  breadcrumbs: string[];
+  breadcrumbs: Array<{ label: string; current?: boolean; onSelect?: () => void }>;
   quickOpenShortcut: string;
   navigationBusy: boolean;
   canGoBack: boolean;
@@ -45,12 +45,20 @@ let {
           onclick={onForward}><ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
     {/if}
-    <div class="breadcrumbs" aria-label="Breadcrumb">
-      {#each breadcrumbs as breadcrumb, index}
-        {#if index > 0}<i>/</i>{/if}
-        {#if index === 1}<strong>{breadcrumb}</strong>{:else}<span>{breadcrumb}</span>{/if}
-      {/each}
-    </div>
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        {#each breadcrumbs as crumb, index}
+          <li>
+            {#if index > 0}<i aria-hidden="true">/</i>{/if}
+            {#if crumb.onSelect && !crumb.current}
+              <button type="button" onclick={crumb.onSelect}>{crumb.label}</button>
+            {:else}
+              <span aria-current={crumb.current ? "page" : undefined}>{crumb.label}</span>
+            {/if}
+          </li>
+        {/each}
+      </ol>
+    </nav>
   </div>
   <div class="top-actions">
     {#if ready}
@@ -126,14 +134,51 @@ let {
   color: var(--ink-faint);
   font-size: 12px;
 }
-.breadcrumbs strong {
-  color: var(--ink-soft);
+.breadcrumbs ol {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.breadcrumbs span:last-child {
+.breadcrumbs li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+.breadcrumbs button,
+.breadcrumbs span {
   overflow: hidden;
   max-width: 180px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-faint);
+  font: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.breadcrumbs button {
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.breadcrumbs button:hover,
+.breadcrumbs button:focus-visible {
+  background: var(--surface-muted);
+  color: var(--ink);
+  outline: 0;
+}
+.breadcrumbs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.breadcrumbs span[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 600;
 }
 .breadcrumbs i {
   color: var(--ink-faint);
@@ -209,7 +254,6 @@ let {
   .top-actions {
     width: 100%;
   }
-  .breadcrumbs span:first-child,
   .sync-badge {
     display: none;
   }

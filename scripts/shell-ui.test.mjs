@@ -72,6 +72,14 @@ assert.match(statusCenter, /prefers-reduced-motion/);
 const workspaceNav = components.get("src/lib/shell/WorkspaceViewNav.svelte");
 assert.match(workspaceNav, /tabindex=\{activeView === view\.id \? 0 : -1\}/);
 
+assert.doesNotMatch(shell, /Private studio/, "MVP Private studio crumb is gone");
+assert.match(shell, /activateBreadcrumb/, "workspace crumbs navigate");
+assert.match(shell, /shellBreadcrumbs/, "crumbs follow the current shell location");
+assert.match(shell, /entityBelongs/, "entity crumbs drop when the module no longer owns the entry");
+const toolbar = components.get("src/lib/shell/GlobalToolbar.svelte");
+assert.match(toolbar, /crumb\.onSelect/, "ancestor breadcrumbs are buttons");
+assert.match(toolbar, /aria-current/, "the current crumb is marked");
+
 const controls = await read("src/lib/shell/controls.css");
 assert.match(controls, /:focus-visible/);
 assert.match(controls, /@media \(pointer: coarse\)/);

@@ -145,6 +145,7 @@ import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
 import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
+import { breadcrumbViewLabel, shellBreadcrumbs } from "$lib/shell/breadcrumbs";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
 import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
 import CollectionPane from "$lib/shell/CollectionPane.svelte";
@@ -2589,16 +2590,63 @@ function sectionLabel() {
             : "Maps";
 }
 
+async function activateBreadcrumb(action: "section" | "view") {
+  if (!(await flushAutoSave())) return;
+  if (section === "language" && !(await canLeaveLanguageSection())) return;
+  const resetView = action === "section";
+  const alreadyCollection =
+    !projectHomeOpen &&
+    !showSettings &&
+    !hostView &&
+    !sandboxView &&
+    !selected &&
+    !loreWikiOpen &&
+    !projectionView &&
+    (!resetView || section !== "houses" || housesView === "houses");
+  if (alreadyCollection) return;
+  const departure = currentShellLocation();
+  if (!(await dismissSettings())) return;
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  projectHomeOpen = false;
+  loreWikiOpen = false;
+  loreWikiEntityId = null;
+  projectionView = null;
+  if (resetView && section === "houses") housesView = "houses";
+  if (selected) clearSelection();
+}
+
 function breadcrumbItems() {
-  const items = ["Private studio", sectionLabel()];
-  if ((section === "writing" || section === "timeline") && !projectHomeOpen) {
-    const tab = activeCollectionTab();
-    items.push(
-      tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : section === "writing" ? "Writing" : "Events",
-    );
-  }
-  if (selected && !projectHomeOpen && !showSettings) items.push(selected.name);
-  return items;
+  const tab = activeCollectionTab();
+  const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
+  const owner = selected ? sectionForEntityType(selected.entity_type) : null;
+  const entityBelongs = Boolean(selected) && (!owner || owner === section);
+  const plugin =
+    hostView ??
+    (sandboxView?.view && sandboxView.renderer !== "maps"
+      ? { plugin: sandboxView.plugin, view: sandboxView.view }
+      : null);
+  const specs = shellBreadcrumbs({
+    home: projectHomeOpen && !showSettings,
+    settingsLabel: showSettings ? sectionLabel() : null,
+    sectionLabel: workspaceSectionLabel(section),
+    viewLabel: breadcrumbViewLabel({
+      section,
+      view: currentWorkspaceLocationView(),
+      tabLabel,
+    }),
+    entityName: entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null,
+    pluginLabel: plugin
+      ? plugin.plugin.name === plugin.view.title
+        ? plugin.plugin.name
+        : `${plugin.plugin.name} · ${plugin.view.title}`
+      : null,
+  });
+  return specs.map((item, index) => ({
+    label: item.label,
+    current: index === specs.length - 1,
+    onSelect: index === specs.length - 1 || !item.action ? undefined : () => void activateBreadcrumb(item.action!),
+  }));
 }
 
 function workspaceHeadingKicker() {

@@ -135,12 +135,7 @@ import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.s
 import { formatWithCalendar, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
-import {
-  capabilityLabel,
-  installedAtLabel,
-  runtimeTimestampLabel,
-  shortDigest,
-} from "$lib/plugins/labels";
+import { capabilityLabel, installedAtLabel, runtimeTimestampLabel, shortDigest } from "$lib/plugins/labels";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
@@ -287,11 +282,7 @@ import {
   suggestionConfidenceLabel,
   suggestionConfidenceTone,
 } from "$lib/fields/values";
-import {
-  defaultCreateFieldValue,
-  isCreateDropdownField,
-  isCreateValuePopulated,
-} from "$lib/shell/create-form-values";
+import { defaultCreateFieldValue, isCreateDropdownField, isCreateValuePopulated } from "$lib/shell/create-form-values";
 import { friendlyError } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 

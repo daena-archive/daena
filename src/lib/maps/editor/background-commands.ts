@@ -1,10 +1,5 @@
-import type {
-  MapBackgroundRef,
-  MapCoordinateSpace,
-} from "../../../../packages/plugin-sdk/src/maps.ts";
-import {
-  type VectorFeature,
-} from "../native-vector/types.ts";
+import type { MapBackgroundRef, MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
+import { type VectorFeature } from "../native-vector/types.ts";
 import {
   backgroundsFromDescriptor,
   flipYBackgrounds,
@@ -13,17 +8,9 @@ import {
   patchOpenLayersDescriptor,
   type OpenLayersMapDescriptor,
 } from "./coordinate-space.ts";
-import {
-  removeFeatures,
-  replaceFeature,
-  type MapDocument,
-} from "./model.ts";
+import { removeFeatures, replaceFeature, type MapDocument } from "./model.ts";
 import type { MapCommand } from "./commands.ts";
-import {
-  openLayersDescriptor,
-  withCollection,
-  withDescriptor,
-} from "./command-utils.ts";
+import { openLayersDescriptor, withCollection, withDescriptor } from "./command-utils.ts";
 
 export function addBackgroundCommand(background: MapBackgroundRef): MapCommand {
   return {

@@ -9,22 +9,10 @@ import {
   type VectorLayerDefinition,
   type VectorLayerStyle,
 } from "../native-vector/types.ts";
-import {
-  cloneLayers,
-  findLayer,
-  nextLayerOrder,
-  removeFeatures,
-  replaceFeature,
-  type MapDocument,
-} from "./model.ts";
+import { cloneLayers, findLayer, nextLayerOrder, removeFeatures, replaceFeature, type MapDocument } from "./model.ts";
 import type { MapCommand } from "./commands.ts";
-import {
-  withCollection,
-  withLayers,
-} from "./command-utils.ts";
-import {
-  duplicateFeaturesOntoLayer,
-} from "./feature-commands.ts";
+import { withCollection, withLayers } from "./command-utils.ts";
+import { duplicateFeaturesOntoLayer } from "./feature-commands.ts";
 
 export function createLayerCommand(layer: MapLayerDefinition): MapCommand {
   return {

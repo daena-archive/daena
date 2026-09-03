@@ -100,14 +100,7 @@ import {
   offsetGeometry,
   selectedMetadataSnapshot,
 } from "./feature-utils";
-import {
-  EPOCH_MAX,
-  EPOCH_MIN,
-  EPOCH_STEP,
-  clampEpoch,
-  formatEpoch,
-  parseEpochYears,
-} from "./epoch-utils";
+import { EPOCH_MAX, EPOCH_MIN, EPOCH_STEP, clampEpoch, formatEpoch, parseEpochYears } from "./epoch-utils";
 import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physical/raster";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";

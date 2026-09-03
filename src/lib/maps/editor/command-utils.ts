@@ -1,15 +1,6 @@
-import {
-  featureLayerId,
-  layerAcceptsEdits,
-  type MapLayerDefinition,
-} from "../native-vector/types.ts";
-import {
-  isOpenLayersDescriptor,
-  type OpenLayersMapDescriptor,
-} from "./coordinate-space.ts";
-import {
-  type MapDocument,
-} from "./model.ts";
+import { featureLayerId, layerAcceptsEdits, type MapLayerDefinition } from "../native-vector/types.ts";
+import { isOpenLayersDescriptor, type OpenLayersMapDescriptor } from "./coordinate-space.ts";
+import { type MapDocument } from "./model.ts";
 
 export function withCollection(document: MapDocument, collection: MapDocument["collection"]): MapDocument {
   return { ...document, collection };

@@ -8,11 +8,7 @@ import {
   normalizeCalendarDefinition,
   type CalendarDefinition,
 } from "./calendar";
-import {
-  type TimelineContribution,
-  type TimelineFieldRole,
-  type TimelineLayer,
-} from "./projection";
+import { type TimelineContribution, type TimelineFieldRole, type TimelineLayer } from "./projection";
 
 export type EventColors = { fill: string; border: string; text: string };
 

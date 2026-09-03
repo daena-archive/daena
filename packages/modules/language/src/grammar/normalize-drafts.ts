@@ -28,13 +28,8 @@ import {
   type YesNoQuestionsConfig,
 } from "./types.ts";
 
-import {
-  emptyConfig,
-  issue,
-} from "./normalize-primitives.ts";
-import {
-  configuredMinimum,
-} from "./normalize-systems.ts";
+import { emptyConfig, issue } from "./normalize-primitives.ts";
+import { configuredMinimum } from "./normalize-systems.ts";
 
 export function emptySystemRecord(
   systemId: GrammarSystemId,

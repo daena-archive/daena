@@ -35,17 +35,8 @@ import {
   pick,
   text,
 } from "./normalize-primitives.ts";
-import {
-  normalizeExamples,
-  normalizeLinks,
-} from "./normalize-paradigm.ts";
-import {
-  BEHAVIORS,
-  CONTROLLERS,
-  TARGETS,
-  configuredMinimum,
-  normalizeSystemConfig,
-} from "./normalize-systems.ts";
+import { normalizeExamples, normalizeLinks } from "./normalize-paradigm.ts";
+import { BEHAVIORS, CONTROLLERS, TARGETS, configuredMinimum, normalizeSystemConfig } from "./normalize-systems.ts";
 
 export function commonFields(record: Record<string, unknown>) {
   return {

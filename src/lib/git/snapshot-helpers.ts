@@ -7,7 +7,11 @@ export type ChangeGroup = {
   subtitle: string;
   paths: string[];
 };
-export type SnapshotChangeGroup = { label: string; changes: GitChange[]; kind: "added" | "modified" | "deleted" | "other" };
+export type SnapshotChangeGroup = {
+  label: string;
+  changes: GitChange[];
+  kind: "added" | "modified" | "deleted" | "other";
+};
 
 export function friendly(cause: unknown) {
   return cause instanceof Error ? cause.message : String(cause);

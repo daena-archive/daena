@@ -26,10 +26,7 @@ export {
   grammarRecordSnapshot,
   validateGrammarDraft,
 } from "./normalize-drafts.ts";
-export {
-  normalizeSystemConfig,
-  configuredMinimum,
-} from "./normalize-systems.ts";
+export { normalizeSystemConfig, configuredMinimum } from "./normalize-systems.ts";
 export {
   normalizeGrammarRecord,
   serializeGrammarRecord,

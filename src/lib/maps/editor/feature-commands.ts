@@ -1,26 +1,8 @@
-import type {
-  MapLabelV2,
-  MapStyleV2,
-} from "../../../../packages/plugin-sdk/src/maps.ts";
-import {
-  featureLayerId,
-  layerAcceptsEdits,
-  type VectorFeature,
-} from "../native-vector/types.ts";
-import {
-  cloneCollection,
-  findFeature,
-  findLayer,
-  removeFeatures,
-  replaceFeature,
-  type MapDocument,
-} from "./model.ts";
+import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src/maps.ts";
+import { featureLayerId, layerAcceptsEdits, type VectorFeature } from "../native-vector/types.ts";
+import { cloneCollection, findFeature, findLayer, removeFeatures, replaceFeature, type MapDocument } from "./model.ts";
 import type { MapCommand } from "./commands.ts";
-import {
-  mergeProtectedCollection,
-  protectedLayerIds,
-  withCollection,
-} from "./command-utils.ts";
+import { mergeProtectedCollection, protectedLayerIds, withCollection } from "./command-utils.ts";
 
 export function createFeatureCommand(feature: VectorFeature): MapCommand {
   return {

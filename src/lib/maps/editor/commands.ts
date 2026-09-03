@@ -1,7 +1,4 @@
-import {
-  cloneDocument,
-  type MapDocument,
-} from "./model.ts";
+import { cloneDocument, type MapDocument } from "./model.ts";
 
 export type MapCommandKind =
   | "CreateFeature"

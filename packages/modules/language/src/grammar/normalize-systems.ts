@@ -47,30 +47,28 @@ import { paradigm } from "./normalize-paradigm.ts";
 
 export const WORD_ORDERS = ["sov", "svo", "vso", "vos", "ovs", "osv", "flexible", "custom"] as const;
 
-
 export const STRENGTHS = ["strict", "strongly-preferred", "default-flexible", "context"] as const;
-
 
 export const INFLUENCES = ["topic", "focus", "emphasis", "definiteness", "animacy", "discourse", "custom"] as const;
 
-
 export const POSITIONS = ["before", "after", "either", "meaning-changes", "custom"] as const;
 
-
-export const POSS_POS = ["possessor-before", "possessor-after", "either", "morphological", "multiple", "custom"] as const;
-
+export const POSS_POS = [
+  "possessor-before",
+  "possessor-after",
+  "either",
+  "morphological",
+  "multiple",
+  "custom",
+] as const;
 
 export const REL_POS = ["before", "after", "internally-headed", "multiple", "custom"] as const;
 
-
 export const ADPOSITIONS = ["prepositions", "postpositions", "both", "other"] as const;
-
 
 export const NUMBER_TEMPLATES = ["singular", "plural", "dual", "trial", "paucal", "collective", "custom"] as const;
 
-
 export const MARKING = ["affix", "separate-word", "stem-change", "multiple", "unmarked", "custom"] as const;
-
 
 export const CASE_TEMPLATES = [
   "nominative",
@@ -88,7 +86,6 @@ export const CASE_TEMPLATES = [
 ] as const;
 
 export const CLASS_KINDS = ["gender", "noun-class", "custom"] as const;
-
 
 export const DEF_STRATEGIES = [
   "definite-article",
@@ -124,36 +121,56 @@ export const VERB_MARKING = [
 
 export const PARTICIPANTS = ["none", "subject", "object", "subject-object", "other"] as const;
 
-
 export const REPRESENTATION = ["endings", "prefixes", "full-forms", "auxiliaries", "flexible-table", "custom"] as const;
 
+export const NEG_VERB = [
+  "affix",
+  "negative-auxiliary",
+  "special-verb",
+  "stem-change",
+  "none",
+  "multiple",
+  "custom",
+] as const;
 
-export const NEG_VERB = ["affix", "negative-auxiliary", "special-verb", "stem-change", "none", "multiple", "custom"] as const;
-
-
-export const ADJ_BEHAVIOR = ["invariant", "agree-with-noun", "verb-like", "noun-like", "multiple-classes", "custom"] as const;
-
+export const ADJ_BEHAVIOR = [
+  "invariant",
+  "agree-with-noun",
+  "verb-like",
+  "noun-like",
+  "multiple-classes",
+  "custom",
+] as const;
 
 export const COMPARATIVE = ["synthetic", "particle", "affix", "exceed", "special", "multiple", "custom"] as const;
 
-
 export const SUPERLATIVE = ["dedicated", "intensifier", "comparative", "definite", "none", "custom"] as const;
 
-
-export const YES_NO = ["intonation", "particle", "word-order", "verb-morphology", "auxiliary", "multiple", "custom"] as const;
-
+export const YES_NO = [
+  "intonation",
+  "particle",
+  "word-order",
+  "verb-morphology",
+  "auxiliary",
+  "multiple",
+  "custom",
+] as const;
 
 export const PLACEMENT = ["clause-initial", "clause-final", "before-verb", "after-verb", "other"] as const;
 
-
 export const CONTENT_Q = ["in-situ", "fronted", "fixed-position", "special-structure", "mixed", "custom"] as const;
 
-
-export const IMPERATIVE = ["bare-verb", "special-form", "particle", "auxiliary", "word-order", "multiple", "custom"] as const;
-
+export const IMPERATIVE = [
+  "bare-verb",
+  "special-form",
+  "particle",
+  "auxiliary",
+  "word-order",
+  "multiple",
+  "custom",
+] as const;
 
 export const CLAUSE_NEG = ["particle", "affix", "auxiliary", "special-verb", "multiple", "custom"] as const;
-
 
 export const REL_STRAT = [
   "relative-pronoun",
@@ -167,12 +184,9 @@ export const REL_STRAT = [
 
 export const CONTROLLERS = ["subject", "object", "noun", "possessor", "custom"] as const;
 
-
 export const TARGETS = ["verb", "adjective", "article", "pronoun", "participle", "custom"] as const;
 
-
 export const BEHAVIORS = ["full", "partial", "conditional"] as const;
-
 
 export function inventoryItems(value: unknown, fields: { meaning?: boolean; marker?: boolean; extra?: boolean }) {
   if (!Array.isArray(value)) return [];

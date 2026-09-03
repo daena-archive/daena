@@ -24,13 +24,7 @@ import {
 } from "$lib/project/client";
 import ImageGenerationDialog, { type ImageContextChoice } from "$lib/ai/ImageGenerationDialog.svelte";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
-import {
-  fieldDisplay,
-  formatAttributeValue,
-  formatSystemTimestamp,
-  humanizeType,
-  isEmptyValue,
-} from "./wiki-format";
+import { fieldDisplay, formatAttributeValue, formatSystemTimestamp, humanizeType, isEmptyValue } from "./wiki-format";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
 import WikiSidebar from "./WikiSidebar.svelte";

@@ -18,7 +18,12 @@ export function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function buildSearchRegex(query: string, caseSensitive: boolean, wholeWord: boolean, useRegex: boolean): RegExp | null {
+export function buildSearchRegex(
+  query: string,
+  caseSensitive: boolean,
+  wholeWord: boolean,
+  useRegex: boolean,
+): RegExp | null {
   if (!query) return null;
   try {
     let pattern = useRegex ? query : escapeRegExp(query);
@@ -58,7 +63,11 @@ export function findMatches(
   return matches;
 }
 
-export function createDecorations(doc: any, matches: Array<{ from: number; to: number }>, activeIndex: number): DecorationSet {
+export function createDecorations(
+  doc: any,
+  matches: Array<{ from: number; to: number }>,
+  activeIndex: number,
+): DecorationSet {
   if (matches.length === 0) return DecorationSet.empty;
   const decos = matches.map((m, idx) =>
     Decoration.inline(m.from, m.to, { class: idx === activeIndex ? "search-match-active" : "search-match" }),

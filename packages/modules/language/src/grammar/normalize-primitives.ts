@@ -1,11 +1,4 @@
-import {
-  GRAMMAR_SYSTEM_IDS,
-  type EmptyConfig,
-  type GrammarIssue,
-  type GrammarStatus,
-} from "./types.ts";
-
-
+import { GRAMMAR_SYSTEM_IDS, type EmptyConfig, type GrammarIssue, type GrammarStatus } from "./types.ts";
 
 export const TEXT = 500;
 
@@ -39,15 +32,11 @@ export const MAX_STRATEGIES = 8;
 
 export const SYSTEM_IDS = new Set<string>(GRAMMAR_SYSTEM_IDS);
 
-
 export const STATUSES = new Set<GrammarStatus>(["unconfigured", "configured", "not-used"]);
-
 
 export const LINK_KINDS = new Set(["lexeme", "lexeme-example", "sample", "paradigm"]);
 
-
 export const CELL_STATES = new Set(["form", "same-as", "zero", "not-applicable"]);
-
 
 export function id() {
   return crypto.randomUUID();

@@ -9,11 +9,7 @@ import {
 } from "../../../module-api/src/index";
 import { parseCalendarDate } from "../../../../src/lib/date";
 import { type CalendarDefinition } from "./calendar";
-import {
-  buildFieldContributions,
-  discoverTimelineFieldSpecs,
-  timelineDateAnchor,
-} from "./projection";
+import { buildFieldContributions, discoverTimelineFieldSpecs, timelineDateAnchor } from "./projection";
 import { belongsToEraScope, resolveChronologyCalendarDefinition } from "../../../../src/lib/modules/chronology";
 import manifestJson from "../manifest.json";
 import {

@@ -20,6 +20,14 @@ import {
   type StagedObject,
 } from "$lib/project/client";
 import { buildExternalImportMappingCatalog, importFolderFor, type ImportFieldChoice } from "$lib/externalImport";
+import {
+  displayError,
+  pageItemSubtitle,
+  pageItemTitle,
+  previewValue,
+  relationshipSources,
+  stagedDocumentFormat,
+} from "$lib/externalImportDisplay";
 
 let {
   modules,
@@ -77,11 +85,6 @@ const selectedObject = (): StagedObject | null => {
 const selectedFolder = () => (selectedObject() ? importFolderFor(selectedObject()!.source_path) : "");
 const selectedCategories = () => selectedObject()?.tags ?? [];
 
-function displayError(cause: unknown): string {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return message.replace(/^external_import\.[^:]+:\s*/, "");
-}
-
 function pageItemKey(item: ExternalImportPageItem, index: number): string {
   if (item.kind === "object" || item.kind === "asset") return item.value.id;
   return `${item.kind}:${pageOffset + index}`;
@@ -91,25 +94,6 @@ function normalizeSourceKind() {
   const importer = activeImporter();
   if (!importer || importer.sourceKinds.includes(sourceKind)) return;
   sourceKind = importer.sourceKinds.includes("folder") ? "folder" : "file";
-}
-
-function pageItemTitle(item: ExternalImportPageItem): string {
-  if (item.kind === "object") return item.value.title;
-  if (item.kind === "asset") return item.value.filename;
-  if (item.kind === "unsupported") return item.value.source_path;
-  return item.value.message;
-}
-
-function pageItemSubtitle(item: ExternalImportPageItem): string {
-  if (item.kind === "object" || item.kind === "asset" || item.kind === "unsupported") {
-    return item.value.source_path;
-  }
-  return item.value.source_path ?? item.value.code;
-}
-
-function stagedDocumentFormat(object: StagedObject): string {
-  const sourceFormat = object.metadata?.document_format;
-  return typeof sourceFormat === "string" ? sourceFormat : (object.body?.format ?? object.source_kind);
 }
 
 function selectPageItem(index: number) {
@@ -220,22 +204,6 @@ function fieldsForEntity(entityType: string): ImportFieldChoice[] {
     const scopes = choice.definition.entityTypes ?? [];
     return scopes.length === 0 || scopes.includes(entityType);
   });
-}
-
-function relationshipSources(object: StagedObject): string[] {
-  return [
-    ...new Set(
-      (object.links ?? [])
-        .filter((link) => link.resolution === "resolved" && (link.kind === "internal" || link.kind === "embed"))
-        .map((link) => link.kind),
-    ),
-  ].sort();
-}
-
-function previewValue(value: unknown): string {
-  const rendered = typeof value === "string" ? value : JSON.stringify(value);
-  if (!rendered) return "";
-  return rendered.length > 90 ? `${rendered.slice(0, 87)}…` : rendered;
 }
 
 function schedulePlanRefresh() {

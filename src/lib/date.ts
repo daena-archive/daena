@@ -183,3 +183,7 @@ export function formatRuntimeTimestampLabel(
   const date = new Date(trimmed);
   return Number.isNaN(date.getTime()) ? "Unknown" : new Intl.DateTimeFormat(undefined, options).format(date);
 }
+
+export function updatedDateLabel(timestamp: string) {
+  return formatRuntimeTimestampLabel(timestamp, { dateStyle: "medium" });
+}

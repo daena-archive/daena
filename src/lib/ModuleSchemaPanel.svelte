@@ -53,6 +53,13 @@ import {
   type SchemaStatusFilter,
 } from "$lib/schema-workbench";
 import SchemaTypesPane from "$lib/schema-workbench/SchemaTypesPane.svelte";
+import {
+  exclusiveReassignmentTarget,
+  isDisabled,
+  overlaySummary,
+  toggleInList,
+  type TypeRemovalPrompt,
+} from "$lib/schema-workbench/panel-helpers";
 import SchemaFieldsPane from "$lib/schema-workbench/SchemaFieldsPane.svelte";
 import SchemaTemplatesPane from "$lib/schema-workbench/SchemaTemplatesPane.svelte";
 import SchemaImpactReview from "$lib/schema-workbench/SchemaImpactReview.svelte";
@@ -367,10 +374,6 @@ onMount(() => {
     onDirtyChange?.(false);
   };
 });
-
-function isDisabled(list: string[] | undefined, id: string) {
-  return (list ?? []).includes(id);
-}
 
 function matchesWorkbenchItem(item: SchemaListItem): boolean {
   return filterSchemaListItems([item], listQuery, statusFilter).length > 0;
@@ -858,13 +861,6 @@ function scopeLabel(entityTypes: string[] | undefined): string {
   return entityTypes.map(entityTypeLabel).join(", ");
 }
 
-function toggleInList(list: string[], id: string): string[] {
-  const next = new Set(list);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  return [...next].sort();
-}
-
 function defaultTemplateFields(entityType: string): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   for (const field of packageFields) {
@@ -1007,21 +1003,6 @@ async function reapplyDraftOntoCurrent() {
   } finally {
     conflictActionBusy = false;
   }
-}
-
-function overlaySummary(value: ModuleSchemaOverlay): string {
-  const types = value.customEntityTypes?.length ?? 0;
-  const fields = value.customFields?.length ?? 0;
-  const templates = value.customTemplates?.length ?? 0;
-  const disabledTypes = value.disabledEntityTypes?.length ?? 0;
-  const disabledFields = value.disabledFields?.length ?? 0;
-  return [
-    `custom types ${types}`,
-    `custom fields ${fields}`,
-    `custom templates ${templates}`,
-    `disabled types ${disabledTypes}`,
-    `disabled fields ${disabledFields}`,
-  ].join(" · ");
 }
 
 async function discardChanges() {
@@ -1177,19 +1158,6 @@ function dependentsForType(name: string): {
   };
 }
 
-type TypeRemovalPrompt = {
-  typeId: string;
-  exclusiveFields: FieldDefinition[];
-  sharedFields: FieldDefinition[];
-  templates: EntityTemplate[];
-  removeSharedFields: boolean;
-  exclusiveDispositions: Record<string, ExclusiveFieldDisposition | undefined>;
-  entityCount: number | null;
-  entityDisposition: EntityRemovalDisposition | undefined;
-  busy: boolean;
-  error: string;
-};
-
 let typeRemovalPrompt = $state<TypeRemovalPrompt | null>(null);
 
 function requestRemoveCustomType(name: string) {
@@ -1250,11 +1218,6 @@ function updateExclusiveReassignment(fieldKey: string, toTypeId: string) {
       [fieldKey]: { action: "reassign", toTypeId },
     },
   };
-}
-
-function exclusiveReassignmentTarget(prompt: TypeRemovalPrompt, fieldKey: string): string {
-  const disposition = prompt.exclusiveDispositions[fieldKey];
-  return disposition?.action === "reassign" ? disposition.toTypeId : "";
 }
 
 function updateEntityDisposition(action: "none" | "reassign") {

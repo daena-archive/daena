@@ -73,6 +73,7 @@ import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
 import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { clampDim } from "$lib/editor/image-attrs";
 import { editorPlainText, markdownFromEditorHtml, sanitizeHtml } from "./html-convert";
+import { getExternalLinkAnchor, getSpoilerEl } from "./event-targets";
 import { buildSearchRegex, SearchAndReplace, searchPluginKey } from "./search-plugin";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -1182,29 +1183,6 @@ function updateAutoEntityReferences() {
     tr = tr.replaceWith(r.from, r.to, editor.state.schema.text(r.text, [mark]));
   }
   if (tr.docChanged) editor.view.dispatch(tr);
-}
-
-function getExternalLinkAnchor(target: EventTarget | null): HTMLAnchorElement | null {
-  if (!target) return null;
-  const el = target as HTMLElement;
-  if ((el as any)?.closest) {
-    const found = (el as HTMLElement).closest<HTMLAnchorElement>("a[href]:not([data-entity-id])");
-    if (found) return found;
-  }
-  const parent = (target as any)?.parentElement as HTMLElement | null;
-  if (parent?.closest) return parent.closest<HTMLAnchorElement>("a[href]:not([data-entity-id])");
-  return null;
-}
-
-function getSpoilerEl(target: EventTarget | null): HTMLElement | null {
-  if (!target) return null;
-  const el = target as HTMLElement;
-  if ((el as any)?.closest) {
-    const found = (el as HTMLElement).closest<HTMLElement>("span[data-spoiler]");
-    if (found) return found;
-  }
-  const parent = (target as any)?.parentElement as HTMLElement | null;
-  return parent?.closest?.("span[data-spoiler]") ?? null;
 }
 
 function insertEntityReference(

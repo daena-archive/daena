@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
+import { mimeTypeFor } from "$lib/assets/mime";
 import {
   project,
   type Asset,
@@ -49,6 +50,7 @@ import {
   manifestOwningRelationshipType,
   relationshipsForField,
 } from "$lib/modules/contributed-fields";
+import { toHostRelationship } from "$lib/modules/host-relationship";
 import {
   appearanceLabel,
   buildManuscriptOutline,
@@ -249,6 +251,7 @@ import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
 import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
+import { normalizeDocument } from "$lib/markdown/normalize";
 import {
   applyThemePreference,
   cacheThemePreference,
@@ -257,12 +260,12 @@ import {
   type ThemePreference,
 } from "$lib/theme";
 import {
-  formatRuntimeTimestampLabel,
   GREGORIAN_CALENDAR_ID,
   isCompleteCalendarDate,
   isGregorianCalendarId,
   parseCalendarDate,
   serializeCalendarDate,
+  updatedDateLabel,
   type CalendarDate,
 } from "$lib/date";
 import {
@@ -289,6 +292,7 @@ import {
   isCreateDropdownField,
   isCreateValuePopulated,
 } from "$lib/shell/create-form-values";
+import { friendlyError } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 
 type InstalledModule = ProjectModuleManifest;
@@ -924,9 +928,6 @@ function recentlyUpdatedEntities() {
     .filter((entity) => !entity.deleted)
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
     .slice(0, 6);
-}
-function updatedDateLabel(timestamp: string) {
-  return formatRuntimeTimestampLabel(timestamp, { dateStyle: "medium" });
 }
 function workspaceNavigationItems(): WorkspaceNavigationItem[] {
   return workspaceSectionOrder.flatMap((target) => {
@@ -2897,11 +2898,6 @@ $effect(() => {
   }
 });
 
-function normalizeDocument(body: string, format?: string) {
-  if (format === "rich-text") return htmlToMarkdown(body);
-  return body;
-}
-
 function dateForField(key: string) {
   return parseCalendarDate(fields[key]);
 }
@@ -3019,12 +3015,6 @@ async function setDocumentMode(mode: "read" | "edit") {
   if (mode === documentMode) return;
   if (documentMode === "edit" && !(await flushAutoSave())) return;
   documentMode = mode;
-}
-function friendlyError(cause: unknown) {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return message.includes("invoke") || message.includes("undefined")
-    ? "The desktop bridge is unavailable. Open this workspace in the Tauri app to use local project storage."
-    : message;
 }
 function updateAiSetting(
   key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
@@ -5585,23 +5575,6 @@ async function createRelationshipTarget(definition: FieldDefinition, name: strin
     return null;
   }
 }
-function toHostRelationship(relationship: {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  type: string;
-  metadata: Record<string, unknown>;
-  revision: string;
-}): Relationship {
-  return {
-    id: relationship.id,
-    source_id: relationship.sourceId,
-    target_id: relationship.targetId,
-    relationship_type: relationship.type,
-    metadata: JSON.stringify(relationship.metadata ?? {}),
-    revision: relationship.revision,
-  };
-}
 async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
   if (projectDiagnostics.length > 0) return;
   if (!selected || !definition.relationshipType) return;
@@ -5668,27 +5641,8 @@ async function updateRelationshipField(definition: FieldDefinition, targetIds: s
     error = friendlyError(cause);
   }
 }
-function mimeTypeFor(filename: string) {
-  const extension = filename.split(".").pop()?.toLowerCase();
-  return extension === "png"
-    ? "image/png"
-    : extension === "jpg" || extension === "jpeg"
-      ? "image/jpeg"
-      : extension === "gif"
-        ? "image/gif"
-        : extension === "webp"
-          ? "image/webp"
-          : extension === "mp4"
-            ? "video/mp4"
-            : extension === "webm"
-              ? "video/webm"
-              : "application/octet-stream";
-}
 function canWriteAssets() {
   return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
-}
-function canUseAsProfile(asset: Asset) {
-  return ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(asset.mime_type);
 }
 async function refreshSelectedAssets() {
   if (!selected) {

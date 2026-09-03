@@ -93,6 +93,21 @@ import {
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "./types";
+import {
+  cloneCollection,
+  defaultFeatureLabel,
+  featureVertexCount,
+  offsetGeometry,
+  selectedMetadataSnapshot,
+} from "./feature-utils";
+import {
+  EPOCH_MAX,
+  EPOCH_MIN,
+  EPOCH_STEP,
+  clampEpoch,
+  formatEpoch,
+  parseEpochYears,
+} from "./epoch-utils";
 import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physical/raster";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
@@ -291,10 +306,6 @@ let pinsReady = $state(false);
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
-
-const EPOCH_MIN = -100_000;
-const EPOCH_MAX = 100_000;
-const EPOCH_STEP = 10;
 
 const listedLayers = $derived(
   [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
@@ -685,13 +696,6 @@ function parseDerivedCollection(text: string): VectorFeatureCollection {
   return collection;
 }
 
-function cloneCollection(collection: VectorFeatureCollection): VectorFeatureCollection {
-  // `draft` is Svelte state and may be a reactive Proxy after an edit. The
-  // browser structured-clone algorithm rejects that proxy, while GeoJSON is
-  // intentionally JSON-shaped and can be copied safely at this boundary.
-  return JSON.parse(JSON.stringify(collection)) as VectorFeatureCollection;
-}
-
 function syncUiFromStack(restoreView = false, skipEditorSync = false) {
   if (!commandStack) return;
   const snap = commandStack.snapshot();
@@ -762,28 +766,6 @@ function deleteSelectedFeatures() {
   editor?.clearSelection();
 }
 
-function offsetGeometry(geometry: VectorFeature["geometry"], dx: number, dy: number): VectorFeature["geometry"] {
-  const shift = (coords: number[]): number[] => [coords[0] + dx, coords[1] + dy, ...coords.slice(2)];
-  const walk = (value: unknown, depth: number): unknown => {
-    if (depth === 0) return shift(value as number[]);
-    return (value as unknown[]).map((item) => walk(item, depth - 1));
-  };
-  switch (geometry.type) {
-    case "Point":
-      return { type: "Point", coordinates: shift(geometry.coordinates) };
-    case "MultiPoint":
-      return { type: "MultiPoint", coordinates: walk(geometry.coordinates, 1) as number[][] };
-    case "LineString":
-      return { type: "LineString", coordinates: walk(geometry.coordinates, 1) as number[][] };
-    case "MultiLineString":
-      return { type: "MultiLineString", coordinates: walk(geometry.coordinates, 2) as number[][][] };
-    case "Polygon":
-      return { type: "Polygon", coordinates: walk(geometry.coordinates, 2) as number[][][] };
-    case "MultiPolygon":
-      return { type: "MultiPolygon", coordinates: walk(geometry.coordinates, 3) as number[][][][] };
-  }
-}
-
 function duplicateSelectedFeatures() {
   if (!commandStack || !editor) return;
   const ids = editor.selectedFeatureIds();
@@ -807,16 +789,6 @@ function renameSelectedFeature(name: string | null) {
   selectedFeature = {
     ...selectedFeature,
     properties: { daena: { ...selectedFeature.properties.daena, name } },
-  };
-}
-
-function selectedMetadataSnapshot(feature: VectorFeature) {
-  return {
-    name: feature.properties.daena.name,
-    semanticType: feature.properties.daena.semanticType,
-    style: feature.properties.daena.style,
-    label: feature.properties.daena.label,
-    custom: feature.properties.daena.custom,
   };
 }
 
@@ -845,22 +817,6 @@ function updateSelectedStyle(patch: Partial<MapStyleV2>) {
     "Edit feature style",
     `feature-style:${Object.keys(patch).join(",")}`,
   );
-}
-
-function defaultFeatureLabel(feature: VectorFeature): MapLabelV2 {
-  return {
-    source: "name",
-    text: null,
-    size: 12,
-    color: "#f7f0e5",
-    haloColor: "#0d1b2a",
-    haloWidth: 3,
-    placement: feature.geometry.type === "LineString" || feature.geometry.type === "MultiLineString" ? "line" : "point",
-    offset: [0, -14],
-    rotation: 0,
-    minZoom: null,
-    maxZoom: null,
-  };
 }
 
 function updateSelectedLabel(patch: Partial<MapLabelV2>) {
@@ -899,10 +855,6 @@ function removeCustomProperty(key: string) {
     delete custom[key];
     return { custom };
   }, "Remove custom property");
-}
-
-function featureVertexCount(feature: VectorFeature) {
-  return (feature.geometry.coordinates.flat(Infinity) as number[]).length / 2;
 }
 
 function focusSearchResult(featureId: string, layerId: string) {
@@ -1000,16 +952,6 @@ function setStudioOpen(next: boolean) {
   void ensurePhysicalEditorMounted();
 }
 
-function formatEpoch(offset: number): string {
-  if (offset === 0) return "Reference epoch";
-  return `${offset > 0 ? "+" : ""}${offset.toLocaleString()} years`;
-}
-
-function clampEpoch(offset: number, step = 1) {
-  const snapped = step > 1 ? Math.round(offset / step) * step : Math.round(offset);
-  return Math.min(EPOCH_MAX, Math.max(EPOCH_MIN, snapped));
-}
-
 function syncEpochFields(offset: number) {
   epochOffsetYears = offset;
   epochYearsAbs = Math.abs(offset);
@@ -1030,12 +972,6 @@ function commitEpochFromExact(absYears: number, era: "past" | "future") {
   epochYearsAbs = magnitude;
   epochEra = era;
   commitEpoch(era === "past" ? -magnitude : magnitude);
-}
-
-function parseEpochYears(raw: string) {
-  const digits = raw.replace(/[^\d]/g, "");
-  const value = digits ? Number(digits) : 0;
-  return Math.min(EPOCH_MAX, value);
 }
 
 function startSidebarResize(event: PointerEvent) {

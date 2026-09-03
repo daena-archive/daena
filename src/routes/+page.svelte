@@ -100,6 +100,26 @@ import {
   workspaceModuleId,
 } from "$lib/modules/workspace";
 import {
+  MAP_HOST_SURFACE,
+  schemaEntityTypeIds,
+  viewRenderer,
+  workspaceDescription,
+  workspaceSectionLabel,
+  type NavigationRenderer,
+} from "$lib/modules/workspace-presentation";
+import {
+  collectionPaneDefault,
+  collectionPaneMax,
+  collectionPaneMin,
+  inspectorPaneDefault,
+  inspectorPaneMax,
+  inspectorPaneMin,
+  loadCollectionQuery,
+  loadWorkbenchLayout,
+  saveWorkbenchLayout,
+  type WorkbenchPane,
+} from "$lib/shell/workbench-persistence";
+import {
   chronologyWarnings,
   firstEraCalendarId,
   isChronologyDateKey,
@@ -113,6 +133,12 @@ import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.s
 import { formatWithCalendar, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
+import {
+  capabilityLabel,
+  installedAtLabel,
+  runtimeTimestampLabel,
+  shortDigest,
+} from "$lib/plugins/labels";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
@@ -247,6 +273,22 @@ import {
   restoreStructuredFieldValue,
   shouldPersistFieldValue,
 } from "$lib/fields/persistence";
+import {
+  aiJsonValueSchema,
+  aiScalarValue,
+  coerceAiFieldValue,
+  fieldDisplayValue,
+  fieldInputValue,
+  fieldRevisionKey,
+  fieldValueForSave,
+  suggestionConfidenceLabel,
+  suggestionConfidenceTone,
+} from "$lib/fields/values";
+import {
+  defaultCreateFieldValue,
+  isCreateDropdownField,
+  isCreateValuePopulated,
+} from "$lib/shell/create-form-values";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 
 type InstalledModule = ProjectModuleManifest;
@@ -256,87 +298,6 @@ type CreateOption = { key: string; module: InstalledModule; template: EntityTemp
 type CreateGroup = { module: InstalledModule; options: CreateOption[] };
 type CreateField = { namespace: string; field: FieldDefinition; required: boolean };
 type CreateDialogView = "templates" | "form";
-type WorkbenchPane = "collection" | "content" | "inspector";
-type WorkbenchLayoutPrefs = {
-  visibility: Record<WorkbenchPane, boolean>;
-  collectionWidth: number;
-  inspectorWidth: number;
-};
-const collectionPaneMin = 190;
-const collectionPaneMax = 380;
-const collectionPaneDefault = 245;
-const inspectorPaneMin = 230;
-const inspectorPaneMax = 440;
-const inspectorPaneDefault = 290;
-
-function workbenchLayoutStorageKey(sec: WorkspaceSection) {
-  return `daena:workbench-layout:${workspaceModuleId(sec)}`;
-}
-
-function clampWorkbenchPaneWidth(value: number, min: number, max: number, fallback: number) {
-  return Number.isFinite(value) && value > 0 ? Math.max(min, Math.min(max, Math.round(value))) : fallback;
-}
-
-function loadWorkbenchLayout(sec: WorkspaceSection): WorkbenchLayoutPrefs {
-  try {
-    const raw = localStorage.getItem(workbenchLayoutStorageKey(sec));
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<WorkbenchLayoutPrefs> & {
-        visibility?: Partial<Record<WorkbenchPane, boolean>>;
-      };
-      return {
-        visibility: {
-          collection: parsed.visibility?.collection !== false,
-          content: parsed.visibility?.content !== false,
-          inspector: parsed.visibility?.inspector !== false,
-        },
-        collectionWidth: clampWorkbenchPaneWidth(
-          Number(parsed.collectionWidth),
-          collectionPaneMin,
-          collectionPaneMax,
-          collectionPaneDefault,
-        ),
-        inspectorWidth: clampWorkbenchPaneWidth(
-          Number(parsed.inspectorWidth),
-          inspectorPaneMin,
-          inspectorPaneMax,
-          inspectorPaneDefault,
-        ),
-      };
-    }
-  } catch {
-    // Fall through to legacy global keys / defaults.
-  }
-  return {
-    visibility: {
-      collection: localStorage.getItem("daena:workbench-pane:collection") !== "false",
-      content: localStorage.getItem("daena:workbench-pane:content") !== "false",
-      inspector: localStorage.getItem("daena:workbench-pane:inspector") !== "false",
-    },
-    collectionWidth: clampWorkbenchPaneWidth(
-      Number(localStorage.getItem("daena:workbench-pane-width:collection")),
-      collectionPaneMin,
-      collectionPaneMax,
-      collectionPaneDefault,
-    ),
-    inspectorWidth: clampWorkbenchPaneWidth(
-      Number(localStorage.getItem("daena:workbench-pane-width:inspector")),
-      inspectorPaneMin,
-      inspectorPaneMax,
-      inspectorPaneDefault,
-    ),
-  };
-}
-
-function saveWorkbenchLayout(sec: WorkspaceSection, layout: WorkbenchLayoutPrefs) {
-  try {
-    localStorage.setItem(workbenchLayoutStorageKey(sec), JSON.stringify(layout));
-  } catch {
-    // Ignore quota / private-mode failures; in-session layout still works.
-  }
-}
-
-type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 type WorkspaceNavigationItem = {
   kind: "workspace";
   plugin: PluginAdminEntry;
@@ -413,27 +374,6 @@ let quickOpenSearchLoading = $state(false);
 let filterOpen = $state(false);
 let expandedGroups = $state<Set<string>>(new Set());
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
-
-function loadCollectionQuery(sec: WorkspaceSection): CollectionQuery {
-  try {
-    const raw = localStorage.getItem(`daena:collection-query:${sec}`);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...DEFAULT_COLLECTION_QUERY,
-        ...parsed,
-        pageSize: [25, 50, 100].includes(parsed.pageSize) ? parsed.pageSize : DEFAULT_COLLECTION_QUERY.pageSize,
-        section: sec,
-        excludedTypes: parsed.excludedTypes ?? [],
-      };
-    }
-  } catch {}
-  return {
-    ...DEFAULT_COLLECTION_QUERY,
-    section: sec,
-    viewMode: sec === "language" ? "flat" : DEFAULT_COLLECTION_QUERY.viewMode,
-  };
-}
 
 let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
 const emptyEntityPage = (): EntityPage => ({
@@ -581,7 +521,6 @@ let schemaEntityCountsLoaded = $state(false);
 let displayVersion = $state(appVersionSyncFallback());
 
 const MAP_NAVIGATION_SERVICE = "daena.maps/navigation";
-const MAP_HOST_SURFACE = "daena.maps/editor";
 
 function enabledServices() {
   return new Set(
@@ -908,9 +847,6 @@ const activeManifest = () => {
             : null) as unknown as ModuleManifest | null;
 };
 const workspaceSectionOrder: WorkspaceSection[] = ["lore", "houses", "timeline", "writing", "language", "maps"];
-function workspaceDescription(target: WorkspaceSection) {
-  return workspaceSectionDescription(target);
-}
 function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest | null {
   const moduleId = workspaceModuleId(target);
   const fromProject = modules.find((module) => module.id === moduleId);
@@ -921,9 +857,6 @@ function manifestForWorkspaceSection(target: WorkspaceSection): ModuleManifest |
   if (target === "language") return languageManifestJson as unknown as ModuleManifest;
   if (target === "houses") return housesManifestJson as unknown as ModuleManifest;
   return null;
-}
-function schemaEntityTypeIds(schema: { entityTypes: EntityTypeDefinition[] }): string[] {
-  return schema.entityTypes.map((entityType) => entityType.id);
 }
 function sectionEntityTypeDefs(target: WorkspaceSection) {
   return (
@@ -954,19 +887,6 @@ function enabledWorkspaceSections() {
   return workspaceSectionOrder.filter((target) =>
     modules.some((module) => module.id === workspaceModuleId(target) && module.enabled),
   );
-}
-function workspaceSectionLabel(target: WorkspaceSection) {
-  return target === "lore"
-    ? "Lore library"
-    : target === "timeline"
-      ? "Timeline"
-      : target === "writing"
-        ? "Writing Studio"
-        : target === "language"
-          ? "Languages"
-          : target === "houses"
-            ? "Houses"
-            : "Maps";
 }
 function entityTypePresentation(entityType: string | null): {
   definition: EntityTypeDefinition;
@@ -1007,18 +927,6 @@ function recentlyUpdatedEntities() {
 }
 function updatedDateLabel(timestamp: string) {
   return formatRuntimeTimestampLabel(timestamp, { dateStyle: "medium" });
-}
-function viewRenderer(
-  plugin: PluginAdminEntry,
-  view: PluginAdminEntry["views"][number],
-): Exclude<NavigationRenderer, "workspace"> {
-  if (view.renderer?.type === "host-surface") {
-    if (view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1) return "maps";
-    return "webview";
-  }
-  if (view.renderer?.type === "sandboxed") return "webview";
-  if (view.renderer?.type === "declarative") return "host";
-  return plugin.kind === "sandboxed" ? "webview" : "host";
 }
 function workspaceNavigationItems(): WorkspaceNavigationItem[] {
   return workspaceSectionOrder.flatMap((target) => {
@@ -1151,120 +1059,12 @@ function namespaceForField(definition: FieldDefinition): string {
     fallback: activeModuleId(),
   });
 }
-function fieldRevisionKey(namespace: string, key: string) {
-  return `${namespace}\u0000${key}`;
-}
-function fieldDisplayValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map((item) => fieldDisplayValue(item)).join(", ");
-  if (typeof value === "object" && value !== null) {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return "";
-    }
-  }
-  return String(value ?? "");
-}
-function fieldInputValue(definition: FieldDefinition, value: unknown): string | number | boolean | string[] {
-  if (definition.type === "boolean") return value === true;
-  if (definition.type === "number") return typeof value === "number" && Number.isFinite(value) ? value : "";
-  if ((definition as any).type === "oneof") return fieldDisplayValue(value);
-  if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
-  return fieldDisplayValue(value);
-}
-function fieldValueForSave(definition: FieldDefinition, value: unknown) {
-  if (definition.type === "number") {
-    if (value === "" || value === null || value === undefined) return "";
-    const numberValue = typeof value === "number" ? value : Number(value);
-    return Number.isFinite(numberValue) ? numberValue : "";
-  }
-  if (definition.type === "boolean") return value === true || value === "true";
-  if ((definition as any).type === "oneof") return value;
-  if (definition.multiple) return Array.isArray(value) ? value.map((item) => String(item)) : [];
-  return value;
-}
-function aiScalarValue(definition: FieldDefinition, raw: unknown): unknown | null {
-  if (definition.type === "number") {
-    const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : Number.NaN;
-    return Number.isFinite(value) ? value : null;
-  }
-  if (definition.type === "boolean") {
-    if (typeof raw === "boolean") return raw;
-    if (raw === "true") return true;
-    if (raw === "false") return false;
-    return null;
-  }
-  if (definition.type === "enum") {
-    return typeof raw === "string" && definition.options?.includes(raw) ? raw : null;
-  }
-  if ((definition as any).type === "oneof") {
-    const opts =
-      definition.options ??
-      ((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
-      [];
-    return typeof raw === "string" && opts.includes(raw) ? raw : null;
-  }
-  if (definition.type === "date") {
-    if (typeof raw !== "string") return null;
-    const date = parseCalendarDate(raw.trim());
-    return date ? serializeCalendarDate(date) : null;
-  }
-  return typeof raw === "string" && raw.trim() ? raw : null;
-}
-function coerceAiFieldValue(definition: FieldDefinition, raw: unknown): unknown | null {
-  const isOne = (definition as any).cardinality === "one";
-  const isRelationship = definition.type === "relationship";
-  const isMultiple = definition.multiple || (isRelationship && !isOne);
-  if (isMultiple || isRelationship) {
-    // For cardinality "one", allow single string as well as array with 1
-    if (isOne && typeof raw === "string" && raw.trim()) {
-      return raw.trim();
-    }
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 5) {
-      // For "one", also allow single string case already handled, so fail for array
-      if (isOne && typeof raw === "string") return null;
-      return null;
-    }
-    if (isOne && raw.length > 1) return null;
-    const values = raw.map((item) =>
-      isRelationship ? (typeof item === "string" && item.trim() ? item : null) : aiScalarValue(definition, item),
-    );
-    return values.every((value) => value !== null) ? values : null;
-  }
-  return aiScalarValue(definition, raw);
-}
-function aiJsonValueSchema(definition: FieldDefinition) {
-  const isOne = (definition as any).cardinality === "one";
-  const scalarType = definition.type === "number" ? "number" : definition.type === "boolean" ? "boolean" : "string";
-  const isOneOf = (definition as any).type === "oneof";
-  const enumOptions = isOneOf
-    ? (((definition as any).oneOf as Array<{ options?: string[] }> | undefined)?.flatMap((v) => v.options ?? []) ??
-      definition.options)
-    : definition.options;
-  const scalar: any = {
-    type: scalarType,
-    ...(definition.type === "enum" && definition.options?.length ? { enum: definition.options } : {}),
-    ...(isOneOf && (enumOptions as string[])?.length ? { enum: enumOptions } : {}),
-  };
-  const isMulti = definition.multiple || (definition.type === "relationship" && !isOne);
-  return isMulti || definition.type === "relationship"
-    ? { type: "array", items: scalar, maxItems: isOne ? 1 : 5, uniqueItems: true }
-    : scalar;
-}
 function suggestionDisplayValue(key: string, suggestion: AiFieldSuggestion) {
   const definition = definitions().find((candidate) => candidate.key === key);
   if (definition?.type !== "relationship" || !Array.isArray(suggestion.value))
     return fieldDisplayValue(suggestion.value);
   const names = new Map(entities.map((entity) => [entity.id, entity.name]));
   return suggestion.value.map((id) => names.get(String(id)) ?? String(id)).join(", ");
-}
-function suggestionConfidenceTone(confidence: string) {
-  const normalized = confidence.trim().toLowerCase();
-  return normalized === "high" || normalized === "medium" || normalized === "low" ? normalized : "unknown";
-}
-function suggestionConfidenceLabel(confidence: string) {
-  const tone = suggestionConfidenceTone(confidence);
-  return tone.charAt(0).toUpperCase() + tone.slice(1);
 }
 function createOptions(): CreateOption[] {
   return modules
@@ -1337,14 +1137,6 @@ function setCreateRelationshipValues(key: string, values: string[]) {
     });
   }
 }
-function defaultCreateFieldValue(field: FieldDefinition, template: EntityTemplate) {
-  if (Object.prototype.hasOwnProperty.call(template.fields, field.key)) return template.fields[field.key];
-  return field.type === "boolean"
-    ? false
-    : field.type === "relationship" || (field.type === "enum" && field.multiple)
-      ? []
-      : "";
-}
 function resetCreateFields(option: CreateOption | null) {
   createFieldValues = Object.fromEntries(
     createFieldsFor(option).map(({ field }) => [field.key, defaultCreateFieldValue(field, option!.template)]),
@@ -1382,13 +1174,6 @@ function setCreateField(key: string, value: unknown) {
 function updateCreateEnumField(key: string, event: Event, multiple: boolean) {
   const target = event.currentTarget as HTMLSelectElement;
   setCreateField(key, multiple ? Array.from(target.selectedOptions, (option) => option.value) : target.value);
-}
-function isCreateValuePopulated(value: unknown) {
-  if (Array.isArray(value)) return value.length > 0;
-  return value !== "" && value !== null && value !== undefined && value !== false;
-}
-function isCreateDropdownField(field: FieldDefinition) {
-  return field.type === "enum";
 }
 function hasCreateValues() {
   const hasNonDropdownValues = createFieldsFor().some(
@@ -6528,38 +6313,6 @@ async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
     },
     plugin.capabilities,
   );
-}
-function capabilityLabel(capability: string) {
-  const labels: Record<string, string> = {
-    "entity.read": "Read entities",
-    "entity.write": "Create and edit entities",
-    "entity.delete": "Delete entities",
-    "document.read": "Read documents",
-    "document.write": "Save and edit documents",
-    "relationship.read": "Read relationships",
-    "relationship.write": "Create and delete relationships",
-    "search.query": "Search the whole world",
-    "asset.register": "Register assets",
-    "asset.read:self": "Read assets in own namespace",
-    "field.read:self": "Read fields in own namespace",
-    "field.write:self": "Write fields in own namespace",
-  };
-  return labels[capability] ?? capability;
-}
-function shortDigest(digest: string) {
-  return digest ? digest.slice(0, 12) : "";
-}
-function installedAtLabel(timestamp: number) {
-  return timestamp ? new Date(timestamp * 1000).toLocaleString() : "";
-}
-function runtimeTimestampLabel(timestamp: string) {
-  try {
-    const ms = Number(BigInt(timestamp) / 1_000_000n);
-    const date = new Date(ms);
-    return Number.isFinite(ms) && ms > 0 && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "Unknown";
-  } catch {
-    return "Unknown";
-  }
 }
 function clearSelection() {
   cancelAutoSave();

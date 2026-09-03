@@ -64,9 +64,17 @@ import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import type { Asset, Entity } from "$lib/project/client";
 import type { AsyncEntityOption, AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import EntityReferenceDialog from "$lib/editor/EntityReferenceDialog.svelte";
+import EntityMentionMenu from "$lib/editor/EntityMentionMenu.svelte";
 import LinkDialog from "$lib/editor/LinkDialog.svelte";
 import InsertAssetDialog from "$lib/editor/InsertAssetDialog.svelte";
 import TableInsertDialog from "$lib/editor/TableInsertDialog.svelte";
+import {
+  findMentionTrigger,
+  mentionLabelForInsert,
+  mentionRangeStillSelected,
+  mentionTriggerDocRange,
+} from "$lib/editor/entity-mentions";
+import { looksLikeWebUrl, normalizeHref } from "$lib/editor/link-href";
 import { AssetImage } from "$lib/editor/AssetImageExtension";
 import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
 import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
@@ -103,6 +111,9 @@ const EntityReference = Mark.create({
 });
 
 const ExternalLink = Link.extend({
+  inclusive() {
+    return false;
+  },
   parseHTML() {
     return [{ tag: "a[href]:not([data-entity-id])" }];
   },
@@ -172,8 +183,10 @@ let aiMenuOpen = false;
 let entityReferenceMenuOpen = false;
 let entityReferenceQuery = "";
 let entityReferenceRange: { from: number; to: number } | null = null;
+let entityReferenceKeepLabel = false;
 let entityReferenceMenuPosition = { top: 0, left: 0 };
 let entityReferenceSuppressedRange: { from: number; to: number } | null = null;
+let entityMentionMenu: { moveActive: (delta: number) => void; confirmActive: () => boolean } | undefined;
 let entityReferenceDialogOpen = false;
 let entityReferenceDialogMode: "insert" | "edit" = "insert";
 let entityReferenceEdit: {
@@ -465,6 +478,14 @@ function changeBlockStyle(event: Event) {
   });
 }
 
+function openWebLinkDialog(from: number, to: number, selectedText: string, previousUrl: string) {
+  linkDialogInitialText = selectedText;
+  linkDialogInitialUrl = previousUrl;
+  linkDialogHasSelection = selectedText.trim().length > 0;
+  linkDialogRange = { from, to };
+  linkDialogOpen = true;
+}
+
 function setLink() {
   if (!editorState || !editor) return;
   const { from, to, empty } = editor.state.selection;
@@ -473,11 +494,11 @@ function setLink() {
   if (!empty) {
     const selectedText = editor.state.doc.textBetween(from, to, " ");
     if (selectedText.trim()) {
-      linkDialogInitialText = selectedText;
-      linkDialogInitialUrl = previousUrl;
-      linkDialogHasSelection = true;
-      linkDialogRange = { from, to };
-      linkDialogOpen = true;
+      if (previousUrl || looksLikeWebUrl(selectedText)) {
+        openWebLinkDialog(from, to, selectedText, previousUrl || selectedText.trim());
+        return;
+      }
+      openEntityMentionForRange({ from, to }, selectedText.trim(), true);
       return;
     }
   }
@@ -504,59 +525,28 @@ function setLink() {
 }
 
 function confirmLink(displayText: string, url: string) {
-  if (!editorState || !editor || !linkDialogRange) {
-    linkDialogOpen = false;
-    return;
-  }
-  const href = url.trim();
-  if (!href) {
-    if (linkDialogInitialUrl) editorState.chain().focus().extendMarkRange("link").unsetLink().run();
-    linkDialogOpen = false;
-    return;
-  }
+  if (!editorState || !editor || !linkDialogRange) return;
+  const href = normalizeHref(url);
+  if (!href) return;
   const range = linkDialogRange;
   const wasSelection = linkDialogHasSelection;
-  // close before transaction to avoid focus issues; keep range copy
-  linkDialogOpen = false;
+  const attrs = { href, target: "_blank", rel: "noopener noreferrer" };
+  let applied = false;
   if (wasSelection) {
-    // Apply link to the original selection; preserve inline marks via extendMarkRange
-    editorState
-      .chain()
-      .focus()
-      .setTextSelection(range)
-      .extendMarkRange("link")
-      .setLink({ href, target: "_blank", rel: "noopener noreferrer" })
-      .run();
+    applied = editorState.chain().focus().setTextSelection(range).extendMarkRange("link").setLink(attrs).run();
   } else {
     const text = displayText.trim();
     if (!text) return;
     const isEditingExisting = !!linkDialogInitialUrl && range.from !== range.to;
-    if (isEditingExisting) {
-      editorState
-        .chain()
-        .focus()
-        .insertContentAt(range, [
-          {
-            type: "text",
-            text,
-            marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }],
-          },
-        ])
-        .run();
-    } else {
-      editorState
-        .chain()
-        .focus()
-        .insertContentAt(range.from, [
-          {
-            type: "text",
-            text,
-            marks: [{ type: "link", attrs: { href, target: "_blank", rel: "noopener noreferrer" } }],
-          },
-        ])
-        .run();
-    }
+    applied = editorState
+      .chain()
+      .focus()
+      .insertContentAt(isEditingExisting ? range : range.from, [
+        { type: "text", text, marks: [{ type: "link", attrs }] },
+      ])
+      .run();
   }
+  if (applied) linkDialogOpen = false;
 }
 
 function cancelLink() {
@@ -1185,28 +1175,52 @@ function updateAutoEntityReferences() {
   if (tr.docChanged) editor.view.dispatch(tr);
 }
 
+function openEntityMentionForRange(range: { from: number; to: number }, query: string, keepLabel: boolean) {
+  if (!editor) return;
+  entityReferenceKeepLabel = keepLabel;
+  entityReferenceQuery = query;
+  entityReferenceRange = range;
+  entityReferenceSuppressedRange = null;
+  entityReferenceDialogOpen = false;
+  try {
+    const coords = editor.view.coordsAtPos(range.to);
+    entityReferenceMenuPosition = { top: coords.bottom + 6, left: coords.left };
+  } catch {
+    entityReferenceMenuPosition = { top: 80, left: 24 };
+  }
+  entityReferenceMenuOpen = true;
+}
+
 function insertEntityReference(
   entity: Pick<Entity, "id" | "name"> | AsyncEntityOption,
   label: string,
-  isCustom: boolean,
+  isCustom?: boolean,
 ) {
   if (!editorState || !editable) return;
   const range = entityReferenceRange;
   if (!range) return;
-  const displayText = isCustom ? label : entity.name;
+  const selectedText = editorState.state.doc.textBetween(range.from, range.to, " ");
+  const mention = mentionLabelForInsert({
+    entityName: entity.name,
+    selectedText,
+    keepLabel: entityReferenceKeepLabel,
+    requestedLabel: label,
+    requestedCustom: isCustom,
+  });
   editorState
     .chain()
     .focus()
     .insertContentAt(range, {
       type: "text",
-      text: displayText,
-      marks: [{ type: "entityReference", attrs: { entityId: entity.id, isCustom } }],
+      text: mention.text,
+      marks: [{ type: "entityReference", attrs: { entityId: entity.id, isCustom: mention.isCustom } }],
     })
     .run();
   entityReferenceMenuOpen = false;
   entityReferenceDialogOpen = false;
   entityReferenceQuery = "";
   entityReferenceRange = null;
+  entityReferenceKeepLabel = false;
   entityReferenceSuppressedRange = null;
 }
 
@@ -1285,32 +1299,52 @@ function cancelEntityReference() {
     entityReferenceDialogOpen = false;
     return;
   }
-  if (entityReferenceRange) entityReferenceSuppressedRange = { ...entityReferenceRange };
+  if (entityReferenceRange && !entityReferenceKeepLabel) entityReferenceSuppressedRange = { ...entityReferenceRange };
   entityReferenceMenuOpen = false;
   entityReferenceDialogOpen = false;
   entityReferenceQuery = "";
   entityReferenceRange = null;
+  entityReferenceKeepLabel = false;
+}
+
+function openWebUrlFromMention() {
+  if (!editorState || !entityReferenceRange) return;
+  const range = entityReferenceRange;
+  const selectedText = editorState.state.doc.textBetween(range.from, range.to, " ");
+  entityReferenceMenuOpen = false;
+  entityReferenceKeepLabel = false;
+  entityReferenceRange = null;
+  openWebLinkDialog(range.from, range.to, selectedText, "");
 }
 
 function updateEntityReferenceTrigger(nextEditor: Editor) {
   const { from, to } = nextEditor.state.selection;
-  if (!editable || from !== to) {
-    if (entityReferenceMenuOpen && entityReferenceRange) entityReferenceSuppressedRange = { ...entityReferenceRange };
+  if (!editable) {
     entityReferenceMenuOpen = false;
     entityReferenceRange = null;
+    entityReferenceKeepLabel = false;
     return;
   }
+  if (from !== to) {
+    if (mentionRangeStillSelected({ from, to }, entityReferenceRange, entityReferenceKeepLabel)) return;
+    if (entityReferenceMenuOpen && entityReferenceRange && !entityReferenceKeepLabel) {
+      entityReferenceSuppressedRange = { ...entityReferenceRange };
+    }
+    entityReferenceMenuOpen = false;
+    entityReferenceRange = null;
+    entityReferenceKeepLabel = false;
+    return;
+  }
+  entityReferenceKeepLabel = false;
   const beforeCursor = nextEditor.state.doc.textBetween(Math.max(0, from - 80), from, "\n");
-  const trigger = beforeCursor.match(/@([^\s@]*)$/);
-  const triggerStart = trigger ? beforeCursor.length - trigger[0].length : -1;
-  const preceding = triggerStart > 0 ? beforeCursor[triggerStart - 1] : "";
-  if (!trigger || (preceding && !/[\s([{]/.test(preceding))) {
+  const trigger = findMentionTrigger(beforeCursor);
+  if (!trigger) {
     if (entityReferenceMenuOpen && entityReferenceRange) entityReferenceSuppressedRange = { ...entityReferenceRange };
     entityReferenceMenuOpen = false;
     entityReferenceRange = null;
     return;
   }
-  const newRange = { from: from - trigger[0].length, to: from };
+  const newRange = mentionTriggerDocRange(from, trigger);
   if (entityReferenceSuppressedRange && newRange.from === entityReferenceSuppressedRange.from) {
     entityReferenceMenuOpen = false;
     entityReferenceRange = null;
@@ -1322,7 +1356,7 @@ function updateEntityReferenceTrigger(nextEditor: Editor) {
     top: coords.bottom + 6,
     left: coords.left,
   };
-  entityReferenceQuery = trigger[1];
+  entityReferenceQuery = trigger.query;
   entityReferenceRange = newRange;
   entityReferenceMenuOpen = true;
 }
@@ -1692,7 +1726,7 @@ onMount(() => {
   const handleEntityReferenceMenuOutside = (event: MouseEvent) => {
     if (!entityReferenceMenuOpen) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest(".entity-reference-menu") || target?.closest(".entity-reference-dialog")) return;
+    if (target?.closest(".entity-mention-menu") || target?.closest(".entity-reference-dialog")) return;
     cancelEntityReference();
   };
   const handleImagePopoverOutside = (event: MouseEvent) => {
@@ -1868,11 +1902,22 @@ onMount(() => {
           el.setAttribute("aria-expanded", revealed ? "true" : "false");
           return true;
         }
-        if (entityReferenceMenuOpen && (event.key === "Enter" || event.key === "Escape")) {
-          event.preventDefault();
-          if (event.key === "Enter") openEntityReferenceDialog();
-          else cancelEntityReference();
-          return true;
+        if (entityReferenceMenuOpen) {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            entityMentionMenu?.moveActive(event.key === "ArrowDown" ? 1 : -1);
+            return true;
+          }
+          if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault();
+            if (!entityMentionMenu?.confirmActive()) openEntityReferenceDialog();
+            return true;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            cancelEntityReference();
+            return true;
+          }
         }
         if (event.key === "Backspace" || event.key === "Delete") {
           const { from, to } = editorState?.state.selection ?? { from: 0, to: 0 };
@@ -2061,7 +2106,7 @@ $: inTable = editorState?.isActive("table") ?? false;
       <div class="toolbar-group" aria-label="Links and media">
         <button
           type="button"
-          title="Link (⌘/Ctrl + K)"
+          title="Link"
           aria-label="Link"
           aria-pressed={editorState?.isActive("link") ?? false}
           class:active={editorState?.isActive("link")}
@@ -2071,7 +2116,15 @@ $: inTable = editorState?.isActive("table") ?? false;
           title="Link to lore entry (@)"
           aria-label="Link to lore entry"
           onclick={() => {
-            if (!editorState) return;
+            if (!editorState || !editor) return;
+            const { from, to, empty } = editor.state.selection;
+            if (!empty) {
+              const selectedText = editor.state.doc.textBetween(from, to, " ");
+              if (selectedText.trim()) {
+                openEntityMentionForRange({ from, to }, selectedText.trim(), true);
+                return;
+              }
+            }
             editorState.chain().focus().insertContent("@").run();
           }}><AtSign size={14} strokeWidth={1.8} /></button>
         <button
@@ -2417,16 +2470,18 @@ $: inTable = editorState?.isActive("table") ?? false;
     bind:this={editorElement}
     onmousedown={focusEditorSurface}>
   </div>
-  {#if entityReferenceMenuOpen}
-    <button
-      type="button"
-      class="entity-reference-menu"
-      style={`top: ${entityReferenceMenuPosition.top}px; left: ${entityReferenceMenuPosition.left}px;`}
-      onmousedown={(event) => event.preventDefault()}
-      onclick={openEntityReferenceDialog}>
-      <span>@</span> Link to another entity <kbd>↵</kbd>
-    </button>
-  {/if}
+  <EntityMentionMenu
+    bind:this={entityMentionMenu}
+    open={entityReferenceMenuOpen}
+    query={entityReferenceQuery}
+    top={entityReferenceMenuPosition.top}
+    left={entityReferenceMenuPosition.left}
+    search={searchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 8, hasMore: false }))}
+    excludeIds={entityId ? [entityId] : []}
+    keepLabel={entityReferenceKeepLabel}
+    onSelect={(entity) => insertEntityReference(entity, entity.name)}
+    onBrowse={openEntityReferenceDialog}
+    onWebUrl={openWebUrlFromMention} />
   {#if entityReferenceEdit && !entityReferenceDialogOpen}
     <button
       type="button"
@@ -2544,8 +2599,14 @@ $: inTable = editorState?.isActive("table") ?? false;
     {entities}
     initialQuery={entityReferenceDialogMode === "insert" ? entityReferenceQuery : ""}
     initialSelectedId={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.entityId ?? "") : ""}
-    initialLabel={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.label ?? "") : ""}
-    initialIsCustom={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.isCustom ?? false) : false}
+    initialLabel={entityReferenceDialogMode === "edit"
+      ? (entityReferenceEdit?.label ?? "")
+      : entityReferenceKeepLabel
+        ? entityReferenceQuery
+        : ""}
+    initialIsCustom={entityReferenceDialogMode === "edit"
+      ? (entityReferenceEdit?.isCustom ?? false)
+      : entityReferenceKeepLabel}
     onInsert={saveEntityReference}
     onCancel={cancelEntityReference} />
   <LinkDialog
@@ -2659,43 +2720,6 @@ $: inTable = editorState?.isActive("table") ?? false;
 .editor-toolbar button:disabled:hover {
   border-color: transparent;
   background: transparent;
-}
-.entity-reference-menu {
-  position: fixed;
-  z-index: 75;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  max-width: calc(100vw - 24px);
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--theme-warning-border, #d3c0a9);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink);
-  font: 700 12px/1 var(--font-body, system-ui, sans-serif);
-  box-shadow: 0 10px 24px rgba(48, 45, 38, 0.16);
-  cursor: pointer;
-}
-.entity-reference-menu:hover,
-.entity-reference-menu:focus-visible {
-  border-color: var(--accent);
-  background: var(--surface-muted);
-  outline: 0;
-}
-.entity-reference-menu > span {
-  color: var(--accent);
-  font-size: 15px;
-}
-.entity-reference-menu kbd {
-  padding: 2px 4px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--canvas);
-  color: var(--ink-faint);
-  font:
-    700 10px/1 ui-monospace,
-    monospace;
 }
 .entity-reference-edit {
   position: fixed;

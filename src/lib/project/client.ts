@@ -116,6 +116,9 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   setAiEnabled: (enabled: boolean) => invoke<ProjectInfo>("project_set_ai_enabled", { enabled }),
+  aiPromptsGet: () => invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_get"),
+  aiPromptsSet: (overlay: { templates?: Array<Record<string, unknown>> }) =>
+    invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_set", { overlay }),
   importCheckpoint: () => invoke<ExternalChangeReport>("project_import_checkpoint"),
   externalImporters: () => invoke<ExternalImporterDescriptor[]>("project_external_importers"),
   externalImportSelectSource: (sourceKind: "file" | "folder") =>
@@ -672,12 +675,18 @@ export const project = {
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
-  aiProviderStatus: () => invoke<AiProviderStatus>("ai_provider_status"),
-  aiProviderModels: () => invoke<string[]>("ai_provider_models"),
-  aiProviderCredentialStatus: () => invoke<RemoteCredentialStatus>("ai_provider_credential_status"),
-  aiProviderImportCredential: () => invoke<RemoteCredentialStatus>("ai_provider_import_credential"),
-  aiProviderSetCredential: (apiKey: string) => invoke<RemoteCredentialStatus>("ai_provider_set_credential", { apiKey }),
-  aiProviderClearCredential: () => invoke<RemoteCredentialStatus>("ai_provider_clear_credential"),
+  aiProviderStatus: (projectId: string) => invoke<AiProviderStatus>("ai_provider_status", { projectId }),
+  aiProviderModels: (projectId: string) => invoke<string[]>("ai_provider_models", { projectId }),
+  aiProviderConnect: (projectId: string) =>
+    invoke<import("./types").AiProviderConnectResult>("ai_provider_connect", { projectId }),
+  aiProviderCredentialStatus: (projectId: string) =>
+    invoke<RemoteCredentialStatus>("ai_provider_credential_status", { projectId }),
+  aiProviderImportCredential: (projectId: string) =>
+    invoke<RemoteCredentialStatus>("ai_provider_import_credential", { projectId }),
+  aiProviderSetCredential: (projectId: string, apiKey: string) =>
+    invoke<RemoteCredentialStatus>("ai_provider_set_credential", { projectId, apiKey }),
+  aiProviderClearCredential: (projectId: string) =>
+    invoke<RemoteCredentialStatus>("ai_provider_clear_credential", { projectId }),
   imageProviderStatus: () => invoke<ImageProviderStatus>("image_provider_status"),
   imageProviderDiscover: () => invoke<ImageProviderDiscovery>("image_provider_discover"),
   imageGenerateStart: (request: ImageGenerationRequest) =>

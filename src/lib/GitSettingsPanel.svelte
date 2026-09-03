@@ -46,6 +46,7 @@ let {
   projectOpen,
   projectId,
   aiEnabled = false,
+  aiInstruction = "",
   onError,
   onBusyMessage,
   beforeWrite,
@@ -54,6 +55,7 @@ let {
   projectOpen: boolean;
   projectId: string;
   aiEnabled?: boolean;
+  aiInstruction?: string;
   onError: (message: string) => void;
   onBusyMessage?: (message: string) => void;
   beforeWrite?: () => Promise<boolean>;
@@ -308,6 +310,7 @@ async function generateAiMessage() {
         : []),
     ].join("\n\n");
     const instruction =
+      aiInstruction.trim() ||
       "Write a concise snapshot message from the confirmed changes. Put a title of 72 characters or fewer on the first line. Optionally add the comment body after a newline; never combine them on one line. Use plain text without labels, Markdown, bullets, paths, UUIDs, hashes, or internal identifiers.";
     console.info("[Snapshots AI] sending message-generation request", {
       projectId,

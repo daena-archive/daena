@@ -43,14 +43,17 @@ pub use self::index::{
 use self::orchestration::*;
 pub use self::orchestration::{
     __cmd__ai_cancel_text, __cmd__ai_generate_structured, __cmd__ai_generate_text,
-    __cmd__ai_poll_text, __cmd__ai_provider_models, __cmd__ai_provider_status,
+    __cmd__ai_poll_text, __cmd__ai_provider_connect, __cmd__ai_provider_models,
+    __cmd__ai_provider_status,
     __tauri_command_name_ai_cancel_text, __tauri_command_name_ai_generate_structured,
     __tauri_command_name_ai_generate_text, __tauri_command_name_ai_poll_text,
-    __tauri_command_name_ai_provider_models, __tauri_command_name_ai_provider_status,
+    __tauri_command_name_ai_provider_connect, __tauri_command_name_ai_provider_models,
+    __tauri_command_name_ai_provider_status,
 };
 pub use self::orchestration::{
-    ai_cancel_text, ai_generate_structured, ai_generate_text, ai_poll_text, ai_provider_models,
-    ai_provider_status, ai_request_citations, ai_request_result, cancel_ai_request, poll_ai_events,
+    ai_cancel_text, ai_generate_structured, ai_generate_text, ai_poll_text, ai_provider_connect,
+    ai_provider_models, ai_provider_status, ai_request_citations, ai_request_result,
+    cancel_ai_request, poll_ai_events,
     remove_ai_citations, start_ai_request_mode, validate_structured_output,
     validate_structured_schema,
 };

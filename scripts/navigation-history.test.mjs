@@ -39,7 +39,7 @@ const lore = {
   surfaceScrollTop: 0,
 };
 const graph = { ...lore, view: "graph" };
-const settings = { kind: "settings", section: "ai" };
+const settings = { kind: "settings", section: "general" };
 const project = { kind: "project", section: "snapshots" };
 assert.equal(sameShellLocation(settings, project), false, "application Settings and Project are distinct locations");
 

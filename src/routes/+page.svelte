@@ -143,6 +143,15 @@ import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
 import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
+import ProjectAiSettingsPanel from "$lib/ai/ProjectAiSettingsPanel.svelte";
+import {
+  emptyAiProvider,
+  instructionFor,
+  mergePromptTemplates,
+  overlayFromTemplates,
+  type PromptOverlay,
+  type PromptTemplate,
+} from "$lib/ai/promptTemplates";
 import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
 import { breadcrumbViewLabel, shellBreadcrumbs } from "$lib/shell/breadcrumbs";
@@ -614,15 +623,7 @@ function schemaReferenceEntityTypes(moduleId: string | null) {
   return types;
 }
 let aiSettings = $state<AiSettings>({
-  provider: {
-    id: "lm-studio",
-    name: "LM Studio",
-    adapter: "openai-compatible",
-    endpoint: "http://127.0.0.1:1234/v1",
-    model: "",
-    embeddingModel: "",
-    capabilities: [],
-  },
+  projectBindings: {},
   imageProvider: {
     enabled: false,
     id: "comfyui-local",
@@ -633,6 +634,7 @@ let aiSettings = $state<AiSettings>({
   },
   consents: [],
 });
+let aiPromptTemplates = $state<PromptTemplate[]>(mergePromptTemplates());
 let aiStatus = $state<AiProviderStatus | null>(null);
 let aiModels = $state<string[]>([]);
 let aiModelsBusy = $state(false);
@@ -717,6 +719,9 @@ let deleteInput = $state("");
 let deleteBusy = $state(false);
 let deleteBackupPath = $state("");
 let projectInfo = $state<ProjectInfo | null>(null);
+const aiProvider = $derived(
+  projectInfo?.root ? (aiSettings.projectBindings[projectInfo.root] ?? emptyAiProvider()) : emptyAiProvider(),
+);
 let projectStatusEpoch = 0;
 let gitStatus = $state<GitStatus | null>(null);
 let showProjectMenu = $state(false);
@@ -2571,10 +2576,11 @@ function dismissTransientMenus(): boolean {
 
 function sectionLabel() {
   if (showSettings) {
-    if (settingsSurface === "application") return settingsSection === "ai" ? "Settings · AI" : "Settings";
+    if (settingsSurface === "application") return "Settings";
     if (projectSection === "data") return "Project · Data & recovery";
     if (projectSection === "extensions") return "Project · Extensions";
     if (projectSection === "fields") return "Project · Fields & Types";
+    if (projectSection === "ai") return "Project · AI";
     if (projectSection === "snapshots") return "Project · Snapshots";
     if (projectSection === "archive") return "Project · Archive";
     if (projectSection === "advanced") return "Project · Advanced";
@@ -3075,24 +3081,32 @@ async function setDocumentMode(mode: "read" | "edit") {
   if (documentMode === "edit" && !(await flushAutoSave())) return;
   documentMode = mode;
 }
-function updateAiSetting(
-  key: "id" | "name" | "adapter" | "endpoint" | "model" | "embeddingModel" | "capabilities",
-  value: string,
-) {
+function updateAiSetting(key: keyof typeof aiProvider, value: string | string[]) {
+  const root = projectInfo?.root;
+  if (!root) return;
   aiStatus = null;
   if (key === "id" || key === "endpoint") aiModels = [];
-  if (key === "capabilities") {
-    const capabilities = value
-      .split(",")
-      .map((capability) => capability.trim())
-      .filter(Boolean);
-    aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, capabilities } };
-    void project.settingsUpdate({ ai: { provider: { capabilities } } });
-    return;
-  }
-  aiSettings = { ...aiSettings, provider: { ...aiSettings.provider, [key]: value } };
-  void project.settingsUpdate({ ai: { provider: { [key]: value } } });
+  const current = aiSettings.projectBindings[root] ?? emptyAiProvider();
+  const next = { ...current, [key]: value };
+  aiSettings = { ...aiSettings, projectBindings: { ...aiSettings.projectBindings, [root]: next } };
+  void project.settingsUpdate({ ai: { projectId: root, provider: { [key]: value } } });
   if (key === "id" || key === "endpoint") void refreshRemoteCredential();
+}
+async function saveAiPromptTemplates(templates: PromptTemplate[]) {
+  aiPromptTemplates = templates;
+  try {
+    await project.aiPromptsSet(overlayFromTemplates(templates));
+  } catch (cause) {
+    showAiIndexMessage(friendlyError(cause));
+  }
+}
+async function loadAiPromptTemplates() {
+  try {
+    const overlay = (await project.aiPromptsGet()) as PromptOverlay;
+    aiPromptTemplates = mergePromptTemplates(overlay);
+  } catch {
+    aiPromptTemplates = mergePromptTemplates();
+  }
 }
 function updateAiImageSetting(
   key: "enabled" | "id" | "name" | "adapter" | "endpoint" | "model",
@@ -3117,28 +3131,31 @@ function showAiIndexMessage(message: string) {
   }, toastDurationMs);
 }
 async function refreshRemoteCredential() {
-  if (!aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://") || !aiSettings.provider.id.trim()) {
+  const root = projectInfo?.root;
+  if (!root || !aiProvider.endpoint.trim().toLowerCase().startsWith("https://") || !aiProvider.id.trim()) {
     remoteCredential = null;
     return;
   }
   try {
-    remoteCredential = await project.aiProviderCredentialStatus();
+    remoteCredential = await project.aiProviderCredentialStatus(root);
   } catch (_) {
-    remoteCredential = { provider: aiSettings.provider.id, configured: false };
+    remoteCredential = { provider: aiProvider.id, configured: false };
   }
 }
 async function importRemoteCredential() {
-  if (!aiSettings.provider.id.trim()) return;
+  const root = projectInfo?.root;
+  if (!root || !aiProvider.id.trim()) return;
   try {
-    remoteCredential = await project.aiProviderImportCredential();
+    remoteCredential = await project.aiProviderImportCredential(root);
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
   }
 }
 async function saveRemoteCredential(apiKey: string): Promise<boolean> {
-  if (!aiSettings.provider.id.trim()) return false;
+  const root = projectInfo?.root;
+  if (!root || !aiProvider.id.trim()) return false;
   try {
-    remoteCredential = await project.aiProviderSetCredential(apiKey);
+    remoteCredential = await project.aiProviderSetCredential(root, apiKey);
     return true;
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
@@ -3146,9 +3163,10 @@ async function saveRemoteCredential(apiKey: string): Promise<boolean> {
   }
 }
 async function clearRemoteCredential() {
-  if (!aiSettings.provider.id.trim()) return;
+  const root = projectInfo?.root;
+  if (!root || !aiProvider.id.trim()) return;
   try {
-    remoteCredential = await project.aiProviderClearCredential();
+    remoteCredential = await project.aiProviderClearCredential(root);
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
   }
@@ -3173,15 +3191,15 @@ async function setProjectAiEnabled(enabled: boolean) {
 async function setRemoteConsent(allowed: boolean) {
   if (
     !projectInfo?.root ||
-    !aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://") ||
-    !aiSettings.provider.id ||
-    !aiSettings.provider.endpoint
+    !aiProvider.endpoint.trim().toLowerCase().startsWith("https://") ||
+    !aiProvider.id ||
+    !aiProvider.endpoint
   )
     return;
   try {
     await project.aiRemoteSetConsent(projectInfo.root, allowed);
     const consents = aiSettings.consents.filter(
-      (consent) => !(consent.projectId === projectInfo?.root && consent.provider === aiSettings.provider.id),
+      (consent) => !(consent.projectId === projectInfo?.root && consent.provider === aiProvider.id),
     );
     aiSettings = {
       ...aiSettings,
@@ -3190,8 +3208,8 @@ async function setRemoteConsent(allowed: boolean) {
             ...consents,
             {
               projectId: projectInfo.root,
-              provider: aiSettings.provider.id,
-              endpoint: aiSettings.provider.endpoint,
+              provider: aiProvider.id,
+              endpoint: aiProvider.endpoint,
             },
           ]
         : consents,
@@ -3200,49 +3218,38 @@ async function setRemoteConsent(allowed: boolean) {
     showAiIndexMessage(friendlyError(cause));
   }
 }
-async function checkAiProvider() {
+async function connectAiProvider() {
+  const root = projectInfo?.root;
+  if (!root) return;
+  const endpoint = aiProvider.endpoint.trim();
+  if (!endpoint) {
+    aiModelsMessage = "Enter an endpoint before connecting.";
+    return;
+  }
   if (aiStatusTimer !== null) window.clearTimeout(aiStatusTimer);
+  aiModelsBusy = true;
+  aiModelsMessage = "";
   try {
-    aiStatus = await project.aiProviderStatus();
+    const result = await project.aiProviderConnect(root);
+    aiStatus = result.status;
+    aiModels = result.models;
+    if (aiModels.length === 0) {
+      aiModelsMessage = result.status.error ?? "No models were returned.";
+    } else {
+      aiModelsMessage = `${aiModels.length} model${aiModels.length === 1 ? "" : "s"} available.`;
+      if (!aiProvider.model.trim() && aiModels.length === 1) updateAiSetting("model", aiModels[0]);
+    }
   } catch (cause) {
+    aiModels = [];
     aiStatus = {
-      endpoint: aiSettings.provider.endpoint,
-      model: aiSettings.provider.model,
+      endpoint: aiProvider.endpoint,
+      model: aiProvider.model,
       available: false,
       modelAvailable: false,
       embeddingAvailable: false,
       credentialAvailable: false,
       error: friendlyError(cause),
     };
-  }
-  aiStatusTimer = window.setTimeout(() => {
-    aiStatus = null;
-    aiStatusTimer = null;
-  }, toastDurationMs);
-}
-async function loadAiModels() {
-  const endpoint = aiSettings.provider.endpoint.trim();
-  if (!endpoint) {
-    aiModelsMessage = "Enter an active provider endpoint before loading models.";
-    return;
-  }
-  aiModelsBusy = true;
-  aiModelsMessage = "";
-  try {
-    aiModels = await project.aiProviderModels();
-    if (aiModels.length === 0) {
-      aiModelsMessage = "No models were returned by the active provider.";
-    } else {
-      aiModelsMessage = `${aiModels.length} model${aiModels.length === 1 ? "" : "s"} available.`;
-      if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
-      aiModelsMessageTimer = window.setTimeout(() => {
-        aiModelsMessage = "";
-        aiModelsMessageTimer = null;
-      }, toastDurationMs);
-      if (!aiSettings.provider.model.trim() && aiModels.length === 1) updateAiSetting("model", aiModels[0]);
-    }
-  } catch (cause) {
-    aiModels = [];
     aiModelsMessage = friendlyError(cause);
   } finally {
     aiModelsBusy = false;
@@ -3273,10 +3280,10 @@ async function refreshAiIndexStatus() {
 }
 async function rebuildAiIndex() {
   if (!projectInfo?.aiEnabled) {
-    showAiIndexMessage("AI is disabled for this project. Enable AI in Settings first.");
+    showAiIndexMessage("AI is disabled for this project. Enable AI in Project first.");
     return;
   }
-  if (!aiSettings.provider.endpoint.trim() || !aiSettings.provider.model.trim()) {
+  if (!aiProvider.endpoint.trim() || !aiProvider.model.trim()) {
     showAiIndexMessage("Configure the active provider endpoint and model before building the semantic index.");
     return;
   }
@@ -3287,7 +3294,7 @@ async function rebuildAiIndex() {
     aiIndexStatus = {
       available: true,
       state: result.state,
-      provider: aiSettings.provider.id,
+      provider: aiProvider.id,
       embeddingAvailable: true,
       message: null,
     };
@@ -3314,15 +3321,11 @@ function setAiSelection(markdown: string, plainText: string) {
     aiSourceSelectionPlain = plainText;
   }
 }
-function openAiAction(
-  action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom",
-  markdown: string,
-  plainText: string,
-  context: string,
-) {
+function openAiAction(action: string, markdown: string, plainText: string, context: string) {
   if (!projectInfo?.aiEnabled) return;
-  if (action !== "generate" && !markdown.trim()) return;
-  if (action !== "generate") {
+  const template = aiPromptTemplates.find((item) => item.id === action);
+  if (template?.requiresSelection && !markdown.trim()) return;
+  if (template?.requiresSelection) {
     aiSourceSelection = markdown;
     aiSourceSelectionPlain = plainText;
     aiGenerationContext = "";
@@ -3332,16 +3335,7 @@ function openAiAction(
     aiGenerationContext = context;
   }
   aiMode = action === "generate" ? "generate" : "rewrite";
-  const instructions = {
-    rewrite: "Rewrite this to be more vivid while preserving the meaning.",
-    concise: "Make this more concise while preserving the meaning.",
-    expand: "Expand this with useful detail while preserving the meaning.",
-    grammar: "Fix grammar, spelling, and awkward phrasing while preserving the meaning.",
-    tone: "Change the tone of this passage while preserving its meaning. Ask for the desired tone if needed.",
-    custom: "",
-    generate: "Write text that fits naturally at the cursor position.",
-  } as const;
-  aiInstruction = instructions[action];
+  aiInstruction = instructionFor(aiPromptTemplates, action);
   aiRewriteOpen = true;
 }
 function emptyInspectorDefinitions() {
@@ -3436,8 +3430,8 @@ async function fillAiFields() {
   if (!projectInfo?.aiEnabled) return;
   const empty = emptyInspectorDefinitions();
   if (empty.length === 0) return;
-  const endpoint = aiSettings.provider.endpoint.trim();
-  const model = aiSettings.provider.model.trim();
+  const endpoint = aiProvider.endpoint.trim();
+  const model = aiProvider.model.trim();
   if (!endpoint || !model) {
     error = "Configure the active provider endpoint and model before filling fields.";
     return;
@@ -3781,8 +3775,13 @@ async function loadRecentProjects() {
     applyThemePreference(themePreference);
     updateChannelPreference = normalizeUpdateChannelPreference(settings.general.appearance.updateChannel);
     cacheUpdateChannelPreference(updateChannelPreference);
-    aiSettings = settings.ai;
+    aiSettings = {
+      projectBindings: settings.ai.projectBindings ?? {},
+      imageProvider: settings.ai.imageProvider,
+      consents: settings.ai.consents ?? [],
+    };
     await refreshRemoteCredential();
+    if (projectInfo) await loadAiPromptTemplates();
     if (recentProjects.length > 0 || settingsMigrated) return;
     const stored = JSON.parse(localStorage.getItem(recentProjectsKey) ?? "[]");
     if (Array.isArray(stored)) {
@@ -4164,6 +4163,8 @@ function statusCenterSummary() {
 async function finishOpening(info?: ProjectInfo) {
   projectInfo = info ?? (await project.info());
   if (!projectInfo) throw new Error("The project did not return an identity");
+  await loadAiPromptTemplates();
+  await refreshRemoteCredential();
   modules = await project.listModuleManifests();
   await reconcileWorkspaceSection();
   rememberProject(projectInfo);
@@ -7120,20 +7121,7 @@ onMount(() => {
         onUpdateChannelChange={updateUpdateChannelPreference}
         onRemoveRecent={removeRecentProject}
         onClose={closeSettings}
-        onBeforeNavigate={beforeVisibleSettingsNavigate}
-        {aiSettings}
-        {aiStatus}
-        {aiModels}
-        {aiModelsBusy}
-        {aiModelsMessage}
-        onAiSettingsChange={updateAiSetting}
-        onAiImageSettingsChange={updateAiImageSetting}
-        onAiCheck={() => void checkAiProvider()}
-        onAiModelsLoad={() => void loadAiModels()}
-        {remoteCredential}
-        onAiRemoteImport={() => void importRemoteCredential()}
-        onAiRemoteSave={(apiKey) => saveRemoteCredential(apiKey)}
-        onAiRemoteClear={() => void clearRemoteCredential()} />
+        onBeforeNavigate={beforeVisibleSettingsNavigate} />
     {:else if showSettings && projectInfo}
       <ProjectCenter
         bind:section={projectSection}
@@ -7149,10 +7137,6 @@ onMount(() => {
         snapshotRepository={gitStatus?.repository ?? false}
         snapshotBranch={gitStatus?.branch ?? null}
         {archivedCount}
-        {aiIndexStatus}
-        {aiIndexBusy}
-        {aiIndexMessage}
-        remoteProvider={aiSettings.provider.endpoint.trim().toLowerCase().startsWith("https://")}
         onClose={closeSettings}
         onBeforeNavigate={beforeVisibleProjectNavigate}
         onImportExternal={openExternalImport}
@@ -7163,11 +7147,6 @@ onMount(() => {
         onImportCheckpoint={importPortableCheckpoint}
         onRebuildIndex={rebuildSearchIndex}
         onSeedExample={seedExample}
-        onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
-        onAiRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
-        onAiIndexRefresh={() => void refreshAiIndexStatus()}
-        onAiIndexRebuild={() => void rebuildAiIndex()}
-        onAiIndexCancel={() => void cancelAiIndex()}
         typeLabel={entityTypeLabel}
         onArchiveChanged={() => void handleArchiveChanged()}
         onArchiveToast={showToast}>
@@ -7441,11 +7420,42 @@ onMount(() => {
             }}
             onDirtyChange={setSchemaEditorDirty} />
         {/snippet}
+        {#snippet ai()}
+          <ProjectAiSettingsPanel
+            enabled={projectInfo?.aiEnabled ?? false}
+            provider={aiProvider}
+            imageProvider={aiSettings.imageProvider}
+            {aiStatus}
+            {aiModels}
+            {aiModelsBusy}
+            {aiModelsMessage}
+            {remoteCredential}
+            remoteConsent={aiSettings.consents.some(
+              (consent) => consent.projectId === projectInfo?.root && consent.provider === aiProvider.id,
+            )}
+            {aiIndexStatus}
+            {aiIndexBusy}
+            {aiIndexMessage}
+            templates={aiPromptTemplates}
+            onToggleAi={(enabled) => void setProjectAiEnabled(enabled)}
+            onProviderChange={updateAiSetting}
+            onImageChange={updateAiImageSetting}
+            onConnect={() => void connectAiProvider()}
+            onRemoteImport={() => void importRemoteCredential()}
+            onRemoteSave={(apiKey) => saveRemoteCredential(apiKey)}
+            onRemoteClear={() => void clearRemoteCredential()}
+            onRemoteConsent={(allowed) => void setRemoteConsent(allowed)}
+            onAiIndexRefresh={() => void refreshAiIndexStatus()}
+            onAiIndexRebuild={() => void rebuildAiIndex()}
+            onAiIndexCancel={() => void cancelAiIndex()}
+            onTemplatesChange={(templates) => void saveAiPromptTemplates(templates)} />
+        {/snippet}
         {#snippet snapshots()}
           <GitSettingsPanel
             projectOpen={ready}
             projectId={projectInfo?.root ?? ""}
             aiEnabled={projectInfo?.aiEnabled ?? false}
+            aiInstruction={instructionFor(aiPromptTemplates, "git-message")}
             onError={(message) => (error = message)}
             onStatusChange={(status) => (gitStatus = status)}
             beforeWrite={flushAutoSave} />
@@ -7540,7 +7550,8 @@ onMount(() => {
           projectId={projectInfo?.root ?? ""}
           aiEnabled={projectInfo?.aiEnabled ?? false}
           imageProvider={aiSettings.imageProvider}
-          textProvider={aiSettings.provider}
+          textProvider={aiProvider}
+          promptTemplates={aiPromptTemplates}
           onClose={() => void closeLoreWiki()}
           onSelectEntity={(id) => {
             const ent = entities.find((e) => e.id === id);
@@ -8336,7 +8347,7 @@ onMount(() => {
                         }}>
                         <div class="ai-rewrite-heading">
                           <div>
-                            <span class="panel-kicker">{aiSettings.provider.name || "AI provider"}</span><strong
+                            <span class="panel-kicker">{aiProvider.name || "AI provider"}</span><strong
                               id="ai-rewrite-title"
                               >{aiCancelPending
                                 ? "Cancelling request…"
@@ -8358,7 +8369,7 @@ onMount(() => {
                               rows="2"
                               bind:value={aiInstruction}
                               disabled={aiBusy}
-                              placeholder={`Tell ${aiSettings.provider.name || "the AI provider"} how to rewrite the selection`}
+                              placeholder={`Tell ${aiProvider.name || "the AI provider"} how to rewrite the selection`}
                             ></textarea
                             ></label
                           >{/if}
@@ -8424,6 +8435,7 @@ onMount(() => {
                           !aiRewriteOpen}
                         fullscreen={editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
+                        aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
                         onChange={updateDocumentBody}
                         onSelectionChange={setAiSelection}
                         onAiRequest={openAiAction}

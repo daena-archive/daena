@@ -23,6 +23,7 @@ import {
   type ModuleManifest,
 } from "$lib/project/client";
 import ImageGenerationDialog, { type ImageContextChoice } from "$lib/ai/ImageGenerationDialog.svelte";
+import type { PromptTemplate } from "$lib/ai/promptTemplates";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
 import { fieldDisplay, formatAttributeValue, formatSystemTimestamp, humanizeType, isEmptyValue } from "./wiki-format";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
@@ -47,6 +48,7 @@ let {
   aiEnabled,
   imageProvider,
   textProvider,
+  promptTemplates,
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
 }: {
@@ -57,6 +59,7 @@ let {
   aiEnabled: boolean;
   imageProvider: ImageProviderSettings;
   textProvider: AiProviderSettings;
+  promptTemplates?: PromptTemplate[];
   onClose?: () => void;
   onSelectEntity?: (id: string) => void;
 } = $props();
@@ -843,6 +846,7 @@ function handleEdit() {
     contextChoices={imageContextChoices}
     {imageProvider}
     {textProvider}
+    {promptTemplates}
     onAccepted={(asset) => {
       if (!assets.some((existing) => existing.id === asset.id)) assets = [...assets, asset];
     }}

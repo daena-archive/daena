@@ -9,6 +9,24 @@ pub(super) async fn project_info(
 }
 
 #[tauri::command]
+pub(super) async fn project_ai_prompts_get(
+    state: tauri::State<'_, SharedCore>,
+) -> Result<serde_json::Value, String> {
+    with_read_project(state, |project| project.ai_prompt_overlay()).await
+}
+
+#[tauri::command]
+pub(super) async fn project_ai_prompts_set(
+    state: tauri::State<'_, SharedCore>,
+    overlay: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.set_ai_prompt_overlay(overlay)
+    })
+    .await
+}
+
+#[tauri::command]
 pub(super) async fn project_set_ai_enabled(
     state: tauri::State<'_, SharedCore>,
     enabled: bool,

@@ -55,6 +55,7 @@ let selectedLanguage: EntitySummary | null = $state(null);
 let incompatibleFocus = $state(false);
 let pane: Pane = $state("overview");
 let pendingLexemeId: string | null = $state(null);
+// svelte-ignore state_referenced_locally
 let languageLoading = $state(Boolean(context.focusEntityId));
 let languageRequest = $state(0);
 let guideOpen = $state(false);

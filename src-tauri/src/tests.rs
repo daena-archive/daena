@@ -513,6 +513,7 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
     // Broker tests need a real, AI-enabled project: the ai.request.start gate
     // reads the canonical manifest and fails closed without an opt-in.
     static PROJECT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    static SETTINGS: std::sync::OnceLock<SharedSettings> = std::sync::OnceLock::new();
     let root = PROJECT.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("daena-ai-broker-{}", uuid::Uuid::new_v4()));
         let project = ProjectStore::open_directory(&root).unwrap();
@@ -520,10 +521,30 @@ fn ai_test_context(runtime: ai::SharedAiRuntime) -> AiBrokerContext {
         project.flush_checkpoint("AI broker test").unwrap();
         root
     });
+    let settings = SETTINGS.get_or_init(|| {
+        let directory = std::env::temp_dir().join(format!("daena-ai-broker-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        let mut configured = AppSettings::default();
+        configured.ai.project_bindings.insert(
+            root.to_string_lossy().into_owned(),
+            crate::settings::AiProviderSettings {
+                id: "test".into(),
+                name: "Test".into(),
+                adapter: "openai-compatible".into(),
+                endpoint: "http://127.0.0.1:1234/v1".into(),
+                model: "test".into(),
+                embedding_model: String::new(),
+                capabilities: vec!["text.generate".into()],
+            },
+        );
+        store.save(&configured).unwrap();
+        Arc::new(Mutex::new(store))
+    });
     AiBrokerContext {
         app: None,
         core: None,
-        settings: None,
+        settings: Some(settings.clone()),
         ai_runtime: runtime,
         session_id: "test-session".into(),
         caller: daena_ai::AiCaller::authorized_plugin(

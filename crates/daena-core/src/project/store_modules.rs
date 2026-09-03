@@ -66,6 +66,44 @@ impl ProjectStore {
         Ok(self.info().expect("root is present"))
     }
 
+    pub fn ai_prompt_overlay(&self) -> Result<serde_json::Value, CoreError> {
+        let value = self
+            .connection
+            .query_row(
+                "SELECT value FROM project_meta WHERE key='ai_prompt_templates'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match value {
+            Some(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw)
+                .map_err(|error| CoreError::Validation(format!("AI prompt overlay is invalid: {error}"))),
+            _ => Ok(serde_json::json!({ "templates": [] })),
+        }
+    }
+
+    pub fn set_ai_prompt_overlay(&self, overlay: serde_json::Value) -> Result<serde_json::Value, CoreError> {
+        if !overlay.is_object() {
+            return Err(CoreError::Validation(
+                "AI prompt overlay must be a JSON object".into(),
+            ));
+        }
+        let encoded = serde_json::to_string(&overlay)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        if encoded.len() > 64 * 1024 {
+            return Err(CoreError::Validation(
+                "AI prompt overlay is too large".into(),
+            ));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('ai_prompt_templates',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&encoded],
+        )?;
+        transaction.commit()?;
+        Ok(overlay)
+    }
+
     /// Remove only data owned by a plugin. Code uninstall and disablement do
     /// not call this method; callers must present the explicit confirmation
     /// phrase and a backup is created before the destructive transaction.

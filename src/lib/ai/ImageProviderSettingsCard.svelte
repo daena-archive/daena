@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Image, RefreshCw, ServerCog } from "@lucide/svelte";
+import { RefreshCw, ServerCog } from "@lucide/svelte";
 import {
   project,
   type ImageProviderDiscovery,
@@ -77,15 +77,13 @@ async function check() {
 }
 </script>
 
-<section class="image-provider-card" aria-labelledby="image-provider-heading">
-  <div class="heading">
-    <div class="icon"><Image size={18} strokeWidth={1.7} aria-hidden="true" /></div>
+<section class="operation-card" aria-labelledby="image-provider-heading">
+  <div class="split-heading">
     <div>
-      <span>LOCAL IMAGE GENERATION</span>
       <strong id="image-provider-heading">ComfyUI</strong>
       <p>Generated candidates stay temporary until you explicitly accept them as project assets.</p>
     </div>
-    <span class="local-badge">Local</span>
+    <span class="state-pill ok">Local</span>
   </div>
 
   <label class="enable-row">
@@ -121,14 +119,16 @@ async function check() {
         </select></label>
     </div>
     <div class="actions">
-      <button type="button" class="primary" disabled={busy} onclick={() => void discover()}>
+      <button type="button" class="primary-button" disabled={busy} onclick={() => void discover()}>
         <RefreshCw size={13} strokeWidth={1.8} aria-hidden="true" />
         {busy ? "Checking…" : "Discover models"}
       </button>
-      <button type="button" class="quiet" disabled={busy} onclick={() => void check()}>
+      <button type="button" class="quiet-button" disabled={busy} onclick={() => void check()}>
         <ServerCog size={13} strokeWidth={1.8} aria-hidden="true" /> Test connection
       </button>
-      {#if message}<span class:ok={status?.available && status?.modelAvailable} role="status">{message}</span>{/if}
+      {#if message}<span class="status-badge" class:ok={status?.available && status?.modelAvailable} role="status"
+          >{message}</span
+        >{/if}
     </div>
     {#if discovery}
       <div class="capabilities">
@@ -140,109 +140,99 @@ async function check() {
 </section>
 
 <style>
-.image-provider-card {
-  padding: 20px;
-  border: 1px solid var(--theme-neutral-border, #d9e0d8);
-  border-radius: 14px;
-  background: var(--theme-surface-bg, #fff);
-  box-shadow: 0 10px 32px rgba(31, 42, 33, 0.05);
-}
-.heading {
+.operation-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 12px;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-subtle);
 }
-.icon {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--theme-success-bg, #edf4ec);
-  color: var(--theme-success-text, #486a4e);
+.split-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
 }
-.heading span,
+.split-heading strong,
 .capabilities strong {
-  color: var(--theme-neutral-text-soft, #778279);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-.heading strong {
   display: block;
-  margin-top: 3px;
-  color: var(--theme-neutral-text, #263228);
-  font-size: 15px;
+  color: var(--ink);
+  font-size: 14px;
 }
-.heading p,
-.capabilities p {
+.split-heading p,
+.capabilities p,
+.enable-row small,
+.fields small {
   margin: 4px 0 0;
-  color: var(--theme-neutral-text-soft, #737c74);
-  font-size: 11px;
+  color: var(--ink-soft);
+  font-size: 12.5px;
   line-height: 1.5;
+  font-weight: 400;
 }
-.heading .local-badge {
-  padding: 5px 8px;
+.state-pill,
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: start;
+  min-height: 24px;
+  padding: 4px 8px;
   border-radius: 999px;
-  background: var(--theme-success-bg, #e8f3e8);
-  color: var(--theme-success-text, #407047);
-  letter-spacing: 0;
-  text-transform: none;
+  background: var(--surface-warm);
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+.state-pill.ok,
+.status-badge.ok {
+  background: var(--theme-success-bg, var(--accent-bg));
+  color: var(--success);
+}
+.status-badge {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-weight: 600;
 }
 .enable-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-top: 17px;
+  gap: 10px;
   padding: 11px 12px;
-  border-radius: 9px;
-  background: var(--theme-success-bg, #f4f6f3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
   cursor: pointer;
 }
-.enable-row input[type="checkbox"] {
-  width: 16px;
-  min-height: 16px;
-}
 .enable-row span {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 2px;
 }
 .enable-row strong {
-  color: var(--theme-neutral-text, #344036);
-  font-size: 11px;
-}
-.enable-row small,
-.fields small {
-  color: var(--theme-neutral-text-soft, #7a847b);
-  font-size: 9px;
+  color: var(--ink);
+  font-size: 13px;
 }
 .fields {
   display: grid;
   grid-template-columns: minmax(220px, 1.25fr) minmax(200px, 1fr);
   gap: 12px;
-  margin-top: 14px;
 }
 .fields label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  color: var(--theme-neutral-text-soft, #536056);
-  font-size: 10px;
+  display: grid;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
   font-weight: 700;
 }
 .fields input,
 .fields select {
   width: 100%;
-  height: 36px;
   min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--theme-neutral-border, #d4dbd3);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--theme-surface-bg, #fff);
-  color: var(--theme-neutral-text, #2f3931);
+  background: var(--surface);
+  color: var(--ink);
   font: inherit;
   font-weight: 500;
   box-sizing: border-box;
@@ -252,40 +242,36 @@ async function check() {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 13px;
 }
-.actions button {
+.primary-button,
+.quiet-button {
   display: inline-flex;
-  min-height: 32px;
   align-items: center;
-  gap: 6px;
-  padding: 0 11px;
-  border: 1px solid var(--theme-neutral-border, #ccd5cb);
+  gap: 7px;
+  min-height: 34px;
+  padding: 8px 12px;
   border-radius: 8px;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 650;
   cursor: pointer;
 }
-.actions .primary {
-  border-color: var(--theme-success-border, #486d50);
-  background: #486d50;
-  color: #fff;
+.primary-button {
+  border: 1px solid var(--accent-dark);
+  background: var(--accent-dark);
+  color: var(--on-accent);
 }
-.actions .quiet {
-  background: var(--theme-surface-bg, #fff);
-  color: var(--theme-neutral-text-soft, #4c5a4f);
+.quiet-button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
 }
-.actions span {
-  color: var(--theme-danger-text, #8a5548);
-  font-size: 10px;
-}
-.actions span.ok {
-  color: var(--theme-success-text, #3f7548);
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .capabilities {
-  margin-top: 13px;
   padding-top: 12px;
-  border-top: 1px solid var(--theme-neutral-border, #edf0ec);
+  border-top: 1px solid var(--line);
 }
 @media (max-width: 720px) {
   .fields {

@@ -217,13 +217,26 @@ pub fn resolve_ai_provider(
     resolve_ai_provider_with_credential(settings, project_id, include_project_context, true)
 }
 
+pub(super) fn project_provider<'a>(
+    settings: &'a AppSettings,
+    project_id: Option<&str>,
+) -> Result<&'a crate::settings::AiProviderSettings, String> {
+    let project_id = project_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "Open a project to configure AI".to_string())?;
+    settings.ai.project_bindings.get(project_id).ok_or_else(|| {
+        "Configure an AI provider for this project first".to_string()
+    })
+}
+
 pub(super) fn resolve_ai_provider_with_credential(
     settings: &AppSettings,
     project_id: Option<&str>,
     include_project_context: bool,
     require_credential: bool,
 ) -> Result<ResolvedAiProvider, String> {
-    let provider = &settings.ai.provider;
+    let provider = project_provider(settings, project_id)?;
     let endpoint = provider.endpoint.trim().to_string();
     let model = provider.model.trim().to_string();
     if endpoint.is_empty() {
@@ -276,19 +289,29 @@ pub(super) fn resolve_ai_provider_with_credential(
     }
 }
 
-#[tauri::command]
-pub fn ai_provider_credential_status(
-    settings: State<'_, Arc<Mutex<SettingsStore>>>,
-) -> Result<RemoteCredentialStatus, String> {
-    let provider = settings
+fn load_project_binding(
+    settings: &State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: &str,
+) -> Result<crate::settings::AiProviderSettings, String> {
+    Ok(settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .load()?
         .ai
-        .provider;
+        .binding(project_id))
+}
+
+#[tauri::command]
+pub fn ai_provider_credential_status(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
+) -> Result<RemoteCredentialStatus, String> {
+    let provider = load_project_binding(&settings, &project_id)?;
+    let configured = !provider.endpoint.trim().is_empty()
+        && endpoint_is_remote(&provider.endpoint)?
+        && read_remote_api_key(&provider.id)?.is_some();
     Ok(RemoteCredentialStatus {
-        configured: endpoint_is_remote(&provider.endpoint)?
-            && read_remote_api_key(&provider.id)?.is_some(),
+        configured,
         provider: provider.id,
     })
 }
@@ -300,14 +323,10 @@ pub fn ai_provider_credential_status(
 #[tauri::command]
 pub fn ai_provider_import_credential(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
 ) -> Result<RemoteCredentialStatus, String> {
-    let provider = settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .load()?
-        .ai
-        .provider;
-    if !endpoint_is_remote(&provider.endpoint)? {
+    let provider = load_project_binding(&settings, &project_id)?;
+    if provider.endpoint.trim().is_empty() || !endpoint_is_remote(&provider.endpoint)? {
         return Err("The active provider does not require a remote credential".into());
     }
     if read_remote_api_key(&provider.id)?.is_some() {
@@ -334,15 +353,11 @@ pub fn ai_provider_import_credential(
 #[tauri::command]
 pub fn ai_provider_set_credential(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
     api_key: String,
 ) -> Result<RemoteCredentialStatus, String> {
-    let provider = settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .load()?
-        .ai
-        .provider;
-    if !endpoint_is_remote(&provider.endpoint)? {
+    let provider = load_project_binding(&settings, &project_id)?;
+    if provider.endpoint.trim().is_empty() || !endpoint_is_remote(&provider.endpoint)? {
         return Err("The active provider does not require a remote credential".into());
     }
     let key = api_key.trim();
@@ -362,13 +377,9 @@ pub fn ai_provider_set_credential(
 #[tauri::command]
 pub fn ai_provider_clear_credential(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
 ) -> Result<RemoteCredentialStatus, String> {
-    let provider = settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?
-        .load()?
-        .ai
-        .provider;
+    let provider = load_project_binding(&settings, &project_id)?;
     // Clearing is intentionally allowed even when the active endpoint is local,
     // so a stale key for this provider can always be removed.
     delete_remote_api_key(&provider.id)?;
@@ -387,8 +398,8 @@ pub fn ai_remote_set_consent(
     let store = settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?;
-    let active_provider = store.load()?.ai.provider;
-    if !endpoint_is_remote(&active_provider.endpoint)? {
+    let active_provider = store.load()?.ai.binding(&project_id);
+    if active_provider.endpoint.trim().is_empty() || !endpoint_is_remote(&active_provider.endpoint)? {
         return Err("The active provider is local; remote consent is not applicable".into());
     }
     validate_remote_endpoint(&active_provider.endpoint)?;

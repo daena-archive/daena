@@ -154,27 +154,38 @@ pub(super) async fn provider_status(provider: ResolvedAiProvider) -> AiProviderS
     status
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConnectResult {
+    pub status: AiProviderStatus,
+    pub models: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn ai_provider_status(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
 ) -> Result<AiProviderStatus, String> {
     let configured = settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .load()?;
-    let provider = resolve_ai_provider_with_credential(&configured, None, false, false)?;
+    let provider =
+        resolve_ai_provider_with_credential(&configured, Some(&project_id), false, false)?;
     Ok(provider_status(provider).await)
 }
 
 #[tauri::command]
 pub async fn ai_provider_models(
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
 ) -> Result<Vec<String>, String> {
     let configured = settings
         .lock()
         .map_err(|_| "settings lock poisoned".to_string())?
         .load()?;
-    let provider = resolve_ai_provider_with_credential(&configured, None, false, false)?;
+    let provider =
+        resolve_ai_provider_with_credential(&configured, Some(&project_id), false, false)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         if provider.remote {
             remote_http_request(
@@ -210,6 +221,19 @@ pub async fn ai_provider_models(
     models.sort();
     models.dedup();
     Ok(models)
+}
+
+#[tauri::command]
+pub async fn ai_provider_connect(
+    settings: State<'_, Arc<Mutex<SettingsStore>>>,
+    project_id: String,
+) -> Result<AiProviderConnectResult, String> {
+    let models = ai_provider_models(settings.clone(), project_id.clone()).await;
+    let status = ai_provider_status(settings, project_id).await?;
+    Ok(AiProviderConnectResult {
+        status,
+        models: models.unwrap_or_default(),
+    })
 }
 
 #[tauri::command]

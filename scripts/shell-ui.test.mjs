@@ -49,7 +49,7 @@ const settings = components.get("src/lib/SettingsView.svelte");
 assert.doesNotMatch(settings, /> Plugins<\/button>|> Snapshots<\/button>|> Schema<\/button>/);
 
 const projectCenter = components.get("src/lib/ProjectCenter.svelte");
-for (const section of ["Overview", "Data &amp; recovery", "Extensions", "Fields &amp; Types", "Snapshots"])
+for (const section of ["Overview", "Data &amp; recovery", "Extensions", "Fields &amp; Types", "AI", "Snapshots"])
   assert.match(projectCenter, new RegExp(`> ${section}`), `Project Center includes ${section}`);
 // Developer fixtures are allowed but must stay gated in Advanced > details.raw-controls
 assert.match(projectCenter, /<details[^>]*class="raw-controls"[^>]*>/);

@@ -102,8 +102,9 @@ pub fn ai_index_status(
     runtime: State<'_, SharedAiRuntime>,
     settings: State<'_, Arc<Mutex<SettingsStore>>>,
 ) -> Result<AiIndexStatus, String> {
-    if let Some(project_id) = crate::current_info(core.inner())?.map(|info| info.root) {
-        crate::ensure_project_ai_enabled(&project_id)?;
+    let project_id = crate::current_info(core.inner())?.map(|info| info.root);
+    if let Some(project_id) = project_id.as_deref() {
+        crate::ensure_project_ai_enabled(project_id)?;
     }
     let mut status = index_status(runtime.inner());
     let configured = settings.lock().ok().and_then(|store| store.load().ok());
@@ -111,7 +112,7 @@ pub fn ai_index_status(
         status.message = Some("AI provider settings are unavailable".into());
         return Ok(status);
     };
-    match resolve_ai_provider_with_credential(&configured, None, false, false) {
+    match resolve_ai_provider_with_credential(&configured, project_id.as_deref(), false, false) {
         Ok(provider) => {
             status.provider = Some(provider.provider_id.clone());
             status.embedding_available = provider.embedding_available;

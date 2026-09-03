@@ -64,11 +64,30 @@ fn remote_redirects_and_provider_secrets_are_redacted() {
     assert!(diagnostic.contains("[REDACTED]"));
 }
 
+fn test_binding(
+    id: &str,
+    endpoint: &str,
+    model: &str,
+    capabilities: Vec<String>,
+) -> crate::settings::AiProviderSettings {
+    crate::settings::AiProviderSettings {
+        id: id.into(),
+        name: id.into(),
+        adapter: "openai-compatible".into(),
+        endpoint: endpoint.into(),
+        model: model.into(),
+        embedding_model: String::new(),
+        capabilities,
+    }
+}
+
 #[test]
 fn remote_provider_requires_exact_consent_before_transport() {
     let mut settings = crate::settings::AppSettings::default();
-    settings.ai.provider.id = "provider".into();
-    settings.ai.provider.endpoint = "https://api.example.com/v1".into();
+    settings.ai.project_bindings.insert(
+        "/project".into(),
+        test_binding("provider", "https://api.example.com/v1", "", vec![]),
+    );
     assert!(!remote_consent_matches(
         &settings,
         "/project",
@@ -91,9 +110,15 @@ fn remote_provider_requires_exact_consent_before_transport() {
 #[test]
 fn provider_resolution_requires_consent_before_credential_lookup() {
     let mut settings = crate::settings::AppSettings::default();
-    settings.ai.provider.id = "provider".into();
-    settings.ai.provider.model = "model".into();
-    settings.ai.provider.endpoint = "https://api.example.com/v1".into();
+    settings.ai.project_bindings.insert(
+        "/project".into(),
+        test_binding(
+            "provider",
+            "https://api.example.com/v1",
+            "model",
+            vec![],
+        ),
+    );
     let error = resolve_ai_provider(&settings, Some("/project"), true).unwrap_err();
     assert_eq!(error, AiError::RemoteContextDenied.to_string());
     settings.ai.consents.push(crate::settings::RemoteConsent {
@@ -105,19 +130,41 @@ fn provider_resolution_requires_consent_before_credential_lookup() {
         resolve_ai_provider(&settings, Some("/project"), true).unwrap_err(),
         AiError::AuthenticationFailed.to_string()
     );
-    let probe = resolve_ai_provider_with_credential(&settings, None, false, false).unwrap();
+    let probe =
+        resolve_ai_provider_with_credential(&settings, Some("/project"), false, false).unwrap();
     assert!(probe.api_key.is_none());
 }
 
 #[test]
 fn embedding_capability_is_model_profile_scoped() {
     let mut settings = crate::settings::AppSettings::default();
-    settings.ai.provider.capabilities = vec!["text.generate".into()];
-    let provider = resolve_ai_provider(&settings, None, false).unwrap();
+    settings.ai.project_bindings.insert(
+        "/project".into(),
+        test_binding(
+            "lm-studio",
+            "http://127.0.0.1:1234/v1",
+            "",
+            vec!["text.generate".into()],
+        ),
+    );
+    let provider = resolve_ai_provider(&settings, Some("/project"), false).unwrap();
     assert!(!provider.embedding_available);
-    settings.ai.provider.capabilities.push("text.embed".into());
-    let provider = resolve_ai_provider(&settings, None, false).unwrap();
+    settings
+        .ai
+        .project_bindings
+        .get_mut("/project")
+        .unwrap()
+        .capabilities
+        .push("text.embed".into());
+    let provider = resolve_ai_provider(&settings, Some("/project"), false).unwrap();
     assert!(provider.embedding_available);
+}
+
+#[test]
+fn empty_project_binding_is_not_a_provider() {
+    let settings = crate::settings::AppSettings::default();
+    let error = resolve_ai_provider(&settings, Some("/project"), false).unwrap_err();
+    assert!(error.contains("Configure an AI provider"));
 }
 
 #[test]

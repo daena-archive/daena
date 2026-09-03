@@ -158,12 +158,8 @@ export let value = "";
 export let placeholder = "Start writing…";
 export let onChange: (value: string) => void = () => {};
 export let onSelectionChange: (markdown: string, plainText: string) => void = () => {};
-export let onAiRequest: (
-  action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom",
-  markdown: string,
-  plainText: string,
-  context: string,
-) => void = () => {};
+export let onAiRequest: (action: string, markdown: string, plainText: string, context: string) => void = () => {};
+export let aiTemplates: Array<{ id: string; label: string; requiresSelection?: boolean; enabled?: boolean }> = [];
 export let editable = true;
 export let fullscreen = false;
 /** Project-level AI opt-in; hides the Ask-AI toolbar entry when false. */
@@ -436,15 +432,37 @@ function focusEditorSurface(event: MouseEvent) {
   if (event.target === event.currentTarget) editor?.commands.focus();
 }
 
-function requestAi(action: "rewrite" | "generate" | "concise" | "expand" | "grammar" | "tone" | "custom") {
-  if (!editor || (action !== "generate" && !selectionText.trim())) return;
+function editorAiTemplates() {
+  return (
+    aiTemplates.length
+      ? aiTemplates
+      : [
+          { id: "rewrite", label: "Rewrite selection", requiresSelection: true },
+          { id: "generate", label: "Generate text" },
+          { id: "concise", label: "Make concise", requiresSelection: true },
+          { id: "expand", label: "Expand", requiresSelection: true },
+          { id: "grammar", label: "Fix grammar", requiresSelection: true },
+          { id: "tone", label: "Change tone", requiresSelection: true },
+          { id: "custom", label: "Custom instruction" },
+        ]
+  ).filter((template) => template.enabled !== false);
+}
+
+function requestAi(action: string) {
+  const template = editorAiTemplates().find((item) => item.id === action);
+  if (!editor || (template?.requiresSelection && !selectionText.trim())) return;
   const { from, to } = editor.state.selection;
   aiRequestRange = { from, to };
   aiMenuOpen = false;
   const beforeCursor = editor.state.doc.textBetween(0, from, "\n").slice(-8000);
   const afterCursor = editor.state.doc.textBetween(to, editor.state.doc.content.size, "\n").slice(0, 8000);
   const cursorContext = `${beforeCursor}\n[CURSOR]\n${afterCursor}`.trim();
-  onAiRequest(action, selectionMarkdown, selectionText, action === "generate" ? cursorContext : selectionMarkdown);
+  onAiRequest(
+    action,
+    selectionMarkdown,
+    selectionText,
+    template?.requiresSelection ? selectionMarkdown : cursorContext,
+  );
 }
 
 export function insertAiTextAtRequest(value: string): boolean {
@@ -2324,46 +2342,14 @@ $: inTable = editorState?.isActive("table") ?? false;
             onclick={() => (aiMenuOpen = !aiMenuOpen)}><SparklesIcon size={14} strokeWidth={1.8} /></button>
           {#if aiMenuOpen}
             <div class="ai-toolbar-menu" role="menu" aria-label="Ask AI">
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!selectionText.trim()}
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("rewrite")}>Rewrite selection</button>
-              <button
-                type="button"
-                role="menuitem"
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("generate")}>Generate text</button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!selectionText.trim()}
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("concise")}>Make concise</button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!selectionText.trim()}
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("expand")}>Expand</button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!selectionText.trim()}
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("grammar")}>Fix grammar</button>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={!selectionText.trim()}
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("tone")}>Change tone</button>
-              <button
-                type="button"
-                role="menuitem"
-                onmousedown={(event) => event.preventDefault()}
-                onclick={() => requestAi("custom")}>Custom instruction</button>
+              {#each editorAiTemplates() as template}
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={template.requiresSelection && !selectionText.trim()}
+                  onmousedown={(event) => event.preventDefault()}
+                  onclick={() => requestAi(template.id)}>{template.label}</button>
+              {/each}
             </div>
           {/if}
         </div>

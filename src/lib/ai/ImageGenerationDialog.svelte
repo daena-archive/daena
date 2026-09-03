@@ -13,6 +13,7 @@ import {
   type ImageProviderDiscovery,
   type ImageProviderSettings,
 } from "$lib/project/client";
+import { instructionFor, mergePromptTemplates, type PromptTemplate } from "$lib/ai/promptTemplates";
 
 export type ImageContextChoice = {
   id: string;
@@ -30,6 +31,7 @@ let {
   contextChoices,
   imageProvider,
   textProvider,
+  promptTemplates = mergePromptTemplates(),
   onAccepted,
   onClose,
 }: {
@@ -39,6 +41,7 @@ let {
   contextChoices: ImageContextChoice[];
   imageProvider: ImageProviderSettings;
   textProvider: AiProviderSettings;
+  promptTemplates?: PromptTemplate[];
   onAccepted: (asset: Asset) => void;
   onClose: () => void;
 } = $props();
@@ -128,16 +131,15 @@ function generationContext(): ImageContextItem[] {
 }
 
 function promptInstruction(action: ImagePromptProvenance["method"]) {
-  if (action === "rewrite") {
-    return "Rewrite the current image prompt into one concise, visually specific text-to-image prompt. Preserve all stated facts. Return only the final prompt.";
-  }
-  if (action === "detailed") {
-    return "Make the current image prompt more visually detailed while preserving every stated fact. Add composition, lighting, materials, and atmosphere only when consistent with the supplied context. Return only the final prompt.";
-  }
-  if (action === "simplified") {
-    return "Simplify the current image prompt into a concise, clear text-to-image prompt without losing stated world facts. Return only the final prompt.";
-  }
-  return "Write one concise, visually oriented text-to-image prompt from the selected world facts. Preserve facts, avoid unsupported inventions, and return only the final prompt.";
+  const id =
+    action === "rewrite"
+      ? "image-rewrite"
+      : action === "detailed"
+        ? "image-detailed"
+        : action === "simplified"
+          ? "image-simplified"
+          : "image-entity";
+  return instructionFor(promptTemplates, id);
 }
 
 async function buildPrompt(action: ImagePromptProvenance["method"], defaultsOnly = false) {

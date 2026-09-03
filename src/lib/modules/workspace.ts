@@ -25,8 +25,9 @@ export function workspaceSectionDescription(section: WorkspaceSection): string {
 export function workspaceModuleId(section: WorkspaceSection): string {
   return WORKSPACE_MODULE_IDS[section];
 }
-export type SettingsSection = "general" | "ai";
-export type ProjectSection = "overview" | "data" | "extensions" | "fields" | "snapshots" | "archive" | "advanced";
+export type SettingsSection = "general";
+export type ProjectSection =
+  "overview" | "data" | "extensions" | "fields" | "ai" | "snapshots" | "archive" | "advanced";
 export type SortField = "name" | "created_at" | "updated_at";
 export type SortDirection = "asc" | "desc";
 export type CollectionViewMode = "flat" | "grouped";

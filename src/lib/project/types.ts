@@ -789,7 +789,7 @@ export interface AppSettings {
   ai: AiSettings;
 }
 export interface AiSettings {
-  provider: AiProviderSettings;
+  projectBindings: Record<string, AiProviderSettings>;
   imageProvider: ImageProviderSettings;
   consents: Array<{ projectId: string; provider: string; endpoint: string }>;
 }
@@ -820,6 +820,7 @@ export interface AppSettingsUpdate {
     appearance?: Partial<AppearanceSettings>;
   };
   ai?: {
+    projectId?: string;
     provider?: Partial<AiProviderSettings>;
     imageProvider?: Partial<ImageProviderSettings>;
   };
@@ -912,6 +913,10 @@ export interface AiProviderStatus {
   embeddingAvailable: boolean;
   credentialAvailable: boolean;
   error: string | null;
+}
+export interface AiProviderConnectResult {
+  status: AiProviderStatus;
+  models: string[];
 }
 export interface AiIndexStatus {
   available: boolean;

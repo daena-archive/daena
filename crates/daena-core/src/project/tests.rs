@@ -4396,6 +4396,21 @@ fn ai_enabled_defaults_to_false_and_round_trips() {
 }
 
 #[test]
+fn ai_prompt_overlay_round_trips() {
+    let root = std::env::temp_dir().join(format!("daena-ai-prompts-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let empty = store.ai_prompt_overlay().unwrap();
+    assert_eq!(empty["templates"], serde_json::json!([]));
+    let overlay = serde_json::json!({
+        "templates": [{ "id": "rewrite", "instruction": "Keep it dry." }]
+    });
+    assert_eq!(store.set_ai_prompt_overlay(overlay.clone()).unwrap(), overlay);
+    assert_eq!(store.ai_prompt_overlay().unwrap(), overlay);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_setting_mutations_keep_the_portable_checkpoint_valid() {
     fn flush_and_validate(store: &ProjectStore, root: &std::path::Path, reason: &str) {
         store.flush_checkpoint(reason).unwrap();

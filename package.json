@@ -33,6 +33,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "npm run test:unit && npm run test:plugins && npm run test:maps",
+    "test:ai-settings": "node --experimental-strip-types scripts/ai-settings.test.mjs",
     "test:ai-stream": "node --experimental-strip-types scripts/ai-stream-state.test.mjs",
     "test:external-import": "node --experimental-strip-types scripts/external-import-mapping.test.ts",
     "test:maps": "npm run check:maps:native-vector && npm run check:maps:physical && npm run check:maps:atlas",
@@ -52,7 +53,7 @@
     "test:houses-management": "node --experimental-strip-types scripts/houses-management.test.mjs",
     "test:tree-interaction": "node --experimental-strip-types scripts/tree-interaction.test.mjs",
     "test:schema-workbench": "node --experimental-strip-types scripts/schema-workbench.test.mjs",
-    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:houses && npm run test:git-ui && npm run test:ui-ux && npm run test:entity-lifecycle && npm run test:async-entity-picker && npm run test:houses-management && npm run test:tree-interaction && npm run test:schema-workbench"
+    "test:unit": "npm run test:shell && npm run test:theme && npm run test:ai-settings && npm run test:ai-stream && npm run test:external-import && npm run test:language && npm run test:markdown && npm run check:timeline-calendar && npm run check:writing-tabs && npm run check:houses && npm run test:git-ui && npm run test:ui-ux && npm run test:entity-lifecycle && npm run test:async-entity-picker && npm run test:houses-management && npm run test:tree-interaction && npm run test:schema-workbench"
   },
   "license": "Apache-2.0",
   "dependencies": {

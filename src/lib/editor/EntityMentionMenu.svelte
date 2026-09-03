@@ -92,6 +92,7 @@ $: clampedTop = Math.max(8, top);
     class="entity-mention-menu"
     style={`top: ${clampedTop}px; left: ${clampedLeft}px;`}
     role="listbox"
+    tabindex="-1"
     aria-label="Entity suggestions"
     onmousedown={(event) => event.preventDefault()}>
     {#if error}

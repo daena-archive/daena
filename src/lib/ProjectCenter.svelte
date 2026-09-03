@@ -3,11 +3,9 @@ import { onMount, type Snippet } from "svelte";
 import {
   AlertTriangle,
   Archive,
-  Bot,
   Boxes,
   ChevronLeft,
   CircleCheck,
-  Cpu,
   DatabaseBackup,
   DatabaseZap,
   Download,
@@ -44,12 +42,9 @@ let {
   snapshotRepository = false,
   snapshotBranch = null,
   archivedCount = 0,
-  aiIndexStatus,
-  aiIndexBusy = false,
-  aiIndexMessage = "",
-  remoteProvider = false,
   extensions,
   fields,
+  ai,
   snapshots,
   onClose,
   onBeforeNavigate,
@@ -61,11 +56,6 @@ let {
   onImportCheckpoint,
   onRebuildIndex,
   onSeedExample,
-  onToggleAi,
-  onAiRemoteConsent,
-  onAiIndexRefresh,
-  onAiIndexRebuild,
-  onAiIndexCancel,
   typeLabel,
   onArchiveChanged,
   onArchiveToast,
@@ -77,12 +67,9 @@ let {
   snapshotRepository?: boolean;
   snapshotBranch?: string | null;
   archivedCount?: number;
-  aiIndexStatus: { state: string | null; message: string | null } | null;
-  aiIndexBusy?: boolean;
-  aiIndexMessage?: string;
-  remoteProvider?: boolean;
   extensions: Snippet;
   fields: Snippet;
+  ai: Snippet;
   snapshots: Snippet;
   onClose: () => void;
   onBeforeNavigate?: (next: ProjectSection | null) => boolean | Promise<boolean>;
@@ -94,11 +81,6 @@ let {
   onImportCheckpoint: () => Promise<void>;
   onRebuildIndex: () => Promise<void>;
   onSeedExample: () => Promise<void>;
-  onToggleAi: (enabled: boolean) => void;
-  onAiRemoteConsent: (allowed: boolean) => void;
-  onAiIndexRefresh: () => void;
-  onAiIndexRebuild: () => void;
-  onAiIndexCancel: () => void;
   typeLabel: (entityType: string | null) => string;
   onArchiveChanged?: () => void;
   onArchiveToast?: (message: string) => void;
@@ -224,6 +206,9 @@ async function seedExampleProject() {
       <button class:active={section === "fields"} onclick={() => void goToSection("fields")}>
         <SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden="true" /> Fields &amp; Types
       </button>
+      <button class:active={section === "ai"} onclick={() => void goToSection("ai")}>
+        <Sparkles size={14} strokeWidth={1.8} aria-hidden="true" /> AI
+      </button>
       <button class:active={section === "snapshots"} onclick={() => void goToSection("snapshots")}>
         <GitBranch size={14} strokeWidth={1.8} aria-hidden="true" /> Snapshots
         {#if snapshotChangeCount > 0}<span class="nav-count">{snapshotChangeCount}</span>{/if}
@@ -292,7 +277,10 @@ async function seedExampleProject() {
         <div class="project-identity">
           <div><span>Project folder</span><strong title={summary.root}>{summary.root}</strong></div>
           <div><span>Search index</span><strong>{summary.indexStatus || "Unknown"}</strong></div>
-          <div><span>AI features</span><strong>{summary.aiEnabled ? "Enabled" : "Off"}</strong></div>
+          <div>
+            <span>AI features</span><button type="button" class="quiet-button" onclick={() => void goToSection("ai")}
+              >{summary.aiEnabled ? "Enabled" : "Off"}</button>
+          </div>
         </div>
         {#if diagnostics.length > 0}
           <div class="diagnostic-callout" role="alert">
@@ -369,6 +357,8 @@ async function seedExampleProject() {
         {@render extensions()}
       {:else if section === "fields"}
         {@render fields()}
+      {:else if section === "ai"}
+        {@render ai()}
       {:else if section === "snapshots"}
         {@render snapshots()}
       {:else if section === "archive"}
@@ -405,48 +395,6 @@ async function seedExampleProject() {
               onclick={() => void runAction(onRebuildIndex, "Search index rebuilt.")}
               ><DatabaseZap size={14} /> Rebuild search index</button>
           </div>
-        </section>
-        <section class="operation-card">
-          <div class="split-heading">
-            <div>
-              <strong>AI access for this project</strong>
-              <p>The provider is configured in application Settings; access and indexing are project-scoped.</p>
-            </div>
-            <span class:ok={summary.aiEnabled} class="state-pill">{summary.aiEnabled ? "Enabled" : "Off"}</span>
-          </div>
-          <div class="action-row">
-            <button
-              type="button"
-              class={summary.aiEnabled ? "quiet-button" : "primary-button"}
-              onclick={() => onToggleAi(!summary.aiEnabled)}
-              ><Bot size={14} /> {summary.aiEnabled ? "Disable AI" : "Enable AI"}</button>
-            {#if remoteProvider && summary.aiEnabled}<button
-                type="button"
-                class="quiet-button"
-                onclick={() => onAiRemoteConsent(true)}>Allow remote provider</button
-              ><button type="button" class="quiet-button" onclick={() => onAiRemoteConsent(false)}
-                >Revoke remote access</button
-              >{/if}
-          </div>
-          {#if summary.aiEnabled}<div class="sub-operation">
-              <div>
-                <strong>Semantic retrieval</strong>
-                <p>
-                  {aiIndexStatus?.message ?? aiIndexStatus?.state ?? "Status not checked"}{aiIndexMessage
-                    ? ` · ${aiIndexMessage}`
-                    : ""}
-                </p>
-              </div>
-              <div class="action-row">
-                <button type="button" class="quiet-button" onclick={onAiIndexRefresh}>Refresh</button><button
-                  type="button"
-                  class="primary-button"
-                  disabled={aiIndexBusy}
-                  onclick={onAiIndexRebuild}>{aiIndexBusy ? "Building index…" : "Build semantic index"}</button
-                >{#if aiIndexBusy}<button type="button" class="quiet-button" onclick={onAiIndexCancel}>Cancel</button
-                  >{/if}
-              </div>
-            </div>{/if}
         </section>
         <details class="raw-controls">
           <summary><FileCog size={15} /> Developer fixtures</summary>
@@ -493,7 +441,6 @@ async function seedExampleProject() {
 }
 .header-left,
 .action-row,
-.split-heading,
 .healthy-copy,
 .action-feedback,
 .path-field div,
@@ -814,29 +761,6 @@ summary:focus-visible {
 }
 .error-copy {
   color: var(--danger) !important;
-}
-.split-heading {
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-}
-.state-pill {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  color: var(--ink-muted);
-  font-size: 10px;
-  font-weight: 700;
-}
-.state-pill.ok {
-  background: var(--theme-success-bg, var(--accent-bg));
-  color: var(--success);
-}
-.sub-operation {
-  display: grid;
-  gap: 10px;
-  padding-top: 13px;
-  border-top: 1px solid var(--line);
 }
 .raw-controls {
   border: 1px solid var(--line);

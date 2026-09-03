@@ -44,13 +44,16 @@ current source before relying on this status.
 
 ### Current provider architecture
 
-The current product uses one machine-local active provider profile. All shell
-and plugin AI operations resolve `AiSettings.provider` in Rust. Local versus
-remote is internal security and transport metadata, not a frontend routing
-choice. Remote project-context operations require exact project/provider/endpoint
-consent before context is sent. Credentials remain in the OS keychain under
-`com.daena.ai.remote.{provider}` and are never serialized into settings,
-projects, plugins, prompts, or logs.
+The current product uses one machine-local provider binding per project. All
+shell and plugin AI operations resolve `AiSettings.projectBindings[projectId]`
+in Rust. There is no app-wide active provider and no default localhost
+endpoint. Local versus remote is internal security and transport metadata, not
+a frontend routing choice. Remote project-context operations require exact
+project/provider/endpoint consent before context is sent. Credentials remain
+in the OS keychain under `com.daena.ai.remote.{provider}` and are never
+serialized into settings, projects, plugins, prompts, or logs. Prompt
+templates are a project overlay on bundled defaults; the host safety template
+stays in application code.
 
 Daena is alpha software and the settings contract is a clean-state hard cut.
 Legacy settings are rejected rather than migrated. The implementation status
@@ -923,9 +926,10 @@ part of Phases 1 and 2.
 
 ### 10.1 Configuration ownership
 
-The active provider profile is application/machine state, not project files or
-plugin state. The current clean-state settings shape is `AiSettings.provider`
-plus `AiSettings.consents`. A profile includes:
+Provider endpoints and models are machine state keyed by project identity, not
+canonical project files or plugin state. Enablement and prompt-template overlays
+are project-scoped. The current clean-state settings shape is
+`AiSettings.projectBindings` plus `AiSettings.consents`. A binding includes:
 
 - provider adapter kind;
 - endpoint after strict URL validation;
@@ -936,12 +940,13 @@ plus `AiSettings.consents`. A profile includes:
 - timeouts, concurrency, and host output limits;
 - optional user-visible cost metadata.
 
-The settings format is versioned and clean-state only. The active profile stores
-`id`, `name`, `adapter`, `endpoint`, `model`, optional `embeddingModel`,
-configured model capabilities. The host derives the local/remote boundary from
-the validated endpoint; it is not user-editable. A malformed settings file or
-an older settings version fails closed with an actionable error; no legacy
-local/remote settings are converted.
+The settings format is versioned and clean-state only. A project binding stores
+`id`, `name`, `adapter`, `endpoint`, `model`, optional `embeddingModel`, and
+configured model capabilities. An empty binding is valid; AI is not ready until
+the user connects a provider for that project. The host derives the
+local/remote boundary from the validated endpoint; it is not user-editable. A
+malformed settings file or an older settings version fails closed with an
+actionable error; no legacy singleton-provider settings are converted.
 
 Credentials use the OS-backed secret store. Plaintext project JSON, localStorage,
 frontend stores, logs, or environment interpolation are not acceptable

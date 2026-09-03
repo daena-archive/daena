@@ -1,15 +1,15 @@
 //! Application-profile settings (`{app_data}/settings.json`).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+pub const SETTINGS_FORMAT_VERSION: u32 = 2;
 const MAX_RECENT_PROJECTS: usize = 6;
-const DEFAULT_AI_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
-const DEFAULT_AI_MODEL: &str = "";
 const DEFAULT_IMAGE_ENDPOINT: &str = "http://127.0.0.1:8188";
+const DEFAULT_PROVIDER_ADAPTER: &str = "openai-compatible";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,11 +59,20 @@ pub struct AppearanceSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiSettings {
     #[serde(default)]
-    pub provider: AiProviderSettings,
+    pub project_bindings: BTreeMap<String, AiProviderSettings>,
     #[serde(default)]
     pub image_provider: ImageProviderSettings,
     #[serde(default)]
     pub consents: Vec<RemoteConsent>,
+}
+
+impl AiSettings {
+    pub fn binding(&self, project_id: &str) -> AiProviderSettings {
+        self.project_bindings
+            .get(project_id)
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,15 +124,15 @@ fn default_image_endpoint() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiProviderSettings {
-    #[serde(default = "default_provider_id")]
+    #[serde(default)]
     pub id: String,
-    #[serde(default = "default_provider_name")]
+    #[serde(default)]
     pub name: String,
     #[serde(default = "default_provider_adapter")]
     pub adapter: String,
-    #[serde(default = "default_ai_endpoint")]
+    #[serde(default)]
     pub endpoint: String,
-    #[serde(default = "default_ai_model")]
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub embedding_model: String,
@@ -131,26 +140,18 @@ pub struct AiProviderSettings {
     pub capabilities: Vec<String>,
 }
 
-fn default_provider_id() -> String {
-    "lm-studio".to_string()
-}
-
-fn default_provider_name() -> String {
-    "LM Studio".to_string()
-}
-
 fn default_provider_adapter() -> String {
-    "openai-compatible".to_string()
+    DEFAULT_PROVIDER_ADAPTER.to_string()
 }
 
 impl Default for AiProviderSettings {
     fn default() -> Self {
         Self {
-            id: default_provider_id(),
-            name: default_provider_name(),
+            id: String::new(),
+            name: String::new(),
             adapter: default_provider_adapter(),
-            endpoint: default_ai_endpoint(),
-            model: default_ai_model(),
+            endpoint: String::new(),
+            model: String::new(),
             embedding_model: String::new(),
             capabilities: Vec::new(),
         }
@@ -165,12 +166,7 @@ pub struct RemoteConsent {
     pub endpoint: String,
 }
 
-fn default_ai_endpoint() -> String {
-    DEFAULT_AI_ENDPOINT.to_string()
-}
-fn default_ai_model() -> String {
-    DEFAULT_AI_MODEL.to_string()
-}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -209,6 +205,7 @@ pub struct AppearanceSettingsUpdate {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AiSettingsUpdate {
+    pub project_id: Option<String>,
     pub provider: Option<AiProviderSettingsUpdate>,
     pub image_provider: Option<ImageProviderSettingsUpdate>,
 }
@@ -260,14 +257,17 @@ impl SettingsStore {
             return Ok(AppSettings::default());
         }
         let bytes = fs::read(&self.path).map_err(|error| error.to_string())?;
-        let settings: AppSettings = serde_json::from_slice(&bytes)
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("invalid settings.json: {error}"))?;
-        if settings.format_version != SETTINGS_FORMAT_VERSION {
-            return Err(format!(
-                "unsupported settings format version {}",
-                settings.format_version
-            ));
+        let version = value
+            .get("formatVersion")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if version != u64::from(SETTINGS_FORMAT_VERSION) {
+            return Err(format!("unsupported settings format version {version}"));
         }
+        let settings: AppSettings = serde_json::from_value(value)
+            .map_err(|error| format!("invalid settings.json: {error}"))?;
         Ok(normalize(settings))
     }
 
@@ -308,26 +308,38 @@ impl SettingsStore {
         }
         if let Some(ai) = update.ai {
             if let Some(provider) = ai.provider {
+                let project_id = ai
+                    .project_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "projectId is required to update an AI provider".to_string())?
+                    .to_string();
+                let entry = settings
+                    .ai
+                    .project_bindings
+                    .entry(project_id)
+                    .or_default();
                 if let Some(id) = provider.id {
-                    settings.ai.provider.id = id;
+                    entry.id = id;
                 }
                 if let Some(name) = provider.name {
-                    settings.ai.provider.name = name;
+                    entry.name = name;
                 }
                 if let Some(adapter) = provider.adapter {
-                    settings.ai.provider.adapter = adapter;
+                    entry.adapter = adapter;
                 }
                 if let Some(endpoint) = provider.endpoint {
-                    settings.ai.provider.endpoint = endpoint;
+                    entry.endpoint = endpoint;
                 }
                 if let Some(model) = provider.model {
-                    settings.ai.provider.model = model;
+                    entry.model = model;
                 }
                 if let Some(model) = provider.embedding_model {
-                    settings.ai.provider.embedding_model = model;
+                    entry.embedding_model = model;
                 }
                 if let Some(capabilities) = provider.capabilities {
-                    settings.ai.provider.capabilities = capabilities;
+                    entry.capabilities = capabilities;
                 }
             }
             if let Some(provider) = ai.image_provider {
@@ -400,7 +412,38 @@ fn normalize(mut settings: AppSettings) -> AppSettings {
         .trim_end_matches('/')
         .to_string();
     settings.ai.image_provider.model = settings.ai.image_provider.model.trim().to_string();
+    settings.ai.project_bindings = settings
+        .ai
+        .project_bindings
+        .into_iter()
+        .filter(|(project_id, _)| !project_id.trim().is_empty())
+        .map(|(project_id, provider)| (project_id, normalize_provider(provider)))
+        .collect();
     settings
+}
+
+fn normalize_provider(mut provider: AiProviderSettings) -> AiProviderSettings {
+    provider.id = provider.id.trim().to_string();
+    provider.name = provider.name.trim().to_string();
+    provider.adapter = if provider.adapter.trim().is_empty() {
+        default_provider_adapter()
+    } else {
+        provider.adapter.trim().to_string()
+    };
+    provider.endpoint = provider
+        .endpoint
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    provider.model = provider.model.trim().to_string();
+    provider.embedding_model = provider.embedding_model.trim().to_string();
+    provider.capabilities = provider
+        .capabilities
+        .into_iter()
+        .map(|capability| capability.trim().to_string())
+        .filter(|capability| !capability.is_empty())
+        .collect();
+    provider
 }
 
 #[cfg(test)]
@@ -545,6 +588,7 @@ mod tests {
             .update(AppSettingsUpdate {
                 general: None,
                 ai: Some(AiSettingsUpdate {
+                    project_id: Some("/project".into()),
                     provider: Some(AiProviderSettingsUpdate {
                         name: Some("Remote Writer".into()),
                         endpoint: Some("https://api.example.com/v1".into()),
@@ -556,10 +600,48 @@ mod tests {
             })
             .unwrap();
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.ai.provider.name, "Remote Writer");
-        assert_eq!(loaded.ai.provider.endpoint, "https://api.example.com/v1");
-        assert_eq!(loaded.ai.provider.capabilities.len(), 2);
-        assert_eq!(loaded.ai.provider.model, default_ai_model());
+        let provider = loaded.ai.binding("/project");
+        assert_eq!(provider.name, "Remote Writer");
+        assert_eq!(provider.endpoint, "https://api.example.com/v1");
+        assert_eq!(provider.capabilities.len(), 2);
+        assert!(provider.model.is_empty());
+        assert!(loaded.ai.binding("/other").endpoint.is_empty());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn provider_update_requires_project_id() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-settings-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        let error = store
+            .update(AppSettingsUpdate {
+                general: None,
+                ai: Some(AiSettingsUpdate {
+                    project_id: None,
+                    provider: Some(AiProviderSettingsUpdate {
+                        endpoint: Some("http://127.0.0.1:1234/v1".into()),
+                        ..AiProviderSettingsUpdate::default()
+                    }),
+                    image_provider: None,
+                }),
+            })
+            .unwrap_err();
+        assert!(error.contains("projectId"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn missing_file_defaults_have_no_provider() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-empty-ai-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let loaded = SettingsStore::new(&directory).load().unwrap();
+        assert!(loaded.ai.project_bindings.is_empty());
+        assert!(loaded.ai.binding("/project").endpoint.is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -574,6 +656,7 @@ mod tests {
             .update(AppSettingsUpdate {
                 general: None,
                 ai: Some(AiSettingsUpdate {
+                    project_id: None,
                     provider: None,
                     image_provider: Some(ImageProviderSettingsUpdate {
                         enabled: Some(true),
@@ -593,9 +676,9 @@ mod tests {
     }
 
     #[test]
-    fn existing_v2_settings_gain_disabled_image_provider_defaults() {
+    fn previous_settings_format_is_rejected() {
         let directory =
-            std::env::temp_dir().join(format!("daena-v2-image-settings-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("daena-v1-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         fs::write(
@@ -617,10 +700,8 @@ mod tests {
 }"#,
         )
         .unwrap();
-        let loaded = SettingsStore::new(&directory).load().unwrap();
-        assert_eq!(loaded.ai.provider.model, "writer");
-        assert_eq!(loaded.ai.image_provider, ImageProviderSettings::default());
-        assert_eq!(loaded.general.appearance.theme, ThemePreference::System);
+        let error = SettingsStore::new(&directory).load().unwrap_err();
+        assert!(error.contains("unsupported settings format version 1"));
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -633,7 +714,7 @@ mod tests {
         let path = directory.join("settings.json");
         fs::write(
             &path,
-            b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n",
+            b"{\"formatVersion\":2,\"general\":{},\"extra\":true}\n",
         )
         .unwrap();
         let store = SettingsStore::new(&directory);
@@ -650,7 +731,7 @@ mod tests {
         let path = directory.join("settings.json");
         fs::write(
             &path,
-            br#"{"formatVersion":1,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
+            br#"{"formatVersion":2,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
         )
         .unwrap();
         let store = SettingsStore::new(&directory);

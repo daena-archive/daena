@@ -35,8 +35,9 @@ export function cargoPackageVersion(toml) {
 }
 
 export function setCargoPackageVersion(toml, version) {
+  const eol = toml.includes("\r\n") ? "\r\n" : "\n";
   let inPackage = false;
-  const lines = toml.split("\n");
+  const lines = toml.split(/\r?\n/);
   let replaced = false;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -56,15 +57,16 @@ export function setCargoPackageVersion(toml, version) {
   if (!replaced) {
     throw new Error("Could not update [package].version in Cargo.toml.");
   }
-  return lines.join("\n");
+  return lines.join(eol);
 }
 
 export function setCargoLockPackageVersion(lockfile, name, version) {
-  const lines = lockfile.split("\n");
+  const eol = lockfile.includes("\r\n") ? "\r\n" : "\n";
+  const lines = lockfile.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
     if (lines[i] === `name = "${name}"` && lines[i + 1]?.startsWith("version = ")) {
       lines[i + 1] = `version = "${version}"`;
-      return lines.join("\n");
+      return lines.join(eol);
     }
   }
   throw new Error(`Could not update package '${name}' version in Cargo.lock.`);

@@ -4,7 +4,11 @@ import fs from "node:fs";
 const route = fs.readFileSync("src/routes/+page.svelte", "utf8");
 const frame = fs.readFileSync("src/lib/plugins/SandboxView.svelte", "utf8");
 const plugin = fs.readFileSync("src-tauri/plugin-assets/shared/plugin.js", "utf8");
-const tauriSource = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+const tauriSource = [
+  fs.readFileSync("src-tauri/src/lib.rs", "utf8"),
+  fs.readFileSync("src-tauri/src/plugin_webview.rs", "utf8"),
+  fs.readFileSync("src-tauri/src/transfer.rs", "utf8"),
+].join("\n");
 const tauri = fs.readFileSync("src-tauri/tauri.conf.json", "utf8");
 const capability = fs.readFileSync("src-tauri/capabilities/plugin.json", "utf8");
 

@@ -6,11 +6,15 @@ let {
   title,
   description,
   actions,
+  onGuide,
+  guideLabel = "Show guide",
 }: {
   kicker: string;
   title: string;
   description: string;
   actions?: Snippet;
+  onGuide?: () => void;
+  guideLabel?: string;
 } = $props();
 </script>
 
@@ -20,8 +24,15 @@ let {
     <h1>{title}</h1>
     <p>{description}</p>
   </div>
-  {#if actions}
-    <div class="heading-actions">{@render actions()}</div>
+  {#if actions || onGuide}
+    <div class="heading-actions">
+      {#if onGuide}
+        <button type="button" class="workspace-guide-button" aria-label={guideLabel} onclick={onGuide}>?</button>
+      {/if}
+      {#if actions}
+        {@render actions()}
+      {/if}
+    </div>
   {/if}
 </header>
 
@@ -52,7 +63,28 @@ let {
 }
 .heading-actions {
   display: flex;
+  align-items: center;
   gap: 7px;
+}
+.workspace-guide-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.workspace-guide-button:hover {
+  border-color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--ink);
 }
 .heading-actions :global(.heading-create-group) {
   display: flex;

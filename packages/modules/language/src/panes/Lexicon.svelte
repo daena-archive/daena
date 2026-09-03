@@ -835,7 +835,12 @@ async function handleSubmit(event: SubmitEvent) {
         class="language-button secondary"
         disabled={!selectedLanguage || lexiconImporting}
         onclick={() => fileInput?.click()}>{lexiconImporting ? "Importing…" : "Import JSON"}</button>
-      <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addWord}>Add word</button>
+      <button
+        type="button"
+        class="language-button"
+        data-guide="language-add-word"
+        disabled={!selectedLanguage}
+        onclick={addWord}>Add word</button>
     </div>
   </div>
   {#if selectedLanguage}
@@ -925,7 +930,8 @@ async function handleSubmit(event: SubmitEvent) {
         {#if filtered}
           <button type="button" class="language-button secondary" onclick={clearFilters}>Clear filters</button>
         {:else}
-          <button type="button" class="language-button" onclick={addWord}>Add word</button>
+          <button type="button" class="language-button" data-guide="language-add-word" onclick={addWord}
+            >Add word</button>
         {/if}
       </div>
     </div>

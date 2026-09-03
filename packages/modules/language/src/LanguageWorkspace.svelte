@@ -1,8 +1,11 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onMount, tick } from "svelte";
 import type { EntitySummary, ModuleContext, UUID } from "../../../module-api/src/index";
 import ConfirmModal from "./ConfirmModal.svelte";
-import WelcomeTour from "./WelcomeTour.svelte";
+import WorkspaceGuide from "../../../../src/lib/guides/WorkspaceGuide.svelte";
+import { dismissGuide, isGuideDismissed } from "../../../../src/lib/guides/persist.ts";
+import type { GuideMode } from "../../../../src/lib/guides/types.ts";
+import { LANGUAGE_GUIDE_ID, languageGuideSteps } from "./guide.ts";
 import Overview from "./panes/Overview.svelte";
 import Lexicon from "./panes/Lexicon.svelte";
 import Sounds from "./panes/Sounds.svelte";
@@ -52,9 +55,14 @@ let selectedLanguage: EntitySummary | null = $state(null);
 let incompatibleFocus = $state(false);
 let pane: Pane = $state("overview");
 let pendingLexemeId: string | null = $state(null);
-let languageLoading = $state(false);
+let languageLoading = $state(Boolean(context.focusEntityId));
 let languageRequest = $state(0);
-let showWelcomeTour = $state(false);
+let guideOpen = $state(false);
+let guideMode: GuideMode = $state("tour");
+let guideIndex = $state(0);
+let tourPaused = $state(false);
+let guideBooted = $state(false);
+const guideSteps = $derived(languageGuideSteps({ hasLanguage: Boolean(selectedLanguage), pane, mode: guideMode }));
 
 let paneListEl: HTMLDivElement | undefined = $state();
 
@@ -134,14 +142,6 @@ onMount(() => {
     void loadLanguage(context.focusEntityId);
   }
 
-  // Show welcome tour for first-time users
-  try {
-    const tourCompleted = localStorage.getItem("daena-language-tour-completed");
-    if (!tourCompleted) {
-      showWelcomeTour = true;
-    }
-  } catch {}
-
   return () => {
     cancelled = true;
   };
@@ -171,11 +171,8 @@ async function loadLanguage(entityId: string) {
 async function switchPane(id: Pane) {
   if (pane === id) return;
   if (!(await canLeave())) return;
-  if (context.onModuleStateChange) {
-    context.onModuleStateChange({ pane: id });
-  } else {
-    pane = id;
-  }
+  pane = id;
+  context.onModuleStateChange?.({ pane: id });
 }
 
 async function openLinkedLexeme(lexemeId: string) {
@@ -223,23 +220,48 @@ function roveTabs(event: KeyboardEvent, index: number) {
   tabs[next]?.click();
 }
 
-function openWelcomeTour() {
-  showWelcomeTour = true;
+function openGuide() {
+  tourPaused = false;
+  guideMode = "hint";
+  guideIndex = 0;
+  guideOpen = true;
 }
 
-function completeWelcomeTour() {
-  showWelcomeTour = false;
-  try {
-    localStorage.setItem("daena-language-tour-completed", "true");
-  } catch {}
+function finishGuide() {
+  guideOpen = false;
+  tourPaused = false;
+  dismissGuide(LANGUAGE_GUIDE_ID);
 }
 
-function dismissWelcomeTour() {
-  showWelcomeTour = false;
-  try {
-    localStorage.setItem("daena-language-tour-completed", "true");
-  } catch {}
+async function handleGuidePrimary(step: { id: string; action?: string }) {
+  if (step.action === "pause") {
+    guideOpen = false;
+    tourPaused = !isGuideDismissed(LANGUAGE_GUIDE_ID);
+    return;
+  }
+  if (step.action === "lexicon") await switchPane("lexicon");
+  if (step.action === "grammar") await switchPane("grammar");
+  if (step.action === "sounds") await switchPane("sounds");
+  await tick();
 }
+
+$effect(() => {
+  if (guideBooted || languageLoading) return;
+  guideBooted = true;
+  if (!isGuideDismissed(LANGUAGE_GUIDE_ID)) {
+    guideMode = "tour";
+    guideIndex = 0;
+    guideOpen = true;
+  }
+});
+
+$effect(() => {
+  if (!selectedLanguage || !tourPaused || isGuideDismissed(LANGUAGE_GUIDE_ID)) return;
+  tourPaused = false;
+  guideMode = "tour";
+  guideIndex = 0;
+  guideOpen = true;
+});
 </script>
 
 <section class="language-workspace">
@@ -279,8 +301,7 @@ function dismissWelcomeTour() {
           {/if}
         </ol>
       </nav>
-      <button type="button" class="language-help-button" onclick={openWelcomeTour} aria-label="Show welcome tour"
-        >?</button>
+      <button type="button" class="language-help-button" onclick={openGuide} aria-label="Show language guide">?</button>
     </div>
     {#if languageLoading && !selectedLanguage}
       <p class="language-empty language-loading" role="status" aria-live="polite">Loading language…</p>
@@ -389,8 +410,15 @@ function dismissWelcomeTour() {
 
 <ConfirmModal />
 
-{#if showWelcomeTour}
-  <WelcomeTour onComplete={completeWelcomeTour} onDismiss={dismissWelcomeTour} />
+{#if guideOpen}
+  <WorkspaceGuide
+    open={guideOpen}
+    steps={guideSteps}
+    stepIndex={guideIndex}
+    onStepIndex={(index) => (guideIndex = index)}
+    onDismiss={finishGuide}
+    onComplete={finishGuide}
+    onPrimary={handleGuidePrimary} />
 {/if}
 
 <style>

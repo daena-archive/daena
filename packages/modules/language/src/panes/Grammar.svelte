@@ -913,7 +913,7 @@ function removeLink(index: number) {
           Define how sentences and words behave in this language. You do not need to configure every system.
         </p>
         {#if !grammarUi.starterDismissed && starterRemaining.length > 0}
-          <section class="language-empty-card" data-grammar-id="starter">
+          <section class="language-empty-card" data-grammar-id="starter" data-guide="language-grammar-starter">
             <p class="language-empty" role="status">Start your grammar</p>
             <p class="language-empty" role="status">
               Choose a few foundational systems now. Everything can be changed later.

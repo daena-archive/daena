@@ -52,6 +52,7 @@ import {
   Replace as ReplaceIcon,
   Image as ImageIcon,
   Paperclip,
+  Palette,
   Table as TableIcon,
   BetweenHorizontalEnd,
   BetweenVerticalEnd,
@@ -79,6 +80,8 @@ import { AssetImage } from "$lib/editor/AssetImageExtension";
 import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
 import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
 import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
+import { DEFAULT_TEXT_COLOR, TextColor } from "$lib/editor/textColor";
+import { normalizeHexColor } from "$lib/markdown/color.ts";
 import { clampDim } from "$lib/editor/image-attrs";
 import { editorPlainText, markdownFromEditorHtml, sanitizeHtml } from "./html-convert";
 import { getExternalLinkAnchor, getSpoilerEl } from "./event-targets";
@@ -315,6 +318,21 @@ function emitSelection() {
 
 function run(command: (currentEditor: Editor) => boolean) {
   if (editorState) command(editorState);
+}
+
+function currentTextColor(): string {
+  const color = normalizeHexColor(String(editorState?.getAttributes("textColor")?.color ?? ""));
+  return color ?? DEFAULT_TEXT_COLOR;
+}
+
+function applyTextColor(value: string) {
+  const color = normalizeHexColor(value);
+  if (!color) return;
+  run((currentEditor) => currentEditor.chain().focus().setMark("textColor", { color }).run());
+}
+
+function clearTextColor() {
+  run((currentEditor) => currentEditor.chain().focus().unsetMark("textColor").run());
 }
 
 function setFullscreen(nextValue: boolean) {
@@ -1770,6 +1788,7 @@ onMount(() => {
       AlignedTableHeader,
       AlignedTableCell,
       Spoiler,
+      TextColor,
       SearchAndReplace,
       ExternalLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       EntityReference,
@@ -2102,6 +2121,23 @@ $: inTable = editorState?.isActive("table") ?? false;
           class:active={editorState?.isActive("spoiler")}
           onclick={() => run((currentEditor) => (currentEditor.chain().focus() as any).toggleSpoiler().run())}
           ><EyeOff size={14} strokeWidth={1.8} /></button>
+        <label
+          class="color-control"
+          class:active={editorState?.isActive("textColor")}
+          title="Text color (right-click to remove)">
+          <Palette size={14} strokeWidth={1.8} />
+          <span class="color-swatch" style={`background: ${currentTextColor()}`}></span>
+          <input
+            type="color"
+            aria-label="Text color"
+            value={currentTextColor()}
+            disabled={!editable}
+            oninput={(event) => applyTextColor(event.currentTarget.value)}
+            oncontextmenu={(event) => {
+              event.preventDefault();
+              clearTextColor();
+            }} />
+        </label>
       </div>
       <div class="toolbar-group" aria-label="Links and media">
         <button
@@ -3011,6 +3047,48 @@ $: inTable = editorState?.isActive("table") ?? false;
 .fullscreen-toggle {
   flex: 0 0 32px;
   font-size: 16px !important;
+}
+.color-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.color-control:hover,
+.color-control:focus-within,
+.color-control.active {
+  border-color: var(--theme-warning-border, #d3c0a9);
+  background: var(--accent-dark);
+  color: var(--on-accent);
+}
+.color-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.color-control input:disabled {
+  cursor: not-allowed;
+}
+.color-swatch {
+  position: absolute;
+  right: 7px;
+  bottom: 6px;
+  left: 7px;
+  height: 3px;
+  border-radius: 1px;
+  pointer-events: none;
 }
 .style-select {
   height: 32px;

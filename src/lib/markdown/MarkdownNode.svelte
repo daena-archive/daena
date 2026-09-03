@@ -1,5 +1,6 @@
 <script lang="ts">
 import MarkdownNode from "./MarkdownNode.svelte";
+import { normalizeHexColor } from "./color.ts";
 import { nodeText } from "./text.ts";
 import { safeHref } from "./urls.ts";
 import AssetImage from "./AssetImage.svelte";
@@ -18,6 +19,7 @@ type MdNode = {
   width?: string;
   height?: string;
   entityId?: string;
+  color?: string;
   isCustom?: boolean;
   ordered?: boolean;
   start?: number | null;
@@ -92,6 +94,10 @@ function height(): string {
 
 function entityId(): string {
   return node.entityId ?? "";
+}
+
+function textColor(): string {
+  return normalizeHexColor(node.color ?? "") ?? "";
 }
 
 function ordered(): boolean {
@@ -194,6 +200,15 @@ function openEntity(event: MouseEvent) {
   <u>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
   </u>
+{:else if node.type === "textColor"}
+  {@const color = textColor()}
+  {#if color}
+    <span style={`color: ${color}`}>
+      {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
+    </span>
+  {:else}
+    {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
+  {/if}
 {:else if node.type === "spoiler"}
   <span
     class="spoiler"

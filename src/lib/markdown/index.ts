@@ -19,6 +19,7 @@ import {
   imageToMarkdown,
   paragraphToMarkdown,
   spoilerToMarkdown,
+  textColorToMarkdown,
   underlineToMarkdown,
 } from "./plugins/html.ts";
 import {
@@ -35,6 +36,7 @@ const stringifyHandlers = {
   entityReference: entityReferenceToMarkdown,
   underline: underlineToMarkdown,
   spoiler: spoilerToMarkdown,
+  textColor: textColorToMarkdown,
   alignedParagraph: alignedParagraphToMarkdown,
   paragraph: paragraphToMarkdown,
   heading: headingToMarkdown,

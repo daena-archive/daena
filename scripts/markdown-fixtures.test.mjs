@@ -35,6 +35,10 @@ for (const fixture of MARKDOWN_FIXTURES) {
     contains(html, "text-align: center", fixture.name);
     contains(html, "centered", fixture.name);
   }
+  if (fixture.name === "text-color") {
+    contains(html, "color: #b4773f", fixture.name);
+    contains(html, "gold", fixture.name);
+  }
   if (fixture.name === "entity-reference") {
     contains(html, 'data-entity-id="entity-ardashir"', fixture.name);
     contains(html, "Ardashir", fixture.name);
@@ -100,6 +104,20 @@ contains(tiptapEntity, "[[Ardashir]](abc)", "tiptap entity without href");
 const tiptapAlign = htmlToMarkdown('<p style="text-align: center"><u>Hi</u></p>');
 contains(tiptapAlign, 'align="center"', "tiptap alignment");
 contains(tiptapAlign, "<u>Hi</u>", "tiptap underline");
+
+const tiptapColor = htmlToMarkdown('<p>A <span style="color: #B4773F">gold</span> word.</p>');
+contains(tiptapColor, 'style="color: #b4773f"', "tiptap text color");
+contains(tiptapColor, "gold", "tiptap text color text");
+
+const unsafeColor = markdownToHtml(
+  '<span style="color: expression(alert(1)); background: url(javascript:x)">x</span>\n',
+);
+assert.equal(unsafeColor.toLowerCase().includes("expression"), false);
+assert.equal(unsafeColor.toLowerCase().includes("javascript"), false);
+assert.equal(unsafeColor.toLowerCase().includes("background"), false);
+
+const namedColor = markdownToHtml('<span style="color: red">x</span>\n');
+assert.equal(namedColor.toLowerCase().includes("color: red"), false);
 
 const tiptapCode = htmlToMarkdown('<pre><code data-language="ts">const x = 1;</code></pre>');
 contains(tiptapCode, "```ts", "tiptap data-language fence");

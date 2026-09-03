@@ -18,6 +18,13 @@ export interface Spoiler {
   data?: { hName?: string; hProperties?: Record<string, unknown> };
 }
 
+export interface TextColor {
+  type: "textColor";
+  color: string;
+  children: Array<{ type: string; value?: string; children?: unknown[] }>;
+  data?: { hName?: string; hProperties?: Record<string, unknown> };
+}
+
 export interface AlignedParagraph {
   type: "alignedParagraph";
   align: "center" | "right";

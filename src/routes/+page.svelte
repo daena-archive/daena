@@ -147,6 +147,9 @@ import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
 import { breadcrumbViewLabel, shellBreadcrumbs } from "$lib/shell/breadcrumbs";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
+import HostGuide from "$lib/guides/HostGuide.svelte";
+import { LORE_GUIDE_ID, loreGuideSteps, TIMELINE_GUIDE_ID, timelineGuideSteps } from "$lib/guides";
+import type { GuideStep } from "$lib/guides/types.ts";
 import WorkspaceViewNav from "$lib/shell/WorkspaceViewNav.svelte";
 import CollectionPane from "$lib/shell/CollectionPane.svelte";
 import ContentPane from "$lib/shell/ContentPane.svelte";
@@ -332,6 +335,8 @@ let shellNavigationRestoring = false;
 let section = $state<WorkspaceSection>("lore");
 let writingView = $state<WritingView>("manuscripts");
 let timelineView = $state<TimelineView>("events");
+let loreGuideHint = $state(0);
+let timelineGuideHint = $state(0);
 let languagePane = $state<LanguagePane>("overview");
 let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
@@ -2818,6 +2823,22 @@ async function openWorkspaceView(view: WorkspaceLocationView) {
     return switchWritingView(view);
   }
   if (section === "houses") return switchHousesView(view);
+}
+
+async function handleLoreGuidePrimary(step: GuideStep) {
+  if (step.action === "library") await openLoreLibrary();
+  if (step.action === "wiki") await openLoreWiki();
+  if (step.action === "graph") await openProjection();
+  if (step.action === "inspector") {
+    await openLoreLibrary();
+    if (!workbenchPaneVisibility.inspector) toggleWorkbenchPane("inspector");
+  }
+}
+
+async function handleTimelineGuidePrimary(step: GuideStep) {
+  if (step.action === "events") await switchTimelineView("events");
+  if (step.action === "calendars") await switchTimelineView("calendars");
+  if (step.action === "timeline") await openWorkspaceView("timeline");
 }
 
 async function restoreShellEntity(entityId: string | null) {
@@ -7715,6 +7736,7 @@ onMount(() => {
             <button
               class="primary-button"
               type="button"
+              data-guide="workspace-new"
               aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}
               onclick={openContextualCreate}
               ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
@@ -7726,7 +7748,17 @@ onMount(() => {
           kicker={workspaceHeadingKicker()}
           title={sectionLabel()}
           description={workspaceHeadingDescription()}
-          actions={workspaceHeaderActions} />
+          actions={workspaceHeaderActions}
+          onGuide={section === "lore"
+            ? () => (loreGuideHint += 1)
+            : section === "timeline"
+              ? () => (timelineGuideHint += 1)
+              : undefined}
+          guideLabel={section === "lore"
+            ? "Show lore guide"
+            : section === "timeline"
+              ? "Show timeline guide"
+              : "Show guide"} />
         <nav class="workbench-layout-controls" aria-label="Workbench panes">
           <span>Layout</span><button
             type="button"
@@ -8925,6 +8957,33 @@ onMount(() => {
       {/if}
     {/snippet}
   </EntityIdentityDialog>
+{/if}
+{#if ready}
+  <HostGuide
+    guideId={LORE_GUIDE_ID}
+    active={section === "lore" && !showSettings && !projectHomeOpen}
+    resumeToken={selected?.id ?? ""}
+    hintNonce={loreGuideHint}
+    stepsFor={(mode) =>
+      loreGuideSteps({
+        hasCollection: !collectionIsEmpty(),
+        hasSelection: Boolean(selected),
+        view: currentWorkspaceLocationView(),
+        mode,
+      })}
+    onPrimary={handleLoreGuidePrimary} />
+  <HostGuide
+    guideId={TIMELINE_GUIDE_ID}
+    active={section === "timeline" && !showSettings && !projectHomeOpen}
+    resumeToken={selected?.id ?? ""}
+    hintNonce={timelineGuideHint}
+    stepsFor={(mode) =>
+      timelineGuideSteps({
+        hasCollection: !collectionIsEmpty(),
+        view: currentWorkspaceLocationView(),
+        mode,
+      })}
+    onPrimary={handleTimelineGuidePrimary} />
 {/if}
 <DialogHost />
 

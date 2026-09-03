@@ -4,7 +4,8 @@ import { defaultHandlers } from "hast-util-to-mdast";
 import type { State as HastState } from "hast-util-to-mdast";
 import { entityIdFromHref } from "./urls.ts";
 import { nodeText } from "./text.ts";
-import type { AlignedParagraph, EntityReference, Spoiler, Underline } from "./types.ts";
+import { colorFromStyle } from "./color.ts";
+import type { AlignedParagraph, EntityReference, Spoiler, TextColor, Underline } from "./types.ts";
 
 function classList(node: Element): string[] {
   const className = node.properties?.className;
@@ -129,20 +130,31 @@ const underline = (state: HastState, node: Element) => {
   return result;
 };
 
-const spoiler = (state: HastState, node: Element) => {
+const spanNode = (state: HastState, node: Element) => {
   const isSpoiler = node.properties?.dataSpoiler != null || classList(node).includes("spoiler");
-  if (!isSpoiler) {
-    const fallback = (defaultHandlers as Record<string, unknown>).span as
-      ((state: HastState, node: Element) => unknown) | undefined;
-    return fallback ? fallback(state, node) : undefined;
+  if (isSpoiler) {
+    const result: Spoiler = {
+      type: "spoiler",
+      children: state.all(node) as Spoiler["children"],
+      data: { hName: "span", hProperties: { dataSpoiler: "", className: ["spoiler"] } },
+    };
+    state.patch(node, result as never);
+    return result;
   }
-  const result: Spoiler = {
-    type: "spoiler",
-    children: state.all(node) as Spoiler["children"],
-    data: { hName: "span", hProperties: { dataSpoiler: "", className: ["spoiler"] } },
-  };
-  state.patch(node, result as never);
-  return result;
+  const color = colorFromStyle(String(node.properties?.style ?? ""));
+  if (color) {
+    const result: TextColor = {
+      type: "textColor",
+      color,
+      children: state.all(node) as TextColor["children"],
+      data: { hName: "span", hProperties: { style: `color: ${color}` } },
+    };
+    state.patch(node, result as never);
+    return result;
+  }
+  const fallback = (defaultHandlers as Record<string, unknown>).span as
+    ((state: HastState, node: Element) => unknown) | undefined;
+  return fallback ? fallback(state, node) : undefined;
 };
 
 const imageNode = (state: HastState, node: Element) => {
@@ -175,7 +187,7 @@ export const hastToMdastHandlers = {
   img: imageNode,
   a: entityOrLink,
   u: underline,
-  span: spoiler,
+  span: spanNode,
   p: alignedBlock,
   div: alignedBlock,
   h1: alignedBlock,

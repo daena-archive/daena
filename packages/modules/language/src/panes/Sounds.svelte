@@ -319,7 +319,12 @@ function handleNotesSubmit(event: SubmitEvent) {
         class="language-button secondary"
         disabled={!selectedLanguage || phonemes.length === 0}
         onclick={() => (chartsOpen = true)}>View charts</button>
-      <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addPhoneme}>Add sound</button>
+      <button
+        type="button"
+        class="language-button"
+        data-guide="language-add-sound"
+        disabled={!selectedLanguage}
+        onclick={addPhoneme}>Add sound</button>
     {/if}
   </div>
 </div>

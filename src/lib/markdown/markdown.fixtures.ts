@@ -13,6 +13,10 @@ export const MARKDOWN_FIXTURES = [
     markdown: '<div align="center">A <u>centered</u> note.</div>\n',
   },
   {
+    name: "text-color",
+    markdown: 'A <span style="color: #b4773f">gold</span> word.\n',
+  },
+  {
     name: "entity-reference",
     markdown: "Meet [[Ardashir]](entity-ardashir) in the archive.\n",
   },

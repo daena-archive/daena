@@ -1,6 +1,7 @@
 import type { Root as HastRoot } from "hast";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { visit } from "unist-util-visit";
+import { sanitizeInlineStyle } from "./color.ts";
 
 export const daenaSanitizeSchema = {
   ...defaultSchema,
@@ -32,7 +33,7 @@ export const daenaSanitizeSchema = {
     h6: [...(defaultSchema.attributes?.h6 ?? []), "style", "dir"],
     pre: [...(defaultSchema.attributes?.pre ?? []), "dataLanguage"],
     mark: [...(defaultSchema.attributes?.mark ?? []), "className"],
-    span: [...(defaultSchema.attributes?.span ?? []), "className", "dataSpoiler"],
+    span: [...(defaultSchema.attributes?.span ?? []), "className", "dataSpoiler", "style"],
     sub: [...(defaultSchema.attributes?.sub ?? []), "className"],
     sup: [...(defaultSchema.attributes?.sup ?? []), "className"],
     table: [...(defaultSchema.attributes?.table ?? []), "className"],
@@ -54,8 +55,9 @@ export function rehypeSafeInlineStyle() {
   return (tree: HastRoot) => {
     visit(tree, "element", (node) => {
       if (!node.properties || node.properties.style == null) return;
-      const style = String(node.properties.style).trim();
-      if (!/^text-align\s*:\s*(?:left|center|right)\s*;?$/i.test(style)) delete node.properties.style;
+      const style = sanitizeInlineStyle(String(node.properties.style));
+      if (style) node.properties.style = style;
+      else delete node.properties.style;
     });
   };
 }

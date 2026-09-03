@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import { denormalizeAssetHtml } from "$lib/assets/resolve";
 import { htmlToMarkdown } from "$lib/markdown";
+import { sanitizeInlineStyle } from "$lib/markdown/color.ts";
 import { taskListsForMarkdown } from "./markdownRoundTrip";
 
 export function sanitizeHtml(value: string): string {
@@ -14,8 +15,11 @@ export function sanitizeHtml(value: string): string {
       const content = attribute.value.trim().toLowerCase();
       if (name.startsWith("on") || ((name === "href" || name === "src") && content.startsWith("javascript:")))
         element.removeAttribute(attribute.name);
-      if (name === "style" && !/^text-align\s*:\s*(?:left|center|right)\s*;?$/i.test(attribute.value.trim()))
-        element.removeAttribute(attribute.name);
+      if (name === "style") {
+        const style = sanitizeInlineStyle(attribute.value);
+        if (style) element.setAttribute("style", style);
+        else element.removeAttribute(attribute.name);
+      }
     }
   }
   return template.innerHTML;

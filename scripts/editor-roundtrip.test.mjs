@@ -118,6 +118,7 @@ reopened.destroy();
 filledEditor.destroy();
 
 const shell = await readFile(new URL("../src/lib/editor/RichTextEditor.svelte", import.meta.url), "utf8");
+assert.match(shell, /Text color/, "toolbar exposes text color");
 assert.match(shell, /Insert table/, "toolbar exposes insert table");
 assert.match(shell, /TableInsertDialog/, "insert uses a size dialog");
 assert.match(shell, /addRowAfter/, "in-table controls can add rows");

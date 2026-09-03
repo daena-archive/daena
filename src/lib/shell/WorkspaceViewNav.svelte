@@ -38,6 +38,7 @@ function handleKeydown(event: KeyboardEvent, index: number) {
       aria-current={activeView === view.id ? "page" : undefined}
       tabindex={activeView === view.id ? 0 : -1}
       onkeydown={(event) => handleKeydown(event, index)}
+      data-guide={`workspace-view-${view.id}`}
       onclick={() => onSelect(view.id)}>{view.label}</button>
   {/each}
 </nav>

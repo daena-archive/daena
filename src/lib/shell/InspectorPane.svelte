@@ -27,6 +27,7 @@ let {
   bind:this={element}
   class:inspector-empty={empty}
   class="inspector-panel panel-surface"
+  data-guide="workspace-inspector"
   aria-label="Inspector"
   aria-busy={loading}
   inert={loading}

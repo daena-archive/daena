@@ -1,5 +1,6 @@
 import type { Handle as ToMarkdownHandle } from "mdast-util-to-markdown";
-import type { AlignedParagraph, Spoiler, Underline } from "../types.ts";
+import { normalizeHexColor } from "../color.ts";
+import type { AlignedParagraph, Spoiler, TextColor, Underline } from "../types.ts";
 
 export const underlineToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   return `<u>${state.containerPhrasing(node as never, info)}</u>`;
@@ -7,6 +8,12 @@ export const underlineToMarkdown: ToMarkdownHandle = (node, _parent, state, info
 
 export const spoilerToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   return `<span data-spoiler>${state.containerPhrasing(node as never, info)}</span>`;
+};
+
+export const textColorToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
+  const color = normalizeHexColor(String((node as TextColor).color ?? ""));
+  const content = state.containerPhrasing(node as never, info);
+  return color ? `<span style="color: ${color}">${content}</span>` : content;
 };
 
 function escapeHtml(value: string): string {
@@ -40,6 +47,12 @@ function phrasingToHtml(nodes: unknown[], state: unknown, info: unknown): string
       case "spoiler":
         out += `<span data-spoiler class="spoiler">${phrasingToHtml(children, state, info)}</span>`;
         break;
+      case "textColor": {
+        const color = normalizeHexColor(String((raw as { color?: string }).color ?? ""));
+        const inner = phrasingToHtml(children, state, info);
+        out += color ? `<span style="color: ${color}">${inner}</span>` : inner;
+        break;
+      }
       case "inlineCode":
         out += `<code>${escapeHtml(String(raw.value ?? ""))}</code>`;
         break;

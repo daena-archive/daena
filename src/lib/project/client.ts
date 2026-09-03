@@ -91,7 +91,10 @@ export const project = {
   openDefault: () => invoke<void>("project_open_default"),
   open: (path: string) => invoke<void>("project_open", { path }),
   openDirectory: (path: string) => invoke<ProjectInfo>("project_open_directory", { path }),
-  pickDirectory: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: true, multiple: false } }),
+  pickDirectory: (title?: string) =>
+    invoke<DialogSelection>("plugin:dialog|open", {
+      options: { directory: true, multiple: false, ...(title ? { title } : {}) },
+    }),
   pickFile: () => invoke<DialogSelection>("plugin:dialog|open", { options: { directory: false, multiple: false } }),
   pickImageMapFile: () =>
     invoke<DialogSelection>("plugin:dialog|open", {

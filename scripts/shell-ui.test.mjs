@@ -65,9 +65,17 @@ const resizeHandle = components.get("src/lib/shell/PaneResizeHandle.svelte");
 assert.match(resizeHandle, /ArrowLeft|ArrowRight/);
 assert.match(resizeHandle, /onpointerdown/);
 
+const projectSwitcher = components.get("src/lib/shell/ProjectSwitcher.svelte");
+assert.match(projectSwitcher, />New project</);
+assert.match(projectSwitcher, />Open folder</);
+assert.match(projectSwitcher, /Projects live in a folder on disk/);
+assert.doesNotMatch(projectSwitcher, /Open project folder/);
+
 const statusCenter = components.get("src/lib/shell/StatusCenter.svelte");
 assert.match(statusCenter, /aria-live="polite"/);
 assert.match(statusCenter, /prefers-reduced-motion/);
+assert.match(shell, /function inactiveGitStatus/);
+assert.doesNotMatch(shell, /Snapshot status unavailable/);
 
 const workspaceNav = components.get("src/lib/shell/WorkspaceViewNav.svelte");
 assert.match(workspaceNav, /tabindex=\{activeView === view\.id \? 0 : -1\}/);

@@ -51,6 +51,7 @@ let {
   projectCenterActive,
   settingsActive,
   version,
+  onCreateProject,
   onOpenProject,
   onOpenRecent,
   onRemoveRecent,
@@ -76,6 +77,7 @@ let {
   projectCenterActive: boolean;
   settingsActive: boolean;
   version: string;
+  onCreateProject: () => void;
   onOpenProject: () => void;
   onOpenRecent: (root: string) => void;
   onRemoveRecent: (root: string) => void;
@@ -156,6 +158,7 @@ function workspaceIcon(section: WorkspaceSection) {
       menuOpen={projectMenuOpen}
       {projectName}
       {recentProjects}
+      {onCreateProject}
       {onOpenProject}
       {onOpenRecent}
       {onRemoveRecent}

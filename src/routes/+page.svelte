@@ -714,7 +714,6 @@ let deleteBackupPath = $state("");
 let projectInfo = $state<ProjectInfo | null>(null);
 let projectStatusEpoch = 0;
 let gitStatus = $state<GitStatus | null>(null);
-let gitMessage = $state("");
 let showProjectMenu = $state(false);
 let showExternalImport = $state(false);
 let recentProjects = $state<RecentProject[]>([]);
@@ -3948,15 +3947,24 @@ async function handleArchiveChanged() {
   await refreshArchivedCount();
 }
 
+function inactiveGitStatus(): GitStatus {
+  return {
+    repository: false,
+    branch: null,
+    changes: [],
+    canonical_changes: [],
+    staged_canonical_changes: [],
+  };
+}
+
 async function refreshGit(epoch = projectStatusEpoch) {
-  gitMessage = "";
   try {
     const status = await project.gitStatus();
     if (epoch !== projectStatusEpoch) return;
     gitStatus = status;
-  } catch (cause) {
+  } catch {
     if (epoch !== projectStatusEpoch) return;
-    gitMessage = friendlyError(cause);
+    gitStatus = inactiveGitStatus();
   }
 }
 
@@ -4063,27 +4071,16 @@ function statusCenterItems(): StatusCenterItem[] {
           },
   );
 
-  items.push(
-    gitMessage
-      ? {
-          id: "snapshot",
-          label: "Snapshot status unavailable",
-          detail: gitMessage,
-          tone: "warning",
-          actionLabel: "Review",
-          onAction: () => openStatusDestination("snapshots"),
-        }
-      : {
-          id: "snapshot",
-          label: gitStatus?.repository ? "Snapshots ready" : "Snapshots not configured",
-          detail: gitStatus?.repository
-            ? `${gitStatus.canonical_changes.length} project change${gitStatus.canonical_changes.length === 1 ? "" : "s"} since the last Snapshot.`
-            : "Set up project history when you are ready to preserve milestones.",
-          tone: gitStatus?.canonical_changes.length ? "warning" : "neutral",
-          actionLabel: "Open Snapshots",
-          onAction: () => openStatusDestination("snapshots"),
-        },
-  );
+  items.push({
+    id: "snapshot",
+    label: gitStatus?.repository ? "Snapshots ready" : "Snapshots not configured",
+    detail: gitStatus?.repository
+      ? `${gitStatus.canonical_changes.length} project change${gitStatus.canonical_changes.length === 1 ? "" : "s"} since the last Snapshot.`
+      : "Set up project history when you are ready to preserve milestones.",
+    tone: gitStatus?.canonical_changes.length ? "warning" : "neutral",
+    actionLabel: "Open Snapshots",
+    onAction: () => openStatusDestination("snapshots"),
+  });
 
   const mapStates = Object.values(mapSaveStates).map((state) => state.status);
   const backgroundBusy =
@@ -4181,23 +4178,33 @@ async function openWorkspace() {
   });
 }
 
-async function openProjectDirectory() {
+async function pickAndOpenProject(intent: "create" | "open") {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
   try {
-    const selection = await project.pickDirectory();
+    const selection = await project.pickDirectory(
+      intent === "create" ? "Choose an empty folder for a new project" : "Open an existing project folder",
+    );
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
-    await runProjectTransition("Opening project…", async () => {
+    await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await flushAutoSave())) return;
       if (!(await leavePluginView())) return;
       resetProjectSessionState();
       await project.close();
-      await finishOpening(await project.openDirectory(path));
+      await finishOpening(intent === "create" ? await project.create(path) : await project.openDirectory(path));
     });
   } catch (cause) {
     error = friendlyError(cause);
   }
+}
+
+async function createProjectDirectory() {
+  await pickAndOpenProject("create");
+}
+
+async function openProjectDirectory() {
+  await pickAndOpenProject("open");
 }
 
 async function openRecentProject(path: string) {
@@ -6357,7 +6364,6 @@ function resetProjectSessionState() {
   sandboxView = null;
   projectionView = null;
   gitStatus = null;
-  gitMessage = "";
   mapSaveStates = {};
   mapsEditorKey = "welcome";
   mapReloadCounter = 0;
@@ -6742,6 +6748,7 @@ onMount(() => {
     projectCenterActive={showSettings && settingsSurface === "project"}
     settingsActive={showSettings && settingsSurface === "application"}
     version={displayVersion}
+    onCreateProject={createProjectDirectory}
     onOpenProject={openProjectDirectory}
     onOpenRecent={(root) => void openRecentProject(root)}
     onRemoveRecent={removeRecentProject}
@@ -8981,6 +8988,8 @@ onMount(() => {
   --focus-ring-strong: var(--accent-soft);
   --control-min-height: 36px;
   --touch-target-min: 44px;
+  --rail-width: 220px;
+  --rail-collapsed-width: 56px;
   --rail-bg: #283a30;
   --rail-surface: #3b5243;
   --rail-surface-strong: #486052;

@@ -42,7 +42,7 @@ let { fullscreen, mapEditorActive, children, element = $bindable(null), onScroll
 }
 .editor-fullscreen {
   position: fixed;
-  inset: 0 0 0 248px;
+  inset: 0 0 0 var(--rail-width, 220px);
   z-index: 30;
   display: flex;
   min-height: 100vh;

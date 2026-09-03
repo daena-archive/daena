@@ -376,7 +376,13 @@ impl ProjectStore {
                 }
             }
         }
-        let output = self.run_git(&["rev-parse", "--show-toplevel"])?;
+        let output = match self.run_git(&["rev-parse", "--show-toplevel"]) {
+            Ok(output) => output,
+            Err(CoreError::NotFound(message)) if message.starts_with("git is unavailable") => {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
         let repository = if !output.status.success() {
             false
         } else {
@@ -735,13 +741,7 @@ impl ProjectStore {
         // Git walks up parent directories by default. Built-in snapshots must
         // never attach to or mutate a repository that owns a broader worktree.
         if !self.git_repository_is_project_root_cached(force_probe)? {
-            return Ok(GitStatus {
-                repository: false,
-                branch: None,
-                changes: Vec::new(),
-                canonical_changes: Vec::new(),
-                staged_canonical_changes: Vec::new(),
-            });
+            return Ok(GitStatus::default());
         }
         let branch = self.run_git(&["branch", "--show-current"])?;
         let entries = self.git_status_entries()?;

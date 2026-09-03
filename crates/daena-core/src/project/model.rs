@@ -489,7 +489,7 @@ pub struct SyncSummary {
     pub export_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitStatus {
     pub repository: bool,
     pub branch: Option<String>,

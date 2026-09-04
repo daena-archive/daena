@@ -300,20 +300,15 @@ function handleNotesSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Focused projection</p>
     <h2>Sounds</h2>
-    <p class="language-toolbar-subtitle">
-      {selectedLanguage
-        ? `${selectedLanguage.name} · phoneme inventory and phonology notes`
-        : "Select a language to document its sound system."}
-    </p>
   </div>
   <div class="language-toolbar-actions">
     {#if !phonemeEditorOpen}
-      <label class="language-mode-toggle">
-        <input type="checkbox" bind:checked={beginnerMode} />
-        <span>Beginner mode</span>
-      </label>
+      <button
+        type="button"
+        class="language-mode-toggle"
+        aria-pressed={beginnerMode}
+        onclick={() => (beginnerMode = !beginnerMode)}>Beginner mode</button>
       <button
         type="button"
         class="language-button secondary"
@@ -682,61 +677,6 @@ function handleNotesSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.language-mode-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-muted);
-  color: var(--ink-soft);
-  font-size: 12px;
-  cursor: pointer;
-}
-.language-mode-toggle:hover {
-  border-color: var(--accent);
-  color: var(--ink);
-}
-.language-mode-toggle input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--accent);
-}
 .language-pane-section {
   display: grid;
   gap: 10px;
@@ -854,31 +794,6 @@ function handleNotesSubmit(event: SubmitEvent) {
   margin: 0;
   color: var(--ink-faint);
   font-size: 12px;
-}
-.language-field input,
-.language-field textarea,
-.language-field select {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-}
-.language-field textarea {
-  min-height: 4.5em;
-  resize: vertical;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
 }
 .language-chart-wrap {
   overflow-x: auto;
@@ -1054,15 +969,6 @@ function handleNotesSubmit(event: SubmitEvent) {
   border-color: var(--danger) !important;
   color: var(--danger) !important;
   background: transparent;
-}
-.language-group {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
 }
 .language-inline {
   display: flex;

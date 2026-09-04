@@ -193,11 +193,10 @@ async function saveSample(): Promise<"ok" | "text" | "error" | "none"> {
       });
       sampleEditing = { ...created, value: normalizeSample(created.value) };
     }
-    sampleEditorOpen = true;
-    sampleDraft = sampleEditing.value;
     sampleSaving = false;
     setMutationActive(false);
     if (ownerLanguageId === selectedLanguage?.id) await loadSamples();
+    closeSampleEditor();
     return "ok";
   } catch (cause) {
     sampleSaving = false;
@@ -256,15 +255,9 @@ async function handleSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Language crafting studio</p>
     <h2>Samples</h2>
-    <p class="language-toolbar-subtitle">
-      {selectedLanguage
-        ? `${selectedLanguage.name} · analyzed usage, translations, and interlinear notes`
-        : "Select a language to collect examples and usage."}
-    </p>
   </div>
-  <div>
+  <div class="language-toolbar-actions">
     <button type="button" class="language-button" disabled={!selectedLanguage} onclick={() => addSample()}
       >Add sample</button>
   </div>
@@ -486,85 +479,11 @@ async function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
 .language-editor {
   display: grid;
   gap: 16px;
   margin-top: 16px;
   min-width: 0;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-}
-.language-field input,
-.language-field textarea,
-.language-field select {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-}
-.language-field textarea {
-  min-height: 4.5em;
-  resize: vertical;
-}
-.language-group {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface-muted);
-}
-.language-group-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-.language-group-head h3 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 500;
 }
 .language-button {
   padding: 8px 12px;

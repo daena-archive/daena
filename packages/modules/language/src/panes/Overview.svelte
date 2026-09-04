@@ -17,7 +17,6 @@ let {
   registerLeaveGuard,
   onLanguageChanged,
   onLanguageArchived,
-  openPane,
 }: {
   context: ModuleContext;
   selectedLanguage: EntitySummary | null;
@@ -25,7 +24,6 @@ let {
   registerLeaveGuard: (guard: (() => Promise<boolean> | boolean) | null) => void;
   onLanguageChanged: (language: EntitySummary) => void;
   onLanguageArchived: (languageId: string) => void;
-  openPane: (pane: "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples") => void;
 } = $props();
 
 const overviewFieldDefinitions = manifest.schemas
@@ -39,15 +37,6 @@ const FIELD_HINTS: Record<string, string> = {
   family: "Parent family or related language group",
   writingSystem: "Primary script or orthography",
 };
-
-const STUDIO_AREAS = [
-  { pane: "sounds", title: "Shape the sounds", detail: "Build the phoneme inventory and phonotactics." },
-  { pane: "writing", title: "Design the writing", detail: "Map sounds to graphemes and test orthographies." },
-  { pane: "lexicon", title: "Coin the words", detail: "Grow vocabulary, senses, pronunciations, and usage." },
-  { pane: "grammar", title: "Define the grammar", detail: "Document systems, strategies, and examples." },
-  { pane: "forms", title: "Model morphology", detail: "Create paradigms, rules, and generated forms." },
-  { pane: "samples", title: "Test it in context", detail: "Analyze sentences and paragraphs interlinearly." },
-] as const;
 
 let cancelled = $state(false);
 let overviewEntity = $state<EntityRecord | null>(null);
@@ -343,13 +332,7 @@ let status = $derived.by(() => {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Unified language workspace</p>
     <h2>Overview</h2>
-    <p class="language-toolbar-subtitle">
-      {selectedLanguage
-        ? `${selectedLanguage.name} · identity, properties, and canonical notes`
-        : "Select a language to begin."}
-    </p>
   </div>
   <div class="language-toolbar-actions">
     {#if selectedLanguage && (overviewDirty || overviewError)}
@@ -426,23 +409,6 @@ let status = $derived.by(() => {
     <section class="language-overview-section">
       <div class="language-overview-section-header">
         <div>
-          <h3>Crafting workbench</h3>
-          <p>Move between the parts of the language in any order. Each area stays scoped to this language.</p>
-        </div>
-      </div>
-      <div class="language-studio-areas">
-        {#each STUDIO_AREAS as area (area.pane)}
-          <button type="button" class="language-studio-area" onclick={() => openPane(area.pane)}>
-            <strong>{area.title}</strong>
-            <span>{area.detail}</span>
-          </button>
-        {/each}
-      </div>
-    </section>
-
-    <section class="language-overview-section">
-      <div class="language-overview-section-header">
-        <div>
           <h3>Canonical notes</h3>
           <p>Describe what makes this language itself. These notes stay with the language as the projection grows.</p>
         </div>
@@ -459,34 +425,6 @@ let status = $derived.by(() => {
 {/if}
 
 <style>
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
 .language-overview-status {
   display: flex;
   align-items: center;
@@ -593,93 +531,8 @@ let status = $derived.by(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
-.language-studio-areas {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.language-studio-area {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-.language-studio-area:hover {
-  border-color: var(--theme-warning-border, #d8c3a5);
-  background: var(--surface);
-}
-.language-studio-area:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
-}
-.language-studio-area strong {
-  color: var(--accent-dark);
-  font-size: 13px;
-}
-.language-studio-area span {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.5;
-}
 .language-overview-editor {
   min-height: 16rem;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-}
-.language-field input,
-.language-field textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-}
-.language-field textarea {
-  min-height: 4.5em;
-  resize: vertical;
-}
-.language-button {
-  padding: 8px 12px;
-  border: 1px solid var(--accent-dark);
-  border-radius: 8px;
-  background: var(--accent-dark);
-  color: #fff;
-  cursor: pointer;
-}
-.language-button:hover {
-  filter: brightness(1.06);
-}
-.language-button.secondary {
-  background: transparent;
-  color: var(--accent-dark);
-}
-.language-button.secondary:hover {
-  background: var(--surface-muted);
-}
-.language-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: none;
-}
-.language-button:focus-visible {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
-  outline-offset: 2px;
 }
 .language-empty,
 .language-status {
@@ -746,9 +599,6 @@ let status = $derived.by(() => {
     width: 100%;
   }
   .language-overview-fields {
-    grid-template-columns: 1fr;
-  }
-  .language-studio-areas {
     grid-template-columns: 1fr;
   }
 }

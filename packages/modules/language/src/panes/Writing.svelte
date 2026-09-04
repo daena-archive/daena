@@ -197,10 +197,10 @@ async function saveOrthography(): Promise<"ok" | "name" | "error" | "none"> {
       });
       orthographyEditing = { ...created, value: normalizeOrthography(created.value) };
     }
-    orthographyDraft = normalizeOrthography(orthographyEditing.value);
     orthographySaving = false;
     setMutationActive(false);
     if (ownerLanguageId === selectedLanguage?.id) await loadWriting();
+    closeOrthographyEditor();
     return "ok";
   } catch (cause) {
     orthographySaving = false;
@@ -315,13 +315,7 @@ function soundLabel(phoneme: PhonemeOption) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Focused projection</p>
     <h2>Writing</h2>
-    <p class="language-toolbar-subtitle">
-      {selectedLanguage
-        ? `${selectedLanguage.name} · writing systems, sound mappings, and samples`
-        : "Select a language to document how it is written."}
-    </p>
   </div>
   <div class="language-toolbar-actions">
     {#if !orthographyEditorOpen}
@@ -725,35 +719,6 @@ function soundLabel(phoneme: PhonemeOption) {
 {/if}
 
 <style>
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-actions,
 .writing-section-actions {
   display: flex;
   flex-wrap: wrap;
@@ -767,7 +732,8 @@ function soundLabel(phoneme: PhonemeOption) {
 }
 .writing-tabs {
   display: flex;
-  gap: 5px;
+  gap: 4px;
+  min-height: 46px;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -775,17 +741,20 @@ function soundLabel(phoneme: PhonemeOption) {
 }
 .writing-tabs button {
   flex: 1;
-  padding: 8px 10px;
-  border: 0;
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
   color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
 }
 .writing-tabs button.active {
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 1px 3px rgba(30, 34, 27, 0.08);
+  border-color: var(--theme-warning-border, #d8c3a5);
+  background: var(--accent-dark);
+  color: var(--on-accent, #fff);
 }
 .writing-tabs span {
   margin-left: 5px;
@@ -825,16 +794,6 @@ function soundLabel(phoneme: PhonemeOption) {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-.language-field input,
-.language-field textarea,
-.language-field select,
 .character-table input,
 .character-table textarea,
 .mapping-group select {
@@ -848,36 +807,8 @@ function soundLabel(phoneme: PhonemeOption) {
   color: var(--ink);
   font: inherit;
 }
-.language-field textarea,
 .character-table textarea {
   resize: vertical;
-}
-.language-button {
-  padding: 8px 12px;
-  border: 1px solid var(--accent-dark);
-  border-radius: 8px;
-  background: var(--accent-dark);
-  color: #fff;
-  cursor: pointer;
-}
-.language-button:hover {
-  filter: brightness(1.06);
-}
-.language-button.secondary {
-  background: transparent;
-  color: var(--accent-dark);
-}
-.language-button.secondary:hover {
-  background: var(--surface);
-}
-.language-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: none;
-}
-.language-danger {
-  border-color: var(--danger) !important;
-  color: var(--danger) !important;
 }
 .language-actions {
   display: flex;

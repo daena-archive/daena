@@ -20,26 +20,27 @@ let {
 
 <fieldset class="grammar-choices">
   <legend>{legend}</legend>
-  {#each options as option (option.value)}
-    <label class="grammar-choice" class:is-selected={option.value === value}>
-      <input
-        type="radio"
-        {name}
-        value={option.value}
-        checked={option.value === value}
-        disabled={locked}
-        onchange={() => onselect(option.value)} />
-      <strong>{option.label}</strong>
-      {#if option.expansion}<span>{option.expansion}</span>{/if}
-      {#if option.example}<em>{option.example}</em>{/if}
-    </label>
-  {/each}
+  <div class="grammar-choice-grid">
+    {#each options as option (option.value)}
+      <label class="grammar-choice" class:is-selected={option.value === value}>
+        <input
+          type="radio"
+          {name}
+          value={option.value}
+          checked={option.value === value}
+          disabled={locked}
+          onchange={() => onselect(option.value)} />
+        <strong>{option.label}</strong>
+        {#if option.expansion}<span>{option.expansion}</span>{/if}
+        {#if option.example}<em>{option.example}</em>{/if}
+      </label>
+    {/each}
+  </div>
 </fieldset>
 
 <style>
 .grammar-choices {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -47,25 +48,35 @@ let {
 }
 .grammar-choices legend {
   padding: 0;
+  padding-bottom: 6px;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.grammar-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
 }
 .grammar-choice {
   display: grid;
   gap: 4px;
   align-content: start;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--theme-neutral-border, var(--line));
   border-radius: 10px;
-  background: var(--surface);
+  background: var(--theme-surface-bg, var(--surface));
   cursor: pointer;
 }
 .grammar-choice.is-selected {
-  border-color: var(--accent-dark);
-  background: var(--surface-muted);
+  border-color: var(--theme-success-border, var(--accent));
+  background: color-mix(in srgb, var(--theme-success-bg, var(--surface-muted)) 70%, var(--surface));
 }
 .grammar-choice input {
   margin: 0;
+  accent-color: var(--accent-dark, var(--accent));
 }
 .grammar-choice span,
 .grammar-choice em {
@@ -77,7 +88,7 @@ let {
   font-style: italic;
 }
 .grammar-choice:focus-within {
-  outline: 3px solid rgba(180, 119, 63, 0.24);
+  outline: 3px solid var(--focus-ring, rgba(180, 119, 63, 0.24));
   outline-offset: 2px;
 }
 </style>

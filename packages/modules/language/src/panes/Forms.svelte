@@ -208,11 +208,10 @@ async function saveParadigm(): Promise<"ok" | "name" | "error" | "none"> {
       });
       paradigmEditing = { ...created, value: normalizeParadigm(created.value) };
     }
-    paradigmEditorOpen = true;
-    paradigmDraft = paradigmEditing.value;
     paradigmSaving = false;
     setMutationActive(false);
     if (ownerLanguageId === selectedLanguage?.id) await loadForms();
+    closeParadigmEditor();
     return "ok";
   } catch (cause) {
     paradigmSaving = false;
@@ -366,13 +365,7 @@ async function handleSubmit(event: SubmitEvent) {
 
 <div class="language-toolbar">
   <div class="language-toolbar-title">
-    <p class="language-toolbar-eyebrow">Language crafting studio</p>
     <h2>Morphology</h2>
-    <p class="language-toolbar-subtitle">
-      {selectedLanguage
-        ? `${selectedLanguage.name} · paradigms, rules, and generated forms`
-        : "Select a language to document its morphology."}
-    </p>
   </div>
   <div class="language-toolbar-actions">
     <button type="button" class="language-button" disabled={!selectedLanguage} onclick={addParadigm}
@@ -736,39 +729,6 @@ async function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .language-pane-section {
   display: grid;
   gap: 10px;
@@ -786,31 +746,6 @@ async function handleSubmit(event: SubmitEvent) {
 }
 .language-pane-section .lexeme-list {
   margin-top: 2px;
-}
-.language-field input,
-.language-field textarea,
-.language-field select {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-}
-.language-field textarea {
-  min-height: 4.5em;
-  resize: vertical;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
 }
 .paradigm-preview {
   width: 100%;
@@ -1004,15 +939,6 @@ async function handleSubmit(event: SubmitEvent) {
   border-color: var(--danger) !important;
   color: var(--danger) !important;
   background: transparent;
-}
-.language-group {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
 }
 .language-inline {
   display: flex;

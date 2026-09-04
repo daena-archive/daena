@@ -16,37 +16,15 @@ import Samples from "./panes/Samples.svelte";
 
 type Pane = "overview" | "lexicon" | "sounds" | "writing" | "grammar" | "forms" | "samples";
 
-interface TabGroup {
-  label: string;
-  tabs: [Pane, string][];
-}
-
-const TAB_GROUPS: TabGroup[] = [
-  {
-    label: "Foundation",
-    tabs: [
-      ["overview", "Overview"],
-      ["lexicon", "Lexicon"],
-    ],
-  },
-  {
-    label: "Phonology & Writing",
-    tabs: [
-      ["sounds", "Sounds"],
-      ["writing", "Writing"],
-    ],
-  },
-  {
-    label: "Grammar & Structure",
-    tabs: [
-      ["grammar", "Grammar"],
-      ["forms", "Morphology"],
-      ["samples", "Samples"],
-    ],
-  },
+const PANES: [Pane, string][] = [
+  ["overview", "Overview"],
+  ["lexicon", "Lexicon"],
+  ["sounds", "Sounds"],
+  ["writing", "Writing"],
+  ["grammar", "Grammar"],
+  ["forms", "Morphology"],
+  ["samples", "Samples"],
 ];
-
-const PANES: [Pane, string][] = TAB_GROUPS.flatMap((group) => group.tabs);
 
 let { context }: { context: ModuleContext } = $props();
 
@@ -308,7 +286,7 @@ $effect(() => {
       <p class="language-empty language-loading" role="status" aria-live="polite">Loading language…</p>
     {:else if !selectedLanguage}
       <div class="language-empty-screen" role="status">
-        <div class="language-empty-mark" aria-hidden="true">✦</div>
+        <div class="language-empty-mark" aria-hidden="true"></div>
         {#if incompatibleFocus}
           <h3>The selected item is not a language.</h3>
           <p>Select a Language entity to work with its words, sounds, writing, and grammar.</p>
@@ -322,25 +300,16 @@ $effect(() => {
       </div>
     {:else}
       <div bind:this={paneListEl} class="language-tabs" role="tablist" aria-label="Language workspace">
-        {#each TAB_GROUPS as group, groupIndex (group.label)}
-          <div class="language-tab-group">
-            <span class="language-tab-group-label">{group.label}</span>
-            <div class="language-tab-group-tabs">
-              {#each group.tabs as [id, label], tabIndex (id)}
-                {@const globalIndex =
-                  TAB_GROUPS.slice(0, groupIndex).reduce((acc, g) => acc + g.tabs.length, 0) + tabIndex}
-                <button
-                  type="button"
-                  role="tab"
-                  id={`language-tab-${id}`}
-                  aria-controls="language-pane"
-                  aria-selected={pane === id}
-                  tabindex={pane === id ? 0 : -1}
-                  onclick={() => switchPane(id)}
-                  onkeydown={(event) => roveTabs(event, globalIndex)}>{label}</button>
-              {/each}
-            </div>
-          </div>
+        {#each PANES as [id, label], index (id)}
+          <button
+            type="button"
+            role="tab"
+            id={`language-tab-${id}`}
+            aria-controls="language-pane"
+            aria-selected={pane === id}
+            tabindex={pane === id ? 0 : -1}
+            onclick={() => switchPane(id)}
+            onkeydown={(event) => roveTabs(event, index)}>{label}</button>
         {/each}
       </div>
       <div class="language-pane" hidden={pane !== "overview"}>
@@ -350,8 +319,7 @@ $effect(() => {
           active={pane === "overview"}
           registerLeaveGuard={registerOverviewGuard}
           {onLanguageChanged}
-          {onLanguageArchived}
-          openPane={(target) => void switchPane(target)} />
+          {onLanguageArchived} />
       </div>
       <div class="language-pane" hidden={pane !== "sounds"}>
         <Sounds
@@ -430,7 +398,7 @@ $effect(() => {
   color: var(--ink);
 }
 .language-panel {
-  --language-control-height: 38px;
+  --language-control-height: 34px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -462,10 +430,9 @@ $effect(() => {
     min-height: 420px;
   }
   .language-tabs {
-    flex-wrap: nowrap;
     overflow-x: auto;
     overscroll-behavior-inline: contain;
-    padding-bottom: 10px;
+    padding-inline: 12px;
     scrollbar-width: thin;
   }
   .language-tabs button {
@@ -473,25 +440,26 @@ $effect(() => {
   }
 }
 .language-help-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 50%;
-  background: transparent;
+  border-radius: 8px;
+  background: var(--surface-muted);
   color: var(--ink-soft);
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
 }
-.language-help-button:hover {
-  background: var(--surface-muted);
+.language-help-button:hover,
+.language-help-button:focus-visible {
+  background: var(--theme-warning-bg, #ebe6dd);
   color: var(--ink);
-  border-color: var(--accent);
+  border-color: var(--theme-neutral-border-strong, var(--line-strong));
+  outline: 0;
 }
 .language-main-header {
   display: flex;
@@ -555,48 +523,38 @@ $effect(() => {
   font-size: 13px;
 }
 .language-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 0 0 8px;
-  padding: 0 0 12px;
-  background: var(--surface);
-}
-.language-tab-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.language-tab-group-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding-left: 4px;
-}
-.language-tab-group-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
+  min-height: 46px;
+  margin: 0 -20px 16px;
+  padding: 7px 20px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(14px);
 }
 .language-tabs button {
-  padding: 7px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  min-height: var(--control-min-height, 34px);
+  padding: 7px 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
   background: transparent;
   color: var(--ink-soft);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
 }
 .language-tabs button:hover {
-  border-color: var(--theme-warning-border, #d8c3a5);
-  color: var(--ink);
   background: var(--surface-muted);
+  color: var(--ink);
 }
 .language-tabs button[aria-selected="true"] {
-  border-color: var(--accent-dark);
-  background: var(--surface-muted);
-  color: var(--accent-dark);
+  border-color: var(--theme-warning-border, #d8c3a5);
+  background: var(--accent-dark);
+  color: var(--on-accent, #fff);
 }
 .language-empty-screen {
   display: grid;
@@ -608,14 +566,11 @@ $effect(() => {
   text-align: center;
 }
 .language-empty-mark {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 23px;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
 }
 .language-empty-screen h3 {
   margin: 18px 0 6px;
@@ -673,11 +628,17 @@ $effect(() => {
   line-height: 1.3;
 }
 :global(.language-button) {
-  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
   border: 1px solid var(--accent-dark);
   border-radius: 8px;
   background: var(--accent-dark);
   color: #fff;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
 :global(.language-button:hover) {
@@ -704,25 +665,82 @@ $effect(() => {
   color: var(--danger) !important;
   background: transparent;
 }
-:global(.language-group) {
+:global(.language-group),
+:global(.language-form-section) {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
+  padding: 16px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 12px;
+  background: var(--surface);
 }
 :global(.language-group .language-group) {
-  background: var(--surface);
+  padding: 12px;
+  background: var(--surface-muted);
+  border-radius: 10px;
+}
+:global(.language-group-head) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+:global(.language-group > h3),
+:global(.language-group-head h3),
+:global(.language-form-section h3) {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+:global(.language-link-row) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+}
+:global(.language-link-kind) {
+  flex: none;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+:global(.language-link-label) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 :global(.language-field) {
   display: grid;
   gap: 6px;
   min-width: 0;
   color: var(--ink-soft);
-  font-size: 11px;
+}
+:global(.language-field > span) {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+:global(.language-field-prompt > span) {
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0.01em;
+  text-transform: none;
 }
 :global(.language-field input),
 :global(.language-field textarea),
@@ -730,12 +748,12 @@ $effect(() => {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
+  padding: 0 10px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--theme-surface-bg, var(--surface));
   color: var(--ink);
-  font: inherit;
+  font: 12px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
 :global(.language-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"])),
 :global(.language-panel select) {
@@ -775,6 +793,7 @@ $effect(() => {
 }
 :global(.language-field textarea) {
   min-height: 4.5em;
+  padding: 8px 10px;
   resize: vertical;
 }
 :global(.language-inline) {
@@ -796,21 +815,6 @@ $effect(() => {
 :global(.language-status.error) {
   color: var(--danger);
 }
-:global(.language-form-section) {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-}
-:global(.language-form-section h3) {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-}
 :global(.language-section-grid) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -824,40 +828,59 @@ $effect(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-height: 34px;
   flex-wrap: wrap;
 }
 :global(.language-toolbar-title) {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 :global(.language-toolbar-title h2) {
   margin: 0;
+  font-size: 22px;
 }
-:global(.language-toolbar-eyebrow) {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-:global(.language-toolbar-subtitle) {
-  margin: 0;
-  color: var(--ink-soft);
+:global(.language-toolbar-status) {
+  color: var(--ink-muted);
   font-size: 12px;
-  line-height: 1.55;
 }
 :global(.language-toolbar-actions) {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
+:global(.language-mode-toggle) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+:global(.language-mode-toggle[aria-pressed="true"]) {
+  border-color: var(--theme-warning-border, #d8c3a5);
+  background: var(--accent-dark);
+  color: var(--on-accent, #fff);
+}
 :global(.language-actions) {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-top: 12px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--line-soft, var(--line));
+  background: var(--surface);
   flex-wrap: wrap;
 }
 :global(.language-actions > span) {

@@ -580,19 +580,25 @@ function removeLink(index: number) {
 <div bind:this={root}>
   <div class="language-toolbar">
     <div class="language-toolbar-title">
-      <p class="language-toolbar-eyebrow">Language crafting studio</p>
-      <h2>Grammar</h2>
-      <p class="language-toolbar-subtitle">
-        {selectedLanguage
-          ? `${selectedLanguage.name} · systems, examples, and usage patterns`
-          : "Select a language to document its grammar."}
-      </p>
+      {#if session}
+        <button type="button" class="language-button secondary" onclick={leaveEditor}>Back</button>
+      {/if}
+      <h2 id="grammar-editor-heading" tabindex="-1">
+        {session ? editorTitle : "Grammar"}
+      </h2>
+      {#if grammarUi.starterCurrent && session?.draft.recordKind === "system"}
+        {@const position = starterPosition(grammarUi.starterCurrent)}
+        <span class="language-toolbar-status">Starter {position.current} of {position.total}</span>
+      {/if}
     </div>
-    {#if grammarUi.section || grammarUi.editing}
-      <div class="language-toolbar-actions">
+    <div class="language-toolbar-actions">
+      {#if grammarUi.starterCurrent && session?.draft.recordKind === "system"}
+        <button type="button" class="language-button secondary" onclick={handleSkip}>Skip</button>
+        <button type="button" class="language-button secondary" onclick={handleExitStarter}>Exit starter</button>
+      {:else if grammarUi.section || grammarUi.editing}
         <button type="button" class="language-button secondary" onclick={handleAllSections}>All sections</button>
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
   {#if error}
     <div class="language-empty-card language-error-card">
@@ -608,17 +614,7 @@ function removeLink(index: number) {
   {:else if paneLoading}
     <p class="language-empty language-loading" aria-live="polite" role="status">Loading grammar systems…</p>
   {:else if session}
-    <div class="language-toolbar">
-      <button type="button" class="language-button secondary" onclick={leaveEditor}>Back</button>
-      {#if grammarUi.starterCurrent && session.draft.recordKind === "system"}
-        {@const position = starterPosition(grammarUi.starterCurrent)}
-        <span>Starter {position.current} of {position.total}</span>
-        <button type="button" class="language-button secondary" onclick={handleSkip}>Skip</button>
-        <button type="button" class="language-button secondary" onclick={handleExitStarter}>Exit starter</button>
-      {/if}
-    </div>
     <form class="language-editor" onsubmit={handleSubmit}>
-      <h2 id="grammar-editor-heading" tabindex="-1">{editorTitle}</h2>
       {#if session.draft.recordKind === "system"}
         {@const systemDraft = session.draft}
         <p class="language-empty" role="status">{grammarSystemDescriptor(systemDraft.systemId)?.hint}</p>
@@ -764,8 +760,18 @@ function removeLink(index: number) {
         <section class="language-group">
           <h3>Links</h3>
           {#each recordDraft.links as link, index (link.id)}
-            <div class="language-inline">
-              <span>{link.kind}: {link.label || link.targetId}</span>
+            <div class="language-link-row">
+              <span class="language-link-kind"
+                >{link.kind === "lexeme"
+                  ? "Word"
+                  : link.kind === "lexeme-example"
+                    ? "Example"
+                    : link.kind === "sample"
+                      ? "Sample"
+                      : link.kind === "paradigm"
+                        ? "Paradigm"
+                        : link.kind}</span>
+              <span class="language-link-label">{link.label || link.targetId}</span>
               {#if !session.locked}
                 <button
                   type="button"
@@ -775,33 +781,49 @@ function removeLink(index: number) {
             </div>
           {/each}
           {#if !session.locked}
-            <select aria-label="Link a record" onchange={handleAddLink}>
-              <option value="">Link a word, sample, or paradigm…</option>
-              {#each ctx.choices.lexemes as lexeme (lexeme.id)}
-                <option value={JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })}
-                  >Word:
-                  {lexeme.lemma}</option>
-              {/each}
-              {#each ctx.choices.examples as example (example.lexemeId + example.exampleId)}
-                <option
-                  value={JSON.stringify({
-                    kind: "lexeme-example",
-                    targetId: example.lexemeId,
-                    secondaryId: example.exampleId,
-                    label: example.text,
-                  })}>Example: {example.lemma} — {example.text}</option>
-              {/each}
-              {#each ctx.choices.samples as sample (sample.id)}
-                <option value={JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title })}
-                  >Sample:
-                  {sample.title}</option>
-              {/each}
-              {#each ctx.choices.paradigms as paradigm (paradigm.id)}
-                <option value={JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name })}
-                  >Paradigm:
-                  {paradigm.name}</option>
-              {/each}
-            </select>
+            <label class="language-field">
+              <span>Link a record</span>
+              <select aria-label="Link a record" onchange={handleAddLink}>
+                <option value="">Word, sample, or paradigm…</option>
+                {#if ctx.choices.lexemes.length > 0}
+                  <optgroup label="Words">
+                    {#each ctx.choices.lexemes as lexeme (lexeme.id)}
+                      <option value={JSON.stringify({ kind: "lexeme", targetId: lexeme.id, label: lexeme.lemma })}
+                        >{lexeme.lemma}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+                {#if ctx.choices.examples.length > 0}
+                  <optgroup label="Examples">
+                    {#each ctx.choices.examples as example (example.lexemeId + example.exampleId)}
+                      <option
+                        value={JSON.stringify({
+                          kind: "lexeme-example",
+                          targetId: example.lexemeId,
+                          secondaryId: example.exampleId,
+                          label: example.text,
+                        })}>{example.lemma} — {example.text}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+                {#if ctx.choices.samples.length > 0}
+                  <optgroup label="Samples">
+                    {#each ctx.choices.samples as sample (sample.id)}
+                      <option value={JSON.stringify({ kind: "sample", targetId: sample.id, label: sample.title })}
+                        >{sample.title}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+                {#if ctx.choices.paradigms.length > 0}
+                  <optgroup label="Paradigms">
+                    {#each ctx.choices.paradigms as paradigm (paradigm.id)}
+                      <option value={JSON.stringify({ kind: "paradigm", targetId: paradigm.id, label: paradigm.name })}
+                        >{paradigm.name}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+              </select>
+            </label>
           {/if}
         </section>
       {/if}
@@ -1084,68 +1106,11 @@ function removeLink(index: number) {
 </div>
 
 <style>
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .language-search-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin-top: 16px;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
-}
-.language-field input,
-.language-field textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-}
-.language-field textarea {
-  min-height: 4.5em;
-  resize: vertical;
 }
 .grammar-card:focus-visible,
 .grammar-system:focus-visible {

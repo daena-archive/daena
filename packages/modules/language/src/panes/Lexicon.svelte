@@ -358,15 +358,10 @@ async function saveLexeme(): Promise<"ok" | "lemma" | "error" | "none"> {
       });
       editing = { ...created, value: normalizeLexeme(created.value) };
     }
-    editorOpen = true;
-    draft = editing.value;
-    tagsText = draft.tags.join("\n");
     lexiconSaving = false;
     setMutationActive(false);
-    if (ownerLanguageId === selectedLanguage?.id) {
-      await loadRecords();
-      await refreshHomonyms(draft.lemma);
-    }
+    if (ownerLanguageId === selectedLanguage?.id) await loadRecords();
+    closeLexiconEditor();
     return "ok";
   } catch (cause) {
     lexiconSaving = false;
@@ -809,13 +804,7 @@ async function handleSubmit(event: SubmitEvent) {
 {:else}
   <div class="language-toolbar">
     <div class="language-toolbar-title">
-      <p class="language-toolbar-eyebrow">Language crafting studio</p>
       <h2>Lexicon</h2>
-      <p class="language-toolbar-subtitle">
-        {selectedLanguage
-          ? `${selectedLanguage.name} · words, meanings, and usage`
-          : "Select a language to begin building its lexicon."}
-      </p>
     </div>
     <div class="language-toolbar-actions">
       <input
@@ -965,30 +954,8 @@ async function handleSubmit(event: SubmitEvent) {
 {/if}
 
 <style>
-.language-toolbar-eyebrow {
-  margin: 0 0 5px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-.language-toolbar-subtitle {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
 .language-field-wide {
   grid-column: 1/-1;
-}
-.language-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  color: var(--ink-soft);
-  font-size: 11px;
-  letter-spacing: 0.01em;
 }
 .language-actions {
   display: flex;
@@ -1011,25 +978,6 @@ async function handleSubmit(event: SubmitEvent) {
   border-color: var(--danger) !important;
   color: var(--danger) !important;
   background: transparent;
-}
-.language-group {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface-muted);
-}
-.language-group .language-group {
-  background: var(--surface);
-}
-.language-group-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 .language-inline {
   display: flex;
@@ -1080,25 +1028,6 @@ async function handleSubmit(event: SubmitEvent) {
   margin: 4px 0 0;
   padding: 0;
   list-style: none;
-}
-.language-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.language-toolbar-title {
-  display: grid;
-  gap: 3px;
-}
-.language-toolbar-title h2 {
-  margin: 0;
-}
-.language-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 .language-search-row {
   display: flex;

@@ -83,30 +83,6 @@ jobs:
             suffix: windows-x86_64
             archive: zip
 
-          - label: Windows ARM64
-            runner: windows-11-arm
-            bundle: nsis
-            suffix: windows-aarch64
-            archive: zip
-
-          - label: Linux x86_64
-            runner: ubuntu-24.04
-            bundle: deb
-            suffix: linux-x86_64
-            archive: tar.gz
-
-          - label: Linux ARM64
-            runner: ubuntu-24.04-arm
-            bundle: deb
-            suffix: linux-aarch64
-            archive: tar.gz
-
-          - label: macOS Intel
-            runner: macos-15-intel
-            bundle: dmg
-            suffix: macos-x86_64
-            archive: zip
-
           - label: macOS Apple Silicon
             runner: macos-15
             bundle: dmg
@@ -120,19 +96,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xdg-utils
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -190,29 +153,6 @@ jobs:
             -Path "package/*" `
             -DestinationPath "dist/$asset" `
             -CompressionLevel Optimal
-
-      - name: Package Linux release
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-          SUFFIX: ${{ matrix.suffix }}
-        run: |
-          set -euo pipefail
-
-          installer="$(find src-tauri/target/release/bundle/deb -maxdepth 1 -type f -name '*.deb' -print -quit)"
-          if [[ -z "$installer" ]]; then
-            echo "::error::Debian package was not found."
-            exit 1
-          fi
-
-          asset="daena-${TAG}-${SUFFIX}.tar.gz"
-
-          mkdir -p package dist
-          cp "$installer" package/
-          cp LICENSE package/LICENSE
-
-          tar -C package -czf "dist/$asset" .
 
       - name: Package macOS release
         if: runner.os == 'macOS'
@@ -277,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          expected=6
+          expected=2
           actual="$(find release-files -maxdepth 1 -type f | wc -l)"
 
           if [[ "$actual" -eq 0 ]]; then

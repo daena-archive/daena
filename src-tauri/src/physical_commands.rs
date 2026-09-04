@@ -7,6 +7,17 @@ pub(super) static HISTORICAL_EPOCH_CACHE: OnceLock<Mutex<BTreeMap<String, serde_
 pub(super) static HISTORICAL_EPOCH_REQUESTS: OnceLock<Mutex<BTreeMap<String, Arc<AtomicU64>>>> =
     OnceLock::new();
 
+fn planetary_from_generation(
+    generation: &serde_json::Value,
+) -> daena_physical::planetary::PlanetaryConfiguration {
+    generation
+        .get("settings")
+        .and_then(|settings| settings.get("planetary"))
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_else(daena_physical::planetary::PlanetaryConfiguration::earth_like)
+}
+
 #[tauri::command]
 pub(super) async fn project_physical_generate(
     state: tauri::State<'_, SharedCore>,
@@ -89,6 +100,7 @@ pub(super) async fn project_physical_generate(
             daena_physical::evolution::EvolutionSettings {
                 preset: evolution_preset,
             },
+            input.settings.planetary,
             &mut progress,
         );
         let mut manager = match jobs_for_worker.lock() {
@@ -264,6 +276,8 @@ pub(super) fn physical_climate_products(
         "width": climate.grid.width,
         "height": climate.grid.height,
         "temperatureCentiC": climate.temperature_centi_c,
+        "temperatureNhSummerCentiC": climate.temperature_nh_summer_centi_c,
+        "temperatureNhWinterCentiC": climate.temperature_nh_winter_centi_c,
         "moistureMmPerYear": climate.moisture_mm_per_year,
         "precipitationMmPerYear": climate.precipitation_mm_per_year,
         "runoffMmPerYear": climate.runoff_mm_per_year,
@@ -280,6 +294,11 @@ pub(super) fn physical_climate_products(
             "wettestCellPrecipitationMmPerYear": climate.metrics.wettest_cell_precipitation_mm_per_year,
             "driestLandCellPrecipitationMmPerYear": climate.metrics.driest_land_cell_precipitation_mm_per_year,
             "transportIterations": climate.metrics.transport_iterations,
+            "meanSeasonalRangeCentiC": climate.metrics.mean_seasonal_range_centi_c,
+            "minimumSeasonalTemperatureCentiC": climate.metrics.minimum_seasonal_temperature_centi_c,
+            "maximumSeasonalTemperatureCentiC": climate.metrics.maximum_seasonal_temperature_centi_c,
+            "permanentlyFrozenLandPpm": climate.metrics.permanently_frozen_land_ppm,
+            "seasonallyFrozenLandPpm": climate.metrics.seasonally_frozen_land_ppm,
         },
     })
 }
@@ -570,9 +589,11 @@ pub(super) fn compute_static_derived(
 ) -> Result<daena_physical::derived_cache::StaticDerivedPhysics, String> {
     let field = world.physical_field();
     let mut progress = daena_physical::NoopProgress;
+    let mut climate_settings = daena_physical::climate::ClimateSettings::default_for(field.grid);
+    climate_settings.planetary = planetary_from_generation(generation);
     let climate = daena_physical::climate::derive_current_climate(
         &field,
-        daena_physical::climate::ClimateSettings::default_for(field.grid),
+        climate_settings,
         world.seed,
         world.retry_index,
         &mut progress,
@@ -638,9 +659,12 @@ pub(super) fn load_or_fill_static_derived(
     generation: &serde_json::Value,
     reference_water_inventory_m3: u64,
 ) -> Result<daena_physical::derived_cache::StaticDerivedPhysics, String> {
-    let cache_dir =
-        daena_core::maps::physical::physical_derived_cache_dir(Path::new(project_root), identity)
-            .map_err(|error| error.to_string())?;
+    let cache_dir = daena_core::maps::physical::physical_derived_cache_dir(
+        Path::new(project_root),
+        identity,
+        planetary_from_generation(generation),
+    )
+    .map_err(|error| error.to_string())?;
     if let Some(hit) = daena_physical::derived_cache::load(&cache_dir)
         .map_err(|error| format!("maps.physical: {error}"))?
     {
@@ -658,6 +682,7 @@ pub(super) fn write_static_derived_from_job(
     let cache_dir = daena_core::maps::physical::physical_derived_cache_dir(
         Path::new(project_root),
         &result.physical_identity,
+        planetary_from_generation(&result.generation),
     )
     .map_err(|error| error.to_string())?;
     let world = daena_physical::decode_source(&result.source)?;
@@ -693,12 +718,13 @@ pub(super) fn derive_reopened_historical(
 > {
     let parameters = historical_forcing_from_generation(generation)?;
     let field = world.physical_field();
-    let historical = daena_physical::history::derive_historical_world(
+    let historical = daena_physical::history::derive_historical_world_with_planet(
         &field,
         reference_water_inventory_m3,
         Some(&world.crust_by_cell),
         parameters,
         epoch_offset_years,
+        planetary_from_generation(generation),
         progress,
     )
     .map_err(|error| format!("maps.physical: {error}"))?;

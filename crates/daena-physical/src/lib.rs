@@ -623,6 +623,7 @@ pub fn generate_world(
         seed,
         retry_index,
         evolution::EvolutionSettings::default(),
+        planetary::PlanetaryConfiguration::earth_like(),
         progress,
     )
 }
@@ -632,6 +633,7 @@ pub fn generate_world_with_evolution(
     seed: u32,
     retry_index: u32,
     evolution_settings: evolution::EvolutionSettings,
+    planetary: planetary::PlanetaryConfiguration,
     progress: &mut dyn ProgressSink,
 ) -> Result<GeneratedWorld, PhysicalError> {
     let grid = settings.grid()?;
@@ -659,9 +661,11 @@ pub fn generate_world_with_evolution(
         sea_level_mm: initial_sea_level_mm,
         elevations_mm: initial_elevations_mm,
     };
+    let mut climate_settings = climate::ClimateSettings::default_for(grid);
+    climate_settings.planetary = planetary;
     let initial_climate = climate::derive_current_climate(
         &initial_field,
-        climate::ClimateSettings::default_for(grid),
+        climate_settings,
         seed,
         retry_index,
         progress,
@@ -687,13 +691,8 @@ pub fn generate_world_with_evolution(
         sea_level_mm,
         elevations_mm,
     };
-    let climate = climate::derive_current_climate(
-        &field,
-        climate::ClimateSettings::default_for(grid),
-        seed,
-        retry_index,
-        progress,
-    )?;
+    let climate =
+        climate::derive_current_climate(&field, climate_settings, seed, retry_index, progress)?;
     let final_drainage = evolution::derive_drainage(&field, &climate)?;
     evolution.replace_drainage(final_drainage);
     evolution.validate_against(&initial_field, &field, &climate)?;

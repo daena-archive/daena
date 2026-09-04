@@ -22,6 +22,8 @@ pub struct ControlFields {
     pub crust_influence_ppm: Vec<i32>,
     pub crust_class: Vec<i32>,
     pub temperature_centi_c: Vec<i32>,
+    pub temperature_nh_summer_centi_c: Vec<i32>,
+    pub temperature_nh_winter_centi_c: Vec<i32>,
     pub runoff_mm: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub climate_class: Vec<i32>,
@@ -45,6 +47,8 @@ impl ControlFields {
         let count = field.grid.sample_count();
         if tectonics.crust_by_cell.len() != count
             || climate.temperature_centi_c.len() != count
+            || climate.temperature_nh_summer_centi_c.len() != count
+            || climate.temperature_nh_winter_centi_c.len() != count
             || climate.runoff_mm_per_year.len() != count
             || climate.precipitation_mm_per_year.len() != count
             || hydrology.ice_thickness_mm.len() != count
@@ -96,6 +100,8 @@ impl ControlFields {
             crust_influence_ppm,
             crust_class,
             temperature_centi_c: climate.temperature_centi_c.clone(),
+            temperature_nh_summer_centi_c: climate.temperature_nh_summer_centi_c.clone(),
+            temperature_nh_winter_centi_c: climate.temperature_nh_winter_centi_c.clone(),
             runoff_mm,
             precipitation_mm,
             climate_class,
@@ -123,6 +129,26 @@ impl ControlFields {
     #[must_use]
     pub fn sample_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.temperature_centi_c, lon_micro, lat_micro)
+    }
+
+    #[must_use]
+    pub fn sample_nh_summer_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(
+            self.grid,
+            &self.temperature_nh_summer_centi_c,
+            lon_micro,
+            lat_micro,
+        )
+    }
+
+    #[must_use]
+    pub fn sample_nh_winter_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(
+            self.grid,
+            &self.temperature_nh_winter_centi_c,
+            lon_micro,
+            lat_micro,
+        )
     }
 
     #[must_use]

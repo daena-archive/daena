@@ -17,7 +17,7 @@ use crate::{
     GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(64 * 1024 * 1024);
@@ -42,15 +42,14 @@ impl StaticDerivedPhysics {
         })
     }
 
-    pub fn version_dir() -> String {
-        // Planetary configuration is not in this key. Climate products that
-        // consume it must add a planetary digest or bump identity.
+    pub fn version_dir(planetary: crate::planetary::PlanetaryConfiguration) -> String {
         format!(
-            "c{}-d{}-h{}-z{}",
+            "c{}-d{}-h{}-z{}-{}",
             crate::climate::CLIMATE_DERIVATION_VERSION,
             crate::evolution::EVOLUTION_DERIVATION_VERSION,
             crate::hydrology::HYDROLOGY_DERIVATION_VERSION,
             crate::hazards::HAZARD_DERIVATION_VERSION,
+            planetary.climate_cache_token(),
         )
     }
 }
@@ -445,7 +444,10 @@ fn encode_grid(out: &mut Vec<u8>, grid: Grid) {
 fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), PhysicalError> {
     encode_grid(out, climate.grid);
     write_u16(out, climate.derivation_version);
+    encode_planetary(out, climate.planetary);
     write_vec_i32(out, &climate.temperature_centi_c)?;
+    write_vec_i32(out, &climate.temperature_nh_summer_centi_c)?;
+    write_vec_i32(out, &climate.temperature_nh_winter_centi_c)?;
     write_vec_u32(out, &climate.moisture_mm_per_year)?;
     write_vec_u32(out, &climate.precipitation_mm_per_year)?;
     write_vec_u32(out, &climate.runoff_mm_per_year)?;
@@ -464,6 +466,11 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
         climate.metrics.driest_land_cell_precipitation_mm_per_year,
     );
     write_u32(out, climate.metrics.transport_iterations);
+    write_u32(out, climate.metrics.mean_seasonal_range_centi_c);
+    write_i32(out, climate.metrics.minimum_seasonal_temperature_centi_c);
+    write_i32(out, climate.metrics.maximum_seasonal_temperature_centi_c);
+    write_u32(out, climate.metrics.permanently_frozen_land_ppm);
+    write_u32(out, climate.metrics.seasonally_frozen_land_ppm);
     Ok(())
 }
 
@@ -471,7 +478,10 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
     Ok(ClimateField {
         grid: reader.grid()?,
         derivation_version: reader.u16()?,
+        planetary: decode_planetary(reader)?,
         temperature_centi_c: reader.vec_i32()?,
+        temperature_nh_summer_centi_c: reader.vec_i32()?,
+        temperature_nh_winter_centi_c: reader.vec_i32()?,
         moisture_mm_per_year: reader.vec_u32()?,
         precipitation_mm_per_year: reader.vec_u32()?,
         runoff_mm_per_year: reader.vec_u32()?,
@@ -488,8 +498,72 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
             wettest_cell_precipitation_mm_per_year: reader.u32()?,
             driest_land_cell_precipitation_mm_per_year: reader.u32()?,
             transport_iterations: reader.u32()?,
+            mean_seasonal_range_centi_c: reader.u32()?,
+            minimum_seasonal_temperature_centi_c: reader.i32()?,
+            maximum_seasonal_temperature_centi_c: reader.i32()?,
+            permanently_frozen_land_ppm: reader.u32()?,
+            seasonally_frozen_land_ppm: reader.u32()?,
         },
     })
+}
+
+fn encode_planetary(out: &mut Vec<u8>, planetary: crate::planetary::PlanetaryConfiguration) {
+    write_u16(out, planetary.version);
+    write_u8(out, encode_planetary_preset(planetary.preset));
+    write_u32(out, planetary.star_luminosity_ppm);
+    write_u32(out, planetary.star_mass_ppm);
+    write_u32(out, planetary.semi_major_axis_milli_au);
+    write_u32(out, planetary.eccentricity_ppm);
+    write_u32(out, planetary.axial_tilt_milli_deg);
+    write_u32(out, planetary.rotation_period_seconds);
+    write_i32(out, planetary.retained_heat_centi_c);
+    write_u32(out, planetary.bond_albedo_ppm);
+    write_u32(out, planetary.mean_density_kg_m3);
+    write_u64(out, planetary.radius_metres);
+}
+
+fn decode_planetary(
+    reader: &mut Reader<'_>,
+) -> Result<crate::planetary::PlanetaryConfiguration, PhysicalError> {
+    Ok(crate::planetary::PlanetaryConfiguration {
+        version: reader.u16()?,
+        preset: decode_planetary_preset(reader.u8()?)?,
+        star_luminosity_ppm: reader.u32()?,
+        star_mass_ppm: reader.u32()?,
+        semi_major_axis_milli_au: reader.u32()?,
+        eccentricity_ppm: reader.u32()?,
+        axial_tilt_milli_deg: reader.u32()?,
+        rotation_period_seconds: reader.u32()?,
+        retained_heat_centi_c: reader.i32()?,
+        bond_albedo_ppm: reader.u32()?,
+        mean_density_kg_m3: reader.u32()?,
+        radius_metres: reader.u64()?,
+    })
+}
+
+fn encode_planetary_preset(preset: crate::planetary::PlanetaryPreset) -> u8 {
+    match preset {
+        crate::planetary::PlanetaryPreset::EarthLike => 0,
+        crate::planetary::PlanetaryPreset::LowTilt => 1,
+        crate::planetary::PlanetaryPreset::HighTilt => 2,
+        crate::planetary::PlanetaryPreset::SlowRotating => 3,
+        crate::planetary::PlanetaryPreset::CloseOrbit => 4,
+        crate::planetary::PlanetaryPreset::Custom => 5,
+    }
+}
+
+fn decode_planetary_preset(value: u8) -> Result<crate::planetary::PlanetaryPreset, PhysicalError> {
+    match value {
+        0 => Ok(crate::planetary::PlanetaryPreset::EarthLike),
+        1 => Ok(crate::planetary::PlanetaryPreset::LowTilt),
+        2 => Ok(crate::planetary::PlanetaryPreset::HighTilt),
+        3 => Ok(crate::planetary::PlanetaryPreset::SlowRotating),
+        4 => Ok(crate::planetary::PlanetaryPreset::CloseOrbit),
+        5 => Ok(crate::planetary::PlanetaryPreset::Custom),
+        _ => Err(cache_error(
+            "physical derived cache planetary preset is invalid",
+        )),
+    }
 }
 
 fn encode_preset(preset: EvolutionPreset) -> u8 {
@@ -953,14 +1027,16 @@ mod tests {
         assert_eq!(decoded.ocean_curve, physics.ocean_curve);
         assert_eq!(decoded.geojson, physics.geojson);
         assert!(!decoded.ocean_curve.is_empty());
+        let earth = crate::planetary::PlanetaryConfiguration::earth_like();
         assert_eq!(
-            StaticDerivedPhysics::version_dir(),
+            StaticDerivedPhysics::version_dir(earth),
             format!(
-                "c{}-d{}-h{}-z{}",
+                "c{}-d{}-h{}-z{}-{}",
                 crate::climate::CLIMATE_DERIVATION_VERSION,
                 crate::evolution::EVOLUTION_DERIVATION_VERSION,
                 crate::hydrology::HYDROLOGY_DERIVATION_VERSION,
                 crate::hazards::HAZARD_DERIVATION_VERSION,
+                earth.climate_cache_token(),
             )
         );
     }

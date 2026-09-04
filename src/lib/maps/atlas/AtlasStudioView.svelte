@@ -867,6 +867,24 @@ onDestroy(() => {
               <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
             </div>
             <div>
+              <dt>Northern-summer solstice</dt>
+              <dd>{formatTemperature(surface.temperatureNhSummerCentiC)}</dd>
+            </div>
+            <div>
+              <dt>Northern-winter solstice</dt>
+              <dd>{formatTemperature(surface.temperatureNhWinterCentiC)}</dd>
+            </div>
+            <div>
+              <dt>Annual range</dt>
+              <dd>{formatTemperature(surface.seasonalRangeCentiC)}</dd>
+            </div>
+            <div>
+              <dt>Freeze</dt>
+              <dd>
+                {surface.freeze === "permanent" ? "Permanent" : surface.freeze === "seasonal" ? "Seasonal" : "None"}
+              </dd>
+            </div>
+            <div>
               <dt>Climate</dt>
               <dd>{titleCase(surface.climate)}</dd>
             </div>

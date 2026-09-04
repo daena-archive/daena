@@ -248,6 +248,8 @@ export interface PhysicalClimateProducts {
   width: number;
   height: number;
   temperatureCentiC: number[];
+  temperatureNhSummerCentiC: number[];
+  temperatureNhWinterCentiC: number[];
   moistureMmPerYear: number[];
   precipitationMmPerYear: number[];
   runoffMmPerYear: number[];
@@ -264,6 +266,11 @@ export interface PhysicalClimateProducts {
     wettestCellPrecipitationMmPerYear: number;
     driestLandCellPrecipitationMmPerYear: number;
     transportIterations: number;
+    meanSeasonalRangeCentiC: number;
+    minimumSeasonalTemperatureCentiC: number;
+    maximumSeasonalTemperatureCentiC: number;
+    permanentlyFrozenLandPpm: number;
+    seasonallyFrozenLandPpm: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -576,6 +583,10 @@ export interface AtlasStudioSurfaceSample {
   elevationMm: number;
   waterSurfaceMm: number;
   temperatureCentiC: number;
+  temperatureNhSummerCentiC: number;
+  temperatureNhWinterCentiC: number;
+  seasonalRangeCentiC: number;
+  freeze: "none" | "seasonal" | "permanent";
   precipitationMm: number;
   climate: string;
   surface: string;

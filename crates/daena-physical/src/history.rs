@@ -10,6 +10,7 @@ use super::{
     derived_cache::StaticDerivedPhysics,
     evolution::{self, DrainageField},
     hydrology::{self, HydrologyField, ThermalExpansion},
+    planetary::PlanetaryConfiguration,
     tectonics::CrustType,
     PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink, SeedDomain,
 };
@@ -322,12 +323,35 @@ fn thermal_expansion_volume(
     )
 }
 
+#[deprecated(
+    note = "pass an explicit PlanetaryConfiguration via derive_historical_world_with_planet"
+)]
 pub fn derive_historical_world(
     field: &PhysicalField,
     reference_water_inventory_m3: u64,
     crust_by_cell: Option<&[CrustType]>,
     parameters: HistoricalForcingParameters,
     epoch_offset_years: i64,
+    progress: &mut dyn ProgressSink,
+) -> Result<HistoricalWorld, PhysicalError> {
+    derive_historical_world_with_planet(
+        field,
+        reference_water_inventory_m3,
+        crust_by_cell,
+        parameters,
+        epoch_offset_years,
+        PlanetaryConfiguration::earth_like(),
+        progress,
+    )
+}
+
+pub fn derive_historical_world_with_planet(
+    field: &PhysicalField,
+    reference_water_inventory_m3: u64,
+    crust_by_cell: Option<&[CrustType]>,
+    parameters: HistoricalForcingParameters,
+    epoch_offset_years: i64,
+    planetary: PlanetaryConfiguration,
     progress: &mut dyn ProgressSink,
 ) -> Result<HistoricalWorld, PhysicalError> {
     derive_historical_world_with_cache(
@@ -337,6 +361,7 @@ pub fn derive_historical_world(
         crust_by_cell,
         parameters,
         epoch_offset_years,
+        planetary,
         progress,
     )
 }
@@ -357,6 +382,7 @@ pub fn derive_historical_world_from_static(
         crust_by_cell,
         parameters,
         epoch_offset_years,
+        static_physics.climate.planetary,
         progress,
     )
 }
@@ -368,6 +394,7 @@ fn derive_historical_world_with_cache(
     crust_by_cell: Option<&[CrustType]>,
     parameters: HistoricalForcingParameters,
     epoch_offset_years: i64,
+    planetary: PlanetaryConfiguration,
     progress: &mut dyn ProgressSink,
 ) -> Result<HistoricalWorld, PhysicalError> {
     field.validate().map_err(PhysicalError::InvalidSource)?;
@@ -415,6 +442,7 @@ fn derive_historical_world_with_cache(
         )
     } else {
         let mut climate_settings = ClimateSettings::default_for(field.grid);
+        climate_settings.planetary = planetary;
         climate_settings.global_temperature_centi_c = climate_settings
             .global_temperature_centi_c
             .saturating_add(temperature_offset);
@@ -645,12 +673,13 @@ mod tests {
             HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
         let (cold_epoch, warm_epoch) = extreme_epochs(parameters);
         let mut reference_progress = NoopProgress;
-        let reference = derive_historical_world(
+        let reference = derive_historical_world_with_planet(
             &world.field,
             world.report.reference_water_inventory_m3,
             Some(&world.tectonics.crust_by_cell),
             parameters,
             0,
+            world.climate.planetary,
             &mut reference_progress,
         )
         .unwrap();
@@ -658,12 +687,13 @@ mod tests {
         assert_eq!(reference.drainage, world.evolution.drainage);
         assert_eq!(reference.hydrology, world.hydrology);
         let mut progress = NoopProgress;
-        let derived = derive_historical_world(
+        let derived = derive_historical_world_with_planet(
             &world.field,
             world.report.reference_water_inventory_m3,
             Some(&world.tectonics.crust_by_cell),
             parameters,
             warm_epoch,
+            world.climate.planetary,
             &mut progress,
         )
         .unwrap();
@@ -675,12 +705,13 @@ mod tests {
         assert!(derived.hydrology.metrics.converged);
         assert!(derived.metrics.balance_error_m3 <= derived.hydrology.metrics.tolerance_m3);
         let mut cold_progress = NoopProgress;
-        let cold = derive_historical_world(
+        let cold = derive_historical_world_with_planet(
             &world.field,
             world.report.reference_water_inventory_m3,
             Some(&world.tectonics.crust_by_cell),
             parameters,
             cold_epoch,
+            world.climate.planetary,
             &mut cold_progress,
         )
         .unwrap();
@@ -716,12 +747,13 @@ mod tests {
         );
         assert_ne!(cold.hydrology.island_id, derived.hydrology.island_id);
         let mut second_progress = NoopProgress;
-        let repeated = derive_historical_world(
+        let repeated = derive_historical_world_with_planet(
             &world.field,
             world.report.reference_water_inventory_m3,
             Some(&world.tectonics.crust_by_cell),
             parameters,
             warm_epoch,
+            world.climate.planetary,
             &mut second_progress,
         )
         .unwrap();
@@ -752,6 +784,41 @@ mod tests {
         assert_eq!(
             historical.metrics.sea_level_mm,
             world.hydrology.sea_level_mm
+        );
+    }
+
+    #[test]
+    fn uncached_historical_path_keeps_authored_planetary() {
+        let world = fixture();
+        let close = crate::planetary::PlanetaryConfiguration::from_preset(
+            crate::planetary::PlanetaryPreset::CloseOrbit,
+        );
+        let parameters =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let earth = derive_historical_world_with_planet(
+            &world.field,
+            world.report.reference_water_inventory_m3,
+            Some(&world.tectonics.crust_by_cell),
+            parameters,
+            0,
+            PlanetaryConfiguration::earth_like(),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let close_world = derive_historical_world_with_planet(
+            &world.field,
+            world.report.reference_water_inventory_m3,
+            Some(&world.tectonics.crust_by_cell),
+            parameters,
+            0,
+            close,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(close_world.climate.planetary, close);
+        assert!(
+            close_world.climate.metrics.mean_temperature_centi_c
+                > earth.climate.metrics.mean_temperature_centi_c
         );
     }
 }

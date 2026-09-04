@@ -1,8 +1,14 @@
 import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates.ts";
 
+export type ClimateOverlayMode = "off" | "annual" | "nh-summer" | "nh-winter" | "freeze";
+
 export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
   lakesVisible?: boolean;
+  climateOverlay?: ClimateOverlayMode;
+  climateAnnualCentiC?: number[];
+  climateNhSummerCentiC?: number[];
+  climateNhWinterCentiC?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -21,6 +27,24 @@ export const MIN_VISIBLE_INLAND_WATER_CELLS = 8;
 
 function lerp(first: number, second: number, t: number): number {
   return first + (second - first) * t;
+}
+
+function temperatureTint(centiC: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, (centiC + 3_500) / 7_500));
+  if (t < 0.5) {
+    const u = t * 2;
+    return [lerp(40, 220, u), lerp(80, 220, u), lerp(180, 160, u)];
+  }
+  const u = (t - 0.5) * 2;
+  return [lerp(220, 196, u), lerp(220, 64, u), lerp(160, 48, u)];
+}
+
+function mixRgb(
+  first: [number, number, number],
+  second: [number, number, number],
+  t: number,
+): [number, number, number] {
+  return [lerp(first[0], second[0], t), lerp(first[1], second[1], t), lerp(first[2], second[2], t)];
 }
 
 function landTint(heightMm: number): [number, number, number] {
@@ -105,6 +129,7 @@ export function paintPhysicalSurface(
 ): HTMLCanvasElement {
   const iceVisible = options.iceVisible ?? true;
   const lakesVisible = options.lakesVisible ?? true;
+  const climateOverlay = options.climateOverlay ?? "off";
   const canvas = document.createElement("canvas");
   canvas.width = products.width;
   canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
@@ -137,7 +162,22 @@ export function paintPhysicalSurface(
         blue = Math.round(138 * light);
       } else {
         const heightMm = Math.max(0, (products.waterLevelMm[index] ?? products.seaLevelMm) - products.seaLevelMm);
-        const [landRed, landGreen, landBlue] = landTint(heightMm);
+        let [landRed, landGreen, landBlue] = landTint(heightMm);
+        if (climateOverlay !== "off") {
+          const annual = options.climateAnnualCentiC?.[index] ?? 0;
+          const summer = options.climateNhSummerCentiC?.[index] ?? annual;
+          const winter = options.climateNhWinterCentiC?.[index] ?? annual;
+          if (climateOverlay === "freeze") {
+            const cold = Math.min(summer, winter);
+            const warm = Math.max(summer, winter);
+            if (warm < 0) [landRed, landGreen, landBlue] = [210, 230, 245];
+            else if (cold < 0)
+              [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], [170, 210, 230], 0.55);
+          } else {
+            const value = climateOverlay === "nh-summer" ? summer : climateOverlay === "nh-winter" ? winter : annual;
+            [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], temperatureTint(value), 0.72);
+          }
+        }
         red = Math.round(landRed * light);
         green = Math.round(landGreen * light);
         blue = Math.round(landBlue * light);

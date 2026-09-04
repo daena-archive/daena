@@ -2654,7 +2654,10 @@ mod tests {
         crate::climate::ClimateField {
             grid: field.grid,
             derivation_version: crate::climate::CLIMATE_DERIVATION_VERSION,
+            planetary: crate::planetary::PlanetaryConfiguration::earth_like(),
             temperature_centi_c: vec![1_200; count],
+            temperature_nh_summer_centi_c: vec![1_200; count],
+            temperature_nh_winter_centi_c: vec![1_200; count],
             moisture_mm_per_year: precipitation_mm_per_year.clone(),
             precipitation_mm_per_year,
             runoff_mm_per_year,
@@ -2671,6 +2674,11 @@ mod tests {
                 wettest_cell_precipitation_mm_per_year: 0,
                 driest_land_cell_precipitation_mm_per_year: 0,
                 transport_iterations: 0,
+                mean_seasonal_range_centi_c: 0,
+                minimum_seasonal_temperature_centi_c: 0,
+                maximum_seasonal_temperature_centi_c: 0,
+                permanently_frozen_land_ppm: 0,
+                seasonally_frozen_land_ppm: 0,
             },
         }
     }

@@ -227,6 +227,8 @@ pub struct AtlasPreparedScene {
     pub visible_water: render::VisibleWater,
     pub climate_class: Vec<i32>,
     pub temperature_centi_c: Vec<i32>,
+    pub temperature_nh_summer_centi_c: Vec<i32>,
+    pub temperature_nh_winter_centi_c: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
@@ -253,6 +255,27 @@ impl AtlasPreparedScene {
             .refined_at(lon_micro, lat_micro, sea_level_mm, sdf_ppm);
         let temperature_centi_c =
             detail::sample_field_mm(grid, &self.temperature_centi_c, lon_micro, lat_micro);
+        let temperature_nh_summer_centi_c = detail::sample_field_mm(
+            grid,
+            &self.temperature_nh_summer_centi_c,
+            lon_micro,
+            lat_micro,
+        );
+        let temperature_nh_winter_centi_c = detail::sample_field_mm(
+            grid,
+            &self.temperature_nh_winter_centi_c,
+            lon_micro,
+            lat_micro,
+        );
+        let seasonal_range_centi_c =
+            temperature_nh_summer_centi_c.abs_diff(temperature_nh_winter_centi_c);
+        let freeze = if temperature_nh_summer_centi_c < 0 && temperature_nh_winter_centi_c < 0 {
+            "permanent"
+        } else if temperature_nh_summer_centi_c.min(temperature_nh_winter_centi_c) < 0 {
+            "seasonal"
+        } else {
+            "none"
+        };
         let precipitation_mm =
             detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
         let climate = control::climate_class_name(
@@ -291,6 +314,10 @@ impl AtlasPreparedScene {
             elevation_mm,
             water_surface_mm,
             temperature_centi_c,
+            temperature_nh_summer_centi_c,
+            temperature_nh_winter_centi_c,
+            seasonal_range_centi_c,
+            freeze: freeze.to_string(),
             precipitation_mm,
             climate: climate.to_string(),
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
@@ -361,7 +388,7 @@ pub fn prepare_from_source(
     progress.report(AtlasPhase::Validating, 1, 1)?;
     progress.report(AtlasPhase::DerivingEpoch, 0, 1)?;
     progress.check_cancelled()?;
-    let historical = daena_physical::history::derive_historical_world(
+    let historical = daena_physical::history::derive_historical_world_with_planet(
         &field,
         report.reference_water_inventory_m3,
         Some(&world.crust_by_cell),
@@ -372,6 +399,7 @@ pub fn prepare_from_source(
             )
         }),
         request.offset_years,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
         &mut daena_physical::NoopProgress,
     )
     .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, error.to_string()))?;
@@ -596,6 +624,8 @@ pub fn prepare_from_source(
         visible_water,
         climate_class: controls.climate_class,
         temperature_centi_c: controls.temperature_centi_c,
+        temperature_nh_summer_centi_c: controls.temperature_nh_summer_centi_c,
+        temperature_nh_winter_centi_c: controls.temperature_nh_winter_centi_c,
         precipitation_mm: controls.precipitation_mm,
         residual_cache,
         drainage_cache,
@@ -943,12 +973,13 @@ mod tests {
             world.field.retry_index,
         );
         let derive = |offset| {
-            daena_physical::history::derive_historical_world(
+            daena_physical::history::derive_historical_world_with_planet(
                 &world.field,
                 report.reference_water_inventory_m3,
                 Some(&world.tectonics.crust_by_cell),
                 forcing,
                 offset,
+                world.climate.planetary,
                 &mut daena_physical::NoopProgress,
             )
             .unwrap()

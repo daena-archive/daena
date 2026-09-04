@@ -6,10 +6,11 @@ import {
   project,
   type Entity,
   type PhysicalGenerationInput,
+  type PhysicalClimateProducts,
   type PhysicalHydrologyProducts,
   type PhysicalJobStatus,
 } from "$lib/project/client";
-import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "./raster";
+import { paintPhysicalSurface, type ClimateOverlayMode, type PhysicalRasterPaintOptions } from "./raster";
 import {
   EARTH_RADIUS_METRES,
   earthLikePlanetary,
@@ -59,6 +60,8 @@ let advancedPlanet = $state(false);
 let yearLengthError = $state<string | null>(null);
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
+let climate = $state<PhysicalClimateProducts | null>(null);
+let climateOverlay = $state<ClimateOverlayMode>("annual");
 let raster = $state<HTMLCanvasElement | null>(null);
 let notice = $state("");
 let busy = $state(false);
@@ -161,7 +164,27 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
   return {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? false,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? false,
+    climateOverlay: climate ? climateOverlay : "off",
+    climateAnnualCentiC: climate?.temperatureCentiC,
+    climateNhSummerCentiC: climate?.temperatureNhSummerCentiC,
+    climateNhWinterCentiC: climate?.temperatureNhWinterCentiC,
   };
+}
+
+function formatCentiC(value: number) {
+  return `${(value / 100).toFixed(1)} °C`;
+}
+
+function climateSummary() {
+  if (!climate) return "";
+  const metrics = climate.metrics;
+  const freeze =
+    metrics.permanentlyFrozenLandPpm > 50_000
+      ? "Permanent freeze is plausible on a large share of land."
+      : metrics.seasonallyFrozenLandPpm > 50_000
+        ? "Seasonal freeze is plausible; summers thaw most of that land."
+        : "Little or no land stays below freezing across the year.";
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. ${freeze}`;
 }
 
 function headline() {
@@ -275,6 +298,7 @@ async function loadSavedMap() {
   try {
     preview = parseDerivedVectorCollection(await project.physicalMapDerivedGeoJson(mapId));
     hydrology = await project.physicalMapDerivedHydrology(mapId);
+    climate = await project.physicalMapDerivedClimate(mapId);
     await mountPreview();
   } catch (cause) {
     notice = cause instanceof Error ? cause.message : String(cause);
@@ -304,6 +328,7 @@ async function poll(jobId: string) {
     if (status.state === "completed") {
       preview = parseDerivedVectorCollection(await project.physicalMapPreview(jobId));
       hydrology = await project.physicalMapHydrology(jobId);
+      climate = await project.physicalMapClimate(jobId);
       await mountPreview();
       publish("preview-ready", { jobId });
     } else if (status.state !== "cancelled") {
@@ -330,6 +355,7 @@ async function generate() {
   busy = true;
   notice = "";
   hydrology = null;
+  climate = null;
   preview = { type: "FeatureCollection", features: [] };
   destroyPreview();
   try {
@@ -426,12 +452,25 @@ onMount(() => {
         onclick={() => (advancedPlanet = !advancedPlanet)}
         disabled={busy}
         aria-expanded={advancedPlanet}>{advancedPlanet ? "Hide planet details" : "Planet details"}</button>
+      {#if climate}
+        <label
+          >Climate view<select bind:value={climateOverlay} onchange={() => rebuildRaster(hydrology)}>
+            <option value="off">Terrain only</option>
+            <option value="annual">Annual temperature</option>
+            <option value="nh-summer">Northern-summer solstice</option>
+            <option value="nh-winter">Northern-winter solstice</option>
+            <option value="freeze">Freeze</option>
+          </select></label>
+      {/if}
     </div>
+    {#if climate}
+      <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
+    {/if}
     {#if advancedPlanet}
       <div class="physical-planet-panel">
         <p class="physical-planet-readout">
-          Stored with the world. These settings do not change this preview's climate yet. Figures are generated world
-          physics, not a precise scientific prediction.
+          Stored with the world. These settings now drive temperature and seasons. Figures are generated world physics,
+          not a precise scientific prediction.
         </p>
         <label
           >Seasons (tilt)
@@ -615,8 +654,8 @@ onMount(() => {
             </p>
             <p class="physical-map-help-note">
               The accepted map is a separate high-resolution render with much more detail. You can’t edit the base world
-              directly; copy any region into an editable layer to change it. Planet settings are stored with the world
-              but do not change this preview's climate yet.
+              directly; copy any region into an editable layer to change it. Planet settings drive temperature and
+              seasons; results are generated world physics, not precise scientific prediction.
             </p>
             <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
           </div>
@@ -724,6 +763,10 @@ onMount(() => {
   margin: 0;
   color: #d9d0c3;
   font-size: 0.76rem;
+}
+
+.physical-climate-readout {
+  padding: 0 1rem 0.75rem;
 }
 
 .physical-planet-advanced {

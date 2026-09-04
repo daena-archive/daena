@@ -1139,7 +1139,9 @@ mod tests {
     use crate::request::AtlasRenderRequest;
     use crate::spike_identity_from_source;
     use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION};
-    use daena_physical::history::{derive_historical_world, HistoricalForcingParameters};
+    use daena_physical::history::{
+        derive_historical_world_with_planet, HistoricalForcingParameters,
+    };
     use daena_physical::Grid;
     use daena_physical::NoopProgress as PhysicalNoop;
     use std::cell::Cell;
@@ -1183,12 +1185,13 @@ mod tests {
     ) {
         let world = golden_world();
         let identity = spike_identity_from_source(&world.source);
-        let historical = derive_historical_world(
+        let historical = derive_historical_world_with_planet(
             &world.field,
             world.report.reference_water_inventory_m3,
             Some(&world.tectonics.crust_by_cell),
             HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index),
             0,
+            world.climate.planetary,
             &mut PhysicalNoop,
         )
         .unwrap();

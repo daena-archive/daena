@@ -143,16 +143,13 @@ fn physical_identity(manifest: &PhysicalIdentityManifestV1, source_bytes: &[u8])
     format!("sha256:{:x}", Sha256::digest(input))
 }
 
-/// Directory for disposable static derived physics keyed by physical identity.
-///
-/// Planetary configuration is stored on generation settings and is not part of
-/// `PhysicalIdentityManifestV1`. When climate derivation consumes planetary
-/// inputs, this cache key must change (identity v2 or a planetary digest
-/// suffix) so two worlds with the same terrain and different planets cannot
-/// share climate products.
+/// Directory for disposable static derived physics keyed by physical identity
+/// and planetary configuration. Terrain identity does not hash planetary
+/// settings, so the cache directory includes a planetary token.
 pub fn physical_derived_cache_dir(
     project_root: &Path,
     identity: &str,
+    planetary: daena_physical::planetary::PlanetaryConfiguration,
 ) -> Result<PathBuf, CoreError> {
     let Some(hex) = identity.strip_prefix("sha256:") else {
         return Err(CoreError::Validation(
@@ -171,7 +168,7 @@ pub fn physical_derived_cache_dir(
     Ok(project_root
         .join(PHYSICAL_DERIVED_CACHE_RELATIVE)
         .join(format!("sha256-{hex}"))
-        .join(daena_physical::derived_cache::StaticDerivedPhysics::version_dir()))
+        .join(daena_physical::derived_cache::StaticDerivedPhysics::version_dir(planetary)))
 }
 
 #[must_use]
@@ -677,13 +674,16 @@ mod tests {
         assert_eq!(
             physical_derived_cache_dir(
                 std::path::Path::new("/tmp/example-project"),
-                &validated.identity
+                &validated.identity,
+                daena_physical::planetary::PlanetaryConfiguration::earth_like(),
             )
             .unwrap(),
             std::path::PathBuf::from(format!(
                 "/tmp/example-project/.daena/cache/physical-derived/sha256-{}/{}",
                 &validated.identity[7..],
-                daena_physical::derived_cache::StaticDerivedPhysics::version_dir()
+                daena_physical::derived_cache::StaticDerivedPhysics::version_dir(
+                    daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+                )
             ))
         );
         assert!(PHYSICAL_DERIVED_CACHE_RELATIVE.starts_with(".daena/cache/"));

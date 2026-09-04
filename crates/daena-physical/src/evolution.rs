@@ -1250,9 +1250,11 @@ pub fn evolve_terrain(
             elevations_mm: current.clone(),
         };
         if step > 0 && step % budget.climate_cadence_steps == 0 {
+            let mut climate_settings = ClimateSettings::default_for(before_field.grid);
+            climate_settings.planetary = climate.planetary;
             active_climate = derive_current_climate(
                 &step_field,
-                ClimateSettings::default_for(before_field.grid),
+                climate_settings,
                 before_field.seed,
                 before_field.retry_index,
                 progress,
@@ -1770,7 +1772,10 @@ mod tests {
         ClimateField {
             grid: field.grid,
             derivation_version: crate::climate::CLIMATE_DERIVATION_VERSION,
+            planetary: crate::planetary::PlanetaryConfiguration::earth_like(),
             temperature_centi_c: vec![0; sample_count],
+            temperature_nh_summer_centi_c: vec![0; sample_count],
+            temperature_nh_winter_centi_c: vec![0; sample_count],
             moisture_mm_per_year: vec![0; sample_count],
             precipitation_mm_per_year: runoff_mm_per_year_field.clone(),
             runoff_mm_per_year: runoff_mm_per_year_field,
@@ -1787,6 +1792,11 @@ mod tests {
                 wettest_cell_precipitation_mm_per_year: 0,
                 driest_land_cell_precipitation_mm_per_year: 0,
                 transport_iterations: 0,
+                mean_seasonal_range_centi_c: 0,
+                minimum_seasonal_temperature_centi_c: 0,
+                maximum_seasonal_temperature_centi_c: 0,
+                permanently_frozen_land_ppm: 0,
+                seasonally_frozen_land_ppm: 0,
             },
         }
     }

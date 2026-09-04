@@ -70,11 +70,13 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
     )
     .unwrap();
     let products = physical_climate_products(&climate);
-    assert_eq!(products["derivationVersion"], 1);
+    assert_eq!(products["derivationVersion"], 2);
     assert_eq!(products["width"], 8);
     assert_eq!(products["height"], 4);
     for key in [
         "temperatureCentiC",
+        "temperatureNhSummerCentiC",
+        "temperatureNhWinterCentiC",
         "moistureMmPerYear",
         "precipitationMmPerYear",
         "runoffMmPerYear",

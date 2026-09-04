@@ -244,3 +244,18 @@ function handleCell(cellId: string, patch: Partial<Omit<ParadigmCell, "id" | "co
     {/if}
   {/each}
 {/snippet}
+
+<style>
+select,
+input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+  color: var(--ink);
+  font: 12px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+}
+</style>

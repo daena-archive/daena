@@ -533,7 +533,7 @@ function handleNotesSubmit(event: SubmitEvent) {
         in.
       </p>
       <div class="language-inline">
-        <button type="button" class="language-button secondary" onclick={addPhoneme}>Add first sound</button>
+        <button type="button" class="language-button" onclick={addPhoneme}>Add first sound</button>
       </div>
     </div>
   {:else}

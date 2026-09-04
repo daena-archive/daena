@@ -700,7 +700,7 @@ async function handleSubmit(event: SubmitEvent) {
       No paradigms yet. Add an inflection or derivation table, then preview generated forms.
     </p>
     <div class="language-inline">
-      <button type="button" class="language-button secondary" onclick={addParadigm}>Add first paradigm</button>
+      <button type="button" class="language-button" onclick={addParadigm}>Add first paradigm</button>
     </div>
   </div>
 {:else}

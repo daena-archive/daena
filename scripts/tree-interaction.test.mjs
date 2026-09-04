@@ -40,6 +40,8 @@ const shell = await read("src/routes/+page.svelte");
 
 assert.match(surface, /TREE_SCOPES\.membersPlusImmediateFamily/);
 assert.match(surface, /aria-label="House tree scope"/);
+assert.match(surface, /aria-label="Back to people and houses"/);
+assert.match(surface, /family-topbar-back/);
 assert.match(surface, /aria-label="Navigation"/);
 assert.match(surface, /aria-label="View"/);
 assert.match(surface, /aria-label="Expansion"/);
@@ -50,6 +52,8 @@ assert.match(surface, /TREE_LEGEND\.member/);
 assert.match(surface, /warnings-list/);
 assert.match(surface, /onEditPersonIdentity/);
 assert.match(surface, /closeDock/);
+assert.match(surface, /dockDismissed/);
+assert.doesNotMatch(surface, /selectedPersonId = \[\.\.\.people\.keys\(\)\]/);
 assert.match(surface, /onSurfaceKeydown/);
 assert.doesNotMatch(surface, /aria-label="View settings"/);
 assert.equal((surface.match(/aria-label="Secondary field"/g) ?? []).length, 1, "secondary field appears once");
@@ -74,7 +78,8 @@ assert.doesNotMatch(canvas, /role="application"/);
 assert.match(personPanel, /ENTITY_ACTIONS\.editIdentity/);
 assert.match(personPanel, /ENTITY_ACTIONS\.archive/);
 assert.match(personPanel, /data-dock-focus/);
-assert.match(personPanel, /Edit relationship/);
+assert.match(personPanel, /aria-label="Edit relationship"/);
+assert.match(personPanel, /aria-label="Close details"/);
 
 const personNode = await read("src/lib/houses/FamilyPersonNode.svelte");
 assert.match(personNode, /tabindex=\{cardTabIndex\}/);
@@ -86,6 +91,8 @@ assert.doesNotMatch(personNode, /--control-min-height/);
 
 assert.match(relationshipPanel, /formatRelationshipTitle/);
 assert.match(relationshipPanel, /formatRelationshipTypeLabel/);
+assert.match(relationshipPanel, /date-empty/);
+assert.match(relationshipPanel, /Add a date/);
 
 const relationshipEdge = await read("src/lib/houses/FamilyRelationshipEdge.svelte");
 assert.match(relationshipEdge, /data-relationship-id/);

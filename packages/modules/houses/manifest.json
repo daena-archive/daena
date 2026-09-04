@@ -35,6 +35,48 @@
         }
       ],
       "fields": [
+        { "key": "summary", "label": "Summary", "type": "text", "entityTypes": ["house"] },
+        { "key": "aliases", "label": "Aliases", "type": "text", "entityTypes": ["house"] },
+        {
+          "key": "founded",
+          "label": "Founded",
+          "type": "date",
+          "entityTypes": ["house"],
+          "shared": true,
+          "timeline": { "role": "start", "group": "house", "label": "Founded", "layer": "dates" }
+        },
+        {
+          "key": "allies",
+          "label": "Allies",
+          "type": "relationship",
+          "relationshipType": "house_allied_with",
+          "relationshipDirection": "undirected",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["house", "daena.lore:faction"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
+        {
+          "key": "rivals",
+          "label": "Rivals",
+          "type": "relationship",
+          "relationshipType": "house_rival_of",
+          "relationshipDirection": "undirected",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["house", "daena.lore:faction"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
         {
           "key": "parents",
           "label": "Parents",
@@ -187,7 +229,14 @@
       "entityType": "house",
       "description": "A lineage, dynasty, or household that binds people together.",
       "requiredFields": [],
-      "fields": {}
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "founded": "",
+        "allies": [],
+        "rivals": [],
+        "members": []
+      }
     }
   ],
   "views": [],

@@ -32,6 +32,11 @@ const children = family.schemas[0].fields.find((field) => field.key === "childre
 const partners = family.schemas[0].fields.find((field) => field.key === "partners");
 const houses = family.schemas[0].fields.find((field) => field.key === "houses");
 const members = family.schemas[0].fields.find((field) => field.key === "members");
+const summary = family.schemas[0].fields.find((field) => field.key === "summary");
+const aliases = family.schemas[0].fields.find((field) => field.key === "aliases");
+const founded = family.schemas[0].fields.find((field) => field.key === "founded");
+const allies = family.schemas[0].fields.find((field) => field.key === "allies");
+const rivals = family.schemas[0].fields.find((field) => field.key === "rivals");
 
 assert.equal(relationshipDirection(parents), "incoming");
 assert.equal(relationshipDirection(children), "outgoing");
@@ -46,6 +51,36 @@ assert.equal(keys.includes("houses"), true);
 assert.equal(relationshipDirection(houses), "outgoing");
 assert.equal(relationshipDirection(members), "incoming");
 assert.equal(houses.relationshipType, "family_member_of");
+assert.equal(summary?.type, "text");
+assert.equal(aliases?.type, "text");
+assert.equal(founded?.type, "date");
+assert.equal(relationshipDirection(allies), "undirected");
+assert.equal(relationshipDirection(rivals), "undirected");
+assert.equal(allies.relationshipType, "house_allied_with");
+assert.equal(rivals.relationshipType, "house_rival_of");
+assert.equal(houses.targetEntityTypes.includes("house"), true);
+assert.equal(members.entityTypes.includes("house"), true);
+
+const houseInspector = contributedRelationshipFields(familyEnabled, "house", [familyEnabled, lore], enabledTypes);
+const houseInspectorKeys = houseInspector.map((field) => field.key);
+assert.equal(houseInspectorKeys.includes("summary"), true);
+assert.equal(houseInspectorKeys.includes("aliases"), true);
+assert.equal(houseInspectorKeys.includes("allies"), true);
+assert.equal(houseInspectorKeys.includes("rivals"), true);
+assert.equal(houseInspectorKeys.includes("members"), true);
+assert.equal(houseInspectorKeys.includes("founded"), false);
+assert.equal(houseInspectorKeys.includes("parents"), false);
+const typesWithTimeline = new Set([...enabledTypes, "daena.timeline:event"]);
+const houseWithTimeline = contributedRelationshipFields(
+  familyEnabled,
+  "house",
+  [familyEnabled, lore],
+  typesWithTimeline,
+);
+assert.equal(
+  houseWithTimeline.some((field) => field.key === "founded"),
+  true,
+);
 assert.equal(defaultRelationshipMetadata(houses).role, "member");
 assert.equal(family.capabilities.includes("schema.overlay"), true);
 assert.equal(

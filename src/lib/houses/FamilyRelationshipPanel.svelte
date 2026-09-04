@@ -1,6 +1,8 @@
 <script lang="ts">
 import type { MetadataFieldDefinition, ModuleContext } from "../../../packages/module-api/src/index";
+import { X } from "@lucide/svelte";
 import DateEditor from "$lib/date/DateEditor.svelte";
+import { parseCalendarDate } from "$lib/date";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import {
   PARENT_KINDS,
@@ -48,6 +50,7 @@ let error = $state("");
 let conflict = $state(false);
 let currentValues = $state<Record<string, unknown> | null>(null);
 let currentRevision = $state("");
+let dateEditorOpen = $state<Record<string, boolean>>({});
 
 const sourceName = $derived(people.get(relationship.sourceId)?.name ?? relationship.sourceId);
 const targetName = $derived(people.get(relationship.targetId)?.name ?? relationship.targetId);
@@ -104,6 +107,7 @@ function resetFrom(value: FamilyRelationship) {
   conflict = false;
   currentValues = null;
   currentRevision = "";
+  dateEditorOpen = {};
 }
 
 function requestIdForSave() {
@@ -220,7 +224,8 @@ async function remove() {
       <strong class="title">{relationshipTitle}</strong>
       <span class="subtitle">{relationshipTypeLabel}</span>
     </div>
-    <button type="button" class="quiet-button ghost" onclick={onClose}>Close</button>
+    <button type="button" class="icon-button" onclick={onClose} aria-label="Close relationship"
+      ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
   </header>
 
   <div class="form-grid">
@@ -237,12 +242,25 @@ async function remove() {
           </select>
         </label>
       {:else if field.type === "date"}
-        <DateEditor
-          label={field.label}
-          value={draft[field.key]}
-          calendars={[]}
-          onChange={(next) => setDraft(field.key, next)}
-          onClear={() => setDraft(field.key, null)} />
+        <div class="field">
+          <span>{field.label}</span>
+          {#if parseCalendarDate(draft[field.key]) || dateEditorOpen[field.key]}
+            <DateEditor
+              label={field.label}
+              value={draft[field.key]}
+              calendars={[]}
+              onChange={(next) => setDraft(field.key, next)}
+              onClear={() => {
+                setDraft(field.key, null);
+                dateEditorOpen = { ...dateEditorOpen, [field.key]: false };
+              }} />
+          {:else}
+            <button
+              class="date-empty"
+              type="button"
+              onclick={() => (dateEditorOpen = { ...dateEditorOpen, [field.key]: true })}>Add a date</button>
+          {/if}
+        </div>
       {:else if field.type === "boolean"}
         <label class="field check">
           <input
@@ -430,14 +448,33 @@ select:focus-visible {
   background: var(--surface-muted);
   color: var(--ink);
 }
-.quiet-button.ghost {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-.quiet-button.ghost:hover {
-  border-color: var(--theme-warning-border, #cbbda9);
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
   background: var(--surface-muted);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.icon-button:hover {
+  background: var(--theme-warning-bg, #ebe6dd);
+  color: var(--ink);
+}
+.date-empty {
+  width: fit-content;
+  padding: 8px 10px;
+  border: 1px dashed var(--theme-warning-border, #d3c0a9);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
 }
 .primary-button {
   border: 1px solid transparent;
@@ -455,6 +492,7 @@ select:focus-visible {
 .danger-button:hover {
   background: var(--theme-danger-bg, #f8ece8);
 }
+.icon-button:focus-visible,
 .quiet-button:focus-visible,
 .primary-button:focus-visible,
 .danger-button:focus-visible {

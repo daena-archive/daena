@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Archive, Crown, ExternalLink, GitBranch, Heart, Pencil, UserPlus } from "@lucide/svelte";
+import { Archive, Crown, ExternalLink, GitBranch, Heart, Pencil, UserPlus, X } from "@lucide/svelte";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
 import { archiveConfirmOptions } from "$lib/entity-lifecycle/archive.ts";
 import { confirmDialog } from "$lib/dialogs.svelte";
@@ -71,8 +71,8 @@ async function archivePerson() {
       {#if person.secondaryLabel}<span class="meta secondary">{person.secondaryLabel}</span>{/if}
       {#if houses.length}<span class="houses">{houses.join(" · ")}</span>{/if}
     </div>
-    <button type="button" class="quiet-button ghost" data-dock-focus onclick={onClose} aria-label="Close details"
-      >Close</button>
+    <button type="button" class="icon-button" data-dock-focus onclick={onClose} aria-label="Close details"
+      ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
   </header>
 
   <div class="panel-actions" role="group" aria-label="Primary actions">
@@ -119,8 +119,9 @@ async function archivePerson() {
             </button>
             <button
               type="button"
-              class="quiet-button ghost small"
-              onclick={() => onSelectRelationship(connection.relationshipId)}>Edit relationship</button>
+              class="icon-button"
+              onclick={() => onSelectRelationship(connection.relationshipId)}
+              aria-label="Edit relationship"><Pencil size={14} strokeWidth={1.8} aria-hidden="true" /></button>
           </li>
         {/each}
       </ul>
@@ -217,19 +218,27 @@ async function archivePerson() {
 .quiet-button.pill {
   border-radius: 999px;
 }
-.quiet-button.ghost {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-.quiet-button.ghost:hover {
-  border-color: var(--theme-warning-border, #cbbda9);
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
   background: var(--surface-muted);
+  color: var(--ink-soft);
+  cursor: pointer;
 }
-.quiet-button.small {
-  min-height: 28px;
-  padding: 0 8px;
-  font-size: 11px;
+.icon-button:hover {
+  background: var(--theme-warning-bg, #ebe6dd);
+  color: var(--ink);
+}
+.icon-button:focus-visible {
+  outline: 3px solid var(--focus-ring, rgba(180, 119, 63, 0.24));
+  outline-offset: 2px;
 }
 .connections {
   display: grid;

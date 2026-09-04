@@ -117,6 +117,14 @@ assert.equal(tableHasHeaderRow(reopened), true, "header remains after close/open
 reopened.destroy();
 filledEditor.destroy();
 
+const blankLineEditor = createEditor("<p>hello</p><p></p>");
+const blankMarkdown = htmlToMarkdown(taskListsForMarkdown(blankLineEditor.getHTML()));
+assert.equal(blankMarkdown, "hello\n\n<p></p>\n", "editor keeps a trailing blank line");
+const restoredBlank = createEditor(taskListsForEditor(markdownToHtml(blankMarkdown)));
+assert.match(restoredBlank.getHTML(), /<p>(<br>)?<\/p>/, "trailing blank line reopens as an empty paragraph");
+blankLineEditor.destroy();
+restoredBlank.destroy();
+
 const shell = await readFile(new URL("../src/lib/editor/RichTextEditor.svelte", import.meta.url), "utf8");
 assert.match(shell, /Text color/, "toolbar exposes text color");
 assert.match(shell, /Insert table/, "toolbar exposes insert table");

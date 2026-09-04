@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { EntitySummary, ModuleContext, UUID } from "../../../packages/module-api/src/index";
+import { X } from "@lucide/svelte";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
 import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
@@ -249,7 +250,7 @@ $effect(() => {
         <span class="panel-kicker">FAMILY</span><strong>{title}</strong>
       </div>
       <button type="button" class="dialog-close" aria-label="Close dialog" disabled={saving} onclick={onClose}
-        >×</button>
+        ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
     {#if linkedOk && created}
       <p class="hint">Person created and linked. Open in Lore to add dates, portrait, and details.</p>
@@ -378,6 +379,9 @@ $effect(() => {
   letter-spacing: 0.12em;
 }
 .dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   flex: none;
@@ -385,8 +389,6 @@ $effect(() => {
   border-radius: 7px;
   background: var(--surface-muted);
   color: var(--ink-soft);
-  font-size: 20px;
-  line-height: 1;
   cursor: pointer;
 }
 .dialog-close:hover {

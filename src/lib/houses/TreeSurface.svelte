@@ -2,7 +2,7 @@
 import type { EntitySummary, ModuleContext, Relationship, UUID } from "../../../packages/module-api/src/index";
 import type { Snippet } from "svelte";
 import { untrack } from "svelte";
-import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound } from "@lucide/svelte";
+import { ArrowLeft, Maximize2, RotateCcw, Settings2, UsersRound, X } from "@lucide/svelte";
 import { TREE_LEGEND, TREE_SCOPES } from "$lib/entity-lifecycle/vocabulary.ts";
 import WorkbenchState from "$lib/shell/WorkbenchState.svelte";
 import FamilyHousePanel from "./FamilyHousePanel.svelte";
@@ -160,6 +160,7 @@ let houseName = $state("");
 let houseMembers = $state<HouseMemberRecord[]>([]);
 let houseMembersBusy = $state(false);
 let addHouseMemberOpen = $state<"link" | "create" | null>(null);
+let dockDismissed = $state(false);
 let memberships = $state<
   Map<string, { houseId: string; houseName: string; role: string | null; customLabel: string | null }[]>
 >(new Map());
@@ -169,7 +170,7 @@ const selectedRelationship = $derived(
   selectedRelationshipId ? (graph.relationships.get(selectedRelationshipId) ?? null) : null,
 );
 const selectedPerson = $derived(selectedPersonId ? (people.get(selectedPersonId) ?? null) : null);
-const showHouseDock = $derived(Boolean(houseId && !selectedPerson && !selectedRelationship));
+const showHouseDock = $derived(Boolean(houseId && !selectedPerson && !selectedRelationship && !dockDismissed));
 const dockOpen = $derived(Boolean(selectedRelationship || selectedPerson || showHouseDock));
 const familyGroupCount = $derived.by(() => {
   if (!houseId) return 0;
@@ -517,6 +518,7 @@ async function loadRoot(id: string, fit = true, restored: string[] | null = null
     rootId = id;
     selectedPersonId = restored ? (initialSession?.selectedPersonId ?? id) : id;
     selectedRelationshipId = restored ? (initialSession?.selectedRelationshipId ?? null) : null;
+    dockDismissed = false;
     houseId = null;
     houseName = "";
     houseMemberIds = [];
@@ -598,6 +600,7 @@ async function loadHouse(id: string, fit = true, restored = false, name = "") {
     houseName = resolvedName;
     selectedPersonId = restored ? (initialSession?.selectedPersonId ?? null) : null;
     selectedRelationshipId = restored ? (initialSession?.selectedRelationshipId ?? null) : null;
+    dockDismissed = false;
     onRootChange?.(id);
     canvasFit = fit;
     if (fit) {
@@ -707,6 +710,7 @@ function closeDock() {
     selectedPersonId ?? focusReturnPersonId ?? (selectedRelationship ? selectedRelationship.sourceId : null);
   selectedPersonId = null;
   selectedRelationshipId = null;
+  dockDismissed = true;
   focusCanvasOrigin({ relationshipId: returnRelationshipId, personId: returnPersonId });
 }
 
@@ -714,6 +718,7 @@ function selectCanvasPerson(id: string | null) {
   if (id) {
     focusReturnPersonId = id;
     focusReturnRelationshipId = null;
+    dockDismissed = false;
   }
   selectedPersonId = id;
   if (id) selectedRelationshipId = null;
@@ -726,6 +731,7 @@ function selectCanvasRelationship(id: string | null) {
   }
   selectedRelationshipId = id;
   if (!id) return;
+  dockDismissed = false;
   selectedPersonId = null;
   focusReturnRelationshipId = id;
   const relationship = graph.relationships.get(id);
@@ -1058,6 +1064,16 @@ function applyRelationshipDelete(id: string) {
   <!-- Topbar — mirrors WorkspaceTopbar language -->
   <div class="family-topbar" role="banner">
     <div class="family-topbar-main">
+      {#if rootId}
+        <button
+          type="button"
+          class="family-topbar-back"
+          onclick={goToLanding}
+          aria-label="Back to people and houses"
+          title="Back to people and houses">
+          <ArrowLeft size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      {/if}
       <span class="family-mark" aria-hidden="true"><UsersRound size={16} strokeWidth={1.8} /></span>
       <div class="family-copy">
         <strong>{houseId ? houseName || "House" : rootId ? (people.get(rootId)?.name ?? "Houses") : "Houses"}</strong>
@@ -1072,32 +1088,18 @@ function applyRelationshipDelete(id: string) {
     {#if rootId}
       <div class="family-topbar-actions" role="toolbar" aria-label="Tree view actions">
         <div class="toolbar-group" role="group" aria-label="Navigation">
-          <button type="button" class="workspace-topbar-action" onclick={goToLanding} title="Back to people and houses">
-            <ArrowLeft size={14} strokeWidth={1.8} aria-hidden="true" /> Trees
-          </button>
-          {#if !houseId}
+          {#if houseId}
+            <FamilyRootPicker
+              {context}
+              kind="house"
+              compact
+              dropdown
+              onSelect={(house) => selectHouse({ id: house.id, name: house.name })} />
+          {:else}
             <FamilyRootPicker {context} compact dropdown recents={recentMenu} onSelect={selectRoot} />
           {/if}
         </div>
         <div class="toolbar-group" role="group" aria-label="View">
-          {#if houseId}
-            <label class="toolbar-field">
-              <span>Scope</span>
-              <select aria-label="House tree scope" value={houseScope} onchange={onHouseScopeChange}>
-                <option value={TREE_SCOPES.membersOnly.id}>{TREE_SCOPES.membersOnly.label}</option>
-                <option value={TREE_SCOPES.membersPlusImmediateFamily.id}
-                  >{TREE_SCOPES.membersPlusImmediateFamily.label}</option>
-              </select>
-            </label>
-          {/if}
-          <label class="toolbar-field">
-            <span>Secondary</span>
-            <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
-              {#each secondaryFields as field (field.key)}
-                <option value={field.key}>{field.label}</option>
-              {/each}
-            </select>
-          </label>
           <button type="button" class="workspace-topbar-action" onclick={fitView} title="Fit to view">
             <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" /> Fit
           </button>
@@ -1120,86 +1122,123 @@ function applyRelationshipDelete(id: string) {
           </button>
           {#if settingsOpen}
             <div class="settings-panel" role="dialog" aria-label="More view options" aria-modal="true">
-              {#if !houseId}
-                <label class="recent limit">
-                  <span>Ancestor generations <em>{limits.ancestorGenerations}</em></span>
-                  <input
-                    type="range"
-                    min="1"
-                    max={MAX_ANCESTOR_GENERATIONS}
-                    step="1"
-                    value={limits.ancestorGenerations}
-                    aria-label="Ancestor generations"
-                    oninput={onAncestorChange} />
-                </label>
-                <label class="recent limit">
-                  <span>Descendant generations <em>{limits.descendantGenerations}</em></span>
-                  <input
-                    type="range"
-                    min="1"
-                    max={MAX_DESCENDANT_GENERATIONS}
-                    step="1"
-                    value={limits.descendantGenerations}
-                    aria-label="Descendant generations"
-                    oninput={onDescendantChange} />
-                </label>
-              {/if}
-              <label class="recent limit">
-                <span>Visible people cap <em>{limits.visiblePersonLimit}</em></span>
-                <input
-                  type="range"
-                  min="50"
-                  max={MAX_VISIBLE_PERSON_LIMIT}
-                  step="50"
-                  value={limits.visiblePersonLimit}
-                  aria-label="Visible people cap"
-                  oninput={onPersonCapChange} />
-              </label>
-              <label class="recent check">
-                <input type="checkbox" checked={showMinimap} onchange={() => (showMinimap = !showMinimap)} />
-                <span>Show minimap</span>
-              </label>
-              <label class="recent check">
-                <input type="checkbox" checked={reducedDetail} onchange={() => (reducedDetail = !reducedDetail)} />
-                <span>Reduced detail</span>
-              </label>
-              <div class="settings-footnote">
-                {#if !houseId}
-                  <small
-                    >Partners and siblings are included with each visible person. Raising the cap keeps more of the
-                    neighborhood in view.</small>
-                {:else}
-                  <small>{TREE_SCOPES.membersOnly.description}</small>
-                  <small>{TREE_SCOPES.membersPlusImmediateFamily.description}</small>
-                {/if}
-                {#if treeLimitsOverBudget(limits)}
-                  <small>{LIMITS_OVER_BUDGET}</small>
-                {/if}
-                {#if truncated}
-                  <small
-                    >Relationship query truncated — counts show a lower bound ({truncationLowerBound
-                      ? `${truncationLowerBound}+`
-                      : "99+"}).</small>
-                {/if}
-              </div>
-              {#if warnings.length > 0}
-                <div class="warnings-block">
-                  <button
-                    type="button"
-                    class="quiet-button ghost small"
-                    aria-expanded={warningsOpen}
-                    onclick={() => (warningsOpen = !warningsOpen)}>
-                    {warnings.length} data warning{warnings.length === 1 ? "" : "s"}
-                  </button>
-                  {#if warningsOpen}
-                    <ul class="warnings-list" aria-label="Tree data warnings">
-                      {#each warnings as warning, index (`${warning.relationshipId ?? warning.entityId ?? "w"}-${index}`)}
-                        <li>{warning.message}</li>
+              <header class="settings-head">
+                <div>
+                  <span>VIEW</span>
+                  <strong>Tree options</strong>
+                </div>
+                <button
+                  type="button"
+                  class="settings-close"
+                  aria-label="Close view options"
+                  onclick={() => closeSettings(true)}><X size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+              </header>
+              <div class="settings-body">
+                <div class="settings-fields">
+                  {#if houseId}
+                    <label class="settings-field">
+                      <span>Scope</span>
+                      <select aria-label="House tree scope" value={houseScope} onchange={onHouseScopeChange}>
+                        <option value={TREE_SCOPES.membersOnly.id}>{TREE_SCOPES.membersOnly.label}</option>
+                        <option value={TREE_SCOPES.membersPlusImmediateFamily.id}
+                          >{TREE_SCOPES.membersPlusImmediateFamily.label}</option>
+                      </select>
+                    </label>
+                  {/if}
+                  <label class="settings-field">
+                    <span>Secondary</span>
+                    <select aria-label="Secondary field" value={secondaryField} onchange={onSecondaryChange}>
+                      {#each secondaryFields as field (field.key)}
+                        <option value={field.key}>{field.label}</option>
                       {/each}
-                    </ul>
+                    </select>
+                  </label>
+                </div>
+                <div class="settings-fields">
+                  {#if !houseId}
+                    <label class="settings-range">
+                      <span>Ancestor generations <em>{limits.ancestorGenerations}</em></span>
+                      <input
+                        type="range"
+                        min="1"
+                        max={MAX_ANCESTOR_GENERATIONS}
+                        step="1"
+                        value={limits.ancestorGenerations}
+                        aria-label="Ancestor generations"
+                        oninput={onAncestorChange} />
+                    </label>
+                    <label class="settings-range">
+                      <span>Descendant generations <em>{limits.descendantGenerations}</em></span>
+                      <input
+                        type="range"
+                        min="1"
+                        max={MAX_DESCENDANT_GENERATIONS}
+                        step="1"
+                        value={limits.descendantGenerations}
+                        aria-label="Descendant generations"
+                        oninput={onDescendantChange} />
+                    </label>
+                  {/if}
+                  <label class="settings-range">
+                    <span>Visible people cap <em>{limits.visiblePersonLimit}</em></span>
+                    <input
+                      type="range"
+                      min="50"
+                      max={MAX_VISIBLE_PERSON_LIMIT}
+                      step="50"
+                      value={limits.visiblePersonLimit}
+                      aria-label="Visible people cap"
+                      oninput={onPersonCapChange} />
+                  </label>
+                </div>
+                <div class="settings-toggles">
+                  <label class="settings-check">
+                    <input type="checkbox" checked={showMinimap} onchange={() => (showMinimap = !showMinimap)} />
+                    <span>Show minimap</span>
+                  </label>
+                  <label class="settings-check">
+                    <input type="checkbox" checked={reducedDetail} onchange={() => (reducedDetail = !reducedDetail)} />
+                    <span>Reduced detail</span>
+                  </label>
+                </div>
+                <div class="settings-footnote">
+                  {#if !houseId}
+                    <small
+                      >Partners and siblings are included with each visible person. Raising the cap keeps more of the
+                      neighborhood in view.</small>
+                  {:else}
+                    <small>{TREE_SCOPES.membersOnly.description}</small>
+                    <small>{TREE_SCOPES.membersPlusImmediateFamily.description}</small>
+                  {/if}
+                  {#if treeLimitsOverBudget(limits)}
+                    <small>{LIMITS_OVER_BUDGET}</small>
+                  {/if}
+                  {#if truncated}
+                    <small
+                      >Relationship query truncated — counts show a lower bound ({truncationLowerBound
+                        ? `${truncationLowerBound}+`
+                        : "99+"}).</small>
                   {/if}
                 </div>
-              {/if}
+                {#if warnings.length > 0}
+                  <div class="warnings-block">
+                    <button
+                      type="button"
+                      class="quiet-button ghost small"
+                      aria-expanded={warningsOpen}
+                      onclick={() => (warningsOpen = !warningsOpen)}>
+                      {warnings.length} data warning{warnings.length === 1 ? "" : "s"}
+                    </button>
+                    {#if warningsOpen}
+                      <ul class="warnings-list" aria-label="Tree data warnings">
+                        {#each warnings as warning, index (`${warning.relationshipId ?? warning.entityId ?? "w"}-${index}`)}
+                          <li>{warning.message}</li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
             </div>
           {/if}
         </div>
@@ -1268,7 +1307,7 @@ function applyRelationshipDelete(id: string) {
         {/snippet}
       </WorkbenchState>
     {:else if houseId && people.size === 0}
-      <div class="workspace has-dock">
+      <div class="workspace" class:has-dock={dockOpen}>
         <WorkbenchState
           kind="empty"
           title="This house has no members"
@@ -1298,10 +1337,7 @@ function applyRelationshipDelete(id: string) {
                   }
                 : undefined}
               onMembersChanged={() => void reloadActiveHouse(true)}
-              onClose={() => {
-                if (people.size > 0) selectedPersonId = [...people.keys()][0] ?? null;
-                else goToLanding();
-              }} />
+              onClose={closeDock} />
           {/if}
         </div>
       </div>
@@ -1408,10 +1444,7 @@ function applyRelationshipDelete(id: string) {
                     }
                   : undefined}
                 onMembersChanged={() => void reloadActiveHouse(true)}
-                onClose={() => {
-                  if (people.size > 0) selectedPersonId = [...people.keys()][0] ?? null;
-                  else goToLanding();
-                }} />
+                onClose={closeDock} />
             {/if}
           </div>
         {/if}
@@ -1508,6 +1541,27 @@ function applyRelationshipDelete(id: string) {
   gap: 10px;
   min-width: 0;
 }
+.family-topbar-back {
+  display: inline-flex;
+  width: 34px;
+  flex: 0 0 34px;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--theme-neutral-border, #d9ddd6);
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+  color: var(--theme-neutral-text-soft, #4d584f);
+  cursor: pointer;
+}
+.family-topbar-back:hover,
+.family-topbar-back:focus-visible {
+  border-color: var(--theme-neutral-border-strong, #b9c4ba);
+  background: var(--theme-success-bg, #f2f6f2);
+  color: var(--theme-success-text, #2f4e35);
+  outline: 0;
+}
 .family-mark {
   display: grid;
   width: 31px;
@@ -1574,33 +1628,6 @@ function applyRelationshipDelete(id: string) {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-}
-.toolbar-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.toolbar-field span {
-  color: var(--ink-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.toolbar-field select {
-  box-sizing: border-box;
-  height: 34px;
-  min-height: 34px;
-  min-width: 7.5rem;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 12px;
 }
 /* Sub-bar — sticky like WorkspaceViewNav */
 .family-subbar {
@@ -1767,36 +1794,145 @@ function applyRelationshipDelete(id: string) {
 }
 .settings-panel {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 10px);
   right: 0;
-  z-index: 6;
+  z-index: 20;
+  width: min(320px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 13px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg, 0 18px 40px rgba(37, 37, 31, 0.14));
+}
+.settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 15px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle, var(--surface-muted, var(--surface)));
+}
+.settings-head div {
+  display: grid;
+  gap: 3px;
+}
+.settings-head span {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.settings-head strong {
+  color: var(--ink);
+  font: 600 15px/1.2 var(--font-display, var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif));
+}
+.settings-close {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.settings-close:hover,
+.settings-close:focus-visible {
+  background: var(--theme-warning-bg, #ebe6dd);
+  color: var(--ink);
+  outline: 0;
+}
+.settings-body {
+  display: grid;
+  gap: 16px;
+  padding: 14px 15px 16px;
+}
+.settings-fields,
+.settings-toggles {
   display: grid;
   gap: 10px;
-  width: 260px;
-  padding: 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.08));
 }
-.settings-panel .recent,
-.settings-panel .recent.limit {
+.settings-field,
+.settings-range {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
-.settings-panel .recent span {
-  color: var(--ink-muted);
-  font-size: 11px;
+.settings-field > span,
+.settings-range > span {
+  color: var(--ink-soft);
+  font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
-.settings-panel .recent span em {
+.settings-range em {
   margin-left: 6px;
   color: var(--ink);
   font-style: normal;
   font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
 }
-.recent input[type="range"] {
+.settings-field select {
+  box-sizing: border-box;
   width: 100%;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 8px;
+  outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--theme-surface-bg, var(--surface));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2377766d' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  color: var(--ink);
+  font: 12px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  cursor: pointer;
+}
+.settings-field select:hover,
+.settings-field select:focus-visible {
+  border-color: var(--theme-neutral-border-strong, var(--line-strong));
+  background-color: var(--theme-success-bg, var(--surface-muted));
+}
+.settings-field select:focus-visible {
+  box-shadow: 0 0 0 3px var(--focus-ring, rgba(180, 119, 63, 0.24));
+}
+.settings-range input[type="range"] {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent-dark, var(--accent));
+}
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-neutral-border, var(--line));
+  border-radius: 8px;
+  background: var(--theme-surface-bg, var(--surface));
+  color: var(--ink);
+  font: 12px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  cursor: pointer;
+}
+.settings-check:hover {
+  border-color: var(--theme-neutral-border-strong, var(--line-strong));
+  background: var(--theme-success-bg, var(--surface-muted));
+}
+.settings-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
   accent-color: var(--accent-dark, var(--accent));
 }
 .settings-footnote {
@@ -1805,14 +1941,8 @@ function applyRelationshipDelete(id: string) {
 }
 .settings-footnote small {
   color: var(--ink-muted);
-  font-size: 10px;
-  line-height: 1.4;
-}
-.settings-panel .recent.check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.45;
 }
 .warnings-block {
   display: grid;
@@ -1830,17 +1960,6 @@ function applyRelationshipDelete(id: string) {
 .legend-sep {
   opacity: 0.45;
 }
-.recent input {
-  min-height: 32px;
-  padding: 4px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-}
-.recent.limit input {
-  width: 100%;
-}
 @media (max-width: 900px) {
   .family-topbar {
     grid-template-columns: 1fr;
@@ -1852,9 +1971,6 @@ function applyRelationshipDelete(id: string) {
   }
   .subbar-legend {
     white-space: normal;
-  }
-  .toolbar-field {
-    flex-wrap: wrap;
   }
   .family-topbar-actions {
     gap: 6px;

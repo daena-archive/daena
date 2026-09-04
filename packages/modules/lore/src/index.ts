@@ -421,13 +421,23 @@ export const lore: DaenaModule = {
             );
             actions.append(relationsMenu);
           }
+          const zoomOutButton = document.createElement("button");
+          zoomOutButton.type = "button";
+          zoomOutButton.textContent = "−";
+          zoomOutButton.setAttribute("aria-label", "Zoom out");
+          zoomOutButton.title = "Zoom out";
+          const zoomInButton = document.createElement("button");
+          zoomInButton.type = "button";
+          zoomInButton.textContent = "+";
+          zoomInButton.setAttribute("aria-label", "Zoom in");
+          zoomInButton.title = "Zoom in";
           const fitButton = document.createElement("button");
           fitButton.type = "button";
           fitButton.textContent = "Fit graph";
           const layoutButton = document.createElement("button");
           layoutButton.type = "button";
           layoutButton.textContent = "Rearrange";
-          actions.append(fitButton, layoutButton);
+          actions.append(zoomOutButton, zoomInButton, fitButton, layoutButton);
           toolbar.append(legend, actions);
           shell.append(toolbar);
 
@@ -583,6 +593,15 @@ export const lore: DaenaModule = {
             };
           }
 
+          const zoomGraph = (factor: number) => {
+            if (!graph) return;
+            graph.zoom({
+              level: Math.min(graph.maxZoom(), Math.max(graph.minZoom(), graph.zoom() * factor)),
+              renderedPosition: { x: graph.width() / 2, y: graph.height() / 2 },
+            });
+          };
+          zoomInButton.onclick = () => zoomGraph(1.4);
+          zoomOutButton.onclick = () => zoomGraph(1 / 1.4);
           fitButton.onclick = () => {
             if (!graph) return;
             const visible = visibleElements();

@@ -220,7 +220,18 @@ function hPropertiesStyle(node: unknown): string {
   return typeof style === "string" ? style : "";
 }
 
-export const paragraphToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
+function persistEmptyParagraph(parent: unknown): boolean {
+  const type = (parent as { type?: string } | null)?.type;
+  if (type !== "root" && type !== "blockquote" && type !== "listItem") return false;
+  return ((parent as { children?: unknown[] }).children?.length ?? 0) > 1;
+}
+
+function isStructurallyEmptyParagraph(node: unknown): boolean {
+  const children = (node as { children?: Array<{ type?: string }> }).children ?? [];
+  return children.every((child) => child.type === "break");
+}
+
+export const paragraphToMarkdown: ToMarkdownHandle = (node, parent, state, info) => {
   const dir = hPropertiesDir(node);
   const style = hPropertiesStyle(node);
   if (dir === "rtl" || dir === "ltr") {
@@ -236,6 +247,7 @@ export const paragraphToMarkdown: ToMarkdownHandle = (node, _parent, state, info
   const value = state.containerPhrasing(node as never, info);
   subexit();
   exit();
+  if (!value && persistEmptyParagraph(parent) && isStructurallyEmptyParagraph(node)) return "<p></p>";
   return value;
 };
 

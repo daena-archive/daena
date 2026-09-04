@@ -58,7 +58,7 @@ assert.equal(collectionTabForEntityType(tabs, "daena.timeline:war")?.id, "daena.
 
 assert.deepEqual(
   workspaceSectionViewNav("timeline", TYPES).map((view) => view.id),
-  ["timeline", "events", "calendars", "daena.timeline:war"],
+  ["events", "calendars", "daena.timeline:war", "timeline"],
 );
 
 console.log("timeline tabs fixtures passed");

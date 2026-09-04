@@ -1,5 +1,5 @@
 <script lang="ts">
-import { tick } from "svelte";
+import { tick, untrack } from "svelte";
 import type { EntityRecord, ModuleContext, UUID } from "../../../module-api/src/index";
 import {
   CALENDAR_DEFINITION_COLLECTION,
@@ -268,7 +268,7 @@ $effect(() => {
   void entityId;
   open = false;
   hideHelp();
-  void load();
+  untrack(() => void load());
 });
 
 $effect(() => {

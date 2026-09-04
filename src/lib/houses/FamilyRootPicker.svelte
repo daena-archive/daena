@@ -3,7 +3,7 @@ import type { EntitySummary, ModuleContext } from "../../../packages/module-api/
 import { UserPlus } from "@lucide/svelte";
 import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
 import { toAsyncEntityPage, type AsyncEntityOption } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
-import { PERSON_TYPE } from "./model";
+import { HOUSE_TYPE, PERSON_TYPE } from "./model";
 import { createMinimalPerson } from "./mutations";
 
 let {
@@ -12,12 +12,14 @@ let {
   compact = false,
   dropdown = false,
   recents = [],
+  kind = "person",
 }: {
   context: ModuleContext;
   onSelect: (person: EntitySummary) => void;
   compact?: boolean;
   dropdown?: boolean;
   recents?: { id: string; name: string }[];
+  kind?: "person" | "house";
 } = $props();
 
 let createName = $state("");
@@ -25,9 +27,11 @@ let creating = $state(false);
 let error = $state("");
 let emptyCatalog = $state(false);
 
-async function searchPeople(query: { text: string; offset: number; limit: number; excludeIds?: string[] }) {
+const entityType = $derived(kind === "house" ? HOUSE_TYPE : PERSON_TYPE);
+
+async function searchEntities(query: { text: string; offset: number; limit: number; excludeIds?: string[] }) {
   const page = await context.entities.query({
-    types: [PERSON_TYPE],
+    types: [entityType],
     text: query.text || undefined,
     sortField: "name",
     sortDirection: "asc",
@@ -43,7 +47,7 @@ function toSummary(entity: AsyncEntityOption): EntitySummary {
   return {
     id: entity.id as EntitySummary["id"],
     name: entity.name,
-    type: entity.entityType ?? PERSON_TYPE,
+    type: entity.entityType ?? entityType,
     deleted: false,
     revision: entity.revision ?? "",
   };
@@ -67,21 +71,22 @@ async function createPerson() {
   }
 }
 
-const showCreate = $derived(emptyCatalog && !dropdown);
+const showCreate = $derived(kind === "person" && emptyCatalog && !dropdown);
 </script>
 
 <div class="picker" class:compact class:dropdown>
-  {#if !compact}<span class="overline">Root person</span>{/if}
+  {#if !compact}<span class="overline">{kind === "house" ? "House" : "Root person"}</span>{/if}
   <AsyncEntityPicker
-    search={searchPeople}
-    entityTypes={[PERSON_TYPE]}
+    search={searchEntities}
+    entityTypes={[entityType]}
     pageSize={20}
     {dropdown}
     openOnFocus={dropdown || compact}
-    placeholder="Search Lore people"
-    ariaLabel="Search Lore people"
-    emptyMessage="No Lore people match this search."
-    recents={recents.map((entry) => ({ ...entry, entityType: PERSON_TYPE }))}
+    placeholder={kind === "house" ? "Search houses" : "Search Lore people"}
+    ariaLabel={kind === "house" ? "Search houses" : "Search Lore people"}
+    emptyMessage={kind === "house" ? "No houses match this search." : "No Lore people match this search."}
+    resultsSectionLabel={kind === "house" ? "Houses" : "People"}
+    recents={recents.map((entry) => ({ ...entry, entityType }))}
     onSelect={pick} />
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if showCreate}

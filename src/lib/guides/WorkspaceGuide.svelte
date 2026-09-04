@@ -66,10 +66,12 @@ function measure() {
 
 async function handlePrimary() {
   if (!step) return;
+  const pausing = step.action === "pause";
+  const finishing = step.action === "complete" || isLast;
   await onPrimary?.(step);
   await tick();
-  if (step.action === "pause") return;
-  if (step.action === "complete" || isLast) {
+  if (pausing) return;
+  if (finishing) {
     onComplete();
     return;
   }

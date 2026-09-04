@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Search } from "@lucide/svelte";
+import { humanizeTypeId } from "../../../packages/module-api/src/entityTypeLabels.ts";
 import {
   createRequestGate,
   emptyAsyncEntityPage,
@@ -25,6 +26,7 @@ let {
   dropdown = true,
   disabled = false,
   emptyMessage = "No matching entities.",
+  resultsSectionLabel = "People",
   searchingMessage = "Searching…",
   sortField = "name" as AsyncEntitySortField,
   sortDirection = "asc" as AsyncEntitySortDirection,
@@ -46,6 +48,7 @@ let {
   dropdown?: boolean;
   disabled?: boolean;
   emptyMessage?: string;
+  resultsSectionLabel?: string;
   searchingMessage?: string;
   sortField?: AsyncEntitySortField;
   sortDirection?: AsyncEntitySortDirection;
@@ -70,7 +73,13 @@ const gate = createRequestGate();
 const selected = $derived(new Set(selectedIds));
 const excluded = $derived(new Set(excludeIds));
 const showMenu = $derived(!dropdown || open);
+const showTypeLabel = $derived((entityTypes?.length ?? 0) !== 1);
 const showRecents = $derived(showMenu && !query.trim() && recents.length > 0);
+
+function optionTypeLabel(type: string | null | undefined) {
+  if (!type) return "Uncategorized";
+  return humanizeTypeId(type);
+}
 const optionItems = $derived.by(() => {
   if (!showMenu) return [] as Array<{ key: string; entity: AsyncEntityOption }>;
   const items: Array<{ key: string; entity: AsyncEntityOption }> = [];
@@ -285,7 +294,7 @@ $effect(() => {
       {:else}
         {#each optionItems as item, index (item.key)}
           {#if showRecents && index === recents.length}
-            <span class="async-entity-section">People</span>
+            <span class="async-entity-section">{resultsSectionLabel}</span>
           {/if}
           <button
             type="button"
@@ -301,7 +310,10 @@ $effect(() => {
               event.preventDefault();
               choose(item.entity);
             }}>
-            <span><strong>{item.entity.name}</strong><small>{item.entity.entityType ?? "Uncategorized"}</small></span>
+            <span
+              ><strong>{item.entity.name}</strong>{#if showTypeLabel}<small
+                  >{optionTypeLabel(item.entity.entityType)}</small
+                >{/if}</span>
             {#if isSelected(item.entity.id)}<b aria-hidden="true">✓</b>{/if}
           </button>
         {/each}

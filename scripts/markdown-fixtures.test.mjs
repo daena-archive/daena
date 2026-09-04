@@ -132,4 +132,31 @@ assert.equal(markdownToHtml("![x](javascript:alert(1))\n").toLowerCase().include
 const entityClass = markdownToHtml("[[Ardashir]](abc)\n");
 contains(entityClass, "entity-reference", "entity class");
 
+assert.equal(htmlToMarkdown("<p>hello</p>"), "hello\n", "plain text is unchanged");
+assert.equal(htmlToMarkdown("<p>hello</p><p>world</p>"), "hello\n\nworld\n", "adjacent paragraphs stay markdown");
+assert.equal(
+  htmlToMarkdown("<p>hello</p><p>&nbsp;</p><p>world</p>"),
+  "hello\n\n \n\nworld\n",
+  "nbsp paragraphs stay as text",
+);
+
+assert.equal(htmlToMarkdown("<p></p>"), "", "sole empty paragraph stays empty document");
+assert.equal(htmlToMarkdown("<p><br></p>"), "", "sole break paragraph stays empty document");
+
+const trailingBlank = htmlToMarkdown("<p>hello</p><p></p>");
+assert.equal(trailingBlank, "hello\n\n<p></p>\n", "trailing empty paragraph is stored");
+assert.equal(htmlToMarkdown(markdownToHtml(trailingBlank)), trailingBlank, "trailing empty paragraph round-trips");
+
+const breakBlank = htmlToMarkdown("<p>hello</p><p><br></p>");
+assert.equal(breakBlank, "hello\n\n<p></p>\n", "trailing break paragraph is stored");
+assert.equal(htmlToMarkdown(markdownToHtml(breakBlank)), breakBlank, "trailing break paragraph round-trips");
+
+const middleBlank = htmlToMarkdown("<p>hello</p><p></p><p>world</p>");
+assert.equal(middleBlank, "hello\n\n<p></p>\n\nworld\n", "middle empty paragraph is stored");
+assert.equal(htmlToMarkdown(markdownToHtml(middleBlank)), middleBlank, "middle empty paragraph round-trips");
+
+const leadingBlank = htmlToMarkdown("<p></p><p>hello</p>");
+assert.equal(leadingBlank, "<p></p>\n\nhello\n", "leading empty paragraph is stored");
+assert.equal(htmlToMarkdown(markdownToHtml(leadingBlank)), leadingBlank, "leading empty paragraph round-trips");
+
 console.log(`markdown fixtures passed (${MARKDOWN_FIXTURES.length} documents + entity/XSS/round-trip checks)`);

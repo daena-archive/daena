@@ -140,6 +140,8 @@ const richText = await read("src/lib/editor/RichTextEditor.svelte");
 assert.match(picker, /runAsyncEntitySearch/);
 assert.match(picker, /createRequestGate|gate/);
 assert.match(picker, /role="combobox"/);
+assert.match(picker, /humanizeTypeId/);
+assert.match(picker, /showTypeLabel/);
 assert.match(picker, /aria-activedescendant/);
 assert.match(picker, /aria-controls=\{listboxId\}/);
 assert.match(relationship, /AsyncEntityPicker/);

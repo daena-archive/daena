@@ -39,7 +39,7 @@ const plotStep: GuideStep = {
 };
 
 export function timelineGuideSteps(opts: { hasCollection: boolean; view: string; mode: GuideMode }): GuideStep[] {
-  if (!opts.hasCollection) return [createStep];
+  if (!opts.hasCollection && opts.view !== "calendars" && opts.view !== "timeline") return [createStep];
   if (opts.mode === "hint") {
     if (opts.view === "calendars") return [calendarsStep];
     if (opts.view === "timeline") return [plotStep];

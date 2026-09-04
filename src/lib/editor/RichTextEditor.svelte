@@ -198,6 +198,7 @@ let entityReferenceEdit: {
   left: number;
 } | null = null;
 let aiRequestRange: { from: number; to: number } | null = null;
+let aiRequestText = "";
 let linkDialogOpen = false;
 let linkDialogInitialText = "";
 let linkDialogInitialUrl = "";
@@ -453,6 +454,7 @@ function requestAi(action: string) {
   if (!editor || (template?.requiresSelection && !selectionText.trim())) return;
   const { from, to } = editor.state.selection;
   aiRequestRange = { from, to };
+  aiRequestText = selectionText;
   aiMenuOpen = false;
   const beforeCursor = editor.state.doc.textBetween(0, from, "\n").slice(-8000);
   const afterCursor = editor.state.doc.textBetween(to, editor.state.doc.content.size, "\n").slice(0, 8000);
@@ -465,11 +467,39 @@ function requestAi(action: string) {
   );
 }
 
-export function insertAiTextAtRequest(value: string): boolean {
-  if (!editor || !aiRequestRange) return false;
-  const inserted = editor.chain().focus().insertContentAt(aiRequestRange, value).run();
+function aiMarkdownToInsertHtml(value: string) {
+  let html = sanitizeHtml(markdownToHtml(value));
+  if (html.startsWith("<p>") && html.endsWith("</p>") && html.indexOf("<p>", 3) === -1) html = html.slice(3, -4);
+  return html;
+}
+
+function resolvedAiRange() {
+  if (!editor || !aiRequestRange) return null;
+  const size = editor.state.doc.content.size;
+  const from = Math.max(0, Math.min(aiRequestRange.from, size));
+  const to = Math.max(from, Math.min(aiRequestRange.to, size));
+  return { from, to };
+}
+
+function clearAiRequest() {
   aiRequestRange = null;
-  return inserted;
+  aiRequestText = "";
+}
+
+export function insertAiTextAtRequest(value: string): string | null {
+  const range = resolvedAiRange();
+  if (!editor || !range) return null;
+  try {
+    editor.setEditable(true);
+    const inserted = editor.chain().focus().insertContentAt(range, aiMarkdownToInsertHtml(value)).run();
+    clearAiRequest();
+    if (!inserted) return null;
+    emitChange();
+    return currentMarkdown;
+  } catch {
+    clearAiRequest();
+    return null;
+  }
 }
 
 /**
@@ -478,17 +508,22 @@ export function insertAiTextAtRequest(value: string): boolean {
  * returns null if the document no longer contains the original selection.
  */
 export function replaceAiTextWithMarkdown(value: string): string | null {
-  if (!editor || !aiRequestRange || !selectionText) return null;
+  if (!editor || !aiRequestRange || !aiRequestText) return null;
+  const size = editor.state.doc.content.size;
   const { from, to } = aiRequestRange;
-  if (editor.state.doc.textBetween(from, to, "\n") !== selectionText) return null;
-  let html = sanitizeHtml(markdownToHtml(value));
-  if (html.startsWith("<p>") && html.endsWith("</p>")) html = html.slice(3, -4);
-  const ok = editor.chain().focus().insertContentAt({ from, to }, html).run();
-  if (!ok) return null;
-  aiRequestRange = null;
-  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
-  editorText = editorPlainText(editor);
-  return currentMarkdown;
+  if (from < 0 || to < 0 || from > size || to > size || from > to) return null;
+  if (editor.state.doc.textBetween(from, to, "\n") !== aiRequestText) return null;
+  try {
+    editor.setEditable(true);
+    const ok = editor.chain().focus().insertContentAt({ from, to }, aiMarkdownToInsertHtml(value)).run();
+    if (!ok) return null;
+    clearAiRequest();
+    currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+    editorText = editorPlainText(editor);
+    return currentMarkdown;
+  } catch {
+    return null;
+  }
 }
 
 function blockStyle(): string {
@@ -2033,7 +2068,7 @@ onMount(() => {
   };
 });
 
-$: if (editor && !editor.isFocused && value !== currentMarkdown) {
+$: if (editor && !editor.isFocused && !aiRequestRange && value !== currentMarkdown) {
   cancelPendingChange();
   const nextHtml = editorHtmlFromMarkdown(value);
   if (nextHtml !== editor.getHTML()) editor.commands.setContent(nextHtml, { emitUpdate: false });
@@ -2043,7 +2078,7 @@ $: if (editor && !editor.isFocused && value !== currentMarkdown) {
 $: if (editor && entities) {
   // live update auto references when entity names change
   tick().then(() => {
-    if (!editor) return;
+    if (!editor || aiRequestRange) return;
     if (editor.isFocused) updateAutoEntityReferences();
     else {
       const hydrated = editorHtmlFromMarkdown(value);
@@ -2055,7 +2090,10 @@ $: if (editor && entities) {
     }
   });
 }
-$: if (editor && editor.isEditable !== editable) editor.setEditable(editable);
+$: if (editor && editor.isEditable !== editable) {
+  editor.setEditable(editable);
+  if (editable) clearAiRequest();
+}
 $: inTable = editorState?.isActive("table") ?? false;
 </script>
 

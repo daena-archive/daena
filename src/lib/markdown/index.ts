@@ -126,7 +126,8 @@ export function htmlToMarkdown(html: string): string {
   const markdown = String(markdownProcessor.processSync(html))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return markdown ? `${markdown}\n` : "";
+  if (!markdown || markdown === "<p></p>") return "";
+  return `${markdown}\n`;
 }
 
 export function extractEntityReferences(markdown: string): EntityReferenceInfo[] {

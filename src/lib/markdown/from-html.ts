@@ -34,7 +34,20 @@ function propertyString(node: Element, key: string): string {
   return value == null ? "" : String(value);
 }
 
+function isBreakOnlyParagraph(node: Element): boolean {
+  if (node.tagName !== "p") return false;
+  return node.children.every((child) => {
+    if (child.type === "text") return String(child.value ?? "") === "";
+    return child.type === "element" && (child.tagName === "br" || child.tagName === "wbr");
+  });
+}
+
 const alignedBlock = (state: HastState, node: Element) => {
+  if (isBreakOnlyParagraph(node) && !textAlign(node) && !textDir(node)) {
+    const empty = { type: "paragraph", children: [] };
+    state.patch(node, empty as never);
+    return empty;
+  }
   const align = textAlign(node);
   const dir = textDir(node);
   const isHeading = /^h[1-6]$/.test(node.tagName);

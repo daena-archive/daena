@@ -131,7 +131,7 @@ flowchart TD
 - `entrypoints`: `{}`
 - required Lore dependency
 - namespace `houses`
-- House entity type, kinship fields, and membership fields
+- House entity type, house identity fields (summary, aliases, founded, allies, rivals), kinship fields, and membership fields
 - empty `views` (host-owned Houses and Tree navigation)
 - no commands, records, services, or events
 - one `0 -> 1` backup migration (`houses-v1`) that creates the `houses`
@@ -235,6 +235,13 @@ Constraints: no self edges; only one undirected edge per endpoint pair.
 Changing endpoints is not an edit: delete the relationship and create the
 intended one. Metadata updates preserve identity and use the relationship
 revision.
+
+### House
+
+House entities (`daena.houses:house`) carry identity fields in the `houses`
+namespace: `summary`, `aliases`, `founded`, plus undirected `house_allied_with`
+and `house_rival_of` relationships (other houses or Lore factions). Manifest
+fields use the local `house` id; load-time normalize qualifies it.
 
 ### House membership
 

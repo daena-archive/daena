@@ -85,6 +85,9 @@ assert.match(housePanel, /ENTITY_ACTION_CONFIRM\.removeMembershipMessage/);
 assert.match(membershipDialog, /membershipMetadataFields/);
 assert.match(membershipDialog, /createMembership/);
 assert.match(membershipDialog, /Remove from House/);
+assert.match(membershipDialog, /dropdown=\{false\}/);
+assert.match(membershipDialog, /dialog-close/);
+assert.match(housePanel, /icon-button/);
 
 assert.match(personNode, /role-badge|roleBadge/);
 assert.match(landing, /formatHouseMemberSummary|houseMemberSummaries/);
@@ -114,7 +117,7 @@ assert.match(shell, /onMembershipChanged=\{\(\) => bumpCollectionRefresh\(\)\}/)
 assert.match(shell, /onBack=\{/);
 assert.match(shell, /fromTree/);
 assert.match(shell, /houseSummariesPending/);
-assert.match(shell, /InspectorSection title="House"/);
+assert.doesNotMatch(shell, /InspectorSection title="House"/);
 assert.match(surface, /onMembershipChanged/);
 assert.match(surface, /onBack/);
 assert.doesNotMatch(landing, /createMinimalPerson/);

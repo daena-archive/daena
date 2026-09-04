@@ -665,7 +665,7 @@ let aiSourceRevision = $state("");
 let aiLastSequence = $state(-1);
 let aiUnlisten: (() => void) | null = null;
 let editorRef = $state<{
-  insertAiTextAtRequest: (value: string) => boolean;
+  insertAiTextAtRequest: (value: string) => string | null;
   replaceAiTextWithMarkdown: (value: string) => string | null;
   flushPendingChanges: () => void;
 } | null>(null);
@@ -3316,10 +3316,9 @@ async function cancelAiIndex() {
   }
 }
 function setAiSelection(markdown: string, plainText: string) {
-  if (!aiBusy && !aiPreviewOutput) {
-    aiSourceSelection = markdown;
-    aiSourceSelectionPlain = plainText;
-  }
+  if (aiRewriteOpen || aiBusy || aiPreviewOutput) return;
+  aiSourceSelection = markdown;
+  aiSourceSelectionPlain = plainText;
 }
 function openAiAction(action: string, markdown: string, plainText: string, context: string) {
   if (!projectInfo?.aiEnabled) return;
@@ -3652,7 +3651,11 @@ function handleAiEvent(payload: AiStreamEvent) {
 }
 async function startAiRewrite() {
   if (!selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
+  const sourceSelection = aiSourceSelection;
+  const sourcePlain = aiSourceSelectionPlain;
+  const generationContext = aiGenerationContext;
   if (!(await flushAutoSave())) return;
+  if (aiMode === "rewrite" && !sourceSelection.trim()) return;
   aiSourceEntityId = selected.id;
   aiSourceBody = documentBody;
   aiSourceRevision = loadedDocumentRevision;
@@ -3666,11 +3669,8 @@ async function startAiRewrite() {
   let startedRequestId: string | null = null;
   try {
     const sourceText =
-      aiMode === "generate" ? aiGenerationContext.trim() || documentBody.trim() || "[CURSOR]" : aiSourceSelection;
-    const retrievalQuery = [selected?.name, aiInstruction, aiSourceSelectionPlain]
-      .filter(Boolean)
-      .join(" ")
-      .slice(0, 4000);
+      aiMode === "generate" ? generationContext.trim() || documentBody.trim() || "[CURSOR]" : sourceSelection;
+    const retrievalQuery = [selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
     const requestId = await project.aiGenerateText(
       projectInfo!.root,
       aiInstruction,
@@ -3716,10 +3716,12 @@ async function acceptAiRewrite() {
     return;
   }
   if (aiMode === "generate") {
-    if (!editorRef?.insertAiTextAtRequest(aiPreviewOutput)) {
+    const nextMarkdown = editorRef?.insertAiTextAtRequest(aiPreviewOutput);
+    if (nextMarkdown == null) {
       error = "The editor position is no longer available. Discard it and try again.";
       return;
     }
+    documentBody = nextMarkdown;
     markEntryDirty({ document: true });
     if (await saveDocument()) closeAiRewrite();
     return;
@@ -8234,21 +8236,26 @@ onMount(() => {
                       style={selected ? "cursor:text" : undefined}>
                       {selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
                     </h2>
-                    {#if selected}<button
-                        class="quiet-button editor-rename-button"
-                        type="button"
-                        aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
-                        title={ENTITY_ACTIONS.editIdentity}
-                        onclick={() => void openEntityEditDialog()}
-                        ><Pencil size={16} strokeWidth={1.8} aria-hidden="true" /></button
-                      >{/if}
-                    {#if selected && section === "houses" && selected.entity_type === HOUSE_TYPE}
-                      {@const houseEntity = selected}
-                      <button
-                        class="quiet-button"
-                        type="button"
-                        aria-label={`${ENTITY_ACTIONS.openTree} for ${houseEntity.name}`}
-                        onclick={() => void openHouseTree(houseEntity)}>{ENTITY_ACTIONS.openTree}</button>
+                    {#if selected}
+                      <div class="editor-title-actions">
+                        <button
+                          class="quiet-button editor-title-icon"
+                          type="button"
+                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
+                          title={ENTITY_ACTIONS.editIdentity}
+                          onclick={() => void openEntityEditDialog()}
+                          ><Pencil size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+                        {#if section === "houses" && selected.entity_type === HOUSE_TYPE}
+                          {@const houseEntity = selected}
+                          <button
+                            class="quiet-button editor-title-icon"
+                            type="button"
+                            aria-label={`${ENTITY_ACTIONS.openTree} for ${houseEntity.name}`}
+                            title={ENTITY_ACTIONS.openTree}
+                            onclick={() => void openHouseTree(houseEntity)}
+                            ><TreePine size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
@@ -8525,24 +8532,6 @@ onMount(() => {
                   >{/if}
               </div>
             </div>
-            {#if section === "houses" && inspectedEntity.entity_type === HOUSE_TYPE}
-              <InspectorSection title="House" count={1}>
-                <section class="inspector-section inspector-section-plain">
-                  <p class="inspector-group-empty">
-                    {formatHouseMemberSummary(houseCollectionSummaries.get(inspectedEntity.id), {
-                      pending: houseSummariesPending && !houseCollectionSummaries.has(inspectedEntity.id),
-                    })}
-                  </p>
-                  <div class="inspector-ai-fill-actions">
-                    <button class="quiet-button" type="button" onclick={() => void openHouseTree(inspectedEntity)}
-                      >{ENTITY_ACTIONS.openTree}</button>
-                  </div>
-                  <p class="inspector-group-empty">
-                    Edit membership roles in Tree → House dock. The Members relationship field below links people.
-                  </p>
-                </section>
-              </InspectorSection>
-            {/if}
             {#if aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
                   <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
@@ -9496,7 +9485,7 @@ onMount(() => {
   border-bottom: 1px solid var(--line);
 }
 .editor-header h2 {
-  margin: 5px 0 0;
+  margin: 0;
   font: 500 22px/1.1 var(--font-display);
 }
 .editor-title {
@@ -9507,15 +9496,24 @@ onMount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 30px;
+  margin-top: 5px;
 }
-.editor-rename-button {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  padding: 0;
+.editor-title-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+.editor-title-icon {
+  flex: none;
   display: inline-grid;
   place-items: center;
-  margin-top: 3px;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
 }
 .editor-header-controls {
   display: flex;
@@ -9729,7 +9727,7 @@ onMount(() => {
   display: grid;
   gap: 5px;
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 .ai-instruction textarea {

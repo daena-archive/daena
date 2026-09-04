@@ -1,5 +1,7 @@
 <script lang="ts">
 import type { ModuleContext } from "../../../packages/module-api/src/index";
+import { X } from "@lucide/svelte";
+import { trapModalTab } from "$lib/shell/modalFocus";
 import AsyncEntityPicker from "$lib/entity-lifecycle/AsyncEntityPicker.svelte";
 import { toAsyncEntityPage } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { ENTITY_ACTION_CONFIRM, MUTATION_STATUS, MUTATION_STATUS_MESSAGES } from "$lib/entity-lifecycle/vocabulary.ts";
@@ -66,6 +68,7 @@ let error = $state("");
 let conflict = $state(false);
 let currentValues = $state<Record<string, unknown> | null>(null);
 let currentRevision = $state("");
+let dialogEl = $state<HTMLElement | null>(null);
 
 const isEdit = $derived(Boolean(editing));
 const title = $derived(
@@ -233,45 +236,47 @@ async function removeMembership() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") {
+  trapModalTab(event, dialogEl);
+  if (event.key === "Escape" && !busy) {
     event.preventDefault();
     onClose();
   }
 }
+
+$effect(() => {
+  dialogEl?.focus();
+});
 </script>
 
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="backdrop" role="presentation" onclick={onClose} onkeydown={onKeydown}>
-  <div
-    class="card"
-    role="dialog"
-    aria-modal="true"
-    aria-label={title}
-    tabindex="-1"
-    onclick={(event) => event.stopPropagation()}
-    onkeydown={onKeydown}>
-    <header class="head">
+<div
+  class="overlay"
+  bind:this={dialogEl}
+  tabindex="-1"
+  role="dialog"
+  aria-modal="true"
+  aria-label={title}
+  onkeydown={onKeydown}
+  onclick={(event) => {
+    if (event.target === event.currentTarget && !busy) onClose();
+  }}>
+  <div class="card" role="document" onclick={(event) => event.stopPropagation()}>
+    <header class="dialog-heading">
       <div>
-        <span class="kicker">MEMBERSHIP</span>
+        <span class="panel-kicker">MEMBERSHIP</span>
         <strong>{title}</strong>
       </div>
-      <button type="button" class="quiet-button ghost" onclick={onClose}>Close</button>
+      <button type="button" class="dialog-close" aria-label="Close dialog" disabled={busy} onclick={onClose}
+        ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
     </header>
 
     {#if !isEdit}
-      <div class="mode-toggle" role="tablist" aria-label="Add member mode">
-        <button
-          type="button"
-          class:active={mode === "link"}
-          role="tab"
-          aria-selected={mode === "link"}
-          onclick={() => (mode = "link")}>Link existing</button>
-        <button
-          type="button"
-          class:active={mode === "create"}
-          role="tab"
-          aria-selected={mode === "create"}
-          onclick={() => (mode = "create")}>Create person</button>
+      <div class="tabs">
+        <button type="button" class="quiet-button" aria-pressed={mode === "link"} onclick={() => (mode = "link")}
+          >Link existing</button>
+        <button type="button" class="quiet-button" aria-pressed={mode === "create"} onclick={() => (mode = "create")}
+          >Create person</button>
       </div>
       {#if mode === "link"}
         <AsyncEntityPicker
@@ -279,6 +284,8 @@ function onKeydown(event: KeyboardEvent) {
           entityTypes={[PERSON_TYPE]}
           {excludeIds}
           selectedIds={selectedPersonId ? [selectedPersonId] : []}
+          dropdown={false}
+          disabled={busy}
           placeholder="Search people"
           ariaLabel="Search people to add"
           emptyMessage="No matching people."
@@ -288,7 +295,7 @@ function onKeydown(event: KeyboardEvent) {
             selectedRevision = typeof option.revision === "string" ? option.revision : "";
           }} />
         {#if selectedPersonId}
-          <p class="selected">Selected: <strong>{selectedPersonName}</strong></p>
+          <p class="hint">Selected: <strong>{selectedPersonName}</strong></p>
         {/if}
       {:else}
         <label class="field"
@@ -355,59 +362,80 @@ function onKeydown(event: KeyboardEvent) {
 </div>
 
 <style>
-.backdrop {
+.overlay {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 300;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: color-mix(in srgb, var(--ink) 35%, transparent);
+  padding: 20px;
+  background: rgba(37, 37, 31, 0.28);
 }
 .card {
-  display: grid;
-  gap: 14px;
   width: min(440px, 100%);
-  max-height: min(88vh, 720px);
+  max-height: min(84vh, 720px);
   overflow: auto;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--theme-warning-border, #e3d9ca);
+  border-radius: 14px;
   background: var(--surface);
-  box-shadow: 0 18px 48px color-mix(in srgb, var(--ink) 18%, transparent);
+  box-shadow: 0 22px 70px rgba(37, 37, 31, 0.2);
+  outline: none;
 }
-.head {
+.dialog-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.kicker {
+.dialog-heading strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.panel-kicker {
   display: block;
   color: var(--accent);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.12em;
 }
-.mode-toggle {
-  display: flex;
-  gap: 6px;
-}
-.mode-toggle button {
-  flex: 1;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-muted, var(--surface));
-  color: var(--ink-muted);
-  font-size: 12px;
-  font-weight: 600;
+.dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
   cursor: pointer;
 }
-.mode-toggle button.active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+.dialog-close:hover {
+  background: var(--theme-warning-bg, #ebe6dd);
   color: var(--ink);
+}
+.dialog-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.tabs,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.tabs {
+  justify-content: space-between;
+}
+.actions {
+  justify-content: flex-end;
 }
 .form-grid {
   display: grid;
@@ -416,6 +444,14 @@ function onKeydown(event: KeyboardEvent) {
 .field {
   display: grid;
   gap: 4px;
+  color: var(--ink);
+  font:
+    12px/1.4 Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+.field > span {
   color: var(--ink-muted);
   font-size: 11px;
   font-weight: 700;
@@ -423,39 +459,84 @@ function onKeydown(event: KeyboardEvent) {
 .field input,
 .field select,
 .field textarea {
+  width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
-  font: 13px/1.35 var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
+  font-size: 13px;
 }
 .field input:not([type="checkbox"]):not([type="hidden"]),
 .field select {
   height: 34px;
   min-height: 34px;
-  padding: 0 10px;
+  padding: 0 9px;
 }
-.hint,
-.selected {
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.hint {
   margin: 0;
   color: var(--ink-muted);
   font-size: 12px;
+  line-height: 1.4;
 }
 .error {
   margin: 0;
-  color: var(--theme-danger-text, #b42318);
+  color: var(--theme-danger-text, #8a2b2b);
+  background: var(--danger-bg, #fff2ee);
+  border: 1px solid var(--danger-line, #edcec5);
+  border-radius: 8px;
+  padding: 8px 10px;
   font-size: 12px;
 }
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
+.quiet-button,
+.primary-button,
+.danger-button {
+  min-height: 34px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.ghost {
+.quiet-button {
+  background: var(--surface);
+  color: var(--ink-soft, var(--ink));
+}
+.quiet-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--ink);
+}
+.quiet-button.ghost {
   border-color: transparent;
   background: transparent;
+}
+.primary-button {
+  background: var(--accent-dark, var(--accent));
+  border-color: transparent;
+  color: #fff;
+}
+.danger-button {
+  border-color: var(--theme-danger-border, #e2c4bb);
+  background: var(--surface);
+  color: var(--theme-danger-text, #8a3b2d);
+}
+.quiet-button:disabled,
+.primary-button:disabled,
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

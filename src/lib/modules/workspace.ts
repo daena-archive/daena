@@ -116,8 +116,8 @@ export function workspaceSectionViewNav(
   }
   if (section === "timeline") {
     return [
-      { id: "timeline", label: "Timeline" },
       ...workspaceCollectionTabs(section, types).map((tab) => ({ id: tab.id, label: tab.label })),
+      { id: "timeline", label: "Timeline" },
     ];
   }
   if (section === "writing") {

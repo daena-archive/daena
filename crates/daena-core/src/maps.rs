@@ -327,6 +327,8 @@ pub struct PhysicalMapGenerationSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub hazard_derivation_version: Option<u16>,
+    #[serde(default)]
+    pub planetary: daena_physical::planetary::PlanetaryConfiguration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

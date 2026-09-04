@@ -10,6 +10,19 @@ import {
   type PhysicalJobStatus,
 } from "$lib/project/client";
 import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "./raster";
+import {
+  EARTH_RADIUS_METRES,
+  earthLikePlanetary,
+  insolationPpm,
+  markPlanetaryCustom,
+  orbitalPeriodSeconds,
+  planetaryFromPreset,
+  surfaceGravityMilliG,
+  validatePlanetary,
+  withOrbitalPeriodSeconds,
+  type PlanetaryConfiguration,
+  type PlanetaryPreset,
+} from "./planetary";
 import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
@@ -41,6 +54,9 @@ function nextPhysicalSeed(fallback = 0) {
 let name = $state("Physical World");
 let seed = $state(nextPhysicalSeed());
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
+let planetary = $state<PlanetaryConfiguration>(earthLikePlanetary());
+let advancedPlanet = $state(false);
+let yearLengthError = $state<string | null>(null);
 let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let raster = $state<HTMLCanvasElement | null>(null);
@@ -157,6 +173,56 @@ function randomSeed() {
   seed = nextPhysicalSeed(seed);
 }
 
+function applyPlanetPreset(preset: PlanetaryPreset) {
+  yearLengthError = null;
+  planetary = planetaryFromPreset(preset);
+}
+
+function setPlanetary(patch: Partial<PlanetaryConfiguration>) {
+  yearLengthError = null;
+  planetary = markPlanetaryCustom({ ...planetary, ...patch });
+}
+
+function numberFromEvent(event: Event) {
+  if (!(event.currentTarget instanceof HTMLInputElement)) return null;
+  const value = Number(event.currentTarget.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function onPlanetPresetChange(event: Event) {
+  const value = event.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : "earth-like";
+  applyPlanetPreset(value as PlanetaryPreset);
+}
+
+const planetError = $derived(validatePlanetary(planetary));
+const yearSeconds = $derived(orbitalPeriodSeconds(planetary));
+const yearDays = $derived(yearSeconds == null ? null : yearSeconds / 86_400);
+const sunlight = $derived(insolationPpm(planetary));
+const gravityG = $derived(surfaceGravityMilliG(planetary));
+const localDaysInYear = $derived(
+  yearSeconds == null || planetary.rotationPeriodSeconds <= 0 ? null : yearSeconds / planetary.rotationPeriodSeconds,
+);
+
+function setYearLengthDays(days: number | null) {
+  if (days == null || days <= 0) {
+    yearLengthError = "Year length must be a positive number of Earth days.";
+    return;
+  }
+  const next = withOrbitalPeriodSeconds(planetary, days * 86_400);
+  if (next) {
+    yearLengthError = null;
+    planetary = next;
+    return;
+  }
+  yearLengthError = "That year length is outside the supported orbital range for this star mass.";
+}
+
+function patchPlanetaryNumber(event: Event, map: (value: number) => Partial<PlanetaryConfiguration>) {
+  const value = numberFromEvent(event);
+  if (value == null) return;
+  setPlanetary(map(value));
+}
+
 function destroyPreview() {
   raster = null;
 }
@@ -255,6 +321,12 @@ async function poll(jobId: string) {
 
 async function generate() {
   if (busy) return;
+  const error = validatePlanetary(planetary);
+  if (error) {
+    notice = error;
+    publish("error", { detail: notice });
+    return;
+  }
   busy = true;
   notice = "";
   hydrology = null;
@@ -268,8 +340,9 @@ async function generate() {
       settings: {
         width: 384,
         height: 192,
-        radiusMetres: 6_371_000,
+        radiusMetres: planetary.radiusMetres,
         targetLandFractionPpm: 300_000,
+        planetary,
       },
     };
     status = await project.generatePhysicalMap(input);
@@ -337,8 +410,182 @@ onMount(() => {
           <option value="mature">Mature</option>
           <option value="old">Old</option>
         </select></label>
+      <label
+        >Planet<select value={planetary.preset} disabled={busy} onchange={onPlanetPresetChange}>
+          <option value="earth-like">Earth-like</option>
+          <option value="low-tilt">Mild seasons</option>
+          <option value="high-tilt">Strong seasons</option>
+          <option value="slow-rotating">Long days</option>
+          <option value="close-orbit">Close orbit</option>
+          <option value="custom">Custom</option>
+        </select></label>
       <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
+      <button
+        class="quiet-button"
+        type="button"
+        onclick={() => (advancedPlanet = !advancedPlanet)}
+        disabled={busy}
+        aria-expanded={advancedPlanet}>{advancedPlanet ? "Hide planet details" : "Planet details"}</button>
     </div>
+    {#if advancedPlanet}
+      <div class="physical-planet-panel">
+        <p class="physical-planet-readout">
+          Stored with the world. These settings do not change this preview's climate yet. Figures are generated world
+          physics, not a precise scientific prediction.
+        </p>
+        <label
+          >Seasons (tilt)
+          <input
+            type="range"
+            min="0"
+            max="90"
+            step="1"
+            disabled={busy}
+            value={Math.round(planetary.axialTiltMilliDeg / 1000)}
+            oninput={(event) => patchPlanetaryNumber(event, (value) => ({ axialTiltMilliDeg: value * 1000 }))} />
+          <span>{Math.round(planetary.axialTiltMilliDeg / 1000)}°</span>
+        </label>
+        <label
+          >Hours in a day
+          <input
+            type="number"
+            min="1"
+            max="2160"
+            step="1"
+            disabled={busy}
+            value={Math.round(planetary.rotationPeriodSeconds / 3600)}
+            oninput={(event) =>
+              patchPlanetaryNumber(event, (value) => ({ rotationPeriodSeconds: Math.max(1, value) * 3600 }))} />
+        </label>
+        <label
+          >Year length (Earth days)
+          <input
+            type="number"
+            min="4"
+            max="200000"
+            step="1"
+            disabled={busy}
+            value={yearDays == null ? "" : Math.round(yearDays)}
+            oninput={(event) => setYearLengthDays(numberFromEvent(event))} />
+        </label>
+        <p class="physical-planet-readout">
+          {#if yearLengthError}
+            {yearLengthError}
+          {:else if planetError}
+            {planetError}
+          {:else if yearDays != null && localDaysInYear != null && sunlight != null && gravityG != null}
+            About {Math.round(yearDays)} Earth days / {Math.round(localDaysInYear)} local days · about {(
+              sunlight / 1_000_000
+            ).toFixed(1)}x sunlight · about {(gravityG / 1000).toFixed(1)} g. Year length sets orbital distance from the star's
+            mass.
+          {:else}
+            Enter supported planetary values to see approximate year, sunlight, and gravity.
+          {/if}
+        </p>
+        <details class="physical-planet-advanced">
+          <summary>Advanced</summary>
+          <div class="physical-planet-advanced-grid">
+            <label
+              >Star brightness
+              <input
+                type="number"
+                min="0.01"
+                max="100"
+                step="0.01"
+                disabled={busy}
+                value={planetary.starLuminosityPpm / 1_000_000}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ starLuminosityPpm: Math.round(value * 1_000_000) }))} />
+            </label>
+            <label
+              >Distance (AU)
+              <input
+                type="number"
+                min="0.05"
+                max="50"
+                step="0.01"
+                disabled={busy}
+                value={planetary.semiMajorAxisMilliAu / 1_000_000}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ semiMajorAxisMilliAu: Math.round(value * 1_000_000) }))} />
+            </label>
+            <label
+              >Star mass
+              <input
+                type="number"
+                min="0.08"
+                max="8"
+                step="0.01"
+                disabled={busy}
+                value={planetary.starMassPpm / 1_000_000}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ starMassPpm: Math.round(value * 1_000_000) }))} />
+            </label>
+            <label
+              >Orbit stretch
+              <input
+                type="number"
+                min="0"
+                max="0.8"
+                step="0.01"
+                disabled={busy}
+                value={planetary.eccentricityPpm / 1_000_000}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ eccentricityPpm: Math.round(value * 1_000_000) }))} />
+            </label>
+            <label
+              >Retained heat (°C)
+              <input
+                type="number"
+                min="-50"
+                max="50"
+                step="1"
+                disabled={busy}
+                value={planetary.retainedHeatCentiC / 100}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ retainedHeatCentiC: Math.round(value * 100) }))} />
+            </label>
+            <label
+              >Reflectivity
+              <input
+                type="number"
+                min="0.05"
+                max="0.8"
+                step="0.01"
+                disabled={busy}
+                value={planetary.bondAlbedoPpm / 1_000_000}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({ bondAlbedoPpm: Math.round(value * 1_000_000) }))} />
+            </label>
+            <label
+              >Planet size (Earth radii)
+              <input
+                type="number"
+                min="0.05"
+                max="10"
+                step="0.05"
+                disabled={busy}
+                value={planetary.radiusMetres / EARTH_RADIUS_METRES}
+                oninput={(event) =>
+                  patchPlanetaryNumber(event, (value) => ({
+                    radiusMetres: Math.max(1, Math.round(value * EARTH_RADIUS_METRES)),
+                  }))} />
+            </label>
+            <label
+              >Density (kg/m³)
+              <input
+                type="number"
+                min="1000"
+                max="12000"
+                step="10"
+                disabled={busy}
+                value={planetary.meanDensityKgM3}
+                oninput={(event) => patchPlanetaryNumber(event, (value) => ({ meanDensityKgM3: value }))} />
+            </label>
+          </div>
+        </details>
+      </div>
+    {/if}
     {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
     <div class="native-vector-map">
       <PhysicalWorldView collection={preview} {layers} {raster} showRaster />
@@ -368,7 +615,8 @@ onMount(() => {
             </p>
             <p class="physical-map-help-note">
               The accepted map is a separate high-resolution render with much more detail. You can’t edit the base world
-              directly; copy any region into an editable layer to change it.
+              directly; copy any region into an editable layer to change it. Planet settings are stored with the world
+              but do not change this preview's climate yet.
             </p>
             <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
           </div>
@@ -444,6 +692,62 @@ onMount(() => {
   color: inherit;
   padding: 0.45rem 0.55rem;
   font: inherit;
+}
+
+.physical-planet-panel {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0 1rem 0.85rem;
+}
+
+.physical-planet-panel label {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) minmax(8rem, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.78rem;
+}
+
+.physical-planet-panel input[type="range"] {
+  width: 100%;
+}
+
+.physical-planet-panel input[type="number"] {
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0.35rem;
+  background: rgb(255 255 255 / 7%);
+  color: inherit;
+  padding: 0.4rem 0.5rem;
+}
+
+.physical-planet-readout {
+  margin: 0;
+  color: #d9d0c3;
+  font-size: 0.76rem;
+}
+
+.physical-planet-advanced {
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  padding-top: 0.55rem;
+}
+
+.physical-planet-advanced summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #d9d0c3;
+}
+
+.physical-planet-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+}
+
+.physical-planet-advanced-grid label {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
 }
 
 .physical-map-editor .quiet-button,

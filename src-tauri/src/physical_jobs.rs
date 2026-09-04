@@ -104,6 +104,8 @@ pub(super) struct PhysicalGenerationSettingsInput {
     pub(super) height: u32,
     pub(super) radius_metres: u64,
     pub(super) target_land_fraction_ppm: u32,
+    #[serde(default)]
+    pub(super) planetary: daena_physical::planetary::PlanetaryConfiguration,
 }
 
 #[derive(Debug, Clone, Deserialize)]

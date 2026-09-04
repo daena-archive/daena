@@ -174,6 +174,20 @@ export type MapDescriptor = {
             continentalPlateCount: number;
             tectonicActivityPpm: number;
             islandActivityPpm: number;
+            planetary?: {
+                version: 1;
+                preset: "earth-like" | "low-tilt" | "high-tilt" | "slow-rotating" | "close-orbit" | "custom";
+                starLuminosityPpm: number;
+                starMassPpm: number;
+                semiMajorAxisMilliAu: number;
+                eccentricityPpm: number;
+                axialTiltMilliDeg: number;
+                rotationPeriodSeconds: number;
+                retainedHeatCentiC: number;
+                bondAlbedoPpm: number;
+                meanDensityKgM3: number;
+                radiusMetres: number;
+            };
         };
     };
 };

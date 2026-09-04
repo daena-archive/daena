@@ -43,6 +43,8 @@ impl StaticDerivedPhysics {
     }
 
     pub fn version_dir() -> String {
+        // Planetary configuration is not in this key. Climate products that
+        // consume it must add a planetary digest or bump identity.
         format!(
             "c{}-d{}-h{}-z{}",
             crate::climate::CLIMATE_DERIVATION_VERSION,

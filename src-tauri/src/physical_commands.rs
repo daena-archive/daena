@@ -31,6 +31,14 @@ pub(super) async fn project_physical_generate(
         input.evolution_preset.as_deref().unwrap_or("mature"),
     )
     .map_err(|error| error.to_string())?;
+    input
+        .settings
+        .planetary
+        .validate()
+        .map_err(|error| error.to_string())?;
+    if input.settings.planetary.radius_metres != input.settings.radius_metres {
+        return Err("planetary.radiusMetres must match settings.radiusMetres".into());
+    }
     let cancel = Arc::new(AtomicBool::new(false));
     let status = PhysicalJobStatus {
         job_id: job_id.clone(),
@@ -67,10 +75,11 @@ pub(super) async fn project_physical_generate(
             job_id: worker_job_id.clone(),
             cancel: cancel.clone(),
         };
+        let radius_metres = input.settings.planetary.radius_metres;
         let settings = daena_physical::GenerationSettings {
             width: input.settings.width,
             height: input.settings.height,
-            radius_metres: input.settings.radius_metres,
+            radius_metres,
             target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
         };
         let outcome = daena_physical::generate_world_with_evolution(
@@ -104,7 +113,7 @@ pub(super) async fn project_physical_generate(
                     "settings": {
                         "width": input.settings.width,
                         "height": input.settings.height,
-                        "radiusMetres": input.settings.radius_metres,
+                        "radiusMetres": radius_metres,
                         "targetLandFractionPpm": input.settings.target_land_fraction_ppm,
                         "referenceWaterInventoryM3": world.report.reference_water_inventory_m3,
                         "plateCount": world.tectonics.settings.plate_count,
@@ -114,6 +123,7 @@ pub(super) async fn project_physical_generate(
                         "evolutionPreset": evolution_preset.as_str(),
                         "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                         "historicalForcing": historical_forcing_products(historical_forcing),
+                        "planetary": input.settings.planetary,
                     }
                 });
                 let physical_identity =

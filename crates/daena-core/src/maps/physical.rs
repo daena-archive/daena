@@ -143,6 +143,13 @@ fn physical_identity(manifest: &PhysicalIdentityManifestV1, source_bytes: &[u8])
     format!("sha256:{:x}", Sha256::digest(input))
 }
 
+/// Directory for disposable static derived physics keyed by physical identity.
+///
+/// Planetary configuration is stored on generation settings and is not part of
+/// `PhysicalIdentityManifestV1`. When climate derivation consumes planetary
+/// inputs, this cache key must change (identity v2 or a planetary digest
+/// suffix) so two worlds with the same terrain and different planets cannot
+/// share climate products.
 pub fn physical_derived_cache_dir(
     project_root: &Path,
     identity: &str,
@@ -322,6 +329,16 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
     historical_forcing(&settings)
         .validate()
         .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    settings
+        .planetary
+        .validate()
+        .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
+    if settings.planetary.radius_metres != settings.radius_metres {
+        return Err(invalid(
+            CODE_INVALID_GENERATION,
+            "planetary.radiusMetres must match generation.settings.radiusMetres",
+        ));
+    }
     Ok(settings)
 }
 
@@ -565,6 +582,65 @@ mod tests {
             evolution_preset: "mature".into(),
             historical_forcing: HistoricalForcingParameters::default_for(831_429, 0),
         }
+    }
+
+    #[test]
+    fn missing_planetary_configuration_defaults_to_earth_like() {
+        let validated = validate_generation(&generation(None)).unwrap();
+        assert_eq!(
+            validated.planetary,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like()
+        );
+        let mut present = generation(None);
+        present["settings"]["planetary"] = serde_json::to_value(
+            daena_physical::planetary::PlanetaryConfiguration::from_preset(
+                daena_physical::planetary::PlanetaryPreset::HighTilt,
+            ),
+        )
+        .unwrap();
+        let high_tilt = validate_generation(&present).unwrap();
+        assert_eq!(
+            high_tilt.planetary.preset,
+            daena_physical::planetary::PlanetaryPreset::HighTilt
+        );
+        assert_eq!(high_tilt.planetary.axial_tilt_milli_deg, 40_000);
+        assert_eq!(high_tilt.planetary.radius_metres, high_tilt.radius_metres);
+
+        let mut mismatched = generation(None);
+        let mut mismatched_planet = daena_physical::planetary::PlanetaryConfiguration::earth_like();
+        mismatched_planet.radius_metres = mismatched_planet.radius_metres + 1;
+        mismatched["settings"]["planetary"] = serde_json::to_value(mismatched_planet).unwrap();
+        assert!(validate_generation(&mismatched).is_err());
+
+        let mut invalid = generation(None);
+        invalid["settings"]["planetary"] = serde_json::json!({
+            "version": 1,
+            "preset": "custom",
+            "starLuminosityPpm": 1_000_000,
+            "starMassPpm": 1_000_000,
+            "semiMajorAxisMilliAu": 1_000_000,
+            "eccentricityPpm": 900_000,
+            "axialTiltMilliDeg": 23_440,
+            "rotationPeriodSeconds": 86_400,
+            "retainedHeatCentiC": 1_400,
+            "bondAlbedoPpm": 306_000,
+            "meanDensityKgM3": 5_514,
+        });
+        assert!(validate_generation(&invalid).is_err());
+    }
+
+    #[test]
+    fn identity_ignores_planetary_configuration() {
+        let (source, generation) = generated_pair();
+        let without = validate_source(&source, &generation).unwrap().identity;
+        let mut with = generation.clone();
+        with["settings"]["planetary"] = serde_json::to_value(
+            daena_physical::planetary::PlanetaryConfiguration::from_preset(
+                daena_physical::planetary::PlanetaryPreset::CloseOrbit,
+            ),
+        )
+        .unwrap();
+        assert_eq!(without, validate_source(&source, &with).unwrap().identity);
     }
 
     #[test]

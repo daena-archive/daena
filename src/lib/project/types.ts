@@ -585,6 +585,7 @@ export interface AtlasStudioInspectResult {
   hits: AtlasStudioInspectHit[];
   surface: AtlasStudioSurfaceSample;
 }
+export type { PlanetaryConfiguration, PlanetaryPreset } from "../maps/physical/planetary";
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
@@ -594,6 +595,7 @@ export interface PhysicalGenerationInput {
     height: number;
     radiusMetres: number;
     targetLandFractionPpm: number;
+    planetary?: PlanetaryConfiguration;
   };
 }
 export type PhysicalNaturalEventKind = "earthquake" | "eruption";

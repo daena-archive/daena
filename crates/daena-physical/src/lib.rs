@@ -17,6 +17,7 @@ pub mod evolution;
 pub mod hazards;
 pub mod history;
 pub mod hydrology;
+pub mod planetary;
 pub mod resolution;
 pub mod tectonics;
 

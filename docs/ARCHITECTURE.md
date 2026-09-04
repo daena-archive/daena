@@ -279,9 +279,9 @@ contiguity and namespace ownership, creates a recovery backup when required,
 executes the migration transactionally, and records the migration ID and
 checksum. Errors roll back the transaction and leave the prior version active.
 
-The alpha cut is reset-oriented: pre-format-version-3 projects and pre-cut
+The alpha cut is reset-oriented: pre-format-version-1 projects and pre-cut
 `.daena/` runtime state receive no legacy reader, migration, feature flag, or
-dual-write path. Existing version-3 portable files initialize a new runtime
+dual-write path. Existing version-1 portable files initialize a new runtime
 database after `.daena/` is removed. Plugin data migrations remain required
 when a plugin package changes its own schema or stored data version.
 

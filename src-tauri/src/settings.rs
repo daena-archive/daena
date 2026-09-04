@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const SETTINGS_FORMAT_VERSION: u32 = 2;
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 const MAX_RECENT_PROJECTS: usize = 6;
 const DEFAULT_IMAGE_ENDPOINT: &str = "http://127.0.0.1:8188";
 const DEFAULT_PROVIDER_ADAPTER: &str = "openai-compatible";
@@ -666,15 +666,15 @@ mod tests {
     }
 
     #[test]
-    fn previous_settings_format_is_rejected() {
+    fn non_current_settings_format_is_rejected() {
         let directory =
-            std::env::temp_dir().join(format!("daena-v1-settings-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("daena-v2-settings-{}", uuid::Uuid::new_v4()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         fs::write(
             directory.join("settings.json"),
             br#"{
-  "formatVersion": 1,
+  "formatVersion": 2,
   "ai": {
     "provider": {
       "id": "lm-studio",
@@ -691,7 +691,7 @@ mod tests {
         )
         .unwrap();
         let error = SettingsStore::new(&directory).load().unwrap_err();
-        assert!(error.contains("unsupported settings format version 1"));
+        assert!(error.contains("unsupported settings format version 2"));
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -704,7 +704,7 @@ mod tests {
         let path = directory.join("settings.json");
         fs::write(
             &path,
-            b"{\"formatVersion\":2,\"general\":{},\"extra\":true}\n",
+            b"{\"formatVersion\":1,\"general\":{},\"extra\":true}\n",
         )
         .unwrap();
         let store = SettingsStore::new(&directory);
@@ -721,7 +721,7 @@ mod tests {
         let path = directory.join("settings.json");
         fs::write(
             &path,
-            br#"{"formatVersion":2,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
+            br#"{"formatVersion":1,"general":{},"ai":{"localEndpoint":"http://127.0.0.1:1234/v1","localModel":"model","remotePolicy":"ask","remote":{}}}"#,
         )
         .unwrap();
         let store = SettingsStore::new(&directory);

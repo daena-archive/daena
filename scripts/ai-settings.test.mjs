@@ -27,7 +27,7 @@ assert.ok(overlay.templates.some((item) => item.id === "house-voice"));
 assert.ok(!overlay.templates.some((item) => item.id === "expand"));
 
 const settings = await readFile(new URL("../src-tauri/src/settings.rs", import.meta.url), "utf8");
-assert.match(settings, /SETTINGS_FORMAT_VERSION: u32 = 2/);
+assert.match(settings, /SETTINGS_FORMAT_VERSION: u32 = 1/);
 assert.match(settings, /project_bindings/);
 assert.doesNotMatch(settings, /DEFAULT_AI_ENDPOINT/);
 

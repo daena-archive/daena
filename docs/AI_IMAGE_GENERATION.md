@@ -24,7 +24,7 @@ entity action
 Application settings contain independent text and image provider profiles. The
 image profile is `AiSettings.imageProvider` and contains only machine-local
 provider configuration: enabled state, provider identity, adapter, endpoint,
-and selected model. This is an additive field in settings format version 2, so
+and selected model. This is an additive field in settings format version 1, so
 existing text-provider settings remain intact and image generation starts
 disabled.
 

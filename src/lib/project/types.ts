@@ -1,4 +1,5 @@
 import type { ModuleManifest } from "../../../packages/module-api/src/index";
+import type { PlanetaryConfiguration, PlanetaryPreset } from "../maps/physical/planetary";
 import type {
   EntityTypeColor,
   EntityTypeDefinition,
@@ -242,6 +243,77 @@ export interface AcceptedPhysicalMap {
   entity: Entity;
   source: Asset;
   physicalIdentity: string;
+}
+export interface FindPlaceQuery {
+  landOnly?: boolean;
+  altitudeMMin?: number | null;
+  altitudeMMax?: number | null;
+  latitudeMilliDegMin?: number | null;
+  latitudeMilliDegMax?: number | null;
+  slopePpmMin?: number | null;
+  slopePpmMax?: number | null;
+  temperatureCentiCMin?: number | null;
+  temperatureCentiCMax?: number | null;
+  precipitationMmMin?: number | null;
+  precipitationMmMax?: number | null;
+  humidityPpmMin?: number | null;
+  humidityPpmMax?: number | null;
+  aridityPpmMin?: number | null;
+  aridityPpmMax?: number | null;
+  biomeClass?: number | null;
+  islandId?: number | null;
+  ice?: boolean | null;
+  coastDistanceKmMin?: number | null;
+  coastDistanceKmMax?: number | null;
+  freshwaterDistanceKmMin?: number | null;
+  freshwaterDistanceKmMax?: number | null;
+  earthquakeHazardPpmMin?: number | null;
+  earthquakeHazardPpmMax?: number | null;
+  volcanicHazardPpmMin?: number | null;
+  volcanicHazardPpmMax?: number | null;
+  stormSuitabilityPpmMin?: number | null;
+  stormSuitabilityPpmMax?: number | null;
+  soft?: string[];
+  maxCandidates?: number;
+  minCells?: number;
+}
+export interface FindPlaceCandidate {
+  id: number;
+  cellCount: number;
+  areaKm2: number;
+  scorePpm: number;
+  fitPpm: number;
+  compactnessPpm: number;
+  sizePpm: number;
+  longitudeMicrodegrees: number;
+  latitudeMicrodegrees: number;
+  reasons: string[];
+  satisfied: string[];
+  preferences: string[];
+  nearMisses: string[];
+  risks: string[];
+  means: {
+    altitudeM: number;
+    temperatureCentiC: number;
+    precipitationMm: number;
+    humidityPpm: number;
+    aridityPpm: number;
+    slopePpm: number;
+    latitudeMilliDeg: number;
+    coastDistanceKm: number | null;
+    freshwaterDistanceKm: number | null;
+    earthquakeHazardPpm: number;
+    volcanicHazardPpm: number;
+    stormSuitabilityPpm: number;
+    biomeClass: number;
+    islandId: number;
+  };
+  cells: number[];
+}
+export interface FindPlaceResult {
+  matchedCells: number;
+  candidateCount: number;
+  candidates: FindPlaceCandidate[];
 }
 export interface PhysicalClimateProducts {
   derivationVersion: number;
@@ -656,7 +728,7 @@ export interface AtlasStudioInspectResult {
   hits: AtlasStudioInspectHit[];
   surface: AtlasStudioSurfaceSample;
 }
-export type { PlanetaryConfiguration, PlanetaryPreset } from "../maps/physical/planetary";
+export type { PlanetaryConfiguration, PlanetaryPreset };
 export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;

@@ -55,6 +55,8 @@ import type {
   ModuleSchemaOverlay,
   ModuleSchemaOverlayMutationResult,
   MutationOptions,
+  FindPlaceQuery,
+  FindPlaceResult,
   PhysicalClimateProducts,
   PhysicalEventMaterializationRequest,
   PhysicalEventMaterializationResult,
@@ -436,6 +438,12 @@ export const project = {
       mapEntityId,
       epochOffsetYears,
       requestId,
+    }),
+  physicalFindPlace: (mapEntityId: string, epochOffsetYears: number, query: FindPlaceQuery) =>
+    invoke<FindPlaceResult>("project_physical_find_place", {
+      mapEntityId,
+      epochOffsetYears,
+      query,
     }),
   physicalMaterializeEvents: (
     mapEntityId: string,

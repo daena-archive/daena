@@ -44,6 +44,8 @@ export type PhysicalRasterPaintOptions = {
   climateBiomeFill?: [number, number, number][];
   climateStormSuitabilityPpm?: number[];
   climateStormTrackPpm?: number[];
+  findPlaceCells?: number[];
+  findPlaceSelectedCells?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -286,6 +288,8 @@ export function paintPhysicalSurface(
   const context = canvas.getContext("2d");
   if (!context) return canvas;
   const water = classifyPhysicalWater(products.width, products.height, products.bathymetryMm, products.lakeCells);
+  const findPlace = new Set(options.findPlaceCells ?? []);
+  const findPlaceSelected = new Set(options.findPlaceSelectedCells ?? []);
   const pixels = context.createImageData(canvas.width, canvas.height);
   for (let canvasRow = 0; canvasRow < canvas.height; canvasRow += 1) {
     const sourceRow = physicalGridRowForRasterRow(canvasRow, canvas.height, products.height);
@@ -382,6 +386,10 @@ export function paintPhysicalSurface(
         red = Math.round(landRed * light);
         green = Math.round(landGreen * light);
         blue = Math.round(landBlue * light);
+      }
+      if (findPlace.has(index)) {
+        const tint: [number, number, number] = findPlaceSelected.has(index) ? [255, 214, 64] : [236, 156, 48];
+        [red, green, blue] = mixRgb([red, green, blue], tint, findPlaceSelected.has(index) ? 0.58 : 0.4);
       }
       pixels.data[offset] = Math.min(255, red);
       pixels.data[offset + 1] = Math.min(255, green);

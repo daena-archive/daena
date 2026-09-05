@@ -618,6 +618,7 @@ pub fn run() {
             project_physical_derived_evolution,
             project_physical_derived_hydrology,
             project_physical_derived_epoch,
+            project_physical_find_place,
             project_physical_materialize_events,
             project_physical_clear_epoch_cache,
             atlas_jobs::project_atlas_capabilities,

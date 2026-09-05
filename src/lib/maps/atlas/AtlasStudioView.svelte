@@ -4,8 +4,17 @@ import { X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
+import Feature from "ol/Feature.js";
+import Point from "ol/geom/Point.js";
 import TileLayer from "ol/layer/Tile.js";
+import VectorLayer from "ol/layer/Vector.js";
+import VectorSource from "ol/source/Vector.js";
 import XYZ from "ol/source/XYZ.js";
+import CircleStyle from "ol/style/Circle.js";
+import Fill from "ol/style/Fill.js";
+import Stroke from "ol/style/Stroke.js";
+import Style from "ol/style/Style.js";
+import Text from "ol/style/Text.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
 import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
 import "ol/ol.css";
@@ -22,6 +31,8 @@ import {
 import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 import MapLocationLinkPanel from "../native-vector/MapLocationLinkPanel.svelte";
+import FindPlacePanel from "../physical/FindPlacePanel.svelte";
+import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import { PHYSICAL_COORDINATE_SPACE, authoredToNormalized } from "../editor/coordinate-space";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
@@ -153,9 +164,15 @@ let confirmCache = $state(false);
 let showHelp = $state(false);
 let viewZoom = $state(1);
 let worldMinZoom = $state(0);
+let findPlaceResult = $state<FindPlaceResult | null>(null);
+let findPlaceSelectedId = $state<number | null>(null);
+let findPlaceSearching = $state(false);
+let findPlaceError = $state("");
 let unlisten: UnlistenFn | undefined;
 let map: Map | null = null;
 let tileSource: XYZ | null = null;
+let findPlaceSource: VectorSource | null = null;
+let findPlaceLayer: VectorLayer | null = null;
 let mapLifecycle: MapLifecycle | undefined;
 let opening = false;
 let reopenPending = false;
@@ -391,6 +408,8 @@ async function openSession() {
       mapLifecycle = undefined;
       map = null;
       tileSource = null;
+      findPlaceLayer = null;
+      findPlaceSource = null;
       const overview = applyWorldConstraints();
       const center: [number, number] = keepCenter ?? [0, 20];
       mountMap(next, { center, zoom: keepZoom ?? overview });
@@ -460,7 +479,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   try {
     map = new Map({
       target: container,
-      layers: [new TileLayer({ source: tileSource, preload: 1 })],
+      layers: [new TileLayer({ source: tileSource, preload: 1 }), findPlaceOverlayLayer()],
       view: new View({
         projection: "EPSG:3857",
         center: fromLonLat(initial?.center ?? [0, 20]),
@@ -485,6 +504,12 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   });
   map.on("singleclick", (event) => {
     if (inspectHover) clearTimeout(inspectHover);
+    const candidateId = map?.forEachFeatureAtPixel(event.pixel, (feature) => feature.get("candidateId"));
+    if (typeof candidateId === "number") {
+      const candidate = findPlaceResult?.candidates.find((item: FindPlaceCandidate) => item.id === candidateId);
+      if (candidate) selectFindPlace(candidate);
+      return;
+    }
     const [longitude, latitude] = toLonLat(event.coordinate);
     if (linkArming) {
       openLinkPanel(longitude, latitude);
@@ -870,7 +895,100 @@ function onViewportKey(event: KeyboardEvent) {
 
 function setOffsetYears(next: number) {
   offsetYears = clampEpoch(next, EPOCH_STEP);
+  clearFindPlace();
   scheduleSession();
+}
+
+function candidatePoint(candidate: FindPlaceCandidate): [number, number] {
+  return [candidate.longitudeMicrodegrees / 1_000_000, candidate.latitudeMicrodegrees / 1_000_000];
+}
+
+function findPlaceOverlayLayer() {
+  findPlaceSource = new VectorSource();
+  findPlaceLayer = new VectorLayer({
+    source: findPlaceSource,
+    zIndex: 20,
+    style: (feature) => {
+      const selected = feature.get("candidateId") === findPlaceSelectedId;
+      return new Style({
+        image: new CircleStyle({
+          radius: selected ? 8 : 6,
+          fill: new Fill({ color: selected ? "#e6b03c" : "#ec9c30" }),
+          stroke: new Stroke({ color: "#1b2822", width: 1.5 }),
+        }),
+        text: new Text({
+          text: String(feature.get("candidateId") ?? ""),
+          fill: new Fill({ color: "#1b2822" }),
+          font: "700 10px system-ui",
+          offsetY: -12,
+        }),
+      });
+    },
+  });
+  syncFindPlaceOverlay();
+  return findPlaceLayer;
+}
+
+function syncFindPlaceOverlay() {
+  findPlaceSource?.clear();
+  if (!findPlaceSource || !findPlaceResult) return;
+  for (const candidate of findPlaceResult.candidates) {
+    const feature = new Feature({
+      geometry: new Point(fromLonLat(candidatePoint(candidate))),
+      candidateId: candidate.id,
+    });
+    findPlaceSource.addFeature(feature);
+  }
+  findPlaceLayer?.changed();
+}
+
+function clearFindPlace() {
+  findPlaceResult = null;
+  findPlaceSelectedId = null;
+  findPlaceError = "";
+  findPlaceSource?.clear();
+}
+
+function selectFindPlace(candidate: FindPlaceCandidate) {
+  findPlaceSelectedId = candidate.id;
+  findPlaceLayer?.changed();
+  const [lng, lat] = candidatePoint(candidate);
+  if (map) {
+    const view = map.getView();
+    const zoom = Math.max(view.getZoom() ?? 3, 3);
+    if (prefersReducedMotion()) {
+      view.setCenter(fromLonLat([lng, lat]));
+      view.setZoom(zoom);
+    } else {
+      view.animate({ center: fromLonLat([lng, lat]), zoom, duration: 280 });
+    }
+  }
+  inspectAt(lng, lat, true);
+}
+
+function pinFindPlace(candidate: FindPlaceCandidate) {
+  selectFindPlace(candidate);
+  const [lng, lat] = candidatePoint(candidate);
+  openLinkPanel(lng, lat);
+}
+
+async function runFindPlace(query: FindPlaceQuery) {
+  findPlaceSearching = true;
+  findPlaceError = "";
+  try {
+    const compact = Object.fromEntries(
+      Object.entries(query).filter(([, value]) => value !== null && value !== undefined),
+    ) as FindPlaceQuery;
+    const next = await project.physicalFindPlace(mapId, offsetYears, compact);
+    findPlaceResult = next;
+    findPlaceSelectedId = next.candidates[0]?.id ?? null;
+    syncFindPlaceOverlay();
+    if (next.candidates[0]) selectFindPlace(next.candidates[0]);
+  } catch (cause) {
+    findPlaceError = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    findPlaceSearching = false;
+  }
 }
 
 function setOffsetYearsAbs(raw: string) {
@@ -897,6 +1015,7 @@ async function applyPreset(id: string) {
   if (style?.id) styleId = style.id;
   const ids = new Set((preset.activeLayerIds as string[] | undefined) ?? []);
   layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
+  clearFindPlace();
   await openSession();
 }
 
@@ -967,6 +1086,8 @@ onDestroy(() => {
   mapLifecycle = undefined;
   map = null;
   tileSource = null;
+  findPlaceLayer = null;
+  findPlaceSource = null;
   if (session) {
     void project.atlasStudioClose(session.sessionToken).catch(() => undefined);
   }
@@ -1032,6 +1153,17 @@ onDestroy(() => {
           </label>
         {/if}
       {/if}
+      <FindPlacePanel
+        variant="studio"
+        disabled={loading}
+        searching={findPlaceSearching}
+        error={findPlaceError}
+        result={findPlaceResult}
+        selectedId={findPlaceSelectedId}
+        onsearch={(query) => void runFindPlace(query)}
+        onselect={selectFindPlace}
+        onpin={pinFindPlace}
+        onclear={clearFindPlace} />
       <MapLayerVisibilityList
         variant="studio"
         {layers}
@@ -1406,7 +1538,7 @@ onDestroy(() => {
 }
 .body {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(0, 1fr);
   min-height: 0;
   height: 100%;
   width: 100%;
@@ -1424,6 +1556,15 @@ aside {
 aside label {
   display: grid;
   gap: 4px;
+}
+aside :global(.find-place .find-check),
+aside :global(.find-place .find-prefer label) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+aside :global(.find-place .detail-grid label) {
+  display: grid;
 }
 aside select,
 aside input[type="number"] {

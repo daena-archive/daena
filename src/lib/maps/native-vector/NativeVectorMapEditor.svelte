@@ -106,6 +106,8 @@ import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physic
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 import DetachPhysicalLayerDialog from "../physical/DetachPhysicalLayerDialog.svelte";
+import FindPlacePanel from "../physical/FindPlacePanel.svelte";
+import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
 import {
   buildPhysicalDetachPlan,
   isPhysicalDerivedLayerId,
@@ -207,6 +209,10 @@ let canRedo = $state(false);
 let derivedPhysical = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let physicalHydrology = $state<PhysicalHydrologyProducts | null>(null);
 let physicalClimate = $state<PhysicalClimateProducts | null>(null);
+let findPlaceResult = $state<FindPlaceResult | null>(null);
+let findPlaceSelectedId = $state<number | null>(null);
+let findPlaceSearching = $state(false);
+let findPlaceError = $state("");
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<MapLayerDefinition[]>([]);
@@ -504,6 +510,7 @@ function ensurePhysicalLockedClimateLayers(parsed: MapLayerDefinition[]): MapLay
 
 function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
   const climate = physicalClimate;
+  const selected = findPlaceResult?.candidates.find((candidate) => candidate.id === findPlaceSelectedId);
   return {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
@@ -517,6 +524,8 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
     climateCurrentEastMilli: climate?.currentEastMilli,
     climateCurrentNorthMilli: climate?.currentNorthMilli,
+    findPlaceCells: findPlaceResult?.candidates.flatMap((candidate) => candidate.cells),
+    findPlaceSelectedCells: selected?.cells,
   };
 }
 
@@ -1048,12 +1057,67 @@ function handleHistoricalProgress(progress: PhysicalHistoricalProgress) {
   epochProgress = { completed: progress.completed, total: progress.total };
 }
 
+function islandOptionsFromHydrology(hydrology: PhysicalHydrologyProducts | null) {
+  if (!hydrology) return [];
+  const counts = new Map<number, number>();
+  for (const id of hydrology.islandId) {
+    if (id === 4_294_967_295) continue;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0] - right[0])
+    .map(([id, cells]) => ({ id, cells }));
+}
+
+function clearFindPlace() {
+  findPlaceResult = null;
+  findPlaceSelectedId = null;
+  findPlaceError = "";
+  if (physicalHydrology) rebuildPhysicalRaster();
+}
+
+function candidatePoint(candidate: FindPlaceCandidate): [number, number] {
+  return [candidate.longitudeMicrodegrees / 1_000_000, candidate.latitudeMicrodegrees / 1_000_000];
+}
+
+function selectFindPlace(candidate: FindPlaceCandidate) {
+  findPlaceSelectedId = candidate.id;
+  rebuildPhysicalRaster();
+  editor?.focusPoint(candidatePoint(candidate), 3);
+}
+
+function pinFindPlace(candidate: FindPlaceCandidate) {
+  selectFindPlace(candidate);
+  openLinkPanel({ kind: "point", point: authoredToNormalized(...candidatePoint(candidate), coordinateSpace) });
+}
+
+async function runFindPlace(query: FindPlaceQuery) {
+  if (!mapId || !physicalMap) return;
+  findPlaceSearching = true;
+  findPlaceError = "";
+  try {
+    const compact = Object.fromEntries(
+      Object.entries(query).filter(([, value]) => value !== null && value !== undefined),
+    ) as FindPlaceQuery;
+    const next = await project.physicalFindPlace(mapId, appliedEpochOffsetYears, compact);
+    findPlaceResult = next;
+    findPlaceSelectedId = next.candidates[0]?.id ?? null;
+    rebuildPhysicalRaster();
+    if (next.candidates[0]) editor?.focusPoint(candidatePoint(next.candidates[0]), 3);
+  } catch (cause) {
+    findPlaceError = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    findPlaceSearching = false;
+  }
+}
+
 function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   if (!commandStack || commandStack.isDirty()) return;
   const physical = parseDerivedCollection(products.geojson);
   derivedPhysical = physical;
   physicalHydrology = products.hydrology;
   physicalClimate = products.climate;
+  clearFindPlace();
   rebuildPhysicalRaster();
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
@@ -1331,6 +1395,9 @@ async function load() {
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       physicalHydrology = historical.hydrology;
       physicalClimate = historical.climate;
+      findPlaceResult = null;
+      findPlaceSelectedId = null;
+      findPlaceError = "";
       rebuildPhysicalRaster();
       epochBusy = false;
       epochPhase = "";
@@ -2375,6 +2442,25 @@ onMount(() => {
               {/if}
             </div>
           </div>
+
+          {#if physicalMap}
+            <FindPlacePanel
+              disabled={busy || epochBusy}
+              searching={findPlaceSearching}
+              error={findPlaceError}
+              climateAvailable={Boolean(physicalClimate)}
+              hazardsAvailable={layers.some(
+                (layer) => layer.id === "earthquake-hazard" || layer.id === "volcanic-hazard",
+              )}
+              biomeLegend={physicalClimate?.biomeLegend ?? []}
+              islandOptions={islandOptionsFromHydrology(physicalHydrology)}
+              result={findPlaceResult}
+              selectedId={findPlaceSelectedId}
+              onsearch={(query) => void runFindPlace(query)}
+              onselect={selectFindPlace}
+              onpin={pinFindPlace}
+              onclear={clearFindPlace} />
+          {/if}
 
           <div class="map-panel-body">
             <!-- Layers -->

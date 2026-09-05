@@ -14,6 +14,7 @@ pub mod contours;
 pub mod derived_cache;
 pub mod events;
 pub mod evolution;
+pub mod find_place;
 pub mod hazards;
 pub mod history;
 pub mod hydrology;

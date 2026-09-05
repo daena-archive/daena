@@ -6,8 +6,9 @@ use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
 use crate::style::{
-    apply_shade, biome_fill, hypsometric, mix_rgb, precipitation_fill, temperature_fill,
-    AtlasStyle, BIOME_STYLE_ID, PRECIPITATION_STYLE_ID, TEMPERATURE_STYLE_ID,
+    apply_shade, aridity_fill, biome_fill, humidity_fill, hypsometric, mix_rgb, precipitation_fill,
+    temperature_fill, AtlasStyle, ARIDITY_STYLE_ID, BIOME_STYLE_ID, HUMIDITY_STYLE_ID,
+    PRECIPITATION_STYLE_ID, TEMPERATURE_STYLE_ID,
 };
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
@@ -46,6 +47,8 @@ pub struct PaintFields<'a> {
     pub climate_class: &'a [i32],
     pub temperature_centi_c: &'a [i32],
     pub precipitation_mm: &'a [i32],
+    pub humidity_ppm: &'a [i32],
+    pub aridity_ppm: &'a [i32],
     pub wind_east_milli: &'a [i32],
     pub wind_north_milli: &'a [i32],
     pub current_east_milli: &'a [i32],
@@ -237,6 +240,8 @@ enum RasterTheme {
     Biome,
     Temperature,
     Precipitation,
+    Humidity,
+    Aridity,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -256,6 +261,8 @@ impl RasterOptions {
             BIOME_STYLE_ID => RasterTheme::Biome,
             TEMPERATURE_STYLE_ID => RasterTheme::Temperature,
             PRECIPITATION_STYLE_ID => RasterTheme::Precipitation,
+            HUMIDITY_STYLE_ID => RasterTheme::Humidity,
+            ARIDITY_STYLE_ID => RasterTheme::Aridity,
             _ => RasterTheme::Relief,
         };
         Self {
@@ -444,6 +451,10 @@ fn paint_pixel(
             style,
             paint.precipitation_mm.get(cell).copied().unwrap_or(0),
         )
+    } else if land && options.theme == RasterTheme::Humidity {
+        humidity_fill(style, paint.humidity_ppm.get(cell).copied().unwrap_or(0))
+    } else if land && options.theme == RasterTheme::Aridity {
+        aridity_fill(style, paint.aridity_ppm.get(cell).copied().unwrap_or(0))
     } else {
         hypsometric(style, painted, sea)
     };

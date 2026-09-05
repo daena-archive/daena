@@ -106,6 +106,12 @@ fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i3
     let precip = controls
         .sample_precipitation(lon_micro, lat_micro)
         .clamp(0, 4_000);
+    let humidity = controls
+        .sample_humidity(lon_micro, lat_micro)
+        .clamp(0, 1_000_000);
+    let aridity = controls
+        .sample_aridity(lon_micro, lat_micro)
+        .clamp(0, 1_000_000);
     let lake = controls.sample_lake_mask(lon_micro, lat_micro);
     let climate = controls.sample_climate_class(lon_micro, lat_micro);
     let sea = controls.sea_level_mm;
@@ -136,6 +142,12 @@ fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i3
     }
     if precip < 200 && climate == CLIMATE_CLASS_ARID {
         amplitude = amplitude.saturating_add(8_000);
+    }
+    if aridity > 700_000 {
+        amplitude = amplitude.saturating_add(5_000);
+    }
+    if humidity > 750_000 && mountain < 200_000 {
+        amplitude = ((i64::from(amplitude) * 920_000) / 1_000_000) as i32;
     }
     if elevation < sea {
         return amplitude.clamp(48, 180);

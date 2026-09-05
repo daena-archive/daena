@@ -1,7 +1,19 @@
 import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates.ts";
 
 export type ClimateOverlayMode =
-  "off" | "annual" | "nh-summer" | "nh-winter" | "freeze" | "wind" | "wind-nh-summer" | "wind-nh-winter";
+  | "off"
+  | "annual"
+  | "nh-summer"
+  | "nh-winter"
+  | "freeze"
+  | "wind"
+  | "wind-nh-summer"
+  | "wind-nh-winter"
+  | "precipitation"
+  | "precipitation-nh-summer"
+  | "precipitation-nh-winter"
+  | "humidity"
+  | "aridity";
 
 export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
@@ -20,6 +32,11 @@ export type PhysicalRasterPaintOptions = {
   climateWindNorthNhWinterMilli?: number[];
   climateCurrentEastMilli?: number[];
   climateCurrentNorthMilli?: number[];
+  climatePrecipitationMm?: number[];
+  climatePrecipitationNhSummerMm?: number[];
+  climatePrecipitationNhWinterMm?: number[];
+  climateHumidityPpm?: number[];
+  climateAridityPpm?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -91,6 +108,39 @@ function windTint(eastMilli: number, northMilli: number): [number, number, numbe
   const zonal = mixRgb(easterly, westerly, (u + 1) / 2);
   const meridional = v >= 0 ? northward : southward;
   return mixRgb(zonal, meridional, Math.abs(v) * 0.7);
+}
+
+function precipitationTint(mm: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, mm / 2_800));
+  return [lerp(196, 32, t), lerp(168, 96, t), lerp(112, 176, t)];
+}
+
+function humidityTint(ppm: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, ppm / 1_000_000));
+  return [lerp(196, 48, t), lerp(176, 164, t), lerp(148, 188, t)];
+}
+
+function aridityTint(ppm: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, ppm / 1_000_000));
+  return [lerp(96, 210, t), lerp(148, 164, t), lerp(92, 96, t)];
+}
+
+function moistureValue(options: PhysicalRasterPaintOptions, overlay: ClimateOverlayMode, index: number): number {
+  if (overlay === "precipitation-nh-summer") return options.climatePrecipitationNhSummerMm?.[index] ?? 0;
+  if (overlay === "precipitation-nh-winter") return options.climatePrecipitationNhWinterMm?.[index] ?? 0;
+  if (overlay === "humidity") return options.climateHumidityPpm?.[index] ?? 0;
+  if (overlay === "aridity") return options.climateAridityPpm?.[index] ?? 0;
+  return options.climatePrecipitationMm?.[index] ?? 0;
+}
+
+function isMoistureOverlay(mode: ClimateOverlayMode): boolean {
+  return (
+    mode === "precipitation" ||
+    mode === "precipitation-nh-summer" ||
+    mode === "precipitation-nh-winter" ||
+    mode === "humidity" ||
+    mode === "aridity"
+  );
 }
 
 function temperatureTint(centiC: number): [number, number, number] {
@@ -263,6 +313,15 @@ export function paintPhysicalSurface(
           } else if (fillWind) {
             const [east, north] = windComponents(options, fillWind, index);
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], windTint(east, north), 0.22);
+          } else if (isMoistureOverlay(climateOverlay)) {
+            const value = moistureValue(options, climateOverlay, index);
+            const tint =
+              climateOverlay === "humidity"
+                ? humidityTint(value)
+                : climateOverlay === "aridity"
+                  ? aridityTint(value)
+                  : precipitationTint(value);
+            [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], tint, 0.72);
           } else {
             const value = climateOverlay === "nh-summer" ? summer : climateOverlay === "nh-winter" ? winter : annual;
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], temperatureTint(value), 0.72);

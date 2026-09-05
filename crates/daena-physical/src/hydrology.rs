@@ -2677,6 +2677,10 @@ mod tests {
             wind_band_nh_winter: vec![0; count],
             current_east_milli: vec![0; count],
             current_north_milli: vec![0; count],
+            humidity_ppm: vec![0; count],
+            aridity_ppm: vec![0; count],
+            precipitation_nh_summer_mm: vec![0; count],
+            precipitation_nh_winter_mm: vec![0; count],
             metrics: crate::climate::ClimateMetrics {
                 precipitation_volume_m3_per_year: 0,
                 runoff_volume_m3_per_year: 0,
@@ -2698,6 +2702,9 @@ mod tests {
                 easterly_cell_ppm: 0,
                 converging_cell_ppm: 0,
                 mean_current_speed_milli: 0,
+                mean_humidity_ppm: 0,
+                mean_land_aridity_ppm: 0,
+                mean_seasonal_precipitation_range_mm: 0,
             },
         }
     }

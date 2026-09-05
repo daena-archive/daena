@@ -40,6 +40,10 @@ pub struct ControlFields {
     pub current_north_milli: Vec<i32>,
     pub runoff_mm: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
+    pub humidity_ppm: Vec<i32>,
+    pub aridity_ppm: Vec<i32>,
+    pub precipitation_nh_summer_mm: Vec<i32>,
+    pub precipitation_nh_winter_mm: Vec<i32>,
     pub climate_class: Vec<i32>,
     pub ice_thickness_mm: Vec<i32>,
     pub water_level_mm: Vec<i32>,
@@ -79,6 +83,10 @@ impl ControlFields {
             || climate.current_north_milli.len() != count
             || climate.runoff_mm_per_year.len() != count
             || climate.precipitation_mm_per_year.len() != count
+            || climate.humidity_ppm.len() != count
+            || climate.aridity_ppm.len() != count
+            || climate.precipitation_nh_summer_mm.len() != count
+            || climate.precipitation_nh_winter_mm.len() != count
             || hydrology.ice_thickness_mm.len() != count
             || hydrology.ice_cells.len() != count
             || hydrology.water_level_mm.len() != count
@@ -95,6 +103,10 @@ impl ControlFields {
         let mut crust_class = Vec::with_capacity(count);
         let mut runoff_mm = Vec::with_capacity(count);
         let mut precipitation_mm = Vec::with_capacity(count);
+        let mut humidity_ppm = Vec::with_capacity(count);
+        let mut aridity_ppm = Vec::with_capacity(count);
+        let mut precipitation_nh_summer_mm = Vec::with_capacity(count);
+        let mut precipitation_nh_winter_mm = Vec::with_capacity(count);
         let mut climate_class = Vec::with_capacity(count);
         let mut ice_thickness_mm = Vec::with_capacity(count);
         let mut watershed_id = Vec::with_capacity(count);
@@ -111,6 +123,12 @@ impl ControlFields {
             runoff_mm.push(i32::try_from(climate.runoff_mm_per_year[cell]).unwrap_or(i32::MAX));
             precipitation_mm
                 .push(i32::try_from(climate.precipitation_mm_per_year[cell]).unwrap_or(i32::MAX));
+            humidity_ppm.push(i32::try_from(climate.humidity_ppm[cell]).unwrap_or(i32::MAX));
+            aridity_ppm.push(i32::try_from(climate.aridity_ppm[cell]).unwrap_or(i32::MAX));
+            precipitation_nh_summer_mm
+                .push(i32::try_from(climate.precipitation_nh_summer_mm[cell]).unwrap_or(i32::MAX));
+            precipitation_nh_winter_mm
+                .push(i32::try_from(climate.precipitation_nh_winter_mm[cell]).unwrap_or(i32::MAX));
             ice_thickness_mm
                 .push(i32::try_from(hydrology.ice_thickness_mm[cell]).unwrap_or(i32::MAX));
             watershed_id.push(i32::try_from(hydrology.watershed_id[cell]).unwrap_or(i32::MAX));
@@ -158,6 +176,10 @@ impl ControlFields {
             current_north_milli: climate.current_north_milli.clone(),
             runoff_mm,
             precipitation_mm,
+            humidity_ppm,
+            aridity_ppm,
+            precipitation_nh_summer_mm,
+            precipitation_nh_winter_mm,
             climate_class,
             ice_thickness_mm,
             water_level_mm: hydrology.water_level_mm.clone(),
@@ -223,6 +245,36 @@ impl ControlFields {
     #[must_use]
     pub fn sample_precipitation(&self, lon_micro: i32, lat_micro: i32) -> i32 {
         sample_field_mm(self.grid, &self.precipitation_mm, lon_micro, lat_micro)
+    }
+
+    #[must_use]
+    pub fn sample_humidity(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(self.grid, &self.humidity_ppm, lon_micro, lat_micro)
+    }
+
+    #[must_use]
+    pub fn sample_aridity(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(self.grid, &self.aridity_ppm, lon_micro, lat_micro)
+    }
+
+    #[must_use]
+    pub fn sample_precipitation_nh_summer(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(
+            self.grid,
+            &self.precipitation_nh_summer_mm,
+            lon_micro,
+            lat_micro,
+        )
+    }
+
+    #[must_use]
+    pub fn sample_precipitation_nh_winter(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(
+            self.grid,
+            &self.precipitation_nh_winter_mm,
+            lon_micro,
+            lat_micro,
+        )
     }
 
     #[must_use]
@@ -436,6 +488,22 @@ mod tests {
         assert_eq!(
             controls.sample_precipitation(180_000_000, 0),
             controls.sample_precipitation(LON_MICRO_MIN, 0)
+        );
+        assert_eq!(
+            controls.sample_humidity(180_000_000, 0),
+            controls.sample_humidity(LON_MICRO_MIN, 0)
+        );
+        assert_eq!(
+            controls.sample_aridity(180_000_000, 0),
+            controls.sample_aridity(LON_MICRO_MIN, 0)
+        );
+        assert_eq!(
+            controls.sample_precipitation_nh_summer(180_000_000, 0),
+            controls.sample_precipitation_nh_summer(LON_MICRO_MIN, 0)
+        );
+        assert_eq!(
+            controls.sample_precipitation_nh_winter(180_000_000, 0),
+            controls.sample_precipitation_nh_winter(LON_MICRO_MIN, 0)
         );
         assert!(controls
             .mountain_influence_ppm

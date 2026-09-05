@@ -81,6 +81,10 @@ function styleLabel(id: string) {
       return "Temperature";
     case "daena-atlas-precipitation":
       return "Rainfall";
+    case "daena-atlas-humidity":
+      return "Humidity";
+    case "daena-atlas-aridity":
+      return "Aridity";
     case "daena-atlas-bathymetry":
       return "Bathymetry";
     case "daena-atlas-hydrology":

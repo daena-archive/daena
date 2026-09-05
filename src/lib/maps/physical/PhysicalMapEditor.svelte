@@ -24,6 +24,7 @@ import {
   type PlanetaryConfiguration,
   type PlanetaryPreset,
 } from "./planetary";
+import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import PhysicalWorldView from "./PhysicalWorldView.svelte";
 import NativeVectorMapEditor from "../native-vector/NativeVectorMapEditor.svelte";
 import { parseVectorCollection } from "../native-vector/source";
@@ -62,6 +63,7 @@ let status = $state<PhysicalJobStatus | null>(null);
 let hydrology = $state<PhysicalHydrologyProducts | null>(null);
 let climate = $state<PhysicalClimateProducts | null>(null);
 let climateOverlay = $state<ClimateOverlayMode>("annual");
+let climateSample = $state<string>("");
 let raster = $state<HTMLCanvasElement | null>(null);
 let notice = $state("");
 let busy = $state(false);
@@ -202,6 +204,11 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
     climateCurrentEastMilli: climate?.currentEastMilli,
     climateCurrentNorthMilli: climate?.currentNorthMilli,
+    climatePrecipitationMm: climate?.precipitationMmPerYear,
+    climatePrecipitationNhSummerMm: climate?.precipitationNhSummerMm,
+    climatePrecipitationNhWinterMm: climate?.precipitationNhWinterMm,
+    climateHumidityPpm: climate?.humidityPpm,
+    climateAridityPpm: climate?.aridityPpm,
   };
 }
 
@@ -222,7 +229,49 @@ function climateSummary() {
   const easterlies = Math.round(metrics.easterlyCellPpm / 10_000);
   const strength =
     metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${freeze}`;
+  const rain = `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/year typical rainfall`;
+  const humidity = `${Math.round(metrics.meanHumidityPpm / 10_000)}% of saturation`;
+  const dryness =
+    metrics.meanLandAridityPpm < 200_000
+      ? "humid land"
+      : metrics.meanLandAridityPpm < 500_000
+        ? "sub-humid land"
+        : metrics.meanLandAridityPpm < 800_000
+          ? "semi-arid land"
+          : "arid land";
+  const seasonRain =
+    metrics.meanSeasonalPrecipitationRangeMm > 0
+      ? ` Solstice rainfall typically differs by ${metrics.meanSeasonalPrecipitationRangeMm.toLocaleString("en-US")} mm.`
+      : "";
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. ${freeze}`;
+}
+
+function formatAridityLabel(ppm: number) {
+  if (ppm < 200_000) return "humid";
+  if (ppm < 500_000) return "sub-humid";
+  if (ppm < 800_000) return "semi-arid";
+  return "arid";
+}
+
+function inspectClimate(anchor: MapAnchor) {
+  if (!climate) {
+    climateSample = "";
+    return;
+  }
+  const point =
+    anchor.kind === "point" ? anchor.point : anchor.kind === "provider-feature" ? anchor.fallbackPoint : null;
+  if (!point) return;
+  const width = climate.width;
+  const height = climate.height;
+  const col = Math.min(width - 1, Math.max(0, Math.floor(((point[0] + 180) / 360) * width)));
+  const row = Math.min(height - 1, Math.max(0, Math.floor(((90 - point[1]) / 180) * height)));
+  const index = row * width + col;
+  const rain = climate.precipitationMmPerYear[index] ?? 0;
+  const summer = climate.precipitationNhSummerMm[index] ?? rain;
+  const winter = climate.precipitationNhWinterMm[index] ?? rain;
+  const humidity = Math.round((climate.humidityPpm[index] ?? 0) / 10_000);
+  const aridity = formatAridityLabel(climate.aridityPpm[index] ?? 0);
+  climateSample = `This cell: ${rain.toLocaleString("en-US")} mm/year, northern-summer ${summer.toLocaleString("en-US")} mm, northern-winter ${winter.toLocaleString("en-US")} mm, humidity ${humidity}% of saturation, ${aridity}.`;
 }
 
 function headline() {
@@ -501,6 +550,11 @@ onMount(() => {
             <option value="wind">Prevailing wind</option>
             <option value="wind-nh-summer">Northern-summer wind</option>
             <option value="wind-nh-winter">Northern-winter wind</option>
+            <option value="precipitation">Annual rainfall</option>
+            <option value="precipitation-nh-summer">Northern-summer rainfall</option>
+            <option value="precipitation-nh-winter">Northern-winter rainfall</option>
+            <option value="humidity">Humidity</option>
+            <option value="aridity">Aridity</option>
           </select></label>
         <label
           ><input
@@ -528,6 +582,9 @@ onMount(() => {
     </div>
     {#if climate}
       <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
+      <p class="physical-planet-readout physical-climate-readout">
+        {climateSample || "Click the map to inspect rainfall, humidity, and aridity at a cell."}
+      </p>
       {#if (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false) || climateOverlay === "wind" || climateOverlay === "wind-nh-summer" || climateOverlay === "wind-nh-winter"}
         <p class="physical-planet-readout physical-climate-readout">
           Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather
@@ -538,6 +595,21 @@ onMount(() => {
         <p class="physical-planet-readout physical-climate-readout">
           Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping
           chart.
+        </p>
+      {/if}
+      {#if climateOverlay === "precipitation" || climateOverlay === "precipitation-nh-summer" || climateOverlay === "precipitation-nh-winter"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast.
+        </p>
+      {/if}
+      {#if climateOverlay === "humidity"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air.
+        </p>
+      {/if}
+      {#if climateOverlay === "aridity"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.
         </p>
       {/if}
     {/if}
@@ -702,7 +774,13 @@ onMount(() => {
     {/if}
     {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
     <div class="native-vector-map">
-      <PhysicalWorldView collection={preview} {layers} {raster} showRaster />
+      <PhysicalWorldView
+        collection={preview}
+        {layers}
+        {raster}
+        showRaster
+        pickArmed={Boolean(climate)}
+        onMapPick={inspectClimate} />
       <div class="physical-map-help-anchor">
         {#if helpOpen}
           <button type="button" class="physical-map-help-backdrop" aria-label="Close help" onclick={closeHelp}></button>

@@ -300,6 +300,10 @@ pub(super) fn physical_climate_products(
     products["windBandNhWinter"] = serde_json::json!(climate.wind_band_nh_winter);
     products["currentEastMilli"] = serde_json::json!(climate.current_east_milli);
     products["currentNorthMilli"] = serde_json::json!(climate.current_north_milli);
+    products["humidityPpm"] = serde_json::json!(climate.humidity_ppm);
+    products["aridityPpm"] = serde_json::json!(climate.aridity_ppm);
+    products["precipitationNhSummerMm"] = serde_json::json!(climate.precipitation_nh_summer_mm);
+    products["precipitationNhWinterMm"] = serde_json::json!(climate.precipitation_nh_winter_mm);
     products["metrics"] = serde_json::json!({
         "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
         "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
@@ -321,6 +325,9 @@ pub(super) fn physical_climate_products(
         "easterlyCellPpm": climate.metrics.easterly_cell_ppm,
         "convergingCellPpm": climate.metrics.converging_cell_ppm,
         "meanCurrentSpeedMilli": climate.metrics.mean_current_speed_milli,
+        "meanHumidityPpm": climate.metrics.mean_humidity_ppm,
+        "meanLandAridityPpm": climate.metrics.mean_land_aridity_ppm,
+        "meanSeasonalPrecipitationRangeMm": climate.metrics.mean_seasonal_precipitation_range_mm,
     });
     products
 }

@@ -11,6 +11,8 @@ pub const POLITICAL_STYLE_ID: &str = "daena-atlas-political";
 pub const BIOME_STYLE_ID: &str = "daena-atlas-biome";
 pub const TEMPERATURE_STYLE_ID: &str = "daena-atlas-temperature";
 pub const PRECIPITATION_STYLE_ID: &str = "daena-atlas-precipitation";
+pub const HUMIDITY_STYLE_ID: &str = "daena-atlas-humidity";
+pub const ARIDITY_STYLE_ID: &str = "daena-atlas-aridity";
 pub const BATHYMETRY_STYLE_ID: &str = "daena-atlas-bathymetry";
 pub const HYDROLOGY_STYLE_ID: &str = "daena-atlas-hydrology";
 pub const SPIKE_STYLE_ALIAS: &str = crate::SPIKE_STYLE_ID;
@@ -28,6 +30,10 @@ const TEMPERATURE_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-temperature.v1.json");
 const PRECIPITATION_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-precipitation.v1.json");
+const HUMIDITY_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-humidity.v1.json");
+const ARIDITY_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-aridity.v1.json");
 const BATHYMETRY_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-bathymetry.v1.json");
 const HYDROLOGY_JSON: &str =
@@ -72,12 +78,14 @@ impl AtlasStyle {
 }
 
 #[must_use]
-pub fn bundled_style_ids() -> [&'static str; 8] {
+pub fn bundled_style_ids() -> [&'static str; 10] {
     [
         RELIEF_STYLE_ID,
         BIOME_STYLE_ID,
         TEMPERATURE_STYLE_ID,
         PRECIPITATION_STYLE_ID,
+        HUMIDITY_STYLE_ID,
+        ARIDITY_STYLE_ID,
         BATHYMETRY_STYLE_ID,
         HYDROLOGY_STYLE_ID,
         ANTIQUE_STYLE_ID,
@@ -93,6 +101,8 @@ pub fn resolve_style_id(id: &str) -> Result<&'static str, AtlasError> {
         BIOME_STYLE_ID => Ok(BIOME_STYLE_ID),
         TEMPERATURE_STYLE_ID => Ok(TEMPERATURE_STYLE_ID),
         PRECIPITATION_STYLE_ID => Ok(PRECIPITATION_STYLE_ID),
+        HUMIDITY_STYLE_ID => Ok(HUMIDITY_STYLE_ID),
+        ARIDITY_STYLE_ID => Ok(ARIDITY_STYLE_ID),
         BATHYMETRY_STYLE_ID => Ok(BATHYMETRY_STYLE_ID),
         HYDROLOGY_STYLE_ID => Ok(HYDROLOGY_STYLE_ID),
         _ => Err(AtlasError::new(
@@ -111,6 +121,8 @@ pub fn load_style(id: &str) -> Result<(AtlasStyle, &'static str), AtlasError> {
         BIOME_STYLE_ID => BIOME_JSON,
         TEMPERATURE_STYLE_ID => TEMPERATURE_JSON,
         PRECIPITATION_STYLE_ID => PRECIPITATION_JSON,
+        HUMIDITY_STYLE_ID => HUMIDITY_JSON,
+        ARIDITY_STYLE_ID => ARIDITY_JSON,
         BATHYMETRY_STYLE_ID => BATHYMETRY_JSON,
         HYDROLOGY_STYLE_ID => HYDROLOGY_JSON,
         _ => {
@@ -229,6 +241,18 @@ pub fn precipitation_fill(style: &AtlasStyle, precip_mm: i32) -> [u8; 3] {
 }
 
 #[must_use]
+pub fn humidity_fill(style: &AtlasStyle, humidity_ppm: i32) -> [u8; 3] {
+    let t = (i64::from(humidity_ppm.clamp(0, 1_000_000)) * 1_000_000 / 1_000_000) as u32;
+    ramp3(style, t)
+}
+
+#[must_use]
+pub fn aridity_fill(style: &AtlasStyle, aridity_ppm: i32) -> [u8; 3] {
+    let t = (i64::from(aridity_ppm.clamp(0, 1_000_000)) * 1_000_000 / 1_000_000) as u32;
+    ramp3(style, t)
+}
+
+#[must_use]
 pub fn hypsometric(style: &AtlasStyle, elevation_mm: i32, sea_level_mm: i32) -> [u8; 3] {
     let relative = elevation_mm.saturating_sub(sea_level_mm);
     if relative < 0 {
@@ -274,7 +298,7 @@ mod tests {
         let (biome, _) = load_style(BIOME_STYLE_ID).unwrap();
         assert_eq!(biome.id, BIOME_STYLE_ID);
         assert_ne!(biome.biome_forest, biome.biome_arid);
-        assert_eq!(bundled_style_ids().len(), 8);
+        assert_eq!(bundled_style_ids().len(), 10);
         let (temperature, _) = load_style(TEMPERATURE_STYLE_ID).unwrap();
         let (precip, _) = load_style(PRECIPITATION_STYLE_ID).unwrap();
         let (bathy, _) = load_style(BATHYMETRY_STYLE_ID).unwrap();
@@ -290,6 +314,16 @@ mod tests {
         assert_ne!(
             precipitation_fill(&precip, 80),
             precipitation_fill(&precip, 2_200)
+        );
+        let (humidity, _) = load_style(HUMIDITY_STYLE_ID).unwrap();
+        let (aridity, _) = load_style(ARIDITY_STYLE_ID).unwrap();
+        assert_ne!(
+            humidity_fill(&humidity, 80_000),
+            humidity_fill(&humidity, 900_000)
+        );
+        assert_ne!(
+            aridity_fill(&aridity, 80_000),
+            aridity_fill(&aridity, 900_000)
         );
         let mid_mountain = hypsometric(&relief, 3_000_000, 0);
         assert_ne!(mid_mountain, [236, 236, 228]);

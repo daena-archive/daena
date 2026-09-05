@@ -54,5 +54,14 @@ assert.match(raster, /const arrowWind = windArrowMode/);
 assert.match(raster, /function sampleWind/);
 assert.match(raster, /function sampleCurrent/);
 assert.match(raster, /currentsVisible/);
+assert.match(raster, /function precipitationTint/);
+assert.match(raster, /function humidityTint/);
+assert.match(raster, /function aridityTint/);
+assert.match(editor, /value="precipitation"/);
+assert.match(editor, /value="humidity"/);
+assert.match(editor, /value="aridity"/);
+assert.match(editor, /inspectClimate/);
+assert.match(editor, /meanHumidityPpm/);
+assert.match(editor, /meanLandAridityPpm/);
 
 console.log("physical surface behavior and component checks passed");

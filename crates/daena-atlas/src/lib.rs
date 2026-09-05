@@ -244,6 +244,10 @@ pub struct AtlasPreparedScene {
     pub current_east_milli: Vec<i32>,
     pub current_north_milli: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
+    pub humidity_ppm: Vec<i32>,
+    pub aridity_ppm: Vec<i32>,
+    pub precipitation_nh_summer_mm: Vec<i32>,
+    pub precipitation_nh_winter_mm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
 }
@@ -255,6 +259,8 @@ impl AtlasPreparedScene {
             climate_class: &self.climate_class,
             temperature_centi_c: &self.temperature_centi_c,
             precipitation_mm: &self.precipitation_mm,
+            humidity_ppm: &self.humidity_ppm,
+            aridity_ppm: &self.aridity_ppm,
             wind_east_milli: &self.wind_east_milli,
             wind_north_milli: &self.wind_north_milli,
             current_east_milli: &self.current_east_milli,
@@ -331,6 +337,12 @@ impl AtlasPreparedScene {
             detail::sample_field_mm(grid, &self.current_north_milli, lon_micro, lat_micro);
         let precipitation_mm =
             detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
+        let humidity_ppm = detail::sample_field_mm(grid, &self.humidity_ppm, lon_micro, lat_micro);
+        let aridity_ppm = detail::sample_field_mm(grid, &self.aridity_ppm, lon_micro, lat_micro);
+        let precipitation_nh_summer_mm =
+            detail::sample_field_mm(grid, &self.precipitation_nh_summer_mm, lon_micro, lat_micro);
+        let precipitation_nh_winter_mm =
+            detail::sample_field_mm(grid, &self.precipitation_nh_winter_mm, lon_micro, lat_micro);
         let climate = control::climate_class_name(
             self.climate_class
                 .get(cell)
@@ -386,6 +398,10 @@ impl AtlasPreparedScene {
             current_east_milli,
             current_north_milli,
             precipitation_mm,
+            humidity_ppm,
+            aridity_ppm,
+            precipitation_nh_summer_mm,
+            precipitation_nh_winter_mm,
             climate: climate.to_string(),
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
             ice_thickness_mm,
@@ -708,6 +724,10 @@ pub fn prepare_from_source(
         current_east_milli: controls.current_east_milli,
         current_north_milli: controls.current_north_milli,
         precipitation_mm: controls.precipitation_mm,
+        humidity_ppm: controls.humidity_ppm,
+        aridity_ppm: controls.aridity_ppm,
+        precipitation_nh_summer_mm: controls.precipitation_nh_summer_mm,
+        precipitation_nh_winter_mm: controls.precipitation_nh_winter_mm,
         residual_cache,
         drainage_cache,
     })

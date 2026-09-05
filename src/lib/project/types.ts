@@ -269,6 +269,10 @@ export interface PhysicalClimateProducts {
   windBandNhWinter: number[];
   currentEastMilli: number[];
   currentNorthMilli: number[];
+  humidityPpm: number[];
+  aridityPpm: number[];
+  precipitationNhSummerMm: number[];
+  precipitationNhWinterMm: number[];
   metrics: {
     precipitationVolumeM3PerYear: number;
     runoffVolumeM3PerYear: number;
@@ -290,6 +294,9 @@ export interface PhysicalClimateProducts {
     easterlyCellPpm: number;
     convergingCellPpm: number;
     meanCurrentSpeedMilli: number;
+    meanHumidityPpm: number;
+    meanLandAridityPpm: number;
+    meanSeasonalPrecipitationRangeMm: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -621,6 +628,10 @@ export interface AtlasStudioSurfaceSample {
   currentEastMilli: number;
   currentNorthMilli: number;
   precipitationMm: number;
+  humidityPpm: number;
+  aridityPpm: number;
+  precipitationNhSummerMm: number;
+  precipitationNhWinterMm: number;
   climate: string;
   surface: string;
   iceThicknessMm: number;

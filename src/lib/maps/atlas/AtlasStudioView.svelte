@@ -247,6 +247,10 @@ function styleLabel(id: string) {
       return "Temperature";
     case "daena-atlas-precipitation":
       return "Rainfall";
+    case "daena-atlas-humidity":
+      return "Humidity";
+    case "daena-atlas-aridity":
+      return "Aridity";
     case "daena-atlas-bathymetry":
       return "Bathymetry";
     case "daena-atlas-hydrology":
@@ -629,6 +633,17 @@ function formatCurrent(eastMilli: number, northMilli: number) {
   return `annual east ${(eastMilli / 1000).toFixed(2)}, north ${(northMilli / 1000).toFixed(2)}`;
 }
 
+function formatHumidity(ppm: number) {
+  return `${Math.round(ppm / 10_000)}% of saturation`;
+}
+
+function formatAridity(ppm: number) {
+  if (ppm < 200_000) return "humid";
+  if (ppm < 500_000) return "sub-humid";
+  if (ppm < 800_000) return "semi-arid";
+  return "arid";
+}
+
 function formatDivergence(ppm: number) {
   if (ppm < -20_000) return "Converging";
   if (ppm > 20_000) return "Diverging";
@@ -949,6 +964,22 @@ onDestroy(() => {
             <div>
               <dt>Rainfall</dt>
               <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
+            </div>
+            <div>
+              <dt>Northern-summer rainfall</dt>
+              <dd>{surface.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
+            </div>
+            <div>
+              <dt>Northern-winter rainfall</dt>
+              <dd>{surface.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
+            </div>
+            <div>
+              <dt>Humidity</dt>
+              <dd>{formatHumidity(surface.humidityPpm)}</dd>
+            </div>
+            <div>
+              <dt>Aridity</dt>
+              <dd>{formatAridity(surface.aridityPpm)}</dd>
             </div>
             <div>
               <dt>Surface</dt>

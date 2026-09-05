@@ -61,6 +61,8 @@ for (const name of [
   "daena-atlas-biome.v1.json",
   "daena-atlas-temperature.v1.json",
   "daena-atlas-precipitation.v1.json",
+  "daena-atlas-humidity.v1.json",
+  "daena-atlas-aridity.v1.json",
   "daena-atlas-bathymetry.v1.json",
   "daena-atlas-hydrology.v1.json",
 ]) {

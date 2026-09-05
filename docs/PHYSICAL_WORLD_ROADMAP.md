@@ -359,9 +359,14 @@ The existing climate system already provides a foundation. D2 should precede the
 
 ### Considerations
 
-- Humidity should have a clear product meaning; avoid exposing a fake precision metric that the model does not actually support.
-- Rainfall should remain compatible with hydrology and water conservation assumptions.
+- Humidity is remaining atmospheric moisture versus local saturation at annual temperature, shown as a percent of saturation — not a weather-station relative-humidity reading.
+- Aridity is evaporative demand unmet by rainfall (potential evapotranspiration from temperature versus precipitation). Inspect uses humid / sub-humid / semi-arid / arid labels.
+- Annual precipitation still feeds hydrology and runoff. Seasonal rainfall is inspectable from solstice wind fields.
+- Humidity and aridity stay annual. Seasonal moisture passes reuse annual surface currents (D3 is epoch-annual, not monsoon currents).
+- Orographic rain uses both zonal and meridional upslope, weighted by local wind.
+- Ocean evaporation scales with sea-surface temperature and surface-current speed. Frozen seas evaporate little.
 - Climate derivations should not modify accepted terrain.
+- Atlas rainfall, humidity, and aridity styles tint land from those fields. Extra Atlas climate layers remain L1.
 
 ### Ecosystem interaction
 
@@ -1214,13 +1219,13 @@ This milestone makes the existing physical world substantially more useful befor
 1. **G1 — Planetary and Orbital Configuration**
 2. **D1 — Solar-Driven Temperature and Seasonality**
 3. **D2 — Global Wind Circulation**
-4. **D4 — Moisture/Humidity/Rainfall Upgrade**
+4. **D4 — Moisture/Humidity/Rainfall Upgrade** (SST/current evaporation, humidity, aridity, seasonal rainfall).
 
 This establishes the causes required for richer climate.
 
 ## Milestone C — Ocean and Ecology
 
-1. **D3 — Ocean Currents** (annual surface gyres per epoch, including large enclosed basins). Consumers are D4 moisture, D5 biomes, D6 storms, and D8 Find Place.
+1. **D3 — Ocean Currents** (annual surface gyres per epoch, including large enclosed basins). D4 moisture already consumes currents; remaining consumers are D5 biomes, D6 storms, and D8 Find Place.
 2. **D5 — Biome Classification**
 3. Extend **Find Place** with the new fields.
 4. Extend **roads** with biome/climate traversal costs.

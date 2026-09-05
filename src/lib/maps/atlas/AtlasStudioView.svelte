@@ -1,5 +1,6 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
+import { onDestroy, onMount, tick } from "svelte";
+import { X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
@@ -20,6 +21,9 @@ import {
 } from "$lib/project/client";
 import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
+import MapLocationLinkPanel from "../native-vector/MapLocationLinkPanel.svelte";
+import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import { PHYSICAL_COORDINATE_SPACE, authoredToNormalized } from "../editor/coordinate-space";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
@@ -74,6 +78,77 @@ let authoredYear = $state(1);
 let layers = $state<Array<{ id: string; name: string; enabled: boolean }>>([]);
 let hits = $state<AtlasStudioInspectHit[]>([]);
 let surface = $state<AtlasStudioSurfaceSample | null>(null);
+let picked = $state<{ lng: number; lat: number; x: number; y: number; flip: boolean } | null>(null);
+let placeModal = $state(false);
+let guideOpen = $state(false);
+let pickedSample = $state<{ lng: number; lat: number; surface: AtlasStudioSurfaceSample } | null>(null);
+let modalSample = $state<{ lng: number; lat: number; surface: AtlasStudioSurfaceSample } | null>(null);
+let sampledPoint = $state<{ lng: number; lat: number } | null>(null);
+let pinSeq = 0;
+const modalSurface = $derived(modalSample?.surface ?? null);
+const modalCoords = $derived(modalSample ? `${modalSample.lng.toFixed(4)}°, ${modalSample.lat.toFixed(4)}°` : "");
+
+const FIELD_GUIDE: Array<{ term: string; help: string }> = [
+  {
+    term: "Solstice temperatures",
+    help: "Temperature at the northern-summer and northern-winter solstices: two representative seasonal states, not a daily forecast.",
+  },
+  {
+    term: "Annual range",
+    help: "How much the temperature typically swings across the year at this spot.",
+  },
+  {
+    term: "Freeze",
+    help: "Permanent means the land stays below freezing all year; seasonal means it freezes for part of the year and thaws.",
+  },
+  {
+    term: "Prevailing wind",
+    help: "The average wind direction and strength here. Think prevailing conditions, not today's weather.",
+  },
+  {
+    term: "Circulation",
+    help: "Which planet-scale air band sits overhead: Hadley (tropical), Ferrel (temperate), or polar.",
+  },
+  {
+    term: "Wind flow",
+    help: "Converging means winds flow together here (air rises, often wetter); diverging means they spread apart (often drier); neutral is neither.",
+  },
+  {
+    term: "Rainfall",
+    help: "Yearly precipitation, with the solstice split showing which season brings the rain.",
+  },
+  {
+    term: "Humidity",
+    help: "Remaining moisture in the air versus local saturation, as a percent. It is not a weather-station humidity reading.",
+  },
+  {
+    term: "Aridity",
+    help: "How much evaporative demand goes unmet by rain: humid, sub-humid, semi-arid, or arid land.",
+  },
+  {
+    term: "Surface current",
+    help: "Year-round surface-ocean drift near this coast: direction and strength of the major gyres, not a shipping chart.",
+  },
+  {
+    term: "Biome",
+    help: "A derived reading of temperature, rain, humidity, aridity, and elevation — an interpretation for worldbuilding, not painted decoration.",
+  },
+  {
+    term: "Storms",
+    help: "Storm climatology: where formation and tracks are plausible, and how exposed this spot is. It is not a forecast, and only materialized storms become world history.",
+  },
+  {
+    term: "Elevation and surface",
+    help: "Height relative to the water surface, and whether this spot reads as ocean, lake, or land.",
+  },
+];
+let placeDialog = $state<HTMLDivElement | null>(null);
+let placeOpener: HTMLElement | null = null;
+let linking = $state(false);
+let linkArming = $state(false);
+let linkAnchor = $state<MapAnchor | null>(null);
+let pickPanel = $state<HTMLDivElement | null>(null);
+let placeHeading = $state<HTMLElement | null>(null);
 let confirmCache = $state(false);
 let showHelp = $state(false);
 let viewZoom = $state(1);
@@ -434,12 +509,20 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   map.on("singleclick", (event) => {
     if (inspectHover) clearTimeout(inspectHover);
     const [longitude, latitude] = toLonLat(event.coordinate);
-    inspectAt(longitude, latitude);
+    if (linkArming) {
+      openLinkPanel(longitude, latitude);
+      inspectAt(longitude, latitude);
+      return;
+    }
+    pickedSample = null;
+    setPicked(longitude, latitude);
+    inspectAt(longitude, latitude, true);
   });
   map.on("moveend", () => {
     if (!map) return;
     const zoom = mapZoom();
     if (viewZoom !== zoom) viewZoom = zoom;
+    if (picked) setPicked(picked.lng, picked.lat, false);
     schedulePrefetch(status);
   });
   watchRenderCompletion(status);
@@ -650,16 +733,19 @@ function formatDivergence(ppm: number) {
   return "Neutral";
 }
 
-function inspectAt(lng: number, lat: number) {
+function inspectAt(lng: number, lat: number, pin = false) {
   const token = session?.sessionToken;
   if (!token || !map) return;
   const seq = ++inspectSeq;
+  if (pin) pinSeq = seq;
   void project
     .atlasStudioInspect(token, toMicro(lng), toMicro(lat), Math.floor(mapZoom()))
     .then((next) => {
       if (seq !== inspectSeq) return;
       hits = next.hits;
       surface = next.surface;
+      sampledPoint = { lng, lat };
+      if (seq === pinSeq) pickedSample = { lng, lat, surface: next.surface };
     })
     .catch(() => {
       if (seq !== inspectSeq) return;
@@ -670,6 +756,88 @@ function inspectAt(lng: number, lat: number) {
 function scheduleInspect(lng: number, lat: number) {
   if (inspectHover) clearTimeout(inspectHover);
   inspectHover = setTimeout(() => inspectAt(lng, lat), 240);
+}
+
+function setPicked(lng: number, lat: number, focus = true) {
+  if (!map) return;
+  const pixel = map.getPixelFromCoordinate(fromLonLat([lng, lat]));
+  const size = map.getSize() ?? [0, 0];
+  const width = size[0] ?? 0;
+  const height = size[1] ?? 0;
+  const x = Math.min(Math.max(pixel[0], 8), Math.max(8, width - 8));
+  const y = Math.min(Math.max(pixel[1], 70), Math.max(70, height - 70));
+  picked = { lng, lat, x, y, flip: pixel[0] > width * 0.6 };
+  if (focus) void tick().then(() => pickPanel?.focus());
+}
+
+function clearPicked(focusMap = false) {
+  picked = null;
+  if (focusMap) host?.focus();
+}
+
+function openPlaceDetails(viaOverlay: boolean) {
+  placeOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (viaOverlay) {
+    modalSample = pickedSample;
+  } else if (surface && sampledPoint) {
+    modalSample = { ...sampledPoint, surface };
+  } else {
+    modalSample = null;
+  }
+  placeModal = true;
+  guideOpen = false;
+  clearPicked(false);
+  void tick().then(() => placeDialog?.focus());
+}
+
+function closePlaceDetails() {
+  placeModal = false;
+  guideOpen = false;
+  const opener = placeOpener;
+  placeOpener = null;
+  if (opener?.isConnected) opener.focus();
+}
+
+function trapPlaceFocus(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closePlaceDetails();
+    return;
+  }
+  if (event.key !== "Tab" || !placeDialog) return;
+  const focusable = [
+    ...placeDialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ];
+  if (focusable.length === 0) return;
+  const index = focusable.indexOf(document.activeElement as HTMLElement);
+  const next = event.shiftKey
+    ? index <= 0
+      ? focusable.length - 1
+      : index - 1
+    : index === focusable.length - 1
+      ? 0
+      : index + 1;
+  event.preventDefault();
+  focusable[next].focus();
+}
+
+function pointAnchorFor(lng: number, lat: number): MapAnchor {
+  const [nx, ny] = authoredToNormalized(wrapLon(lng), lat, PHYSICAL_COORDINATE_SPACE);
+  return { kind: "point", point: [nx, ny] };
+}
+
+function openLinkPanel(lng: number, lat: number) {
+  linkAnchor = pointAnchorFor(lng, lat);
+  linkArming = false;
+  linking = true;
+  clearPicked(false);
+}
+
+function closeLinkPanel(focusMap = false) {
+  linking = false;
+  if (focusMap) host?.focus();
 }
 
 function onViewportKey(event: KeyboardEvent) {
@@ -699,9 +867,21 @@ function onViewportKey(event: KeyboardEvent) {
   } else if (event.key === "Enter") {
     event.preventDefault();
     const center = mapCenterLonLat();
-    inspectAt(center[0], center[1]);
+    pickedSample = null;
+    setPicked(center[0], center[1]);
+    inspectAt(center[0], center[1], true);
   } else if (event.key === "Escape") {
     event.preventDefault();
+    if (linking) {
+      closeLinkPanel(true);
+      return;
+    }
+    if (linkArming) {
+      linkArming = false;
+      host?.focus();
+      return;
+    }
+    clearPicked();
     hits = [];
   } else if (event.key === "?" || event.key.toLowerCase() === "h") {
     if (!event.metaKey && !event.ctrlKey) {
@@ -884,125 +1064,32 @@ onDestroy(() => {
           scheduleSession();
         }} />
       <section class="place" aria-label="Place" aria-live="polite">
-        <strong>Place</strong>
-        <dl>
+        <div class="place-head">
+          <strong>Place</strong>
+        </div>
+        <dl class="place-summary">
           <div>
             <dt>Coordinates</dt>
             <dd>{cursor}</dd>
           </div>
           {#if surface}
             <div>
-              <dt>Elevation</dt>
-              <dd>{formatElevation(surface.elevationMm, surface.waterSurfaceMm, surface.surface)}</dd>
+              <dt>Biome</dt>
+              <dd>{titleCase(surface.climate)}</dd>
             </div>
             <div>
               <dt>Temperature</dt>
               <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
             </div>
             <div>
-              <dt>Northern-summer solstice</dt>
-              <dd>{formatTemperature(surface.temperatureNhSummerCentiC)}</dd>
-            </div>
-            <div>
-              <dt>Northern-winter solstice</dt>
-              <dd>{formatTemperature(surface.temperatureNhWinterCentiC)}</dd>
-            </div>
-            <div>
-              <dt>Annual range</dt>
-              <dd>{formatTemperature(surface.seasonalRangeCentiC)}</dd>
-            </div>
-            <div>
-              <dt>Freeze</dt>
-              <dd>
-                {surface.freeze === "permanent" ? "Permanent" : surface.freeze === "seasonal" ? "Seasonal" : "None"}
-              </dd>
-            </div>
-            <div>
-              <dt>Biome</dt>
-              <dd>{titleCase(surface.climate)}</dd>
-            </div>
-            <div>
-              <dt>Biome reason</dt>
-              <dd>{surface.biomeReason}</dd>
-            </div>
-            <div>
-              <dt>Storms</dt>
-              <dd>{surface.stormReason}</dd>
-            </div>
-            <div>
-              <dt>Prevailing wind</dt>
-              <dd>{formatWind(surface.windEastMilli, surface.windNorthMilli)}</dd>
-            </div>
-            <div>
-              <dt>Northern-summer wind</dt>
-              <dd>{formatWind(surface.windEastNhSummerMilli, surface.windNorthNhSummerMilli)}</dd>
-            </div>
-            <div>
-              <dt>Northern-winter wind</dt>
-              <dd>{formatWind(surface.windEastNhWinterMilli, surface.windNorthNhWinterMilli)}</dd>
-            </div>
-            <div>
-              <dt>Circulation</dt>
-              <dd>{titleCase(surface.windBand)}</dd>
-            </div>
-            <div>
-              <dt>Northern-summer circulation</dt>
-              <dd>{titleCase(surface.windBandNhSummer)}</dd>
-            </div>
-            <div>
-              <dt>Northern-winter circulation</dt>
-              <dd>{titleCase(surface.windBandNhWinter)}</dd>
-            </div>
-            <div>
-              <dt>Wind flow</dt>
-              <dd>{formatDivergence(surface.windDivergencePpm)}</dd>
-            </div>
-            <div>
-              <dt>Northern-summer wind flow</dt>
-              <dd>{formatDivergence(surface.windDivergenceNhSummerPpm)}</dd>
-            </div>
-            <div>
-              <dt>Northern-winter wind flow</dt>
-              <dd>{formatDivergence(surface.windDivergenceNhWinterPpm)}</dd>
-            </div>
-            <div>
-              <dt>Surface current</dt>
-              <dd>{formatCurrent(surface.currentEastMilli, surface.currentNorthMilli)}</dd>
-            </div>
-            <div>
               <dt>Rainfall</dt>
               <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
             </div>
-            <div>
-              <dt>Northern-summer rainfall</dt>
-              <dd>{surface.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
-            </div>
-            <div>
-              <dt>Northern-winter rainfall</dt>
-              <dd>{surface.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
-            </div>
-            <div>
-              <dt>Humidity</dt>
-              <dd>{formatHumidity(surface.humidityPpm)}</dd>
-            </div>
-            <div>
-              <dt>Aridity</dt>
-              <dd>{formatAridity(surface.aridityPpm)}</dd>
-            </div>
-            <div>
-              <dt>Surface</dt>
-              <dd>{titleCase(surface.surface)}</dd>
-            </div>
-            {#if surface.iceThicknessMm > 0}
-              <div>
-                <dt>Ice</dt>
-                <dd>{formatMetres(surface.iceThicknessMm)}</dd>
-              </div>
-            {/if}
-          {:else}
-            <p>Move or click the map to sample this point.</p>
           {/if}
         </dl>
+        {#if !surface}
+          <p>Move or click the map to sample this point.</p>
+        {/if}
       </section>
       {#if confirmCache}
         <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
@@ -1080,8 +1167,253 @@ onDestroy(() => {
         max={session?.maxZoom ?? 8}
         onzoom={setViewZoom}
         onpan={shiftMap} />
+      {#if linking && linkAnchor}
+        <MapLocationLinkPanel
+          {mapId}
+          bind:anchor={linkAnchor}
+          arming={linkArming}
+          onclose={() => closeLinkPanel(true)}
+          onresnap={() => {
+            linking = false;
+            linkArming = true;
+            host?.focus();
+          }} />
+      {/if}
+      {#if linkArming}
+        <p class="pick-arming" role="status">Click the map to choose a link location · Escape to cancel</p>
+      {/if}
+      {#if picked}
+        <div
+          class="pick-overlay"
+          class:flip={picked.flip}
+          style={`left: ${picked.x}px; top: ${picked.y}px;`}
+          role="dialog"
+          aria-label="Map spot actions"
+          tabindex="-1"
+          bind:this={pickPanel}>
+          <button type="button" class="pick-close" aria-label="Close spot actions" onclick={() => clearPicked(true)}>
+            <X size={13} strokeWidth={2} aria-hidden="true" />
+          </button>
+          <strong>{picked.lng.toFixed(4)}°, {picked.lat.toFixed(4)}°</strong>
+          {#if pickedSample}
+            <span
+              >{titleCase(pickedSample.surface.climate)} · {formatTemperature(pickedSample.surface.temperatureCentiC)} · {pickedSample.surface.precipitationMm.toLocaleString(
+                "en-US",
+              )} mm/year</span>
+          {:else}
+            <span>Sampling this point…</span>
+          {/if}
+          <div class="actions">
+            <button type="button" onclick={() => picked && openLinkPanel(picked.lng, picked.lat)}>
+              Link to entity
+            </button>
+            <button type="button" onclick={() => openPlaceDetails(true)}>Place details</button>
+          </div>
+        </div>
+      {/if}
     </div>
   </div>
+  {#if placeModal}
+    <div
+      class="place-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) closePlaceDetails();
+      }}>
+      <div
+        bind:this={placeDialog}
+        class="place-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="place-modal-title"
+        tabindex="-1"
+        onkeydown={trapPlaceFocus}>
+        <div class="place-modal-head">
+          <button type="button" class="place-close" aria-label="Close place details" onclick={closePlaceDetails}>
+            <X size={15} strokeWidth={2} aria-hidden="true" />
+          </button>
+          {#if modalSurface}
+            <span class="place-kicker">Place details</span>
+            <strong id="place-modal-title">{titleCase(modalSurface.climate)}</strong>
+            <span class="place-sub"
+              >{modalCoords} · {formatElevation(
+                modalSurface.elevationMm,
+                modalSurface.waterSurfaceMm,
+                modalSurface.surface,
+              )}</span>
+            <dl class="place-hero">
+              <div>
+                <dt>Temperature</dt>
+                <dd>{formatTemperature(modalSurface.temperatureCentiC)}</dd>
+              </div>
+              <div>
+                <dt>Rainfall</dt>
+                <dd>{modalSurface.precipitationMm.toLocaleString("en-US")} mm</dd>
+              </div>
+              <div>
+                <dt>Humidity</dt>
+                <dd>{formatHumidity(modalSurface.humidityPpm)}</dd>
+              </div>
+            </dl>
+          {:else}
+            <span class="place-kicker">Place details</span>
+            <strong id="place-modal-title">No sample yet</strong>
+          {/if}
+        </div>
+        {#if modalSurface}
+          <div class="place-sheet">
+            <section aria-label="Temperature">
+              <h3>Temperature</h3>
+              <dl>
+                <div>
+                  <dt>Northern-summer solstice</dt>
+                  <dd>{formatTemperature(modalSurface.temperatureNhSummerCentiC)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-winter solstice</dt>
+                  <dd>{formatTemperature(modalSurface.temperatureNhWinterCentiC)}</dd>
+                </div>
+                <div>
+                  <dt>Annual range</dt>
+                  <dd>{formatTemperature(modalSurface.seasonalRangeCentiC)}</dd>
+                </div>
+                <div>
+                  <dt>Freeze</dt>
+                  <dd>
+                    {modalSurface.freeze === "permanent"
+                      ? "Permanent"
+                      : modalSurface.freeze === "seasonal"
+                        ? "Seasonal"
+                        : "None"}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+            <section aria-label="Wind">
+              <h3>Wind</h3>
+              <dl>
+                <div>
+                  <dt>Prevailing</dt>
+                  <dd>{formatWind(modalSurface.windEastMilli, modalSurface.windNorthMilli)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-summer</dt>
+                  <dd>{formatWind(modalSurface.windEastNhSummerMilli, modalSurface.windNorthNhSummerMilli)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-winter</dt>
+                  <dd>{formatWind(modalSurface.windEastNhWinterMilli, modalSurface.windNorthNhWinterMilli)}</dd>
+                </div>
+                <div>
+                  <dt>Circulation</dt>
+                  <dd>{titleCase(modalSurface.windBand)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-summer circulation</dt>
+                  <dd>{titleCase(modalSurface.windBandNhSummer)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-winter circulation</dt>
+                  <dd>{titleCase(modalSurface.windBandNhWinter)}</dd>
+                </div>
+                <div>
+                  <dt>Wind flow</dt>
+                  <dd>{formatDivergence(modalSurface.windDivergencePpm)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-summer flow</dt>
+                  <dd>{formatDivergence(modalSurface.windDivergenceNhSummerPpm)}</dd>
+                </div>
+                <div>
+                  <dt>Northern-winter flow</dt>
+                  <dd>{formatDivergence(modalSurface.windDivergenceNhWinterPpm)}</dd>
+                </div>
+              </dl>
+            </section>
+            <section aria-label="Water">
+              <h3>Water</h3>
+              <dl>
+                <div>
+                  <dt>Northern-summer rainfall</dt>
+                  <dd>{modalSurface.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
+                </div>
+                <div>
+                  <dt>Northern-winter rainfall</dt>
+                  <dd>{modalSurface.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
+                </div>
+                <div>
+                  <dt>Aridity</dt>
+                  <dd>{formatAridity(modalSurface.aridityPpm)}</dd>
+                </div>
+                <div>
+                  <dt>Surface current</dt>
+                  <dd>{formatCurrent(modalSurface.currentEastMilli, modalSurface.currentNorthMilli)}</dd>
+                </div>
+              </dl>
+            </section>
+            <section aria-label="Land and climate">
+              <h3>Land and climate</h3>
+              <dl>
+                <div>
+                  <dt>Surface</dt>
+                  <dd>{titleCase(modalSurface.surface)}</dd>
+                </div>
+                {#if modalSurface.iceThicknessMm > 0}
+                  <div>
+                    <dt>Ice cover</dt>
+                    <dd>{formatMetres(modalSurface.iceThicknessMm)}</dd>
+                  </div>
+                {/if}
+                <div>
+                  <dt>Why this biome</dt>
+                  <dd>{modalSurface.biomeReason}</dd>
+                </div>
+                <div>
+                  <dt>Storms</dt>
+                  <dd>{modalSurface.stormReason}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+        {:else}
+          <p>Move or click the map to sample this point.</p>
+        {/if}
+        <div class="place-guide">
+          <button
+            type="button"
+            onclick={() => (guideOpen = !guideOpen)}
+            aria-expanded={guideOpen}
+            aria-controls="place-guide-list">
+            {guideOpen ? "Hide field guide" : "What do these terms mean?"}
+          </button>
+          {#if guideOpen}
+            <dl id="place-guide-list">
+              {#each FIELD_GUIDE as entry}
+                <div>
+                  <dt>{entry.term}</dt>
+                  <dd>{entry.help}</dd>
+                </div>
+              {/each}
+            </dl>
+          {/if}
+        </div>
+        <div class="place-modal-foot">
+          {#if modalSample}
+            <button
+              type="button"
+              onclick={() => {
+                const spot = modalSample;
+                closePlaceDetails();
+                if (spot) openLinkPanel(spot.lng, spot.lat);
+              }}>
+              Link to entity
+            </button>
+          {/if}
+          <button type="button" onclick={closePlaceDetails}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -1150,6 +1482,12 @@ aside input[type="range"] {
   display: grid;
   gap: 6px;
 }
+.place-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .place dl,
 .place p {
   margin: 0;
@@ -1185,6 +1523,227 @@ aside input[type="range"] {
   min-height: 360px;
   height: 100%;
   background: #0d1b2a;
+}
+.pick-overlay {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 4px;
+  max-width: min(260px, calc(100% - 24px));
+  padding: 8px 30px 8px 10px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 8px;
+  background: #1b2822f2;
+  color: #edf2ec;
+  font: 12px/1.4 system-ui;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  transform: translate(12px, -50%);
+}
+.pick-close {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+}
+.pick-overlay.flip {
+  transform: translate(calc(-100% - 12px), -50%);
+}
+.pick-overlay span {
+  color: #b8c8bc;
+}
+.pick-overlay:focus {
+  outline: none;
+}
+.pick-overlay:focus-visible {
+  outline: 2px solid var(--theme-success-border, #edf2ec);
+  outline-offset: 2px;
+}
+.pick-arming {
+  position: absolute;
+  z-index: 2;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 999px;
+  background: #1b2822f2;
+  color: #edf2ec;
+  font: 12px/1.4 system-ui;
+  white-space: nowrap;
+}
+.place-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(13 27 42 / 55%);
+}
+.place-modal {
+  position: relative;
+  display: grid;
+  gap: 0;
+  width: min(620px, 100%);
+  max-height: min(84vh, 700px);
+  overflow: auto;
+  padding: 0;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 14px;
+  background: #1b2822;
+  color: #edf2ec;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 50%);
+  font: 13px/1.6 system-ui;
+  outline: none;
+}
+.place-modal-head {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+}
+.place-modal-head strong {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.place-kicker {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.place-sub {
+  color: #b8c8bc;
+  font-variant-numeric: tabular-nums;
+}
+.place-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+}
+.place-hero {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+}
+.place-hero div {
+  padding: 10px 12px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(0 0 0 / 20%);
+}
+.place-hero dt {
+  color: var(--theme-neutral-text-muted, #aebdb1);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.place-hero dd {
+  margin: 2px 0 0;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.place-sheet {
+  display: grid;
+  padding: 6px 24px;
+}
+.place-sheet section {
+  min-width: 0;
+  padding: 14px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+.place-sheet section:last-child {
+  border-bottom: 0;
+}
+.place-sheet h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #d5ab6c;
+}
+.place-sheet dl {
+  margin: 0;
+  display: grid;
+}
+.place-sheet dl div {
+  display: grid;
+  grid-template-columns: 13em minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 7px 0;
+  border-bottom: 1px dotted rgb(255 255 255 / 7%);
+}
+.place-sheet dl div:last-child {
+  border-bottom: 0;
+}
+.place-sheet dt {
+  color: var(--theme-neutral-text-muted, #aebdb1);
+}
+.place-sheet dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
+}
+.place-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px 18px;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+}
+.place-guide {
+  display: grid;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  background: rgb(0 0 0 / 15%);
+}
+.place-guide > button {
+  justify-self: start;
+}
+.place-guide dl {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.place-guide dl div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.place-guide dt {
+  color: #d5ab6c;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.place-guide dd {
+  margin: 0;
+  color: #d9d0c3;
+  overflow-wrap: break-word;
 }
 .actions {
   display: flex;

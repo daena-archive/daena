@@ -4,8 +4,9 @@
 //! never changes the canonical elevation/source bytes. The model is purposely
 //! bounded: a solar-driven latitude/altitude temperature field with two
 //! solstice states, an explicit rotation-and-temperature wind field, a
-//! fixed-point moisture transport pass driven by that wind, and precipitation
-//! that feeds runoff volumes using exact spherical cell areas.
+//! wind-driven surface-ocean current field, a fixed-point moisture transport
+//! pass driven by that wind, and precipitation that feeds runoff volumes using
+//! exact spherical cell areas.
 
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
@@ -17,14 +18,22 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 2;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 3;
 const EARTH_EQUATOR_BASE_CENTI_C: i32 = 1_400;
 pub const CLIMATE_WIND_BAND_COUNT: u32 = 6;
 pub const WIND_BAND_HADLEY: u32 = 0;
 pub const WIND_BAND_FERREL: u32 = 1;
 pub const WIND_BAND_POLAR: u32 = 2;
 pub const MAX_WIND_MILLI: i32 = 10_000;
+pub const MAX_CURRENT_MILLI: i32 = 4_000;
 const WIND_GRADIENT_REF_METRES: f64 = 1_000_000.0;
+const CURRENT_WIND_COUPLING: f64 = 0.30;
+const CURRENT_GEOSTROPHY: f64 = 0.42;
+const CURRENT_SVERDRUP: f64 = 0.22;
+const MIN_CURRENT_BASIN_CELLS: usize = 8;
+const CURRENT_WESTERN_RETURN: f64 = 2.35;
+const CURRENT_WESTERN_SCALE: f64 = 2.1;
+const CURRENT_SMOOTH_PASSES: usize = 2;
 pub const CLIMATE_MAX_TRANSPORT_ITERATIONS: u32 = 96;
 const CLIMATE_MIN_TRANSPORT_ITERATIONS: u32 = 8;
 const CLIMATE_TRANSPORT_TOLERANCE_MM: f64 = 1.0;
@@ -124,6 +133,7 @@ pub struct ClimateMetrics {
     pub itcz_latitude_milli_deg: i32,
     pub easterly_cell_ppm: u32,
     pub converging_cell_ppm: u32,
+    pub mean_current_speed_milli: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +161,8 @@ pub struct ClimateField {
     pub wind_band: Vec<u32>,
     pub wind_band_nh_summer: Vec<u32>,
     pub wind_band_nh_winter: Vec<u32>,
+    pub current_east_milli: Vec<i32>,
+    pub current_north_milli: Vec<i32>,
     pub metrics: ClimateMetrics,
 }
 
@@ -178,6 +190,8 @@ impl ClimateField {
             || self.wind_band.len() != expected
             || self.wind_band_nh_summer.len() != expected
             || self.wind_band_nh_winter.len() != expected
+            || self.current_east_milli.len() != expected
+            || self.current_north_milli.len() != expected
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -224,6 +238,11 @@ impl ClimateField {
                 .chain(self.wind_band_nh_summer.iter())
                 .chain(self.wind_band_nh_winter.iter())
                 .any(|value| *value > WIND_BAND_POLAR)
+            || self
+                .current_east_milli
+                .iter()
+                .chain(self.current_north_milli.iter())
+                .any(|value| !(-MAX_CURRENT_MILLI..=MAX_CURRENT_MILLI).contains(value))
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -271,40 +290,6 @@ impl ClimateField {
             .max()
             .unwrap_or(shifted.metrics.maximum_temperature_centi_c);
         shifted
-    }
-
-    pub fn with_winds_for_field(&self, field: &PhysicalField) -> Self {
-        let winds = derive_winds(
-            field,
-            self.planetary,
-            &self.temperature_centi_c,
-            &self.temperature_nh_summer_centi_c,
-            &self.temperature_nh_winter_centi_c,
-            field.seed,
-            field.retry_index,
-        );
-        let mut next = self.clone();
-        next.wind_east_milli = winds.east;
-        next.wind_north_milli = winds.north;
-        next.wind_east_nh_summer_milli = winds.east_summer;
-        next.wind_north_nh_summer_milli = winds.north_summer;
-        next.wind_east_nh_winter_milli = winds.east_winter;
-        next.wind_north_nh_winter_milli = winds.north_winter;
-        next.wind_divergence_ppm = winds.divergence_ppm;
-        next.wind_divergence_nh_summer_ppm = winds.divergence_summer_ppm;
-        next.wind_divergence_nh_winter_ppm = winds.divergence_winter_ppm;
-        next.wind_band = winds.band;
-        next.wind_band_nh_summer = winds.band_summer;
-        next.wind_band_nh_winter = winds.band_winter;
-        apply_wind_metrics(
-            field,
-            &next.wind_east_milli,
-            &next.wind_north_milli,
-            &next.wind_divergence_ppm,
-            winds.itcz_latitude,
-            &mut next.metrics,
-        );
-        next
     }
 
     pub fn with_winds_and_moisture_for_field(
@@ -380,6 +365,9 @@ impl ClimateField {
             winds.itcz_latitude,
             &mut metrics,
         );
+        next.metrics = metrics;
+        stamp_currents(&mut next, field);
+        metrics = next.metrics;
         next.moisture_mm_per_year = moisture;
         next.precipitation_mm_per_year = precipitation;
         next.runoff_mm_per_year = runoff;
@@ -759,6 +747,12 @@ fn clamp_wind(value: f64) -> i32 {
         .clamp(-f64::from(MAX_WIND_MILLI), f64::from(MAX_WIND_MILLI)) as i32
 }
 
+fn clamp_current(value: f64) -> i32 {
+    value
+        .round()
+        .clamp(-f64::from(MAX_CURRENT_MILLI), f64::from(MAX_CURRENT_MILLI)) as i32
+}
+
 fn omega_ratio(planetary: PlanetaryConfiguration) -> f64 {
     f64::from(EARTH_ROTATION_PERIOD_SECONDS) / f64::from(planetary.rotation_period_seconds.max(1))
 }
@@ -851,6 +845,57 @@ fn spacing_scale(metres: f64) -> f64 {
 
 fn is_ocean(field: &PhysicalField, cell: usize) -> bool {
     field.elevations_mm[cell] <= field.sea_level_mm
+}
+
+fn ocean_mask(field: &PhysicalField) -> Vec<bool> {
+    let count = field.grid.sample_count();
+    let wet: Vec<bool> = (0..count)
+        .map(|cell| field.elevations_mm[cell] <= field.sea_level_mm)
+        .collect();
+    let mut seen = vec![false; count];
+    let mut components = Vec::new();
+    for start in 0..count {
+        if !wet[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+        seen[start] = true;
+        while let Some(cell) = stack.pop() {
+            component.push(cell);
+            let (row, col) = field.grid.row_col(cell);
+            let neighbors = [
+                field.grid.index(row, wrapped_col(field.grid, col, -1)),
+                field.grid.index(row, wrapped_col(field.grid, col, 1)),
+                field.grid.index(clamped_row(field.grid, row, -1), col),
+                field.grid.index(clamped_row(field.grid, row, 1), col),
+            ];
+            for neighbor in neighbors {
+                if wet[neighbor] && !seen[neighbor] {
+                    seen[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        components.push(component);
+    }
+    let mut ocean = vec![false; count];
+    for component in components {
+        if component.len() >= MIN_CURRENT_BASIN_CELLS {
+            for cell in component {
+                ocean[cell] = true;
+            }
+        }
+    }
+    ocean
+}
+
+fn ocean_temperature(temperatures: &[i32], ocean: &[bool], cell: usize, fallback: i32) -> i32 {
+    if ocean[cell] {
+        temperatures[cell]
+    } else {
+        fallback
+    }
 }
 
 fn wind_components(
@@ -1019,6 +1064,174 @@ fn derive_winds(
         band_winter,
         itcz_latitude: itcz,
     }
+}
+
+fn stamp_currents(climate: &mut ClimateField, field: &PhysicalField) {
+    let (east, north) = derive_currents(
+        field,
+        climate.planetary,
+        &climate.temperature_centi_c,
+        &climate.wind_east_milli,
+        &climate.wind_north_milli,
+    );
+    climate.current_east_milli = east;
+    climate.current_north_milli = north;
+    apply_current_metrics(
+        field,
+        &climate.current_east_milli,
+        &climate.current_north_milli,
+        &mut climate.metrics,
+    );
+}
+
+fn steps_along_row(field: &PhysicalField, ocean: &[bool], col_delta: i32) -> Vec<u32> {
+    let mut distance = vec![0u32; field.grid.sample_count()];
+    for cell in 0..field.grid.sample_count() {
+        if !ocean[cell] {
+            continue;
+        }
+        let (row, col) = field.grid.row_col(cell);
+        let mut steps = 0u32;
+        loop {
+            steps += 1;
+            if steps >= field.grid.width {
+                break;
+            }
+            let other = field
+                .grid
+                .index(row, wrapped_col(field.grid, col, col_delta * steps as i32));
+            if !ocean[other] {
+                break;
+            }
+        }
+        distance[cell] = steps.saturating_sub(1);
+    }
+    distance
+}
+
+fn derive_currents(
+    field: &PhysicalField,
+    planetary: PlanetaryConfiguration,
+    temperatures: &[i32],
+    wind_east: &[i32],
+    wind_north: &[i32],
+) -> (Vec<i32>, Vec<i32>) {
+    let omega = omega_ratio(planetary);
+    let count = field.grid.sample_count();
+    let ocean = ocean_mask(field);
+    let mut east = vec![0.0; count];
+    let mut north = vec![0.0; count];
+    let west_distance = steps_along_row(field, &ocean, -1);
+    let east_distance = steps_along_row(field, &ocean, 1);
+    let wind_scale = CURRENT_WIND_COUPLING * omega.clamp(0.2, 2.2).sqrt();
+    for cell in 0..count {
+        if !ocean[cell] {
+            continue;
+        }
+        let (row, col) = field.grid.row_col(cell);
+        let latitude = field.grid.center_radians(row, col).1;
+        let coriolis = (latitude.sin() * omega).clamp(-2.4, 2.4);
+        let turn = 1.08 * coriolis.tanh();
+        let (sin, cos) = turn.sin_cos();
+        let wind_u = f64::from(wind_east[cell]);
+        let wind_v = f64::from(wind_north[cell]);
+        let mut u = wind_scale * (wind_u * cos + wind_v * sin);
+        let mut v = wind_scale * (-wind_u * sin + wind_v * cos);
+        let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
+        let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
+        let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
+        let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
+        let scale_x = spacing_scale(neighbor_metres(field.grid, row, col, 0, 1));
+        let scale_y = spacing_scale(neighbor_metres(field.grid, row, col, 1, 0));
+        let here = temperatures[cell];
+        let dtx = f64::from(
+            ocean_temperature(temperatures, &ocean, east_cell, here)
+                - ocean_temperature(temperatures, &ocean, west_cell, here),
+        ) * scale_x;
+        let dty = f64::from(
+            ocean_temperature(temperatures, &ocean, north_cell, here)
+                - ocean_temperature(temperatures, &ocean, south_cell, here),
+        ) * scale_y;
+        let geostrophy = CURRENT_GEOSTROPHY * (2.2 * coriolis.abs()).clamp(0.0, 1.0);
+        let sign = if coriolis == 0.0 {
+            0.0
+        } else {
+            coriolis.signum()
+        };
+        u += geostrophy * (-dty) * sign;
+        v += geostrophy * dtx * sign;
+        let d_u_dy = f64::from(wind_east[north_cell] - wind_east[south_cell]) * scale_y;
+        let wind_curl = -d_u_dy;
+        let beta = latitude.cos().abs().max(0.2);
+        let sverdrup = CURRENT_SVERDRUP * omega.clamp(0.2, 2.2).sqrt() * wind_curl / beta;
+        v += sverdrup;
+        let dist_west = west_distance[cell];
+        let dist_east = east_distance[cell];
+        if dist_west <= dist_east && dist_west + dist_east + 1 < field.grid.width {
+            let boost = 1.0
+                + CURRENT_WESTERN_RETURN * (-f64::from(dist_west) / CURRENT_WESTERN_SCALE).exp();
+            v -= sverdrup * boost;
+            u *= 0.62 + 0.38 / boost;
+        }
+        east[cell] = u;
+        north[cell] = v;
+    }
+    for _ in 0..CURRENT_SMOOTH_PASSES {
+        let previous_east = east.clone();
+        let previous_north = north.clone();
+        for cell in 0..count {
+            if !ocean[cell] {
+                continue;
+            }
+            let (row, col) = field.grid.row_col(cell);
+            let neighbors = [
+                field.grid.index(row, wrapped_col(field.grid, col, -1)),
+                field.grid.index(row, wrapped_col(field.grid, col, 1)),
+                field.grid.index(clamped_row(field.grid, row, -1), col),
+                field.grid.index(clamped_row(field.grid, row, 1), col),
+            ];
+            let mut sum_u = previous_east[cell] * 2.0;
+            let mut sum_v = previous_north[cell] * 2.0;
+            let mut weight = 2.0;
+            for neighbor in neighbors {
+                if ocean[neighbor] {
+                    sum_u += previous_east[neighbor];
+                    sum_v += previous_north[neighbor];
+                    weight += 1.0;
+                }
+            }
+            east[cell] = sum_u / weight;
+            north[cell] = sum_v / weight;
+        }
+    }
+    for cell in 0..count {
+        if !ocean[cell] {
+            east[cell] = 0.0;
+            north[cell] = 0.0;
+            continue;
+        }
+        let (row, col) = field.grid.row_col(cell);
+        let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
+        let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
+        let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
+        let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
+        if !ocean[east_cell] {
+            east[cell] = east[cell].min(0.0);
+        }
+        if !ocean[west_cell] {
+            east[cell] = east[cell].max(0.0);
+        }
+        if !ocean[north_cell] {
+            north[cell] = north[cell].min(0.0);
+        }
+        if !ocean[south_cell] {
+            north[cell] = north[cell].max(0.0);
+        }
+    }
+    (
+        east.into_iter().map(clamp_current).collect(),
+        north.into_iter().map(clamp_current).collect(),
+    )
 }
 
 fn hydrology_parameters(preset: HydrologyPreset) -> (f64, f64, f64, f64) {
@@ -1266,6 +1479,7 @@ fn runoff_fields(
             itcz_latitude_milli_deg: 0,
             easterly_cell_ppm: 0,
             converging_cell_ppm: 0,
+            mean_current_speed_milli: 0,
         },
     ))
 }
@@ -1342,6 +1556,30 @@ fn apply_wind_metrics(
     metrics.converging_cell_ppm = (converging_area / total_area * 1_000_000.0).round() as u32;
 }
 
+fn apply_current_metrics(
+    field: &PhysicalField,
+    east: &[i32],
+    north: &[i32],
+    metrics: &mut ClimateMetrics,
+) {
+    let ocean = ocean_mask(field);
+    let mut speed_area_sum = 0.0;
+    let mut ocean_area = 0.0;
+    for cell in 0..field.grid.sample_count() {
+        if !ocean[cell] {
+            continue;
+        }
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        ocean_area += area;
+        speed_area_sum += f64::from(east[cell]).hypot(f64::from(north[cell])) * area;
+    }
+    metrics.mean_current_speed_milli = if ocean_area <= 0.0 {
+        0
+    } else {
+        (speed_area_sum / ocean_area).round() as u32
+    };
+}
+
 fn round_volume(volume_m3: f64) -> Result<u64, PhysicalError> {
     if !volume_m3.is_finite() || !(0.0..=(u64::MAX as f64)).contains(&volume_m3) {
         return Err(PhysicalError::coded(
@@ -1400,7 +1638,7 @@ pub fn derive_current_climate(
         &mut metrics,
     );
     progress.report(ProgressPhase::CalculatingClimate, 3, 4)?;
-    let climate = ClimateField {
+    let mut climate = ClimateField {
         grid: field.grid,
         derivation_version: CLIMATE_DERIVATION_VERSION,
         planetary: settings.planetary,
@@ -1424,8 +1662,11 @@ pub fn derive_current_climate(
         wind_band: winds.band,
         wind_band_nh_summer: winds.band_summer,
         wind_band_nh_winter: winds.band_winter,
+        current_east_milli: Vec::new(),
+        current_north_milli: Vec::new(),
         metrics,
     };
+    stamp_currents(&mut climate, field);
     climate.validate_against(field)?;
     progress.report(ProgressPhase::CalculatingClimate, 4, 4)?;
     Ok(climate)
@@ -1965,7 +2206,13 @@ mod tests {
         .unwrap();
         let shifted = climate
             .with_global_temperature_offset(-500)
-            .with_winds_for_field(&physical);
+            .with_winds_and_moisture_for_field(
+                &physical,
+                physical.seed,
+                physical.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
         assert_eq!(shifted.wind_east_milli, climate.wind_east_milli);
         assert_eq!(shifted.wind_north_milli, climate.wind_north_milli);
         let mut flooded = physical.clone();
@@ -1982,6 +2229,57 @@ mod tests {
         assert_ne!(
             epoch.precipitation_mm_per_year,
             climate.precipitation_mm_per_year
+        );
+        assert_ne!(epoch.current_east_milli, climate.current_east_milli);
+        assert_ne!(epoch.current_north_milli, climate.current_north_milli);
+    }
+
+    #[test]
+    fn ocean_temperature_gradient_changes_currents() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let elevations = vec![-2_000; grid.sample_count()];
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let flat = vec![1_500; grid.sample_count()];
+        let mut front = flat.clone();
+        for cell in 0..grid.sample_count() {
+            let (row, _) = grid.row_col(cell);
+            front[cell] = if row + 1 > grid.height / 2 {
+                4_000
+            } else {
+                -2_000
+            };
+        }
+        let (front_east, _) = derive_currents(
+            &physical,
+            climate.planetary,
+            &front,
+            &climate.wind_east_milli,
+            &climate.wind_north_milli,
+        );
+        let (flat_east, _) = derive_currents(
+            &physical,
+            climate.planetary,
+            &flat,
+            &climate.wind_east_milli,
+            &climate.wind_north_milli,
+        );
+        let mean_abs_delta = front_east
+            .iter()
+            .zip(&flat_east)
+            .map(|(a, b)| i64::from(*a - *b).unsigned_abs())
+            .sum::<u64>()
+            / u64::from(grid.sample_count() as u32);
+        assert!(
+            mean_abs_delta > 40,
+            "geostrophy should move currents, mean abs delta {mean_abs_delta}"
         );
     }
 
@@ -2037,5 +2335,184 @@ mod tests {
             climate_first.wind_north_milli,
             climate_second.wind_north_milli
         );
+    }
+
+    #[test]
+    fn ocean_currents_are_zero_on_land() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            elevations[grid.index(row, 5)] = 2_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        for cell in 0..grid.sample_count() {
+            if physical.elevations_mm[cell] > physical.sea_level_mm {
+                assert_eq!(climate.current_east_milli[cell], 0);
+                assert_eq!(climate.current_north_milli[cell], 0);
+            }
+        }
+        assert!(climate.metrics.mean_current_speed_milli > 0);
+    }
+
+    #[test]
+    fn inland_sinks_do_not_get_ocean_currents() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            elevations[grid.index(row, 0)] = -2_000;
+            elevations[grid.index(row, 1)] = -2_000;
+        }
+        elevations[grid.index(3, 10)] = -2_000;
+        elevations[grid.index(3, 11)] = -2_000;
+        elevations[grid.index(4, 10)] = -2_000;
+        elevations[grid.index(4, 11)] = -2_000;
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        for cell in [
+            grid.index(3, 10),
+            grid.index(3, 11),
+            grid.index(4, 10),
+            grid.index(4, 11),
+        ] {
+            assert_eq!(climate.current_east_milli[cell], 0);
+            assert_eq!(climate.current_north_milli[cell], 0);
+        }
+        assert!(climate.metrics.mean_current_speed_milli > 0);
+    }
+
+    #[test]
+    fn enclosed_seas_get_wind_driven_currents() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            elevations[grid.index(row, 0)] = -2_000;
+            elevations[grid.index(row, 1)] = -2_000;
+        }
+        for row in 2..6 {
+            for col in 8..12 {
+                elevations[grid.index(row, col)] = -2_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut enclosed_speed = 0.0;
+        for row in 2..6 {
+            for col in 8..12 {
+                let cell = grid.index(row, col);
+                enclosed_speed += f64::from(climate.current_east_milli[cell])
+                    .hypot(f64::from(climate.current_north_milli[cell]));
+            }
+        }
+        assert!(
+            enclosed_speed > 0.0,
+            "enclosed sea should circulate: {enclosed_speed}"
+        );
+    }
+
+    #[test]
+    fn western_boundary_current_is_stronger_than_the_basin_interior() {
+        let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            elevations[grid.index(row, 6)] = 2_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut west_speed = 0.0;
+        let mut interior_speed = 0.0;
+        let mut samples = 0.0;
+        for row in 9..12 {
+            let west = grid.index(row, 7);
+            let interior = grid.index(row, 18);
+            west_speed += f64::from(climate.current_east_milli[west])
+                .hypot(f64::from(climate.current_north_milli[west]));
+            interior_speed += f64::from(climate.current_east_milli[interior])
+                .hypot(f64::from(climate.current_north_milli[interior]));
+            samples += 1.0;
+        }
+        assert!(
+            west_speed / samples > interior_speed / samples * 1.15,
+            "western {west_speed} vs interior {interior_speed}"
+        );
+        let mut nh_north = 0i64;
+        let mut sh_north = 0i64;
+        let mut eq_east = 0i64;
+        for col in 7..10 {
+            nh_north += i64::from(climate.current_north_milli[grid.index(10, col)]);
+            sh_north += i64::from(climate.current_north_milli[grid.index(5, col)]);
+            eq_east += i64::from(climate.current_east_milli[grid.index(8, col)]);
+        }
+        assert!(
+            nh_north > 0,
+            "NH western boundary should run north: {nh_north}"
+        );
+        assert!(
+            sh_north < 0,
+            "SH western boundary should run south: {sh_north}"
+        );
+        assert!(
+            eq_east < 0,
+            "equator should have a westward current: {eq_east}"
+        );
+    }
+
+    #[test]
+    fn slower_rotation_weakens_surface_currents() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            elevations[grid.index(row, 4)] = 2_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let earth = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut settings = ClimateSettings::default_for(grid);
+        settings.planetary.rotation_period_seconds =
+            EARTH_ROTATION_PERIOD_SECONDS.saturating_mul(4);
+        settings.planetary.preset = crate::planetary::PlanetaryPreset::Custom;
+        let slow = derive_current_climate(
+            &physical,
+            settings,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(slow.metrics.mean_current_speed_milli < earth.metrics.mean_current_speed_milli);
     }
 }

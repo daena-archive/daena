@@ -267,6 +267,8 @@ export interface PhysicalClimateProducts {
   windBand: number[];
   windBandNhSummer: number[];
   windBandNhWinter: number[];
+  currentEastMilli: number[];
+  currentNorthMilli: number[];
   metrics: {
     precipitationVolumeM3PerYear: number;
     runoffVolumeM3PerYear: number;
@@ -287,6 +289,7 @@ export interface PhysicalClimateProducts {
     itczLatitudeMilliDeg: number;
     easterlyCellPpm: number;
     convergingCellPpm: number;
+    meanCurrentSpeedMilli: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -615,6 +618,8 @@ export interface AtlasStudioSurfaceSample {
   windBand: string;
   windBandNhSummer: string;
   windBandNhWinter: string;
+  currentEastMilli: number;
+  currentNorthMilli: number;
   precipitationMm: number;
   climate: string;
   surface: string;

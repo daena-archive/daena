@@ -313,6 +313,8 @@ It is not required before Find Place or roads can exist.
 - Current vectors should not imply precision beyond physical-map resolution.
 - Current behavior may change as coastlines change between epochs.
 - Deep thermohaline circulation is a future extension, not an initial requirement.
+- Surface currents are annual per epoch. Seasonal monsoon current fields are out of scope because D3 is epoch-level, not a second seasonality milestone.
+- Moisture, biomes, storms, Find Place, and sea-route context consume currents in D4–D8 / Milestone C; D3's product is the current field itself.
 
 ### Ecosystem interaction
 
@@ -1218,7 +1220,7 @@ This establishes the causes required for richer climate.
 
 ## Milestone C — Ocean and Ecology
 
-1. **D3 — Ocean Currents**
+1. **D3 — Ocean Currents** (annual surface gyres per epoch, including large enclosed basins). Consumers are D4 moisture, D5 biomes, D6 storms, and D8 Find Place.
 2. **D5 — Biome Classification**
 3. Extend **Find Place** with the new fields.
 4. Extend **roads** with biome/climate traversal costs.

@@ -86,7 +86,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "ice",
     kind: "vector",
     name: "Ice",
-    order: 1,
+    order: 13,
     defaultVisible: false,
     locked: true,
     opacity: 1,
@@ -107,10 +107,22 @@ let layers = $state<VectorLayerDefinition[]>([
     style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
   },
   {
+    id: "currents",
+    kind: "vector",
+    name: "Currents",
+    order: 15,
+    defaultVisible: false,
+    locked: true,
+    opacity: 1,
+    blendMode: "normal",
+    selector: {},
+    style: { fill: "#3ab8c4", fillOpacity: 0.18, stroke: "#9ee7ee", strokeWidth: 0.7, pointRadius: 2 },
+  },
+  {
     id: "ocean",
     kind: "vector",
     name: "Ocean",
-    order: 2,
+    order: 1,
     defaultVisible: false,
     locked: true,
     opacity: 1,
@@ -134,7 +146,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "lakes",
     kind: "vector",
     name: "Lakes",
-    order: 11,
+    order: 9,
     defaultVisible: false,
     locked: true,
     opacity: 1,
@@ -146,7 +158,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "rivers",
     kind: "vector",
     name: "Rivers",
-    order: 12,
+    order: 10,
     defaultVisible: false,
     locked: true,
     opacity: 1,
@@ -158,7 +170,7 @@ let layers = $state<VectorLayerDefinition[]>([
     id: "islands",
     kind: "vector",
     name: "Islands",
-    order: 14,
+    order: 12,
     defaultVisible: false,
     locked: true,
     opacity: 1,
@@ -177,6 +189,7 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? false,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? false,
     windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
+    currentsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false),
     climateOverlay: climate ? climateOverlay : "off",
     climateAnnualCentiC: climate?.temperatureCentiC,
     climateNhSummerCentiC: climate?.temperatureNhSummerCentiC,
@@ -187,6 +200,8 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
     climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
+    climateCurrentEastMilli: climate?.currentEastMilli,
+    climateCurrentNorthMilli: climate?.currentNorthMilli,
   };
 }
 
@@ -498,6 +513,17 @@ onMount(() => {
               rebuildRaster(hydrology);
             }} />
           Winds</label>
+        <label
+          ><input
+            type="checkbox"
+            checked={layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
+            disabled={busy}
+            onchange={(event) => {
+              const next = event.currentTarget.checked;
+              layers = layers.map((layer) => (layer.id === "currents" ? { ...layer, defaultVisible: next } : layer));
+              rebuildRaster(hydrology);
+            }} />
+          Currents</label>
       {/if}
     </div>
     {#if climate}
@@ -508,12 +534,18 @@ onMount(() => {
           forecast.
         </p>
       {/if}
+      {#if layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
+        <p class="physical-planet-readout physical-climate-readout">
+          Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping
+          chart.
+        </p>
+      {/if}
     {/if}
     {#if advancedPlanet}
       <div class="physical-planet-panel">
         <p class="physical-planet-readout">
-          Stored with the world. These settings now drive temperature, seasons, and prevailing winds. Figures are
-          generated world physics, not a precise scientific prediction.
+          Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface currents.
+          Figures are generated world physics, not a precise scientific prediction.
         </p>
         <label
           >Seasons (tilt)

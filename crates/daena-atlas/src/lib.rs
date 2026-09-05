@@ -241,6 +241,8 @@ pub struct AtlasPreparedScene {
     pub wind_band: Vec<i32>,
     pub wind_band_nh_summer: Vec<i32>,
     pub wind_band_nh_winter: Vec<i32>,
+    pub current_east_milli: Vec<i32>,
+    pub current_north_milli: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
@@ -255,6 +257,8 @@ impl AtlasPreparedScene {
             precipitation_mm: &self.precipitation_mm,
             wind_east_milli: &self.wind_east_milli,
             wind_north_milli: &self.wind_north_milli,
+            current_east_milli: &self.current_east_milli,
+            current_north_milli: &self.current_north_milli,
         }
     }
 
@@ -321,6 +325,10 @@ impl AtlasPreparedScene {
             control::wind_band_name(self.wind_band_nh_summer.get(cell).copied().unwrap_or(0));
         let wind_band_nh_winter =
             control::wind_band_name(self.wind_band_nh_winter.get(cell).copied().unwrap_or(0));
+        let current_east_milli =
+            detail::sample_field_mm(grid, &self.current_east_milli, lon_micro, lat_micro);
+        let current_north_milli =
+            detail::sample_field_mm(grid, &self.current_north_milli, lon_micro, lat_micro);
         let precipitation_mm =
             detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
         let climate = control::climate_class_name(
@@ -375,6 +383,8 @@ impl AtlasPreparedScene {
             wind_band: wind_band.to_string(),
             wind_band_nh_summer: wind_band_nh_summer.to_string(),
             wind_band_nh_winter: wind_band_nh_winter.to_string(),
+            current_east_milli,
+            current_north_milli,
             precipitation_mm,
             climate: climate.to_string(),
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
@@ -695,6 +705,8 @@ pub fn prepare_from_source(
         wind_band: controls.wind_band,
         wind_band_nh_summer: controls.wind_band_nh_summer,
         wind_band_nh_winter: controls.wind_band_nh_winter,
+        current_east_milli: controls.current_east_milli,
+        current_north_milli: controls.current_north_milli,
         precipitation_mm: controls.precipitation_mm,
         residual_cache,
         drainage_cache,

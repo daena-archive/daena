@@ -36,6 +36,8 @@ pub struct ControlFields {
     pub wind_band: Vec<i32>,
     pub wind_band_nh_summer: Vec<i32>,
     pub wind_band_nh_winter: Vec<i32>,
+    pub current_east_milli: Vec<i32>,
+    pub current_north_milli: Vec<i32>,
     pub runoff_mm: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub climate_class: Vec<i32>,
@@ -73,6 +75,8 @@ impl ControlFields {
             || climate.wind_band.len() != count
             || climate.wind_band_nh_summer.len() != count
             || climate.wind_band_nh_winter.len() != count
+            || climate.current_east_milli.len() != count
+            || climate.current_north_milli.len() != count
             || climate.runoff_mm_per_year.len() != count
             || climate.precipitation_mm_per_year.len() != count
             || hydrology.ice_thickness_mm.len() != count
@@ -150,6 +154,8 @@ impl ControlFields {
                 .iter()
                 .map(|value| i32::try_from(*value).unwrap_or(i32::MAX))
                 .collect(),
+            current_east_milli: climate.current_east_milli.clone(),
+            current_north_milli: climate.current_north_milli.clone(),
             runoff_mm,
             precipitation_mm,
             climate_class,

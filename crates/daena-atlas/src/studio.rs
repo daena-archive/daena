@@ -604,6 +604,7 @@ pub fn render_studio_tile_with_style_overlays(
             overlays,
             &scene.drainage.tributaries,
             Some((&scene.wind_east_milli, &scene.wind_north_milli)),
+            Some((&scene.current_east_milli, &scene.current_north_milli)),
         );
         if request.layer_enabled("labels") {
             let n = tile_count(tile.z)?;

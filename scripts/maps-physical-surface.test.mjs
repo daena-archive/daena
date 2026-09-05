@@ -43,11 +43,16 @@ for (const path of [
 
 const editor = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEditor.svelte"), "utf8");
 assert.match(editor, /id: "winds"/);
+assert.match(editor, /id: "currents"/);
 assert.match(editor, /order: 14/);
+assert.match(editor, /order: 15/);
 assert.match(editor, /layers\.find\(\(layer\) => layer\.id === "winds"\)\?\.defaultVisible/);
+assert.match(editor, /layers\.find\(\(layer\) => layer\.id === "currents"\)\?\.defaultVisible/);
 const raster = readFileSync(resolve(root, "src/lib/maps/physical/raster.ts"), "utf8");
 assert.match(raster, /const fillWind = isWindOverlay/);
 assert.match(raster, /const arrowWind = windArrowMode/);
 assert.match(raster, /function sampleWind/);
+assert.match(raster, /function sampleCurrent/);
+assert.match(raster, /currentsVisible/);
 
 console.log("physical surface behavior and component checks passed");

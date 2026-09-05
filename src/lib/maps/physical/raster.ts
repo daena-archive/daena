@@ -7,6 +7,7 @@ export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
   lakesVisible?: boolean;
   windsVisible?: boolean;
+  currentsVisible?: boolean;
   climateOverlay?: ClimateOverlayMode;
   climateAnnualCentiC?: number[];
   climateNhSummerCentiC?: number[];
@@ -17,6 +18,8 @@ export type PhysicalRasterPaintOptions = {
   climateWindNorthNhSummerMilli?: number[];
   climateWindEastNhWinterMilli?: number[];
   climateWindNorthNhWinterMilli?: number[];
+  climateCurrentEastMilli?: number[];
+  climateCurrentNorthMilli?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -32,6 +35,7 @@ export type PhysicalRasterProducts = {
 
 /** Isolated sinks smaller than this stay land so one-cell puddles do not speckle continents. */
 export const MIN_VISIBLE_INLAND_WATER_CELLS = 8;
+const CURRENT_ARROW_MIN_MILLI = 80;
 
 function lerp(first: number, second: number, t: number): number {
   return first + (second - first) * t;
@@ -59,6 +63,20 @@ function windComponents(
     return [options.climateWindEastNhWinterMilli?.[index] ?? 0, options.climateWindNorthNhWinterMilli?.[index] ?? 0];
   }
   return [options.climateWindEastMilli?.[index] ?? 0, options.climateWindNorthMilli?.[index] ?? 0];
+}
+
+function currentTint(eastMilli: number, northMilli: number): [number, number, number] {
+  const speed = Math.hypot(eastMilli, northMilli);
+  if (speed < 1) return [48, 196, 196];
+  const u = eastMilli / speed;
+  const v = northMilli / speed;
+  const westward: [number, number, number] = [72, 112, 220];
+  const eastward: [number, number, number] = [48, 196, 196];
+  const northward: [number, number, number] = [232, 148, 64];
+  const southward: [number, number, number] = [64, 188, 168];
+  const zonal = mixRgb(westward, eastward, (u + 1) / 2);
+  const meridional = v >= 0 ? northward : southward;
+  return mixRgb(zonal, meridional, Math.abs(v) * 0.7);
 }
 
 function windTint(eastMilli: number, northMilli: number): [number, number, number] {
@@ -264,6 +282,9 @@ export function paintPhysicalSurface(
   if (arrowWind) {
     paintWindArrows(context, products, options, arrowWind);
   }
+  if (options.currentsVisible) {
+    paintCurrentArrows(context, products, options);
+  }
   return canvas;
 }
 
@@ -313,6 +334,71 @@ function paintWindArrows(
       const alpha = 0.45 + Math.min(0.45, speed / 2_400);
       context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
       const length = 2.4 + Math.min(5.2, speed / 420);
+      const angle = Math.atan2(-north, east);
+      const x = sampleCol + 0.5;
+      const y = (sampleRow + 0.5) * oversample;
+      const dx = Math.cos(angle) * length;
+      const dy = Math.sin(angle) * length;
+      context.beginPath();
+      context.moveTo(x - dx, y - dy);
+      context.lineTo(x + dx, y + dy);
+      context.moveTo(x + dx, y + dy);
+      context.lineTo(x + dx - Math.cos(angle - 0.45) * 2.1, y + dy - Math.sin(angle - 0.45) * 2.1);
+      context.moveTo(x + dx, y + dy);
+      context.lineTo(x + dx - Math.cos(angle + 0.45) * 2.1, y + dy - Math.sin(angle + 0.45) * 2.1);
+      context.stroke();
+    }
+  }
+}
+
+function sampleCurrent(
+  options: PhysicalRasterPaintOptions,
+  width: number,
+  height: number,
+  column: number,
+  row: number,
+): [number, number] {
+  const x = Math.max(0, Math.min(width - 1, column));
+  const y = Math.max(0, Math.min(height - 1, row));
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(width - 1, x0 + 1);
+  const y1 = Math.min(height - 1, y0 + 1);
+  const tx = x - x0;
+  const ty = y - y0;
+  const at = (index: number): [number, number] => [
+    options.climateCurrentEastMilli?.[index] ?? 0,
+    options.climateCurrentNorthMilli?.[index] ?? 0,
+  ];
+  const a = at(y0 * width + x0);
+  const b = at(y0 * width + x1);
+  const c = at(y1 * width + x0);
+  const d = at(y1 * width + x1);
+  return [lerp(lerp(a[0], b[0], tx), lerp(c[0], d[0], tx), ty), lerp(lerp(a[1], b[1], tx), lerp(c[1], d[1], tx), ty)];
+}
+
+function paintCurrentArrows(
+  context: CanvasRenderingContext2D,
+  products: PhysicalRasterProducts,
+  options: PhysicalRasterPaintOptions,
+) {
+  const stepX = Math.max(2, Math.floor(products.width / 24));
+  const stepY = Math.max(2, Math.floor(products.height / 12));
+  const oversample = PHYSICAL_RASTER_OVERSAMPLE;
+  context.lineWidth = 1.2;
+  context.lineCap = "round";
+  for (let row = Math.floor(stepY / 2); row < products.height; row += stepY) {
+    for (let column = Math.floor(stepX / 2); column < products.width; column += stepX) {
+      const jitter = ((column * 1103515245 + row * 12345) >>> 0) % 7;
+      const sampleCol = column + (jitter - 3) * 0.22;
+      const sampleRow = row + (((jitter * 3) % 7) - 3) * 0.22;
+      const [east, north] = sampleCurrent(options, products.width, products.height, sampleCol, sampleRow);
+      const speed = Math.hypot(east, north);
+      if (speed < CURRENT_ARROW_MIN_MILLI) continue;
+      const [red, green, blue] = currentTint(east, north);
+      const alpha = 0.48 + Math.min(0.42, speed / 2_400);
+      context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
+      const length = 2.6 + Math.min(5.4, speed / 380);
       const angle = Math.atan2(-north, east);
       const x = sampleCol + 0.5;
       const y = (sampleRow + 0.5) * oversample;

@@ -462,21 +462,44 @@ function clearRasterAssets() {
   physicalClimate = null;
 }
 
-function ensurePhysicalWindsLayer(parsed: MapLayerDefinition[]): MapLayerDefinition[] {
-  if (!physicalMap || parsed.some((layer) => layer.id === "winds")) return parsed;
-  const winds: VectorLayerDefinition = {
-    id: "winds",
-    kind: "vector",
-    name: "Winds",
-    order: 14,
-    defaultVisible: false,
-    locked: true,
-    opacity: 1,
-    blendMode: "normal",
-    selector: {},
-    style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
-  };
-  return [...parsed, winds];
+function ensurePhysicalLockedClimateLayers(parsed: MapLayerDefinition[]): MapLayerDefinition[] {
+  if (!physicalMap) return parsed;
+  let next = parsed;
+  if (!next.some((layer) => layer.id === "winds")) {
+    next = [
+      ...next,
+      {
+        id: "winds",
+        kind: "vector",
+        name: "Winds",
+        order: 14,
+        defaultVisible: false,
+        locked: true,
+        opacity: 1,
+        blendMode: "normal",
+        selector: {},
+        style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
+      },
+    ];
+  }
+  if (!next.some((layer) => layer.id === "currents")) {
+    next = [
+      ...next,
+      {
+        id: "currents",
+        kind: "vector",
+        name: "Currents",
+        order: 15,
+        defaultVisible: false,
+        locked: true,
+        opacity: 1,
+        blendMode: "normal",
+        selector: {},
+        style: { fill: "#3ab8c4", fillOpacity: 0.18, stroke: "#9ee7ee", strokeWidth: 0.7, pointRadius: 2 },
+      },
+    ];
+  }
+  return next;
 }
 
 function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
@@ -485,12 +508,15 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
     windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
+    currentsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false),
     climateWindEastMilli: climate?.windEastMilli,
     climateWindNorthMilli: climate?.windNorthMilli,
     climateWindEastNhSummerMilli: climate?.windEastNhSummerMilli,
     climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
     climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
     climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
+    climateCurrentEastMilli: climate?.currentEastMilli,
+    climateCurrentNorthMilli: climate?.currentNorthMilli,
   };
 }
 
@@ -508,11 +534,12 @@ const physicalRasterLayerVisibility = $derived.by(() => ({
   ice: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
   lakes: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
   winds: layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false,
+  currents: layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false,
 }));
 
 function iceLakesVisibilityKey(): string {
-  const { ice, lakes, winds } = physicalRasterLayerVisibility;
-  return `${ice}:${lakes}:${winds}`;
+  const { ice, lakes, winds, currents } = physicalRasterLayerVisibility;
+  return `${ice}:${lakes}:${winds}:${currents}`;
 }
 
 let lastIceLakesVisibilityKey = "";
@@ -915,7 +942,7 @@ function moveSelectedToLayer(layerId: string) {
 function applyLayersField(field: FieldValue) {
   layersField = field;
   layersFieldRevision = field.revision;
-  const parsed = ensurePhysicalWindsLayer(parseVectorLayers(field.value));
+  const parsed = ensurePhysicalLockedClimateLayers(parseVectorLayers(field.value));
   layers = parsed;
   if (commandStack) {
     commandStack.replaceDocument({
@@ -1284,6 +1311,7 @@ async function load() {
         "islands",
         "ice",
         "winds",
+        "currents",
       ]);
       syncEpochFields(0);
       const requestId = crypto.randomUUID();

@@ -623,6 +623,12 @@ function formatWind(eastMilli: number, northMilli: number) {
   return `${strength} east ${(eastMilli / 1000).toFixed(1)}, north ${(northMilli / 1000).toFixed(1)}`;
 }
 
+function formatCurrent(eastMilli: number, northMilli: number) {
+  const speed = Math.hypot(eastMilli, northMilli);
+  if (speed < 1) return "none";
+  return `annual east ${(eastMilli / 1000).toFixed(2)}, north ${(northMilli / 1000).toFixed(2)}`;
+}
+
 function formatDivergence(ppm: number) {
   if (ppm < -20_000) return "Converging";
   if (ppm > 20_000) return "Diverging";
@@ -935,6 +941,10 @@ onDestroy(() => {
             <div>
               <dt>Northern-winter wind flow</dt>
               <dd>{formatDivergence(surface.windDivergenceNhWinterPpm)}</dd>
+            </div>
+            <div>
+              <dt>Surface current</dt>
+              <dd>{formatCurrent(surface.currentEastMilli, surface.currentNorthMilli)}</dd>
             </div>
             <div>
               <dt>Rainfall</dt>

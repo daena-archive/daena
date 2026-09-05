@@ -1793,6 +1793,8 @@ mod tests {
             wind_band: vec![0; sample_count],
             wind_band_nh_summer: vec![0; sample_count],
             wind_band_nh_winter: vec![0; sample_count],
+            current_east_milli: vec![0; sample_count],
+            current_north_milli: vec![0; sample_count],
             metrics: crate::climate::ClimateMetrics {
                 precipitation_volume_m3_per_year: 0,
                 runoff_volume_m3_per_year: 0,
@@ -1813,6 +1815,7 @@ mod tests {
                 itcz_latitude_milli_deg: 0,
                 easterly_cell_ppm: 0,
                 converging_cell_ppm: 0,
+                mean_current_speed_milli: 0,
             },
         }
     }

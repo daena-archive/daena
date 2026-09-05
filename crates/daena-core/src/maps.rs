@@ -1344,11 +1344,10 @@ pub fn validate_field(
             }
         }
         if physical_map && seen_physical_layers.len() != physical_layer_by_id.len() {
-            let only_winds_missing = physical_layer_by_id.len()
-                == seen_physical_layers.len().saturating_add(1)
-                && physical_layer_by_id.contains_key("winds")
-                && !seen_physical_layers.contains("winds");
-            if !only_winds_missing {
+            let missing_ok = physical_layer_by_id.keys().all(|id| {
+                seen_physical_layers.contains(*id) || *id == "winds" || *id == "currents"
+            });
+            if !missing_ok {
                 return Err(invalid(
                     "physical maps must retain all locked physical layers",
                 ));

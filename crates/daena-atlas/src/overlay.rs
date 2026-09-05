@@ -20,6 +20,7 @@ use crate::style::AtlasStyle;
 const PAPER_CELL_MICRO: i64 = 100_000;
 
 const FRAME_PX: u32 = 8;
+const FLOW_ARROW_MIN_MILLI: f32 = 80.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,12 +91,55 @@ fn arrow_step(size: u32) -> u32 {
     (size / 16).max(4).min(size.max(1))
 }
 
+pub(crate) fn current_tint(east_milli: i32, north_milli: i32) -> [u8; 3] {
+    let speed = (east_milli as f32).hypot(north_milli as f32).max(1.0);
+    let u = east_milli as f32 / speed;
+    let v = north_milli as f32 / speed;
+    let westward = [72_u8, 112, 220];
+    let eastward = [48_u8, 196, 196];
+    let northward = [232_u8, 148, 64];
+    let southward = [64_u8, 188, 168];
+    let zonal = [
+        mix_channel(westward[0], eastward[0], (u + 1.0) / 2.0),
+        mix_channel(westward[1], eastward[1], (u + 1.0) / 2.0),
+        mix_channel(westward[2], eastward[2], (u + 1.0) / 2.0),
+    ];
+    let meridional = if v >= 0.0 { northward } else { southward };
+    let t = v.abs() * 0.7;
+    [
+        mix_channel(zonal[0], meridional[0], t),
+        mix_channel(zonal[1], meridional[1], t),
+        mix_channel(zonal[2], meridional[2], t),
+    ]
+}
+
 pub(crate) fn draw_wind_arrows(
     buffer: &mut [u8],
     view: ProjectedView,
     grid: Grid,
     east: &[i32],
     north: &[i32],
+) {
+    draw_flow_arrows(buffer, view, grid, east, north, wind_tint);
+}
+
+pub(crate) fn draw_current_arrows(
+    buffer: &mut [u8],
+    view: ProjectedView,
+    grid: Grid,
+    east: &[i32],
+    north: &[i32],
+) {
+    draw_flow_arrows(buffer, view, grid, east, north, current_tint);
+}
+
+fn draw_flow_arrows(
+    buffer: &mut [u8],
+    view: ProjectedView,
+    grid: Grid,
+    east: &[i32],
+    north: &[i32],
+    tint: fn(i32, i32) -> [u8; 3],
 ) {
     if east.len() != grid.sample_count() || north.len() != grid.sample_count() {
         return;
@@ -120,14 +164,14 @@ pub(crate) fn draw_wind_arrows(
             let east_milli = crate::detail::sample_field_mm(grid, east, lon, lat);
             let north_milli = crate::detail::sample_field_mm(grid, north, lon, lat);
             let speed = (east_milli as f32).hypot(north_milli as f32);
-            if speed >= 80.0 {
+            if speed >= FLOW_ARROW_MIN_MILLI {
                 let length = 8.0 + (speed / 450.0).min(10.0);
                 let angle = (-north_milli as f32).atan2(east_milli as f32);
                 let ax = px as i32;
                 let ay = py as i32;
                 let dx = (angle.cos() * length).round() as i32;
                 let dy = (angle.sin() * length).round() as i32;
-                let rgb = wind_tint(east_milli, north_milli);
+                let rgb = tint(east_milli, north_milli);
                 let alpha = 480_000 + ((speed / 2_000.0).min(1.0) * 440_000.0) as u32;
                 draw_segment(
                     buffer,
@@ -283,6 +327,7 @@ pub fn composite_overlays(
     overlays: &[AuthoredFeature],
     tributaries: &[DerivedTributary],
     winds: Option<(&[i32], &[i32])>,
+    currents: Option<(&[i32], &[i32])>,
 ) {
     let view = request.view().unwrap_or(ProjectedView {
         projection: request.projection,
@@ -374,6 +419,11 @@ pub fn composite_overlays(
     if request.layer_enabled("winds") {
         if let Some((east, north)) = winds {
             draw_wind_arrows(buffer, view, hydrology.grid, east, north);
+        }
+    }
+    if request.layer_enabled("currents") {
+        if let Some((east, north)) = currents {
+            draw_current_arrows(buffer, view, hydrology.grid, east, north);
         }
     }
     if request.layer_enabled("graticule") {
@@ -516,6 +566,8 @@ pub struct AtlasSurfaceSample {
     pub wind_band: String,
     pub wind_band_nh_summer: String,
     pub wind_band_nh_winter: String,
+    pub current_east_milli: i32,
+    pub current_north_milli: i32,
     pub precipitation_mm: i32,
     pub climate: String,
     pub surface: String,
@@ -756,6 +808,15 @@ mod tests {
         assert!(
             westerly[0] > westerly[2],
             "westerly should lean amber: {westerly:?}"
+        );
+    }
+
+    #[test]
+    fn poleward_current_tint_is_warm() {
+        let rgb = current_tint(0, 1_500);
+        assert!(
+            rgb[0] > rgb[2],
+            "northward current should lean amber: {rgb:?}"
         );
     }
 

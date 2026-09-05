@@ -3,20 +3,27 @@
 //! This module only produces an explicit materialization result. It does not
 //! persist anything and it does not modify the accepted physical source.
 //! Event rates are events per physical model year.
+//!
+//! Storm sampling uses climatology as location weights. Expected count is a
+//! sparse notable-event rate, not the annual cyclone census shown on climate
+//! overlays. Earthquake and eruption provenance stay on materialization v1;
+//! storms use v2.
 
 use serde::{Deserialize, Serialize};
 
 use super::{
+    climate::{self, ClimateField},
     hazards::{self, HazardField, RATE_NANO, VOLCANIC_SOURCE_DERIVATION_VERSION},
     splitmix64,
     tectonics::TectonicWorld,
-    Grid,
+    Grid, PhysicalField,
 };
 
-pub const EVENT_MATERIALIZATION_VERSION: u16 = 1;
+pub const EVENT_MATERIALIZATION_VERSION: u16 = 2;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
 pub const MAX_EVENTS: u32 = 128;
 const MAX_EXPECTED_EVENTS: f64 = 1_024.0;
+const STORM_NOTABLE_PER_YEAR: f64 = 0.00035;
 const EARTHQUAKE_MIN_MAGNITUDE_MILLI: u32 = 4_000;
 const EARTHQUAKE_MAX_MAGNITUDE_MILLI: u32 = 8_500;
 const GUTENBERG_RICHTER_B_VALUE: f64 = 0.9;
@@ -26,6 +33,7 @@ const GUTENBERG_RICHTER_B_VALUE: f64 = 0.9;
 pub enum NaturalEventKind {
     Earthquake,
     Eruption,
+    Storm,
 }
 
 impl NaturalEventKind {
@@ -33,6 +41,7 @@ impl NaturalEventKind {
         match self {
             Self::Earthquake => "earthquake",
             Self::Eruption => "eruption",
+            Self::Storm => "storm",
         }
     }
 
@@ -40,6 +49,7 @@ impl NaturalEventKind {
         match self {
             Self::Earthquake => 0x6561_7274_6871_0001,
             Self::Eruption => 0x6572_7570_7469_0002,
+            Self::Storm => 0x7374_6f72_6d00_0003,
         }
     }
 
@@ -47,6 +57,14 @@ impl NaturalEventKind {
         match self {
             Self::Earthquake => "poisson-gutenberg-richter-v2",
             Self::Eruption => "persistent-rate-v2",
+            Self::Storm => "tropical-cyclone-climatology-v1",
+        }
+    }
+
+    pub const fn materialization_version(self) -> u16 {
+        match self {
+            Self::Earthquake | Self::Eruption => 1,
+            Self::Storm => 2,
         }
     }
 }
@@ -100,6 +118,8 @@ pub struct MaterializedEvent {
     pub rate_per_million_years_ppm: u32,
     pub sampled_center_id: Option<u32>,
     pub volcanic_source_derivation_version: u16,
+    #[serde(default)]
+    pub track_cells: Vec<u32>,
 }
 
 fn uniform_open01(seed: u64) -> f64 {
@@ -146,6 +166,11 @@ fn eruption_magnitude_milli(annual_rate_nano: u64, seed: u64) -> u32 {
     1_000 + (annual_rate_nano / 20).min(2_000) as u32 + variability
 }
 
+fn storm_magnitude_milli(intensity_ppm: u32, seed: u64) -> u32 {
+    let variability = (splitmix64(seed) % 251) as u32;
+    1_000 + intensity_ppm / 500 + variability
+}
+
 fn sample_cell(rates: &[u64], mass: u64, seed: u64) -> usize {
     if mass == 0 {
         return 0;
@@ -166,55 +191,115 @@ fn sample_cell(rates: &[u64], mass: u64, seed: u64) -> usize {
 /// Samples occurrences from the complete annual-rate field. `N ~ Poisson(Λ)`
 /// with `Λ = total_annual_rate * years`, then each location is drawn from the
 /// normalized rate mass. `maxEvents` only truncates the persisted list.
+/// `epoch_field` supplies the coastline used for storm tracks; omit it to use
+/// the accepted present-day field.
 pub fn sample_events(
     world: &TectonicWorld,
     hazards: &HazardField,
+    climate: Option<&ClimateField>,
+    epoch_field: Option<&PhysicalField>,
     request: &EventMaterializationRequest,
 ) -> Result<Vec<MaterializedEvent>, String> {
     request.validate()?;
     hazards
         .validate(world.grid)
         .map_err(|error| error.to_string())?;
-    let rates = match request.event_kind {
+    if request.event_kind == NaturalEventKind::Storm && climate.is_none() {
+        return Err("storm materialization requires derived climate".into());
+    }
+    let storm_rates = climate.map(|field| {
+        field
+            .storm_suitability_ppm
+            .iter()
+            .copied()
+            .map(climate::storm_annual_rate_nano)
+            .collect::<Vec<_>>()
+    });
+    let storm_million = climate.map(|field| {
+        field
+            .storm_suitability_ppm
+            .iter()
+            .map(|value| u32::try_from(u64::from(*value) * 1_000 / 1_000_000).unwrap_or(u32::MAX))
+            .collect::<Vec<_>>()
+    });
+    let rates: &[u64] = match request.event_kind {
         NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
         NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
+        NaturalEventKind::Storm => storm_rates.as_deref().unwrap_or(&[]),
     };
-    let hazard_values = match request.event_kind {
+    let hazard_values: &[u32] = match request.event_kind {
         NaturalEventKind::Earthquake => &hazards.earthquake_hazard_ppm,
         NaturalEventKind::Eruption => &hazards.volcanic_hazard_ppm,
+        NaturalEventKind::Storm => climate
+            .map(|field| field.storm_suitability_ppm.as_slice())
+            .unwrap_or(&[]),
     };
-    let million_year_rates = match request.event_kind {
+    let million_year_rates: &[u32] = match request.event_kind {
         NaturalEventKind::Earthquake => &hazards.earthquake_rate_per_million_years_ppm,
         NaturalEventKind::Eruption => &hazards.eruption_rate_per_million_years_ppm,
+        NaturalEventKind::Storm => storm_million.as_deref().unwrap_or(&[]),
     };
     let interval_length = request.interval_length();
     let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
-    let lambda = (mass as f64 / RATE_NANO as f64) * interval_length as f64;
+    let lambda = match (request.event_kind, climate) {
+        (NaturalEventKind::Storm, Some(field)) => storm_notable_lambda(field, interval_length),
+        _ => (mass as f64 / RATE_NANO as f64) * interval_length as f64,
+    };
     let count = poisson(
         lambda,
         request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
     )
     .min(request.max_events);
+    let present = world.physical_field();
+    let track_field = epoch_field.unwrap_or(&present);
+    let notable_nano = climate
+        .map(|field| {
+            ((f64::from(field.metrics.mean_ocean_storm_suitability_ppm) / 1_000_000.0)
+                * STORM_NOTABLE_PER_YEAR
+                * RATE_NANO as f64)
+                .round() as u64
+        })
+        .unwrap_or(0);
     let mut events = Vec::with_capacity(count as usize);
     for ordinal in 0..count {
         let event_seed = request.hazard_seed
             ^ request.event_kind.tag()
             ^ u64::from(ordinal).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        let cell = sample_cell(rates, mass, event_seed ^ 0x6c6f_6361_7469_6f6e);
+        let genesis = sample_cell(rates, mass, event_seed ^ 0x6c6f_6361_7469_6f6e);
+        let track_cells = match (request.event_kind, climate) {
+            (NaturalEventKind::Storm, Some(field)) => {
+                climate::collect_storm_track(track_field, field, genesis)
+            }
+            _ => vec![genesis],
+        };
+        let cell = *track_cells.last().unwrap_or(&genesis);
         let point = center_microdegrees(world.grid, cell);
         let year = request.interval_start_years
             + (splitmix64(event_seed ^ 0x7469_6d65) % interval_length) as i64;
         let magnitude_milli = match request.event_kind {
             NaturalEventKind::Earthquake => earthquake_magnitude_milli(event_seed ^ 0x4551),
             NaturalEventKind::Eruption => {
-                eruption_magnitude_milli(rates[cell], event_seed ^ 0x4552)
+                eruption_magnitude_milli(rates[genesis], event_seed ^ 0x4552)
             }
+            NaturalEventKind::Storm => storm_magnitude_milli(
+                climate
+                    .and_then(|field| field.storm_intensity_ppm.get(genesis).copied())
+                    .unwrap_or(0),
+                event_seed ^ 0x4553,
+            ),
         };
         let sampled_center_id = match request.event_kind {
             NaturalEventKind::Eruption => {
                 hazards::nearest_volcanic_source(hazards, cell).map(|source| source.stable_id)
             }
+            NaturalEventKind::Storm => Some(genesis as u32),
             NaturalEventKind::Earthquake => None,
+        };
+        let annual_rate_nano = match request.event_kind {
+            NaturalEventKind::Storm if mass > 0 => {
+                notable_nano.saturating_mul(rates[genesis]) / mass
+            }
+            _ => rates[genesis],
         };
         events.push(MaterializedEvent {
             event_kind: request.event_kind,
@@ -224,23 +309,44 @@ pub fn sample_events(
             longitude_microdegrees: point[0],
             latitude_microdegrees: point[1],
             magnitude_milli,
-            hazard_ppm: hazard_values[cell],
-            annual_rate_nano: rates[cell],
-            rate_per_million_years_ppm: million_year_rates[cell],
+            hazard_ppm: hazard_values[genesis],
+            annual_rate_nano,
+            rate_per_million_years_ppm: million_year_rates[genesis],
             sampled_center_id,
-            volcanic_source_derivation_version: VOLCANIC_SOURCE_DERIVATION_VERSION,
+            volcanic_source_derivation_version: match request.event_kind {
+                NaturalEventKind::Storm => climate::CLIMATE_DERIVATION_VERSION,
+                _ => VOLCANIC_SOURCE_DERIVATION_VERSION,
+            },
+            track_cells: track_cells.into_iter().map(|cell| cell as u32).collect(),
         });
     }
     Ok(events)
 }
 
-pub fn expected_lambda(hazards: &HazardField, request: &EventMaterializationRequest) -> f64 {
-    let rates = match request.event_kind {
-        NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
-        NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
-    };
-    let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
-    (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64
+fn storm_notable_lambda(climate: &ClimateField, years: u64) -> f64 {
+    let mean = f64::from(climate.metrics.mean_ocean_storm_suitability_ppm) / 1_000_000.0;
+    (mean * STORM_NOTABLE_PER_YEAR * years as f64).clamp(0.0, MAX_EXPECTED_EVENTS)
+}
+
+pub fn expected_lambda(
+    hazards: &HazardField,
+    climate: Option<&ClimateField>,
+    request: &EventMaterializationRequest,
+) -> f64 {
+    match (request.event_kind, climate) {
+        (NaturalEventKind::Storm, Some(field)) => {
+            storm_notable_lambda(field, request.interval_length())
+        }
+        _ => {
+            let rates: &[u64] = match request.event_kind {
+                NaturalEventKind::Earthquake => &hazards.earthquake_annual_rate_nano,
+                NaturalEventKind::Eruption => &hazards.volcanic_annual_rate_nano,
+                NaturalEventKind::Storm => &[],
+            };
+            let mass = rates.iter().copied().fold(0u64, u64::saturating_add);
+            (mass as f64 / RATE_NANO as f64) * request.interval_length() as f64
+        }
+    }
 }
 
 #[cfg(test)]
@@ -302,8 +408,8 @@ mod tests {
             max_events: MAX_EVENTS,
             hazard_seed: 7_331,
         };
-        let first = sample_events(&world, &hazards, &request).unwrap();
-        let second = sample_events(&world, &hazards, &request).unwrap();
+        let first = sample_events(&world, &hazards, None, None, &request).unwrap();
+        let second = sample_events(&world, &hazards, None, None, &request).unwrap();
         assert_eq!(first, second);
         assert!(first.len() <= MAX_EVENTS as usize);
         assert!(first.iter().all(|event| {
@@ -325,7 +431,7 @@ mod tests {
             max_events: MAX_EVENTS,
             hazard_seed: 7_331,
         };
-        let events = sample_events(&world, &hazards, &request).unwrap();
+        let events = sample_events(&world, &hazards, None, None, &request).unwrap();
         assert_eq!(
             NaturalEventKind::Eruption.model_label(),
             "persistent-rate-v2"
@@ -341,9 +447,9 @@ mod tests {
     fn display_cap_does_not_change_event_samples() {
         let (world, hazards) = fixture();
         let request = request(NaturalEventKind::Earthquake, 80_000, 99, 32);
-        let first = sample_events(&world, &hazards, &request).unwrap();
+        let first = sample_events(&world, &hazards, None, None, &request).unwrap();
         let limited = crate::hazards::to_geojson_with_limit(&world, &hazards, 4).unwrap();
-        let second = sample_events(&world, &hazards, &request).unwrap();
+        let second = sample_events(&world, &hazards, None, None, &request).unwrap();
         assert_eq!(first, second);
         assert!(limited.contains("earthquake-hazard"));
     }
@@ -352,14 +458,16 @@ mod tests {
     fn poisson_mean_tracks_rate_mass_lambda() {
         let (world, hazards) = fixture();
         let request = request(NaturalEventKind::Earthquake, 20_000, 1, MAX_EVENTS);
-        let lambda = expected_lambda(&hazards, &request);
+        let lambda = expected_lambda(&hazards, None, &request);
         assert!(lambda > 0.0);
         let mut total = 0u64;
         let ensemble = 48u32;
         for seed in 0..ensemble {
             let mut seeded = request.clone();
             seeded.hazard_seed = u64::from(seed + 11);
-            total += sample_events(&world, &hazards, &seeded).unwrap().len() as u64;
+            total += sample_events(&world, &hazards, None, None, &seeded)
+                .unwrap()
+                .len() as u64;
         }
         let mean = total as f64 / f64::from(ensemble);
         assert!((mean - lambda.min(MAX_EVENTS as f64)).abs() < lambda.max(1.0) * 0.75 + 1.5);
@@ -380,7 +488,7 @@ mod tests {
         for seed in 0..24 {
             let mut seeded = request.clone();
             seeded.hazard_seed = 100 + seed;
-            for event in sample_events(&world, &hazards, &seeded).unwrap() {
+            for event in sample_events(&world, &hazards, None, None, &seeded).unwrap() {
                 if event.magnitude_milli < 5_500 {
                     small += 1;
                 } else {
@@ -401,5 +509,54 @@ mod tests {
             .copied()
             .fold(0u64, u64::saturating_add);
         assert_eq!(mass, hazards.metrics.earthquake_rate_mass_nano);
+    }
+
+    #[test]
+    fn storms_sample_from_climate_and_stay_stable() {
+        let settings = GenerationSettings {
+            width: 16,
+            height: 8,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let generated = generate_world(settings, 831_429, 0, &mut NoopProgress).unwrap();
+        let hazards = crate::hazards::derive_hazards(&generated.tectonics).unwrap();
+        let request = EventMaterializationRequest {
+            event_kind: NaturalEventKind::Storm,
+            interval_start_years: 0,
+            interval_end_years: 100_000,
+            max_events: MAX_EVENTS,
+            hazard_seed: 42,
+        };
+        assert!(sample_events(&generated.tectonics, &hazards, None, None, &request).is_err());
+        let first = sample_events(
+            &generated.tectonics,
+            &hazards,
+            Some(&generated.climate),
+            None,
+            &request,
+        )
+        .unwrap();
+        let second = sample_events(
+            &generated.tectonics,
+            &hazards,
+            Some(&generated.climate),
+            None,
+            &request,
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            NaturalEventKind::Storm.model_label(),
+            "tropical-cyclone-climatology-v1"
+        );
+        assert!(first.iter().all(|event| {
+            event.event_kind == NaturalEventKind::Storm
+                && event.sampled_center_id.is_some()
+                && !event.track_cells.is_empty()
+                && event.volcanic_source_derivation_version == climate::CLIMATE_DERIVATION_VERSION
+        }));
+        assert_eq!(NaturalEventKind::Earthquake.materialization_version(), 1);
+        assert_eq!(NaturalEventKind::Storm.materialization_version(), 2);
     }
 }

@@ -211,6 +211,8 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climateAridityPpm: climate?.aridityPpm,
     climateBiomeClass: climate?.biomeClass,
     climateBiomeFill: climateBiomeFills(),
+    climateStormSuitabilityPpm: climate?.stormSuitabilityPpm,
+    climateStormTrackPpm: climate?.stormTrackPpm,
   };
 }
 
@@ -246,7 +248,12 @@ function climateSummary() {
       ? ` Solstice rainfall typically differs by ${metrics.meanSeasonalPrecipitationRangeMm.toLocaleString("en-US")} mm.`
       : "";
   const biome = biomeLegendEntry(metrics.dominantLandBiome).name;
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Typical land biome is ${biome}. Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. ${freeze}`;
+  const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
+  const storms =
+    metrics.stormProneOceanPpm > 50_000
+      ? ` Tropical-cyclone-like genesis covers about ${Math.round(metrics.stormProneOceanPpm / 10_000)}% of ocean, about ${stormsPerYear.toFixed(1)} storms per year.`
+      : " Tropical-cyclone genesis is limited.";
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Typical land biome is ${biome}.${storms} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. Storm fields are climatology, not a weather forecast. ${freeze}`;
 }
 
 function formatAridityLabel(ppm: number) {
@@ -302,7 +309,10 @@ function inspectClimate(anchor: MapAnchor) {
   );
   const iceCover = hydrology?.iceCells?.[index] ?? false;
   const iceNote = iceCover ? " Ice cover is present." : biomeClass === 1 ? " No ice cover on this cell." : "";
-  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString("en-US")} mm/year, humidity ${humidity}% of saturation, ${aridity}.${iceNote}`;
+  const storm = Math.round((climate.stormSuitabilityPpm[index] ?? 0) / 10_000);
+  const track = Math.round((climate.stormTrackPpm[index] ?? 0) / 10_000);
+  const intensity = Math.round((climate.stormIntensityPpm[index] ?? 0) / 10_000);
+  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString("en-US")} mm/year, humidity ${humidity}% of saturation, ${aridity}. Storm genesis ${storm}%, track ${track}%, intensity ${intensity}%.${iceNote}`;
 }
 
 function headline() {
@@ -587,6 +597,8 @@ onMount(() => {
             <option value="humidity">Humidity</option>
             <option value="aridity">Aridity</option>
             <option value="biome">Biome</option>
+            <option value="storm">Storm genesis</option>
+            <option value="storm-track">Storm tracks</option>
           </select></label>
         <label
           ><input
@@ -615,7 +627,7 @@ onMount(() => {
     {#if climate}
       <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
       <p class="physical-planet-readout physical-climate-readout">
-        {climateSample || "Click the map to inspect rainfall, humidity, aridity, and biome at a cell."}
+        {climateSample || "Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell."}
       </p>
       {#if (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false) || climateOverlay === "wind" || climateOverlay === "wind-nh-summer" || climateOverlay === "wind-nh-winter"}
         <p class="physical-planet-readout physical-climate-readout">
@@ -660,6 +672,18 @@ onMount(() => {
             {/each}
           </p>
         {/if}
+      {/if}
+      {#if climateOverlay === "storm"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents.
+          Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.
+        </p>
+      {/if}
+      {#if climateOverlay === "storm-track"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific
+          storm.
+        </p>
       {/if}
     {/if}
     {#if advancedPlanet}

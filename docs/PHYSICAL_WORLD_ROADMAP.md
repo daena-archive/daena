@@ -495,6 +495,12 @@ It is intentionally later than basic climate.
 - Generated storms should be sparse, bounded worldbuilding events.
 - A materialized event must remain stable even if the future storm model changes.
 - Storm effects on settlements, roads, or Lore should not be applied silently without author acceptance.
+- Suitability, frequency, tracks, and intensity are climatology. A specific storm exists only after the author materializes it.
+- Find Place storm filters remain later Milestone C / D8 work.
+- Wind shear is the seasonal solstice wind-vector difference, not vertical shear.
+- Overlay frequency is an Earth-scaled climatology census. Materialized storms are sparse notable events sampled from the same spatial weights.
+- Storm materialization uses climate and coastline at the interval midpoint, not a per-year weather replay.
+- Timeline, Lore, AI narrative, and plugin consequences stay later ecosystem linking (Milestone D / D7). Chronology is written; silent settlement or road damage is not.
 
 ### Ecosystem interaction
 

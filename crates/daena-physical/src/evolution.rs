@@ -1800,6 +1800,9 @@ mod tests {
             precipitation_nh_summer_mm: vec![0; sample_count],
             precipitation_nh_winter_mm: vec![0; sample_count],
             biome_class: vec![0; sample_count],
+            storm_suitability_ppm: vec![0; sample_count],
+            storm_track_ppm: vec![0; sample_count],
+            storm_intensity_ppm: vec![0; sample_count],
             metrics: crate::climate::ClimateMetrics {
                 precipitation_volume_m3_per_year: 0,
                 runoff_volume_m3_per_year: 0,
@@ -1825,6 +1828,11 @@ mod tests {
                 mean_land_aridity_ppm: 0,
                 mean_seasonal_precipitation_range_mm: 0,
                 dominant_land_biome: 0,
+                mean_ocean_storm_suitability_ppm: 0,
+                storm_prone_ocean_ppm: 0,
+                mean_storm_intensity_ppm: 0,
+                mean_land_storm_track_ppm: 0,
+                expected_storms_per_year_milli: 0,
             },
         }
     }

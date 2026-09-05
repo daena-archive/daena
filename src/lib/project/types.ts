@@ -275,6 +275,9 @@ export interface PhysicalClimateProducts {
   precipitationNhWinterMm: number[];
   biomeClass: number[];
   biomeLegend: { id: number; name: string; reason: string; fill: [number, number, number] }[];
+  stormSuitabilityPpm: number[];
+  stormTrackPpm: number[];
+  stormIntensityPpm: number[];
   metrics: {
     precipitationVolumeM3PerYear: number;
     runoffVolumeM3PerYear: number;
@@ -300,6 +303,11 @@ export interface PhysicalClimateProducts {
     meanLandAridityPpm: number;
     meanSeasonalPrecipitationRangeMm: number;
     dominantLandBiome: number;
+    meanOceanStormSuitabilityPpm: number;
+    stormProneOceanPpm: number;
+    meanStormIntensityPpm: number;
+    meanLandStormTrackPpm: number;
+    expectedStormsPerYearMilli: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -637,6 +645,10 @@ export interface AtlasStudioSurfaceSample {
   precipitationNhWinterMm: number;
   climate: string;
   biomeReason: string;
+  stormSuitabilityPpm: number;
+  stormTrackPpm: number;
+  stormIntensityPpm: number;
+  stormReason: string;
   surface: string;
   iceThicknessMm: number;
 }
@@ -657,7 +669,7 @@ export interface PhysicalGenerationInput {
     planetary?: PlanetaryConfiguration;
   };
 }
-export type PhysicalNaturalEventKind = "earthquake" | "eruption";
+export type PhysicalNaturalEventKind = "earthquake" | "eruption" | "storm";
 export interface PhysicalEventMaterializationRequest {
   eventKind: PhysicalNaturalEventKind;
   intervalStartYears: number;
@@ -679,6 +691,7 @@ export interface PhysicalMaterializedEvent {
   ratePerMillionYearsPpm: number;
   sampledCenterId: number | null;
   volcanicSourceDerivationVersion: number;
+  trackCells: number[];
 }
 export interface PhysicalEventMaterializationResult {
   requestId: string;

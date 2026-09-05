@@ -926,6 +926,10 @@ onDestroy(() => {
               <dd>{surface.biomeReason}</dd>
             </div>
             <div>
+              <dt>Storms</dt>
+              <dd>{surface.stormReason}</dd>
+            </div>
+            <div>
               <dt>Prevailing wind</dt>
               <dd>{formatWind(surface.windEastMilli, surface.windNorthMilli)}</dd>
             </div>

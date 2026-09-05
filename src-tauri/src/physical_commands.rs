@@ -305,6 +305,9 @@ pub(super) fn physical_climate_products(
     products["precipitationNhSummerMm"] = serde_json::json!(climate.precipitation_nh_summer_mm);
     products["precipitationNhWinterMm"] = serde_json::json!(climate.precipitation_nh_winter_mm);
     products["biomeClass"] = serde_json::json!(climate.biome_class);
+    products["stormSuitabilityPpm"] = serde_json::json!(climate.storm_suitability_ppm);
+    products["stormTrackPpm"] = serde_json::json!(climate.storm_track_ppm);
+    products["stormIntensityPpm"] = serde_json::json!(climate.storm_intensity_ppm);
     products["biomeLegend"] = serde_json::json!(daena_physical::climate::biome_legend()
         .iter()
         .map(|entry| serde_json::json!({
@@ -339,6 +342,11 @@ pub(super) fn physical_climate_products(
         "meanLandAridityPpm": climate.metrics.mean_land_aridity_ppm,
         "meanSeasonalPrecipitationRangeMm": climate.metrics.mean_seasonal_precipitation_range_mm,
         "dominantLandBiome": climate.metrics.dominant_land_biome,
+        "meanOceanStormSuitabilityPpm": climate.metrics.mean_ocean_storm_suitability_ppm,
+        "stormProneOceanPpm": climate.metrics.storm_prone_ocean_ppm,
+        "meanStormIntensityPpm": climate.metrics.mean_storm_intensity_ppm,
+        "meanLandStormTrackPpm": climate.metrics.mean_land_storm_track_ppm,
+        "expectedStormsPerYearMilli": climate.metrics.expected_storms_per_year_milli,
     });
     products
 }
@@ -1303,8 +1311,53 @@ pub(super) async fn project_physical_materialize_events(
         let world = &validated.world;
         let hazards = daena_physical::hazards::derive_hazards(world)
             .map_err(|error| CoreError::Validation(error.to_string()))?;
-        let events = daena_physical::events::sample_events(world, &hazards, &request)
+        let climate_epoch = if request.event_kind == daena_physical::events::NaturalEventKind::Storm
+        {
+            daena_physical::history::normalize_epoch_offset(
+                (request.interval_start_years + request.interval_end_years) / 2,
+            )
+            .map_err(|error| CoreError::Validation(error.to_string()))?
+        } else {
+            0
+        };
+        let mut epoch_field = None;
+        let climate = if request.event_kind == daena_physical::events::NaturalEventKind::Storm {
+            let physics = load_or_fill_static_derived(
+                &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+                &validated.identity,
+                world,
+                &generation,
+                validated.report.reference_water_inventory_m3,
+            )
             .map_err(CoreError::Validation)?;
+            if climate_epoch == 0 {
+                Some(physics.climate)
+            } else {
+                let (historical, _, _) = derive_reopened_historical_from_static(
+                    world,
+                    &generation,
+                    validated.report.reference_water_inventory_m3,
+                    climate_epoch,
+                    &physics,
+                    &mut daena_physical::NoopProgress,
+                )
+                .map_err(CoreError::Validation)?;
+                let mut field = world.physical_field();
+                field.sea_level_mm = historical.hydrology.sea_level_mm;
+                epoch_field = Some(field);
+                Some(historical.climate)
+            }
+        } else {
+            None
+        };
+        let events = daena_physical::events::sample_events(
+            world,
+            &hazards,
+            climate.as_ref(),
+            epoch_field.as_ref(),
+            &request,
+        )
+        .map_err(CoreError::Validation)?;
         let source_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         let generator_id = generation
             .get("id")
@@ -1322,17 +1375,44 @@ pub(super) async fn project_physical_materialize_events(
         let entries = events
             .iter()
             .map(|event| {
+                let strength = if event.event_kind
+                    == daena_physical::events::NaturalEventKind::Storm
+                {
+                    format!("I {:.1}", f64::from(event.magnitude_milli) / 1_000.0)
+                } else {
+                    format!("M {:.3}", f64::from(event.magnitude_milli) / 1_000.0)
+                };
                 let name = format!(
-                    "{} · year {} · M {:.3}",
+                    "{} · year {} · {}",
                     event.event_kind.label(),
                     event.year_offset,
-                    f64::from(event.magnitude_milli) / 1_000.0
+                    strength
                 );
                 let location_id = deterministic_event_location_id(&request_id, event.ordinal);
                 let x = (f64::from(event.longitude_microdegrees) / 1_000_000.0 + 180.0) / 360.0;
                 let y = (f64::from(event.latitude_microdegrees) / 1_000_000.0 + 90.0) / 180.0;
+                let track_points = event
+                    .track_cells
+                    .iter()
+                    .map(|cell| {
+                        let (row, col) = world.grid.row_col(*cell as usize);
+                        let (lon, lat) = world.grid.center_radians(row, col);
+                        [
+                            (lon.to_degrees() + 180.0) / 360.0,
+                            (lat.to_degrees() + 90.0) / 180.0,
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                let anchor = if event.event_kind
+                    == daena_physical::events::NaturalEventKind::Storm
+                    && track_points.len() >= 2
+                {
+                    serde_json::json!({"kind": "path", "points": track_points})
+                } else {
+                    serde_json::json!({"kind": "point", "point": [x, y]})
+                };
                 let provenance = serde_json::json!({
-                    "materializationVersion": daena_physical::events::EVENT_MATERIALIZATION_VERSION,
+                    "materializationVersion": event.event_kind.materialization_version(),
                     "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                     "eventModel": event.event_kind.model_label(),
                     "eventKind": event.event_kind.label(),
@@ -1348,6 +1428,8 @@ pub(super) async fn project_physical_materialize_events(
                     "annualRateNano": event.annual_rate_nano,
                     "ratePerMillionYearsPpm": event.rate_per_million_years_ppm,
                     "sampledCenterId": event.sampled_center_id,
+                    "trackCells": event.track_cells,
+                    "climateEpochYears": climate_epoch,
                     "volcanicSourceDerivationVersion": event.volcanic_source_derivation_version,
                     "physicalIdentity": validated.identity,
                     "requestId": request_id,
@@ -1359,10 +1441,10 @@ pub(super) async fn project_physical_materialize_events(
                     "prediction": false,
                 });
                 let document = format!(
-                    "# {}\n\n- Relative time offset: {} years\n- Magnitude/index: {:.3}\n- Location: {:.3}°, {:.3}°\n- Model: {}\n- Prediction: no; this is generated relative history.\n",
+                    "# {}\n\n- Relative time offset: {} years\n- Strength: {}\n- Location: {:.3}°, {:.3}°\n- Model: {}\n- Prediction: no; this is generated relative history.\n",
                     name,
                     event.year_offset,
-                    f64::from(event.magnitude_milli) / 1_000.0,
+                    strength,
                     f64::from(event.latitude_microdegrees) / 1_000_000.0,
                     f64::from(event.longitude_microdegrees) / 1_000_000.0,
                     event.event_kind.model_label(),
@@ -1411,7 +1493,7 @@ pub(super) async fn project_physical_materialize_events(
                                     "mapEntityId": map_entity_id,
                                     "role": "physical-event",
                                     "label": name,
-                                    "anchor": {"kind": "point", "point": [x, y]},
+                                     "anchor": anchor,
                                     "validity": {"from": null, "to": null}
                                 }]
                             }),
@@ -1436,7 +1518,7 @@ pub(super) async fn project_physical_materialize_events(
         Ok(PhysicalEventMaterializationResult {
             request_id,
             map_entity_id: response_map_id,
-            materialization_version: daena_physical::events::EVENT_MATERIALIZATION_VERSION,
+            materialization_version: request.event_kind.materialization_version(),
             hazard_derivation_version: daena_physical::hazards::HAZARD_DERIVATION_VERSION,
             prediction: false,
             events: materialized,

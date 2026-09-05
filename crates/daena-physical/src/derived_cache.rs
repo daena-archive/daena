@@ -17,7 +17,7 @@ use crate::{
     GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
-pub const CACHE_FORMAT_VERSION: u32 = 7;
+pub const CACHE_FORMAT_VERSION: u32 = 9;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(64 * 1024 * 1024);
@@ -472,6 +472,9 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_vec_u32(out, &climate.precipitation_nh_summer_mm)?;
     write_vec_u32(out, &climate.precipitation_nh_winter_mm)?;
     write_vec_u32(out, &climate.biome_class)?;
+    write_vec_u32(out, &climate.storm_suitability_ppm)?;
+    write_vec_u32(out, &climate.storm_track_ppm)?;
+    write_vec_u32(out, &climate.storm_intensity_ppm)?;
     write_u64(out, climate.metrics.precipitation_volume_m3_per_year);
     write_u64(out, climate.metrics.runoff_volume_m3_per_year);
     write_i32(out, climate.metrics.mean_temperature_centi_c);
@@ -499,6 +502,11 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_u32(out, climate.metrics.mean_land_aridity_ppm);
     write_u32(out, climate.metrics.mean_seasonal_precipitation_range_mm);
     write_u32(out, climate.metrics.dominant_land_biome);
+    write_u32(out, climate.metrics.mean_ocean_storm_suitability_ppm);
+    write_u32(out, climate.metrics.storm_prone_ocean_ppm);
+    write_u32(out, climate.metrics.mean_storm_intensity_ppm);
+    write_u32(out, climate.metrics.mean_land_storm_track_ppm);
+    write_u32(out, climate.metrics.expected_storms_per_year_milli);
     Ok(())
 }
 
@@ -534,6 +542,9 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
         precipitation_nh_summer_mm: reader.vec_u32()?,
         precipitation_nh_winter_mm: reader.vec_u32()?,
         biome_class: reader.vec_u32()?,
+        storm_suitability_ppm: reader.vec_u32()?,
+        storm_track_ppm: reader.vec_u32()?,
+        storm_intensity_ppm: reader.vec_u32()?,
         metrics: ClimateMetrics {
             precipitation_volume_m3_per_year: reader.u64()?,
             runoff_volume_m3_per_year: reader.u64()?,
@@ -559,6 +570,11 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
             mean_land_aridity_ppm: reader.u32()?,
             mean_seasonal_precipitation_range_mm: reader.u32()?,
             dominant_land_biome: reader.u32()?,
+            mean_ocean_storm_suitability_ppm: reader.u32()?,
+            storm_prone_ocean_ppm: reader.u32()?,
+            mean_storm_intensity_ppm: reader.u32()?,
+            mean_land_storm_track_ppm: reader.u32()?,
+            expected_storms_per_year_milli: reader.u32()?,
         },
     })
 }
@@ -1079,6 +1095,10 @@ mod tests {
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded.climate, physics.climate);
         assert_eq!(decoded.climate.biome_class, physics.climate.biome_class);
+        assert_eq!(
+            decoded.climate.storm_suitability_ppm,
+            physics.climate.storm_suitability_ppm
+        );
         assert!(decoded
             .climate
             .biome_class

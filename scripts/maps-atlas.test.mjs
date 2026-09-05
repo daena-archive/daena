@@ -102,6 +102,7 @@ try {
     "daena-atlas-precipitation",
     "daena-atlas-humidity",
     "daena-atlas-aridity",
+    "daena-atlas-storms",
     "daena-atlas-bathymetry",
     "daena-atlas-hydrology",
   ]) {

@@ -248,7 +248,7 @@ let epochProgress = $state<{ completed: number; total: number } | null>(null);
 let activeEpochRequestId = "";
 let epochRequest = 0;
 let epochTimer: ReturnType<typeof setTimeout> | undefined;
-let eventKind = $state<"earthquake" | "eruption">("earthquake");
+let eventKind = $state<"earthquake" | "eruption" | "storm">("earthquake");
 let eventStartYears = $state(-10_000);
 let eventEndYears = $state(10_000);
 let eventMaxEvents = $state(8);
@@ -2886,6 +2886,7 @@ onMount(() => {
                       <select bind:value={eventKind} disabled={eventBusy || busy}>
                         <option value="earthquake">Earthquake</option>
                         <option value="eruption">Eruption</option>
+                        <option value="storm">Storm</option>
                       </select>
                     </label>
                     <div class="event-grid">

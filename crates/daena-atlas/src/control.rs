@@ -50,6 +50,9 @@ pub struct ControlFields {
     pub aridity_ppm: Vec<i32>,
     pub precipitation_nh_summer_mm: Vec<i32>,
     pub precipitation_nh_winter_mm: Vec<i32>,
+    pub storm_suitability_ppm: Vec<i32>,
+    pub storm_track_ppm: Vec<i32>,
+    pub storm_intensity_ppm: Vec<i32>,
     pub climate_class: Vec<i32>,
     pub ice_thickness_mm: Vec<i32>,
     pub water_level_mm: Vec<i32>,
@@ -94,6 +97,9 @@ impl ControlFields {
             || climate.precipitation_nh_summer_mm.len() != count
             || climate.precipitation_nh_winter_mm.len() != count
             || climate.biome_class.len() != count
+            || climate.storm_suitability_ppm.len() != count
+            || climate.storm_track_ppm.len() != count
+            || climate.storm_intensity_ppm.len() != count
             || hydrology.ice_thickness_mm.len() != count
             || hydrology.ice_cells.len() != count
             || hydrology.water_level_mm.len() != count
@@ -114,6 +120,9 @@ impl ControlFields {
         let mut aridity_ppm = Vec::with_capacity(count);
         let mut precipitation_nh_summer_mm = Vec::with_capacity(count);
         let mut precipitation_nh_winter_mm = Vec::with_capacity(count);
+        let mut storm_suitability_ppm = Vec::with_capacity(count);
+        let mut storm_track_ppm = Vec::with_capacity(count);
+        let mut storm_intensity_ppm = Vec::with_capacity(count);
         let mut climate_class = Vec::with_capacity(count);
         let mut ice_thickness_mm = Vec::with_capacity(count);
         let mut watershed_id = Vec::with_capacity(count);
@@ -136,6 +145,11 @@ impl ControlFields {
                 .push(i32::try_from(climate.precipitation_nh_summer_mm[cell]).unwrap_or(i32::MAX));
             precipitation_nh_winter_mm
                 .push(i32::try_from(climate.precipitation_nh_winter_mm[cell]).unwrap_or(i32::MAX));
+            storm_suitability_ppm
+                .push(i32::try_from(climate.storm_suitability_ppm[cell]).unwrap_or(i32::MAX));
+            storm_track_ppm.push(i32::try_from(climate.storm_track_ppm[cell]).unwrap_or(i32::MAX));
+            storm_intensity_ppm
+                .push(i32::try_from(climate.storm_intensity_ppm[cell]).unwrap_or(i32::MAX));
             ice_thickness_mm
                 .push(i32::try_from(hydrology.ice_thickness_mm[cell]).unwrap_or(i32::MAX));
             watershed_id.push(i32::try_from(hydrology.watershed_id[cell]).unwrap_or(i32::MAX));
@@ -183,6 +197,9 @@ impl ControlFields {
             aridity_ppm,
             precipitation_nh_summer_mm,
             precipitation_nh_winter_mm,
+            storm_suitability_ppm,
+            storm_track_ppm,
+            storm_intensity_ppm,
             climate_class,
             ice_thickness_mm,
             water_level_mm: hydrology.water_level_mm.clone(),

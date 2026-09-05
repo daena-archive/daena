@@ -8,7 +8,11 @@
 //! winds with sea-surface and current evaporation, humidity and aridity from
 //! remaining moisture versus local saturation and evaporative demand,
 //! precipitation that feeds runoff volumes using exact spherical cell areas,
-//! and land biome classes from those climate conditions.
+//! land biome classes from those climate conditions, and tropical-cyclone-like
+//! storm suitability, track corridors, and intensity potential. Storm genesis
+//! consumes D1–D4 (temperature, moisture, winds, and surface currents) plus
+//! land proximity. Wind shear is the seasonal (solstice) wind-vector
+//! difference, not vertical shear.
 
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
@@ -20,7 +24,7 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 5;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 7;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -49,6 +53,17 @@ const TROPICAL_HUMIDITY_PPM: u32 = 550_000;
 const FOREST_HUMIDITY_PPM: u32 = 350_000;
 const MARITIME_HUMIDITY_PPM: u32 = 700_000;
 const UNKNOWN_BIOME_FILL: [u8; 3] = [120, 120, 124];
+const STORM_MIN_SST_CENTI_C: i32 = 1_200;
+const STORM_FULL_SST_CENTI_C: i32 = 1_800;
+const STORM_MIN_HUMIDITY_PPM: u32 = 150_000;
+const STORM_FULL_HUMIDITY_PPM: u32 = 450_000;
+const STORM_SHEAR_START_MILLI: u32 = 2_500;
+const STORM_SHEAR_KILL_MILLI: u32 = 12_000;
+const STORM_TRACK_START_PPM: u32 = 40_000;
+const STORM_TRACK_STEPS: usize = 14;
+const STORM_PRONE_PPM: u32 = 100_000;
+const STORM_CURRENT_STEER_PPM: i32 = 650_000;
+const STORM_CLIMATE_YEAR_MILLI_AT_FULL: u32 = 80_000;
 const EARTH_EQUATOR_BASE_CENTI_C: i32 = 1_400;
 pub const CLIMATE_WIND_BAND_COUNT: u32 = 6;
 pub const WIND_BAND_HADLEY: u32 = 0;
@@ -168,6 +183,11 @@ pub struct ClimateMetrics {
     pub mean_land_aridity_ppm: u32,
     pub mean_seasonal_precipitation_range_mm: u32,
     pub dominant_land_biome: u32,
+    pub mean_ocean_storm_suitability_ppm: u32,
+    pub storm_prone_ocean_ppm: u32,
+    pub mean_storm_intensity_ppm: u32,
+    pub mean_land_storm_track_ppm: u32,
+    pub expected_storms_per_year_milli: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +222,9 @@ pub struct ClimateField {
     pub precipitation_nh_summer_mm: Vec<u32>,
     pub precipitation_nh_winter_mm: Vec<u32>,
     pub biome_class: Vec<u32>,
+    pub storm_suitability_ppm: Vec<u32>,
+    pub storm_track_ppm: Vec<u32>,
+    pub storm_intensity_ppm: Vec<u32>,
     pub metrics: ClimateMetrics,
 }
 
@@ -236,6 +259,9 @@ impl ClimateField {
             || self.precipitation_nh_summer_mm.len() != expected
             || self.precipitation_nh_winter_mm.len() != expected
             || self.biome_class.len() != expected
+            || self.storm_suitability_ppm.len() != expected
+            || self.storm_track_ppm.len() != expected
+            || self.storm_intensity_ppm.len() != expected
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -301,6 +327,12 @@ impl ClimateField {
                 .biome_class
                 .iter()
                 .any(|value| *value > BIOME_CLASS_MAX)
+            || self
+                .storm_suitability_ppm
+                .iter()
+                .chain(self.storm_track_ppm.iter())
+                .chain(self.storm_intensity_ppm.iter())
+                .any(|value| *value > 1_000_000)
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -447,6 +479,32 @@ impl ClimateField {
             &next.aridity_ppm,
         );
         apply_biome_metrics(field, &next.biome_class, &mut metrics);
+        let storms = derive_storms(
+            field,
+            next.planetary,
+            &next.temperature_centi_c,
+            &next.temperature_nh_summer_centi_c,
+            &next.temperature_nh_winter_centi_c,
+            &next.humidity_ppm,
+            &next.wind_east_milli,
+            &next.wind_north_milli,
+            &next.wind_east_nh_summer_milli,
+            &next.wind_north_nh_summer_milli,
+            &next.wind_east_nh_winter_milli,
+            &next.wind_north_nh_winter_milli,
+            &next.current_east_milli,
+            &next.current_north_milli,
+        );
+        next.storm_suitability_ppm = storms.suitability_ppm;
+        next.storm_track_ppm = storms.track_ppm;
+        next.storm_intensity_ppm = storms.intensity_ppm;
+        apply_storm_metrics(
+            field,
+            &next.storm_suitability_ppm,
+            &next.storm_track_ppm,
+            &next.storm_intensity_ppm,
+            &mut metrics,
+        );
         next.metrics = metrics;
         next.validate_against(field)?;
         Ok(next)
@@ -1747,6 +1805,11 @@ fn runoff_fields(
             mean_land_aridity_ppm: 0,
             mean_seasonal_precipitation_range_mm: 0,
             dominant_land_biome: BIOME_OCEAN,
+            mean_ocean_storm_suitability_ppm: 0,
+            storm_prone_ocean_ppm: 0,
+            mean_storm_intensity_ppm: 0,
+            mean_land_storm_track_ppm: 0,
+            expected_storms_per_year_milli: 0,
         },
     ))
 }
@@ -2128,6 +2191,430 @@ fn apply_biome_metrics(field: &PhysicalField, biome_class: &[u32], metrics: &mut
     };
 }
 
+struct StormFields {
+    suitability_ppm: Vec<u32>,
+    track_ppm: Vec<u32>,
+    intensity_ppm: Vec<u32>,
+}
+
+fn unit_factor(value: i64, start: i64, full: i64) -> f64 {
+    if full <= start {
+        return if value >= full { 1.0 } else { 0.0 };
+    }
+    ((value - start) as f64 / (full - start) as f64).clamp(0.0, 1.0)
+}
+
+fn storm_latitude_factor(latitude: f64) -> f64 {
+    let abs_lat = latitude.abs().to_degrees();
+    if abs_lat < 5.0 {
+        0.0
+    } else if abs_lat < 12.0 {
+        (abs_lat - 5.0) / 7.0
+    } else if abs_lat <= 22.0 {
+        1.0
+    } else if abs_lat < 32.0 {
+        (32.0 - abs_lat) / 10.0
+    } else {
+        0.0
+    }
+}
+
+fn storm_shear_milli(
+    east_summer: i32,
+    north_summer: i32,
+    east_winter: i32,
+    north_winter: i32,
+) -> u32 {
+    // Seasonal solstice wind-vector difference. This is not vertical shear.
+    let east = i64::from(east_summer) - i64::from(east_winter);
+    let north = i64::from(north_summer) - i64::from(north_winter);
+    ((east * east + north * north) as f64).sqrt().round() as u32
+}
+
+fn storm_coriolis_factor(planetary: PlanetaryConfiguration) -> f64 {
+    (f64::from(EARTH_ROTATION_PERIOD_SECONDS) / f64::from(planetary.rotation_period_seconds.max(1)))
+        .clamp(0.0, 1.0)
+}
+
+fn storm_sst_bounds(planetary: PlanetaryConfiguration) -> (i32, i32) {
+    let shift = planetary.retained_heat_centi_c - EARTH_RETAINED_HEAT_CENTI_C;
+    (
+        STORM_MIN_SST_CENTI_C.saturating_add(shift),
+        STORM_FULL_SST_CENTI_C.saturating_add(shift),
+    )
+}
+
+fn storm_proximity_factor(land_distance_cells: u16) -> f64 {
+    match land_distance_cells {
+        0 => 0.0,
+        1 => 0.35,
+        2..=6 => 1.0,
+        7..=12 => 0.7,
+        _ => 0.45,
+    }
+}
+
+fn storm_current_factor(east_milli: i32, north_milli: i32) -> f64 {
+    let speed = ((i64::from(east_milli) * i64::from(east_milli)
+        + i64::from(north_milli) * i64::from(north_milli)) as f64)
+        .sqrt()
+        .round() as i64;
+    0.82 + 0.18 * unit_factor(speed, 200, 2_800)
+}
+
+fn land_distance_cells(field: &PhysicalField) -> Vec<u16> {
+    let count = field.grid.sample_count();
+    let mut distance = vec![u16::MAX; count];
+    let mut queue = Vec::with_capacity(count);
+    for cell in 0..count {
+        if !is_ocean(field, cell) {
+            distance[cell] = 0;
+            queue.push(cell);
+        }
+    }
+    let mut head = 0usize;
+    while head < queue.len() {
+        let cell = queue[head];
+        head += 1;
+        let next = distance[cell].saturating_add(1);
+        for neighbor in field.grid.neighbors(cell) {
+            if distance[neighbor] > next {
+                distance[neighbor] = next;
+                queue.push(neighbor);
+            }
+        }
+    }
+    distance
+}
+
+fn classify_storm_cell(
+    ocean: bool,
+    sst_centi_c: i32,
+    humidity_ppm: u32,
+    latitude: f64,
+    shear_milli: u32,
+    coriolis: f64,
+    proximity: f64,
+    current: f64,
+    sst_min: i32,
+    sst_full: i32,
+) -> (u32, u32) {
+    if !ocean || sst_centi_c < 0 {
+        return (0, 0);
+    }
+    let sst = unit_factor(
+        i64::from(sst_centi_c),
+        i64::from(sst_min),
+        i64::from(sst_full),
+    );
+    let humidity = unit_factor(
+        i64::from(humidity_ppm),
+        i64::from(STORM_MIN_HUMIDITY_PPM),
+        i64::from(STORM_FULL_HUMIDITY_PPM),
+    );
+    let latitude_factor = storm_latitude_factor(latitude) * coriolis;
+    let shear = unit_factor(
+        i64::from(shear_milli),
+        i64::from(STORM_SHEAR_START_MILLI),
+        i64::from(STORM_SHEAR_KILL_MILLI),
+    );
+    let suitability =
+        (sst * humidity * latitude_factor * (1.0 - shear) * proximity * current * 1_000_000.0)
+            .round() as u32;
+    let intensity = (suitability as f64 * (0.45 + 0.55 * sst)).round() as u32;
+    (suitability.min(1_000_000), intensity.min(1_000_000))
+}
+
+pub fn explain_storm(
+    ocean: bool,
+    sst_centi_c: i32,
+    humidity_ppm: u32,
+    latitude_milli_deg: i32,
+    shear_milli: u32,
+    suitability_ppm: u32,
+    track_ppm: u32,
+    intensity_ppm: u32,
+) -> String {
+    let zone = if !ocean {
+        "landfall exposure, not formation"
+    } else if suitability_ppm == 0 {
+        "this ocean cell is outside the tropical-cyclone genesis band"
+    } else if suitability_ppm >= 500_000 {
+        "warm, moist, rotating ocean favors tropical-cyclone genesis"
+    } else {
+        "marginal tropical-cyclone conditions"
+    };
+    format!(
+        "Storm suitability {}% ({zone}). Sea {:.1} °C, humidity {}% of saturation, |lat| {:.1}°, seasonal wind shear {} (solstice vector difference, not vertical), track corridor {}%, intensity potential {}%. Climatology, not a forecast.",
+        suitability_ppm / 10_000,
+        f64::from(sst_centi_c) / 100.0,
+        humidity_ppm / 10_000,
+        f64::from(latitude_milli_deg.abs()) / 1_000.0,
+        shear_milli,
+        track_ppm / 10_000,
+        intensity_ppm / 10_000,
+    )
+}
+
+pub fn storm_annual_rate_nano(suitability_ppm: u32) -> u64 {
+    u64::from(suitability_ppm)
+}
+
+pub fn storm_expected_per_year_milli(mean_ocean_suitability_ppm: u32) -> u32 {
+    ((u64::from(mean_ocean_suitability_ppm) * u64::from(STORM_CLIMATE_YEAR_MILLI_AT_FULL))
+        / 1_000_000) as u32
+}
+
+pub fn storm_track_step(
+    grid: Grid,
+    cell: usize,
+    east_milli: i32,
+    north_milli: i32,
+    current_east_milli: i32,
+    current_north_milli: i32,
+    latitude: f64,
+) -> Option<usize> {
+    let east = east_milli.saturating_add(
+        ((i64::from(current_east_milli) * i64::from(STORM_CURRENT_STEER_PPM)) / 1_000_000) as i32,
+    );
+    let north_wind = north_milli.saturating_add(
+        ((i64::from(current_north_milli) * i64::from(STORM_CURRENT_STEER_PPM)) / 1_000_000) as i32,
+    );
+    let poleward = if latitude >= 0.0 { 1 } else { -1 };
+    let beta = (east.unsigned_abs() as i32 * 2) / 5;
+    let north = north_wind.saturating_add(poleward * beta);
+    let speed = east.unsigned_abs().max(north.unsigned_abs());
+    if speed < 200 {
+        return None;
+    }
+    let dcol = if east.unsigned_abs() * 2 >= speed {
+        if east > 0 {
+            1
+        } else {
+            -1
+        }
+    } else {
+        0
+    };
+    let drow = if north.unsigned_abs() * 2 >= speed {
+        if north > 0 {
+            1
+        } else {
+            -1
+        }
+    } else {
+        0
+    };
+    if dcol == 0 && drow == 0 {
+        return None;
+    }
+    let (row, col) = grid.row_col(cell);
+    let next_row = clamped_row(grid, row, drow);
+    let next_col = wrapped_col(grid, col, dcol);
+    let next = grid.index(next_row, next_col);
+    if next == cell {
+        None
+    } else {
+        Some(next)
+    }
+}
+
+pub fn collect_storm_track(
+    field: &PhysicalField,
+    climate: &ClimateField,
+    origin: usize,
+) -> Vec<usize> {
+    let mut cells = vec![origin];
+    let mut cell = origin;
+    let mut landfalls = 0u32;
+    for _ in 0..STORM_TRACK_STEPS {
+        let (row, _) = field.grid.row_col(cell);
+        let latitude = field.grid.center_radians(row, 0).1;
+        let Some(next) = storm_track_step(
+            field.grid,
+            cell,
+            climate.wind_east_milli[cell],
+            climate.wind_north_milli[cell],
+            climate.current_east_milli[cell],
+            climate.current_north_milli[cell],
+            latitude,
+        ) else {
+            break;
+        };
+        if cells.contains(&next) {
+            break;
+        }
+        cell = next;
+        cells.push(cell);
+        if !is_ocean(field, cell) {
+            landfalls += 1;
+            if landfalls >= 2 {
+                break;
+            }
+        }
+    }
+    cells
+}
+
+pub fn follow_storm_track(field: &PhysicalField, climate: &ClimateField, origin: usize) -> usize {
+    *collect_storm_track(field, climate, origin)
+        .last()
+        .unwrap_or(&origin)
+}
+
+fn deposit(values: &mut [u32], cell: usize, amount: u32) {
+    values[cell] = values[cell].saturating_add(amount).min(1_000_000);
+}
+
+fn derive_storms(
+    field: &PhysicalField,
+    planetary: PlanetaryConfiguration,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    humidity_ppm: &[u32],
+    wind_east: &[i32],
+    wind_north: &[i32],
+    wind_east_summer: &[i32],
+    wind_north_summer: &[i32],
+    wind_east_winter: &[i32],
+    wind_north_winter: &[i32],
+    current_east: &[i32],
+    current_north: &[i32],
+) -> StormFields {
+    let count = field.grid.sample_count();
+    let coriolis = storm_coriolis_factor(planetary);
+    let (sst_min, sst_full) = storm_sst_bounds(planetary);
+    let proximity = land_distance_cells(field);
+    let mut suitability_ppm = vec![0u32; count];
+    let mut track_ppm = vec![0u32; count];
+    let mut intensity_ppm = vec![0u32; count];
+    for cell in 0..count {
+        let (row, _) = field.grid.row_col(cell);
+        let latitude = field.grid.center_radians(row, 0).1;
+        let sst = summers[cell].max(winters[cell]).max(annual[cell]);
+        let shear = storm_shear_milli(
+            wind_east_summer[cell],
+            wind_north_summer[cell],
+            wind_east_winter[cell],
+            wind_north_winter[cell],
+        );
+        let (suitability, intensity) = classify_storm_cell(
+            is_ocean(field, cell),
+            sst,
+            humidity_ppm[cell],
+            latitude,
+            shear,
+            coriolis,
+            storm_proximity_factor(proximity[cell]),
+            storm_current_factor(current_east[cell], current_north[cell]),
+            sst_min,
+            sst_full,
+        );
+        suitability_ppm[cell] = suitability;
+        intensity_ppm[cell] = intensity;
+    }
+    for origin in 0..count {
+        if suitability_ppm[origin] < STORM_TRACK_START_PPM {
+            continue;
+        }
+        let mut cell = origin;
+        let mut remaining = suitability_ppm[origin];
+        deposit(&mut track_ppm, cell, remaining);
+        let mut landfalls = 0u32;
+        for _ in 0..STORM_TRACK_STEPS {
+            let (row, _) = field.grid.row_col(cell);
+            let latitude = field.grid.center_radians(row, 0).1;
+            let Some(next) = storm_track_step(
+                field.grid,
+                cell,
+                wind_east[cell],
+                wind_north[cell],
+                current_east[cell],
+                current_north[cell],
+                latitude,
+            ) else {
+                break;
+            };
+            cell = next;
+            let land = !is_ocean(field, cell);
+            remaining =
+                ((u64::from(remaining) * if land { 500_000 } else { 880_000 }) / 1_000_000) as u32;
+            if remaining == 0 {
+                break;
+            }
+            deposit(&mut track_ppm, cell, remaining);
+            if land {
+                let landfall =
+                    ((u64::from(intensity_ppm[origin]) * u64::from(remaining)) / 1_000_000) as u32;
+                deposit(&mut intensity_ppm, cell, landfall);
+                landfalls += 1;
+                if landfalls >= 2 {
+                    break;
+                }
+            }
+        }
+    }
+    StormFields {
+        suitability_ppm,
+        track_ppm,
+        intensity_ppm,
+    }
+}
+
+fn apply_storm_metrics(
+    field: &PhysicalField,
+    suitability_ppm: &[u32],
+    track_ppm: &[u32],
+    intensity_ppm: &[u32],
+    metrics: &mut ClimateMetrics,
+) {
+    let mut ocean_area = 0.0;
+    let mut land_area = 0.0;
+    let mut suitability_sum = 0.0;
+    let mut prone_area = 0.0;
+    let mut intensity_sum = 0.0;
+    let mut land_track_sum = 0.0;
+    let mut intensity_area = 0.0;
+    for cell in 0..field.grid.sample_count() {
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        intensity_sum += f64::from(intensity_ppm[cell]) * area;
+        intensity_area += area;
+        if is_ocean(field, cell) {
+            ocean_area += area;
+            suitability_sum += f64::from(suitability_ppm[cell]) * area;
+            if suitability_ppm[cell] >= STORM_PRONE_PPM {
+                prone_area += area;
+            }
+        } else {
+            land_area += area;
+            land_track_sum += f64::from(track_ppm[cell]) * area;
+        }
+    }
+    metrics.mean_ocean_storm_suitability_ppm = if ocean_area <= 0.0 {
+        0
+    } else {
+        (suitability_sum / ocean_area).round() as u32
+    };
+    metrics.storm_prone_ocean_ppm = if ocean_area <= 0.0 {
+        0
+    } else {
+        ((prone_area / ocean_area) * 1_000_000.0).round() as u32
+    };
+    metrics.mean_storm_intensity_ppm = if intensity_area <= 0.0 {
+        0
+    } else {
+        (intensity_sum / intensity_area).round() as u32
+    };
+    metrics.mean_land_storm_track_ppm = if land_area <= 0.0 {
+        0
+    } else {
+        (land_track_sum / land_area).round() as u32
+    };
+    metrics.expected_storms_per_year_milli =
+        storm_expected_per_year_milli(metrics.mean_ocean_storm_suitability_ppm);
+}
+
 fn round_volume(volume_m3: f64) -> Result<u64, PhysicalError> {
     if !volume_m3.is_finite() || !(0.0..=(u64::MAX as f64)).contains(&volume_m3) {
         return Err(PhysicalError::coded(
@@ -2201,6 +2688,9 @@ pub fn derive_current_climate(
         precipitation_nh_summer_mm: Vec::new(),
         precipitation_nh_winter_mm: Vec::new(),
         biome_class: Vec::new(),
+        storm_suitability_ppm: Vec::new(),
+        storm_track_ppm: Vec::new(),
+        storm_intensity_ppm: Vec::new(),
         metrics: ClimateMetrics {
             precipitation_volume_m3_per_year: 0,
             runoff_volume_m3_per_year: 0,
@@ -2226,6 +2716,11 @@ pub fn derive_current_climate(
             mean_land_aridity_ppm: 0,
             mean_seasonal_precipitation_range_mm: 0,
             dominant_land_biome: BIOME_OCEAN,
+            mean_ocean_storm_suitability_ppm: 0,
+            storm_prone_ocean_ppm: 0,
+            mean_storm_intensity_ppm: 0,
+            mean_land_storm_track_ppm: 0,
+            expected_storms_per_year_milli: 0,
         },
     };
     let moisture = derive_moisture_fields(field, settings, climate_seed, &climate, progress)?;
@@ -2284,6 +2779,32 @@ pub fn derive_current_climate(
         &climate.aridity_ppm,
     );
     apply_biome_metrics(field, &climate.biome_class, &mut metrics);
+    let storms = derive_storms(
+        field,
+        climate.planetary,
+        &climate.temperature_centi_c,
+        &climate.temperature_nh_summer_centi_c,
+        &climate.temperature_nh_winter_centi_c,
+        &climate.humidity_ppm,
+        &climate.wind_east_milli,
+        &climate.wind_north_milli,
+        &climate.wind_east_nh_summer_milli,
+        &climate.wind_north_nh_summer_milli,
+        &climate.wind_east_nh_winter_milli,
+        &climate.wind_north_nh_winter_milli,
+        &climate.current_east_milli,
+        &climate.current_north_milli,
+    );
+    climate.storm_suitability_ppm = storms.suitability_ppm;
+    climate.storm_track_ppm = storms.track_ppm;
+    climate.storm_intensity_ppm = storms.intensity_ppm;
+    apply_storm_metrics(
+        field,
+        &climate.storm_suitability_ppm,
+        &climate.storm_track_ppm,
+        &climate.storm_intensity_ppm,
+        &mut metrics,
+    );
     climate.metrics = metrics;
     climate.validate_against(field)?;
     progress.report(ProgressPhase::CalculatingClimate, 4, 4)?;
@@ -3494,7 +4015,7 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        assert_eq!(climate.derivation_version, 5);
+        assert_eq!(climate.derivation_version, CLIMATE_DERIVATION_VERSION);
         assert_eq!(climate.biome_class.len(), grid.sample_count());
         assert_eq!(climate.biome_class[0], BIOME_OCEAN);
         assert!(climate
@@ -3541,6 +4062,107 @@ mod tests {
         assert!(
             cold_ice > present_ice,
             "cold {cold_ice} present {present_ice}"
+        );
+    }
+
+    #[test]
+    fn storm_genesis_needs_warm_moist_rotating_ocean() {
+        let (suitability, _) =
+            classify_storm_cell(false, 2_800, 800_000, 0.3, 800, 1.0, 1.0, 1.0, 1_200, 1_800);
+        assert_eq!(suitability, 0);
+        let (equator, _) =
+            classify_storm_cell(true, 2_800, 800_000, 0.0, 800, 1.0, 1.0, 1.0, 1_200, 1_800);
+        assert_eq!(equator, 0);
+        let (cold, _) =
+            classify_storm_cell(true, -200, 800_000, 0.3, 800, 1.0, 1.0, 1.0, 1_200, 1_800);
+        assert_eq!(cold, 0);
+        let (core, intensity) =
+            classify_storm_cell(true, 2_800, 800_000, 0.3, 800, 1.0, 1.0, 1.0, 1_200, 1_800);
+        assert!(core > 500_000, "core {core}");
+        assert!(intensity > 0);
+        let (sheared, _) = classify_storm_cell(
+            true, 2_800, 800_000, 0.3, 20_000, 1.0, 1.0, 1.0, 1_200, 1_800,
+        );
+        assert_eq!(sheared, 0);
+        let (coastal, _) =
+            classify_storm_cell(true, 2_800, 800_000, 0.3, 800, 1.0, 0.35, 1.0, 1_200, 1_800);
+        assert!(coastal < core);
+        assert_eq!(
+            storm_coriolis_factor(PlanetaryConfiguration {
+                rotation_period_seconds: EARTH_ROTATION_PERIOD_SECONDS * 10,
+                ..PlanetaryConfiguration::earth_like()
+            }),
+            0.1
+        );
+        assert!(
+            explain_storm(true, 2_800, 800_000, 18_000, 800, core, 200_000, intensity)
+                .contains("Climatology")
+        );
+    }
+
+    #[test]
+    fn derived_storms_form_on_tropical_ocean_and_track_toward_land() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![800; grid.sample_count()];
+        for col in 0..grid.width {
+            elevations[grid.index(3, col)] = -2_000;
+            elevations[grid.index(4, col)] = -2_000;
+        }
+        elevations[grid.index(3, 0)] = 800;
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(climate.storm_suitability_ppm.len(), grid.sample_count());
+        assert_eq!(climate.storm_suitability_ppm[grid.index(3, 0)], 0);
+        assert!(
+            climate.storm_suitability_ppm.iter().any(|value| *value > 0),
+            "suitability never left zero"
+        );
+        assert!(
+            climate.storm_track_ppm.iter().any(|value| *value > 0),
+            "tracks never left zero"
+        );
+        assert!(climate.metrics.mean_ocean_storm_suitability_ppm > 0);
+    }
+
+    #[test]
+    fn colder_epoch_reduces_tropical_storm_suitability() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![800; grid.sample_count()];
+        for col in 0..grid.width {
+            elevations[grid.index(3, col)] = -2_000;
+            elevations[grid.index(4, col)] = -2_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let present = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let cold = present
+            .with_global_temperature_offset(-2_500)
+            .with_winds_and_moisture_for_field(
+                &physical,
+                physical.seed,
+                physical.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        assert!(
+            cold.metrics.mean_ocean_storm_suitability_ppm
+                < present.metrics.mean_ocean_storm_suitability_ppm,
+            "cold {} present {}",
+            cold.metrics.mean_ocean_storm_suitability_ppm,
+            present.metrics.mean_ocean_storm_suitability_ppm
         );
     }
 }

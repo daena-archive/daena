@@ -248,6 +248,9 @@ pub struct AtlasPreparedScene {
     pub aridity_ppm: Vec<i32>,
     pub precipitation_nh_summer_mm: Vec<i32>,
     pub precipitation_nh_winter_mm: Vec<i32>,
+    pub storm_suitability_ppm: Vec<i32>,
+    pub storm_track_ppm: Vec<i32>,
+    pub storm_intensity_ppm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
 }
@@ -261,6 +264,8 @@ impl AtlasPreparedScene {
             precipitation_mm: &self.precipitation_mm,
             humidity_ppm: &self.humidity_ppm,
             aridity_ppm: &self.aridity_ppm,
+            storm_suitability_ppm: &self.storm_suitability_ppm,
+            storm_track_ppm: &self.storm_track_ppm,
             wind_east_milli: &self.wind_east_milli,
             wind_north_milli: &self.wind_north_milli,
             current_east_milli: &self.current_east_milli,
@@ -361,6 +366,30 @@ impl AtlasPreparedScene {
         } else if climate_class == control::CLIMATE_CLASS_ICE {
             biome_reason.push_str(" No ice cover on this cell.");
         }
+        let storm_suitability_ppm =
+            detail::sample_field_mm(grid, &self.storm_suitability_ppm, lon_micro, lat_micro);
+        let storm_track_ppm =
+            detail::sample_field_mm(grid, &self.storm_track_ppm, lon_micro, lat_micro);
+        let storm_intensity_ppm =
+            detail::sample_field_mm(grid, &self.storm_intensity_ppm, lon_micro, lat_micro);
+        let shear_east = wind_east_nh_summer_milli - wind_east_nh_winter_milli;
+        let shear_north = wind_north_nh_summer_milli - wind_north_nh_winter_milli;
+        let shear_milli = ((i64::from(shear_east).pow(2) + i64::from(shear_north).pow(2)) as f64)
+            .sqrt()
+            .round() as u32;
+        let sst = temperature_nh_summer_centi_c
+            .max(temperature_nh_winter_centi_c)
+            .max(temperature_centi_c);
+        let storm_reason = daena_physical::climate::explain_storm(
+            elevation_mm < sea_level_mm,
+            sst,
+            humidity_ppm.max(0) as u32,
+            lat_micro / 1_000,
+            shear_milli,
+            storm_suitability_ppm.max(0) as u32,
+            storm_track_ppm.max(0) as u32,
+            storm_intensity_ppm.max(0) as u32,
+        );
         let inland = self
             .visible_water
             .inland
@@ -415,6 +444,10 @@ impl AtlasPreparedScene {
             precipitation_nh_winter_mm,
             climate: climate.to_string(),
             biome_reason: biome_reason.to_string(),
+            storm_suitability_ppm,
+            storm_track_ppm,
+            storm_intensity_ppm,
+            storm_reason,
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
             ice_thickness_mm,
         }
@@ -740,6 +773,9 @@ pub fn prepare_from_source(
         aridity_ppm: controls.aridity_ppm,
         precipitation_nh_summer_mm: controls.precipitation_nh_summer_mm,
         precipitation_nh_winter_mm: controls.precipitation_nh_winter_mm,
+        storm_suitability_ppm: controls.storm_suitability_ppm,
+        storm_track_ppm: controls.storm_track_ppm,
+        storm_intensity_ppm: controls.storm_intensity_ppm,
         residual_cache,
         drainage_cache,
     })

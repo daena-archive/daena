@@ -14,7 +14,9 @@ export type ClimateOverlayMode =
   | "precipitation-nh-winter"
   | "humidity"
   | "aridity"
-  | "biome";
+  | "biome"
+  | "storm"
+  | "storm-track";
 
 export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
@@ -40,6 +42,8 @@ export type PhysicalRasterPaintOptions = {
   climateAridityPpm?: number[];
   climateBiomeClass?: number[];
   climateBiomeFill?: [number, number, number][];
+  climateStormSuitabilityPpm?: number[];
+  climateStormTrackPpm?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -132,6 +136,15 @@ function biomeTint(biomeClass: number, fills: [number, number, number][] | undef
   const fill = fills?.[biomeClass];
   if (fill) return fill;
   return [120, 120, 124];
+}
+
+function stormTint(ppm: number): [number, number, number] {
+  const t = Math.max(0, Math.min(1, ppm / 1_000_000));
+  return [lerp(48, 212, t), lerp(72, 96, t), lerp(112, 64, t)];
+}
+
+function isStormOverlay(mode: ClimateOverlayMode): boolean {
+  return mode === "storm" || mode === "storm-track";
 }
 
 function moistureValue(options: PhysicalRasterPaintOptions, overlay: ClimateOverlayMode, index: number): number {
@@ -284,6 +297,12 @@ export function paintPhysicalSurface(
         if (fillWind) {
           const [east, north] = windComponents(options, fillWind, index);
           [oceanRed, oceanGreen, oceanBlue] = mixRgb([oceanRed, oceanGreen, oceanBlue], windTint(east, north), 0.22);
+        } else if (isStormOverlay(climateOverlay)) {
+          const value =
+            climateOverlay === "storm-track"
+              ? (options.climateStormTrackPpm?.[index] ?? 0)
+              : (options.climateStormSuitabilityPpm?.[index] ?? 0);
+          [oceanRed, oceanGreen, oceanBlue] = mixRgb([oceanRed, oceanGreen, oceanBlue], stormTint(value), 0.72);
         }
         red = Math.round(oceanRed);
         green = Math.round(oceanGreen);
@@ -326,6 +345,12 @@ export function paintPhysicalSurface(
           } else if (fillWind) {
             const [east, north] = windComponents(options, fillWind, index);
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], windTint(east, north), 0.22);
+          } else if (isStormOverlay(climateOverlay)) {
+            const value =
+              climateOverlay === "storm-track"
+                ? (options.climateStormTrackPpm?.[index] ?? 0)
+                : (options.climateStormSuitabilityPpm?.[index] ?? 0);
+            [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], stormTint(value), 0.72);
           } else if (isBiomeOverlay(climateOverlay)) {
             [landRed, landGreen, landBlue] = mixRgb(
               [landRed, landGreen, landBlue],

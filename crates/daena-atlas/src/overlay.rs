@@ -575,6 +575,10 @@ pub struct AtlasSurfaceSample {
     pub precipitation_nh_winter_mm: i32,
     pub climate: String,
     pub biome_reason: String,
+    pub storm_suitability_ppm: i32,
+    pub storm_track_ppm: i32,
+    pub storm_intensity_ppm: i32,
+    pub storm_reason: String,
     pub surface: String,
     pub ice_thickness_mm: i32,
 }

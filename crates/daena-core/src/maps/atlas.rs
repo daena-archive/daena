@@ -1035,6 +1035,7 @@ mod tests {
             .contains(&"daena-atlas-precipitation".into()));
         assert!(supported.styles.contains(&"daena-atlas-humidity".into()));
         assert!(supported.styles.contains(&"daena-atlas-aridity".into()));
+        assert!(supported.styles.contains(&"daena-atlas-storms".into()));
         assert!(supported.styles.contains(&"daena-atlas-bathymetry".into()));
         assert!(supported.styles.contains(&"daena-atlas-hydrology".into()));
         assert!(supported.supports_studio);

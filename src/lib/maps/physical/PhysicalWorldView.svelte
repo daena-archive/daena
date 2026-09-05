@@ -74,7 +74,7 @@ $effect(() => {
         const next = backgroundFrom(raster);
         return next ? [next] : [];
       },
-      initialView: view ?? { center: [0, 0], zoom: 0, rotation: 0 },
+      initialView: view ?? { center: [0, 0], zoom: 1, rotation: 0 },
       onViewChange(next) {
         view = next;
       },
@@ -119,7 +119,7 @@ $effect(() => {
   {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
   <div class="viewport" bind:this={host} role="img" aria-label="Physical world map"></div>
   <MapViewControls
-    zoom={view?.zoom ?? 0}
+    zoom={view?.zoom ?? 1}
     min={0}
     max={8}
     onzoom={(zoom) => editor?.setZoom(zoom)}

@@ -423,7 +423,7 @@ function paintWindArrows(
   const stepX = Math.max(2, Math.floor(products.width / 24));
   const stepY = Math.max(2, Math.floor(products.height / 12));
   const oversample = PHYSICAL_RASTER_OVERSAMPLE;
-  context.lineWidth = 1.15;
+  context.lineWidth = 1.4;
   context.lineCap = "round";
   for (let row = Math.floor(stepY / 2); row < products.height; row += stepY) {
     for (let column = Math.floor(stepX / 2); column < products.width; column += stepX) {
@@ -434,9 +434,9 @@ function paintWindArrows(
       const speed = Math.hypot(east, north);
       if (speed < 80) continue;
       const [red, green, blue] = windTint(east, north);
-      const alpha = 0.45 + Math.min(0.45, speed / 2_400);
+      const alpha = 0.58 + Math.min(0.37, speed / 2_400);
       context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
-      const length = 2.4 + Math.min(5.2, speed / 420);
+      const length = 2.8 + Math.min(5.6, speed / 380);
       const angle = Math.atan2(-north, east);
       const x = sampleCol + 0.5;
       const y = (sampleRow + 0.5) * oversample;
@@ -488,7 +488,7 @@ function paintCurrentArrows(
   const stepX = Math.max(2, Math.floor(products.width / 24));
   const stepY = Math.max(2, Math.floor(products.height / 12));
   const oversample = PHYSICAL_RASTER_OVERSAMPLE;
-  context.lineWidth = 1.2;
+  context.lineWidth = 1.4;
   context.lineCap = "round";
   for (let row = Math.floor(stepY / 2); row < products.height; row += stepY) {
     for (let column = Math.floor(stepX / 2); column < products.width; column += stepX) {
@@ -499,9 +499,9 @@ function paintCurrentArrows(
       const speed = Math.hypot(east, north);
       if (speed < CURRENT_ARROW_MIN_MILLI) continue;
       const [red, green, blue] = currentTint(east, north);
-      const alpha = 0.48 + Math.min(0.42, speed / 2_400);
+      const alpha = 0.6 + Math.min(0.35, speed / 2_400);
       context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
-      const length = 2.6 + Math.min(5.4, speed / 380);
+      const length = 3 + Math.min(5.8, speed / 360);
       const angle = Math.atan2(-north, east);
       const x = sampleCol + 0.5;
       const y = (sampleRow + 0.5) * oversample;

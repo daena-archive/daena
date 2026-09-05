@@ -263,6 +263,69 @@ function formatAridityLabel(ppm: number) {
   return "arid";
 }
 
+function climateStats(): Array<{ label: string; value: string }> {
+  if (!climate) return [];
+  const metrics = climate.metrics;
+  const strength =
+    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
+  const stormsPerYear = (metrics.expectedStormsPerYearMilli ?? 0) / 1_000;
+  return [
+    { label: "Warmest", value: formatCentiC(metrics.maximumSeasonalTemperatureCentiC) },
+    { label: "Coldest", value: formatCentiC(metrics.minimumSeasonalTemperatureCentiC) },
+    { label: "Range", value: formatCentiC(metrics.meanSeasonalRangeCentiC) },
+    { label: "Rainfall", value: `${metrics.meanPrecipitationMmPerYear.toLocaleString("en-US")} mm/yr` },
+    { label: "Humidity", value: `${Math.round(metrics.meanHumidityPpm / 10_000)}% saturation` },
+    { label: "Land", value: formatAridityLabel(metrics.meanLandAridityPpm) },
+    { label: "Winds", value: strength },
+    { label: "Biome", value: biomeLegendEntry(metrics.dominantLandBiome).name },
+    { label: "Storms", value: `${stormsPerYear.toFixed(1)}/yr` },
+  ];
+}
+
+function climateOverlayHint(): string | null {
+  const hints: string[] = [];
+  const windsOn =
+    layers.find((layer) => layer.id === "winds")?.defaultVisible ||
+    climateOverlay === "wind" ||
+    climateOverlay === "wind-nh-summer" ||
+    climateOverlay === "wind-nh-winter";
+  const currentsOn = layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false;
+  if (windsOn) {
+    hints.push(
+      "Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather forecast.",
+    );
+  }
+  if (currentsOn) {
+    hints.push(
+      "Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping chart.",
+    );
+  }
+  if (
+    climateOverlay === "precipitation" ||
+    climateOverlay === "precipitation-nh-summer" ||
+    climateOverlay === "precipitation-nh-winter"
+  ) {
+    hints.push("Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast.");
+  } else if (climateOverlay === "humidity") {
+    hints.push("Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air.");
+  } else if (climateOverlay === "aridity") {
+    hints.push("Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.");
+  } else if (climateOverlay === "biome") {
+    hints.push(
+      "Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice is climate freeze, not ice-sheet cover. Click a cell to see why.",
+    );
+  } else if (climateOverlay === "storm") {
+    hints.push(
+      "Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents. Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.",
+    );
+  } else if (climateOverlay === "storm-track") {
+    hints.push(
+      "Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific storm.",
+    );
+  }
+  return hints.length ? hints.join(" ") : null;
+}
+
 function biomeLegendEntry(biomeClass: number) {
   return (
     climate?.biomeLegend?.find((entry) => entry.id === biomeClass) ?? {
@@ -555,353 +618,393 @@ onMount(() => {
       icon={Mountain}
       backLabel="Back to map details"
       onBack={() => void cancel()} />
-    <div class="physical-map-controls">
-      <label>Map name<input bind:value={name} disabled={busy} /></label>
-      <label>Seed<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
-      <label
-        >Terrain age<select bind:value={evolutionPreset} disabled={busy}>
-          <option value="young">Young</option>
-          <option value="mature">Mature</option>
-          <option value="old">Old</option>
-        </select></label>
-      <label
-        >Planet<select value={planetary.preset} disabled={busy} onchange={onPlanetPresetChange}>
-          <option value="earth-like">Earth-like</option>
-          <option value="low-tilt">Mild seasons</option>
-          <option value="high-tilt">Strong seasons</option>
-          <option value="slow-rotating">Long days</option>
-          <option value="close-orbit">Close orbit</option>
-          <option value="custom">Custom</option>
-        </select></label>
-      <button class="quiet-button" type="button" onclick={randomSeed} disabled={busy}>Reroll seed</button>
-      <button
-        class="quiet-button"
-        type="button"
-        onclick={() => (advancedPlanet = !advancedPlanet)}
-        disabled={busy}
-        aria-expanded={advancedPlanet}>{advancedPlanet ? "Hide planet details" : "Planet details"}</button>
-      {#if climate}
-        <label
-          >Climate view<select bind:value={climateOverlay} onchange={() => rebuildRaster(hydrology)}>
-            <option value="off">Terrain only</option>
-            <option value="annual">Annual temperature</option>
-            <option value="nh-summer">Northern-summer solstice</option>
-            <option value="nh-winter">Northern-winter solstice</option>
-            <option value="freeze">Freeze</option>
-            <option value="wind">Prevailing wind</option>
-            <option value="wind-nh-summer">Northern-summer wind</option>
-            <option value="wind-nh-winter">Northern-winter wind</option>
-            <option value="precipitation">Annual rainfall</option>
-            <option value="precipitation-nh-summer">Northern-summer rainfall</option>
-            <option value="precipitation-nh-winter">Northern-winter rainfall</option>
-            <option value="humidity">Humidity</option>
-            <option value="aridity">Aridity</option>
-            <option value="biome">Biome</option>
-            <option value="storm">Storm genesis</option>
-            <option value="storm-track">Storm tracks</option>
-          </select></label>
-        <label
-          ><input
-            type="checkbox"
-            checked={layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false}
+    <div class="physical-layout">
+      <aside class="physical-sidebar" aria-label="World setup">
+        <section class="physical-section" aria-labelledby="physical-world-heading">
+          <h2 id="physical-world-heading">World</h2>
+          <label class="physical-field"
+            >Map name<input bind:value={name} disabled={busy} maxlength="120" placeholder="Physical World" /></label>
+          <div class="physical-seed-row">
+            <label class="physical-field physical-seed-field"
+              >Seed<input type="number" bind:value={seed} disabled={busy} min="0" max="4294967295" /></label>
+            <button
+              class="quiet-button physical-seed-reroll"
+              type="button"
+              onclick={randomSeed}
+              disabled={busy}
+              title="Pick a new random seed">Reroll seed</button>
+          </div>
+          <label class="physical-field"
+            >Terrain age<select bind:value={evolutionPreset} disabled={busy}>
+              <option value="young">Young</option>
+              <option value="mature">Mature</option>
+              <option value="old">Old</option>
+            </select></label>
+          <p class="physical-hint">
+            Preview is low resolution. Accepting locks coasts, elevation, climate, ice, and rivers.
+          </p>
+        </section>
+        <section class="physical-section" aria-labelledby="physical-planet-heading">
+          <h2 id="physical-planet-heading">Planet</h2>
+          <label class="physical-field"
+            >Planet<select value={planetary.preset} disabled={busy} onchange={onPlanetPresetChange}>
+              <option value="earth-like">Earth-like</option>
+              <option value="low-tilt">Mild seasons</option>
+              <option value="high-tilt">Strong seasons</option>
+              <option value="slow-rotating">Long days</option>
+              <option value="close-orbit">Close orbit</option>
+              <option value="custom">Custom</option>
+            </select></label>
+          <p class="physical-hint">Presets cover most worlds. Use Planet details for custom tilt, days, and orbit.</p>
+        </section>
+        <section class="physical-section" aria-labelledby="physical-climate-heading">
+          <h2 id="physical-climate-heading">Climate view</h2>
+          {#if climate}
+            <label class="physical-field"
+              >Climate view<select bind:value={climateOverlay} onchange={() => rebuildRaster(hydrology)}>
+                <option value="off">Terrain only</option>
+                <option value="annual">Annual temperature</option>
+                <option value="nh-summer">Northern-summer solstice</option>
+                <option value="nh-winter">Northern-winter solstice</option>
+                <option value="freeze">Freeze</option>
+                <option value="wind">Prevailing wind</option>
+                <option value="wind-nh-summer">Northern-summer wind</option>
+                <option value="wind-nh-winter">Northern-winter wind</option>
+                <option value="precipitation">Annual rainfall</option>
+                <option value="precipitation-nh-summer">Northern-summer rainfall</option>
+                <option value="precipitation-nh-winter">Northern-winter rainfall</option>
+                <option value="humidity">Humidity</option>
+                <option value="aridity">Aridity</option>
+                <option value="biome">Biome</option>
+                <option value="storm">Storm genesis</option>
+                <option value="storm-track">Storm tracks</option>
+              </select></label>
+            <div class="physical-check-row">
+              <label class="physical-check"
+                ><input
+                  type="checkbox"
+                  checked={layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false}
+                  disabled={busy}
+                  onchange={(event) => {
+                    const next = event.currentTarget.checked;
+                    layers = layers.map((layer) => (layer.id === "winds" ? { ...layer, defaultVisible: next } : layer));
+                    rebuildRaster(hydrology);
+                  }} />
+                Winds</label>
+              <label class="physical-check"
+                ><input
+                  type="checkbox"
+                  checked={layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
+                  disabled={busy}
+                  onchange={(event) => {
+                    const next = event.currentTarget.checked;
+                    layers = layers.map((layer) =>
+                      layer.id === "currents" ? { ...layer, defaultVisible: next } : layer,
+                    );
+                    rebuildRaster(hydrology);
+                  }} />
+                Currents</label>
+            </div>
+            {#if climateStats().length > 0}
+              <dl class="physical-stat-grid">
+                {#each climateStats() as stat}
+                  <div class="physical-stat">
+                    <dt>{stat.label}</dt>
+                    <dd>{stat.value}</dd>
+                  </div>
+                {/each}
+              </dl>
+            {/if}
+            {#if climateOverlayHint()}
+              <p class="physical-hint">{climateOverlayHint()}</p>
+            {/if}
+            {#if climateOverlay === "biome" && climate.biomeLegend}
+              <p class="physical-planet-readout physical-biome-legend">
+                {#each climate.biomeLegend.filter((entry) => entry.id !== 0) as entry}
+                  <span
+                    ><span
+                      class="physical-biome-swatch"
+                      style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
+                    >{entry.name}</span>
+                {/each}
+              </p>
+            {/if}
+            <details class="physical-details">
+              <summary>Full climate summary</summary>
+              <p class="physical-planet-readout">{climateSummary()}</p>
+            </details>
+          {:else}
+            <p class="physical-hint">Generate a world to unlock temperature, rainfall, biome, and storm views.</p>
+          {/if}
+        </section>
+        <section class="physical-section" aria-labelledby="physical-planet-details-heading">
+          <h2 id="physical-planet-details-heading">Planet details</h2>
+          <button
+            class="quiet-button physical-details-toggle"
+            type="button"
+            onclick={() => (advancedPlanet = !advancedPlanet)}
             disabled={busy}
-            onchange={(event) => {
-              const next = event.currentTarget.checked;
-              layers = layers.map((layer) => (layer.id === "winds" ? { ...layer, defaultVisible: next } : layer));
-              rebuildRaster(hydrology);
-            }} />
-          Winds</label>
-        <label
-          ><input
-            type="checkbox"
-            checked={layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
-            disabled={busy}
-            onchange={(event) => {
-              const next = event.currentTarget.checked;
-              layers = layers.map((layer) => (layer.id === "currents" ? { ...layer, defaultVisible: next } : layer));
-              rebuildRaster(hydrology);
-            }} />
-          Currents</label>
-      {/if}
-    </div>
-    {#if climate}
-      <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
-      <p class="physical-planet-readout physical-climate-readout">
-        {climateSample || "Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell."}
-      </p>
-      {#if (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false) || climateOverlay === "wind" || climateOverlay === "wind-nh-summer" || climateOverlay === "wind-nh-winter"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather
-          forecast.
-        </p>
-      {/if}
-      {#if layers.find((layer) => layer.id === "currents")?.defaultVisible ?? false}
-        <p class="physical-planet-readout physical-climate-readout">
-          Ocean arrows are surface currents. Amber is northward, teal is southward. Major gyres only, not a shipping
-          chart.
-        </p>
-      {/if}
-      {#if climateOverlay === "precipitation" || climateOverlay === "precipitation-nh-summer" || climateOverlay === "precipitation-nh-winter"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Tan is dry, teal is wet. Rainfall follows winds, mountains, and warmer seas, not a weather forecast.
-        </p>
-      {/if}
-      {#if climateOverlay === "humidity"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Humidity is remaining atmospheric moisture versus local saturation. Teal is moister air.
-        </p>
-      {/if}
-      {#if climateOverlay === "aridity"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.
-        </p>
-      {/if}
-      {#if climateOverlay === "biome"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice
-          is climate freeze, not ice-sheet cover. Click a cell to see why.
-        </p>
-        {#if climate.biomeLegend}
-          <p class="physical-planet-readout physical-climate-readout physical-biome-legend">
-            {#each climate.biomeLegend.filter((entry) => entry.id !== 0) as entry}
-              <span
-                ><span
-                  class="physical-biome-swatch"
-                  style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
-                >{entry.name}</span>
-            {/each}
+            aria-expanded={advancedPlanet}>{advancedPlanet ? "Hide planet details" : "Planet details"}</button>
+          {#if advancedPlanet}
+            <div class="physical-planet-panel">
+              <p class="physical-planet-readout">
+                Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface
+                currents. Figures are generated world physics, not a precise scientific prediction.
+              </p>
+              <label
+                >Seasons (tilt)
+                <input
+                  type="range"
+                  min="0"
+                  max="90"
+                  step="1"
+                  disabled={busy}
+                  value={Math.round(planetary.axialTiltMilliDeg / 1000)}
+                  oninput={(event) => patchPlanetaryNumber(event, (value) => ({ axialTiltMilliDeg: value * 1000 }))} />
+                <span>{Math.round(planetary.axialTiltMilliDeg / 1000)}°</span>
+              </label>
+              <label
+                >Hours in a day
+                <input
+                  type="number"
+                  min="1"
+                  max="2160"
+                  step="1"
+                  disabled={busy}
+                  value={Math.round(planetary.rotationPeriodSeconds / 3600)}
+                  oninput={(event) =>
+                    patchPlanetaryNumber(event, (value) => ({ rotationPeriodSeconds: Math.max(1, value) * 3600 }))} />
+              </label>
+              <label
+                >Year length (Earth days)
+                <input
+                  type="number"
+                  min="4"
+                  max="200000"
+                  step="1"
+                  disabled={busy}
+                  value={yearDays == null ? "" : Math.round(yearDays)}
+                  oninput={(event) => setYearLengthDays(numberFromEvent(event))} />
+              </label>
+              <p class="physical-planet-readout">
+                {#if yearLengthError}
+                  {yearLengthError}
+                {:else if planetError}
+                  {planetError}
+                {:else if yearDays != null && localDaysInYear != null && sunlight != null && gravityG != null}
+                  About {Math.round(yearDays)} Earth days / {Math.round(localDaysInYear)} local days · about {(
+                    sunlight / 1_000_000
+                  ).toFixed(1)}x sunlight · about {(gravityG / 1000).toFixed(1)} g. Year length sets orbital distance from
+                  the star's mass.
+                {:else}
+                  Enter supported planetary values to see approximate year, sunlight, and gravity.
+                {/if}
+              </p>
+              <details class="physical-planet-advanced">
+                <summary>Advanced</summary>
+                <div class="physical-planet-advanced-grid">
+                  <label
+                    >Star brightness
+                    <input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      disabled={busy}
+                      value={planetary.starLuminosityPpm / 1_000_000}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({
+                          starLuminosityPpm: Math.round(value * 1_000_000),
+                        }))} />
+                  </label>
+                  <label
+                    >Distance (AU)
+                    <input
+                      type="number"
+                      min="0.05"
+                      max="50"
+                      step="0.01"
+                      disabled={busy}
+                      value={planetary.semiMajorAxisMilliAu / 1_000_000}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({
+                          semiMajorAxisMilliAu: Math.round(value * 1_000_000),
+                        }))} />
+                  </label>
+                  <label
+                    >Star mass
+                    <input
+                      type="number"
+                      min="0.08"
+                      max="8"
+                      step="0.01"
+                      disabled={busy}
+                      value={planetary.starMassPpm / 1_000_000}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({ starMassPpm: Math.round(value * 1_000_000) }))} />
+                  </label>
+                  <label
+                    >Orbit stretch
+                    <input
+                      type="number"
+                      min="0"
+                      max="0.8"
+                      step="0.01"
+                      disabled={busy}
+                      value={planetary.eccentricityPpm / 1_000_000}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({ eccentricityPpm: Math.round(value * 1_000_000) }))} />
+                  </label>
+                  <label
+                    >Retained heat (°C)
+                    <input
+                      type="number"
+                      min="-50"
+                      max="50"
+                      step="1"
+                      disabled={busy}
+                      value={planetary.retainedHeatCentiC / 100}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({ retainedHeatCentiC: Math.round(value * 100) }))} />
+                  </label>
+                  <label
+                    >Reflectivity
+                    <input
+                      type="number"
+                      min="0.05"
+                      max="0.8"
+                      step="0.01"
+                      disabled={busy}
+                      value={planetary.bondAlbedoPpm / 1_000_000}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({ bondAlbedoPpm: Math.round(value * 1_000_000) }))} />
+                  </label>
+                  <label
+                    >Planet size (Earth radii)
+                    <input
+                      type="number"
+                      min="0.05"
+                      max="10"
+                      step="0.05"
+                      disabled={busy}
+                      value={planetary.radiusMetres / EARTH_RADIUS_METRES}
+                      oninput={(event) =>
+                        patchPlanetaryNumber(event, (value) => ({
+                          radiusMetres: Math.max(1, Math.round(value * EARTH_RADIUS_METRES)),
+                        }))} />
+                  </label>
+                  <label
+                    >Density (kg/m³)
+                    <input
+                      type="number"
+                      min="1000"
+                      max="12000"
+                      step="10"
+                      disabled={busy}
+                      value={planetary.meanDensityKgM3}
+                      oninput={(event) => patchPlanetaryNumber(event, (value) => ({ meanDensityKgM3: value }))} />
+                  </label>
+                </div>
+              </details>
+            </div>
+          {/if}
+        </section>
+      </aside>
+      <div class="physical-main">
+        <div class="physical-statusbar" role="status">
+          {#if busy}
+            <span class="physical-status-progress"
+              >{status?.stage ?? "Starting"}…{#if status && status.total > 0}
+                {status.completed} / {status.total}{/if}</span>
+          {:else if status?.state === "completed"}
+            <span class="physical-status-progress"
+              >Seed {seed} · {evolutionPreset} terrain · {preview.features.length} features</span>
+          {:else}
+            <span class="physical-status-progress">Choose a seed and planet, then generate.</span>
+          {/if}
+          <div class="physical-map-help-anchor">
+            {#if helpOpen}
+              <button type="button" class="physical-map-help-backdrop" aria-label="Close help" onclick={closeHelp}
+              ></button>
+            {/if}
+            <button
+              type="button"
+              class="physical-map-help"
+              class:unread={!helpSeen}
+              aria-expanded={helpOpen}
+              aria-controls="physical-map-help-panel"
+              aria-label="About this preview"
+              onclick={toggleHelp}>?</button>
+            {#if helpOpen}
+              <div
+                id="physical-map-help-panel"
+                class="physical-map-help-panel"
+                role="dialog"
+                aria-labelledby="physical-map-help-title"
+                aria-modal="false">
+                <strong id="physical-map-help-title">About this preview</strong>
+                <p>
+                  This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers.
+                  Pan and zoom to explore before you accept.
+                </p>
+                <p class="physical-map-help-note">
+                  The accepted map is a separate high-resolution render with much more detail. You can’t edit the base
+                  world directly; copy any region into an editable layer to change it. Planet settings drive temperature
+                  and seasons; results are generated world physics, not precise scientific prediction.
+                </p>
+                <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
+              </div>
+            {/if}
+          </div>
+        </div>
+        {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
+        {#if climate}
+          <p class="physical-inspector">
+            {climateSample || "Click the map to inspect rainfall, humidity, aridity, biome, and storms at a cell."}
           </p>
         {/if}
-      {/if}
-      {#if climateOverlay === "storm"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Formation zones only: warm, moist tropical ocean with enough rotation, fetch from land, and surface currents.
-          Seasonal wind-vector shear can suppress genesis. Amber is potential. Climatology, not a forecast.
-        </p>
-      {/if}
-      {#if climateOverlay === "storm-track"}
-        <p class="physical-planet-readout physical-climate-readout">
-          Track corridors only: winds plus surface currents with a poleward drift, then decay inland. Not a specific
-          storm.
-        </p>
-      {/if}
-    {/if}
-    {#if advancedPlanet}
-      <div class="physical-planet-panel">
-        <p class="physical-planet-readout">
-          Stored with the world. These settings now drive temperature, seasons, prevailing winds, and surface currents.
-          Figures are generated world physics, not a precise scientific prediction.
-        </p>
-        <label
-          >Seasons (tilt)
-          <input
-            type="range"
-            min="0"
-            max="90"
-            step="1"
-            disabled={busy}
-            value={Math.round(planetary.axialTiltMilliDeg / 1000)}
-            oninput={(event) => patchPlanetaryNumber(event, (value) => ({ axialTiltMilliDeg: value * 1000 }))} />
-          <span>{Math.round(planetary.axialTiltMilliDeg / 1000)}°</span>
-        </label>
-        <label
-          >Hours in a day
-          <input
-            type="number"
-            min="1"
-            max="2160"
-            step="1"
-            disabled={busy}
-            value={Math.round(planetary.rotationPeriodSeconds / 3600)}
-            oninput={(event) =>
-              patchPlanetaryNumber(event, (value) => ({ rotationPeriodSeconds: Math.max(1, value) * 3600 }))} />
-        </label>
-        <label
-          >Year length (Earth days)
-          <input
-            type="number"
-            min="4"
-            max="200000"
-            step="1"
-            disabled={busy}
-            value={yearDays == null ? "" : Math.round(yearDays)}
-            oninput={(event) => setYearLengthDays(numberFromEvent(event))} />
-        </label>
-        <p class="physical-planet-readout">
-          {#if yearLengthError}
-            {yearLengthError}
-          {:else if planetError}
-            {planetError}
-          {:else if yearDays != null && localDaysInYear != null && sunlight != null && gravityG != null}
-            About {Math.round(yearDays)} Earth days / {Math.round(localDaysInYear)} local days · about {(
-              sunlight / 1_000_000
-            ).toFixed(1)}x sunlight · about {(gravityG / 1000).toFixed(1)} g. Year length sets orbital distance from the star's
-            mass.
-          {:else}
-            Enter supported planetary values to see approximate year, sunlight, and gravity.
+        <div class="native-vector-map">
+          <PhysicalWorldView
+            collection={preview}
+            {layers}
+            {raster}
+            showRaster
+            pickArmed={Boolean(climate)}
+            onMapPick={inspectClimate} />
+          {#if busy}
+            <div class="physical-map-stage" role="status">
+              <strong>{status?.stage ?? "Starting"}…</strong>
+              {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
+              <span class="physical-stage-hint">You can cancel; nothing is saved until you accept.</span>
+            </div>
+          {:else if preview.features.length === 0 && !raster}
+            <div class="physical-map-empty-hint">
+              <p>
+                No preview yet. Set the seed and planet on the left, then click <strong>Generate world</strong> below.
+              </p>
+            </div>
           {/if}
-        </p>
-        <details class="physical-planet-advanced">
-          <summary>Advanced</summary>
-          <div class="physical-planet-advanced-grid">
-            <label
-              >Star brightness
-              <input
-                type="number"
-                min="0.01"
-                max="100"
-                step="0.01"
-                disabled={busy}
-                value={planetary.starLuminosityPpm / 1_000_000}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ starLuminosityPpm: Math.round(value * 1_000_000) }))} />
-            </label>
-            <label
-              >Distance (AU)
-              <input
-                type="number"
-                min="0.05"
-                max="50"
-                step="0.01"
-                disabled={busy}
-                value={planetary.semiMajorAxisMilliAu / 1_000_000}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ semiMajorAxisMilliAu: Math.round(value * 1_000_000) }))} />
-            </label>
-            <label
-              >Star mass
-              <input
-                type="number"
-                min="0.08"
-                max="8"
-                step="0.01"
-                disabled={busy}
-                value={planetary.starMassPpm / 1_000_000}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ starMassPpm: Math.round(value * 1_000_000) }))} />
-            </label>
-            <label
-              >Orbit stretch
-              <input
-                type="number"
-                min="0"
-                max="0.8"
-                step="0.01"
-                disabled={busy}
-                value={planetary.eccentricityPpm / 1_000_000}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ eccentricityPpm: Math.round(value * 1_000_000) }))} />
-            </label>
-            <label
-              >Retained heat (°C)
-              <input
-                type="number"
-                min="-50"
-                max="50"
-                step="1"
-                disabled={busy}
-                value={planetary.retainedHeatCentiC / 100}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ retainedHeatCentiC: Math.round(value * 100) }))} />
-            </label>
-            <label
-              >Reflectivity
-              <input
-                type="number"
-                min="0.05"
-                max="0.8"
-                step="0.01"
-                disabled={busy}
-                value={planetary.bondAlbedoPpm / 1_000_000}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({ bondAlbedoPpm: Math.round(value * 1_000_000) }))} />
-            </label>
-            <label
-              >Planet size (Earth radii)
-              <input
-                type="number"
-                min="0.05"
-                max="10"
-                step="0.05"
-                disabled={busy}
-                value={planetary.radiusMetres / EARTH_RADIUS_METRES}
-                oninput={(event) =>
-                  patchPlanetaryNumber(event, (value) => ({
-                    radiusMetres: Math.max(1, Math.round(value * EARTH_RADIUS_METRES)),
-                  }))} />
-            </label>
-            <label
-              >Density (kg/m³)
-              <input
-                type="number"
-                min="1000"
-                max="12000"
-                step="10"
-                disabled={busy}
-                value={planetary.meanDensityKgM3}
-                oninput={(event) => patchPlanetaryNumber(event, (value) => ({ meanDensityKgM3: value }))} />
-            </label>
-          </div>
-        </details>
-      </div>
-    {/if}
-    {#if notice}<p class="map-reconcile-notice" role="alert">{notice}</p>{/if}
-    <div class="native-vector-map">
-      <PhysicalWorldView
-        collection={preview}
-        {layers}
-        {raster}
-        showRaster
-        pickArmed={Boolean(climate)}
-        onMapPick={inspectClimate} />
-      <div class="physical-map-help-anchor">
-        {#if helpOpen}
-          <button type="button" class="physical-map-help-backdrop" aria-label="Close help" onclick={closeHelp}></button>
-        {/if}
-        <button
-          type="button"
-          class="physical-map-help"
-          class:unread={!helpSeen}
-          aria-expanded={helpOpen}
-          aria-controls="physical-map-help-panel"
-          aria-label="About this preview"
-          onclick={toggleHelp}>?</button>
-        {#if helpOpen}
-          <div
-            id="physical-map-help-panel"
-            class="physical-map-help-panel"
-            role="dialog"
-            aria-labelledby="physical-map-help-title"
-            aria-modal="false">
-            <strong id="physical-map-help-title">About this preview</strong>
-            <p>
-              This low-resolution view locks the world’s physical shape—coasts, elevation, climate, ice, and rivers. Pan
-              and zoom to explore before you accept.
-            </p>
-            <p class="physical-map-help-note">
-              The accepted map is a separate high-resolution render with much more detail. You can’t edit the base world
-              directly; copy any region into an editable layer to change it. Planet settings drive temperature and
-              seasons; results are generated world physics, not precise scientific prediction.
-            </p>
-            <button type="button" class="physical-map-help-dismiss" onclick={closeHelp}>Got it</button>
-          </div>
-        {/if}
-      </div>
-      {#if busy}
-        <div class="physical-map-stage" role="status">
-          <strong>{status?.stage ?? "Starting"}…</strong>
-          {#if status && status.total > 0}<span>{status.completed} / {status.total}</span>{/if}
         </div>
-      {:else if preview.features.length === 0 && !raster}
-        <div class="physical-map-empty-hint">
-          <p>Click <strong>Generate world</strong> below to create a physical map.</p>
-        </div>
-      {/if}
+      </div>
     </div>
     <footer class="physical-map-actions">
+      <span class="physical-actions-status" role="status">
+        {#if status?.state === "completed"}Preview ready — review, reroll, or accept.{:else if busy}Generating…{:else}Not
+          generated yet.{/if}
+      </span>
       {#if status?.state === "completed"}
-        <button class="primary-button" type="button" onclick={() => void accept()} disabled={busy}>Accept world</button>
-        <button class="quiet-button" type="button" onclick={() => void generate()} disabled={busy}>Reroll</button>
+        <button
+          class="primary-button"
+          type="button"
+          onclick={() => void accept()}
+          disabled={busy}
+          title="Save this world as a new map">Accept world</button>
+        <button
+          class="quiet-button"
+          type="button"
+          onclick={() => void generate()}
+          disabled={busy}
+          title="Generate another world with the current settings">Reroll</button>
       {:else if busy}
         <button class="quiet-button" type="button" onclick={() => void cancel()}>Cancel generation</button>
       {:else}
@@ -922,54 +1025,203 @@ onMount(() => {
   color: #f7f0e5;
 }
 
-.physical-map-actions,
-.physical-map-controls {
+.physical-map-actions {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   padding: 0.9rem 1rem;
 }
 
-.physical-map-controls {
-  flex-wrap: wrap;
+.physical-layout {
+  display: grid;
+  grid-template-columns: 21rem minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
 }
 
-.physical-map-controls label {
+.physical-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.9rem 1rem 1.1rem;
+  border-right: 1px solid rgb(255 255 255 / 12%);
+  background: rgb(255 255 255 / 2%);
+}
+
+.physical-section {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem 0.8rem;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.6rem;
+  background: rgb(255 255 255 / 3%);
+}
+
+.physical-section h2 {
+  margin: 0;
+  color: #f7f0e5;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.physical-field {
   display: grid;
   gap: 0.3rem;
-  min-width: 10rem;
   font-size: 0.78rem;
 }
 
-.physical-map-controls input {
-  border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 0.35rem;
-  background: rgb(255 255 255 / 7%);
-  color: inherit;
-  padding: 0.45rem 0.55rem;
-}
-
-.physical-map-controls select {
-  min-width: 10rem;
+.physical-field input,
+.physical-field select {
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 0.35rem;
   background: rgb(255 255 255 / 7%);
   color: inherit;
   padding: 0.45rem 0.55rem;
   font: inherit;
+  min-width: 0;
+  width: 100%;
+}
+
+.physical-seed-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.physical-seed-field {
+  min-width: 0;
+}
+
+.physical-seed-reroll {
+  white-space: nowrap;
+}
+
+.physical-details-toggle {
+  justify-self: start;
+}
+
+.physical-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+.physical-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.physical-check input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #c9a96e;
+}
+
+.physical-hint {
+  margin: 0;
+  color: #c4b8a8;
+  font-size: 0.74rem;
+  line-height: 1.5;
+}
+
+.physical-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+}
+
+.physical-stat {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 0.45rem;
+  background: rgb(0 0 0 / 18%);
+}
+
+.physical-stat dt {
+  color: #c4b8a8;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.physical-stat dd {
+  margin: 0;
+  color: #f7f0e5;
+  font-size: 0.76rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.physical-details {
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  padding-top: 0.5rem;
+}
+
+.physical-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #d9d0c3;
+}
+
+.physical-details p {
+  margin: 0.5rem 0 0;
+}
+
+.physical-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.physical-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+  background: rgb(0 0 0 / 18%);
+  font-size: 0.76rem;
+}
+
+.physical-status-progress {
+  color: #d9d0c3;
+}
+
+.physical-inspector {
+  margin: 0;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+  color: #d9d0c3;
+  font-size: 0.76rem;
+  line-height: 1.5;
 }
 
 .physical-planet-panel {
   display: grid;
   gap: 0.65rem;
-  padding: 0 1rem 0.85rem;
+  padding-top: 0.25rem;
 }
 
 .physical-planet-panel label {
   display: grid;
-  grid-template-columns: minmax(8rem, 12rem) minmax(8rem, 1fr) auto;
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.6rem;
   font-size: 0.78rem;
 }
 
@@ -983,22 +1235,22 @@ onMount(() => {
   background: rgb(255 255 255 / 7%);
   color: inherit;
   padding: 0.4rem 0.5rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .physical-planet-readout {
   margin: 0;
   color: #d9d0c3;
   font-size: 0.76rem;
-}
-
-.physical-climate-readout {
-  padding: 0 1rem 0.75rem;
+  line-height: 1.5;
 }
 
 .physical-biome-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem 0.75rem;
+  margin: 0;
 }
 
 .physical-biome-swatch {
@@ -1023,9 +1275,9 @@ onMount(() => {
 
 .physical-planet-advanced-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: 0.65rem;
-  margin-top: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.6rem;
+  margin-top: 0.6rem;
 }
 
 .physical-planet-advanced-grid label {
@@ -1092,10 +1344,10 @@ onMount(() => {
 }
 
 .physical-map-help-anchor {
-  position: absolute;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 4;
+  position: relative;
+  z-index: 6;
+  margin-left: auto;
+  flex: none;
 }
 
 .physical-map-help-backdrop {
@@ -1237,6 +1489,11 @@ onMount(() => {
   font-size: 0.8rem;
 }
 
+.physical-stage-hint {
+  font-size: 0.74rem !important;
+  color: #c4b8a8 !important;
+}
+
 .physical-map-empty-hint {
   position: absolute;
   inset: 0;
@@ -1259,5 +1516,33 @@ onMount(() => {
 .physical-map-actions {
   justify-content: flex-end;
   border-top: 1px solid rgb(255 255 255 / 12%);
+  flex-wrap: wrap;
+}
+
+.physical-actions-status {
+  margin-right: auto;
+  color: #d9d0c3;
+  font-size: 0.76rem;
+}
+
+@media (max-width: 960px) {
+  .physical-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .physical-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 12%);
+    max-height: none;
+    overflow: visible;
+  }
+
+  .physical-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .native-vector-map {
+    min-height: 320px;
+  }
 }
 </style>

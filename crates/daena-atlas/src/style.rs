@@ -10,10 +10,16 @@ pub const ANTIQUE_STYLE_ID: &str = "daena-atlas-antique";
 pub const POLITICAL_STYLE_ID: &str = "daena-atlas-political";
 pub const BIOME_STYLE_ID: &str = "daena-atlas-biome";
 pub const TEMPERATURE_STYLE_ID: &str = "daena-atlas-temperature";
+pub const TEMPERATURE_NH_SUMMER_STYLE_ID: &str = "daena-atlas-temperature-nh-summer";
+pub const TEMPERATURE_NH_WINTER_STYLE_ID: &str = "daena-atlas-temperature-nh-winter";
+pub const FREEZE_STYLE_ID: &str = "daena-atlas-freeze";
 pub const PRECIPITATION_STYLE_ID: &str = "daena-atlas-precipitation";
+pub const PRECIPITATION_NH_SUMMER_STYLE_ID: &str = "daena-atlas-precipitation-nh-summer";
+pub const PRECIPITATION_NH_WINTER_STYLE_ID: &str = "daena-atlas-precipitation-nh-winter";
 pub const HUMIDITY_STYLE_ID: &str = "daena-atlas-humidity";
 pub const ARIDITY_STYLE_ID: &str = "daena-atlas-aridity";
 pub const STORMS_STYLE_ID: &str = "daena-atlas-storms";
+pub const STORM_TRACKS_STYLE_ID: &str = "daena-atlas-storm-tracks";
 pub const BATHYMETRY_STYLE_ID: &str = "daena-atlas-bathymetry";
 pub const HYDROLOGY_STYLE_ID: &str = "daena-atlas-hydrology";
 pub const SPIKE_STYLE_ALIAS: &str = crate::SPIKE_STYLE_ID;
@@ -29,14 +35,26 @@ const POLITICAL_JSON: &str =
 const BIOME_JSON: &str = include_str!("../../../docs/maps/atlas/styles/daena-atlas-biome.v1.json");
 const TEMPERATURE_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-temperature.v1.json");
+const TEMPERATURE_NH_SUMMER_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-temperature-nh-summer.v1.json");
+const TEMPERATURE_NH_WINTER_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-temperature-nh-winter.v1.json");
+const FREEZE_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-freeze.v1.json");
 const PRECIPITATION_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-precipitation.v1.json");
+const PRECIPITATION_NH_SUMMER_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-precipitation-nh-summer.v1.json");
+const PRECIPITATION_NH_WINTER_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-precipitation-nh-winter.v1.json");
 const HUMIDITY_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-humidity.v1.json");
 const ARIDITY_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-aridity.v1.json");
 const STORMS_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-storms.v1.json");
+const STORM_TRACKS_JSON: &str =
+    include_str!("../../../docs/maps/atlas/styles/daena-atlas-storm-tracks.v1.json");
 const BATHYMETRY_JSON: &str =
     include_str!("../../../docs/maps/atlas/styles/daena-atlas-bathymetry.v1.json");
 const HYDROLOGY_JSON: &str =
@@ -81,15 +99,21 @@ impl AtlasStyle {
 }
 
 #[must_use]
-pub fn bundled_style_ids() -> [&'static str; 11] {
+pub fn bundled_style_ids() -> [&'static str; 17] {
     [
         RELIEF_STYLE_ID,
         BIOME_STYLE_ID,
         TEMPERATURE_STYLE_ID,
+        TEMPERATURE_NH_SUMMER_STYLE_ID,
+        TEMPERATURE_NH_WINTER_STYLE_ID,
+        FREEZE_STYLE_ID,
         PRECIPITATION_STYLE_ID,
+        PRECIPITATION_NH_SUMMER_STYLE_ID,
+        PRECIPITATION_NH_WINTER_STYLE_ID,
         HUMIDITY_STYLE_ID,
         ARIDITY_STYLE_ID,
         STORMS_STYLE_ID,
+        STORM_TRACKS_STYLE_ID,
         BATHYMETRY_STYLE_ID,
         HYDROLOGY_STYLE_ID,
         ANTIQUE_STYLE_ID,
@@ -104,10 +128,16 @@ pub fn resolve_style_id(id: &str) -> Result<&'static str, AtlasError> {
         POLITICAL_STYLE_ID => Ok(POLITICAL_STYLE_ID),
         BIOME_STYLE_ID => Ok(BIOME_STYLE_ID),
         TEMPERATURE_STYLE_ID => Ok(TEMPERATURE_STYLE_ID),
+        TEMPERATURE_NH_SUMMER_STYLE_ID => Ok(TEMPERATURE_NH_SUMMER_STYLE_ID),
+        TEMPERATURE_NH_WINTER_STYLE_ID => Ok(TEMPERATURE_NH_WINTER_STYLE_ID),
+        FREEZE_STYLE_ID => Ok(FREEZE_STYLE_ID),
         PRECIPITATION_STYLE_ID => Ok(PRECIPITATION_STYLE_ID),
+        PRECIPITATION_NH_SUMMER_STYLE_ID => Ok(PRECIPITATION_NH_SUMMER_STYLE_ID),
+        PRECIPITATION_NH_WINTER_STYLE_ID => Ok(PRECIPITATION_NH_WINTER_STYLE_ID),
         HUMIDITY_STYLE_ID => Ok(HUMIDITY_STYLE_ID),
         ARIDITY_STYLE_ID => Ok(ARIDITY_STYLE_ID),
         STORMS_STYLE_ID => Ok(STORMS_STYLE_ID),
+        STORM_TRACKS_STYLE_ID => Ok(STORM_TRACKS_STYLE_ID),
         BATHYMETRY_STYLE_ID => Ok(BATHYMETRY_STYLE_ID),
         HYDROLOGY_STYLE_ID => Ok(HYDROLOGY_STYLE_ID),
         _ => Err(AtlasError::new(
@@ -125,10 +155,16 @@ pub fn load_style(id: &str) -> Result<(AtlasStyle, &'static str), AtlasError> {
         POLITICAL_STYLE_ID => POLITICAL_JSON,
         BIOME_STYLE_ID => BIOME_JSON,
         TEMPERATURE_STYLE_ID => TEMPERATURE_JSON,
+        TEMPERATURE_NH_SUMMER_STYLE_ID => TEMPERATURE_NH_SUMMER_JSON,
+        TEMPERATURE_NH_WINTER_STYLE_ID => TEMPERATURE_NH_WINTER_JSON,
+        FREEZE_STYLE_ID => FREEZE_JSON,
         PRECIPITATION_STYLE_ID => PRECIPITATION_JSON,
+        PRECIPITATION_NH_SUMMER_STYLE_ID => PRECIPITATION_NH_SUMMER_JSON,
+        PRECIPITATION_NH_WINTER_STYLE_ID => PRECIPITATION_NH_WINTER_JSON,
         HUMIDITY_STYLE_ID => HUMIDITY_JSON,
         ARIDITY_STYLE_ID => ARIDITY_JSON,
         STORMS_STYLE_ID => STORMS_JSON,
+        STORM_TRACKS_STYLE_ID => STORM_TRACKS_JSON,
         BATHYMETRY_STYLE_ID => BATHYMETRY_JSON,
         HYDROLOGY_STYLE_ID => HYDROLOGY_JSON,
         _ => {
@@ -244,6 +280,18 @@ pub fn ramp3(style: &AtlasStyle, t_ppm: u32) -> [u8; 3] {
     }
 }
 
+fn ramp_stops(stops: &[[u8; 3]], t_ppm: u32) -> [u8; 3] {
+    if stops.len() < 2 {
+        return stops.first().copied().unwrap_or([0; 3]);
+    }
+    let t = t_ppm.min(1_000_000);
+    let segments = (stops.len() - 1) as u32;
+    let scaled = t.saturating_mul(segments);
+    let idx = (scaled / 1_000_000).min(segments - 1) as usize;
+    let local = scaled - idx as u32 * 1_000_000;
+    mix_rgb(stops[idx], stops[idx + 1], local)
+}
+
 #[must_use]
 pub fn temperature_fill(style: &AtlasStyle, centi_c: i32) -> [u8; 3] {
     const LO: i32 = -3_500;
@@ -255,15 +303,21 @@ pub fn temperature_fill(style: &AtlasStyle, centi_c: i32) -> [u8; 3] {
 
 #[must_use]
 pub fn precipitation_fill(style: &AtlasStyle, precip_mm: i32) -> [u8; 3] {
-    const HI: i32 = 2_800;
+    const HI: i32 = 1_400;
     let t = (i64::from(precip_mm.clamp(0, HI)) * 1_000_000 / i64::from(HI)) as u32;
     ramp3(style, t)
 }
 
 #[must_use]
-pub fn humidity_fill(style: &AtlasStyle, humidity_ppm: i32) -> [u8; 3] {
-    let t = (i64::from(humidity_ppm.clamp(0, 1_000_000)) * 1_000_000 / 1_000_000) as u32;
-    ramp3(style, t)
+pub fn humidity_fill(_style: &AtlasStyle, humidity_ppm: i32) -> [u8; 3] {
+    const STOPS: [[u8; 3]; 5] = [
+        [236, 214, 164],
+        [204, 176, 88],
+        [124, 180, 116],
+        [48, 160, 152],
+        [22, 96, 88],
+    ];
+    ramp_stops(&STOPS, humidity_ppm.clamp(0, 1_000_000) as u32)
 }
 
 #[must_use]
@@ -273,10 +327,28 @@ pub fn aridity_fill(style: &AtlasStyle, aridity_ppm: i32) -> [u8; 3] {
 }
 
 #[must_use]
-pub fn storm_fill(style: &AtlasStyle, suitability_ppm: i32, track_ppm: i32, land: bool) -> [u8; 3] {
-    let value = if land { track_ppm } else { suitability_ppm };
-    let t = (i64::from(value.clamp(0, 1_000_000)) * 1_000_000 / 1_000_000) as u32;
-    ramp3(style, t)
+pub fn storm_fill(style: &AtlasStyle, suitability_ppm: i32, track_ppm: i32) -> [u8; 3] {
+    let value = suitability_ppm.max(track_ppm).clamp(0, 1_000_000) as u32;
+    ramp3(style, value)
+}
+
+#[must_use]
+pub fn storm_mix_ppm(suitability_ppm: i32, track_ppm: i32) -> u32 {
+    let value = suitability_ppm.max(track_ppm).clamp(0, 1_000_000) as u32;
+    ((u64::from(value) * 820_000) / 1_000_000) as u32
+}
+
+#[must_use]
+pub fn freeze_fill(summer_centi_c: i32, winter_centi_c: i32, base: [u8; 3]) -> [u8; 3] {
+    let cold = summer_centi_c.min(winter_centi_c);
+    let warm = summer_centi_c.max(winter_centi_c);
+    if warm < 0 {
+        [210, 230, 245]
+    } else if cold < 0 {
+        mix_rgb(base, [170, 210, 230], 550_000)
+    } else {
+        base
+    }
 }
 
 #[must_use]
@@ -338,7 +410,7 @@ mod tests {
             biome_fill(&biome, crate::control::CLIMATE_CLASS_ARID)
         );
         assert_ne!(biome_fill(&biome, 99), biome.biome_grassland);
-        assert_eq!(bundled_style_ids().len(), 11);
+        assert_eq!(bundled_style_ids().len(), 17);
         let (temperature, _) = load_style(TEMPERATURE_STYLE_ID).unwrap();
         let (precip, _) = load_style(PRECIPITATION_STYLE_ID).unwrap();
         let (bathy, _) = load_style(BATHYMETRY_STYLE_ID).unwrap();
@@ -357,10 +429,27 @@ mod tests {
         );
         let (humidity, _) = load_style(HUMIDITY_STYLE_ID).unwrap();
         let (aridity, _) = load_style(ARIDITY_STYLE_ID).unwrap();
+        let (storms, _) = load_style(STORMS_STYLE_ID).unwrap();
+        let (tracks, _) = load_style(STORM_TRACKS_STYLE_ID).unwrap();
+        let (freeze, _) = load_style(FREEZE_STYLE_ID).unwrap();
+        assert_eq!(storms.title, "Storm genesis");
+        assert_eq!(tracks.title, "Storm tracks");
+        assert_eq!(freeze.title, "Freeze");
         assert_ne!(
-            humidity_fill(&humidity, 80_000),
-            humidity_fill(&humidity, 900_000)
+            storm_fill(&storms, 0, 0),
+            storm_fill(&storms, 800_000, 200_000)
         );
+        assert_eq!(storm_mix_ppm(0, 0), 0);
+        assert!(storm_mix_ppm(700_000, 100_000) > 400_000);
+        assert_ne!(
+            freeze_fill(-400, -800, freeze.land_low),
+            freeze_fill(2_000, 1_200, freeze.land_low)
+        );
+        let dry = humidity_fill(&humidity, 80_000);
+        let wet = humidity_fill(&humidity, 900_000);
+        assert_ne!(dry, wet);
+        assert!(dry[0] > wet[0]);
+        assert!(i32::from(dry[0]) - i32::from(dry[2]) > i32::from(wet[0]) - i32::from(wet[2]));
         assert_ne!(
             aridity_fill(&aridity, 80_000),
             aridity_fill(&aridity, 900_000)

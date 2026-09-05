@@ -27,7 +27,7 @@ import { PHYSICAL_COORDINATE_SPACE, authoredToNormalized } from "../editor/coord
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
-import { ATLAS_DETAIL_ALGORITHM_VERSION, isAtlasLayerEnabledByDefault } from "./constants.ts";
+import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -313,30 +313,7 @@ function derivedExplanation(hit: AtlasStudioInspectHit) {
 }
 
 function styleLabel(id: string) {
-  switch (id) {
-    case "daena-atlas-relief":
-      return "Elevation";
-    case "daena-atlas-biome":
-      return "Biomes";
-    case "daena-atlas-temperature":
-      return "Temperature";
-    case "daena-atlas-precipitation":
-      return "Rainfall";
-    case "daena-atlas-humidity":
-      return "Humidity";
-    case "daena-atlas-aridity":
-      return "Aridity";
-    case "daena-atlas-bathymetry":
-      return "Bathymetry";
-    case "daena-atlas-hydrology":
-      return "Hydrology";
-    case "daena-atlas-antique":
-      return "Antique";
-    case "daena-atlas-political":
-      return "Political";
-    default:
-      return id;
-  }
+  return atlasStyleLabel(id);
 }
 
 function studioRequest() {

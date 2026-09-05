@@ -1,14 +1,17 @@
 use daena_physical::hydrology::HydrologyField;
 use daena_physical::Grid;
 
-use crate::detail::{sample_sdf_ppm, AtlasDetailModel};
+use crate::detail::{sample_field_mm, sample_sdf_ppm, AtlasDetailModel};
 use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
 use crate::style::{
-    apply_shade, aridity_fill, biome_fill, humidity_fill, hypsometric, mix_rgb, precipitation_fill,
-    storm_fill, temperature_fill, AtlasStyle, ARIDITY_STYLE_ID, BIOME_STYLE_ID, HUMIDITY_STYLE_ID,
-    PRECIPITATION_STYLE_ID, STORMS_STYLE_ID, TEMPERATURE_STYLE_ID,
+    apply_shade, aridity_fill, biome_fill, freeze_fill, humidity_fill, hypsometric, mix_rgb,
+    precipitation_fill, storm_fill, storm_mix_ppm, temperature_fill, AtlasStyle, ARIDITY_STYLE_ID,
+    BIOME_STYLE_ID, FREEZE_STYLE_ID, HUMIDITY_STYLE_ID, PRECIPITATION_NH_SUMMER_STYLE_ID,
+    PRECIPITATION_NH_WINTER_STYLE_ID, PRECIPITATION_STYLE_ID, STORMS_STYLE_ID,
+    STORM_TRACKS_STYLE_ID, TEMPERATURE_NH_SUMMER_STYLE_ID, TEMPERATURE_NH_WINTER_STYLE_ID,
+    TEMPERATURE_STYLE_ID,
 };
 use crate::{AtlasError, AtlasPhase, AtlasProgress};
 
@@ -46,7 +49,11 @@ fn cardinal_neighbors(width: u32, height: u32, index: usize) -> [Option<usize>; 
 pub struct PaintFields<'a> {
     pub climate_class: &'a [i32],
     pub temperature_centi_c: &'a [i32],
+    pub temperature_nh_summer_centi_c: &'a [i32],
+    pub temperature_nh_winter_centi_c: &'a [i32],
     pub precipitation_mm: &'a [i32],
+    pub precipitation_nh_summer_mm: &'a [i32],
+    pub precipitation_nh_winter_mm: &'a [i32],
     pub humidity_ppm: &'a [i32],
     pub aridity_ppm: &'a [i32],
     pub storm_suitability_ppm: &'a [i32],
@@ -241,10 +248,16 @@ enum RasterTheme {
     Relief,
     Biome,
     Temperature,
+    TemperatureNhSummer,
+    TemperatureNhWinter,
+    Freeze,
     Precipitation,
+    PrecipitationNhSummer,
+    PrecipitationNhWinter,
     Humidity,
     Aridity,
     Storms,
+    StormTracks,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -263,10 +276,16 @@ impl RasterOptions {
         let theme = match style.id.as_str() {
             BIOME_STYLE_ID => RasterTheme::Biome,
             TEMPERATURE_STYLE_ID => RasterTheme::Temperature,
+            TEMPERATURE_NH_SUMMER_STYLE_ID => RasterTheme::TemperatureNhSummer,
+            TEMPERATURE_NH_WINTER_STYLE_ID => RasterTheme::TemperatureNhWinter,
+            FREEZE_STYLE_ID => RasterTheme::Freeze,
             PRECIPITATION_STYLE_ID => RasterTheme::Precipitation,
+            PRECIPITATION_NH_SUMMER_STYLE_ID => RasterTheme::PrecipitationNhSummer,
+            PRECIPITATION_NH_WINTER_STYLE_ID => RasterTheme::PrecipitationNhWinter,
             HUMIDITY_STYLE_ID => RasterTheme::Humidity,
             ARIDITY_STYLE_ID => RasterTheme::Aridity,
             STORMS_STYLE_ID => RasterTheme::Storms,
+            STORM_TRACKS_STYLE_ID => RasterTheme::StormTracks,
             _ => RasterTheme::Relief,
         };
         Self {
@@ -308,7 +327,11 @@ pub(crate) fn studio_shade_ppm(
         elevation,
         options.approximate_shading,
     );
-    if options.theme == RasterTheme::Relief {
+    if options.theme == RasterTheme::Relief
+        || options.theme == RasterTheme::Storms
+        || options.theme == RasterTheme::StormTracks
+        || options.theme == RasterTheme::Freeze
+    {
         shade
     } else {
         shade.max(780_000)
@@ -366,13 +389,17 @@ pub(crate) fn pixel_rgba_with_options(
         elevation,
         options.approximate_shading,
     );
-    let shade = if options.theme == RasterTheme::Relief {
+    let shade = if options.theme == RasterTheme::Relief
+        || options.theme == RasterTheme::Storms
+        || options.theme == RasterTheme::StormTracks
+        || options.theme == RasterTheme::Freeze
+    {
         shade
     } else {
         shade.max(780_000)
     };
     paint_pixel(
-        hydrology, style, options, water, paint, sea, elevation, cell, shade,
+        model.grid, hydrology, style, options, water, paint, sea, elevation, cell, lon, lat, shade,
     )
 }
 
@@ -394,12 +421,13 @@ pub(crate) fn pixel_rgba_with_shade(
     let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
     let cell = nearest_cell(model.grid, lon, lat);
     paint_pixel(
-        hydrology, style, options, water, paint, sea, elevation, cell, shade,
+        model.grid, hydrology, style, options, water, paint, sea, elevation, cell, lon, lat, shade,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn paint_pixel(
+    grid: Grid,
     hydrology: &HydrologyField,
     style: &AtlasStyle,
     options: RasterOptions,
@@ -408,6 +436,8 @@ fn paint_pixel(
     sea: i32,
     elevation: i32,
     cell: usize,
+    lon: i32,
+    lat: i32,
     shade: u32,
 ) -> [u8; 4] {
     if options.ice && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
@@ -446,22 +476,95 @@ fn paint_pixel(
             style,
             paint.temperature_centi_c.get(cell).copied().unwrap_or(0),
         )
-    } else if land && options.theme == RasterTheme::Precipitation {
-        precipitation_fill(
+    } else if land && options.theme == RasterTheme::TemperatureNhSummer {
+        temperature_fill(
             style,
-            paint.precipitation_mm.get(cell).copied().unwrap_or(0),
+            paint
+                .temperature_nh_summer_centi_c
+                .get(cell)
+                .copied()
+                .unwrap_or(0),
+        )
+    } else if land && options.theme == RasterTheme::TemperatureNhWinter {
+        temperature_fill(
+            style,
+            paint
+                .temperature_nh_winter_centi_c
+                .get(cell)
+                .copied()
+                .unwrap_or(0),
+        )
+    } else if land && options.theme == RasterTheme::Freeze {
+        freeze_fill(
+            paint
+                .temperature_nh_summer_centi_c
+                .get(cell)
+                .copied()
+                .unwrap_or(0),
+            paint
+                .temperature_nh_winter_centi_c
+                .get(cell)
+                .copied()
+                .unwrap_or(0),
+            hypsometric(style, painted, sea),
+        )
+    } else if land && options.theme == RasterTheme::Precipitation {
+        mix_rgb(
+            hypsometric(style, painted, sea),
+            precipitation_fill(
+                style,
+                sample_field_mm(grid, paint.precipitation_mm, lon, lat),
+            ),
+            720_000,
+        )
+    } else if land && options.theme == RasterTheme::PrecipitationNhSummer {
+        mix_rgb(
+            hypsometric(style, painted, sea),
+            precipitation_fill(
+                style,
+                sample_field_mm(grid, paint.precipitation_nh_summer_mm, lon, lat),
+            ),
+            720_000,
+        )
+    } else if land && options.theme == RasterTheme::PrecipitationNhWinter {
+        mix_rgb(
+            hypsometric(style, painted, sea),
+            precipitation_fill(
+                style,
+                sample_field_mm(grid, paint.precipitation_nh_winter_mm, lon, lat),
+            ),
+            720_000,
         )
     } else if land && options.theme == RasterTheme::Humidity {
-        humidity_fill(style, paint.humidity_ppm.get(cell).copied().unwrap_or(0))
-    } else if land && options.theme == RasterTheme::Aridity {
-        aridity_fill(style, paint.aridity_ppm.get(cell).copied().unwrap_or(0))
-    } else if options.theme == RasterTheme::Storms {
-        storm_fill(
-            style,
-            paint.storm_suitability_ppm.get(cell).copied().unwrap_or(0),
-            paint.storm_track_ppm.get(cell).copied().unwrap_or(0),
-            land,
+        mix_rgb(
+            hypsometric(style, painted, sea),
+            humidity_fill(style, sample_field_mm(grid, paint.humidity_ppm, lon, lat)),
+            720_000,
         )
+    } else if land && options.theme == RasterTheme::Aridity {
+        mix_rgb(
+            hypsometric(style, painted, sea),
+            aridity_fill(style, sample_field_mm(grid, paint.aridity_ppm, lon, lat)),
+            720_000,
+        )
+    } else if options.theme == RasterTheme::Storms || options.theme == RasterTheme::StormTracks {
+        let suitability = if options.theme == RasterTheme::Storms {
+            sample_field_mm(grid, paint.storm_suitability_ppm, lon, lat)
+        } else {
+            0
+        };
+        let track = if options.theme == RasterTheme::StormTracks {
+            sample_field_mm(grid, paint.storm_track_ppm, lon, lat)
+        } else {
+            0
+        };
+        let mix = storm_mix_ppm(suitability, track);
+        let base = hypsometric(style, painted, sea);
+        if mix == 0 {
+            base
+        } else {
+            mix_rgb(base, storm_fill(style, suitability, track), mix)
+        }
     } else {
         hypsometric(style, painted, sea)
     };

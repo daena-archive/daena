@@ -261,7 +261,11 @@ impl AtlasPreparedScene {
         render::PaintFields {
             climate_class: &self.climate_class,
             temperature_centi_c: &self.temperature_centi_c,
+            temperature_nh_summer_centi_c: &self.temperature_nh_summer_centi_c,
+            temperature_nh_winter_centi_c: &self.temperature_nh_winter_centi_c,
             precipitation_mm: &self.precipitation_mm,
+            precipitation_nh_summer_mm: &self.precipitation_nh_summer_mm,
+            precipitation_nh_winter_mm: &self.precipitation_nh_winter_mm,
             humidity_ppm: &self.humidity_ppm,
             aridity_ppm: &self.aridity_ppm,
             storm_suitability_ppm: &self.storm_suitability_ppm,

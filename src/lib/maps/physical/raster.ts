@@ -118,13 +118,21 @@ function windTint(eastMilli: number, northMilli: number): [number, number, numbe
 }
 
 function precipitationTint(mm: number): [number, number, number] {
-  const t = Math.max(0, Math.min(1, mm / 2_800));
+  const t = Math.max(0, Math.min(1, mm / 1_400));
   return [lerp(196, 32, t), lerp(168, 96, t), lerp(112, 176, t)];
 }
 
 function humidityTint(ppm: number): [number, number, number] {
-  const t = Math.max(0, Math.min(1, ppm / 1_000_000));
-  return [lerp(196, 48, t), lerp(176, 164, t), lerp(148, 188, t)];
+  const stops: [number, number, number][] = [
+    [236, 214, 164],
+    [204, 176, 88],
+    [124, 180, 116],
+    [48, 160, 152],
+    [22, 96, 88],
+  ];
+  const t = Math.max(0, Math.min(1, ppm / 1_000_000)) * (stops.length - 1);
+  const index = Math.min(stops.length - 2, Math.floor(t));
+  return mixRgb(stops[index], stops[index + 1], t - index);
 }
 
 function aridityTint(ppm: number): [number, number, number] {

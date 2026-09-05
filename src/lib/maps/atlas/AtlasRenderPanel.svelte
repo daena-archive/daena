@@ -11,7 +11,7 @@ import {
 } from "$lib/project/client";
 import type { MapLayerDefinition } from "../native-vector/types";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
-import { ATLAS_DETAIL_ALGORITHM_VERSION, isAtlasLayerEnabledByDefault } from "./constants.ts";
+import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
 
 let {
   mapId,
@@ -72,30 +72,7 @@ function viewerLayerEnabled(atlasLayerId: string): boolean | null {
 }
 
 function styleLabel(id: string) {
-  switch (id) {
-    case "daena-atlas-relief":
-      return "Elevation";
-    case "daena-atlas-biome":
-      return "Biomes";
-    case "daena-atlas-temperature":
-      return "Temperature";
-    case "daena-atlas-precipitation":
-      return "Rainfall";
-    case "daena-atlas-humidity":
-      return "Humidity";
-    case "daena-atlas-aridity":
-      return "Aridity";
-    case "daena-atlas-bathymetry":
-      return "Bathymetry";
-    case "daena-atlas-hydrology":
-      return "Hydrology";
-    case "daena-atlas-antique":
-      return "Antique";
-    case "daena-atlas-political":
-      return "Political";
-    default:
-      return id;
-  }
+  return atlasStyleLabel(id);
 }
 
 let capabilities = $state<AtlasRenderCapabilities | null>(null);

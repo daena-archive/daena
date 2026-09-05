@@ -1032,10 +1032,26 @@ mod tests {
         assert!(supported.styles.contains(&"daena-atlas-temperature".into()));
         assert!(supported
             .styles
+            .contains(&"daena-atlas-temperature-nh-summer".into()));
+        assert!(supported
+            .styles
+            .contains(&"daena-atlas-temperature-nh-winter".into()));
+        assert!(supported.styles.contains(&"daena-atlas-freeze".into()));
+        assert!(supported
+            .styles
             .contains(&"daena-atlas-precipitation".into()));
+        assert!(supported
+            .styles
+            .contains(&"daena-atlas-precipitation-nh-summer".into()));
+        assert!(supported
+            .styles
+            .contains(&"daena-atlas-precipitation-nh-winter".into()));
         assert!(supported.styles.contains(&"daena-atlas-humidity".into()));
         assert!(supported.styles.contains(&"daena-atlas-aridity".into()));
         assert!(supported.styles.contains(&"daena-atlas-storms".into()));
+        assert!(supported
+            .styles
+            .contains(&"daena-atlas-storm-tracks".into()));
         assert!(supported.styles.contains(&"daena-atlas-bathymetry".into()));
         assert!(supported.styles.contains(&"daena-atlas-hydrology".into()));
         assert!(supported.supports_studio);

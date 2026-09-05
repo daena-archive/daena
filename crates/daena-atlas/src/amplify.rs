@@ -4,8 +4,9 @@
 use daena_physical::Grid;
 
 use crate::control::{
-    ControlFields, CLIMATE_CLASS_ARID, CLIMATE_CLASS_FOREST, CLIMATE_CLASS_GRASSLAND,
-    CLIMATE_CLASS_ICE, CLIMATE_CLASS_TUNDRA,
+    ControlFields, CLIMATE_CLASS_ALPINE, CLIMATE_CLASS_ARID, CLIMATE_CLASS_COLD_GRASSLAND,
+    CLIMATE_CLASS_FOREST, CLIMATE_CLASS_GRASSLAND, CLIMATE_CLASS_ICE, CLIMATE_CLASS_SHRUBLAND,
+    CLIMATE_CLASS_TROPICAL_FOREST, CLIMATE_CLASS_TUNDRA,
 };
 use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
@@ -130,11 +131,16 @@ fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i3
         amplitude = ((i64::from(amplitude) * 220_000) / 1_000_000) as i32;
     }
     amplitude = match climate {
-        CLIMATE_CLASS_ICE => ((i64::from(amplitude) * 180_000) / 1_000_000) as i32,
+        CLIMATE_CLASS_ICE | CLIMATE_CLASS_ALPINE => {
+            ((i64::from(amplitude) * 180_000) / 1_000_000) as i32
+        }
         CLIMATE_CLASS_TUNDRA => ((i64::from(amplitude) * 720_000) / 1_000_000) as i32,
         CLIMATE_CLASS_ARID => ((i64::from(amplitude) * 1_180_000) / 1_000_000) as i32,
-        CLIMATE_CLASS_GRASSLAND => amplitude,
-        CLIMATE_CLASS_FOREST => ((i64::from(amplitude) * 900_000) / 1_000_000) as i32,
+        CLIMATE_CLASS_SHRUBLAND => ((i64::from(amplitude) * 1_080_000) / 1_000_000) as i32,
+        CLIMATE_CLASS_COLD_GRASSLAND | CLIMATE_CLASS_GRASSLAND => amplitude,
+        CLIMATE_CLASS_FOREST | CLIMATE_CLASS_TROPICAL_FOREST => {
+            ((i64::from(amplitude) * 900_000) / 1_000_000) as i32
+        }
         _ => amplitude,
     };
     if runoff > 400 && mountain < 200_000 {

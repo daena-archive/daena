@@ -204,9 +204,23 @@ pub fn biome_fill(style: &AtlasStyle, climate_class: i32) -> [u8; 3] {
     match climate_class {
         crate::control::CLIMATE_CLASS_ICE => style.ice,
         crate::control::CLIMATE_CLASS_TUNDRA => style.biome_tundra,
+        crate::control::CLIMATE_CLASS_ALPINE => {
+            mix_rgb(style.biome_tundra, style.land_peak, 350_000)
+        }
         crate::control::CLIMATE_CLASS_ARID => style.biome_arid,
+        crate::control::CLIMATE_CLASS_SHRUBLAND => {
+            mix_rgb(style.biome_arid, style.biome_grassland, 450_000)
+        }
+        crate::control::CLIMATE_CLASS_COLD_GRASSLAND => {
+            mix_rgb(style.biome_grassland, style.biome_tundra, 280_000)
+        }
         crate::control::CLIMATE_CLASS_FOREST => style.biome_forest,
-        _ => style.biome_grassland,
+        crate::control::CLIMATE_CLASS_TROPICAL_FOREST => {
+            mix_rgb(style.biome_forest, [18, 72, 36], 280_000)
+        }
+        crate::control::CLIMATE_CLASS_GRASSLAND => style.biome_grassland,
+        crate::control::CLIMATE_CLASS_OCEAN => style.ocean_shallow,
+        _ => [120, 120, 124],
     }
 }
 
@@ -298,6 +312,19 @@ mod tests {
         let (biome, _) = load_style(BIOME_STYLE_ID).unwrap();
         assert_eq!(biome.id, BIOME_STYLE_ID);
         assert_ne!(biome.biome_forest, biome.biome_arid);
+        assert_ne!(
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_ALPINE),
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_TUNDRA)
+        );
+        assert_ne!(
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_TROPICAL_FOREST),
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_FOREST)
+        );
+        assert_ne!(
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_SHRUBLAND),
+            biome_fill(&biome, crate::control::CLIMATE_CLASS_ARID)
+        );
+        assert_ne!(biome_fill(&biome, 99), biome.biome_grassland);
         assert_eq!(bundled_style_ids().len(), 10);
         let (temperature, _) = load_style(TEMPERATURE_STYLE_ID).unwrap();
         let (precip, _) = load_style(PRECIPITATION_STYLE_ID).unwrap();

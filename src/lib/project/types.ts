@@ -273,6 +273,8 @@ export interface PhysicalClimateProducts {
   aridityPpm: number[];
   precipitationNhSummerMm: number[];
   precipitationNhWinterMm: number[];
+  biomeClass: number[];
+  biomeLegend: { id: number; name: string; reason: string; fill: [number, number, number] }[];
   metrics: {
     precipitationVolumeM3PerYear: number;
     runoffVolumeM3PerYear: number;
@@ -297,6 +299,7 @@ export interface PhysicalClimateProducts {
     meanHumidityPpm: number;
     meanLandAridityPpm: number;
     meanSeasonalPrecipitationRangeMm: number;
+    dominantLandBiome: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -633,6 +636,7 @@ export interface AtlasStudioSurfaceSample {
   precipitationNhSummerMm: number;
   precipitationNhWinterMm: number;
   climate: string;
+  biomeReason: string;
   surface: string;
   iceThicknessMm: number;
 }

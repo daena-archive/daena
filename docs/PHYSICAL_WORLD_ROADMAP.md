@@ -430,6 +430,10 @@ D3 improves coastal realism but need not block an initial biome system.
 - Biomes remain derived interpretations, not immutable physical truth.
 - Classification should be versioned so improving thresholds does not pretend old results were canonical.
 - Authors should be allowed to override presentation with authored layers without rewriting the physical model.
+- Humidity and aridity both feed classification. Permanent-ice biome is climate freeze, distinct from hydrology ice cover.
+- Inspect should state the winning rule plus the temperature, elevation, rain, humidity, and aridity that applied.
+- Ocean-current influence is already in moisture via SST/current evaporation; classification does not add a second current rule.
+- Find Place biome filters, road traversal costs, and extra Atlas climate layers remain later Milestone C / L1 work.
 - Future ecology plugins may provide alternative biome schemes.
 
 ### Ecosystem interaction

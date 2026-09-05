@@ -304,6 +304,16 @@ pub(super) fn physical_climate_products(
     products["aridityPpm"] = serde_json::json!(climate.aridity_ppm);
     products["precipitationNhSummerMm"] = serde_json::json!(climate.precipitation_nh_summer_mm);
     products["precipitationNhWinterMm"] = serde_json::json!(climate.precipitation_nh_winter_mm);
+    products["biomeClass"] = serde_json::json!(climate.biome_class);
+    products["biomeLegend"] = serde_json::json!(daena_physical::climate::biome_legend()
+        .iter()
+        .map(|entry| serde_json::json!({
+            "id": entry.id,
+            "name": entry.name,
+            "reason": entry.reason,
+            "fill": entry.fill,
+        }))
+        .collect::<Vec<_>>());
     products["metrics"] = serde_json::json!({
         "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
         "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
@@ -328,6 +338,7 @@ pub(super) fn physical_climate_products(
         "meanHumidityPpm": climate.metrics.mean_humidity_ppm,
         "meanLandAridityPpm": climate.metrics.mean_land_aridity_ppm,
         "meanSeasonalPrecipitationRangeMm": climate.metrics.mean_seasonal_precipitation_range_mm,
+        "dominantLandBiome": climate.metrics.dominant_land_biome,
     });
     products
 }

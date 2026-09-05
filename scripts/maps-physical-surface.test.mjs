@@ -57,11 +57,17 @@ assert.match(raster, /currentsVisible/);
 assert.match(raster, /function precipitationTint/);
 assert.match(raster, /function humidityTint/);
 assert.match(raster, /function aridityTint/);
+assert.match(raster, /function biomeTint/);
 assert.match(editor, /value="precipitation"/);
 assert.match(editor, /value="humidity"/);
 assert.match(editor, /value="aridity"/);
+assert.match(editor, /value="biome"/);
 assert.match(editor, /inspectClimate/);
 assert.match(editor, /meanHumidityPpm/);
 assert.match(editor, /meanLandAridityPpm/);
+assert.match(editor, /dominantLandBiome/);
+assert.match(editor, /biomeClass/);
+assert.match(editor, /biomeLegend/);
+assert.match(editor, /physical-biome-legend/);
 
 console.log("physical surface behavior and component checks passed");

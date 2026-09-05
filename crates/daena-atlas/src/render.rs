@@ -432,11 +432,7 @@ fn paint_pixel(
     }
     let painted = if land { elevation.max(sea) } else { elevation };
     let mut rgb = if land && options.theme == RasterTheme::Biome {
-        let mut climate = paint
-            .climate_class
-            .get(cell)
-            .copied()
-            .unwrap_or(crate::control::CLIMATE_CLASS_GRASSLAND);
+        let mut climate = paint.climate_class.get(cell).copied().unwrap_or(99);
         if !options.ice && climate == crate::control::CLIMATE_CLASS_ICE {
             climate = crate::control::CLIMATE_CLASS_TUNDRA;
         }

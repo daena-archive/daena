@@ -209,6 +209,8 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
     climatePrecipitationNhWinterMm: climate?.precipitationNhWinterMm,
     climateHumidityPpm: climate?.humidityPpm,
     climateAridityPpm: climate?.aridityPpm,
+    climateBiomeClass: climate?.biomeClass,
+    climateBiomeFill: climateBiomeFills(),
   };
 }
 
@@ -243,7 +245,8 @@ function climateSummary() {
     metrics.meanSeasonalPrecipitationRangeMm > 0
       ? ` Solstice rainfall typically differs by ${metrics.meanSeasonalPrecipitationRangeMm.toLocaleString("en-US")} mm.`
       : "";
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. ${freeze}`;
+  const biome = biomeLegendEntry(metrics.dominantLandBiome).name;
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${rain}; humidity ${humidity}; ${dryness}.${seasonRain} Typical land biome is ${biome}. Rainfall follows winds, mountains, and warmer seas. Humidity is remaining moisture versus local saturation. Aridity is evaporative demand unmet by rain. Biomes are a derived reading of those conditions, not painted decoration. ${freeze}`;
 }
 
 function formatAridityLabel(ppm: number) {
@@ -251,6 +254,25 @@ function formatAridityLabel(ppm: number) {
   if (ppm < 500_000) return "sub-humid";
   if (ppm < 800_000) return "semi-arid";
   return "arid";
+}
+
+function biomeLegendEntry(biomeClass: number) {
+  return (
+    climate?.biomeLegend?.find((entry) => entry.id === biomeClass) ?? {
+      id: biomeClass,
+      name: "unclassified",
+      reason: "biome class is outside the versioned legend",
+      fill: [120, 120, 124] as [number, number, number],
+    }
+  );
+}
+
+function climateBiomeFills() {
+  const fills: [number, number, number][] = [];
+  for (const entry of climate?.biomeLegend ?? []) {
+    fills[entry.id] = entry.fill;
+  }
+  return fills;
 }
 
 function inspectClimate(anchor: MapAnchor) {
@@ -271,7 +293,16 @@ function inspectClimate(anchor: MapAnchor) {
   const winter = climate.precipitationNhWinterMm[index] ?? rain;
   const humidity = Math.round((climate.humidityPpm[index] ?? 0) / 10_000);
   const aridity = formatAridityLabel(climate.aridityPpm[index] ?? 0);
-  climateSample = `This cell: ${rain.toLocaleString("en-US")} mm/year, northern-summer ${summer.toLocaleString("en-US")} mm, northern-winter ${winter.toLocaleString("en-US")} mm, humidity ${humidity}% of saturation, ${aridity}.`;
+  const biomeClass = climate.biomeClass[index] ?? 99;
+  const entry = biomeLegendEntry(biomeClass);
+  const summerT = climate.temperatureNhSummerCentiC[index] ?? climate.temperatureCentiC[index] ?? 0;
+  const winterT = climate.temperatureNhWinterCentiC[index] ?? climate.temperatureCentiC[index] ?? 0;
+  const heightM = Math.round(
+    ((hydrology?.waterLevelMm[index] ?? hydrology?.seaLevelMm ?? 0) - (hydrology?.seaLevelMm ?? 0)) / 1_000,
+  );
+  const iceCover = hydrology?.iceCells?.[index] ?? false;
+  const iceNote = iceCover ? " Ice cover is present." : biomeClass === 1 ? " No ice cover on this cell." : "";
+  climateSample = `${entry.name} because ${entry.reason}. Warmer solstice ${formatCentiC(Math.max(summerT, winterT))}, colder ${formatCentiC(Math.min(summerT, winterT))}, ${heightM} m above sea, ${rain.toLocaleString("en-US")} mm/year, humidity ${humidity}% of saturation, ${aridity}.${iceNote}`;
 }
 
 function headline() {
@@ -555,6 +586,7 @@ onMount(() => {
             <option value="precipitation-nh-winter">Northern-winter rainfall</option>
             <option value="humidity">Humidity</option>
             <option value="aridity">Aridity</option>
+            <option value="biome">Biome</option>
           </select></label>
         <label
           ><input
@@ -583,7 +615,7 @@ onMount(() => {
     {#if climate}
       <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
       <p class="physical-planet-readout physical-climate-readout">
-        {climateSample || "Click the map to inspect rainfall, humidity, and aridity at a cell."}
+        {climateSample || "Click the map to inspect rainfall, humidity, aridity, and biome at a cell."}
       </p>
       {#if (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false) || climateOverlay === "wind" || climateOverlay === "wind-nh-summer" || climateOverlay === "wind-nh-winter"}
         <p class="physical-planet-readout physical-climate-readout">
@@ -611,6 +643,23 @@ onMount(() => {
         <p class="physical-planet-readout physical-climate-readout">
           Aridity is evaporative demand unmet by rainfall. Green is humid, tan is dry.
         </p>
+      {/if}
+      {#if climateOverlay === "biome"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Biomes are classified from temperature, rainfall, humidity, aridity, seasonality, and elevation. Permanent ice
+          is climate freeze, not ice-sheet cover. Click a cell to see why.
+        </p>
+        {#if climate.biomeLegend}
+          <p class="physical-planet-readout physical-climate-readout physical-biome-legend">
+            {#each climate.biomeLegend.filter((entry) => entry.id !== 0) as entry}
+              <span
+                ><span
+                  class="physical-biome-swatch"
+                  style={`background: rgb(${entry.fill[0]}, ${entry.fill[1]}, ${entry.fill[2]})`}></span
+                >{entry.name}</span>
+            {/each}
+          </p>
+        {/if}
       {/if}
     {/if}
     {#if advancedPlanet}
@@ -920,6 +969,21 @@ onMount(() => {
 
 .physical-climate-readout {
   padding: 0 1rem 0.75rem;
+}
+
+.physical-biome-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+}
+
+.physical-biome-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: 0.3rem;
+  vertical-align: -0.1rem;
+  border: 1px solid rgb(255 255 255 / 20%);
 }
 
 .physical-planet-advanced {

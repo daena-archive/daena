@@ -17,7 +17,7 @@ use crate::{
     GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
-pub const CACHE_FORMAT_VERSION: u32 = 6;
+pub const CACHE_FORMAT_VERSION: u32 = 7;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(64 * 1024 * 1024);
@@ -471,6 +471,7 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_vec_u32(out, &climate.aridity_ppm)?;
     write_vec_u32(out, &climate.precipitation_nh_summer_mm)?;
     write_vec_u32(out, &climate.precipitation_nh_winter_mm)?;
+    write_vec_u32(out, &climate.biome_class)?;
     write_u64(out, climate.metrics.precipitation_volume_m3_per_year);
     write_u64(out, climate.metrics.runoff_volume_m3_per_year);
     write_i32(out, climate.metrics.mean_temperature_centi_c);
@@ -497,6 +498,7 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_u32(out, climate.metrics.mean_humidity_ppm);
     write_u32(out, climate.metrics.mean_land_aridity_ppm);
     write_u32(out, climate.metrics.mean_seasonal_precipitation_range_mm);
+    write_u32(out, climate.metrics.dominant_land_biome);
     Ok(())
 }
 
@@ -531,6 +533,7 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
         aridity_ppm: reader.vec_u32()?,
         precipitation_nh_summer_mm: reader.vec_u32()?,
         precipitation_nh_winter_mm: reader.vec_u32()?,
+        biome_class: reader.vec_u32()?,
         metrics: ClimateMetrics {
             precipitation_volume_m3_per_year: reader.u64()?,
             runoff_volume_m3_per_year: reader.u64()?,
@@ -555,6 +558,7 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
             mean_humidity_ppm: reader.u32()?,
             mean_land_aridity_ppm: reader.u32()?,
             mean_seasonal_precipitation_range_mm: reader.u32()?,
+            dominant_land_biome: reader.u32()?,
         },
     })
 }
@@ -1074,6 +1078,12 @@ mod tests {
         let encoded = encode(&physics).unwrap();
         let decoded = decode(&encoded).unwrap();
         assert_eq!(decoded.climate, physics.climate);
+        assert_eq!(decoded.climate.biome_class, physics.climate.biome_class);
+        assert!(decoded
+            .climate
+            .biome_class
+            .iter()
+            .any(|class| *class != crate::climate::BIOME_OCEAN));
         assert_eq!(decoded.evolution, physics.evolution);
         assert_eq!(decoded.hydrology, physics.hydrology);
         assert_eq!(decoded.ocean_curve, physics.ocean_curve);

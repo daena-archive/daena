@@ -8,11 +8,17 @@ use daena_physical::{Grid, PhysicalField};
 use crate::detail::{nearest_cell, sample_field_mm};
 use crate::projection::{clamp_lat_micro, wrap_lon_micro};
 
-pub const CLIMATE_CLASS_ICE: i32 = 0;
-pub const CLIMATE_CLASS_TUNDRA: i32 = 1;
-pub const CLIMATE_CLASS_ARID: i32 = 2;
-pub const CLIMATE_CLASS_GRASSLAND: i32 = 3;
-pub const CLIMATE_CLASS_FOREST: i32 = 4;
+pub const CLIMATE_CLASS_OCEAN: i32 = daena_physical::climate::BIOME_OCEAN as i32;
+pub const CLIMATE_CLASS_ICE: i32 = daena_physical::climate::BIOME_ICE as i32;
+pub const CLIMATE_CLASS_TUNDRA: i32 = daena_physical::climate::BIOME_TUNDRA as i32;
+pub const CLIMATE_CLASS_ALPINE: i32 = daena_physical::climate::BIOME_ALPINE as i32;
+pub const CLIMATE_CLASS_COLD_GRASSLAND: i32 = daena_physical::climate::BIOME_COLD_GRASSLAND as i32;
+pub const CLIMATE_CLASS_GRASSLAND: i32 = daena_physical::climate::BIOME_TEMPERATE_GRASSLAND as i32;
+pub const CLIMATE_CLASS_ARID: i32 = daena_physical::climate::BIOME_DESERT as i32;
+pub const CLIMATE_CLASS_SHRUBLAND: i32 = daena_physical::climate::BIOME_SHRUBLAND as i32;
+pub const CLIMATE_CLASS_FOREST: i32 = daena_physical::climate::BIOME_TEMPERATE_FOREST as i32;
+pub const CLIMATE_CLASS_TROPICAL_FOREST: i32 =
+    daena_physical::climate::BIOME_TROPICAL_FOREST as i32;
 pub const CONTINENTAL_INFLUENCE_PPM: i32 = 1_000_000;
 
 #[derive(Debug, Clone)]
@@ -87,6 +93,7 @@ impl ControlFields {
             || climate.aridity_ppm.len() != count
             || climate.precipitation_nh_summer_mm.len() != count
             || climate.precipitation_nh_winter_mm.len() != count
+            || climate.biome_class.len() != count
             || hydrology.ice_thickness_mm.len() != count
             || hydrology.ice_cells.len() != count
             || hydrology.water_level_mm.len() != count
@@ -134,11 +141,7 @@ impl ControlFields {
             watershed_id.push(i32::try_from(hydrology.watershed_id[cell]).unwrap_or(i32::MAX));
             basin_id.push(i32::try_from(hydrology.basin_by_cell[cell]).unwrap_or(i32::MAX));
             lake_mask.push(i32::from(hydrology.lake_cells[cell]));
-            climate_class.push(climate_class_at(
-                hydrology.ice_cells[cell],
-                climate.temperature_centi_c[cell],
-                climate.precipitation_mm_per_year[cell],
-            ));
+            climate_class.push(i32::try_from(climate.biome_class[cell]).unwrap_or(i32::MAX));
         }
         Ok(Self {
             grid: field.grid,
@@ -334,30 +337,13 @@ impl ControlFields {
 }
 
 #[must_use]
-pub fn climate_class_at(ice: bool, temperature_centi_c: i32, precipitation_mm: u32) -> i32 {
-    if ice {
-        CLIMATE_CLASS_ICE
-    } else if temperature_centi_c < -500 {
-        CLIMATE_CLASS_TUNDRA
-    } else if precipitation_mm < 250 {
-        CLIMATE_CLASS_ARID
-    } else if precipitation_mm < 800 {
-        CLIMATE_CLASS_GRASSLAND
-    } else {
-        CLIMATE_CLASS_FOREST
-    }
+pub fn climate_class_name(class: i32) -> &'static str {
+    daena_physical::climate::biome_name(u32::try_from(class).unwrap_or(0))
 }
 
 #[must_use]
-pub fn climate_class_name(class: i32) -> &'static str {
-    match class {
-        CLIMATE_CLASS_ICE => "ice",
-        CLIMATE_CLASS_TUNDRA => "tundra",
-        CLIMATE_CLASS_ARID => "arid",
-        CLIMATE_CLASS_GRASSLAND => "grassland",
-        CLIMATE_CLASS_FOREST => "forest",
-        _ => "grassland",
-    }
+pub fn climate_class_reason(class: i32) -> &'static str {
+    daena_physical::climate::biome_reason(u32::try_from(class).unwrap_or(0))
 }
 
 #[must_use]
@@ -554,11 +540,16 @@ mod tests {
 
     #[test]
     fn climate_and_surface_names_are_stable() {
-        assert_eq!(climate_class_name(CLIMATE_CLASS_ICE), "ice");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_ICE), "permanent ice");
         assert_eq!(climate_class_name(CLIMATE_CLASS_TUNDRA), "tundra");
-        assert_eq!(climate_class_name(CLIMATE_CLASS_ARID), "arid");
-        assert_eq!(climate_class_name(CLIMATE_CLASS_GRASSLAND), "grassland");
-        assert_eq!(climate_class_name(CLIMATE_CLASS_FOREST), "forest");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_ARID), "desert");
+        assert_eq!(
+            climate_class_name(CLIMATE_CLASS_GRASSLAND),
+            "temperate grassland"
+        );
+        assert_eq!(climate_class_name(CLIMATE_CLASS_FOREST), "temperate forest");
+        assert_eq!(climate_class_name(CLIMATE_CLASS_ALPINE), "alpine");
+        assert!(climate_class_reason(CLIMATE_CLASS_ICE).contains("climate freeze"));
         assert_eq!(surface_kind(true, true, 1_000, 0), "ice");
         assert_eq!(surface_kind(false, true, -1_000, 0), "lake");
         assert_eq!(surface_kind(false, false, -1_000, 0), "ocean");

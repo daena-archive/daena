@@ -343,13 +343,24 @@ impl AtlasPreparedScene {
             detail::sample_field_mm(grid, &self.precipitation_nh_summer_mm, lon_micro, lat_micro);
         let precipitation_nh_winter_mm =
             detail::sample_field_mm(grid, &self.precipitation_nh_winter_mm, lon_micro, lat_micro);
-        let climate = control::climate_class_name(
-            self.climate_class
-                .get(cell)
-                .copied()
-                .unwrap_or(control::CLIMATE_CLASS_GRASSLAND),
-        );
+        let climate_class = self.climate_class.get(cell).copied().unwrap_or(99);
+        let climate = control::climate_class_name(climate_class);
         let ice = self.hydrology.ice_cells.get(cell).copied().unwrap_or(false);
+        let mut biome_reason = daena_physical::climate::explain_biome(
+            u32::try_from(climate_class).unwrap_or(0),
+            elevation_mm,
+            sea_level_mm,
+            temperature_nh_summer_centi_c,
+            temperature_nh_winter_centi_c,
+            precipitation_mm.max(0) as u32,
+            humidity_ppm.max(0) as u32,
+            aridity_ppm.max(0) as u32,
+        );
+        if ice {
+            biome_reason.push_str(" Ice cover is present.");
+        } else if climate_class == control::CLIMATE_CLASS_ICE {
+            biome_reason.push_str(" No ice cover on this cell.");
+        }
         let inland = self
             .visible_water
             .inland
@@ -403,6 +414,7 @@ impl AtlasPreparedScene {
             precipitation_nh_summer_mm,
             precipitation_nh_winter_mm,
             climate: climate.to_string(),
+            biome_reason: biome_reason.to_string(),
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
             ice_thickness_mm,
         }

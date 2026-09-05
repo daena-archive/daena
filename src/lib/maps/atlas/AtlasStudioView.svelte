@@ -918,8 +918,12 @@ onDestroy(() => {
               </dd>
             </div>
             <div>
-              <dt>Climate</dt>
+              <dt>Biome</dt>
               <dd>{titleCase(surface.climate)}</dd>
+            </div>
+            <div>
+              <dt>Biome reason</dt>
+              <dd>{surface.biomeReason}</dd>
             </div>
             <div>
               <dt>Prevailing wind</dt>

@@ -6,8 +6,9 @@
 //! solstice states, an explicit rotation-and-temperature wind field, a
 //! wind-driven surface-ocean current field, moisture transport driven by those
 //! winds with sea-surface and current evaporation, humidity and aridity from
-//! remaining moisture versus local saturation and evaporative demand, and
-//! precipitation that feeds runoff volumes using exact spherical cell areas.
+//! remaining moisture versus local saturation and evaporative demand,
+//! precipitation that feeds runoff volumes using exact spherical cell areas,
+//! and land biome classes from those climate conditions.
 
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
@@ -19,7 +20,35 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 4;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 5;
+pub const BIOME_OCEAN: u32 = 0;
+pub const BIOME_ICE: u32 = 1;
+pub const BIOME_TUNDRA: u32 = 2;
+pub const BIOME_ALPINE: u32 = 3;
+pub const BIOME_COLD_GRASSLAND: u32 = 4;
+pub const BIOME_TEMPERATE_GRASSLAND: u32 = 5;
+pub const BIOME_DESERT: u32 = 6;
+pub const BIOME_SHRUBLAND: u32 = 7;
+pub const BIOME_TEMPERATE_FOREST: u32 = 8;
+pub const BIOME_TROPICAL_FOREST: u32 = 9;
+pub const BIOME_CLASS_MAX: u32 = BIOME_TROPICAL_FOREST;
+const ALPINE_HEIGHT_MM: i32 = 1_500_000;
+const TUNDRA_WARM_CENTI_C: i32 = 1_000;
+const TROPICAL_ANNUAL_CENTI_C: i32 = 1_800;
+const TROPICAL_COLD_CENTI_C: i32 = 1_000;
+const TROPICAL_PRECIPITATION_MM: u32 = 1_500;
+const FOREST_PRECIPITATION_MM: u32 = 800;
+const GRASSLAND_PRECIPITATION_MM: u32 = 450;
+const DESERT_PRECIPITATION_MM: u32 = 250;
+const DESERT_ARIDITY_PPM: u32 = 800_000;
+const SHRUBLAND_ARIDITY_PPM: u32 = 500_000;
+const GRASSLAND_ARIDITY_PPM: u32 = 200_000;
+const COLD_GRASSLAND_ANNUAL_CENTI_C: i32 = 500;
+const COLD_GRASSLAND_WINTER_CENTI_C: i32 = -1_000;
+const TROPICAL_HUMIDITY_PPM: u32 = 550_000;
+const FOREST_HUMIDITY_PPM: u32 = 350_000;
+const MARITIME_HUMIDITY_PPM: u32 = 700_000;
+const UNKNOWN_BIOME_FILL: [u8; 3] = [120, 120, 124];
 const EARTH_EQUATOR_BASE_CENTI_C: i32 = 1_400;
 pub const CLIMATE_WIND_BAND_COUNT: u32 = 6;
 pub const WIND_BAND_HADLEY: u32 = 0;
@@ -138,6 +167,7 @@ pub struct ClimateMetrics {
     pub mean_humidity_ppm: u32,
     pub mean_land_aridity_ppm: u32,
     pub mean_seasonal_precipitation_range_mm: u32,
+    pub dominant_land_biome: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +201,7 @@ pub struct ClimateField {
     pub aridity_ppm: Vec<u32>,
     pub precipitation_nh_summer_mm: Vec<u32>,
     pub precipitation_nh_winter_mm: Vec<u32>,
+    pub biome_class: Vec<u32>,
     pub metrics: ClimateMetrics,
 }
 
@@ -204,6 +235,7 @@ impl ClimateField {
             || self.aridity_ppm.len() != expected
             || self.precipitation_nh_summer_mm.len() != expected
             || self.precipitation_nh_winter_mm.len() != expected
+            || self.biome_class.len() != expected
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -265,6 +297,10 @@ impl ClimateField {
                 .iter()
                 .chain(self.precipitation_nh_winter_mm.iter())
                 .any(|value| *value > MAX_CLIMATE_PRECIPITATION_MM)
+            || self
+                .biome_class
+                .iter()
+                .any(|value| *value > BIOME_CLASS_MAX)
         {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::NumericNonFinite,
@@ -401,6 +437,16 @@ impl ClimateField {
         next.aridity_ppm = moisture.aridity_ppm;
         next.runoff_mm_per_year = runoff;
         next.runoff_volume_m3_per_year = runoff_volume;
+        next.biome_class = classify_biomes(
+            field,
+            &next.temperature_centi_c,
+            &next.temperature_nh_summer_centi_c,
+            &next.temperature_nh_winter_centi_c,
+            &next.precipitation_mm_per_year,
+            &next.humidity_ppm,
+            &next.aridity_ppm,
+        );
+        apply_biome_metrics(field, &next.biome_class, &mut metrics);
         next.metrics = metrics;
         next.validate_against(field)?;
         Ok(next)
@@ -1700,6 +1746,7 @@ fn runoff_fields(
             mean_humidity_ppm: 0,
             mean_land_aridity_ppm: 0,
             mean_seasonal_precipitation_range_mm: 0,
+            dominant_land_biome: BIOME_OCEAN,
         },
     ))
 }
@@ -1832,6 +1879,255 @@ fn apply_current_metrics(
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BiomeLegendEntry {
+    pub id: u32,
+    pub name: &'static str,
+    pub reason: &'static str,
+    pub fill: [u8; 3],
+}
+
+#[must_use]
+pub fn biome_name(class: u32) -> &'static str {
+    biome_entry(class).name
+}
+
+#[must_use]
+pub fn biome_reason(class: u32) -> &'static str {
+    biome_entry(class).reason
+}
+
+#[must_use]
+pub fn biome_fill_rgb(class: u32) -> [u8; 3] {
+    biome_entry(class).fill
+}
+
+#[must_use]
+pub fn biome_legend() -> [BiomeLegendEntry; 10] {
+    [
+        biome_entry(BIOME_OCEAN),
+        biome_entry(BIOME_ICE),
+        biome_entry(BIOME_TUNDRA),
+        biome_entry(BIOME_ALPINE),
+        biome_entry(BIOME_COLD_GRASSLAND),
+        biome_entry(BIOME_TEMPERATE_GRASSLAND),
+        biome_entry(BIOME_DESERT),
+        biome_entry(BIOME_SHRUBLAND),
+        biome_entry(BIOME_TEMPERATE_FOREST),
+        biome_entry(BIOME_TROPICAL_FOREST),
+    ]
+}
+
+fn biome_entry(class: u32) -> BiomeLegendEntry {
+    match class {
+        BIOME_ICE => BiomeLegendEntry {
+            id: BIOME_ICE,
+            name: "permanent ice",
+            reason:
+                "both solstices stay below freezing; this is climate freeze, not ice-sheet cover",
+            fill: [236, 244, 252],
+        },
+        BIOME_TUNDRA => BiomeLegendEntry {
+            id: BIOME_TUNDRA,
+            name: "tundra",
+            reason: "the warmer solstice stays below 10 °C",
+            fill: [156, 168, 148],
+        },
+        BIOME_ALPINE => BiomeLegendEntry {
+            id: BIOME_ALPINE,
+            name: "alpine",
+            reason: "high land stays cold despite its latitude",
+            fill: [188, 176, 156],
+        },
+        BIOME_COLD_GRASSLAND => BiomeLegendEntry {
+            id: BIOME_COLD_GRASSLAND,
+            name: "cold grassland",
+            reason: "cool or strongly seasonal climate with moderate rain",
+            fill: [148, 168, 92],
+        },
+        BIOME_TEMPERATE_GRASSLAND => BiomeLegendEntry {
+            id: BIOME_TEMPERATE_GRASSLAND,
+            name: "temperate grassland",
+            reason: "moderate rain without enough moisture for forest",
+            fill: [168, 186, 92],
+        },
+        BIOME_DESERT => BiomeLegendEntry {
+            id: BIOME_DESERT,
+            name: "desert",
+            reason: "rainfall does not meet evaporative demand",
+            fill: [214, 178, 96],
+        },
+        BIOME_SHRUBLAND => BiomeLegendEntry {
+            id: BIOME_SHRUBLAND,
+            name: "shrubland",
+            reason: "semi-arid or leftover humidity supports shrubs rather than closed grassland",
+            fill: [196, 164, 88],
+        },
+        BIOME_TEMPERATE_FOREST => BiomeLegendEntry {
+            id: BIOME_TEMPERATE_FOREST,
+            name: "temperate forest",
+            reason:
+                "enough rain and remaining humidity for forest outside the tropical warmth band",
+            fill: [46, 120, 62],
+        },
+        BIOME_TROPICAL_FOREST => BiomeLegendEntry {
+            id: BIOME_TROPICAL_FOREST,
+            name: "tropical forest",
+            reason: "warm year-round with heavy rainfall and moist air",
+            fill: [18, 92, 44],
+        },
+        BIOME_OCEAN => BiomeLegendEntry {
+            id: BIOME_OCEAN,
+            name: "ocean",
+            reason: "this cell is ocean, not a land biome",
+            fill: [46, 110, 148],
+        },
+        _ => BiomeLegendEntry {
+            id: class,
+            name: "unclassified",
+            reason: "biome class is outside the versioned legend",
+            fill: UNKNOWN_BIOME_FILL,
+        },
+    }
+}
+
+#[must_use]
+pub fn explain_biome(
+    class: u32,
+    elevation_mm: i32,
+    sea_level_mm: i32,
+    summer_centi_c: i32,
+    winter_centi_c: i32,
+    precipitation_mm: u32,
+    humidity_ppm: u32,
+    aridity_ppm: u32,
+) -> String {
+    let warm = summer_centi_c.max(winter_centi_c);
+    let cold = summer_centi_c.min(winter_centi_c);
+    let height_m = elevation_mm.saturating_sub(sea_level_mm) / 1_000;
+    format!(
+        "{} because {}. Warmer solstice {:.1} °C, colder {:.1} °C, {} m above sea, {} mm/year, humidity {}% of saturation, aridity {}%.",
+        biome_name(class),
+        biome_reason(class),
+        f64::from(warm) / 100.0,
+        f64::from(cold) / 100.0,
+        height_m,
+        precipitation_mm,
+        humidity_ppm / 10_000,
+        aridity_ppm / 10_000
+    )
+}
+
+#[must_use]
+pub fn classify_biome_cell(
+    land: bool,
+    elevation_mm: i32,
+    sea_level_mm: i32,
+    annual_centi_c: i32,
+    summer_centi_c: i32,
+    winter_centi_c: i32,
+    precipitation_mm: u32,
+    humidity_ppm: u32,
+    aridity_ppm: u32,
+) -> u32 {
+    if !land {
+        return BIOME_OCEAN;
+    }
+    let warm = summer_centi_c.max(winter_centi_c);
+    let cold = summer_centi_c.min(winter_centi_c);
+    if warm < 0 {
+        return BIOME_ICE;
+    }
+    let highland = elevation_mm.saturating_sub(sea_level_mm) >= ALPINE_HEIGHT_MM;
+    if highland && warm < TUNDRA_WARM_CENTI_C {
+        return BIOME_ALPINE;
+    }
+    if warm < TUNDRA_WARM_CENTI_C {
+        return BIOME_TUNDRA;
+    }
+    if aridity_ppm >= DESERT_ARIDITY_PPM || precipitation_mm < DESERT_PRECIPITATION_MM {
+        if humidity_ppm >= MARITIME_HUMIDITY_PPM {
+            return BIOME_SHRUBLAND;
+        }
+        return BIOME_DESERT;
+    }
+    if aridity_ppm >= SHRUBLAND_ARIDITY_PPM || precipitation_mm < GRASSLAND_PRECIPITATION_MM {
+        return BIOME_SHRUBLAND;
+    }
+    let grassland = aridity_ppm >= GRASSLAND_ARIDITY_PPM
+        || precipitation_mm < FOREST_PRECIPITATION_MM
+        || humidity_ppm < FOREST_HUMIDITY_PPM;
+    if grassland {
+        if annual_centi_c < COLD_GRASSLAND_ANNUAL_CENTI_C || cold < COLD_GRASSLAND_WINTER_CENTI_C {
+            return BIOME_COLD_GRASSLAND;
+        }
+        return BIOME_TEMPERATE_GRASSLAND;
+    }
+    if annual_centi_c >= TROPICAL_ANNUAL_CENTI_C
+        && cold >= TROPICAL_COLD_CENTI_C
+        && precipitation_mm >= TROPICAL_PRECIPITATION_MM
+        && humidity_ppm >= TROPICAL_HUMIDITY_PPM
+    {
+        return BIOME_TROPICAL_FOREST;
+    }
+    BIOME_TEMPERATE_FOREST
+}
+
+fn classify_biomes(
+    field: &PhysicalField,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    precipitation: &[u32],
+    humidity_ppm: &[u32],
+    aridity_ppm: &[u32],
+) -> Vec<u32> {
+    (0..field.grid.sample_count())
+        .map(|cell| {
+            classify_biome_cell(
+                field.elevations_mm[cell] > field.sea_level_mm,
+                field.elevations_mm[cell],
+                field.sea_level_mm,
+                annual[cell],
+                summers[cell],
+                winters[cell],
+                precipitation[cell],
+                humidity_ppm[cell],
+                aridity_ppm[cell],
+            )
+        })
+        .collect()
+}
+
+fn apply_biome_metrics(field: &PhysicalField, biome_class: &[u32], metrics: &mut ClimateMetrics) {
+    let mut areas = [0.0; BIOME_CLASS_MAX as usize + 1];
+    let mut land_area = 0.0;
+    for cell in 0..field.grid.sample_count() {
+        if field.elevations_mm[cell] <= field.sea_level_mm {
+            continue;
+        }
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        land_area += area;
+        let class = biome_class[cell].min(BIOME_CLASS_MAX) as usize;
+        areas[class] += area;
+    }
+    metrics.dominant_land_biome = if land_area <= 0.0 {
+        BIOME_OCEAN
+    } else {
+        areas
+            .iter()
+            .enumerate()
+            .skip(1)
+            .max_by(|left, right| {
+                left.1
+                    .partial_cmp(right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(class, _)| class as u32)
+            .unwrap_or(BIOME_OCEAN)
+    };
+}
+
 fn round_volume(volume_m3: f64) -> Result<u64, PhysicalError> {
     if !volume_m3.is_finite() || !(0.0..=(u64::MAX as f64)).contains(&volume_m3) {
         return Err(PhysicalError::coded(
@@ -1904,6 +2200,7 @@ pub fn derive_current_climate(
         aridity_ppm: Vec::new(),
         precipitation_nh_summer_mm: Vec::new(),
         precipitation_nh_winter_mm: Vec::new(),
+        biome_class: Vec::new(),
         metrics: ClimateMetrics {
             precipitation_volume_m3_per_year: 0,
             runoff_volume_m3_per_year: 0,
@@ -1928,6 +2225,7 @@ pub fn derive_current_climate(
             mean_humidity_ppm: 0,
             mean_land_aridity_ppm: 0,
             mean_seasonal_precipitation_range_mm: 0,
+            dominant_land_biome: BIOME_OCEAN,
         },
     };
     let moisture = derive_moisture_fields(field, settings, climate_seed, &climate, progress)?;
@@ -1976,6 +2274,16 @@ pub fn derive_current_climate(
     climate.aridity_ppm = moisture.aridity_ppm;
     climate.runoff_mm_per_year = runoff;
     climate.runoff_volume_m3_per_year = runoff_volume;
+    climate.biome_class = classify_biomes(
+        field,
+        &climate.temperature_centi_c,
+        &climate.temperature_nh_summer_centi_c,
+        &climate.temperature_nh_winter_centi_c,
+        &climate.precipitation_mm_per_year,
+        &climate.humidity_ppm,
+        &climate.aridity_ppm,
+    );
+    apply_biome_metrics(field, &climate.biome_class, &mut metrics);
     climate.metrics = metrics;
     climate.validate_against(field)?;
     progress.report(ProgressPhase::CalculatingClimate, 4, 4)?;
@@ -3111,5 +3419,128 @@ mod tests {
         )
         .unwrap();
         assert!(slow.metrics.mean_current_speed_milli < earth.metrics.mean_current_speed_milli);
+    }
+
+    #[test]
+    fn biome_classes_are_explainable_from_climate_conditions() {
+        assert_eq!(
+            classify_biome_cell(false, -2_000, 0, 2_000, 2_200, 1_800, 2_000, 500_000, 0),
+            BIOME_OCEAN
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, -1_200, -800, -1_600, 200, 200_000, 200_000),
+            BIOME_ICE
+        );
+        assert_eq!(
+            classify_biome_cell(true, 400, 0, -200, 400, -800, 400, 400_000, 300_000),
+            BIOME_TUNDRA
+        );
+        assert_eq!(
+            classify_biome_cell(true, 2_400_000, 0, 200, 600, -200, 600, 400_000, 250_000),
+            BIOME_ALPINE
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 2_200, 2_600, 1_800, 80, 100_000, 900_000),
+            BIOME_DESERT
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 2_200, 2_600, 1_800, 80, 800_000, 900_000),
+            BIOME_SHRUBLAND
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 1_800, 2_200, 1_400, 350, 400_000, 600_000),
+            BIOME_SHRUBLAND
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 200, 1_200, -1_400, 600, 400_000, 350_000),
+            BIOME_COLD_GRASSLAND
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 1_400, 1_800, 1_000, 600, 400_000, 350_000),
+            BIOME_TEMPERATE_GRASSLAND
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 1_200, 1_800, 600, 1_200, 100_000, 80_000),
+            BIOME_TEMPERATE_GRASSLAND
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 1_200, 1_800, 600, 1_200, 500_000, 80_000),
+            BIOME_TEMPERATE_FOREST
+        );
+        assert_eq!(
+            classify_biome_cell(true, 200, 0, 2_400, 2_600, 2_200, 2_400, 700_000, 40_000),
+            BIOME_TROPICAL_FOREST
+        );
+        assert_eq!(biome_name(BIOME_DESERT), "desert");
+        assert_eq!(biome_name(BIOME_ICE), "permanent ice");
+        assert!(
+            explain_biome(BIOME_ALPINE, 2_400_000, 0, 600, -200, 600, 400_000, 250_000)
+                .contains("2400 m")
+        );
+        assert_eq!(biome_legend().len(), 10);
+    }
+
+    #[test]
+    fn derived_biomes_cover_land_and_leave_ocean_unclassified() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(climate.derivation_version, 5);
+        assert_eq!(climate.biome_class.len(), grid.sample_count());
+        assert_eq!(climate.biome_class[0], BIOME_OCEAN);
+        assert!(climate
+            .biome_class
+            .iter()
+            .skip(1)
+            .all(|class| *class != BIOME_OCEAN));
+        assert_ne!(climate.metrics.dominant_land_biome, BIOME_OCEAN);
+    }
+
+    #[test]
+    fn colder_epoch_increases_frozen_biome_cover() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let physical = field(grid, elevations, 0);
+        let present = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let cold = present
+            .with_global_temperature_offset(-2_500)
+            .with_winds_and_moisture_for_field(
+                &physical,
+                physical.seed,
+                physical.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        let present_ice = present
+            .biome_class
+            .iter()
+            .filter(|class| **class == BIOME_ICE)
+            .count();
+        let cold_ice = cold
+            .biome_class
+            .iter()
+            .filter(|class| **class == BIOME_ICE)
+            .count();
+        assert!(
+            cold_ice > present_ice,
+            "cold {cold_ice} present {present_ice}"
+        );
     }
 }

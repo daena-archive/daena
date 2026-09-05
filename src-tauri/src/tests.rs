@@ -70,7 +70,7 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
     )
     .unwrap();
     let products = physical_climate_products(&climate);
-    assert_eq!(products["derivationVersion"], 4);
+    assert_eq!(products["derivationVersion"], 5);
     assert_eq!(products["width"], 8);
     assert_eq!(products["height"], 4);
     for key in [
@@ -99,9 +99,11 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
         "aridityPpm",
         "precipitationNhSummerMm",
         "precipitationNhWinterMm",
+        "biomeClass",
     ] {
         assert_eq!(products[key].as_array().unwrap().len(), grid.sample_count());
     }
+    assert_eq!(products["biomeLegend"].as_array().unwrap().len(), 10);
     assert!(
         products["metrics"]["precipitationVolumeM3PerYear"]
             .as_u64()

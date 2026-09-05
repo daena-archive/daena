@@ -13,7 +13,8 @@ export type ClimateOverlayMode =
   | "precipitation-nh-summer"
   | "precipitation-nh-winter"
   | "humidity"
-  | "aridity";
+  | "aridity"
+  | "biome";
 
 export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
@@ -37,6 +38,8 @@ export type PhysicalRasterPaintOptions = {
   climatePrecipitationNhWinterMm?: number[];
   climateHumidityPpm?: number[];
   climateAridityPpm?: number[];
+  climateBiomeClass?: number[];
+  climateBiomeFill?: [number, number, number][];
 };
 
 export type PhysicalRasterProducts = {
@@ -125,6 +128,12 @@ function aridityTint(ppm: number): [number, number, number] {
   return [lerp(96, 210, t), lerp(148, 164, t), lerp(92, 96, t)];
 }
 
+function biomeTint(biomeClass: number, fills: [number, number, number][] | undefined): [number, number, number] {
+  const fill = fills?.[biomeClass];
+  if (fill) return fill;
+  return [120, 120, 124];
+}
+
 function moistureValue(options: PhysicalRasterPaintOptions, overlay: ClimateOverlayMode, index: number): number {
   if (overlay === "precipitation-nh-summer") return options.climatePrecipitationNhSummerMm?.[index] ?? 0;
   if (overlay === "precipitation-nh-winter") return options.climatePrecipitationNhWinterMm?.[index] ?? 0;
@@ -141,6 +150,10 @@ function isMoistureOverlay(mode: ClimateOverlayMode): boolean {
     mode === "humidity" ||
     mode === "aridity"
   );
+}
+
+function isBiomeOverlay(mode: ClimateOverlayMode): boolean {
+  return mode === "biome";
 }
 
 function temperatureTint(centiC: number): [number, number, number] {
@@ -313,6 +326,12 @@ export function paintPhysicalSurface(
           } else if (fillWind) {
             const [east, north] = windComponents(options, fillWind, index);
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], windTint(east, north), 0.22);
+          } else if (isBiomeOverlay(climateOverlay)) {
+            [landRed, landGreen, landBlue] = mixRgb(
+              [landRed, landGreen, landBlue],
+              biomeTint(options.climateBiomeClass?.[index] ?? 99, options.climateBiomeFill),
+              0.78,
+            );
           } else if (isMoistureOverlay(climateOverlay)) {
             const value = moistureValue(options, climateOverlay, index);
             const tint =

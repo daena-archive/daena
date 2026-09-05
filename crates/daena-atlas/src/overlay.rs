@@ -59,6 +59,124 @@ fn project_point(view: ProjectedView, lon_micro: i32, lat_micro: i32) -> Option<
     view.project(lon_micro, lat_micro)
 }
 
+fn mix_channel(first: u8, second: u8, t: f32) -> u8 {
+    let t = t.clamp(0.0, 1.0);
+    (f32::from(first) + (f32::from(second) - f32::from(first)) * t).round() as u8
+}
+
+pub(crate) fn wind_tint(east_milli: i32, north_milli: i32) -> [u8; 3] {
+    let speed = (east_milli as f32).hypot(north_milli as f32).max(1.0);
+    let u = east_milli as f32 / speed;
+    let v = north_milli as f32 / speed;
+    let easterly = [72_u8, 168, 232];
+    let westerly = [232_u8, 156, 48];
+    let northward = [64_u8, 196, 168];
+    let southward = [196_u8, 96, 168];
+    let zonal = [
+        mix_channel(easterly[0], westerly[0], (u + 1.0) / 2.0),
+        mix_channel(easterly[1], westerly[1], (u + 1.0) / 2.0),
+        mix_channel(easterly[2], westerly[2], (u + 1.0) / 2.0),
+    ];
+    let meridional = if v >= 0.0 { northward } else { southward };
+    let t = v.abs() * 0.7;
+    [
+        mix_channel(zonal[0], meridional[0], t),
+        mix_channel(zonal[1], meridional[1], t),
+        mix_channel(zonal[2], meridional[2], t),
+    ]
+}
+
+fn arrow_step(size: u32) -> u32 {
+    (size / 16).max(4).min(size.max(1))
+}
+
+pub(crate) fn draw_wind_arrows(
+    buffer: &mut [u8],
+    view: ProjectedView,
+    grid: Grid,
+    east: &[i32],
+    north: &[i32],
+) {
+    if east.len() != grid.sample_count() || north.len() != grid.sample_count() {
+        return;
+    }
+    if view.width == 0 || view.height == 0 {
+        return;
+    }
+    let step_x = arrow_step(view.width);
+    let step_y = arrow_step(view.height);
+    let mut y = step_y / 2;
+    while y < view.height {
+        let mut x = step_x / 2;
+        while x < view.width {
+            let jitter = x
+                .wrapping_mul(0x9e37_79b9)
+                .wrapping_add(y.wrapping_mul(0x85eb_ca6b));
+            let ox = ((jitter % 7) as i32) - 3;
+            let oy = (((jitter / 7) % 7) as i32) - 3;
+            let px = (x as i32 + ox).clamp(0, view.width.saturating_sub(1) as i32) as u32;
+            let py = (y as i32 + oy).clamp(0, view.height.saturating_sub(1) as i32) as u32;
+            let (lon, lat) = view.pixel_center(px, py);
+            let east_milli = crate::detail::sample_field_mm(grid, east, lon, lat);
+            let north_milli = crate::detail::sample_field_mm(grid, north, lon, lat);
+            let speed = (east_milli as f32).hypot(north_milli as f32);
+            if speed >= 80.0 {
+                let length = 8.0 + (speed / 450.0).min(10.0);
+                let angle = (-north_milli as f32).atan2(east_milli as f32);
+                let ax = px as i32;
+                let ay = py as i32;
+                let dx = (angle.cos() * length).round() as i32;
+                let dy = (angle.sin() * length).round() as i32;
+                let rgb = wind_tint(east_milli, north_milli);
+                let alpha = 480_000 + ((speed / 2_000.0).min(1.0) * 440_000.0) as u32;
+                draw_segment(
+                    buffer,
+                    view.width,
+                    view.height,
+                    ax - dx,
+                    ay - dy,
+                    ax + dx,
+                    ay + dy,
+                    rgb,
+                    alpha,
+                );
+                let left = angle - 0.45;
+                let right = angle + 0.45;
+                draw_segment(
+                    buffer,
+                    view.width,
+                    view.height,
+                    ax + dx,
+                    ay + dy,
+                    ax + dx - (left.cos() * 4.5).round() as i32,
+                    ay + dy - (left.sin() * 4.5).round() as i32,
+                    rgb,
+                    alpha,
+                );
+                draw_segment(
+                    buffer,
+                    view.width,
+                    view.height,
+                    ax + dx,
+                    ay + dy,
+                    ax + dx - (right.cos() * 4.5).round() as i32,
+                    ay + dy - (right.sin() * 4.5).round() as i32,
+                    rgb,
+                    alpha,
+                );
+            }
+            x = x.saturating_add(step_x);
+            if step_x == 0 {
+                break;
+            }
+        }
+        y = y.saturating_add(step_y);
+        if step_y == 0 {
+            break;
+        }
+    }
+}
+
 fn cell_center(grid: Grid, cell: usize) -> [i32; 2] {
     if cell >= grid.sample_count() {
         return [0, 0];
@@ -164,6 +282,7 @@ pub fn composite_overlays(
     identity: &[u8],
     overlays: &[AuthoredFeature],
     tributaries: &[DerivedTributary],
+    winds: Option<(&[i32], &[i32])>,
 ) {
     let view = request.view().unwrap_or(ProjectedView {
         projection: request.projection,
@@ -250,6 +369,11 @@ pub fn composite_overlays(
                     }
                 }
             }
+        }
+    }
+    if request.layer_enabled("winds") {
+        if let Some((east, north)) = winds {
+            draw_wind_arrows(buffer, view, hydrology.grid, east, north);
         }
     }
     if request.layer_enabled("graticule") {
@@ -380,6 +504,18 @@ pub struct AtlasSurfaceSample {
     pub temperature_nh_winter_centi_c: i32,
     pub seasonal_range_centi_c: u32,
     pub freeze: String,
+    pub wind_east_milli: i32,
+    pub wind_north_milli: i32,
+    pub wind_east_nh_summer_milli: i32,
+    pub wind_north_nh_summer_milli: i32,
+    pub wind_east_nh_winter_milli: i32,
+    pub wind_north_nh_winter_milli: i32,
+    pub wind_divergence_ppm: i32,
+    pub wind_divergence_nh_summer_ppm: i32,
+    pub wind_divergence_nh_winter_ppm: i32,
+    pub wind_band: String,
+    pub wind_band_nh_summer: String,
+    pub wind_band_nh_winter: String,
     pub precipitation_mm: i32,
     pub climate: String,
     pub surface: String,
@@ -610,5 +746,49 @@ mod tests {
             nearby_jump <= 4,
             "grain is per-sample hash, not paper: jump {nearby_jump}"
         );
+    }
+
+    #[test]
+    fn easterly_wind_tint_is_blue() {
+        let rgb = wind_tint(-1_500, 0);
+        assert!(rgb[2] > rgb[0], "easterly should lean blue: {rgb:?}");
+        let westerly = wind_tint(1_500, 0);
+        assert!(
+            westerly[0] > westerly[2],
+            "westerly should lean amber: {westerly:?}"
+        );
+    }
+
+    #[test]
+    fn wind_arrows_paint_zoomed_views() {
+        let grid = daena_physical::Grid::new(8, 4, 6_371_000).unwrap();
+        let east = vec![-1_200; grid.sample_count()];
+        let north = vec![0; grid.sample_count()];
+        let view = ProjectedView {
+            projection: crate::projection::AtlasProjection::Equirectangular,
+            extent: crate::projection::AtlasExtent {
+                west_lon_micro: 12_000_000,
+                south_lat_micro: 8_000_000,
+                east_lon_micro: 18_000_000,
+                north_lat_micro: 12_000_000,
+            },
+            width: 64,
+            height: 48,
+        };
+        let mut buffer = vec![0_u8; 64 * 48 * 4];
+        draw_wind_arrows(&mut buffer, view, grid, &east, &north);
+        let painted = buffer
+            .chunks(4)
+            .filter(|px| px[0] | px[1] | px[2] != 0)
+            .count();
+        assert!(
+            painted > 20,
+            "zoomed view should still receive arrows: {painted}"
+        );
+        let blueish = buffer
+            .chunks(4)
+            .filter(|px| px[2] > px[0] && px[2] > 40)
+            .count();
+        assert!(blueish > 10, "easterly arrows should be blue: {blueish}");
     }
 }

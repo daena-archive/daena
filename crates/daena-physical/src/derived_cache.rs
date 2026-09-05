@@ -17,7 +17,7 @@ use crate::{
     GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
-pub const CACHE_FORMAT_VERSION: u32 = 2;
+pub const CACHE_FORMAT_VERSION: u32 = 4;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(64 * 1024 * 1024);
@@ -453,6 +453,18 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_vec_u32(out, &climate.runoff_mm_per_year)?;
     write_vec_u64(out, &climate.runoff_volume_m3_per_year)?;
     write_vec_u32(out, &climate.maritime_factor_ppm)?;
+    write_vec_i32(out, &climate.wind_east_milli)?;
+    write_vec_i32(out, &climate.wind_north_milli)?;
+    write_vec_i32(out, &climate.wind_east_nh_summer_milli)?;
+    write_vec_i32(out, &climate.wind_north_nh_summer_milli)?;
+    write_vec_i32(out, &climate.wind_east_nh_winter_milli)?;
+    write_vec_i32(out, &climate.wind_north_nh_winter_milli)?;
+    write_vec_i32(out, &climate.wind_divergence_ppm)?;
+    write_vec_i32(out, &climate.wind_divergence_nh_summer_ppm)?;
+    write_vec_i32(out, &climate.wind_divergence_nh_winter_ppm)?;
+    write_vec_u32(out, &climate.wind_band)?;
+    write_vec_u32(out, &climate.wind_band_nh_summer)?;
+    write_vec_u32(out, &climate.wind_band_nh_winter)?;
     write_u64(out, climate.metrics.precipitation_volume_m3_per_year);
     write_u64(out, climate.metrics.runoff_volume_m3_per_year);
     write_i32(out, climate.metrics.mean_temperature_centi_c);
@@ -471,6 +483,10 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_i32(out, climate.metrics.maximum_seasonal_temperature_centi_c);
     write_u32(out, climate.metrics.permanently_frozen_land_ppm);
     write_u32(out, climate.metrics.seasonally_frozen_land_ppm);
+    write_u32(out, climate.metrics.mean_wind_speed_milli);
+    write_i32(out, climate.metrics.itcz_latitude_milli_deg);
+    write_u32(out, climate.metrics.easterly_cell_ppm);
+    write_u32(out, climate.metrics.converging_cell_ppm);
     Ok(())
 }
 
@@ -487,6 +503,18 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
         runoff_mm_per_year: reader.vec_u32()?,
         runoff_volume_m3_per_year: reader.vec_u64()?,
         maritime_factor_ppm: reader.vec_u32()?,
+        wind_east_milli: reader.vec_i32()?,
+        wind_north_milli: reader.vec_i32()?,
+        wind_east_nh_summer_milli: reader.vec_i32()?,
+        wind_north_nh_summer_milli: reader.vec_i32()?,
+        wind_east_nh_winter_milli: reader.vec_i32()?,
+        wind_north_nh_winter_milli: reader.vec_i32()?,
+        wind_divergence_ppm: reader.vec_i32()?,
+        wind_divergence_nh_summer_ppm: reader.vec_i32()?,
+        wind_divergence_nh_winter_ppm: reader.vec_i32()?,
+        wind_band: reader.vec_u32()?,
+        wind_band_nh_summer: reader.vec_u32()?,
+        wind_band_nh_winter: reader.vec_u32()?,
         metrics: ClimateMetrics {
             precipitation_volume_m3_per_year: reader.u64()?,
             runoff_volume_m3_per_year: reader.u64()?,
@@ -503,6 +531,10 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
             maximum_seasonal_temperature_centi_c: reader.i32()?,
             permanently_frozen_land_ppm: reader.u32()?,
             seasonally_frozen_land_ppm: reader.u32()?,
+            mean_wind_speed_milli: reader.u32()?,
+            itcz_latitude_milli_deg: reader.i32()?,
+            easterly_cell_ppm: reader.u32()?,
+            converging_cell_ppm: reader.u32()?,
         },
     })
 }

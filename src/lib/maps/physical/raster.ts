@@ -1,14 +1,22 @@
 import { PHYSICAL_RASTER_OVERSAMPLE, physicalGridRowForRasterRow } from "../native-vector/coordinates.ts";
 
-export type ClimateOverlayMode = "off" | "annual" | "nh-summer" | "nh-winter" | "freeze";
+export type ClimateOverlayMode =
+  "off" | "annual" | "nh-summer" | "nh-winter" | "freeze" | "wind" | "wind-nh-summer" | "wind-nh-winter";
 
 export type PhysicalRasterPaintOptions = {
   iceVisible?: boolean;
   lakesVisible?: boolean;
+  windsVisible?: boolean;
   climateOverlay?: ClimateOverlayMode;
   climateAnnualCentiC?: number[];
   climateNhSummerCentiC?: number[];
   climateNhWinterCentiC?: number[];
+  climateWindEastMilli?: number[];
+  climateWindNorthMilli?: number[];
+  climateWindEastNhSummerMilli?: number[];
+  climateWindNorthNhSummerMilli?: number[];
+  climateWindEastNhWinterMilli?: number[];
+  climateWindNorthNhWinterMilli?: number[];
 };
 
 export type PhysicalRasterProducts = {
@@ -27,6 +35,44 @@ export const MIN_VISIBLE_INLAND_WATER_CELLS = 8;
 
 function lerp(first: number, second: number, t: number): number {
   return first + (second - first) * t;
+}
+
+function isWindOverlay(mode: ClimateOverlayMode): boolean {
+  return mode === "wind" || mode === "wind-nh-summer" || mode === "wind-nh-winter";
+}
+
+function windArrowMode(options: PhysicalRasterPaintOptions, overlay: ClimateOverlayMode): ClimateOverlayMode | null {
+  if (isWindOverlay(overlay)) return overlay;
+  if (options.windsVisible) return "wind";
+  return null;
+}
+
+function windComponents(
+  options: PhysicalRasterPaintOptions,
+  overlay: ClimateOverlayMode,
+  index: number,
+): [number, number] {
+  if (overlay === "wind-nh-summer") {
+    return [options.climateWindEastNhSummerMilli?.[index] ?? 0, options.climateWindNorthNhSummerMilli?.[index] ?? 0];
+  }
+  if (overlay === "wind-nh-winter") {
+    return [options.climateWindEastNhWinterMilli?.[index] ?? 0, options.climateWindNorthNhWinterMilli?.[index] ?? 0];
+  }
+  return [options.climateWindEastMilli?.[index] ?? 0, options.climateWindNorthMilli?.[index] ?? 0];
+}
+
+function windTint(eastMilli: number, northMilli: number): [number, number, number] {
+  const speed = Math.hypot(eastMilli, northMilli);
+  if (speed < 1) return [72, 168, 232];
+  const u = eastMilli / speed;
+  const v = northMilli / speed;
+  const easterly: [number, number, number] = [72, 168, 232];
+  const westerly: [number, number, number] = [232, 156, 48];
+  const northward: [number, number, number] = [64, 196, 168];
+  const southward: [number, number, number] = [196, 96, 168];
+  const zonal = mixRgb(easterly, westerly, (u + 1) / 2);
+  const meridional = v >= 0 ? northward : southward;
+  return mixRgb(zonal, meridional, Math.abs(v) * 0.7);
 }
 
 function temperatureTint(centiC: number): [number, number, number] {
@@ -130,6 +176,8 @@ export function paintPhysicalSurface(
   const iceVisible = options.iceVisible ?? true;
   const lakesVisible = options.lakesVisible ?? true;
   const climateOverlay = options.climateOverlay ?? "off";
+  const fillWind = isWindOverlay(climateOverlay) ? climateOverlay : null;
+  const arrowWind = windArrowMode(options, climateOverlay);
   const canvas = document.createElement("canvas");
   canvas.width = products.width;
   canvas.height = products.height * PHYSICAL_RASTER_OVERSAMPLE;
@@ -149,17 +197,38 @@ export function paintPhysicalSurface(
       let blue: number;
       if (water.ocean[index]) {
         const depth = Math.min(1, (products.bathymetryMm[index] ?? 0) / 4_000_000);
-        red = Math.round((18 + (1 - depth) * 36) * (0.75 + 0.25 * shade));
-        green = Math.round((52 + (1 - depth) * 70) * (0.75 + 0.25 * shade));
-        blue = Math.round((96 + (1 - depth) * 62) * (0.8 + 0.2 * shade));
+        let oceanRed = (18 + (1 - depth) * 36) * (0.75 + 0.25 * shade);
+        let oceanGreen = (52 + (1 - depth) * 70) * (0.75 + 0.25 * shade);
+        let oceanBlue = (96 + (1 - depth) * 62) * (0.8 + 0.2 * shade);
+        if (fillWind) {
+          const [east, north] = windComponents(options, fillWind, index);
+          [oceanRed, oceanGreen, oceanBlue] = mixRgb([oceanRed, oceanGreen, oceanBlue], windTint(east, north), 0.22);
+        }
+        red = Math.round(oceanRed);
+        green = Math.round(oceanGreen);
+        blue = Math.round(oceanBlue);
       } else if (iceVisible && products.iceCells?.[index]) {
-        red = Math.round((228 + 18 * shade) * (0.88 + 0.12 * shade));
-        green = Math.round((236 + 12 * shade) * (0.9 + 0.1 * shade));
-        blue = Math.round((244 + 8 * shade) * (0.92 + 0.08 * shade));
+        let iceRed = (228 + 18 * shade) * (0.88 + 0.12 * shade);
+        let iceGreen = (236 + 12 * shade) * (0.9 + 0.1 * shade);
+        let iceBlue = (244 + 8 * shade) * (0.92 + 0.08 * shade);
+        if (fillWind) {
+          const [east, north] = windComponents(options, fillWind, index);
+          [iceRed, iceGreen, iceBlue] = mixRgb([iceRed, iceGreen, iceBlue], windTint(east, north), 0.16);
+        }
+        red = Math.round(iceRed);
+        green = Math.round(iceGreen);
+        blue = Math.round(iceBlue);
       } else if (lakesVisible && water.inland[index]) {
-        red = Math.round(42 * light);
-        green = Math.round(132 * light);
-        blue = Math.round(138 * light);
+        let lakeRed = 42 * light;
+        let lakeGreen = 132 * light;
+        let lakeBlue = 138 * light;
+        if (fillWind) {
+          const [east, north] = windComponents(options, fillWind, index);
+          [lakeRed, lakeGreen, lakeBlue] = mixRgb([lakeRed, lakeGreen, lakeBlue], windTint(east, north), 0.18);
+        }
+        red = Math.round(lakeRed);
+        green = Math.round(lakeGreen);
+        blue = Math.round(lakeBlue);
       } else {
         const heightMm = Math.max(0, (products.waterLevelMm[index] ?? products.seaLevelMm) - products.seaLevelMm);
         let [landRed, landGreen, landBlue] = landTint(heightMm);
@@ -173,6 +242,9 @@ export function paintPhysicalSurface(
             if (warm < 0) [landRed, landGreen, landBlue] = [210, 230, 245];
             else if (cold < 0)
               [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], [170, 210, 230], 0.55);
+          } else if (fillWind) {
+            const [east, north] = windComponents(options, fillWind, index);
+            [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], windTint(east, north), 0.22);
           } else {
             const value = climateOverlay === "nh-summer" ? summer : climateOverlay === "nh-winter" ? winter : annual;
             [landRed, landGreen, landBlue] = mixRgb([landRed, landGreen, landBlue], temperatureTint(value), 0.72);
@@ -189,5 +261,71 @@ export function paintPhysicalSurface(
     }
   }
   context.putImageData(pixels, 0, 0);
+  if (arrowWind) {
+    paintWindArrows(context, products, options, arrowWind);
+  }
   return canvas;
+}
+
+function sampleWind(
+  options: PhysicalRasterPaintOptions,
+  overlay: ClimateOverlayMode,
+  width: number,
+  height: number,
+  column: number,
+  row: number,
+): [number, number] {
+  const x = Math.max(0, Math.min(width - 1, column));
+  const y = Math.max(0, Math.min(height - 1, row));
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(width - 1, x0 + 1);
+  const y1 = Math.min(height - 1, y0 + 1);
+  const tx = x - x0;
+  const ty = y - y0;
+  const a = windComponents(options, overlay, y0 * width + x0);
+  const b = windComponents(options, overlay, y0 * width + x1);
+  const c = windComponents(options, overlay, y1 * width + x0);
+  const d = windComponents(options, overlay, y1 * width + x1);
+  return [lerp(lerp(a[0], b[0], tx), lerp(c[0], d[0], tx), ty), lerp(lerp(a[1], b[1], tx), lerp(c[1], d[1], tx), ty)];
+}
+
+function paintWindArrows(
+  context: CanvasRenderingContext2D,
+  products: PhysicalRasterProducts,
+  options: PhysicalRasterPaintOptions,
+  overlay: ClimateOverlayMode,
+) {
+  const stepX = Math.max(2, Math.floor(products.width / 24));
+  const stepY = Math.max(2, Math.floor(products.height / 12));
+  const oversample = PHYSICAL_RASTER_OVERSAMPLE;
+  context.lineWidth = 1.15;
+  context.lineCap = "round";
+  for (let row = Math.floor(stepY / 2); row < products.height; row += stepY) {
+    for (let column = Math.floor(stepX / 2); column < products.width; column += stepX) {
+      const jitter = ((column * 1103515245 + row * 12345) >>> 0) % 7;
+      const sampleCol = column + (jitter - 3) * 0.22;
+      const sampleRow = row + (((jitter * 3) % 7) - 3) * 0.22;
+      const [east, north] = sampleWind(options, overlay, products.width, products.height, sampleCol, sampleRow);
+      const speed = Math.hypot(east, north);
+      if (speed < 80) continue;
+      const [red, green, blue] = windTint(east, north);
+      const alpha = 0.45 + Math.min(0.45, speed / 2_400);
+      context.strokeStyle = `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha})`;
+      const length = 2.4 + Math.min(5.2, speed / 420);
+      const angle = Math.atan2(-north, east);
+      const x = sampleCol + 0.5;
+      const y = (sampleRow + 0.5) * oversample;
+      const dx = Math.cos(angle) * length;
+      const dy = Math.sin(angle) * length;
+      context.beginPath();
+      context.moveTo(x - dx, y - dy);
+      context.lineTo(x + dx, y + dy);
+      context.moveTo(x + dx, y + dy);
+      context.lineTo(x + dx - Math.cos(angle - 0.45) * 2.1, y + dy - Math.sin(angle - 0.45) * 2.1);
+      context.moveTo(x + dx, y + dy);
+      context.lineTo(x + dx - Math.cos(angle + 0.45) * 2.1, y + dy - Math.sin(angle + 0.45) * 2.1);
+      context.stroke();
+    }
+  }
 }

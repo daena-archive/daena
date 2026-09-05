@@ -342,6 +342,7 @@ fn role_name(role: &str) -> String {
         "ocean" => "Ocean".into(),
         "relief" => "Relief".into(),
         "ice" => "Ice".into(),
+        "winds" => "Winds".into(),
         "lakes" => "Lakes".into(),
         "rivers" => "Rivers".into(),
         "coastlines" => "Islands".into(),

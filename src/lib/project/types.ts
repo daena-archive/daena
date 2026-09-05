@@ -255,6 +255,18 @@ export interface PhysicalClimateProducts {
   runoffMmPerYear: number[];
   runoffVolumeM3PerYear: number[];
   maritimeFactorPpm: number[];
+  windEastMilli: number[];
+  windNorthMilli: number[];
+  windEastNhSummerMilli: number[];
+  windNorthNhSummerMilli: number[];
+  windEastNhWinterMilli: number[];
+  windNorthNhWinterMilli: number[];
+  windDivergencePpm: number[];
+  windDivergenceNhSummerPpm: number[];
+  windDivergenceNhWinterPpm: number[];
+  windBand: number[];
+  windBandNhSummer: number[];
+  windBandNhWinter: number[];
   metrics: {
     precipitationVolumeM3PerYear: number;
     runoffVolumeM3PerYear: number;
@@ -271,6 +283,10 @@ export interface PhysicalClimateProducts {
     maximumSeasonalTemperatureCentiC: number;
     permanentlyFrozenLandPpm: number;
     seasonallyFrozenLandPpm: number;
+    meanWindSpeedMilli: number;
+    itczLatitudeMilliDeg: number;
+    easterlyCellPpm: number;
+    convergingCellPpm: number;
   };
 }
 export interface PhysicalEvolutionProducts {
@@ -587,6 +603,18 @@ export interface AtlasStudioSurfaceSample {
   temperatureNhWinterCentiC: number;
   seasonalRangeCentiC: number;
   freeze: "none" | "seasonal" | "permanent";
+  windEastMilli: number;
+  windNorthMilli: number;
+  windEastNhSummerMilli: number;
+  windNorthNhSummerMilli: number;
+  windEastNhWinterMilli: number;
+  windNorthNhWinterMilli: number;
+  windDivergencePpm: number;
+  windDivergenceNhSummerPpm: number;
+  windDivergenceNhWinterPpm: number;
+  windBand: string;
+  windBandNhSummer: string;
+  windBandNhWinter: string;
   precipitationMm: number;
   climate: string;
   surface: string;

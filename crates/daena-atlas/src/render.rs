@@ -46,6 +46,8 @@ pub struct PaintFields<'a> {
     pub climate_class: &'a [i32],
     pub temperature_centi_c: &'a [i32],
     pub precipitation_mm: &'a [i32],
+    pub wind_east_milli: &'a [i32],
+    pub wind_north_milli: &'a [i32],
 }
 
 fn flood_component(
@@ -519,6 +521,7 @@ pub fn render_rgba(
         identity,
         overlays,
         tributaries,
+        Some((paint.wind_east_milli, paint.wind_north_milli)),
     );
     Ok(buffer)
 }

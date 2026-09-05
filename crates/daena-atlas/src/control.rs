@@ -24,6 +24,18 @@ pub struct ControlFields {
     pub temperature_centi_c: Vec<i32>,
     pub temperature_nh_summer_centi_c: Vec<i32>,
     pub temperature_nh_winter_centi_c: Vec<i32>,
+    pub wind_east_milli: Vec<i32>,
+    pub wind_north_milli: Vec<i32>,
+    pub wind_east_nh_summer_milli: Vec<i32>,
+    pub wind_north_nh_summer_milli: Vec<i32>,
+    pub wind_east_nh_winter_milli: Vec<i32>,
+    pub wind_north_nh_winter_milli: Vec<i32>,
+    pub wind_divergence_ppm: Vec<i32>,
+    pub wind_divergence_nh_summer_ppm: Vec<i32>,
+    pub wind_divergence_nh_winter_ppm: Vec<i32>,
+    pub wind_band: Vec<i32>,
+    pub wind_band_nh_summer: Vec<i32>,
+    pub wind_band_nh_winter: Vec<i32>,
     pub runoff_mm: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub climate_class: Vec<i32>,
@@ -49,6 +61,18 @@ impl ControlFields {
             || climate.temperature_centi_c.len() != count
             || climate.temperature_nh_summer_centi_c.len() != count
             || climate.temperature_nh_winter_centi_c.len() != count
+            || climate.wind_east_milli.len() != count
+            || climate.wind_north_milli.len() != count
+            || climate.wind_east_nh_summer_milli.len() != count
+            || climate.wind_north_nh_summer_milli.len() != count
+            || climate.wind_east_nh_winter_milli.len() != count
+            || climate.wind_north_nh_winter_milli.len() != count
+            || climate.wind_divergence_ppm.len() != count
+            || climate.wind_divergence_nh_summer_ppm.len() != count
+            || climate.wind_divergence_nh_winter_ppm.len() != count
+            || climate.wind_band.len() != count
+            || climate.wind_band_nh_summer.len() != count
+            || climate.wind_band_nh_winter.len() != count
             || climate.runoff_mm_per_year.len() != count
             || climate.precipitation_mm_per_year.len() != count
             || hydrology.ice_thickness_mm.len() != count
@@ -102,6 +126,30 @@ impl ControlFields {
             temperature_centi_c: climate.temperature_centi_c.clone(),
             temperature_nh_summer_centi_c: climate.temperature_nh_summer_centi_c.clone(),
             temperature_nh_winter_centi_c: climate.temperature_nh_winter_centi_c.clone(),
+            wind_east_milli: climate.wind_east_milli.clone(),
+            wind_north_milli: climate.wind_north_milli.clone(),
+            wind_east_nh_summer_milli: climate.wind_east_nh_summer_milli.clone(),
+            wind_north_nh_summer_milli: climate.wind_north_nh_summer_milli.clone(),
+            wind_east_nh_winter_milli: climate.wind_east_nh_winter_milli.clone(),
+            wind_north_nh_winter_milli: climate.wind_north_nh_winter_milli.clone(),
+            wind_divergence_ppm: climate.wind_divergence_ppm.clone(),
+            wind_divergence_nh_summer_ppm: climate.wind_divergence_nh_summer_ppm.clone(),
+            wind_divergence_nh_winter_ppm: climate.wind_divergence_nh_winter_ppm.clone(),
+            wind_band: climate
+                .wind_band
+                .iter()
+                .map(|value| i32::try_from(*value).unwrap_or(i32::MAX))
+                .collect(),
+            wind_band_nh_summer: climate
+                .wind_band_nh_summer
+                .iter()
+                .map(|value| i32::try_from(*value).unwrap_or(i32::MAX))
+                .collect(),
+            wind_band_nh_winter: climate
+                .wind_band_nh_winter
+                .iter()
+                .map(|value| i32::try_from(*value).unwrap_or(i32::MAX))
+                .collect(),
             runoff_mm,
             precipitation_mm,
             climate_class,
@@ -149,6 +197,16 @@ impl ControlFields {
             lon_micro,
             lat_micro,
         )
+    }
+
+    #[must_use]
+    pub fn sample_wind_east(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(self.grid, &self.wind_east_milli, lon_micro, lat_micro)
+    }
+
+    #[must_use]
+    pub fn sample_wind_north(&self, lon_micro: i32, lat_micro: i32) -> i32 {
+        sample_field_mm(self.grid, &self.wind_north_milli, lon_micro, lat_micro)
     }
 
     #[must_use]
@@ -241,6 +299,16 @@ pub fn climate_class_name(class: i32) -> &'static str {
         CLIMATE_CLASS_GRASSLAND => "grassland",
         CLIMATE_CLASS_FOREST => "forest",
         _ => "grassland",
+    }
+}
+
+#[must_use]
+pub fn wind_band_name(band: i32) -> &'static str {
+    match band {
+        0 => "hadley",
+        1 => "ferrel",
+        2 => "polar",
+        _ => "hadley",
     }
 }
 
@@ -422,5 +490,8 @@ mod tests {
         assert_eq!(surface_kind(false, false, -1_000, 0), "ocean");
         assert_eq!(surface_kind(false, false, 1_000, 0), "land");
         assert_eq!(surface_kind(false, false, 0, 0), "land");
+        assert_eq!(wind_band_name(0), "hadley");
+        assert_eq!(wind_band_name(1), "ferrel");
+        assert_eq!(wind_band_name(2), "polar");
     }
 }

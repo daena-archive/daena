@@ -41,4 +41,13 @@ for (const path of [
   assert.doesNotMatch(source, /https?:\/\//i, `${path} must not embed remote resources`);
 }
 
+const editor = readFileSync(resolve(root, "src/lib/maps/physical/PhysicalMapEditor.svelte"), "utf8");
+assert.match(editor, /id: "winds"/);
+assert.match(editor, /order: 14/);
+assert.match(editor, /layers\.find\(\(layer\) => layer\.id === "winds"\)\?\.defaultVisible/);
+const raster = readFileSync(resolve(root, "src/lib/maps/physical/raster.ts"), "utf8");
+assert.match(raster, /const fillWind = isWindOverlay/);
+assert.match(raster, /const arrowWind = windArrowMode/);
+assert.match(raster, /function sampleWind/);
+
 console.log("physical surface behavior and component checks passed");

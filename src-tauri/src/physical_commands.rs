@@ -271,7 +271,7 @@ pub(super) fn project_physical_preview(
 pub(super) fn physical_climate_products(
     climate: &daena_physical::climate::ClimateField,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut products = serde_json::json!({
         "derivationVersion": climate.derivation_version,
         "width": climate.grid.width,
         "height": climate.grid.height,
@@ -283,24 +283,43 @@ pub(super) fn physical_climate_products(
         "runoffMmPerYear": climate.runoff_mm_per_year,
         "runoffVolumeM3PerYear": climate.runoff_volume_m3_per_year,
         "maritimeFactorPpm": climate.maritime_factor_ppm,
-        "metrics": {
-            "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
-            "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
-            "meanTemperatureCentiC": climate.metrics.mean_temperature_centi_c,
-            "minimumTemperatureCentiC": climate.metrics.minimum_temperature_centi_c,
-            "maximumTemperatureCentiC": climate.metrics.maximum_temperature_centi_c,
-            "meanPrecipitationMmPerYear": climate.metrics.mean_precipitation_mm_per_year,
-            "meanRunoffMmPerYear": climate.metrics.mean_runoff_mm_per_year,
-            "wettestCellPrecipitationMmPerYear": climate.metrics.wettest_cell_precipitation_mm_per_year,
-            "driestLandCellPrecipitationMmPerYear": climate.metrics.driest_land_cell_precipitation_mm_per_year,
-            "transportIterations": climate.metrics.transport_iterations,
-            "meanSeasonalRangeCentiC": climate.metrics.mean_seasonal_range_centi_c,
-            "minimumSeasonalTemperatureCentiC": climate.metrics.minimum_seasonal_temperature_centi_c,
-            "maximumSeasonalTemperatureCentiC": climate.metrics.maximum_seasonal_temperature_centi_c,
-            "permanentlyFrozenLandPpm": climate.metrics.permanently_frozen_land_ppm,
-            "seasonallyFrozenLandPpm": climate.metrics.seasonally_frozen_land_ppm,
-        },
-    })
+        "windEastMilli": climate.wind_east_milli,
+        "windNorthMilli": climate.wind_north_milli,
+        "windEastNhSummerMilli": climate.wind_east_nh_summer_milli,
+        "windNorthNhSummerMilli": climate.wind_north_nh_summer_milli,
+        "windEastNhWinterMilli": climate.wind_east_nh_winter_milli,
+        "windNorthNhWinterMilli": climate.wind_north_nh_winter_milli,
+        "windDivergencePpm": climate.wind_divergence_ppm,
+        "windBand": climate.wind_band,
+    });
+    products["windDivergenceNhSummerPpm"] =
+        serde_json::json!(climate.wind_divergence_nh_summer_ppm);
+    products["windDivergenceNhWinterPpm"] =
+        serde_json::json!(climate.wind_divergence_nh_winter_ppm);
+    products["windBandNhSummer"] = serde_json::json!(climate.wind_band_nh_summer);
+    products["windBandNhWinter"] = serde_json::json!(climate.wind_band_nh_winter);
+    products["metrics"] = serde_json::json!({
+        "precipitationVolumeM3PerYear": climate.metrics.precipitation_volume_m3_per_year,
+        "runoffVolumeM3PerYear": climate.metrics.runoff_volume_m3_per_year,
+        "meanTemperatureCentiC": climate.metrics.mean_temperature_centi_c,
+        "minimumTemperatureCentiC": climate.metrics.minimum_temperature_centi_c,
+        "maximumTemperatureCentiC": climate.metrics.maximum_temperature_centi_c,
+        "meanPrecipitationMmPerYear": climate.metrics.mean_precipitation_mm_per_year,
+        "meanRunoffMmPerYear": climate.metrics.mean_runoff_mm_per_year,
+        "wettestCellPrecipitationMmPerYear": climate.metrics.wettest_cell_precipitation_mm_per_year,
+        "driestLandCellPrecipitationMmPerYear": climate.metrics.driest_land_cell_precipitation_mm_per_year,
+        "transportIterations": climate.metrics.transport_iterations,
+        "meanSeasonalRangeCentiC": climate.metrics.mean_seasonal_range_centi_c,
+        "minimumSeasonalTemperatureCentiC": climate.metrics.minimum_seasonal_temperature_centi_c,
+        "maximumSeasonalTemperatureCentiC": climate.metrics.maximum_seasonal_temperature_centi_c,
+        "permanentlyFrozenLandPpm": climate.metrics.permanently_frozen_land_ppm,
+        "seasonallyFrozenLandPpm": climate.metrics.seasonally_frozen_land_ppm,
+        "meanWindSpeedMilli": climate.metrics.mean_wind_speed_milli,
+        "itczLatitudeMilliDeg": climate.metrics.itcz_latitude_milli_deg,
+        "easterlyCellPpm": climate.metrics.easterly_cell_ppm,
+        "convergingCellPpm": climate.metrics.converging_cell_ppm,
+    });
+    products
 }
 
 pub(super) fn physical_evolution_products(

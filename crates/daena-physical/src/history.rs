@@ -15,7 +15,7 @@ use super::{
     PhysicalError, PhysicalErrorCode, PhysicalField, ProgressPhase, ProgressSink, SeedDomain,
 };
 
-pub const HISTORICAL_DERIVATION_VERSION: u16 = 1;
+pub const HISTORICAL_DERIVATION_VERSION: u16 = 2;
 pub const FORCING_COMPONENT_COUNT: usize = 3;
 pub const MAX_HISTORICAL_OFFSET_YEARS: i64 = 10_000_000;
 const MIN_PERIOD_YEARS: i64 = 4;
@@ -433,11 +433,17 @@ fn derive_historical_world_with_cache(
     };
     let mut epoch_field = field.clone();
     epoch_field.sea_level_mm = initial_sea_level;
-    let (climate, drainage) = if let Some(cache) = static_physics {
+    let (mut climate, drainage) = if let Some(cache) = static_physics {
         (
             cache
                 .climate
-                .with_global_temperature_offset(temperature_offset),
+                .with_global_temperature_offset(temperature_offset)
+                .with_winds_and_moisture_for_field(
+                    &epoch_field,
+                    field.seed,
+                    field.retry_index,
+                    progress,
+                )?,
             cache.evolution.drainage.clone(),
         )
     } else {
@@ -485,6 +491,15 @@ fn derive_historical_world_with_cache(
     };
     progress.check_cancelled()?;
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
+    if normalized_epoch != 0 && hydrology.sea_level_mm != epoch_field.sea_level_mm {
+        epoch_field.sea_level_mm = hydrology.sea_level_mm;
+        climate = climate.with_winds_and_moisture_for_field(
+            &epoch_field,
+            field.seed,
+            field.retry_index,
+            progress,
+        )?;
+    }
 
     let land_ice_m3 = hydrology.metrics.land_ice_m3;
     let remaining_mass = reference_water_inventory_m3
@@ -784,6 +799,52 @@ mod tests {
         assert_eq!(
             historical.metrics.sea_level_mm,
             world.hydrology.sea_level_mm
+        );
+    }
+
+    #[test]
+    fn cached_and_uncached_historical_winds_match() {
+        let world = fixture();
+        let physics = crate::derived_cache::StaticDerivedPhysics::from_world(&world).unwrap();
+        let parameters =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let (cold_epoch, _) = extreme_epochs(parameters);
+        let cached = derive_historical_world_from_static(
+            &world.field,
+            &physics,
+            world.report.reference_water_inventory_m3,
+            Some(&world.tectonics.crust_by_cell),
+            parameters,
+            cold_epoch,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(cached.metrics.sea_level_mm, world.field.sea_level_mm);
+        assert_ne!(
+            cached.climate.wind_east_milli,
+            world.climate.wind_east_milli
+        );
+        let mut epoch_field = world.field.clone();
+        epoch_field.sea_level_mm = cached.metrics.sea_level_mm;
+        let rebuilt = physics
+            .climate
+            .with_global_temperature_offset(cached.metrics.temperature_offset_centi_c)
+            .with_winds_and_moisture_for_field(
+                &epoch_field,
+                world.field.seed,
+                world.field.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        assert_eq!(cached.climate.wind_east_milli, rebuilt.wind_east_milli);
+        assert_eq!(cached.climate.wind_north_milli, rebuilt.wind_north_milli);
+        assert_eq!(
+            cached.climate.precipitation_mm_per_year,
+            rebuilt.precipitation_mm_per_year
+        );
+        assert_ne!(
+            cached.climate.precipitation_mm_per_year,
+            world.climate.precipitation_mm_per_year
         );
     }
 

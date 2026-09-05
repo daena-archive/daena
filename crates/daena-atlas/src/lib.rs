@@ -229,6 +229,18 @@ pub struct AtlasPreparedScene {
     pub temperature_centi_c: Vec<i32>,
     pub temperature_nh_summer_centi_c: Vec<i32>,
     pub temperature_nh_winter_centi_c: Vec<i32>,
+    pub wind_east_milli: Vec<i32>,
+    pub wind_north_milli: Vec<i32>,
+    pub wind_east_nh_summer_milli: Vec<i32>,
+    pub wind_north_nh_summer_milli: Vec<i32>,
+    pub wind_east_nh_winter_milli: Vec<i32>,
+    pub wind_north_nh_winter_milli: Vec<i32>,
+    pub wind_divergence_ppm: Vec<i32>,
+    pub wind_divergence_nh_summer_ppm: Vec<i32>,
+    pub wind_divergence_nh_winter_ppm: Vec<i32>,
+    pub wind_band: Vec<i32>,
+    pub wind_band_nh_summer: Vec<i32>,
+    pub wind_band_nh_winter: Vec<i32>,
     pub precipitation_mm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
@@ -241,6 +253,8 @@ impl AtlasPreparedScene {
             climate_class: &self.climate_class,
             temperature_centi_c: &self.temperature_centi_c,
             precipitation_mm: &self.precipitation_mm,
+            wind_east_milli: &self.wind_east_milli,
+            wind_north_milli: &self.wind_north_milli,
         }
     }
 
@@ -276,6 +290,37 @@ impl AtlasPreparedScene {
         } else {
             "none"
         };
+        let wind_east_milli =
+            detail::sample_field_mm(grid, &self.wind_east_milli, lon_micro, lat_micro);
+        let wind_north_milli =
+            detail::sample_field_mm(grid, &self.wind_north_milli, lon_micro, lat_micro);
+        let wind_east_nh_summer_milli =
+            detail::sample_field_mm(grid, &self.wind_east_nh_summer_milli, lon_micro, lat_micro);
+        let wind_north_nh_summer_milli =
+            detail::sample_field_mm(grid, &self.wind_north_nh_summer_milli, lon_micro, lat_micro);
+        let wind_east_nh_winter_milli =
+            detail::sample_field_mm(grid, &self.wind_east_nh_winter_milli, lon_micro, lat_micro);
+        let wind_north_nh_winter_milli =
+            detail::sample_field_mm(grid, &self.wind_north_nh_winter_milli, lon_micro, lat_micro);
+        let wind_divergence_ppm =
+            detail::sample_field_mm(grid, &self.wind_divergence_ppm, lon_micro, lat_micro);
+        let wind_divergence_nh_summer_ppm = detail::sample_field_mm(
+            grid,
+            &self.wind_divergence_nh_summer_ppm,
+            lon_micro,
+            lat_micro,
+        );
+        let wind_divergence_nh_winter_ppm = detail::sample_field_mm(
+            grid,
+            &self.wind_divergence_nh_winter_ppm,
+            lon_micro,
+            lat_micro,
+        );
+        let wind_band = control::wind_band_name(self.wind_band.get(cell).copied().unwrap_or(0));
+        let wind_band_nh_summer =
+            control::wind_band_name(self.wind_band_nh_summer.get(cell).copied().unwrap_or(0));
+        let wind_band_nh_winter =
+            control::wind_band_name(self.wind_band_nh_winter.get(cell).copied().unwrap_or(0));
         let precipitation_mm =
             detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
         let climate = control::climate_class_name(
@@ -318,6 +363,18 @@ impl AtlasPreparedScene {
             temperature_nh_winter_centi_c,
             seasonal_range_centi_c,
             freeze: freeze.to_string(),
+            wind_east_milli,
+            wind_north_milli,
+            wind_east_nh_summer_milli,
+            wind_north_nh_summer_milli,
+            wind_east_nh_winter_milli,
+            wind_north_nh_winter_milli,
+            wind_divergence_ppm,
+            wind_divergence_nh_summer_ppm,
+            wind_divergence_nh_winter_ppm,
+            wind_band: wind_band.to_string(),
+            wind_band_nh_summer: wind_band_nh_summer.to_string(),
+            wind_band_nh_winter: wind_band_nh_winter.to_string(),
             precipitation_mm,
             climate: climate.to_string(),
             surface: control::surface_kind(ice, inland, elevation_mm, sea_level_mm).to_string(),
@@ -626,6 +683,18 @@ pub fn prepare_from_source(
         temperature_centi_c: controls.temperature_centi_c,
         temperature_nh_summer_centi_c: controls.temperature_nh_summer_centi_c,
         temperature_nh_winter_centi_c: controls.temperature_nh_winter_centi_c,
+        wind_east_milli: controls.wind_east_milli,
+        wind_north_milli: controls.wind_north_milli,
+        wind_east_nh_summer_milli: controls.wind_east_nh_summer_milli,
+        wind_north_nh_summer_milli: controls.wind_north_nh_summer_milli,
+        wind_east_nh_winter_milli: controls.wind_east_nh_winter_milli,
+        wind_north_nh_winter_milli: controls.wind_north_nh_winter_milli,
+        wind_divergence_ppm: controls.wind_divergence_ppm,
+        wind_divergence_nh_summer_ppm: controls.wind_divergence_nh_summer_ppm,
+        wind_divergence_nh_winter_ppm: controls.wind_divergence_nh_winter_ppm,
+        wind_band: controls.wind_band,
+        wind_band_nh_summer: controls.wind_band_nh_summer,
+        wind_band_nh_winter: controls.wind_band_nh_winter,
         precipitation_mm: controls.precipitation_mm,
         residual_cache,
         drainage_cache,

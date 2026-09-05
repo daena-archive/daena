@@ -1344,9 +1344,15 @@ pub fn validate_field(
             }
         }
         if physical_map && seen_physical_layers.len() != physical_layer_by_id.len() {
-            return Err(invalid(
-                "physical maps must retain all locked physical layers",
-            ));
+            let only_winds_missing = physical_layer_by_id.len()
+                == seen_physical_layers.len().saturating_add(1)
+                && physical_layer_by_id.contains_key("winds")
+                && !seen_physical_layers.contains("winds");
+            if !only_winds_missing {
+                return Err(invalid(
+                    "physical maps must retain all locked physical layers",
+                ));
+            }
         }
         Ok(())
     } else if key == calendar::PHYSICAL_CALENDAR_BINDING_KEY {

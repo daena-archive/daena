@@ -52,6 +52,7 @@ import {
   type Entity,
   type FieldValue,
   type PhysicalHistoricalProgress,
+  type PhysicalClimateProducts,
   type PhysicalHistoricalProducts,
   type PhysicalHydrologyProducts,
   type AtlasRenderRequest,
@@ -205,6 +206,7 @@ let canUndo = $state(false);
 let canRedo = $state(false);
 let derivedPhysical = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let physicalHydrology = $state<PhysicalHydrologyProducts | null>(null);
+let physicalClimate = $state<PhysicalClimateProducts | null>(null);
 let draft = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let loaded = $state<VectorFeatureCollection>({ type: "FeatureCollection", features: [] });
 let layers = $state<MapLayerDefinition[]>([]);
@@ -457,12 +459,38 @@ function clearRasterAssets() {
   objectUrls.length = 0;
   rasterAssets = new Map();
   physicalHydrology = null;
+  physicalClimate = null;
+}
+
+function ensurePhysicalWindsLayer(parsed: MapLayerDefinition[]): MapLayerDefinition[] {
+  if (!physicalMap || parsed.some((layer) => layer.id === "winds")) return parsed;
+  const winds: VectorLayerDefinition = {
+    id: "winds",
+    kind: "vector",
+    name: "Winds",
+    order: 14,
+    defaultVisible: false,
+    locked: true,
+    opacity: 1,
+    blendMode: "normal",
+    selector: {},
+    style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
+  };
+  return [...parsed, winds];
 }
 
 function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
+  const climate = physicalClimate;
   return {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
+    windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
+    climateWindEastMilli: climate?.windEastMilli,
+    climateWindNorthMilli: climate?.windNorthMilli,
+    climateWindEastNhSummerMilli: climate?.windEastNhSummerMilli,
+    climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
+    climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
+    climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
   };
 }
 
@@ -479,11 +507,12 @@ function rebuildPhysicalRaster() {
 const physicalRasterLayerVisibility = $derived.by(() => ({
   ice: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? true,
   lakes: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? true,
+  winds: layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false,
 }));
 
 function iceLakesVisibilityKey(): string {
-  const { ice, lakes } = physicalRasterLayerVisibility;
-  return `${ice}:${lakes}`;
+  const { ice, lakes, winds } = physicalRasterLayerVisibility;
+  return `${ice}:${lakes}:${winds}`;
 }
 
 let lastIceLakesVisibilityKey = "";
@@ -886,7 +915,7 @@ function moveSelectedToLayer(layerId: string) {
 function applyLayersField(field: FieldValue) {
   layersField = field;
   layersFieldRevision = field.revision;
-  const parsed = parseVectorLayers(field.value);
+  const parsed = ensurePhysicalWindsLayer(parseVectorLayers(field.value));
   layers = parsed;
   if (commandStack) {
     commandStack.replaceDocument({
@@ -997,6 +1026,7 @@ function applyHistoricalProducts(products: PhysicalHistoricalProducts) {
   const physical = parseDerivedCollection(products.geojson);
   derivedPhysical = physical;
   physicalHydrology = products.hydrology;
+  physicalClimate = products.climate;
   rebuildPhysicalRaster();
   epochOffsetYears = products.epochOffsetYears;
   appliedEpochOffsetYears = products.epochOffsetYears;
@@ -1253,6 +1283,7 @@ async function load() {
         "watersheds",
         "islands",
         "ice",
+        "winds",
       ]);
       syncEpochFields(0);
       const requestId = crypto.randomUUID();
@@ -1271,6 +1302,7 @@ async function load() {
       });
       epochNotice = `Showing ${formatEpoch(historical.epochOffsetYears)} · deterministic derived playback`;
       physicalHydrology = historical.hydrology;
+      physicalClimate = historical.climate;
       rebuildPhysicalRaster();
       epochBusy = false;
       epochPhase = "";

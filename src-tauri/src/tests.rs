@@ -81,6 +81,18 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
         "precipitationMmPerYear",
         "runoffMmPerYear",
         "runoffVolumeM3PerYear",
+        "windEastMilli",
+        "windNorthMilli",
+        "windEastNhSummerMilli",
+        "windNorthNhSummerMilli",
+        "windEastNhWinterMilli",
+        "windNorthNhWinterMilli",
+        "windDivergencePpm",
+        "windDivergenceNhSummerPpm",
+        "windDivergenceNhWinterPpm",
+        "windBand",
+        "windBandNhSummer",
+        "windBandNhWinter",
     ] {
         assert_eq!(products[key].as_array().unwrap().len(), grid.sample_count());
     }

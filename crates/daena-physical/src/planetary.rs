@@ -2,8 +2,9 @@
 //!
 //! These values describe the planet's relationship with its star. They are
 //! authored world configuration, not a disposable climate cache. Downstream
-//! climate derivation consumes them for solar-driven temperature and solstice
-//! contrast. Existing worlds without this block use the Earth-like default.
+//! climate derivation consumes them for solar-driven temperature, solstice
+//! contrast, and rotation-aware wind circulation. Existing worlds without this
+//! block use the Earth-like default.
 //! Terrain identity does not hash this block; derived-cache directories
 //! include a planetary token.
 
@@ -200,6 +201,7 @@ impl PlanetaryConfiguration {
             u64::from(self.semi_major_axis_milli_au),
             u64::from(self.eccentricity_ppm),
             u64::from(self.axial_tilt_milli_deg),
+            u64::from(self.rotation_period_seconds),
             self.retained_heat_centi_c as u64,
             u64::from(self.bond_albedo_ppm),
         ] {
@@ -233,8 +235,9 @@ mod tests {
         let mut denser = earth;
         denser.mean_density_kg_m3 = 8_000;
         denser.star_mass_ppm = 2_000_000;
-        denser.rotation_period_seconds = 200_000;
         assert_eq!(earth.climate_cache_token(), denser.climate_cache_token());
+        denser.rotation_period_seconds = 200_000;
+        assert_ne!(earth.climate_cache_token(), denser.climate_cache_token());
         denser.star_luminosity_ppm = 2_000_000;
         assert_ne!(earth.climate_cache_token(), denser.climate_cache_token());
     }

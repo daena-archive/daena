@@ -603,6 +603,7 @@ pub fn render_studio_tile_with_style_overlays(
             &scene.identity,
             overlays,
             &scene.drainage.tributaries,
+            Some((&scene.wind_east_milli, &scene.wind_north_milli)),
         );
         if request.layer_enabled("labels") {
             let n = tile_count(tile.z)?;

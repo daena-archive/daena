@@ -12,12 +12,13 @@ pub const MAX_PIXEL_COUNT: u64 = 33_554_432;
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_HALO: u32 = 0;
 
-pub const ATLAS_LAYER_ROLES: [&str; 14] = [
+pub const ATLAS_LAYER_ROLES: [&str; 15] = [
     "ocean",
     "relief",
     "ice",
     "lakes",
     "rivers",
+    "winds",
     "coastlines",
     "contours",
     "tectonic-plates",
@@ -299,6 +300,7 @@ pub fn physical_layer_role(layer_id: &str) -> Option<&'static str> {
         "ocean" | "bathymetry" | "shelves" => Some("ocean"),
         "land" | "base" => Some("relief"),
         "ice" => Some("ice"),
+        "winds" => Some("winds"),
         "lakes" => Some("lakes"),
         "rivers" => Some("rivers"),
         "bathymetric-contours" => Some("contours"),

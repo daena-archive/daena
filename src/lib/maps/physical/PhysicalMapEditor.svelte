@@ -95,6 +95,18 @@ let layers = $state<VectorLayerDefinition[]>([
     style: { fill: "#e8f2f8", fillOpacity: 0.82, stroke: "#c5d8e6", strokeWidth: 0.4, pointRadius: 2 },
   },
   {
+    id: "winds",
+    kind: "vector",
+    name: "Winds",
+    order: 14,
+    defaultVisible: false,
+    locked: true,
+    opacity: 1,
+    blendMode: "normal",
+    selector: {},
+    style: { fill: "#d69434", fillOpacity: 0.18, stroke: "#f2d9a8", strokeWidth: 0.7, pointRadius: 2 },
+  },
+  {
     id: "ocean",
     kind: "vector",
     name: "Ocean",
@@ -164,10 +176,17 @@ function physicalRasterPaintOptions(): PhysicalRasterPaintOptions {
   return {
     iceVisible: layers.find((layer) => layer.id === "ice")?.defaultVisible ?? false,
     lakesVisible: layers.find((layer) => layer.id === "lakes")?.defaultVisible ?? false,
+    windsVisible: Boolean(climate) && (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false),
     climateOverlay: climate ? climateOverlay : "off",
     climateAnnualCentiC: climate?.temperatureCentiC,
     climateNhSummerCentiC: climate?.temperatureNhSummerCentiC,
     climateNhWinterCentiC: climate?.temperatureNhWinterCentiC,
+    climateWindEastMilli: climate?.windEastMilli,
+    climateWindNorthMilli: climate?.windNorthMilli,
+    climateWindEastNhSummerMilli: climate?.windEastNhSummerMilli,
+    climateWindNorthNhSummerMilli: climate?.windNorthNhSummerMilli,
+    climateWindEastNhWinterMilli: climate?.windEastNhWinterMilli,
+    climateWindNorthNhWinterMilli: climate?.windNorthNhWinterMilli,
   };
 }
 
@@ -184,7 +203,11 @@ function climateSummary() {
       : metrics.seasonallyFrozenLandPpm > 50_000
         ? "Seasonal freeze is plausible; summers thaw most of that land."
         : "Little or no land stays below freezing across the year.";
-  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. ${freeze}`;
+  const itcz = `${(metrics.itczLatitudeMilliDeg / 1000).toFixed(1)}°`;
+  const easterlies = Math.round(metrics.easterlyCellPpm / 10_000);
+  const strength =
+    metrics.meanWindSpeedMilli < 400 ? "light" : metrics.meanWindSpeedMilli < 1_200 ? "moderate" : "strong";
+  return `Warmest ${formatCentiC(metrics.maximumSeasonalTemperatureCentiC)}, coldest ${formatCentiC(metrics.minimumSeasonalTemperatureCentiC)}, typical annual range ${formatCentiC(metrics.meanSeasonalRangeCentiC)}. High land stays colder than its latitude. Northern-summer solstice is the warmer-orbit season. Prevailing ${strength} winds (not local weather): ITCZ near ${itcz}, easterlies over ${easterlies}% of the globe. ${freeze}`;
 }
 
 function headline() {
@@ -460,17 +483,37 @@ onMount(() => {
             <option value="nh-summer">Northern-summer solstice</option>
             <option value="nh-winter">Northern-winter solstice</option>
             <option value="freeze">Freeze</option>
+            <option value="wind">Prevailing wind</option>
+            <option value="wind-nh-summer">Northern-summer wind</option>
+            <option value="wind-nh-winter">Northern-winter wind</option>
           </select></label>
+        <label
+          ><input
+            type="checkbox"
+            checked={layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false}
+            disabled={busy}
+            onchange={(event) => {
+              const next = event.currentTarget.checked;
+              layers = layers.map((layer) => (layer.id === "winds" ? { ...layer, defaultVisible: next } : layer));
+              rebuildRaster(hydrology);
+            }} />
+          Winds</label>
       {/if}
     </div>
     {#if climate}
       <p class="physical-planet-readout physical-climate-readout">{climateSummary()}</p>
+      {#if (layers.find((layer) => layer.id === "winds")?.defaultVisible ?? false) || climateOverlay === "wind" || climateOverlay === "wind-nh-summer" || climateOverlay === "wind-nh-winter"}
+        <p class="physical-planet-readout physical-climate-readout">
+          Blue is easterly, amber is westerly. Arrows are prevailing direction on this coarse grid, not a weather
+          forecast.
+        </p>
+      {/if}
     {/if}
     {#if advancedPlanet}
       <div class="physical-planet-panel">
         <p class="physical-planet-readout">
-          Stored with the world. These settings now drive temperature and seasons. Figures are generated world physics,
-          not a precise scientific prediction.
+          Stored with the world. These settings now drive temperature, seasons, and prevailing winds. Figures are
+          generated world physics, not a precise scientific prediction.
         </p>
         <label
           >Seasons (tilt)

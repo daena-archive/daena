@@ -617,6 +617,18 @@ function formatTemperature(centiC: number) {
   return `${(centiC / 100).toFixed(1)} °C`;
 }
 
+function formatWind(eastMilli: number, northMilli: number) {
+  const speed = Math.hypot(eastMilli, northMilli);
+  const strength = speed < 400 ? "light" : speed < 1_200 ? "moderate" : "strong";
+  return `${strength} east ${(eastMilli / 1000).toFixed(1)}, north ${(northMilli / 1000).toFixed(1)}`;
+}
+
+function formatDivergence(ppm: number) {
+  if (ppm < -20_000) return "Converging";
+  if (ppm > 20_000) return "Diverging";
+  return "Neutral";
+}
+
 function inspectAt(lng: number, lat: number) {
   const token = session?.sessionToken;
   if (!token || !map) return;
@@ -887,6 +899,42 @@ onDestroy(() => {
             <div>
               <dt>Climate</dt>
               <dd>{titleCase(surface.climate)}</dd>
+            </div>
+            <div>
+              <dt>Prevailing wind</dt>
+              <dd>{formatWind(surface.windEastMilli, surface.windNorthMilli)}</dd>
+            </div>
+            <div>
+              <dt>Northern-summer wind</dt>
+              <dd>{formatWind(surface.windEastNhSummerMilli, surface.windNorthNhSummerMilli)}</dd>
+            </div>
+            <div>
+              <dt>Northern-winter wind</dt>
+              <dd>{formatWind(surface.windEastNhWinterMilli, surface.windNorthNhWinterMilli)}</dd>
+            </div>
+            <div>
+              <dt>Circulation</dt>
+              <dd>{titleCase(surface.windBand)}</dd>
+            </div>
+            <div>
+              <dt>Northern-summer circulation</dt>
+              <dd>{titleCase(surface.windBandNhSummer)}</dd>
+            </div>
+            <div>
+              <dt>Northern-winter circulation</dt>
+              <dd>{titleCase(surface.windBandNhWinter)}</dd>
+            </div>
+            <div>
+              <dt>Wind flow</dt>
+              <dd>{formatDivergence(surface.windDivergencePpm)}</dd>
+            </div>
+            <div>
+              <dt>Northern-summer wind flow</dt>
+              <dd>{formatDivergence(surface.windDivergenceNhSummerPpm)}</dd>
+            </div>
+            <div>
+              <dt>Northern-winter wind flow</dt>
+              <dd>{formatDivergence(surface.windDivergenceNhWinterPpm)}</dd>
             </div>
             <div>
               <dt>Rainfall</dt>

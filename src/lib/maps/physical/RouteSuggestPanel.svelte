@@ -44,34 +44,38 @@ function hint() {
     return `${result.suggestionCount} suggestion${result.suggestionCount === 1 ? "" : "s"}. Accept writes a road.`;
   return "Two clicks on land. Suggestions stay disposable until you accept one.";
 }
+
+const step = $derived(result ? 3 : arming && startPicked ? 2 : arming ? 1 : 0);
 </script>
 
-{#snippet body()}
+{#snippet pick()}
+  <ol class="steps" aria-label="Route steps">
+    <li class:done={step > 1} class:active={step === 1}>Start</li>
+    <li class:done={step > 2} class:active={step === 2}>End</li>
+    <li class:done={step > 3} class:active={step === 3}>Choose</li>
+  </ol>
   <p class="section-note">{hint()}</p>
-  <div class="quick-add-row">
-    <button type="button" class="primary-button small" disabled={disabled || searching} onclick={onarm}>
+  <div class="actions">
+    <button type="button" class="primary" disabled={disabled || searching} onclick={onarm}>
       {arming ? (startPicked ? "Waiting for end…" : "Waiting for start…") : "Pick start and end"}
     </button>
-    <button
-      type="button"
-      class="quiet-button small"
-      disabled={disabled || (!arming && !searching && !result && !error)}
-      onclick={oncancel}>Cancel</button>
+    <button type="button" disabled={disabled || (!arming && !searching && !result && !error)} onclick={oncancel}>
+      Cancel
+    </button>
   </div>
   {#if error}
     <p class="section-note route-error">{error}</p>
   {/if}
+{/snippet}
+
+{#snippet suggestions()}
   {#if result && result.suggestions.length === 0}
-    <p class="empty-note">No land path between those points.</p>
+    <p class="empty-note">No land path between those points. Try different endpoints.</p>
   {:else if result}
     <ul class="route-results">
       {#each result.suggestions as suggestion (suggestion.id)}
-        <li>
-          <button
-            type="button"
-            class="route-candidate"
-            class:selected={selectedId === suggestion.id}
-            onclick={() => onselect(suggestion)}>
+        <li class:active={selectedId === suggestion.id}>
+          <button type="button" class="route-candidate" onclick={() => onselect(suggestion)}>
             <strong>{suggestion.label}</strong>
             <span>{km(suggestion.lengthM)} · {suggestion.climbM.toLocaleString("en-US")} m climb</span>
             <span>{suggestion.tradeoff}</span>
@@ -79,30 +83,28 @@ function hint() {
               <span>{reason}</span>
             {/each}
           </button>
+          {#if selectedId === suggestion.id}
+            <button type="button" class="primary" {disabled} onclick={() => onaccept(suggestion)}
+              >Accept as road</button>
+          {/if}
         </li>
       {/each}
     </ul>
-    <div class="quick-add-row">
-      <button
-        type="button"
-        class="primary-button small"
-        disabled={disabled || !selected}
-        onclick={() => selected && onaccept(selected)}>Accept as road</button>
-    </div>
   {/if}
 {/snippet}
 
 {#if variant === "studio"}
   <section class="route-suggest studio" aria-label="Suggested routes">
-    <div class="route-head">
-      <strong>Routes</strong>
-      {#if result}
-        <span class="section-count">{result.suggestionCount}</span>
-      {/if}
+    <div class="block">
+      <span class="kicker">Path</span>
+      {@render pick()}
     </div>
-    <div class="section-body">
-      {@render body()}
-    </div>
+    {#if result}
+      <div class="block">
+        <span class="kicker">Suggestions</span>
+        {@render suggestions()}
+      </div>
+    {/if}
   </section>
 {:else}
   <details class="route-suggest map-section-group" open={arming || searching || Boolean(result) || Boolean(error)}>
@@ -114,7 +116,8 @@ function hint() {
       {/if}
     </summary>
     <div class="section-body">
-      {@render body()}
+      {@render pick()}
+      {@render suggestions()}
     </div>
   </details>
 {/if}
@@ -122,94 +125,117 @@ function hint() {
 <style>
 .route-suggest.studio {
   display: grid;
+  gap: 10px;
+}
+.block {
+  display: grid;
   gap: 8px;
   padding: 10px;
   border: 1px solid rgb(255 255 255 / 8%);
   border-radius: 10px;
   background: rgb(255 255 255 / 3%);
 }
-.route-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.route-head strong {
-  flex: 1;
+.kicker {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #d5ab6c;
 }
-.route-suggest.studio .section-count {
-  min-width: 20px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  font-size: 10px;
-  font-weight: 700;
-  text-align: center;
-}
-.route-suggest.studio .section-body {
+.section-body {
   display: grid;
   gap: 8px;
 }
-.quick-add-row {
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  min-height: 26px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  background: #0f1a16;
+  color: #aebdb1;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+}
+.steps li.active {
+  border-color: #d5ab6c;
+  color: #1b2822;
+  background: #d5ab6c;
+}
+.steps li.done {
+  border-color: rgb(213 171 108 / 45%);
+  color: #edf2ec;
+}
+.actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
-.quiet-button.small,
-.primary-button.small {
+.actions button,
+.primary {
   min-height: 26px;
-  padding: 0 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 7px;
-  font-weight: 650;
+  background: #0f1a16;
+  color: #edf2ec;
   font-size: 11px;
   cursor: pointer;
 }
-.quiet-button.small {
-  border: 1px solid var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  background: var(--surface, color-mix(in srgb, currentColor 8%, transparent));
-  color: inherit;
+.primary {
+  border-color: #d5ab6c;
+  background: #d5ab6c;
+  color: #1b2822;
 }
-.quiet-button.small:hover:not(:disabled) {
-  background: var(--surface-muted, color-mix(in srgb, currentColor 12%, transparent));
-}
-.primary-button.small {
-  border: 1px solid var(--accent, #b4773f);
-  background: var(--accent, #b4773f);
-  color: var(--on-accent, #fffefa);
-}
-.quiet-button.small:disabled,
-.primary-button.small:disabled {
+.actions button:disabled,
+.primary:disabled {
   opacity: 0.45;
-  cursor: not-allowed;
+  cursor: default;
 }
 .section-note,
 .empty-note {
   margin: 0;
+  color: var(--theme-neutral-text-muted, #aebdb1);
   font-size: 11px;
   line-height: 1.45;
-  opacity: 0.82;
 }
 .empty-note {
-  padding: 10px 11px;
-  border: 1px dashed var(--line, color-mix(in srgb, currentColor 18%, transparent));
+  padding: 10px;
+  border: 1px dashed rgb(255 255 255 / 14%);
   border-radius: 8px;
-  text-align: center;
 }
 .route-error {
   color: var(--danger, #c45c48);
-  opacity: 1;
 }
 .route-results {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+.route-results li {
+  display: grid;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 16%);
+}
+.route-results li.active {
+  border-color: #d5ab6c;
+  background: rgb(213 171 108 / 16%);
 }
 .route-candidate {
   display: flex;
@@ -217,18 +243,14 @@ function hint() {
   gap: 2px;
   width: 100%;
   text-align: left;
-  padding: 7px 8px;
-  border: 1px solid var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  background: var(--surface, color-mix(in srgb, currentColor 6%, transparent));
+  padding: 4px 6px;
+  border: 0;
+  background: none;
   color: inherit;
-  border-radius: 8px;
   cursor: pointer;
-}
-.route-candidate.selected {
-  border-color: var(--accent, #e6b03c);
 }
 .route-candidate span {
   font-size: 11px;
-  opacity: 0.82;
+  color: #aebdb1;
 }
 </style>

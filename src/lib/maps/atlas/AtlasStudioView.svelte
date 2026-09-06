@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount, tick, untrack } from "svelte";
-import { Info, Layers, Pencil, Search, X } from "@lucide/svelte";
+import { Info, Layers, MapPin, Pencil, Route, Search, X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
@@ -91,7 +91,6 @@ import {
   overlayLayerFamily,
   type AtlasOverlayAuthoring,
   type OverlayDrawTool,
-  type OverlayFamily,
 } from "./overlay-family.ts";
 
 const EPOCH_MIN = -100_000;
@@ -219,7 +218,9 @@ let placeHeading = $state<HTMLElement | null>(null);
 let confirmCache = $state(false);
 let showHelp = $state(false);
 type SidebarPane = "layers" | "find" | "draw" | "inspect";
+type FindTopic = "places" | "routes";
 let sidebarPane = $state<SidebarPane>("layers");
+let findTopic = $state<FindTopic>("places");
 const sidebarPanes: Array<{ id: SidebarPane; label: string }> = [
   { id: "layers", label: "Layers" },
   { id: "find", label: "Find" },
@@ -257,7 +258,7 @@ let overlayDetectHint = $state("");
 let overlayDetectBusy = false;
 let landmassRequest = 0;
 let overlaySyncing = false;
-let overlayCreateFamily = $state<OverlayFamily>("political");
+let overlayCreateName = $state("");
 let landmassSelection = $state<LandmassSelection | null>(null);
 let includeOccupied = $state(false);
 let landmassHover = $state<LandmassSelection | null>(null);
@@ -1496,7 +1497,8 @@ function commitLandmassSelection(layerId: string, subtractOccupied = false) {
 function createFromLandmassSelection() {
   const authoring = overlayAuthoring;
   if (!authoring || !landmassSelection) return;
-  const layerId = authoring.createLayer(overlayCreateFamily);
+  const layerId = authoring.createLayer(overlayCreateName);
+  overlayCreateName = "";
   if (!layerId) {
     overlayDetectHint = "Could not create overlay.";
     return;
@@ -1682,6 +1684,8 @@ function armRouting() {
   routeRequest += 1;
   routeSearching = false;
   routingArming = true;
+  findTopic = "routes";
+  sidebarPane = "find";
   routingStart = null;
   routeResult = null;
   routeSelectedId = null;
@@ -2322,30 +2326,63 @@ onDestroy(() => {
           </div>
         {:else if sidebarPane === "find"}
           <div class="sidebar-pane find-pane" id="atlas-pane-find" role="tabpanel" aria-labelledby="atlas-tab-find">
-            <FindPlacePanel
-              variant="studio"
-              disabled={loading}
-              searching={findPlaceSearching}
-              error={findPlaceError}
-              result={findPlaceResult}
-              selectedId={findPlaceSelectedId}
-              onsearch={(query) => void runFindPlace(query)}
-              onselect={selectFindPlace}
-              onpin={pinFindPlace}
-              onclear={clearFindPlace} />
-            <RouteSuggestPanel
-              variant="studio"
-              disabled={loading}
-              searching={routeSearching}
-              error={routeError}
-              arming={routingArming}
-              startPicked={Boolean(routingStart)}
-              result={routeResult}
-              selectedId={routeSelectedId}
-              onarm={armRouting}
-              onselect={selectRoute}
-              onaccept={acceptRoute}
-              oncancel={clearRouting} />
+            <div class="find-topics" role="tablist" aria-label="Search">
+              <button
+                type="button"
+                role="tab"
+                id="atlas-find-places"
+                aria-selected={findTopic === "places"}
+                aria-controls="atlas-find-places-panel"
+                class:active={findTopic === "places"}
+                onclick={() => (findTopic = "places")}>
+                <MapPin size={13} strokeWidth={1.8} />
+                Places
+                {#if findPlaceResult}<em>{findPlaceResult.candidateCount}</em>{/if}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="atlas-find-routes"
+                aria-selected={findTopic === "routes"}
+                aria-controls="atlas-find-routes-panel"
+                class:active={findTopic === "routes"}
+                onclick={() => (findTopic = "routes")}>
+                <Route size={13} strokeWidth={1.8} />
+                Routes
+                {#if routeResult}<em>{routeResult.suggestionCount}</em>{/if}
+              </button>
+            </div>
+            {#if findTopic === "places"}
+              <div id="atlas-find-places-panel" role="tabpanel" aria-labelledby="atlas-find-places">
+                <FindPlacePanel
+                  variant="studio"
+                  disabled={loading}
+                  searching={findPlaceSearching}
+                  error={findPlaceError}
+                  result={findPlaceResult}
+                  selectedId={findPlaceSelectedId}
+                  onsearch={(query) => void runFindPlace(query)}
+                  onselect={selectFindPlace}
+                  onpin={pinFindPlace}
+                  onclear={clearFindPlace} />
+              </div>
+            {:else}
+              <div id="atlas-find-routes-panel" role="tabpanel" aria-labelledby="atlas-find-routes">
+                <RouteSuggestPanel
+                  variant="studio"
+                  disabled={loading}
+                  searching={routeSearching}
+                  error={routeError}
+                  arming={routingArming}
+                  startPicked={Boolean(routingStart)}
+                  result={routeResult}
+                  selectedId={routeSelectedId}
+                  onarm={armRouting}
+                  onselect={selectRoute}
+                  onaccept={acceptRoute}
+                  oncancel={clearRouting} />
+              </div>
+            {/if}
           </div>
         {:else if sidebarPane === "draw"}
           <div class="sidebar-pane" id="atlas-pane-draw" role="tabpanel" aria-labelledby="atlas-tab-draw">
@@ -2355,7 +2392,7 @@ onDestroy(() => {
                 bind:tool={overlayTool}
                 bind:selectedFeatureId={overlaySelectedId}
                 bind:detectHint={overlayDetectHint}
-                bind:createFamily={overlayCreateFamily}
+                bind:createName={overlayCreateName}
                 selection={landmassSelection}
                 bind:includeOccupied
                 showIncludeOccupied={activeOccupiedGeometries().length > 0}
@@ -2861,13 +2898,45 @@ onDestroy(() => {
   gap: 12px;
   align-content: start;
 }
-.find-pane :global(.find-place.studio) {
+.find-topics {
   display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid rgb(255 255 255 / 8%);
-  border-radius: 10px;
-  background: rgb(255 255 255 / 3%);
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.find-topics button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 8px;
+  background: #0f1a16;
+  color: #aebdb1;
+  font: 650 11px/1.1 system-ui;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+.find-topics button.active {
+  border-color: #d5ab6c;
+  background: rgb(213 171 108 / 16%);
+  color: #edf2ec;
+}
+.find-topics em {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d5ab6c;
+  color: #1b2822;
+  font: 700 9px/14px system-ui;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
 }
 .pane-empty {
   margin: 0;

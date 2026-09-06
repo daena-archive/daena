@@ -107,15 +107,15 @@ import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physic
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
 import {
-  OVERLAY_FAMILIES,
   isOverlayLayer,
   layerBookGroups,
-  nextOverlayLayerName,
+  overlayFamilyFromName,
   overlayFamilyLabel,
   overlayFamilyStyle,
+  overlayNameSuggestions,
   reorderLayerBookIds,
+  uniqueOverlayLayerName,
   type AtlasOverlayAuthoring,
-  type OverlayFamily,
 } from "../atlas/overlay-family.ts";
 import LandmassSelectionBar from "../physical/LandmassSelectionBar.svelte";
 import {
@@ -314,7 +314,7 @@ let bufferDistance = $state("10");
 let simplifyTolerance = $state("0.5");
 let operationNotice = $state("");
 let layersCollapsed = $state(false);
-let overlayCreateFamily = $state<OverlayFamily>("political");
+let overlayCreateName = $state("");
 let landmassSelection = $state<LandmassSelection | null>(null);
 let includeOccupied = $state(false);
 let landmassHover = $state<LandmassSelection | null>(null);
@@ -1740,16 +1740,19 @@ function switchLayer(layerId: string) {
   editor?.setMode(tool);
 }
 
-function createOverlayLayer(family: OverlayFamily): string | null {
+function createOverlayLayer(name?: string): string | null {
   if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return null;
+  const desired = name?.trim() ?? "";
+  const family = overlayFamilyFromName(desired);
   const built = buildCreateOverlayLayer(
     commandStack.document,
-    nextOverlayLayerName(layers, family),
+    uniqueOverlayLayerName(layers, desired),
     family,
     overlayFamilyStyle(family),
   );
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
+  overlayCreateName = "";
   return built.layer.id;
 }
 
@@ -1863,7 +1866,7 @@ function commitLandmassToLayer(layerId: string, subtractOccupied = false) {
 
 function createFromLandmassSelection() {
   if (!landmassSelection) return;
-  const layerId = createOverlayLayer(overlayCreateFamily);
+  const layerId = createOverlayLayer(overlayCreateName);
   if (!layerId) {
     landmassHint = "Could not create overlay.";
     return;
@@ -3241,19 +3244,23 @@ onMount(() => {
                       <span class="section-count">{overlayLayers.length}</span>
                     </div>
                     <div class="layer-book-create">
-                      <select
-                        bind:value={overlayCreateFamily}
-                        aria-label="Overlay family"
-                        disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}>
-                        {#each OVERLAY_FAMILIES as family}
-                          <option value={family}>{overlayFamilyLabel(family)}</option>
+                      <input
+                        list="overlay-name-suggestions"
+                        bind:value={overlayCreateName}
+                        aria-label="Overlay name"
+                        placeholder="Political, kingdoms, trade…"
+                        autocomplete="off"
+                        disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS} />
+                      <datalist id="overlay-name-suggestions">
+                        {#each overlayNameSuggestions() as item (item.family)}
+                          <option value={item.label}></option>
                         {/each}
-                      </select>
+                      </datalist>
                       <button
                         type="button"
                         class="quiet-button small"
                         disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
-                        onclick={() => createOverlayLayer(overlayCreateFamily)}>
+                        onclick={() => createOverlayLayer(overlayCreateName)}>
                         New overlay
                       </button>
                     </div>
@@ -4530,7 +4537,7 @@ onMount(() => {
   gap: 6px;
   align-items: center;
 }
-.layer-book-create select {
+.layer-book-create input {
   flex: 1;
   min-width: 0;
   height: 28px;

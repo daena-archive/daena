@@ -49,7 +49,7 @@ export type AtlasOverlayAuthoring = {
   canUndo: boolean;
   canRedo: boolean;
   busy: boolean;
-  createLayer: (family: OverlayFamily) => string | null;
+  createLayer: (name?: string) => string | null;
   setActiveLayer: (id: string) => void;
   renameLayer: (id: string, name: string) => void;
   deleteLayer: (id: string) => void;
@@ -117,13 +117,33 @@ export function reorderLayerBookIds(
   return display.reverse().map((layer) => layer.id);
 }
 
-export function nextOverlayLayerName(layers: readonly { name: string }[], family: OverlayFamily): string {
-  const base = FAMILY_LABELS[family];
+export function overlayFamilyFromName(name: string): OverlayFamily {
+  const key = name.trim().toLowerCase();
+  if (!key) return "custom";
+  for (const family of OVERLAY_FAMILIES) {
+    if (family === key || FAMILY_LABELS[family].toLowerCase() === key) return family;
+  }
+  return "custom";
+}
+
+export function uniqueOverlayLayerName(layers: readonly { name: string }[], desired: string): string {
+  const base = desired.trim() || "Overlay";
   const used = new Set(layers.map((layer) => layer.name));
   if (!used.has(base)) return base;
   let index = 2;
   while (used.has(`${base} ${index}`)) index += 1;
   return `${base} ${index}`;
+}
+
+export function overlayNameSuggestions(query = ""): { family: OverlayFamily; label: string }[] {
+  const needle = query.trim().toLowerCase();
+  return OVERLAY_FAMILIES.filter((family) => family !== "custom")
+    .map((family) => ({ family, label: FAMILY_LABELS[family] }))
+    .filter((item) => !needle || item.label.toLowerCase().includes(needle) || item.family.includes(needle));
+}
+
+export function nextOverlayLayerName(layers: readonly { name: string }[], family: OverlayFamily): string {
+  return uniqueOverlayLayerName(layers, FAMILY_LABELS[family]);
 }
 
 export function overlayFeaturesForLayer(features: readonly VectorFeature[], layerId: string): VectorFeature[] {

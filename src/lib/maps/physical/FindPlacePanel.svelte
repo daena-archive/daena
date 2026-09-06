@@ -108,7 +108,6 @@ let {
   onclear: () => void;
 } = $props();
 
-let mode = $state<"simple" | "advanced">("simple");
 let simpleElevation = $state("");
 let simpleTemperature = $state("");
 let simpleRain = $state("");
@@ -324,11 +323,6 @@ function syncSimpleFromNumbers() {
   else simpleHazard = quakeMin || quakeMax || volcanoMin || volcanoMax || stormMin || stormMax ? "custom" : "";
 }
 
-function setMode(next: "simple" | "advanced") {
-  mode = next;
-  if (next === "simple") syncSimpleFromNumbers();
-}
-
 function resetFilters() {
   simpleElevation = "";
   simpleTemperature = "";
@@ -496,113 +490,97 @@ const compared = $derived(
 function statLine(candidate: FindPlaceCandidate) {
   return `${candidate.means.altitudeM} m · ${(candidate.means.temperatureCentiC / 100).toFixed(1)} °C · ${candidate.means.precipitationMm} mm`;
 }
+
+const ELEVATION_CHIPS = [
+  { id: "", label: "Any" },
+  { id: "lowland", label: "Lowland" },
+  { id: "upland", label: "Upland" },
+  { id: "highland", label: "Highland" },
+];
+const TEMP_CHIPS = [
+  { id: "", label: "Any" },
+  { id: "hot", label: "Hot" },
+  { id: "mild", label: "Mild" },
+  { id: "cold", label: "Cold" },
+];
+const RAIN_CHIPS = [
+  { id: "", label: "Any" },
+  { id: "wet", label: "Wet" },
+  { id: "moderate", label: "Moderate" },
+  { id: "dry", label: "Dry" },
+];
+const WATER_CHIPS = [
+  { id: "", label: "Any" },
+  { id: "coastal", label: "Coastal" },
+  { id: "inland", label: "Inland" },
+  { id: "freshwater", label: "Fresh water" },
+];
+const HAZARD_CHIPS = [
+  { id: "", label: "Any" },
+  { id: "low", label: "Low hazard" },
+  { id: "stormy", label: "Stormy" },
+];
 </script>
 
-{#snippet body()}
-  <div class="find-mode" role="tablist" aria-label="Search mode">
-    <button
-      type="button"
-      class="quiet-button small"
-      class:active={mode === "simple"}
-      role="tab"
-      aria-selected={mode === "simple"}
-      {disabled}
-      onclick={() => setMode("simple")}>Simple</button>
-    <button
-      type="button"
-      class="quiet-button small"
-      class:active={mode === "advanced"}
-      role="tab"
-      aria-selected={mode === "advanced"}
-      {disabled}
-      onclick={() => setMode("advanced")}>Advanced</button>
+{#snippet chips(
+  label: string,
+  value: string,
+  options: { id: string; label: string }[],
+  apply: (id: string) => void,
+  off = false,
+)}
+  <div class="chip-field">
+    <span>{label}</span>
+    <div class="chips" role="group" aria-label={label}>
+      {#each options as option (option.id || `${label}-any`)}
+        <button type="button" class:active={value === option.id} disabled={off} onclick={() => apply(option.id)}>
+          {option.label}
+        </button>
+      {/each}
+      {#if value === "custom"}
+        <button type="button" class="active" disabled>Custom</button>
+      {/if}
+    </div>
   </div>
-  <p class="section-note">
-    {mode === "simple"
-      ? "Describe the kind of place. Advanced unlocks exact numbers, extra fields, and preferences."
-      : "Every available field. Blank means any. Prefer ranks instead of excluding."}
-  </p>
-  <div class="quick-add-row find-presets" role="group" aria-label="Starting searches">
+{/snippet}
+
+{#snippet query()}
+  <p class="section-note">Presets fill filters. Chips and numbers stay editable.</p>
+  <div class="find-presets" role="group" aria-label="Starting searches">
     {#each PRESETS as preset (preset.id)}
-      <button type="button" class="quiet-button small" {disabled} onclick={() => applyPreset(preset)}
-        >{preset.label}</button>
+      <button type="button" class="chip" {disabled} onclick={() => applyPreset(preset)}>{preset.label}</button>
     {/each}
   </div>
   <label class="find-check"><input type="checkbox" bind:checked={landOnly} {disabled} /> Land only</label>
   {#if !climateAvailable}
     <p class="section-note">Climate filters are unavailable until climate has been derived.</p>
   {/if}
-  {#if !hazardsAvailable && mode === "advanced"}
+  {#if !hazardsAvailable}
     <p class="section-note">Earthquake and volcanic filters need hazard layers.</p>
   {/if}
-  {#if mode === "simple"}
-    <div class="detail-grid">
-      <label
-        ><span>Elevation</span>
-        <select value={simpleElevation} {disabled} onchange={(event) => applyElevation(event.currentTarget.value)}>
-          <option value="">Any</option>
-          <option value="lowland">Lowland (under 400 m)</option>
-          <option value="upland">Upland (400–1500 m)</option>
-          <option value="highland">Highland (1500 m+)</option>
-          {#if simpleElevation === "custom"}<option value="custom">Custom (see Advanced)</option>{/if}
-        </select>
-      </label>
-      <label
-        ><span>Temperature</span>
-        <select
-          value={simpleTemperature}
-          disabled={climateOff}
-          onchange={(event) => applyTemperature(event.currentTarget.value)}>
-          <option value="">Any</option>
-          <option value="hot">Hot (18 °C+)</option>
-          <option value="mild">Mild (8–20 °C)</option>
-          <option value="cold">Cold (under 8 °C)</option>
-          {#if simpleTemperature === "custom"}<option value="custom">Custom (see Advanced)</option>{/if}
-        </select>
-      </label>
-      <label
-        ><span>Rainfall</span>
-        <select value={simpleRain} disabled={climateOff} onchange={(event) => applyRain(event.currentTarget.value)}>
-          <option value="">Any</option>
-          <option value="wet">Wet (800 mm+)</option>
-          <option value="moderate">Moderate (400–800 mm)</option>
-          <option value="dry">Dry (under 400 mm)</option>
-          {#if simpleRain === "custom"}<option value="custom">Custom (see Advanced)</option>{/if}
-        </select>
-      </label>
-      <label
-        ><span>Water</span>
-        <select value={simpleWater} {disabled} onchange={(event) => applyWater(event.currentTarget.value)}>
-          <option value="">Any</option>
-          <option value="coastal">Coastal (within 50 km)</option>
-          <option value="inland">Inland (200 km+ from coast)</option>
-          <option value="freshwater">Near fresh water (within 40 km)</option>
-          {#if simpleWater === "custom"}<option value="custom">Custom (see Advanced)</option>{/if}
-        </select>
-      </label>
-      <label
-        ><span>Biome</span>
-        <select bind:value={biomeClass} disabled={climateOff}>
-          <option value="">Any</option>
-          {#each biomes.filter((entry) => entry.id !== 0) as entry (entry.id)}
-            <option value={String(entry.id)}>{entry.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label
-        ><span>Hazard</span>
-        <select
-          value={simpleHazard}
-          disabled={disabled || (!climateAvailable && !hazardsAvailable)}
-          onchange={(event) => applyHazard(event.currentTarget.value)}>
-          <option value="">Any</option>
-          <option value="low" disabled={!hazardsAvailable}>Low earthquake and volcano</option>
-          <option value="stormy" disabled={!climateAvailable}>Storm-exposed</option>
-          {#if simpleHazard === "custom"}<option value="custom">Custom (see Advanced)</option>{/if}
-        </select>
-      </label>
-    </div>
-  {:else}
+  {@render chips("Elevation", simpleElevation, ELEVATION_CHIPS, applyElevation, disabled)}
+  {@render chips("Temperature", simpleTemperature, TEMP_CHIPS, applyTemperature, climateOff)}
+  {@render chips("Rainfall", simpleRain, RAIN_CHIPS, applyRain, climateOff)}
+  {@render chips("Water", simpleWater, WATER_CHIPS, applyWater, disabled)}
+  {@render chips(
+    "Hazard",
+    simpleHazard,
+    HAZARD_CHIPS,
+    applyHazard,
+    disabled || (!climateAvailable && !hazardsAvailable),
+  )}
+  <label class="biome-field"
+    ><span>Biome</span>
+    <select bind:value={biomeClass} disabled={climateOff}>
+      <option value="">Any</option>
+      {#each biomes.filter((entry) => entry.id !== 0) as entry (entry.id)}
+        <option value={String(entry.id)}>{entry.name}</option>
+      {/each}
+    </select>
+  </label>
+  <details class="advanced" oninput={syncSimpleFromNumbers}>
+    <summary>Exact numbers</summary>
+    <p class="section-note">Blank means any. Prefer ranks a match instead of excluding it.</p>
     <div class="detail-grid">
       <label><span>Altitude min m</span><input type="number" bind:value={altitudeMin} {disabled} /></label>
       <label><span>Altitude max m</span><input type="number" bind:value={altitudeMax} {disabled} /></label>
@@ -720,9 +698,6 @@ function statLine(candidate: FindPlaceCandidate) {
         ><span>Max regions</span><input type="number" min="1" max="12" bind:value={maxCandidates} {disabled} /></label>
       <label><span>Min cells</span><input type="number" min="1" bind:value={minCells} {disabled} /></label>
     </div>
-  {/if}
-  {#if mode === "advanced"}
-    <p class="section-note">Prefer ranks matches instead of excluding them.</p>
     <div class="find-prefer">
       <label><input type="checkbox" bind:checked={altitudeSoft} {disabled} /> Altitude</label>
       <label><input type="checkbox" bind:checked={tempSoft} disabled={climateOff} /> Temperature</label>
@@ -742,21 +717,22 @@ function statLine(candidate: FindPlaceCandidate) {
       <label><input type="checkbox" bind:checked={volcanoSoft} disabled={hazardsOff} /> Volcano</label>
       <label><input type="checkbox" bind:checked={stormSoft} disabled={climateOff} /> Storm</label>
     </div>
-  {/if}
-  <div class="quick-add-row">
-    <button type="button" class="primary-button small" disabled={disabled || searching} onclick={submit}>
+  </details>
+  <div class="actions">
+    <button type="button" class="primary" disabled={disabled || searching} onclick={submit}>
       {searching ? "Searching…" : "Search"}
     </button>
-    <button type="button" class="quiet-button small" {disabled} onclick={resetFilters}>Reset filters</button>
-    <button
-      type="button"
-      class="quiet-button small"
-      disabled={disabled || (!result && !error && !formError)}
-      onclick={clearResults}>Clear results</button>
+    <button type="button" {disabled} onclick={resetFilters}>Reset</button>
+    <button type="button" disabled={disabled || (!result && !error && !formError)} onclick={clearResults}>
+      Clear
+    </button>
   </div>
   {#if formError || error}
     <p class="section-note find-error">{formError || error}</p>
   {/if}
+{/snippet}
+
+{#snippet matches()}
   {#if result}
     <p class="section-note">
       {result.candidateCount} region{result.candidateCount === 1 ? "" : "s"} · {result.matchedCells.toLocaleString(
@@ -775,18 +751,13 @@ function statLine(candidate: FindPlaceCandidate) {
       </div>
     {/if}
     {#if result.candidates.length === 0}
-      <p class="empty-note">No region matches those criteria.</p>
+      <p class="empty-note">No region matches those criteria. Loosen a chip or open Exact numbers.</p>
     {:else}
       <ul class="find-results">
         {#each result.candidates as candidate (candidate.id)}
-          <li>
-            <button
-              type="button"
-              class="find-candidate"
-              class:selected={selectedId === candidate.id}
-              class:compare={compareId === candidate.id}
-              onclick={() => onselect(candidate)}>
-              <strong>#{candidate.id} · {biomeName(candidate.means.biomeClass)}</strong>
+          <li class:active={selectedId === candidate.id} class:compare={compareId === candidate.id}>
+            <button type="button" class="find-candidate" onclick={() => onselect(candidate)}>
+              <strong>{biomeName(candidate.means.biomeClass)}</strong>
               <span>{candidate.areaKm2.toLocaleString("en-US")} km² · {candidate.reasons[0]}</span>
               <span>{statLine(candidate)}</span>
               {#if candidate.risks.length}
@@ -798,13 +769,17 @@ function statLine(candidate: FindPlaceCandidate) {
                 {#if candidate.nearMisses.length}<span>{candidate.nearMisses.join(" · ")}</span>{/if}
               {/if}
             </button>
-            <div class="quick-add-row">
-              <button type="button" class="quiet-button small" onclick={() => toggleExpanded(candidate.id)}>
+            <div class="actions">
+              <button type="button" onclick={() => toggleExpanded(candidate.id)}>
                 {expandedId === candidate.id ? "Less" : "Why"}
               </button>
-              <button type="button" class="quiet-button small" onclick={() => toggleCompare(candidate.id)}
-                >Compare</button>
-              <button type="button" class="quiet-button small" onclick={() => onpin(candidate)}>Pin</button>
+              <button
+                type="button"
+                class:active={compareId === candidate.id}
+                onclick={() => toggleCompare(candidate.id)}>
+                Compare
+              </button>
+              <button type="button" onclick={() => onpin(candidate)}>Pin</button>
             </div>
           </li>
         {/each}
@@ -814,10 +789,17 @@ function statLine(candidate: FindPlaceCandidate) {
 {/snippet}
 
 {#if variant === "studio"}
-  <section class="find-place studio" aria-label="Find Place">
-    <div class="section-body">
-      {@render body()}
+  <section class="find-place studio" aria-label="Find place">
+    <div class="block">
+      <span class="kicker">Query</span>
+      {@render query()}
     </div>
+    {#if result}
+      <div class="block">
+        <span class="kicker">Matches</span>
+        {@render matches()}
+      </div>
+    {/if}
   </section>
 {:else}
   <details class="find-place map-section-group">
@@ -829,7 +811,8 @@ function statLine(candidate: FindPlaceCandidate) {
       {/if}
     </summary>
     <div class="section-body">
-      {@render body()}
+      {@render query()}
+      {@render matches()}
     </div>
   </details>
 {/if}
@@ -837,64 +820,95 @@ function statLine(candidate: FindPlaceCandidate) {
 <style>
 .find-place.studio {
   display: grid;
-  gap: 0;
+  gap: 10px;
 }
-.find-place.studio .section-body {
+.block {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 3%);
+}
+.kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d5ab6c;
+}
+.section-body {
   display: grid;
   gap: 8px;
 }
-.find-mode,
-.quick-add-row,
-.find-presets {
+.section-note,
+.empty-note {
+  margin: 0;
+  color: var(--theme-neutral-text-muted, #aebdb1);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.empty-note {
+  padding: 10px;
+  border: 1px dashed rgb(255 255 255 / 14%);
+  border-radius: 8px;
+}
+.find-presets,
+.chips,
+.actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
-.quiet-button.small,
-.primary-button.small {
+.chip-field,
+.biome-field {
+  display: grid;
+  gap: 4px;
+}
+.chip-field span,
+.biome-field span,
+.detail-grid label span,
+.advanced summary {
+  color: #d9d0c3;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.chips button,
+.chip,
+.actions button {
   min-height: 26px;
-  padding: 0 8px;
-  border-radius: 7px;
-  font-weight: 650;
+  padding: 3px 8px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 999px;
+  background: #0f1a16;
+  color: #edf2ec;
   font-size: 11px;
   cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
 }
-.quiet-button.small {
-  border: 1px solid var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  background: var(--surface, color-mix(in srgb, currentColor 8%, transparent));
-  color: inherit;
+.chips button.active,
+.actions button.active {
+  border-color: #d5ab6c;
+  background: #d5ab6c;
+  color: #1b2822;
 }
-.quiet-button.small.active {
-  border-color: var(--line-strong, color-mix(in srgb, currentColor 28%, transparent));
-  background: var(--accent-dark, #31443b);
-  color: var(--on-accent, #edf2ec);
+.actions .primary {
+  border-radius: 7px;
+  border-color: #d5ab6c;
+  background: #d5ab6c;
+  color: #1b2822;
 }
-.quiet-button.small:hover:not(:disabled):not(.active) {
-  background: var(--surface-muted, color-mix(in srgb, currentColor 12%, transparent));
-}
-.primary-button.small {
-  border: 1px solid var(--accent, #b4773f);
-  background: var(--accent, #b4773f);
-  color: var(--on-accent, #fffefa);
-}
-.quiet-button.small:disabled,
-.primary-button.small:disabled {
+.chips button:disabled,
+.chip:disabled,
+.actions button:disabled {
   opacity: 0.45;
-  cursor: not-allowed;
-}
-.section-note,
-.empty-note {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.45;
-  opacity: 0.82;
-}
-.empty-note {
-  padding: 10px 11px;
-  border: 1px dashed var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  border-radius: 8px;
-  text-align: center;
+  cursor: default;
 }
 .find-check,
 .find-prefer label {
@@ -902,6 +916,30 @@ function statLine(candidate: FindPlaceCandidate) {
   align-items: center;
   gap: 6px;
   font-size: 11px;
+  color: #edf2ec;
+}
+.biome-field select,
+.detail-grid input,
+.detail-grid select {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 7px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font-size: 11px;
+}
+.advanced {
+  display: grid;
+  gap: 8px;
+}
+.advanced summary {
+  cursor: pointer;
+  list-style: none;
+}
+.advanced summary::-webkit-details-marker {
+  display: none;
 }
 .detail-grid {
   display: grid;
@@ -912,23 +950,6 @@ function statLine(candidate: FindPlaceCandidate) {
   display: grid;
   gap: 4px;
   font-size: 10px;
-  font-weight: 600;
-}
-.detail-grid label span {
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.72;
-}
-.detail-grid input,
-.detail-grid select {
-  width: 100%;
-  min-width: 0;
-  padding: 7px 8px;
-  border: 1px solid var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  border-radius: 7px;
-  background: var(--surface, color-mix(in srgb, currentColor 6%, transparent));
-  color: inherit;
-  font-size: 11px;
 }
 .find-prefer {
   display: flex;
@@ -937,7 +958,6 @@ function statLine(candidate: FindPlaceCandidate) {
 }
 .find-error {
   color: var(--danger, #c45c48);
-  opacity: 1;
 }
 .find-compare {
   display: grid;
@@ -946,18 +966,29 @@ function statLine(candidate: FindPlaceCandidate) {
 }
 .find-compare span {
   display: block;
-  opacity: 0.82;
+  color: #aebdb1;
 }
 .find-results {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 .find-results li {
   display: grid;
-  gap: 6px;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 16%);
+}
+.find-results li.active {
+  border-color: #d5ab6c;
+  background: rgb(213 171 108 / 16%);
+}
+.find-results li.compare {
+  box-shadow: inset 0 0 0 1px #7aa7d9;
 }
 .find-candidate {
   display: flex;
@@ -965,24 +996,20 @@ function statLine(candidate: FindPlaceCandidate) {
   gap: 2px;
   width: 100%;
   text-align: left;
-  padding: 7px 8px;
-  border: 1px solid var(--line, color-mix(in srgb, currentColor 18%, transparent));
-  background: var(--surface, color-mix(in srgb, currentColor 6%, transparent));
+  padding: 4px 6px;
+  border: 0;
+  background: none;
   color: inherit;
-  border-radius: 8px;
   cursor: pointer;
-}
-.find-candidate.selected {
-  border-color: var(--accent, #e6b03c);
-}
-.find-candidate.compare {
-  border-color: #7aa7d9;
 }
 .find-candidate span {
   font-size: 11px;
-  opacity: 0.82;
+  color: #aebdb1;
 }
 .find-risks {
   color: #d9a05c;
+}
+.actions button {
+  border-radius: 7px;
 }
 </style>

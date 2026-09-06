@@ -618,6 +618,8 @@ pub fn render_studio_tile_with_style_overlays(
                         kind: "derived-tributary".into(),
                         label: Some(format!("T{}", tributary.source_cell)),
                         path: vec![*first],
+                        fill: None,
+                        closed: false,
                     });
                 }
             }
@@ -1376,6 +1378,8 @@ mod tests {
             kind: "point".into(),
             label: Some("PORT".into()),
             path: vec![[0, 20_000_000]],
+            fill: None,
+            closed: false,
         };
         let with_vectors = render_studio_tile_with_overlays(
             &scene,

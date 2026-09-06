@@ -7,7 +7,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use daena_atlas::cache::AtlasDiskCache;
-use daena_atlas::overlay::{hit_test_features, AtlasInspectResult, AuthoredFeature};
+use daena_atlas::overlay::{
+    hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature,
+};
 use daena_atlas::studio::{
     render_studio_tile_with_style_overlays, tile_count, AtlasStudioSceneRequestV1,
     AtlasStudioTileRequestV1, CODE_STUDIO_CANCELLED, CODE_STUDIO_EXPIRED,
@@ -875,6 +877,8 @@ pub async fn project_atlas_studio_inspect(
                     kind: "derived-tributary".into(),
                     label: Some(format!("T{}", tributary.source_cell)),
                     path: vec![*first],
+                    fill: None,
+                    closed: false,
                 });
             }
         }
@@ -893,6 +897,111 @@ pub async fn project_atlas_studio_inspect(
         ),
         surface,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasStudioProposeInput {
+    pub session_token: String,
+    pub lon_micro: i32,
+    pub lat_micro: i32,
+    pub detector: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlasRegionProposal {
+    pub detector: String,
+    pub label: String,
+    pub epoch_dependent: bool,
+    pub geometry: serde_json::Value,
+}
+
+#[tauri::command]
+pub async fn project_atlas_studio_propose_region(
+    studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
+    input: AtlasStudioProposeInput,
+) -> Result<AtlasRegionProposal, String> {
+    let prepared = {
+        let mut manager = studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?;
+        manager.reap();
+        let session = manager
+            .sessions
+            .get(&input.session_token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        session.prepared.clone()
+    };
+    let hydrology = &prepared.hydrology;
+    let cell = cell_from_micro(hydrology.grid, input.lon_micro, input.lat_micro);
+    let (detector, index, rings, label) = match input.detector.as_str() {
+        "landmass" => {
+            let id = hydrology.island_id.get(cell).copied().unwrap_or(u32::MAX);
+            if id == u32::MAX {
+                return Err("No connected landmass at this point for the current epoch.".into());
+            }
+            let rings = hydrology
+                .island_polygons
+                .get(id as usize)
+                .cloned()
+                .unwrap_or_default();
+            ("landmass", id, rings, format!("Landmass {}", id + 1))
+        }
+        "watershed" => {
+            let outlet = hydrology
+                .watershed_id
+                .get(cell)
+                .copied()
+                .unwrap_or(u32::MAX);
+            let Some(index) = watershed_polygon_index(&hydrology.watershed_id, outlet) else {
+                return Err("No watershed at this point for the current epoch.".into());
+            };
+            let rings = hydrology
+                .watershed_polygons
+                .get(index)
+                .cloned()
+                .unwrap_or_default();
+            (
+                "watershed",
+                index as u32,
+                rings,
+                format!("Watershed {}", index + 1),
+            )
+        }
+        _ => {
+            return Err(format!(
+                "{}: unsupported region detector",
+                daena_atlas::studio::CODE_STUDIO_REQUEST_INVALID
+            ));
+        }
+    };
+    let geometry = polygon_from_micro_rings(&rings)
+        .ok_or_else(|| format!("Could not build {detector} geometry for region {index}."))?;
+    Ok(AtlasRegionProposal {
+        detector: detector.into(),
+        label,
+        epoch_dependent: true,
+        geometry,
+    })
+}
+
+fn cell_from_micro(grid: daena_physical::Grid, lon: i32, lat: i32) -> usize {
+    let col = ((i64::from(lon) + 180_000_000) * i64::from(grid.width) / 360_000_000)
+        .clamp(0, i64::from(grid.width.saturating_sub(1))) as u32;
+    let row = ((i64::from(lat) + 90_000_000) * i64::from(grid.height) / 180_000_000)
+        .clamp(0, i64::from(grid.height.saturating_sub(1))) as u32;
+    grid.index(row, col)
+}
+
+fn watershed_polygon_index(ids: &[u32], outlet: u32) -> Option<usize> {
+    if outlet == u32::MAX {
+        return None;
+    }
+    let mut unique: Vec<u32> = ids.iter().copied().filter(|id| *id != u32::MAX).collect();
+    unique.sort_unstable();
+    unique.dedup();
+    unique.iter().position(|id| *id == outlet)
 }
 
 #[cfg(test)]
@@ -1119,5 +1228,15 @@ mod tests {
         let denied = protocol_response(&studio, &core, &request, "plugin:daena.maps");
         assert_eq!(denied.status(), 403);
         assert!(String::from_utf8_lossy(denied.body()).contains(CODE_STUDIO_PROTOCOL_DENIED));
+    }
+
+    #[test]
+    fn watershed_polygon_index_matches_sorted_outlet_order() {
+        let ids = [u32::MAX, 40, 10, 40, 10, u32::MAX, 25];
+        assert_eq!(watershed_polygon_index(&ids, 10), Some(0));
+        assert_eq!(watershed_polygon_index(&ids, 25), Some(1));
+        assert_eq!(watershed_polygon_index(&ids, 40), Some(2));
+        assert_eq!(watershed_polygon_index(&ids, u32::MAX), None);
+        assert_eq!(watershed_polygon_index(&ids, 99), None);
     }
 }

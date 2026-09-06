@@ -342,6 +342,67 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
     )
     .unwrap();
 
+    let overlay = serde_json::json!({
+        "id": "018f89ec-25fc-7816-8b47-6f80905f2869",
+        "name": "Kingdoms",
+        "order": 11,
+        "defaultVisible": true,
+        "locked": false,
+        "selector": {},
+        "style": {
+            "fill": "#b03030",
+            "fillOpacity": 0.35,
+            "stroke": "#5c1818",
+            "strokeWidth": 1.5,
+            "pointRadius": 5
+        },
+        "kind": "vector",
+        "overlayFamily": "political"
+    });
+    let parsed_overlay: LayerDefinition = serde_json::from_value(overlay.clone()).unwrap();
+    match parsed_overlay {
+        LayerDefinition::Vector(vector) => {
+            assert_eq!(
+                vector.overlay_family,
+                Some(crate::maps::OverlayFamily::Political)
+            );
+        }
+        _ => panic!("expected vector overlay layer"),
+    }
+    validate_field(
+        &connection,
+        &map_id,
+        "layers",
+        &serde_json::json!({"schemaVersion": 1, "layers": [overlay]}),
+    )
+    .unwrap();
+    assert!(validate_field(
+        &connection,
+        &map_id,
+        "layers",
+        &serde_json::json!({
+            "schemaVersion": 1,
+            "layers": [{
+                "id": "018f89ec-25fc-7816-8b47-6f80905f2870",
+                "name": "Kingdoms",
+                "order": 12,
+                "defaultVisible": true,
+                "locked": false,
+                "selector": {},
+                "style": {
+                    "fill": "#b03030",
+                    "fillOpacity": 0.35,
+                    "stroke": "#5c1818",
+                    "strokeWidth": 1.5,
+                    "pointRadius": 5
+                },
+                "kind": "vector",
+                "overlayFamily": "empire"
+            }]
+        }),
+    )
+    .is_err());
+
     let feature_id = "018f89ec-25fc-7816-8b47-6f80905f2801";
     assert!(anchor(&serde_json::json!({
         "kind": "provider-feature",

@@ -6,6 +6,7 @@ import {
   type MapLayerDefinition,
   type RasterLayerDefinition,
   type VectorFeature,
+  type OverlayFamily,
   type VectorLayerDefinition,
   type VectorLayerStyle,
 } from "../native-vector/types.ts";
@@ -294,7 +295,34 @@ export function setLayerOpacityCommand(layerId: string, opacity: number, previou
   };
 }
 
-export function newVectorLayer(name: string, style?: VectorLayerStyle, order?: number): VectorLayerDefinition {
+export function setLayerOverlayFamilyCommand(
+  layerId: string,
+  overlayFamily: OverlayFamily | null,
+  previous: OverlayFamily | null | undefined,
+): MapCommand {
+  return {
+    kind: "SetLayerOverlayFamily",
+    label: "Set overlay family",
+    apply(document) {
+      return withLayers(
+        document,
+        document.layers.map((layer) =>
+          layer.id === layerId && isVectorLayer(layer) ? { ...layer, overlayFamily } : layer,
+        ),
+      );
+    },
+    invert() {
+      return setLayerOverlayFamilyCommand(layerId, previous ?? null, overlayFamily);
+    },
+  };
+}
+
+export function newVectorLayer(
+  name: string,
+  style?: VectorLayerStyle,
+  order?: number,
+  overlayFamily?: OverlayFamily | null,
+): VectorLayerDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "vector",
@@ -312,6 +340,7 @@ export function newVectorLayer(name: string, style?: VectorLayerStyle, order?: n
       strokeWidth: 1.5,
       pointRadius: 5,
     },
+    ...(overlayFamily ? { overlayFamily } : {}),
   };
 }
 
@@ -339,6 +368,16 @@ export function buildCreateLayer(
   return { command: createLayerCommand(layer), layer };
 }
 
+export function buildCreateOverlayLayer(
+  document: MapDocument,
+  name: string,
+  overlayFamily: OverlayFamily,
+  style?: VectorLayerStyle,
+): { command: MapCommand; layer: VectorLayerDefinition } {
+  const layer = newVectorLayer(name, style, nextLayerOrder(document.layers), overlayFamily);
+  return { command: createLayerCommand(layer), layer };
+}
+
 export function buildCreateRasterLayer(
   document: MapDocument,
   name: string,
@@ -360,7 +399,12 @@ export function buildDuplicateLayer(
     return { command: duplicateLayerCommand(source.id, layer, []), layer };
   }
   if (!isVectorLayer(source)) return null;
-  const layer = newVectorLayer(`${source.name} copy`, { ...source.style }, nextLayerOrder(document.layers));
+  const layer = newVectorLayer(
+    `${source.name} copy`,
+    { ...source.style },
+    nextLayerOrder(document.layers),
+    source.overlayFamily ?? null,
+  );
   const copies = duplicateFeaturesOntoLayer(document, source.id, layer.id);
   return { command: duplicateLayerCommand(source.id, layer, copies), layer };
 }

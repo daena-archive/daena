@@ -12,6 +12,7 @@ import type {
   AtlasJobStatus,
   AtlasRenderCapabilities,
   AtlasRenderRequest,
+  AtlasRegionProposal,
   AtlasStudioInspectResult,
   AtlasStudioSessionRequest,
   AtlasStudioSessionStatus,
@@ -481,6 +482,15 @@ export const project = {
   atlasStudioInspect: (sessionToken: string, lonMicro: number, latMicro: number, zoom: number) =>
     invoke<AtlasStudioInspectResult>("project_atlas_studio_inspect", {
       input: { sessionToken, lonMicro, latMicro, zoom },
+    }),
+  atlasStudioProposeRegion: (
+    sessionToken: string,
+    lonMicro: number,
+    latMicro: number,
+    detector: "landmass" | "watershed",
+  ) =>
+    invoke<AtlasRegionProposal>("project_atlas_studio_propose_region", {
+      input: { sessionToken, lonMicro, latMicro, detector },
     }),
   readAssetBytes: (assetId: string) => invoke<number[]>("project_read_asset_bytes", { assetId }),
   readAssetBytesByPath: (path: string) => invoke<number[]>("project_read_asset_bytes_by_path", { path }),

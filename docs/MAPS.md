@@ -164,7 +164,10 @@ changes. Feature links additionally use stable Daena feature IDs.
 Layers are first-class Daena values with stable IDs and a canonical total
 order. A layer declares its kind, name, visibility, lock state, opacity, blend
 mode, and applicable style or raster asset. Array position alone is not layer
-authority.
+authority. Authored vector overlays may declare an optional overlay family
+(`political`, `cultural`, `religious`, `linguistic`, `economic`, `military`,
+or `custom`). Family is presentation and editing policy, not a second storage
+silo; geometry remains ordinary GeoJSON on the map entity.
 
 Each runtime vector layer has independent rendering, selection, visibility,
 locking, hit testing, and snapping behavior. Raster bytes remain project-owned
@@ -333,9 +336,11 @@ make it stale; they do not silently mix new labels or layers into existing
 tiles. Viewport, hover, selection, panel, session, and tile state are local UI
 state unless the user invokes a separately defined save action.
 
-Physical and Atlas-derived features remain read-only in Studio. Authored map
-features use the shared Maps authoring and persistence contracts rather than a
-Studio-specific mutation model.
+Physical and Atlas-derived features remain read-only in Studio. Authored overlay
+regions may be drawn, labeled, and refined in Studio, but they use the shared
+Maps authoring and persistence contracts rather than a Studio-specific mutation
+model. Live overlay vectors sit above baked tiles; saving still goes through
+the map edit revision path, and a later refresh captures overlays for export.
 
 ### Static Atlas rendering
 

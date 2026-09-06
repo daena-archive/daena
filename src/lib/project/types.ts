@@ -728,6 +728,12 @@ export interface AtlasStudioInspectResult {
   hits: AtlasStudioInspectHit[];
   surface: AtlasStudioSurfaceSample;
 }
+export interface AtlasRegionProposal {
+  detector: string;
+  label: string;
+  epochDependent: boolean;
+  geometry: { type: "Polygon"; coordinates: number[][][] } | { type: "MultiPolygon"; coordinates: number[][][][] };
+}
 export type { PlanetaryConfiguration, PlanetaryPreset };
 export interface PhysicalGenerationInput {
   seed: number;

@@ -4,6 +4,7 @@ import {
   featureLayerId,
   isVectorLayer,
   type MapBlendMode,
+  type OverlayFamily,
   type MapLayerDefinition,
   type RasterLayerDefinition,
   type VectorFeature,
@@ -245,6 +246,18 @@ function asStyle(value: unknown): VectorLayerStyle {
   };
 }
 
+function asOverlayFamily(value: unknown): OverlayFamily | null {
+  return value === "political" ||
+    value === "cultural" ||
+    value === "religious" ||
+    value === "linguistic" ||
+    value === "economic" ||
+    value === "military" ||
+    value === "custom"
+    ? value
+    : null;
+}
+
 function asBlendMode(value: unknown): MapBlendMode {
   return value === "multiply" || value === "screen" || value === "overlay" ? value : "normal";
 }
@@ -266,6 +279,7 @@ function parseVectorLayer(layer: Record<string, unknown>): VectorLayerDefinition
     blendMode: asBlendMode(layer.blendMode),
     selector: {},
     style: asStyle(layer.style),
+    overlayFamily: asOverlayFamily(layer.overlayFamily),
   };
 }
 

@@ -5,6 +5,7 @@ export const FREEHAND_SIMPLIFIED_POSITION_LIMIT = 2048;
 export const UNDO_STACK_SIZE = 50;
 
 export type VectorKind = "land" | "lake" | "region" | "route" | "marker" | "custom";
+export type OverlayFamily = "political" | "cultural" | "religious" | "linguistic" | "economic" | "military" | "custom";
 export type VectorDrawMode =
   | "static"
   | "select"
@@ -61,6 +62,7 @@ export type VectorLayerDefinition = {
   blendMode: MapBlendMode;
   selector: Record<string, never>;
   style: VectorLayerStyle;
+  overlayFamily?: OverlayFamily | null;
 };
 
 export type RasterLayerDefinition = {

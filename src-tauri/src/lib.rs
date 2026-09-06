@@ -633,6 +633,7 @@ pub fn run() {
             atlas_studio::project_atlas_studio_status,
             atlas_studio::project_atlas_studio_regenerate_cache,
             atlas_studio::project_atlas_studio_inspect,
+            atlas_studio::project_atlas_studio_propose_region,
             project_read_asset_bytes,
             project_read_asset_bytes_by_path,
             project_get_asset_by_path,

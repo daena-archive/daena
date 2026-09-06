@@ -502,9 +502,8 @@ onDestroy(() => {
       variant="studio"
       defaultCollapsed
       {layers}
-      onToggle={(index) => {
-        layers[index].enabled = !layers[index].enabled;
-        layers = layers;
+      onToggle={(id) => {
+        layers = layers.map((layer) => (layer.id === id ? { ...layer, enabled: !layer.enabled } : layer));
         notifyLayerSelection();
         schedulePreview();
       }} />

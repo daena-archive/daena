@@ -734,7 +734,7 @@ fn collect_overlays(
     let mut overlays = Vec::new();
     if let Some(authored_id) = descriptor.authored_source_asset_id.as_deref() {
         if let Ok(bytes) = project.asset_bytes(authored_id.to_string()) {
-            parse_geojson_overlays(&bytes, request, &mut overlays, diagnostics);
+            parse_geojson_overlays(&bytes, layers_value, request, &mut overlays, diagnostics);
         } else {
             diagnostics.push("authored source asset is missing".into());
         }
@@ -757,6 +757,7 @@ fn collect_overlays(
 
 fn parse_geojson_overlays(
     bytes: &[u8],
+    layers_value: &Value,
     request: &AtlasRenderRequest,
     overlays: &mut Vec<AuthoredFeature>,
     diagnostics: &mut Vec<String>,
@@ -798,12 +799,18 @@ fn parse_geojson_overlays(
         if path.is_empty() {
             continue;
         }
+        let geometry_type = feature
+            .pointer("/geometry/type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         overlays.push(AuthoredFeature {
             id,
-            layer_id,
+            layer_id: layer_id.clone(),
             kind: "vector".into(),
             label,
             path,
+            fill: overlay_fill(layers_value, &layer_id, feature),
+            closed: matches!(geometry_type, "Polygon" | "MultiPolygon"),
         });
         if overlays.len() >= MAX_OVERLAY_FEATURES {
             break;
@@ -876,8 +883,40 @@ fn collect_semantic_overlays(
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             path: vec![[lon as i32, lat as i32]],
+            fill: None,
+            closed: false,
         });
     }
+}
+
+fn overlay_fill(layers_value: &Value, layer_id: &str, feature: &Value) -> Option<[u8; 3]> {
+    if let Some(rgb) = feature
+        .pointer("/properties/daena/style/fill")
+        .and_then(Value::as_str)
+        .and_then(parse_hex_rgb)
+    {
+        return Some(rgb);
+    }
+    layers_value
+        .get("layers")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|layer| layer.get("id").and_then(Value::as_str) == Some(layer_id))
+        .and_then(|layer| layer.pointer("/style/fill").and_then(Value::as_str))
+        .and_then(parse_hex_rgb)
+}
+
+fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(hex, 16).ok()?;
+    Some([
+        ((n >> 16) & 0xff) as u8,
+        ((n >> 8) & 0xff) as u8,
+        (n & 0xff) as u8,
+    ])
 }
 
 fn collect_coordinates(geometry: Option<&Value>, path: &mut Vec<[i32; 2]>) {
@@ -902,7 +941,21 @@ fn collect_coordinates(geometry: Option<&Value>, path: &mut Vec<[i32; 2]>) {
                 }
             }
         }
-        Some("MultiLineString" | "MultiPolygon" | "GeometryCollection") => {
+        Some("MultiPolygon") => {
+            if let Some(polygons) = geometry.get("coordinates").and_then(Value::as_array) {
+                if let Some(ring) = polygons
+                    .first()
+                    .and_then(Value::as_array)
+                    .and_then(|rings| rings.first())
+                    .and_then(Value::as_array)
+                {
+                    for position in ring {
+                        push_position(Some(position), path);
+                    }
+                }
+            }
+        }
+        Some("MultiLineString" | "GeometryCollection") => {
             if let Some(geometries) = geometry.get("geometries").and_then(Value::as_array) {
                 for child in geometries {
                     collect_coordinates(Some(child), path);

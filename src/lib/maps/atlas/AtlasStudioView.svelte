@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onDestroy, onMount, tick } from "svelte";
+import { onDestroy, onMount, tick, untrack } from "svelte";
 import { X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
@@ -15,7 +15,9 @@ import Fill from "ol/style/Fill.js";
 import Stroke from "ol/style/Stroke.js";
 import Style from "ol/style/Style.js";
 import Text from "ol/style/Text.js";
+import Draw from "ol/interaction/Draw.js";
 import { defaults as defaultInteractions } from "ol/interaction/defaults.js";
+import GeoJSON from "ol/format/GeoJSON.js";
 import { fromLonLat, toLonLat, transformExtent } from "ol/proj.js";
 import "ol/ol.css";
 import {
@@ -39,6 +41,16 @@ import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
 import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
+import AtlasOverlayPanel from "./AtlasOverlayPanel.svelte";
+import { simplifyFreehandGeometry } from "../native-vector/geometry.ts";
+import { daenaProperties, type VectorFeature } from "../native-vector/types.ts";
+import {
+  overlayFamilyLabel,
+  overlayFeaturesForLayer,
+  overlayLayerFamily,
+  type AtlasOverlayAuthoring,
+  type OverlayDrawTool,
+} from "./overlay-family.ts";
 
 const EPOCH_MIN = -100_000;
 const EPOCH_MAX = 100_000;
@@ -59,12 +71,14 @@ const VIEWER_ROLE_ALIASES: Record<string, string[]> = {
 let {
   mapId,
   viewerLayers = [],
+  overlayAuthoring = null,
   stage = $bindable("Opening Atlas Studio…"),
   onexport,
   onready,
 }: {
   mapId: string;
   viewerLayers?: Pick<MapLayerDefinition, "id" | "name" | "defaultVisible">[];
+  overlayAuthoring?: AtlasOverlayAuthoring | null;
   stage?: string;
   onexport?: (request: AtlasRenderRequest) => void;
   onready?: (api: {
@@ -173,6 +187,14 @@ let map: Map | null = null;
 let tileSource: XYZ | null = null;
 let findPlaceSource: VectorSource | null = null;
 let findPlaceLayer: VectorLayer | null = null;
+let overlaySource: VectorSource | null = null;
+let overlayLayer: VectorLayer | null = null;
+let overlayDraw: Draw | null = null;
+let overlayTool = $state<OverlayDrawTool>("select");
+let overlaySelectedId = $state<string | null>(null);
+let overlayDetectHint = $state("");
+let overlayDetectBusy = false;
+let overlaySyncing = false;
 let mapLifecycle: MapLifecycle | undefined;
 let opening = false;
 let reopenPending = false;
@@ -183,6 +205,14 @@ let statusTimer: ReturnType<typeof setInterval> | undefined;
 let prefetchTimer: ReturnType<typeof setTimeout> | undefined;
 let mountedControls = false;
 const renderCompletion = createAtlasRenderCompletionTracker();
+const overlayGeoJson = new GeoJSON({
+  dataProjection: "EPSG:4326",
+  featureProjection: "EPSG:3857",
+});
+const overlayGeoJsonOptions = {
+  dataProjection: "EPSG:4326",
+  featureProjection: "EPSG:3857",
+} as const;
 
 function deviceScale() {
   // CPU-rendered 2x tiles cost four times as much for a small interactive
@@ -333,6 +363,37 @@ function styleLabel(id: string) {
   return atlasStyleLabel(id);
 }
 
+const studioLayerBook = $derived([
+  {
+    id: "overlays",
+    label: "Overlays",
+    layers:
+      overlayAuthoring?.layers.map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        enabled: layer.defaultVisible,
+        meta: overlayFamilyLabel(overlayLayerFamily(layer)),
+        overlay: true,
+      })) ?? [],
+  },
+  {
+    id: "physical",
+    label: "Physical",
+    layers: layers.map((layer) => ({
+      id: layer.id,
+      name: layer.name,
+      enabled: layer.enabled,
+    })),
+  },
+]);
+
+function atlasLayerIds() {
+  return [
+    ...layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    ...(overlayAuthoring?.layers.filter((layer) => layer.defaultVisible).map((layer) => layer.id) ?? []),
+  ];
+}
+
 function studioRequest() {
   return {
     schemaVersion: 1,
@@ -342,7 +403,7 @@ function studioRequest() {
     level: "detailed" as const,
     variant: 0,
     styleId,
-    activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    activeLayerIds: atlasLayerIds(),
     projection: "web-mercator",
     timeKind,
     authoredYear: timeKind === "calendar-year" ? authoredYear : null,
@@ -369,7 +430,7 @@ async function loadCapabilities() {
     authoredYear = capabilities.calendarBinding.calendarReferenceYear;
   }
   layers = capabilities.layers
-    .filter((layer) => layer.id !== "frame")
+    .filter((layer) => layer.id !== "frame" && layer.role !== "vector")
     .map((layer) => ({
       id: layer.id,
       name: viewerLayerName(layer.id) ?? layer.name,
@@ -479,7 +540,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   try {
     map = new Map({
       target: container,
-      layers: [new TileLayer({ source: tileSource, preload: 1 }), findPlaceOverlayLayer()],
+      layers: [new TileLayer({ source: tileSource, preload: 1 }), authoredOverlayLayer(), findPlaceOverlayLayer()],
       view: new View({
         projection: "EPSG:3857",
         center: fromLonLat(initial?.center ?? [0, 20]),
@@ -516,6 +577,21 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       inspectAt(longitude, latitude);
       return;
     }
+    if (overlayTool === "landmass" || overlayTool === "watershed") {
+      void acceptDetectedRegion(longitude, latitude, overlayTool);
+      return;
+    }
+    if (overlayTool === "select") {
+      const regionId = map?.forEachFeatureAtPixel(event.pixel, (feature) => {
+        const id = feature.getId();
+        return typeof id === "string" ? id : null;
+      });
+      if (typeof regionId === "string") {
+        overlaySelectedId = regionId;
+        return;
+      }
+    }
+    if (overlayTool === "freehand" || overlayTool === "polygon") return;
     pickedSample = null;
     setPicked(longitude, latitude);
     inspectAt(longitude, latitude, true);
@@ -601,7 +677,7 @@ function worldExportRequest(): AtlasRenderRequest {
       northLatMicro: 90_000_000,
     },
     unlockAspect: false,
-    activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    activeLayerIds: atlasLayerIds(),
     timeKind,
     authoredYear: timeKind === "calendar-year" ? authoredYear : null,
     bindingRevision: null,
@@ -637,7 +713,7 @@ function currentViewExport(): AtlasRenderRequest | null {
       northLatMicro: north,
     },
     unlockAspect: true,
-    activeLayerIds: layers.filter((layer) => layer.enabled).map((layer) => layer.id),
+    activeLayerIds: atlasLayerIds(),
     timeKind,
     authoredYear: timeKind === "calendar-year" ? authoredYear : null,
     bindingRevision: null,
@@ -883,8 +959,28 @@ function onViewportKey(event: KeyboardEvent) {
       host?.focus();
       return;
     }
+    if (overlayTool !== "select") {
+      overlayTool = "select";
+      overlayDetectHint = "";
+      return;
+    }
+    if (overlaySelectedId) {
+      overlaySelectedId = null;
+      return;
+    }
     clearPicked();
     hits = [];
+  } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    if (event.shiftKey) overlayAuthoring?.redo();
+    else overlayAuthoring?.undo();
+  } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    void overlayAuthoring?.save();
+  } else if ((event.key === "Delete" || event.key === "Backspace") && overlaySelectedId) {
+    event.preventDefault();
+    overlayAuthoring?.deleteFeatures([overlaySelectedId]);
+    overlaySelectedId = null;
   } else if (event.key === "?" || event.key.toLowerCase() === "h") {
     if (!event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -897,6 +993,213 @@ function setOffsetYears(next: number) {
   offsetYears = clampEpoch(next, EPOCH_STEP);
   clearFindPlace();
   scheduleSession();
+}
+
+function hexToRgba(hex: string, alpha: number) {
+  const raw = hex.replace("#", "");
+  const value =
+    raw.length === 3
+      ? raw
+          .split("")
+          .map((part) => part + part)
+          .join("")
+      : raw;
+  const n = Number.parseInt(value, 16);
+  if (!Number.isFinite(n)) return `rgba(143, 111, 209, ${alpha})`;
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+function authoredOverlayStyle(feature: Feature) {
+  const id = String(feature.getId() ?? "");
+  const vector = overlayAuthoring?.features.find((item) => item.id === id);
+  const layer = overlayAuthoring?.layers.find((item) => item.id === vector?.properties.daena.layerId);
+  const override = vector?.properties.daena.style ?? {};
+  const fill = override.fill ?? layer?.style.fill ?? "#8f6fd1";
+  const stroke = override.stroke ?? layer?.style.stroke ?? "#5e4893";
+  const fillOpacity = (layer?.opacity ?? 1) * (override.fillOpacity ?? layer?.style.fillOpacity ?? 0.35);
+  const strokeWidth = override.strokeWidth ?? layer?.style.strokeWidth ?? 1.5;
+  const selected = id === overlaySelectedId;
+  const name = vector?.properties.daena.name;
+  return new Style({
+    fill: new Fill({ color: hexToRgba(fill, selected ? Math.min(1, fillOpacity + 0.18) : fillOpacity) }),
+    stroke: new Stroke({
+      color: selected ? "#f3d39a" : hexToRgba(stroke, override.strokeOpacity ?? layer?.style.strokeOpacity ?? 1),
+      width: selected ? Math.max(2.4, strokeWidth) : strokeWidth,
+    }),
+    text: name
+      ? new Text({
+          text: name,
+          font: "600 12px system-ui",
+          fill: new Fill({ color: "#f7f0e5" }),
+          stroke: new Stroke({ color: "#0d1b2a", width: 3 }),
+        })
+      : undefined,
+  });
+}
+
+function readOlOverlayFeature(feature: VectorFeature): Feature | null {
+  try {
+    const read = overlayGeoJson.readFeature(
+      { type: "Feature", id: feature.id, geometry: feature.geometry, properties: {} },
+      overlayGeoJsonOptions,
+    );
+    const olFeature = (Array.isArray(read) ? read[0] : read) as Feature | undefined;
+    if (!olFeature?.getGeometry()) return null;
+    olFeature.setId(feature.id);
+    return olFeature;
+  } catch {
+    return null;
+  }
+}
+
+function paintOverlayFeature(feature: VectorFeature) {
+  if (!overlaySource) return;
+  const existing = overlaySource.getFeatureById(feature.id);
+  if (existing) overlaySource.removeFeature(existing);
+  const olFeature = readOlOverlayFeature(feature);
+  if (olFeature) overlaySource.addFeature(olFeature);
+  overlayLayer?.changed();
+}
+
+function authoredOverlayLayer() {
+  overlaySource = new VectorSource();
+  overlayLayer = new VectorLayer({
+    source: overlaySource,
+    zIndex: 10,
+    style: (feature) => authoredOverlayStyle(feature as Feature),
+  });
+  syncAuthoredOverlays();
+  return overlayLayer;
+}
+
+function syncAuthoredOverlays() {
+  if (!overlaySource || overlaySyncing) return;
+  overlaySyncing = true;
+  overlaySource.clear();
+  const authoring = overlayAuthoring;
+  if (authoring) {
+    for (const layer of authoring.layers) {
+      if (!layer.defaultVisible) continue;
+      for (const feature of overlayFeaturesForLayer(authoring.features, layer.id)) {
+        if (feature.geometry.type !== "Polygon" && feature.geometry.type !== "MultiPolygon") continue;
+        const olFeature = readOlOverlayFeature(feature);
+        if (olFeature) overlaySource.addFeature(olFeature);
+      }
+    }
+  }
+  overlaySyncing = false;
+  overlayLayer?.changed();
+}
+
+function clearOverlayDraw() {
+  if (overlayDraw && map) map.removeInteraction(overlayDraw);
+  overlayDraw = null;
+}
+
+function vectorGeometryFromOl(feature: Feature): VectorFeature["geometry"] | null {
+  const written = overlayGeoJson.writeFeatureObject(feature, overlayGeoJsonOptions);
+  const geometry = written.geometry;
+  if (
+    !geometry ||
+    (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon" && geometry.type !== "LineString")
+  ) {
+    return null;
+  }
+  return geometry as VectorFeature["geometry"];
+}
+
+function commitDrawnFeature(olFeature: Feature) {
+  const authoring = overlayAuthoring;
+  const layerId = authoring?.activeLayerId;
+  if (!authoring || !layerId) {
+    overlaySource?.removeFeature(olFeature);
+    overlayDetectHint = "Create an overlay first.";
+    return;
+  }
+  let geometry = vectorGeometryFromOl(olFeature);
+  if (!geometry) {
+    overlaySource?.removeFeature(olFeature);
+    overlayDetectHint = "Could not keep that shape.";
+    return;
+  }
+  if (overlayTool === "freehand") {
+    const simplified = simplifyFreehandGeometry(geometry, mapZoom());
+    if ("error" in simplified) {
+      overlaySource?.removeFeature(olFeature);
+      overlayDetectHint =
+        simplified.error === "vector.limit.exceeded" ? "That drawing is too detailed." : "Could not close that shape.";
+      return;
+    }
+    geometry = simplified;
+  }
+  if (geometry.type !== "Polygon" && geometry.type !== "MultiPolygon") {
+    overlaySource?.removeFeature(olFeature);
+    overlayDetectHint = "Could not close that shape.";
+    return;
+  }
+  const feature: VectorFeature = {
+    type: "Feature",
+    id: crypto.randomUUID(),
+    properties: daenaProperties(layerId, "region", null),
+    geometry,
+  };
+  overlaySource?.removeFeature(olFeature);
+  overlaySelectedId = feature.id;
+  overlayTool = "select";
+  overlayDetectHint = "Region added. Set its color, then save.";
+  authoring.addFeature(feature);
+  paintOverlayFeature(feature);
+}
+
+function syncOverlayDraw() {
+  clearOverlayDraw();
+  if (!map || !overlaySource || (overlayTool !== "freehand" && overlayTool !== "polygon")) return;
+  const layer = overlayAuthoring?.layers.find((item) => item.id === overlayAuthoring.activeLayerId);
+  if (!layer || layer.locked || !layer.defaultVisible) return;
+  overlayDraw = new Draw({
+    source: overlaySource,
+    type: "Polygon",
+    freehand: overlayTool === "freehand",
+  });
+  overlayDraw.on("drawend", (event) => {
+    commitDrawnFeature(event.feature);
+  });
+  map.addInteraction(overlayDraw);
+}
+
+async function acceptDetectedRegion(longitude: number, latitude: number, detector: "landmass" | "watershed") {
+  const token = session?.sessionToken;
+  const authoring = overlayAuthoring;
+  const layerId = authoring?.activeLayerId;
+  if (!token || !authoring || !layerId) {
+    overlayDetectHint = "Create an overlay first.";
+    return;
+  }
+  if (overlayDetectBusy) return;
+  overlayDetectBusy = true;
+  overlayDetectHint = detector === "landmass" ? "Selecting landmass…" : "Selecting watershed…";
+  try {
+    const proposal = await project.atlasStudioProposeRegion(token, toMicro(longitude), toMicro(latitude), detector);
+    const feature: VectorFeature = {
+      type: "Feature",
+      id: crypto.randomUUID(),
+      properties: daenaProperties(layerId, "region", proposal.label),
+      geometry: proposal.geometry,
+    };
+    feature.properties.daena.custom = {
+      detector: proposal.detector,
+      epochDependent: proposal.epochDependent,
+      capturedOffsetYears: offsetYears,
+    };
+    overlaySelectedId = feature.id;
+    overlayDetectHint = `${proposal.label} added. Set its color, then save.`;
+    authoring.addFeature(feature);
+    paintOverlayFeature(feature);
+  } catch (cause) {
+    overlayDetectHint = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    overlayDetectBusy = false;
+  }
 }
 
 function candidatePoint(candidate: FindPlaceCandidate): [number, number] {
@@ -1068,6 +1371,25 @@ $effect(() => {
 });
 
 $effect(() => {
+  overlayAuthoring?.layers.map((layer) => `${layer.id}:${layer.defaultVisible}`).join();
+  overlayAuthoring?.features.map((feature) => feature.id).join();
+  untrack(() => syncAuthoredOverlays());
+});
+
+$effect(() => {
+  overlaySelectedId;
+  overlayAuthoring?.layers;
+  overlayAuthoring?.features;
+  untrack(() => overlayLayer?.changed());
+});
+
+$effect(() => {
+  overlayTool;
+  overlayAuthoring?.activeLayerId;
+  untrack(() => syncOverlayDraw());
+});
+
+$effect(() => {
   const node = host;
   if (!node) return;
   const handler = (event: KeyboardEvent) => onViewportKey(event);
@@ -1084,10 +1406,13 @@ onDestroy(() => {
   if (prefetchTimer) clearTimeout(prefetchTimer);
   mapLifecycle?.dispose();
   mapLifecycle = undefined;
+  clearOverlayDraw();
   map = null;
   tileSource = null;
   findPlaceLayer = null;
   findPlaceSource = null;
+  overlayLayer = null;
+  overlaySource = null;
   if (session) {
     void project.atlasStudioClose(session.sessionToken).catch(() => undefined);
   }
@@ -1166,12 +1491,25 @@ onDestroy(() => {
         onclear={clearFindPlace} />
       <MapLayerVisibilityList
         variant="studio"
-        {layers}
-        onToggle={(index) => {
-          layers[index].enabled = !layers[index].enabled;
-          layers = layers;
+        groups={studioLayerBook}
+        activeId={overlayAuthoring?.activeLayerId ?? null}
+        onSelect={(id) => overlayAuthoring?.setActiveLayer(id)}
+        onToggle={(id) => {
+          const overlay = overlayAuthoring?.layers.find((layer) => layer.id === id);
+          if (overlay && overlayAuthoring) {
+            overlayAuthoring.setVisible(id, !overlay.defaultVisible);
+            return;
+          }
+          layers = layers.map((layer) => (layer.id === id ? { ...layer, enabled: !layer.enabled } : layer));
           scheduleSession();
         }} />
+      {#if overlayAuthoring}
+        <AtlasOverlayPanel
+          authoring={overlayAuthoring}
+          bind:tool={overlayTool}
+          bind:selectedFeatureId={overlaySelectedId}
+          bind:detectHint={overlayDetectHint} />
+      {/if}
       <section class="place" aria-label="Place" aria-live="polite">
         <div class="place-head">
           <strong>Place</strong>
@@ -1221,7 +1559,9 @@ onDestroy(() => {
             <li>+ / − zoom</li>
             <li>Home or 0 resets the view</li>
             <li>Enter inspects the map center</li>
-            <li>Escape clears inspection</li>
+            <li>Escape clears inspection or drawing</li>
+            <li>⌘/Ctrl+Z undo overlay edits</li>
+            <li>⌘/Ctrl+S save overlay edits</li>
           </ul>
         </section>
       {/if}

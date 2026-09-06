@@ -16,6 +16,7 @@ export type MapCommandKind =
   | "SetLayerLocked"
   | "SetLayerOpacity"
   | "SetLayerStyle"
+  | "SetLayerOverlayFamily"
   | "AddBackground"
   | "ReplaceBackground"
   | "RemoveBackground"
@@ -67,6 +68,8 @@ export {
   layersFieldValue,
   newRasterLayer,
   newVectorLayer,
+  buildCreateOverlayLayer,
+  setLayerOverlayFamilyCommand,
   renameLayerCommand,
   reorderLayerCommand,
   reorderLayersByIdsCommand,

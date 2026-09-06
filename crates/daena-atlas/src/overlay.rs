@@ -30,6 +30,10 @@ pub struct AuthoredFeature {
     pub kind: String,
     pub label: Option<String>,
     pub path: Vec<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 3]>,
+    #[serde(default)]
+    pub closed: bool,
 }
 
 #[must_use]
@@ -217,6 +221,103 @@ fn draw_flow_arrows(
         y = y.saturating_add(step_y);
         if step_y == 0 {
             break;
+        }
+    }
+}
+
+#[must_use]
+pub fn polygon_from_micro_rings(rings: &[Vec<[i32; 2]>]) -> Option<serde_json::Value> {
+    let rings: Vec<Vec<Vec<f64>>> = rings
+        .iter()
+        .filter(|ring| ring.len() >= 3)
+        .map(|ring| {
+            let mut coords: Vec<Vec<f64>> = ring
+                .iter()
+                .map(|point| {
+                    vec![
+                        f64::from(point[0]) / 1_000_000.0,
+                        f64::from(point[1]) / 1_000_000.0,
+                    ]
+                })
+                .collect();
+            if coords.first() != coords.last() {
+                if let Some(first) = coords.first().cloned() {
+                    coords.push(first);
+                }
+            }
+            coords
+        })
+        .filter(|ring| ring.len() >= 4)
+        .collect();
+    match rings.as_slice() {
+        [] => None,
+        [ring] => Some(serde_json::json!({ "type": "Polygon", "coordinates": [ring] })),
+        _ => {
+            let polygons: Vec<Vec<Vec<Vec<f64>>>> =
+                rings.into_iter().map(|ring| vec![ring]).collect();
+            Some(serde_json::json!({ "type": "MultiPolygon", "coordinates": polygons }))
+        }
+    }
+}
+
+pub(crate) fn fill_closed_path(
+    buffer: &mut [u8],
+    view: ProjectedView,
+    path: &[[i32; 2]],
+    rgb: [u8; 3],
+    alpha_ppm: u32,
+) {
+    let mut pts = Vec::new();
+    for point in path {
+        let Some(xy) = project_point(view, point[0], point[1]) else {
+            continue;
+        };
+        if pts.last() != Some(&xy) {
+            pts.push(xy);
+        }
+    }
+    if pts.len() >= 2 && pts.first() == pts.last() {
+        pts.pop();
+    }
+    if pts.len() < 3 {
+        return;
+    }
+    let width = view.width;
+    let height = view.height;
+    let min_y = pts.iter().map(|point| point.1).min().unwrap_or(0).max(0);
+    let max_y = pts
+        .iter()
+        .map(|point| point.1)
+        .max()
+        .unwrap_or(0)
+        .min(height.saturating_sub(1) as i32);
+    for y in min_y..=max_y {
+        let mut xs = Vec::new();
+        for index in 0..pts.len() {
+            let (x0, y0) = pts[index];
+            let (x1, y1) = pts[(index + 1) % pts.len()];
+            if y0 == y1 {
+                continue;
+            }
+            let crosses = (y0 <= y && y1 > y) || (y1 <= y && y0 > y);
+            if !crosses {
+                continue;
+            }
+            let dy = i64::from(y1) - i64::from(y0);
+            xs.push(
+                x0 + ((i64::from(x1) - i64::from(x0)) * (i64::from(y) - i64::from(y0)) / dy) as i32,
+            );
+        }
+        xs.sort_unstable();
+        for pair in xs.chunks(2) {
+            if pair.len() < 2 {
+                continue;
+            }
+            let start = pair[0].max(0);
+            let end = pair[1].min(width.saturating_sub(1) as i32);
+            for x in start..=end {
+                put_pixel(buffer, width, height, x, y, rgb, alpha_ppm);
+            }
         }
     }
 }
@@ -442,11 +543,14 @@ pub fn composite_overlays(
         {
             continue;
         }
-        let color = if feature.kind == "semantic" {
+        let color = feature.fill.unwrap_or(if feature.kind == "semantic" {
             style.label_ink
         } else {
             style.political
-        };
+        });
+        if feature.closed && feature.path.len() >= 4 {
+            fill_closed_path(buffer, view, &feature.path, color, 380_000);
+        }
         match feature.path.len() {
             0 => {}
             1 => {
@@ -471,6 +575,8 @@ pub fn composite_overlays(
                     kind: "derived-tributary".into(),
                     label: Some(format!("T{}", tributary.source_cell)),
                     path: vec![*first],
+                    fill: None,
+                    closed: false,
                 });
             }
         }
@@ -860,5 +966,60 @@ mod tests {
             .filter(|px| px[2] > px[0] && px[2] > 40)
             .count();
         assert!(blueish > 10, "easterly arrows should be blue: {blueish}");
+    }
+
+    #[test]
+    fn closed_overlay_fill_paints_interior() {
+        let view = ProjectedView {
+            projection: crate::projection::AtlasProjection::Equirectangular,
+            extent: crate::projection::AtlasExtent::world(),
+            width: 64,
+            height: 32,
+        };
+        let mut buffer = vec![0_u8; 64 * 32 * 4];
+        fill_closed_path(
+            &mut buffer,
+            view,
+            &[
+                [-20_000_000, -10_000_000],
+                [20_000_000, -10_000_000],
+                [20_000_000, 10_000_000],
+                [-20_000_000, 10_000_000],
+                [-20_000_000, -10_000_000],
+            ],
+            [200, 40, 40],
+            1_000_000,
+        );
+        let painted = buffer
+            .chunks(4)
+            .filter(|px| px[0] > 100 && px[1] < 80)
+            .count();
+        assert!(
+            painted > 40,
+            "closed overlay should fill interior: {painted}"
+        );
+    }
+
+    #[test]
+    fn polygon_from_micro_rings_closes_and_scales() {
+        let geometry =
+            polygon_from_micro_rings(&[vec![[0, 0], [1_000_000, 0], [1_000_000, 1_000_000]]])
+                .unwrap();
+        assert_eq!(geometry["type"], "Polygon");
+        let ring = geometry["coordinates"][0].as_array().unwrap();
+        assert_eq!(ring.len(), 4);
+        assert_eq!(ring[0], ring[3]);
+        assert_eq!(ring[1], serde_json::json!([1.0, 0.0]));
+    }
+
+    #[test]
+    fn polygon_from_micro_rings_emits_multipolygon_for_disjoint_rings() {
+        let geometry = polygon_from_micro_rings(&[
+            vec![[0, 0], [1_000_000, 0], [1_000_000, 1_000_000]],
+            vec![[2_000_000, 0], [3_000_000, 0], [3_000_000, 1_000_000]],
+        ])
+        .unwrap();
+        assert_eq!(geometry["type"], "MultiPolygon");
+        assert_eq!(geometry["coordinates"].as_array().unwrap().len(), 2);
     }
 }

@@ -436,6 +436,18 @@ pub struct RasterLayerDefinition {
     pub blend_mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayFamily {
+    Political,
+    Cultural,
+    Religious,
+    Linguistic,
+    Economic,
+    Military,
+    Custom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VectorLayerDefinition {
@@ -452,6 +464,12 @@ pub struct VectorLayerDefinition {
     pub selector: Value,
     pub style: Value,
     pub kind: VectorLayerKind,
+    #[serde(
+        rename = "overlayFamily",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub overlay_family: Option<OverlayFamily>,
 }
 
 fn default_opacity() -> f64 {
@@ -1315,6 +1333,12 @@ pub fn validate_field(
             } else if let LayerDefinition::Vector(vector_layer) = &layer {
                 if vector_layer.selector != serde_json::json!({}) {
                     return Err(invalid("vector layers must have an empty selector"));
+                }
+                if physical_map
+                    && physical_layer_by_id.contains_key(layer.id())
+                    && vector_layer.overlay_family.is_some()
+                {
+                    return Err(invalid("physical layer definitions are immutable"));
                 }
                 vector::validate_vector_style(&vector_layer.style)?;
                 if !vector_layer.opacity.is_finite()

@@ -105,6 +105,17 @@ import { EPOCH_MAX, EPOCH_MIN, EPOCH_STEP, clampEpoch, formatEpoch, parseEpochYe
 import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physical/raster";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
+import {
+  OVERLAY_FAMILIES,
+  isOverlayLayer,
+  layerBookGroups,
+  nextOverlayLayerName,
+  overlayFamilyLabel,
+  overlayFamilyStyle,
+  reorderLayerBookIds,
+  type AtlasOverlayAuthoring,
+  type OverlayFamily,
+} from "../atlas/overlay-family.ts";
 import DetachPhysicalLayerDialog from "../physical/DetachPhysicalLayerDialog.svelte";
 import FindPlacePanel from "../physical/FindPlacePanel.svelte";
 import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
@@ -123,7 +134,9 @@ import {
   authoredToNormalized,
   backgroundsFromDescriptor,
   buildCreateLayer,
+  buildCreateOverlayLayer,
   buildCreateRasterLayer,
+  createFeatureCommand,
   buildDuplicateLayer,
   buildRecoveryPackage,
   calibrateImageToWorld,
@@ -287,6 +300,7 @@ let bufferDistance = $state("10");
 let simplifyTolerance = $state("0.5");
 let operationNotice = $state("");
 let layersCollapsed = $state(false);
+let overlayCreateFamily = $state<OverlayFamily>("political");
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
 let epochYearsAbs = $state(0);
@@ -308,9 +322,41 @@ let pinsReady = $state(false);
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
 
-const listedLayers = $derived(
-  [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id)),
+const overlayBook = $derived(layerBookGroups(layers));
+const overlayLayers = $derived(overlayBook.overlays);
+const physicalBookLayers = $derived(overlayBook.base);
+const listedLayers = $derived([...overlayLayers, ...physicalBookLayers]);
+const overlayFeatures = $derived(
+  draft.features.filter((feature) => overlayLayers.some((layer) => layer.id === feature.properties.daena.layerId)),
 );
+const overlayAuthoring = $derived.by((): AtlasOverlayAuthoring | null => {
+  if (!commandStack) return null;
+  return {
+    layers: overlayLayers,
+    features: overlayFeatures,
+    activeLayerId: overlayLayers.some((layer) => layer.id === activeLayerId)
+      ? activeLayerId
+      : (overlayLayers[0]?.id ?? null),
+    dirty,
+    canUndo,
+    canRedo,
+    busy,
+    createLayer: createOverlayLayer,
+    setActiveLayer: setOverlayActiveLayer,
+    renameLayer: renameOverlayLayer,
+    deleteLayer: deleteOverlayLayer,
+    setVisible: setOverlayVisible,
+    updateLayerStyle: updateOverlayLayerStyle,
+    updateLayerOpacity: setOverlayOpacity,
+    addFeature: addOverlayFeature,
+    renameFeature: renameOverlayFeature,
+    updateFeatureStyle: updateOverlayFeatureStyle,
+    deleteFeatures: deleteOverlayFeatures,
+    undo: undoEdit,
+    redo: redoEdit,
+    save,
+  };
+});
 const listedRasters = $derived(
   commandStack ? listedBackgrounds(commandStack.document) : backgroundsFromDescriptor(mapField?.value),
 );
@@ -1652,6 +1698,97 @@ function switchLayer(layerId: string) {
   editor?.setMode(tool);
 }
 
+function createOverlayLayer(family: OverlayFamily) {
+  if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
+  const built = buildCreateOverlayLayer(
+    commandStack.document,
+    nextOverlayLayerName(layers, family),
+    family,
+    overlayFamilyStyle(family),
+  );
+  dispatchCommand(built.command);
+  switchLayer(built.layer.id);
+}
+
+function setOverlayActiveLayer(id: string) {
+  if (!overlayLayers.some((layer) => layer.id === id)) return;
+  activeLayerId = id;
+}
+
+function renameOverlayLayer(id: string, name: string) {
+  const layer = overlayLayers.find((item) => item.id === id);
+  if (!layer || !commandStack) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === layer.name) return;
+  dispatchCommand(renameLayerCommand(layer.id, trimmed, layer.name));
+}
+
+function deleteOverlayLayer(id: string) {
+  const layer = overlayLayers.find((item) => item.id === id);
+  if (!layer || !commandStack || layer.locked) return;
+  const removedFeatures = commandStack.document.collection.features.filter(
+    (feature) => featureLayerId(feature) === layer.id,
+  );
+  dispatchCommand(deleteLayerCommand(layer.id, layer, removedFeatures));
+  if (activeLayerId === id) {
+    activeLayerId = overlayLayers.find((item) => item.id !== id)?.id ?? listedLayers[0]?.id ?? null;
+  }
+}
+
+function setOverlayVisible(id: string, visible: boolean) {
+  const layer = overlayLayers.find((item) => item.id === id);
+  if (!layer || !commandStack) return;
+  dispatchCommand(setLayerVisibilityCommand(layer.id, visible, layer.defaultVisible));
+}
+
+function updateOverlayLayerStyle(id: string, patch: Partial<VectorLayerDefinition["style"]>) {
+  const layer = overlayLayers.find((item) => item.id === id);
+  if (!layer) return;
+  updateStyle(layer, patch);
+}
+
+function setOverlayOpacity(id: string, opacity: number) {
+  const layer = overlayLayers.find((item) => item.id === id);
+  if (!layer) return;
+  setLayerOpacity(layer, opacity);
+}
+
+function addOverlayFeature(feature: VectorFeature) {
+  dispatchCommand(createFeatureCommand(feature));
+}
+
+function updateOverlayFeatureStyle(id: string, patch: Partial<VectorLayerDefinition["style"]>) {
+  if (!commandStack) return;
+  const feature = commandStack.document.collection.features.find((item) => item.id === id);
+  if (!feature) return;
+  const previous = selectedMetadataSnapshot(feature);
+  const next = { ...previous, style: { ...(feature.properties.daena.style ?? {}), ...patch } };
+  dispatchCommand(
+    setFeaturesMetadataByIdCommand(
+      { [id]: next },
+      { [id]: previous },
+      "Edit region style",
+      `overlay-style:${id}:${Object.keys(patch).join(",")}`,
+    ),
+  );
+}
+
+function renameOverlayFeature(id: string, name: string | null) {
+  if (!commandStack) return;
+  const feature = commandStack.document.collection.features.find((item) => item.id === id);
+  if (!feature) return;
+  const previous = featureName(feature);
+  if (previous === name) return;
+  dispatchCommand(setFeatureMetadataCommand(id, name, previous));
+}
+
+function deleteOverlayFeatures(ids: string[]) {
+  if (!commandStack) return;
+  const command = captureDeleteFeatures(commandStack.document, ids);
+  if (!command) return;
+  dispatchCommand(command);
+}
+
 function addLayer() {
   if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
   const built = buildCreateLayer(commandStack.document, `Layer ${layers.filter(isVectorLayer).length + 1}`);
@@ -1794,21 +1931,17 @@ function focusOnMount(node: HTMLInputElement) {
 
 function moveLayer(layer: MapLayerDefinition, direction: -1 | 1) {
   if ((physicalMap && immutablePhysicalLayerIds.has(layer.id)) || !commandStack) return;
-  const index = listedLayers.findIndex((item) => item.id === layer.id);
-  const neighbor = listedLayers[index + direction];
+  const book = isOverlayLayer(layer) ? overlayLayers : physicalBookLayers;
+  const index = book.findIndex((item) => item.id === layer.id);
+  const neighbor = book[index + direction];
   if (!neighbor) return;
   dispatchCommand(reorderLayerCommand(layer.id, neighbor.order, layer.order, neighbor.id, layer.order, neighbor.order));
 }
 
 function dropLayer(sourceId: string, targetId: string) {
   if (!commandStack || sourceId === targetId) return;
-  const display = [...listedLayers];
-  const from = display.findIndex((item) => item.id === sourceId);
-  const to = display.findIndex((item) => item.id === targetId);
-  if (from < 0 || to < 0) return;
-  const [moved] = display.splice(from, 1);
-  display.splice(to, 0, moved);
-  const nextIds = [...display].reverse().map((item) => item.id);
+  const nextIds = reorderLayerBookIds(layers, sourceId, targetId);
+  if (!nextIds) return;
   const previousIds = [...layers]
     .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
     .map((item) => item.id);
@@ -2480,11 +2613,6 @@ onMount(() => {
                     Hazard layers show relative generated rates; they are not real-world predictions.
                   </p>
                 {/if}
-                {#if listedLayers.length === 0}
-                  <p class="empty-note">
-                    Add a vector layer to draw points, lines, and regions. Base geography stays read-only.
-                  </p>
-                {/if}
                 <div class="quick-add-row">
                   <button
                     type="button"
@@ -2521,301 +2649,356 @@ onMount(() => {
                   </div>
                 {/if}
 
-                <div class="layer-list" role="list">
-                  {#each listedLayers as layer (layer.id)}
-                    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-                    <div
-                      class="layer-card"
-                      class:active={layer.id === activeLayerId}
-                      class:locked={layer.locked}
-                      class:immutable={immutablePhysicalLayerIds.has(layer.id)}
-                      role="listitem"
-                      draggable={!immutablePhysicalLayerIds.has(layer.id)}
-                      ondragstart={() => (draggingLayerId = layer.id)}
-                      ondragover={(event) => event.preventDefault()}
-                      ondrop={(event) => {
-                        event.preventDefault();
-                        if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
-                        draggingLayerId = null;
-                      }}>
-                      <div class="layer-card-main">
-                        <span class="drag-handle" aria-hidden="true" title="Drag to reorder">
-                          <GripVertical size={12} strokeWidth={1.8} />
-                        </span>
-                        <span class="layer-kind-icon" aria-hidden="true">
-                          {#if isRasterLayer(layer)}<ImageIcon size={13} strokeWidth={1.8} />{:else}<Layers
-                              size={13}
-                              strokeWidth={1.8} />{/if}
-                        </span>
+                {#snippet layerBookCard(layer: MapLayerDefinition)}
+                  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                  <div
+                    class="layer-card"
+                    class:active={layer.id === activeLayerId}
+                    class:locked={layer.locked}
+                    class:immutable={immutablePhysicalLayerIds.has(layer.id)}
+                    role="listitem"
+                    draggable={!immutablePhysicalLayerIds.has(layer.id)}
+                    ondragstart={() => (draggingLayerId = layer.id)}
+                    ondragover={(event) => event.preventDefault()}
+                    ondrop={(event) => {
+                      event.preventDefault();
+                      if (draggingLayerId) dropLayer(draggingLayerId, layer.id);
+                      draggingLayerId = null;
+                    }}>
+                    <div class="layer-card-main">
+                      <span class="drag-handle" aria-hidden="true" title="Drag to reorder">
+                        <GripVertical size={12} strokeWidth={1.8} />
+                      </span>
+                      <span class="layer-kind-icon" aria-hidden="true">
+                        {#if isRasterLayer(layer)}
+                          <ImageIcon size={13} strokeWidth={1.8} />
+                        {:else if isOverlayLayer(layer)}
+                          <Hexagon size={13} strokeWidth={1.8} />
+                        {:else}
+                          <Layers size={13} strokeWidth={1.8} />
+                        {/if}
+                      </span>
+                      <button
+                        class="layer-name"
+                        type="button"
+                        aria-pressed={layer.id === activeLayerId}
+                        onkeydown={(event) => {
+                          if (event.target === event.currentTarget) onLayerKey(event, layer);
+                        }}
+                        onclick={() => switchLayer(layer.id)}>
+                        {#if renamingId === layer.id}
+                          <input
+                            value={layer.name}
+                            aria-label="Layer name"
+                            use:focusOnMount
+                            onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
+                            onkeydown={(event) => {
+                              if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
+                              if (event.key === "Escape") renamingId = null;
+                            }} />
+                        {:else}
+                          <span class="layer-name-text">{layer.name}</span>
+                          <span class="layer-meta"
+                            >{layer.kind === "vector" && layer.overlayFamily
+                              ? overlayFamilyLabel(layer.overlayFamily)
+                              : layer.kind} · {isRasterLayer(layer)
+                              ? "raster"
+                              : `${featureCountForLayer(draft, layer.id)} feats`}{layer.locked
+                              ? " · locked"
+                              : ""}{!layer.defaultVisible ? " · hidden" : ""}</span>
+                        {/if}
+                      </button>
+                      <div class="layer-card-actions">
                         <button
-                          class="layer-name"
                           type="button"
-                          aria-pressed={layer.id === activeLayerId}
-                          onkeydown={(event) => {
-                            if (event.target === event.currentTarget) onLayerKey(event, layer);
-                          }}
-                          onclick={() => switchLayer(layer.id)}>
-                          {#if renamingId === layer.id}
-                            <input
-                              value={layer.name}
-                              aria-label="Layer name"
-                              use:focusOnMount
-                              onblur={(event) => void renameLayer(layer, event.currentTarget.value)}
-                              onkeydown={(event) => {
-                                if (event.key === "Enter") void renameLayer(layer, event.currentTarget.value);
-                                if (event.key === "Escape") renamingId = null;
-                              }} />
-                          {:else}
-                            <span class="layer-name-text">{layer.name}</span>
-                            <span class="layer-meta"
-                              >{layer.kind} · {isRasterLayer(layer)
-                                ? "raster"
-                                : `${featureCountForLayer(draft, layer.id)} feats`}{layer.locked
-                                ? " · locked"
-                                : ""}{!layer.defaultVisible ? " · hidden" : ""}</span>
-                          {/if}
-                        </button>
-                        <div class="layer-card-actions">
+                          class="mini-icon"
+                          class:off={!layer.defaultVisible}
+                          aria-pressed={layer.defaultVisible}
+                          aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                          title={layer.defaultVisible ? "Hide" : "Show"}
+                          onclick={() => void toggleVisible(layer)}
+                          >{#if layer.defaultVisible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff
+                              size={14}
+                              strokeWidth={1.8} />{/if}</button>
+                        {#if !immutablePhysicalLayerIds.has(layer.id)}
                           <button
                             type="button"
                             class="mini-icon"
-                            class:off={!layer.defaultVisible}
-                            aria-pressed={layer.defaultVisible}
-                            aria-label={layer.defaultVisible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                            title={layer.defaultVisible ? "Hide" : "Show"}
-                            onclick={() => void toggleVisible(layer)}
-                            >{#if layer.defaultVisible}<Eye size={14} strokeWidth={1.8} />{:else}<EyeOff
+                            class:off={!layer.locked}
+                            aria-pressed={layer.locked}
+                            aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                            title={layer.locked ? "Unlock" : "Lock"}
+                            onclick={() => void toggleLock(layer)}
+                            >{#if layer.locked}<Lock size={14} strokeWidth={1.8} />{:else}<LockOpen
                                 size={14}
                                 strokeWidth={1.8} />{/if}</button>
-                          {#if !immutablePhysicalLayerIds.has(layer.id)}
-                            <button
-                              type="button"
-                              class="mini-icon"
-                              class:off={!layer.locked}
-                              aria-pressed={layer.locked}
-                              aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                              title={layer.locked ? "Unlock" : "Lock"}
-                              onclick={() => void toggleLock(layer)}
-                              >{#if layer.locked}<Lock size={14} strokeWidth={1.8} />{:else}<LockOpen
-                                  size={14}
-                                  strokeWidth={1.8} />{/if}</button>
-                          {/if}
-                          {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
-                            <button
-                              type="button"
-                              class="mini-icon"
-                              aria-label={`Detach ${layer.name} for editing`}
-                              title="Detach for editing"
-                              disabled={busy ||
-                                epochBusy ||
-                                physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
-                              onclick={() => openDetachDialog(layer)}><Scissors size={14} strokeWidth={1.8} /></button>
-                          {/if}
+                        {/if}
+                        {#if physicalMap && isVectorLayer(layer) && isPhysicalDerivedLayerId(layer.id)}
                           <button
                             type="button"
-                            class="mini-icon customize-btn"
-                            class:active={openCustomizeLayerId === layer.id}
-                            aria-label={`Customize ${layer.name}`}
-                            aria-expanded={openCustomizeLayerId === layer.id}
-                            title="Customize"
-                            onclick={(event) => {
-                              event.stopPropagation();
-                              openCustomizeLayerId = openCustomizeLayerId === layer.id ? null : layer.id;
-                            }}><SlidersHorizontal size={14} strokeWidth={1.8} /></button>
-                        </div>
-                      </div>
-
-                      {#if !immutablePhysicalLayerIds.has(layer.id)}
-                        <div class="layer-card-toolbar">
-                          <button
-                            type="button"
-                            class="toolbar-btn"
-                            aria-label={`Rename ${layer.name}`}
-                            title="Rename"
-                            onclick={() => (renamingId = layer.id)}><Pencil size={12} strokeWidth={1.8} /></button>
-                          <button
-                            type="button"
-                            class="toolbar-btn"
-                            aria-label={`Move ${layer.name} up`}
-                            title="Move up"
-                            disabled={busy}
-                            onclick={() => void moveLayer(layer, -1)}><ChevronUp size={12} strokeWidth={1.8} /></button>
-                          <button
-                            type="button"
-                            class="toolbar-btn"
-                            aria-label={`Move ${layer.name} down`}
-                            title="Move down"
-                            disabled={busy}
-                            onclick={() => void moveLayer(layer, 1)}
-                            ><ChevronDown size={12} strokeWidth={1.8} /></button>
-                          <button
-                            type="button"
-                            class="toolbar-btn"
-                            aria-label={`Duplicate ${layer.name}`}
-                            title="Duplicate"
+                            class="mini-icon"
+                            aria-label={`Detach ${layer.name} for editing`}
+                            title="Detach for editing"
                             disabled={busy ||
-                              (isRasterLayer(layer)
-                                ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
-                                : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
-                            onclick={() => void duplicateLayer(layer)}><Copy size={12} strokeWidth={1.8} /></button>
-                          <button
-                            type="button"
-                            class="toolbar-btn danger"
-                            aria-label={`Remove ${layer.name}`}
-                            title="Remove"
-                            onclick={() => void removeLayer(layer)}><Trash2 size={12} strokeWidth={1.8} /></button>
-                        </div>
-                      {/if}
-
-                      {#if openCustomizeLayerId === layer.id}
-                        <div class="layer-customize">
-                          <div class="opacity-group">
-                            <span class="customize-label">Opacity</span>
-                            <label class="detail-range">
-                              <span>Layer</span>
-                              <input
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.05"
-                                value={layer.opacity}
-                                aria-label={`${layer.name} layer opacity`}
-                                oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
-                              <em>{Math.round(layer.opacity * 100)}%</em>
-                            </label>
-                            <label class="detail-range">
-                              <span>Fill</span>
-                              <input
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.05"
-                                value={layer.style.fillOpacity}
-                                aria-label={`${layer.name} fill opacity`}
-                                oninput={(event) =>
-                                  void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
-                              <em>{Math.round(layer.style.fillOpacity * 100)}%</em>
-                            </label>
-                            <label class="detail-range">
-                              <span>Stroke</span>
-                              <input
-                                type="range"
-                                min="0"
-                                max="1"
-                                step="0.05"
-                                value={layer.style.strokeOpacity ?? 1}
-                                aria-label={`${layer.name} stroke opacity`}
-                                oninput={(event) =>
-                                  void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })} />
-                              <em>{Math.round((layer.style.strokeOpacity ?? 1) * 100)}%</em>
-                            </label>
-                          </div>
-                          {#if isVectorLayer(layer)}
-                            <details class="layer-advanced" open>
-                              <summary>
-                                <span>Advanced style</span>
-                                <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
-                              </summary>
-                              <div class="detail-grid">
-                                <label
-                                  ><span>Fill</span><input
-                                    type="color"
-                                    value={layer.style.fill}
-                                    aria-label={`${layer.name} fill`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, { fill: event.currentTarget.value })} /></label>
-                                <label
-                                  ><span>Stroke</span><input
-                                    type="color"
-                                    value={layer.style.stroke}
-                                    aria-label={`${layer.name} stroke`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, { stroke: event.currentTarget.value })} /></label>
-                                <label
-                                  ><span>Stroke width</span><input
-                                    type="number"
-                                    min="0"
-                                    max="32"
-                                    step="0.25"
-                                    value={layer.style.strokeWidth}
-                                    aria-label={`${layer.name} stroke width`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, {
-                                        strokeWidth: Number(event.currentTarget.value),
-                                      })} /></label>
-                                <label
-                                  ><span>Dash</span><input
-                                    type="text"
-                                    value={(layer.style.strokeDash ?? []).join(", ")}
-                                    placeholder="solid"
-                                    aria-label={`${layer.name} stroke dash`}
-                                    onchange={(event) => {
-                                      const values = event.currentTarget.value
-                                        .split(",")
-                                        .map((v) => Number(v.trim()))
-                                        .filter(Number.isFinite);
-                                      void updateStyle(layer, { strokeDash: values.slice(0, 16) });
-                                    }} /></label>
-                                <label
-                                  ><span>Point radius</span><input
-                                    type="number"
-                                    min="1"
-                                    max="64"
-                                    step="1"
-                                    value={layer.style.pointRadius}
-                                    aria-label={`${layer.name} point radius`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, {
-                                        pointRadius: Number(event.currentTarget.value),
-                                      })} /></label>
-                                <label
-                                  ><span>Marker</span>
-                                  <select
-                                    value={layer.style.icon ?? "circle"}
-                                    aria-label={`${layer.name} marker icon`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, {
-                                        icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
-                                      })}>
-                                    <option value="circle">Circle</option><option value="square">Square</option><option
-                                      value="diamond">Diamond</option
-                                    ><option value="triangle">Triangle</option><option value="star">Star</option>
-                                  </select>
-                                </label>
-                                <label
-                                  ><span>Marker size</span><input
-                                    type="number"
-                                    min="4"
-                                    max="256"
-                                    step="1"
-                                    value={layer.style.iconSize ?? 20}
-                                    aria-label={`${layer.name} marker size`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, {
-                                        iconSize: Number(event.currentTarget.value),
-                                      })} /></label>
-                                <label
-                                  ><span>Label size</span><input
-                                    type="number"
-                                    min="6"
-                                    max="96"
-                                    step="1"
-                                    value={layer.style.label?.size ?? 12}
-                                    aria-label={`${layer.name} label size`}
-                                    onchange={(event) =>
-                                      void updateStyle(layer, {
-                                        label: {
-                                          ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!),
-                                          size: Number(event.currentTarget.value),
-                                        },
-                                      })} /></label>
-                              </div>
-                            </details>
-                          {/if}
-                        </div>
-                      {/if}
+                              epochBusy ||
+                              physicalFeaturesForLayer(derivedPhysical, layer.id).length === 0}
+                            onclick={() => openDetachDialog(layer)}><Scissors size={14} strokeWidth={1.8} /></button>
+                        {/if}
+                        <button
+                          type="button"
+                          class="mini-icon customize-btn"
+                          class:active={openCustomizeLayerId === layer.id}
+                          aria-label={`Customize ${layer.name}`}
+                          aria-expanded={openCustomizeLayerId === layer.id}
+                          title="Customize"
+                          onclick={(event) => {
+                            event.stopPropagation();
+                            openCustomizeLayerId = openCustomizeLayerId === layer.id ? null : layer.id;
+                          }}><SlidersHorizontal size={14} strokeWidth={1.8} /></button>
+                      </div>
                     </div>
-                  {/each}
+
+                    {#if !immutablePhysicalLayerIds.has(layer.id)}
+                      <div class="layer-card-toolbar">
+                        <button
+                          type="button"
+                          class="toolbar-btn"
+                          aria-label={`Rename ${layer.name}`}
+                          title="Rename"
+                          onclick={() => (renamingId = layer.id)}><Pencil size={12} strokeWidth={1.8} /></button>
+                        <button
+                          type="button"
+                          class="toolbar-btn"
+                          aria-label={`Move ${layer.name} up`}
+                          title="Move up"
+                          disabled={busy}
+                          onclick={() => void moveLayer(layer, -1)}><ChevronUp size={12} strokeWidth={1.8} /></button>
+                        <button
+                          type="button"
+                          class="toolbar-btn"
+                          aria-label={`Move ${layer.name} down`}
+                          title="Move down"
+                          disabled={busy}
+                          onclick={() => void moveLayer(layer, 1)}><ChevronDown size={12} strokeWidth={1.8} /></button>
+                        <button
+                          type="button"
+                          class="toolbar-btn"
+                          aria-label={`Duplicate ${layer.name}`}
+                          title="Duplicate"
+                          disabled={busy ||
+                            (isRasterLayer(layer)
+                              ? rasterLayerCount >= IMAGE_MAX_RASTER_LAYERS
+                              : layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS)}
+                          onclick={() => void duplicateLayer(layer)}><Copy size={12} strokeWidth={1.8} /></button>
+                        <button
+                          type="button"
+                          class="toolbar-btn danger"
+                          aria-label={`Remove ${layer.name}`}
+                          title="Remove"
+                          onclick={() => void removeLayer(layer)}><Trash2 size={12} strokeWidth={1.8} /></button>
+                      </div>
+                    {/if}
+
+                    {#if openCustomizeLayerId === layer.id}
+                      <div class="layer-customize">
+                        <div class="opacity-group">
+                          <span class="customize-label">Opacity</span>
+                          <label class="detail-range">
+                            <span>Layer</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={layer.opacity}
+                              aria-label={`${layer.name} layer opacity`}
+                              oninput={(event) => void setLayerOpacity(layer, Number(event.currentTarget.value))} />
+                            <em>{Math.round(layer.opacity * 100)}%</em>
+                          </label>
+                          <label class="detail-range">
+                            <span>Fill</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={layer.style.fillOpacity}
+                              aria-label={`${layer.name} fill opacity`}
+                              oninput={(event) =>
+                                void updateStyle(layer, { fillOpacity: Number(event.currentTarget.value) })} />
+                            <em>{Math.round(layer.style.fillOpacity * 100)}%</em>
+                          </label>
+                          <label class="detail-range">
+                            <span>Stroke</span>
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={layer.style.strokeOpacity ?? 1}
+                              aria-label={`${layer.name} stroke opacity`}
+                              oninput={(event) =>
+                                void updateStyle(layer, { strokeOpacity: Number(event.currentTarget.value) })} />
+                            <em>{Math.round((layer.style.strokeOpacity ?? 1) * 100)}%</em>
+                          </label>
+                        </div>
+                        {#if isVectorLayer(layer)}
+                          <details class="layer-advanced" open>
+                            <summary>
+                              <span>Advanced style</span>
+                              <ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" />
+                            </summary>
+                            <div class="detail-grid">
+                              <label
+                                ><span>Fill</span><input
+                                  type="color"
+                                  value={layer.style.fill}
+                                  aria-label={`${layer.name} fill`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, { fill: event.currentTarget.value })} /></label>
+                              <label
+                                ><span>Stroke</span><input
+                                  type="color"
+                                  value={layer.style.stroke}
+                                  aria-label={`${layer.name} stroke`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, { stroke: event.currentTarget.value })} /></label>
+                              <label
+                                ><span>Stroke width</span><input
+                                  type="number"
+                                  min="0"
+                                  max="32"
+                                  step="0.25"
+                                  value={layer.style.strokeWidth}
+                                  aria-label={`${layer.name} stroke width`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, {
+                                      strokeWidth: Number(event.currentTarget.value),
+                                    })} /></label>
+                              <label
+                                ><span>Dash</span><input
+                                  type="text"
+                                  value={(layer.style.strokeDash ?? []).join(", ")}
+                                  placeholder="solid"
+                                  aria-label={`${layer.name} stroke dash`}
+                                  onchange={(event) => {
+                                    const values = event.currentTarget.value
+                                      .split(",")
+                                      .map((v) => Number(v.trim()))
+                                      .filter(Number.isFinite);
+                                    void updateStyle(layer, { strokeDash: values.slice(0, 16) });
+                                  }} /></label>
+                              <label
+                                ><span>Point radius</span><input
+                                  type="number"
+                                  min="1"
+                                  max="64"
+                                  step="1"
+                                  value={layer.style.pointRadius}
+                                  aria-label={`${layer.name} point radius`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, {
+                                      pointRadius: Number(event.currentTarget.value),
+                                    })} /></label>
+                              <label
+                                ><span>Marker</span>
+                                <select
+                                  value={layer.style.icon ?? "circle"}
+                                  aria-label={`${layer.name} marker icon`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, {
+                                      icon: event.currentTarget.value === "circle" ? null : event.currentTarget.value,
+                                    })}>
+                                  <option value="circle">Circle</option><option value="square">Square</option><option
+                                    value="diamond">Diamond</option
+                                  ><option value="triangle">Triangle</option><option value="star">Star</option>
+                                </select>
+                              </label>
+                              <label
+                                ><span>Marker size</span><input
+                                  type="number"
+                                  min="4"
+                                  max="256"
+                                  step="1"
+                                  value={layer.style.iconSize ?? 20}
+                                  aria-label={`${layer.name} marker size`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, {
+                                      iconSize: Number(event.currentTarget.value),
+                                    })} /></label>
+                              <label
+                                ><span>Label size</span><input
+                                  type="number"
+                                  min="6"
+                                  max="96"
+                                  step="1"
+                                  value={layer.style.label?.size ?? 12}
+                                  aria-label={`${layer.name} label size`}
+                                  onchange={(event) =>
+                                    void updateStyle(layer, {
+                                      label: {
+                                        ...(layer.style.label ?? DEFAULT_VECTOR_LAYER_STYLE.label!),
+                                        size: Number(event.currentTarget.value),
+                                      },
+                                    })} /></label>
+                            </div>
+                          </details>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/snippet}
+
+                <div class="layer-book">
+                  <section class="layer-book-group" aria-label="Overlays">
+                    <div class="layer-book-head">
+                      <strong>Overlays</strong>
+                      <span class="section-count">{overlayLayers.length}</span>
+                    </div>
+                    <div class="layer-book-create">
+                      <select
+                        bind:value={overlayCreateFamily}
+                        aria-label="Overlay family"
+                        disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}>
+                        {#each OVERLAY_FAMILIES as family}
+                          <option value={family}>{overlayFamilyLabel(family)}</option>
+                        {/each}
+                      </select>
+                      <button
+                        type="button"
+                        class="quiet-button small"
+                        disabled={busy || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS}
+                        onclick={() => createOverlayLayer(overlayCreateFamily)}>
+                        New overlay
+                      </button>
+                    </div>
+                    {#if overlayLayers.length === 0}
+                      <p class="empty-note">Create an overlay to draw political, cultural, or other regions.</p>
+                    {:else}
+                      <div class="layer-list" role="list">
+                        {#each overlayLayers as layer (layer.id)}
+                          {@render layerBookCard(layer)}
+                        {/each}
+                      </div>
+                    {/if}
+                  </section>
+                  <section class="layer-book-group" aria-label={physicalMap ? "Physical" : "Base"}>
+                    <div class="layer-book-head">
+                      <strong>{physicalMap ? "Physical" : "Base"}</strong>
+                      <span class="section-count">{physicalBookLayers.length}</span>
+                    </div>
+                    {#if physicalBookLayers.length === 0}
+                      <p class="empty-note">
+                        Add a vector layer to draw points, lines, and regions. Base geography stays read-only.
+                      </p>
+                    {:else}
+                      <div class="layer-list" role="list">
+                        {#each physicalBookLayers as layer (layer.id)}
+                          {@render layerBookCard(layer)}
+                        {/each}
+                      </div>
+                    {/if}
+                  </section>
                 </div>
               </div>
             </details>
@@ -3492,6 +3675,7 @@ onMount(() => {
           <AtlasStudioView
             {mapId}
             viewerLayers={layers}
+            {overlayAuthoring}
             bind:stage={studioStage}
             onready={(api) => (studioApi = api)}
             onexport={(request) => {
@@ -4009,6 +4193,45 @@ onMount(() => {
   color: var(--ink-faint);
   font-size: 10px;
   line-height: 1.3;
+}
+
+.layer-book {
+  display: grid;
+  gap: 14px;
+}
+.layer-book-group {
+  display: grid;
+  gap: 6px;
+}
+.layer-book-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.layer-book-head strong {
+  flex: 1;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.layer-book-create {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.layer-book-create select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line, #e4e1d8);
+  border-radius: 7px;
+  background: var(--surface, #fffefa);
+  color: var(--ink);
+  font-size: 11px;
+  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
 }
 
 /* layer list */

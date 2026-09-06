@@ -813,63 +813,35 @@ function statLine(candidate: FindPlaceCandidate) {
   {/if}
 {/snippet}
 
-<details class="find-place" class:studio={variant === "studio"} class:map-section-group={variant !== "studio"}>
-  <summary>
-    {#if variant !== "studio"}
+{#if variant === "studio"}
+  <section class="find-place studio" aria-label="Find Place">
+    <div class="section-body">
+      {@render body()}
+    </div>
+  </section>
+{:else}
+  <details class="find-place map-section-group">
+    <summary>
       <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
-    {/if}
-    <strong>Find Place</strong>
-    {#if result}
-      <span class="section-count">{result.candidateCount}</span>
-    {/if}
-  </summary>
-  <div class="section-body">
-    {@render body()}
-  </div>
-</details>
+      <strong>Find Place</strong>
+      {#if result}
+        <span class="section-count">{result.candidateCount}</span>
+      {/if}
+    </summary>
+    <div class="section-body">
+      {@render body()}
+    </div>
+  </details>
+{/if}
 
 <style>
 .find-place.studio {
   display: grid;
   gap: 0;
 }
-.find-place.studio > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  list-style: none;
-  font-size: 12px;
-}
-.find-place.studio > summary::-webkit-details-marker {
-  display: none;
-}
-.find-place.studio > summary::before {
-  content: "";
-  width: 0.4em;
-  height: 0.4em;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(-45deg);
-  opacity: 0.7;
-}
-.find-place.studio[open] > summary::before {
-  transform: rotate(45deg);
-}
-.find-place.studio .section-count {
-  margin-left: auto;
-  min-width: 20px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  font-size: 10px;
-  font-weight: 700;
-  text-align: center;
-}
 .find-place.studio .section-body {
   display: grid;
   gap: 8px;
-  padding-top: 8px;
 }
 .find-mode,
 .quick-add-row,

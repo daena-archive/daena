@@ -46,97 +46,102 @@ function hint() {
 }
 </script>
 
-<details
-  class="route-suggest"
-  class:studio={variant === "studio"}
-  class:map-section-group={variant !== "studio"}
-  open={arming || searching || Boolean(result) || Boolean(error)}>
-  <summary>
-    {#if variant !== "studio"}
-      <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
-    {/if}
-    <strong>Suggested routes</strong>
-    {#if result}
-      <span class="section-count">{result.suggestionCount}</span>
-    {/if}
-  </summary>
-  <div class="section-body">
-    <p class="section-note">{hint()}</p>
+{#snippet body()}
+  <p class="section-note">{hint()}</p>
+  <div class="quick-add-row">
+    <button type="button" class="primary-button small" disabled={disabled || searching} onclick={onarm}>
+      {arming ? (startPicked ? "Waiting for end…" : "Waiting for start…") : "Pick start and end"}
+    </button>
+    <button
+      type="button"
+      class="quiet-button small"
+      disabled={disabled || (!arming && !searching && !result && !error)}
+      onclick={oncancel}>Cancel</button>
+  </div>
+  {#if error}
+    <p class="section-note route-error">{error}</p>
+  {/if}
+  {#if result && result.suggestions.length === 0}
+    <p class="empty-note">No land path between those points.</p>
+  {:else if result}
+    <ul class="route-results">
+      {#each result.suggestions as suggestion (suggestion.id)}
+        <li>
+          <button
+            type="button"
+            class="route-candidate"
+            class:selected={selectedId === suggestion.id}
+            onclick={() => onselect(suggestion)}>
+            <strong>{suggestion.label}</strong>
+            <span>{km(suggestion.lengthM)} · {suggestion.climbM.toLocaleString("en-US")} m climb</span>
+            <span>{suggestion.tradeoff}</span>
+            {#each suggestion.reasons.slice(1) as reason}
+              <span>{reason}</span>
+            {/each}
+          </button>
+        </li>
+      {/each}
+    </ul>
     <div class="quick-add-row">
-      <button type="button" class="primary-button small" disabled={disabled || searching} onclick={onarm}>
-        {arming ? (startPicked ? "Waiting for end…" : "Waiting for start…") : "Pick start and end"}
-      </button>
       <button
         type="button"
-        class="quiet-button small"
-        disabled={disabled || (!arming && !searching && !result && !error)}
-        onclick={oncancel}>Cancel</button>
+        class="primary-button small"
+        disabled={disabled || !selected}
+        onclick={() => selected && onaccept(selected)}>Accept as road</button>
     </div>
-    {#if error}
-      <p class="section-note route-error">{error}</p>
-    {/if}
-    {#if result && result.suggestions.length === 0}
-      <p class="empty-note">No land path between those points.</p>
-    {:else if result}
-      <ul class="route-results">
-        {#each result.suggestions as suggestion (suggestion.id)}
-          <li>
-            <button
-              type="button"
-              class="route-candidate"
-              class:selected={selectedId === suggestion.id}
-              onclick={() => onselect(suggestion)}>
-              <strong>{suggestion.label}</strong>
-              <span>{km(suggestion.lengthM)} · {suggestion.climbM.toLocaleString("en-US")} m climb</span>
-              <span>{suggestion.tradeoff}</span>
-              {#each suggestion.reasons.slice(1) as reason}
-                <span>{reason}</span>
-              {/each}
-            </button>
-          </li>
-        {/each}
-      </ul>
-      <div class="quick-add-row">
-        <button
-          type="button"
-          class="primary-button small"
-          disabled={disabled || !selected}
-          onclick={() => selected && onaccept(selected)}>Accept as road</button>
-      </div>
-    {/if}
-  </div>
-</details>
+  {/if}
+{/snippet}
+
+{#if variant === "studio"}
+  <section class="route-suggest studio" aria-label="Suggested routes">
+    <div class="route-head">
+      <strong>Routes</strong>
+      {#if result}
+        <span class="section-count">{result.suggestionCount}</span>
+      {/if}
+    </div>
+    <div class="section-body">
+      {@render body()}
+    </div>
+  </section>
+{:else}
+  <details class="route-suggest map-section-group" open={arming || searching || Boolean(result) || Boolean(error)}>
+    <summary>
+      <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
+      <strong>Suggested routes</strong>
+      {#if result}
+        <span class="section-count">{result.suggestionCount}</span>
+      {/if}
+    </summary>
+    <div class="section-body">
+      {@render body()}
+    </div>
+  </details>
+{/if}
 
 <style>
 .route-suggest.studio {
   display: grid;
-  gap: 0;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 3%);
 }
-.route-suggest.studio > summary {
+.route-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-  list-style: none;
-  font-size: 12px;
 }
-.route-suggest.studio > summary::-webkit-details-marker {
-  display: none;
-}
-.route-suggest.studio > summary::before {
-  content: "";
-  width: 0.4em;
-  height: 0.4em;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: rotate(-45deg);
-  opacity: 0.7;
-}
-.route-suggest.studio[open] > summary::before {
-  transform: rotate(45deg);
+.route-head strong {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d5ab6c;
 }
 .route-suggest.studio .section-count {
-  margin-left: auto;
   min-width: 20px;
   padding: 2px 6px;
   border-radius: 999px;
@@ -148,7 +153,6 @@ function hint() {
 .route-suggest.studio .section-body {
   display: grid;
   gap: 8px;
-  padding-top: 8px;
 }
 .quick-add-row {
   display: flex;

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onDestroy, onMount, tick, untrack } from "svelte";
-import { X } from "@lucide/svelte";
+import { Info, Layers, Pencil, Search, X } from "@lucide/svelte";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
@@ -53,7 +53,13 @@ import type {
   RouteSuggestResult,
 } from "$lib/project/types";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
-import { PHYSICAL_COORDINATE_SPACE, authoredToNormalized } from "../editor/coordinate-space";
+import {
+  PHYSICAL_COORDINATE_SPACE,
+  authoredToNormalized,
+  mapPositions,
+  wrapGeographicPosition,
+  wrapLongitude,
+} from "../editor/coordinate-space";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
 import { createAtlasRenderCompletionTracker } from "./render-completion.ts";
 import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
@@ -212,6 +218,14 @@ let pickPanel = $state<HTMLDivElement | null>(null);
 let placeHeading = $state<HTMLElement | null>(null);
 let confirmCache = $state(false);
 let showHelp = $state(false);
+type SidebarPane = "layers" | "find" | "draw" | "inspect";
+let sidebarPane = $state<SidebarPane>("layers");
+const sidebarPanes: Array<{ id: SidebarPane; label: string }> = [
+  { id: "layers", label: "Layers" },
+  { id: "find", label: "Find" },
+  { id: "draw", label: "Draw" },
+  { id: "inspect", label: "Inspect" },
+];
 let viewZoom = $state(1);
 let worldMinZoom = $state(0);
 let findPlaceResult = $state<FindPlaceResult | null>(null);
@@ -298,7 +312,7 @@ function clampEpoch(offset: number, step = 1) {
 }
 
 function wrapLon(value: number) {
-  return ((((value + 180) % 360) + 360) % 360) - 180;
+  return wrapLongitude(value);
 }
 
 function fillWidthZoom(width: number, tileSize: number) {
@@ -902,6 +916,66 @@ function formatDivergence(ppm: number) {
   return "Neutral";
 }
 
+function formatFreeze(value: AtlasStudioSurfaceSample["freeze"]) {
+  if (value === "permanent") return "Permanent";
+  if (value === "seasonal") return "Seasonal";
+  return "None";
+}
+
+function formatShare(ppm: number) {
+  return `${Math.round(ppm / 10_000)}%`;
+}
+
+const SIDEBAR_MIN = 260;
+const SIDEBAR_MAX = 560;
+const SIDEBAR_DEFAULT = 312;
+const SIDEBAR_STORAGE_KEY = "daena:atlas-sidebar-width";
+
+function readSidebarWidth() {
+  try {
+    const raw = Number(localStorage.getItem(SIDEBAR_STORAGE_KEY));
+    if (!Number.isFinite(raw)) return SIDEBAR_DEFAULT;
+    return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(raw)));
+  } catch {
+    return SIDEBAR_DEFAULT;
+  }
+}
+
+let sidebarWidth = $state(readSidebarWidth());
+
+function setSidebarWidth(next: number) {
+  sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(next)));
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth));
+  } catch {
+    /* ignore quota / private-mode failures */
+  }
+}
+
+function startSidebarResize(event: PointerEvent) {
+  const handle = event.currentTarget;
+  if (!(handle instanceof HTMLElement) || event.button !== 0) return;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  const originX = event.clientX;
+  const originWidth = sidebarWidth;
+  const onMove = (move: PointerEvent) => {
+    setSidebarWidth(originWidth + (move.clientX - originX));
+  };
+  const onUp = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+}
+
+function onSidebarResizeKey(event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  event.preventDefault();
+  setSidebarWidth(sidebarWidth + (event.key === "ArrowRight" ? 16 : -16));
+}
+
 function inspectAt(lng: number, lat: number, pin = false) {
   const token = session?.sessionToken;
   if (!token || !map) return;
@@ -1083,9 +1157,22 @@ function onViewportKey(event: KeyboardEvent) {
   } else if (event.key === "?" || event.key.toLowerCase() === "h") {
     if (!event.metaKey && !event.ctrlKey) {
       event.preventDefault();
-      showHelp = !showHelp;
+      toggleStudioHelp();
     }
   }
+}
+
+function toggleStudioHelp() {
+  showHelp = !showHelp;
+  if (showHelp) sidebarPane = "inspect";
+}
+
+function sidebarPaneBadge(id: SidebarPane) {
+  if (id === "find") {
+    return (findPlaceResult?.candidateCount ?? 0) + (routeResult?.suggestionCount ?? 0);
+  }
+  if (id === "inspect") return hits.length;
+  return 0;
 }
 
 function setOffsetYears(next: number) {
@@ -1196,6 +1283,15 @@ function clearOverlayDraw() {
   overlayDraw = null;
 }
 
+function overlayAuthoredPosition(position: number[]): number[] {
+  let x = position[0];
+  let y = position[1];
+  if (Math.abs(x) > 540 || Math.abs(y) > 90) {
+    [x, y] = toLonLat([x, y]);
+  }
+  return wrapGeographicPosition([x, y]);
+}
+
 function vectorGeometryFromOl(feature: Feature): VectorFeature["geometry"] | null {
   const written = overlayGeoJson.writeFeatureObject(feature, overlayGeoJsonOptions);
   const geometry = written.geometry;
@@ -1205,7 +1301,7 @@ function vectorGeometryFromOl(feature: Feature): VectorFeature["geometry"] | nul
   ) {
     return null;
   }
-  return geometry as VectorFeature["geometry"];
+  return mapPositions(geometry as VectorFeature["geometry"], overlayAuthoredPosition);
 }
 
 function commitDrawnFeature(olFeature: Feature) {
@@ -1849,9 +1945,7 @@ onMount(() => {
     requestRegenerate: () => {
       confirmCache = true;
     },
-    toggleHelp: () => {
-      showHelp = !showHelp;
-    },
+    toggleHelp: () => toggleStudioHelp(),
     exportView: () => currentViewExport(),
   });
   void loadCapabilities()
@@ -1965,152 +2059,213 @@ onDestroy(() => {
 });
 </script>
 
+{#snippet surfaceFields(sample: AtlasStudioSurfaceSample)}
+  <dl class="place-hero">
+    <div>
+      <dt>Temperature</dt>
+      <dd>{formatTemperature(sample.temperatureCentiC)}</dd>
+    </div>
+    <div>
+      <dt>Rainfall</dt>
+      <dd>{sample.precipitationMm.toLocaleString("en-US")} mm</dd>
+    </div>
+    <div>
+      <dt>Humidity</dt>
+      <dd>{formatHumidity(sample.humidityPpm)}</dd>
+    </div>
+  </dl>
+  <div class="place-sheet">
+    <section aria-label="Temperature">
+      <h3>Temperature</h3>
+      <dl>
+        <div>
+          <dt>Northern-summer solstice</dt>
+          <dd>{formatTemperature(sample.temperatureNhSummerCentiC)}</dd>
+        </div>
+        <div>
+          <dt>Northern-winter solstice</dt>
+          <dd>{formatTemperature(sample.temperatureNhWinterCentiC)}</dd>
+        </div>
+        <div>
+          <dt>Annual range</dt>
+          <dd>{formatTemperature(sample.seasonalRangeCentiC)}</dd>
+        </div>
+        <div>
+          <dt>Freeze</dt>
+          <dd>{formatFreeze(sample.freeze)}</dd>
+        </div>
+      </dl>
+    </section>
+    <section aria-label="Wind">
+      <h3>Wind</h3>
+      <dl>
+        <div>
+          <dt>Prevailing</dt>
+          <dd>{formatWind(sample.windEastMilli, sample.windNorthMilli)}</dd>
+        </div>
+        <div>
+          <dt>Northern-summer</dt>
+          <dd>{formatWind(sample.windEastNhSummerMilli, sample.windNorthNhSummerMilli)}</dd>
+        </div>
+        <div>
+          <dt>Northern-winter</dt>
+          <dd>{formatWind(sample.windEastNhWinterMilli, sample.windNorthNhWinterMilli)}</dd>
+        </div>
+        <div>
+          <dt>Circulation</dt>
+          <dd>{titleCase(sample.windBand)}</dd>
+        </div>
+        <div>
+          <dt>Northern-summer circulation</dt>
+          <dd>{titleCase(sample.windBandNhSummer)}</dd>
+        </div>
+        <div>
+          <dt>Northern-winter circulation</dt>
+          <dd>{titleCase(sample.windBandNhWinter)}</dd>
+        </div>
+        <div>
+          <dt>Wind flow</dt>
+          <dd>{formatDivergence(sample.windDivergencePpm)}</dd>
+        </div>
+        <div>
+          <dt>Northern-summer flow</dt>
+          <dd>{formatDivergence(sample.windDivergenceNhSummerPpm)}</dd>
+        </div>
+        <div>
+          <dt>Northern-winter flow</dt>
+          <dd>{formatDivergence(sample.windDivergenceNhWinterPpm)}</dd>
+        </div>
+      </dl>
+    </section>
+    <section aria-label="Water">
+      <h3>Water</h3>
+      <dl>
+        <div>
+          <dt>Northern-summer rainfall</dt>
+          <dd>{sample.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
+        </div>
+        <div>
+          <dt>Northern-winter rainfall</dt>
+          <dd>{sample.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
+        </div>
+        <div>
+          <dt>Aridity</dt>
+          <dd>{formatAridity(sample.aridityPpm)}</dd>
+        </div>
+        <div>
+          <dt>Surface current</dt>
+          <dd>{formatCurrent(sample.currentEastMilli, sample.currentNorthMilli)}</dd>
+        </div>
+      </dl>
+    </section>
+    <section aria-label="Land and climate">
+      <h3>Land and climate</h3>
+      <dl>
+        <div>
+          <dt>Surface</dt>
+          <dd>{titleCase(sample.surface)}</dd>
+        </div>
+        {#if sample.iceThicknessMm > 0}
+          <div>
+            <dt>Ice cover</dt>
+            <dd>{formatMetres(sample.iceThicknessMm)}</dd>
+          </div>
+        {/if}
+        <div>
+          <dt>Why this biome</dt>
+          <dd>{sample.biomeReason}</dd>
+        </div>
+        <div>
+          <dt>Storms</dt>
+          <dd>{sample.stormReason}</dd>
+        </div>
+        <div>
+          <dt>Storm suitability</dt>
+          <dd>{formatShare(sample.stormSuitabilityPpm)}</dd>
+        </div>
+        <div>
+          <dt>Storm tracks</dt>
+          <dd>{formatShare(sample.stormTrackPpm)}</dd>
+        </div>
+        <div>
+          <dt>Storm intensity</dt>
+          <dd>{formatShare(sample.stormIntensityPpm)}</dd>
+        </div>
+      </dl>
+    </section>
+  </div>
+{/snippet}
+
 <section class="studio" aria-label="Atlas Studio">
-  <div class="body">
-    <aside aria-label="Atlas Studio controls">
-      {#if (capabilities?.presets.length ?? 0) > 0}
-        <label>
-          Preset
-          <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
-            <option value="">Apply a saved preset</option>
-            {#each capabilities?.presets ?? [] as preset}
-              <option value={preset.id}>{preset.name}</option>
+  <div class="body" style={`--atlas-sidebar-width: ${sidebarWidth}px`}>
+    <aside class="atlas-sidebar" aria-label="Atlas Studio controls">
+      <header class="sidebar-head">
+        <div class="sidebar-brand">
+          <span>Atlas</span>
+          <strong>{styleLabel(styleId)}</strong>
+        </div>
+        <label class="style-field">
+          Style
+          <select bind:value={styleId} onchange={() => scheduleSession()}>
+            {#each capabilities?.styles ?? [] as id}
+              <option value={id}>{styleLabel(id)}</option>
             {/each}
           </select>
         </label>
-      {/if}
-      <label>
-        Style
-        <select bind:value={styleId} onchange={() => scheduleSession()}>
-          {#each capabilities?.styles ?? [] as id}
-            <option value={id}>{styleLabel(id)}</option>
-          {/each}
-        </select>
-      </label>
-      <div class="epoch-control" aria-label="World epoch">
-        <input
-          type="range"
-          min={EPOCH_MIN}
-          max={EPOCH_MAX}
-          step={EPOCH_STEP}
-          value={offsetYears}
-          aria-label="Epoch offset"
-          disabled={timeKind === "calendar-year"}
-          oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
-        <input
-          class="epoch-year"
-          type="text"
-          inputmode="numeric"
-          autocomplete="off"
-          spellcheck="false"
-          value={Math.abs(offsetYears).toLocaleString("en-US")}
-          aria-label="Years from epoch"
-          disabled={timeKind === "calendar-year"}
-          onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
-        <span>{formatEpoch(offsetYears)}</span>
-      </div>
-      {#if capabilities?.timeModes.includes("calendar-year")}
-        <label>
-          Time mode
-          <select bind:value={timeKind} onchange={() => scheduleSession()}>
-            <option value="physical-offset-year">Physical offset</option>
-            <option value="calendar-year">Authored year</option>
-          </select>
-        </label>
-        {#if timeKind === "calendar-year"}
-          <label>
-            Authored year
-            <input type="number" bind:value={authoredYear} oninput={() => scheduleSession()} />
+        {#if (capabilities?.presets.length ?? 0) > 0}
+          <label class="style-field">
+            Preset
+            <select onchange={(event) => void applyPreset(event.currentTarget.value)}>
+              <option value="">Saved presets</option>
+              {#each capabilities?.presets ?? [] as preset}
+                <option value={preset.id}>{preset.name}</option>
+              {/each}
+            </select>
           </label>
         {/if}
-      {/if}
-      <FindPlacePanel
-        variant="studio"
-        disabled={loading}
-        searching={findPlaceSearching}
-        error={findPlaceError}
-        result={findPlaceResult}
-        selectedId={findPlaceSelectedId}
-        onsearch={(query) => void runFindPlace(query)}
-        onselect={selectFindPlace}
-        onpin={pinFindPlace}
-        onclear={clearFindPlace} />
-      <RouteSuggestPanel
-        variant="studio"
-        disabled={loading}
-        searching={routeSearching}
-        error={routeError}
-        arming={routingArming}
-        startPicked={Boolean(routingStart)}
-        result={routeResult}
-        selectedId={routeSelectedId}
-        onarm={armRouting}
-        onselect={selectRoute}
-        onaccept={acceptRoute}
-        oncancel={clearRouting} />
-      <MapLayerVisibilityList
-        variant="studio"
-        groups={studioLayerBook}
-        activeId={overlayAuthoring?.activeLayerId ?? null}
-        onSelect={(id) => overlayAuthoring?.setActiveLayer(id)}
-        onToggle={(id) => {
-          const overlay = overlayAuthoring?.layers.find((layer) => layer.id === id);
-          if (overlay && overlayAuthoring) {
-            overlayAuthoring.setVisible(id, !overlay.defaultVisible);
-            return;
-          }
-          layers = layers.map((layer) => (layer.id === id ? { ...layer, enabled: !layer.enabled } : layer));
-          scheduleSession();
-        }} />
-      {#if overlayAuthoring}
-        <AtlasOverlayPanel
-          authoring={overlayAuthoring}
-          bind:tool={overlayTool}
-          bind:selectedFeatureId={overlaySelectedId}
-          bind:detectHint={overlayDetectHint}
-          bind:createFamily={overlayCreateFamily}
-          selection={landmassSelection}
-          bind:includeOccupied
-          showIncludeOccupied={activeOccupiedGeometries().length > 0}
-          covered={Boolean(
-            landmassSelection &&
-            !includeOccupied &&
-            activeOccupiedGeometries().length > 0 &&
-            !displayLandmassGeometry(landmassSelection, activeOccupiedGeometries(), false),
-          )}
-          onCreateFromSelection={createFromLandmassSelection}
-          onAddFromSelection={addFromLandmassSelection}
-          onInvertSelection={() => void invertLandmassSelection()}
-          onClearSelection={() => clearLandmassSelection()} />
-      {/if}
-      <section class="place" aria-label="Place" aria-live="polite">
-        <div class="place-head">
-          <strong>Place</strong>
-        </div>
-        <dl class="place-summary">
-          <div>
-            <dt>Coordinates</dt>
-            <dd>{cursor}</dd>
+        <div class="epoch-card" aria-label="World epoch">
+          <div class="epoch-copy">
+            <span>Epoch</span>
+            <strong>{formatEpoch(offsetYears)}</strong>
           </div>
-          {#if surface}
-            <div>
-              <dt>Biome</dt>
-              <dd>{titleCase(surface.climate)}</dd>
-            </div>
-            <div>
-              <dt>Temperature</dt>
-              <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
-            </div>
-            <div>
-              <dt>Rainfall</dt>
-              <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
-            </div>
-          {/if}
-        </dl>
-        {#if !surface}
-          <p>Move or click the map to sample this point.</p>
+          <input
+            type="range"
+            min={EPOCH_MIN}
+            max={EPOCH_MAX}
+            step={EPOCH_STEP}
+            value={offsetYears}
+            aria-label="Epoch offset"
+            disabled={timeKind === "calendar-year"}
+            oninput={(event) => setOffsetYears(clampEpoch(Number(event.currentTarget.value), EPOCH_STEP))} />
+          <input
+            class="epoch-year"
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            value={Math.abs(offsetYears).toLocaleString("en-US")}
+            aria-label="Years from epoch"
+            disabled={timeKind === "calendar-year"}
+            onchange={(event) => setOffsetYearsAbs(event.currentTarget.value)} />
+        </div>
+        {#if capabilities?.timeModes.includes("calendar-year")}
+          <div class="time-row">
+            <label>
+              Time
+              <select bind:value={timeKind} onchange={() => scheduleSession()}>
+                <option value="physical-offset-year">Physical offset</option>
+                <option value="calendar-year">Authored year</option>
+              </select>
+            </label>
+            {#if timeKind === "calendar-year"}
+              <label>
+                Year
+                <input type="number" bind:value={authoredYear} oninput={() => scheduleSession()} />
+              </label>
+            {/if}
+          </div>
         {/if}
-      </section>
+      </header>
       {#if confirmCache}
         <div class="confirm" role="alertdialog" aria-labelledby="atlas-cache-title" aria-describedby="atlas-cache-copy">
           <strong id="atlas-cache-title">Regenerate disposable Atlas cache?</strong>
@@ -2123,34 +2278,207 @@ onDestroy(() => {
           </div>
         </div>
       {/if}
-      {#if showHelp}
-        <section class="help" aria-label="Keyboard shortcuts">
-          <strong>Keyboard</strong>
-          <ul>
-            <li>Drag or the pan pad to move the view</li>
-            <li>Arrows pan (Shift for a larger step)</li>
-            <li>+ / − zoom</li>
-            <li>Home or 0 resets the view</li>
-            <li>Enter inspects the map center</li>
-            <li>Escape clears inspection, drawing, or suggested routing</li>
-            <li>⌘/Ctrl+Z undo overlay edits</li>
-            <li>⌘/Ctrl+S save overlay edits</li>
-          </ul>
-        </section>
-      {/if}
-      {#if hits.length > 0}
-        <div class="inspect" role="region" aria-label="Feature inspection">
-          <strong>Inspect</strong>
-          {#each hits as hit}
-            <p>
-              <span>{hit.label ?? hit.id}</span>
-              <small>{hit.kind}{hit.derived ? " · derived" : ""}</small>
-              <small>{derivedExplanation(hit)}</small>
-            </p>
-          {/each}
-        </div>
-      {/if}
+      <div class="sidebar-tabs" role="tablist" aria-label="Atlas tools">
+        {#each sidebarPanes as pane (pane.id)}
+          {@const badge = sidebarPaneBadge(pane.id)}
+          <button
+            type="button"
+            role="tab"
+            id={`atlas-tab-${pane.id}`}
+            aria-selected={sidebarPane === pane.id}
+            aria-controls={`atlas-pane-${pane.id}`}
+            class:active={sidebarPane === pane.id}
+            class:dirty={pane.id === "draw" && Boolean(overlayAuthoring?.dirty)}
+            onclick={() => (sidebarPane = pane.id)}>
+            {#if pane.id === "layers"}<Layers size={14} strokeWidth={1.8} />
+            {:else if pane.id === "find"}<Search size={14} strokeWidth={1.8} />
+            {:else if pane.id === "draw"}<Pencil size={14} strokeWidth={1.8} />
+            {:else}<Info size={14} strokeWidth={1.8} />{/if}
+            <span>{pane.label}</span>
+            {#if badge > 0}<em>{badge}</em>{/if}
+          </button>
+        {/each}
+      </div>
+      <div class="sidebar-body">
+        {#if sidebarPane === "layers"}
+          <div class="sidebar-pane" id="atlas-pane-layers" role="tabpanel" aria-labelledby="atlas-tab-layers">
+            <MapLayerVisibilityList
+              variant="studio"
+              groups={studioLayerBook}
+              activeId={overlayAuthoring?.activeLayerId ?? null}
+              onSelect={(id) => {
+                overlayAuthoring?.setActiveLayer(id);
+                sidebarPane = "draw";
+              }}
+              onToggle={(id) => {
+                const overlay = overlayAuthoring?.layers.find((layer) => layer.id === id);
+                if (overlay && overlayAuthoring) {
+                  overlayAuthoring.setVisible(id, !overlay.defaultVisible);
+                  return;
+                }
+                layers = layers.map((layer) => (layer.id === id ? { ...layer, enabled: !layer.enabled } : layer));
+                scheduleSession();
+              }} />
+          </div>
+        {:else if sidebarPane === "find"}
+          <div class="sidebar-pane find-pane" id="atlas-pane-find" role="tabpanel" aria-labelledby="atlas-tab-find">
+            <FindPlacePanel
+              variant="studio"
+              disabled={loading}
+              searching={findPlaceSearching}
+              error={findPlaceError}
+              result={findPlaceResult}
+              selectedId={findPlaceSelectedId}
+              onsearch={(query) => void runFindPlace(query)}
+              onselect={selectFindPlace}
+              onpin={pinFindPlace}
+              onclear={clearFindPlace} />
+            <RouteSuggestPanel
+              variant="studio"
+              disabled={loading}
+              searching={routeSearching}
+              error={routeError}
+              arming={routingArming}
+              startPicked={Boolean(routingStart)}
+              result={routeResult}
+              selectedId={routeSelectedId}
+              onarm={armRouting}
+              onselect={selectRoute}
+              onaccept={acceptRoute}
+              oncancel={clearRouting} />
+          </div>
+        {:else if sidebarPane === "draw"}
+          <div class="sidebar-pane" id="atlas-pane-draw" role="tabpanel" aria-labelledby="atlas-tab-draw">
+            {#if overlayAuthoring}
+              <AtlasOverlayPanel
+                authoring={overlayAuthoring}
+                bind:tool={overlayTool}
+                bind:selectedFeatureId={overlaySelectedId}
+                bind:detectHint={overlayDetectHint}
+                bind:createFamily={overlayCreateFamily}
+                selection={landmassSelection}
+                bind:includeOccupied
+                showIncludeOccupied={activeOccupiedGeometries().length > 0}
+                covered={Boolean(
+                  landmassSelection &&
+                  !includeOccupied &&
+                  activeOccupiedGeometries().length > 0 &&
+                  !displayLandmassGeometry(landmassSelection, activeOccupiedGeometries(), false),
+                )}
+                onCreateFromSelection={createFromLandmassSelection}
+                onAddFromSelection={addFromLandmassSelection}
+                onInvertSelection={() => void invertLandmassSelection()}
+                onClearSelection={() => clearLandmassSelection()} />
+            {:else}
+              <p class="pane-empty">This map has no overlay authoring session.</p>
+            {/if}
+          </div>
+        {:else}
+          <div
+            class="sidebar-pane inspect-pane"
+            id="atlas-pane-inspect"
+            role="tabpanel"
+            aria-labelledby="atlas-tab-inspect">
+            <section class="place" aria-label="Place" aria-live="polite">
+              <div class="place-head">
+                <strong>Place</strong>
+                <button
+                  type="button"
+                  class="quiet"
+                  disabled={!surface || !sampledPoint}
+                  onclick={() => openPlaceDetails(false)}>
+                  Details
+                </button>
+              </div>
+              {#if surface}
+                <dl class="place-summary">
+                  <div>
+                    <dt>Coordinates</dt>
+                    <dd>{cursor}</dd>
+                  </div>
+                  <div>
+                    <dt>Biome</dt>
+                    <dd>{titleCase(surface.climate)}</dd>
+                  </div>
+                  <div>
+                    <dt>Surface</dt>
+                    <dd>{formatElevation(surface.elevationMm, surface.waterSurfaceMm, surface.surface)}</dd>
+                  </div>
+                  <div>
+                    <dt>Temperature</dt>
+                    <dd>{formatTemperature(surface.temperatureCentiC)}</dd>
+                  </div>
+                  <div>
+                    <dt>Rainfall</dt>
+                    <dd>{surface.precipitationMm.toLocaleString("en-US")} mm/year</dd>
+                  </div>
+                  <div>
+                    <dt>Humidity</dt>
+                    <dd>{formatHumidity(surface.humidityPpm)}</dd>
+                  </div>
+                </dl>
+              {:else}
+                <p>Move or click the map to sample this point.</p>
+              {/if}
+            </section>
+            {#if hits.length > 0}
+              <div class="inspect" role="region" aria-label="Feature inspection">
+                <strong>Features</strong>
+                {#each hits as hit}
+                  <p>
+                    <span>{hit.label ?? hit.id}</span>
+                    <small>{hit.kind}{hit.derived ? " · derived" : ""}</small>
+                    <small>{derivedExplanation(hit)}</small>
+                  </p>
+                {/each}
+              </div>
+            {:else}
+              <p class="pane-empty">Click the map or press Enter to inspect the center.</p>
+            {/if}
+            {#if showHelp}
+              <section class="help" aria-label="Keyboard shortcuts">
+                <strong>Keyboard</strong>
+                <ul>
+                  <li>Drag or the pan pad to move the view</li>
+                  <li>Arrows pan (Shift for a larger step)</li>
+                  <li>+ / − zoom</li>
+                  <li>Home or 0 resets the view</li>
+                  <li>Enter inspects the map center</li>
+                  <li>Escape clears inspection, drawing, or suggested routing</li>
+                  <li>⌘/Ctrl+Z undo overlay edits</li>
+                  <li>⌘/Ctrl+S save overlay edits</li>
+                </ul>
+              </section>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      <button
+        type="button"
+        class="sidebar-foot"
+        onclick={() => (sidebarPane = "inspect")}
+        aria-label="Open place inspection">
+        <span>{cursor}</span>
+        {#if surface}
+          <span>{titleCase(surface.climate)} · {formatTemperature(surface.temperatureCentiC)}</span>
+        {:else}
+          <span>Sample a point</span>
+        {/if}
+      </button>
     </aside>
+    <button
+      type="button"
+      class="sidebar-resizer"
+      role="slider"
+      aria-orientation="vertical"
+      aria-label="Resize Atlas sidebar"
+      aria-valuemin={SIDEBAR_MIN}
+      aria-valuemax={SIDEBAR_MAX}
+      aria-valuenow={sidebarWidth}
+      title="Drag to resize · Double-click to reset"
+      onpointerdown={startSidebarResize}
+      ondblclick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+      onkeydown={onSidebarResizeKey}></button>
     <div class="frame">
       {#if error}
         {@const diagnostic = explainStudioError(error)}
@@ -2269,140 +2597,13 @@ onDestroy(() => {
                 modalSurface.waterSurfaceMm,
                 modalSurface.surface,
               )}</span>
-            <dl class="place-hero">
-              <div>
-                <dt>Temperature</dt>
-                <dd>{formatTemperature(modalSurface.temperatureCentiC)}</dd>
-              </div>
-              <div>
-                <dt>Rainfall</dt>
-                <dd>{modalSurface.precipitationMm.toLocaleString("en-US")} mm</dd>
-              </div>
-              <div>
-                <dt>Humidity</dt>
-                <dd>{formatHumidity(modalSurface.humidityPpm)}</dd>
-              </div>
-            </dl>
           {:else}
             <span class="place-kicker">Place details</span>
             <strong id="place-modal-title">No sample yet</strong>
           {/if}
         </div>
         {#if modalSurface}
-          <div class="place-sheet">
-            <section aria-label="Temperature">
-              <h3>Temperature</h3>
-              <dl>
-                <div>
-                  <dt>Northern-summer solstice</dt>
-                  <dd>{formatTemperature(modalSurface.temperatureNhSummerCentiC)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-winter solstice</dt>
-                  <dd>{formatTemperature(modalSurface.temperatureNhWinterCentiC)}</dd>
-                </div>
-                <div>
-                  <dt>Annual range</dt>
-                  <dd>{formatTemperature(modalSurface.seasonalRangeCentiC)}</dd>
-                </div>
-                <div>
-                  <dt>Freeze</dt>
-                  <dd>
-                    {modalSurface.freeze === "permanent"
-                      ? "Permanent"
-                      : modalSurface.freeze === "seasonal"
-                        ? "Seasonal"
-                        : "None"}
-                  </dd>
-                </div>
-              </dl>
-            </section>
-            <section aria-label="Wind">
-              <h3>Wind</h3>
-              <dl>
-                <div>
-                  <dt>Prevailing</dt>
-                  <dd>{formatWind(modalSurface.windEastMilli, modalSurface.windNorthMilli)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-summer</dt>
-                  <dd>{formatWind(modalSurface.windEastNhSummerMilli, modalSurface.windNorthNhSummerMilli)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-winter</dt>
-                  <dd>{formatWind(modalSurface.windEastNhWinterMilli, modalSurface.windNorthNhWinterMilli)}</dd>
-                </div>
-                <div>
-                  <dt>Circulation</dt>
-                  <dd>{titleCase(modalSurface.windBand)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-summer circulation</dt>
-                  <dd>{titleCase(modalSurface.windBandNhSummer)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-winter circulation</dt>
-                  <dd>{titleCase(modalSurface.windBandNhWinter)}</dd>
-                </div>
-                <div>
-                  <dt>Wind flow</dt>
-                  <dd>{formatDivergence(modalSurface.windDivergencePpm)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-summer flow</dt>
-                  <dd>{formatDivergence(modalSurface.windDivergenceNhSummerPpm)}</dd>
-                </div>
-                <div>
-                  <dt>Northern-winter flow</dt>
-                  <dd>{formatDivergence(modalSurface.windDivergenceNhWinterPpm)}</dd>
-                </div>
-              </dl>
-            </section>
-            <section aria-label="Water">
-              <h3>Water</h3>
-              <dl>
-                <div>
-                  <dt>Northern-summer rainfall</dt>
-                  <dd>{modalSurface.precipitationNhSummerMm.toLocaleString("en-US")} mm</dd>
-                </div>
-                <div>
-                  <dt>Northern-winter rainfall</dt>
-                  <dd>{modalSurface.precipitationNhWinterMm.toLocaleString("en-US")} mm</dd>
-                </div>
-                <div>
-                  <dt>Aridity</dt>
-                  <dd>{formatAridity(modalSurface.aridityPpm)}</dd>
-                </div>
-                <div>
-                  <dt>Surface current</dt>
-                  <dd>{formatCurrent(modalSurface.currentEastMilli, modalSurface.currentNorthMilli)}</dd>
-                </div>
-              </dl>
-            </section>
-            <section aria-label="Land and climate">
-              <h3>Land and climate</h3>
-              <dl>
-                <div>
-                  <dt>Surface</dt>
-                  <dd>{titleCase(modalSurface.surface)}</dd>
-                </div>
-                {#if modalSurface.iceThicknessMm > 0}
-                  <div>
-                    <dt>Ice cover</dt>
-                    <dd>{formatMetres(modalSurface.iceThicknessMm)}</dd>
-                  </div>
-                {/if}
-                <div>
-                  <dt>Why this biome</dt>
-                  <dd>{modalSurface.biomeReason}</dd>
-                </div>
-                <div>
-                  <dt>Storms</dt>
-                  <dd>{modalSurface.stormReason}</dd>
-                </div>
-              </dl>
-            </section>
-          </div>
+          {@render surfaceFields(modalSurface)}
         {:else}
           <p>Move or click the map to sample this point.</p>
         {/if}
@@ -2457,55 +2658,132 @@ onDestroy(() => {
 }
 .body {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: var(--atlas-sidebar-width, 312px) 6px minmax(0, 1fr);
   min-height: 0;
   height: 100%;
   width: 100%;
 }
-aside {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  overflow: auto;
-  padding: 10px;
-  background: #1b2822;
-  border-right: 1px solid var(--theme-neutral-border-strong, #405047);
+.sidebar-resizer {
+  width: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #405047;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible {
+  background: #d5ab6c;
+}
+.atlas-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: #15211d;
   font: 12px/1.4 system-ui;
 }
-aside label {
+.sidebar-head {
+  display: grid;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+  background: #1b2822;
+}
+.sidebar-brand {
+  display: grid;
+  gap: 1px;
+}
+.sidebar-brand span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #d5ab6c;
+}
+.sidebar-brand strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.style-field,
+.atlas-sidebar label,
+.time-row label {
   display: grid;
   gap: 4px;
+  color: #b8c8bc;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-aside :global(.find-place .find-check),
-aside :global(.find-place .find-prefer label) {
+.time-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.atlas-sidebar :global(.find-place .find-check),
+.atlas-sidebar :global(.find-place .find-prefer label) {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-aside :global(.find-place .detail-grid label) {
-  display: grid;
-}
-aside select,
-aside input[type="number"] {
-  border: 1px solid var(--theme-neutral-border-strong, #405047);
-  border-radius: 6px;
-  padding: 6px;
-  background: #0f1a16;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  font-size: 11px;
   color: #edf2ec;
 }
-.epoch-control {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
+.atlas-sidebar :global(.find-place .detail-grid label) {
+  display: grid;
 }
-.epoch-control input[type="range"],
-aside input[type="range"] {
-  width: 140px;
+.atlas-sidebar select,
+.atlas-sidebar input[type="number"] {
+  border: 1px solid var(--theme-neutral-border-strong, #405047);
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: #0f1a16;
+  color: #edf2ec;
+  font: 12px/1.3 system-ui;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+.epoch-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.6em;
+  gap: 6px 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(0 0 0 / 18%);
+}
+.epoch-copy {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.epoch-copy span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b8c8bc;
+}
+.epoch-copy strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: #edf2ec;
+}
+.epoch-card input[type="range"] {
+  width: 100%;
   accent-color: #d5ab6c;
 }
 .epoch-year {
-  width: 5.4em;
+  width: 100%;
   border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 6px;
   padding: 4px 5px;
@@ -2515,9 +2793,117 @@ aside input[type="range"] {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
-.place {
+.sidebar-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 8px 8px 0;
+  background: #1b2822;
+}
+.sidebar-tabs button {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-height: 44px;
+  padding: 6px 4px 7px;
+  border: 0;
+  border-radius: 9px 9px 0 0;
+  background: transparent;
+  color: #aebdb1;
+  font: 650 10px/1.1 system-ui;
+  letter-spacing: 0.02em;
+}
+.sidebar-tabs button:hover {
+  color: #edf2ec;
+  background: rgb(255 255 255 / 5%);
+}
+.sidebar-tabs button.active {
+  background: #15211d;
+  color: #edf2ec;
+  box-shadow: inset 0 2px 0 #d5ab6c;
+}
+.sidebar-tabs button.dirty::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d5ab6c;
+}
+.sidebar-tabs em {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d5ab6c;
+  color: #1b2822;
+  font: 700 9px/14px system-ui;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 12px;
+  background: #15211d;
+}
+.sidebar-pane,
+.find-pane,
+.inspect-pane {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+.find-pane :global(.find-place.studio) {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 3%);
+}
+.pane-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed rgb(255 255 255 / 14%);
+  border-radius: 8px;
+  color: #aebdb1;
+}
+.sidebar-foot {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-top: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 0;
+  background: #1b2822;
+  color: #edf2ec;
+  text-align: left;
+  font: 11px/1.35 system-ui;
+  cursor: pointer;
+}
+.sidebar-foot span:first-child {
+  font-variant-numeric: tabular-nums;
+}
+.sidebar-foot span:last-child {
+  color: #aebdb1;
+}
+.place,
+.inspect {
   display: grid;
   gap: 6px;
+  padding: 10px;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 10px;
+  background: rgb(255 255 255 / 3%);
 }
 .place-head {
   display: flex;
@@ -2525,11 +2911,16 @@ aside input[type="range"] {
   justify-content: space-between;
   gap: 8px;
 }
+.place-head .quiet {
+  padding: 4px 8px;
+  background: rgb(255 255 255 / 8%);
+  font-weight: 650;
+}
 .place dl,
 .place p {
   margin: 0;
 }
-.place div {
+.place-summary > div {
   display: grid;
   grid-template-columns: 7.2em minmax(0, 1fr);
   gap: 6px 10px;
@@ -2857,9 +3248,16 @@ button {
 .confirm {
   display: grid;
   gap: 6px;
-  padding: 8px;
+  margin: 0 8px 8px;
+  padding: 8px 10px;
   border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;
+}
+.help {
+  margin: 0;
+}
+.confirm {
+  background: #1b2822;
 }
 .help li,
 .confirm p {
@@ -2870,7 +3268,7 @@ button {
   margin: 0;
   padding-left: 1.2em;
 }
-aside small {
+.atlas-sidebar small {
   color: var(--theme-neutral-text-muted, #aebdb1);
 }
 button:focus-visible,

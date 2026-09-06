@@ -9,6 +9,8 @@ import {
   flipYExtent,
   normalizedToAuthored,
   viewToAuthored,
+  wrapGeographicGeometry,
+  wrapLongitude,
 } from "../src/lib/maps/editor/coordinate-space.ts";
 import {
   addBackgroundCommand,
@@ -29,6 +31,7 @@ import {
 } from "../src/lib/maps/editor/commands.ts";
 import { CommandStack } from "../src/lib/maps/editor/command-stack.ts";
 import { createMapDocument } from "../src/lib/maps/editor/model.ts";
+import { encodeLayersField } from "../src/lib/maps/editor/persistence.ts";
 import {
   measurementSummary,
   pathLength,
@@ -225,6 +228,63 @@ const rasterParsed = parseVectorLayers({
 });
 assert.equal(rasterParsed.length, 2);
 assert.equal(rasterParsed[1].kind, "raster");
+
+const physicalBaseStyle = {
+  fill: "#c9a96e",
+  fillOpacity: 0.92,
+  stroke: "#8a7048",
+  strokeWidth: 1.25,
+  pointRadius: 2,
+};
+const physicalParsed = parseVectorLayers({
+  layers: [
+    {
+      id: "base",
+      name: "Physical base",
+      order: 0,
+      defaultVisible: false,
+      locked: true,
+      selector: {},
+      style: physicalBaseStyle,
+      kind: "vector",
+    },
+  ],
+});
+assert.deepEqual(physicalParsed[0].style, physicalBaseStyle);
+assert.equal("overlayFamily" in physicalParsed[0], false);
+assert.deepEqual(
+  encodeLayersField({
+    descriptor,
+    layers: [
+      {
+        ...physicalParsed[0],
+        overlayFamily: "political",
+        style: {
+          ...physicalParsed[0].style,
+          strokeOpacity: 1,
+          strokeDash: [],
+          icon: null,
+          iconSize: 20,
+          label: {
+            source: "name",
+            text: null,
+            size: 12,
+            color: "#f7f0e5",
+            haloColor: "#0d1b2a",
+            haloWidth: 3,
+            placement: "point",
+            offset: [0, -14],
+            rotation: 0,
+            minZoom: null,
+            maxZoom: null,
+          },
+        },
+      },
+    ],
+    collection: { type: "FeatureCollection", features: [] },
+  }).layers[0].style,
+  physicalBaseStyle,
+);
 assert.equal(layersFieldValue(rasterParsed).layers[1].kind, "raster");
 
 const layerDoc = createMapDocument({
@@ -304,5 +364,36 @@ layerStack.apply(setLayerVisibilityCommand(vectorLayer.id, false, true));
 assert.equal(captureDeleteFeatures(layerStack.document, [feature.id]), null);
 layerStack.apply(createFeatureCommand({ ...feature, id: "99999999-9999-4999-8999-999999999999" }));
 assert.equal(layerStack.document.collection.features.length, 1);
+
+assert.equal(wrapLongitude(190), -170);
+assert.equal(wrapLongitude(-190), 170);
+assert.equal(wrapLongitude(180), 180);
+assert.equal(wrapLongitude(-180), -180);
+assert.deepEqual(
+  wrapGeographicGeometry({
+    type: "Polygon",
+    coordinates: [
+      [
+        [190, 10],
+        [200, 10],
+        [200, 20],
+        [190, 20],
+        [190, 10],
+      ],
+    ],
+  }),
+  {
+    type: "Polygon",
+    coordinates: [
+      [
+        [-170, 10],
+        [-160, 10],
+        [-160, 20],
+        [-170, 20],
+        [-170, 10],
+      ],
+    ],
+  },
+);
 
 console.log("coordinate-space, measurement units, and raster commands passed");

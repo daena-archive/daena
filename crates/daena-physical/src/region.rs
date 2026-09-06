@@ -162,6 +162,7 @@ fn cell_from_microdegrees(grid: Grid, lon: i32, lat: i32) -> usize {
     grid.index(row, col)
 }
 
+#[cfg(test)]
 fn cell_center_microdegrees(grid: Grid, cell: usize) -> [i32; 2] {
     let (row, col) = grid.row_col(cell);
     let (lon, lat) = grid.center_radians(row, col);

@@ -87,6 +87,22 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+export function wrapLongitude(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value >= -180 && value <= 180) return value;
+  return ((((value + 180) % 360) + 360) % 360) - 180;
+}
+
+export function wrapGeographicPosition(position: readonly number[]): Position {
+  const lon = wrapLongitude(position[0]);
+  const lat = Number.isFinite(position[1]) ? Math.max(-90, Math.min(90, position[1])) : 0;
+  return [lon, lat];
+}
+
+export function wrapGeographicGeometry<T>(geometry: T): T {
+  return mapPositions(geometry, (position) => wrapGeographicPosition(position));
+}
+
 export function mapPositions<T>(geometry: T, transform: (position: number[]) => number[]): T {
   const walk = (value: unknown, depth: number): unknown => {
     if (depth === 0) {

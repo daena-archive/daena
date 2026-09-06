@@ -102,6 +102,7 @@ import {
   selectedMetadataSnapshot,
 } from "./feature-utils";
 import { EPOCH_MAX, EPOCH_MIN, EPOCH_STEP, clampEpoch, formatEpoch, parseEpochYears } from "./epoch-utils";
+import { wrapGeographicGeometry } from "../editor/coordinate-space";
 import { paintPhysicalSurface, type PhysicalRasterPaintOptions } from "../physical/raster";
 import AtlasRenderPanel from "../atlas/AtlasRenderPanel.svelte";
 import AtlasStudioView from "../atlas/AtlasStudioView.svelte";
@@ -2008,7 +2009,12 @@ function setOverlayOpacity(id: string, opacity: number) {
 }
 
 function addOverlayFeature(feature: VectorFeature) {
-  dispatchCommand(createFeatureCommand(feature));
+  dispatchCommand(
+    createFeatureCommand({
+      ...feature,
+      geometry: wrapGeographicGeometry(feature.geometry),
+    }),
+  );
 }
 
 function updateOverlayFeatureStyle(id: string, patch: Partial<VectorLayerDefinition["style"]>) {

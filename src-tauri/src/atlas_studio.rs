@@ -13,16 +13,17 @@ use daena_atlas::overlay::{
 use daena_atlas::studio::{
     render_studio_tile_with_style_overlays, tile_count, AtlasStudioSceneRequestV1,
     AtlasStudioTileRequestV1, CODE_STUDIO_CANCELLED, CODE_STUDIO_EXPIRED,
-    CODE_STUDIO_PROTOCOL_DENIED, CODE_STUDIO_RESOURCE_LIMIT, CODE_STUDIO_TILE_FAILED,
-    CODE_STUDIO_TILE_INVALID, STUDIO_MAX_DEVICE_SCALE, STUDIO_MAX_ZOOM, STUDIO_TILE_SIZE,
+    CODE_STUDIO_PROTOCOL_DENIED, CODE_STUDIO_RESOURCE_LIMIT, CODE_STUDIO_STALE,
+    CODE_STUDIO_TILE_FAILED, CODE_STUDIO_TILE_INVALID, STUDIO_MAX_DEVICE_SCALE, STUDIO_MAX_ZOOM,
+    STUDIO_TILE_SIZE,
 };
 use daena_atlas::{
     prepare_from_source, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, CancelFlag,
     FlagProgress,
 };
 use daena_core::maps::atlas::{
-    atlas_cache_dir, capture_studio_session, regenerate_atlas_cache, AtlasCacheRegenerateResult,
-    AtlasStudioSessionRequestV1,
+    atlas_cache_dir, capture_snapshot, capture_studio_session, regenerate_atlas_cache,
+    AtlasCacheRegenerateResult, AtlasStudioSessionRequestV1,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -138,6 +139,7 @@ struct StudioSession {
     style: daena_atlas::style::AtlasStyle,
     style_hash: String,
     prepared: Arc<AtlasPreparedScene>,
+    physical_identity: String,
     captured_content_generation: i64,
     device_scale: u32,
     cancel: Arc<CancelFlag>,
@@ -310,6 +312,27 @@ impl AtlasStudioManager {
         session.tile_cache_bytes = session.tile_cache_bytes.saturating_add(png.len());
         session.tile_cache.insert((z, x, y), (Instant::now(), png));
         session.last_used = Instant::now();
+    }
+
+    fn adopt_overlay_snapshot(
+        &mut self,
+        token: &str,
+        identity: &str,
+        offset_years: i64,
+        overlays: Vec<AuthoredFeature>,
+        content_generation: i64,
+    ) -> Result<bool, String> {
+        let session = self
+            .sessions
+            .get_mut(token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        if session.physical_identity != identity || session.offset_years != offset_years {
+            return Ok(false);
+        }
+        session.overlays = Arc::new(overlays);
+        session.captured_content_generation = content_generation;
+        session.last_used = Instant::now();
+        Ok(true)
     }
 }
 
@@ -762,6 +785,7 @@ pub async fn project_atlas_studio_open(
         style,
         style_hash,
         prepared,
+        physical_identity: capture.snapshot.identity.clone(),
         captured_content_generation: capture.snapshot.content_generation,
         device_scale,
         cancel: Arc::new(CancelFlag::default()),
@@ -804,15 +828,54 @@ pub async fn project_atlas_studio_status(
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?
         .status(&session_token)?;
-    if let Ok(current) =
-        with_read_project(state, daena_core::ProjectStore::content_generation).await
-    {
-        status.current_content_generation = Some(current);
-        if current > status.captured_content_generation {
-            status.error_code = Some(daena_atlas::studio::CODE_STUDIO_STALE.into());
-            status.error = Some("The project changed after this Atlas session.".into());
-        }
+    let Ok(current) =
+        with_read_project(state.clone(), daena_core::ProjectStore::content_generation).await
+    else {
+        return Ok(status);
+    };
+    status.current_content_generation = Some(current);
+    if current <= status.captured_content_generation {
+        return Ok(status);
     }
+    let (map_entity_id, render) = {
+        let guard = studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?;
+        let session = guard
+            .sessions
+            .get(&session_token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        (
+            session.map_entity_id.clone(),
+            session
+                .scene
+                .as_render_request(STUDIO_TILE_SIZE)
+                .and_then(daena_atlas::request::AtlasRenderRequest::normalize)
+                .map_err(|error| format!("{}: {}", error.code, error.message))?,
+        )
+    };
+    let snapshot = with_read_project(state, move |project| {
+        capture_snapshot(project, &map_entity_id, render)
+    })
+    .await?;
+    let mut guard = studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?;
+    if guard.adopt_overlay_snapshot(
+        &session_token,
+        &snapshot.identity,
+        snapshot.request.offset_years,
+        snapshot.overlays,
+        snapshot.content_generation,
+    )? {
+        let session = guard
+            .sessions
+            .get(&session_token)
+            .ok_or_else(|| format!("{CODE_STUDIO_EXPIRED}: atlas studio session expired"))?;
+        return Ok(status_from(session, Some(snapshot.content_generation)));
+    }
+    status.error_code = Some(CODE_STUDIO_STALE.into());
+    status.error = Some("The project changed after this Atlas session.".into());
     Ok(status)
 }
 
@@ -1096,6 +1159,7 @@ mod tests {
                     style: prepared.style.clone(),
                     style_hash: prepared.style_hash.clone(),
                     prepared: prepared.clone(),
+                    physical_identity: String::from_utf8_lossy(&identity).into_owned(),
                     captured_content_generation: 1,
                     device_scale: 1,
                     cancel: Arc::new(CancelFlag::default()),
@@ -1121,6 +1185,7 @@ mod tests {
                 style: prepared.style.clone(),
                 style_hash: prepared.style_hash.clone(),
                 prepared: prepared.clone(),
+                physical_identity: String::from_utf8_lossy(&identity).into_owned(),
                 captured_content_generation: 1,
                 device_scale: 1,
                 cancel: Arc::new(CancelFlag::default()),
@@ -1138,6 +1203,19 @@ mod tests {
         assert!(manager.sessions.contains_key(&replacement));
         manager.close(&replacement);
         assert!(!manager.sessions.contains_key(&replacement));
+        let overlay_token = manager.sessions.keys().next().cloned().unwrap();
+        assert!(manager
+            .adopt_overlay_snapshot(
+                &overlay_token,
+                &String::from_utf8_lossy(&identity),
+                0,
+                Vec::new(),
+                2,
+            )
+            .unwrap());
+        assert!(!manager
+            .adopt_overlay_snapshot(&overlay_token, "other-world", 0, Vec::new(), 3)
+            .unwrap());
         manager.cancel_all();
         assert!(manager.sessions.is_empty());
         assert!(manager.prepared_scenes.is_empty());

@@ -18,6 +18,31 @@ import type { MapLabelV2, MapStyleV2 } from "../../../../packages/plugin-sdk/src
 
 const KINDS: readonly VectorKind[] = ["land", "lake", "region", "route", "marker", "custom"];
 
+const RESERVED_PHYSICAL_LAYER_IDS = new Set([
+  "base",
+  "ocean",
+  "land",
+  "shelves",
+  "bathymetric-contours",
+  "tectonic-plates",
+  "tectonic-boundaries",
+  "bathymetry",
+  "volcanic-centers",
+  "earthquake-hazard",
+  "volcanic-hazard",
+  "lakes",
+  "rivers",
+  "watersheds",
+  "islands",
+  "ice",
+  "winds",
+  "currents",
+]);
+
+export function isReservedPhysicalLayerId(id: string): boolean {
+  return RESERVED_PHYSICAL_LAYER_IDS.has(id);
+}
+
 export function emptyCollection(): VectorFeatureCollection {
   return { type: "FeatureCollection", features: [] };
 }
@@ -268,6 +293,8 @@ function asOpacity(value: unknown): number {
 
 function parseVectorLayer(layer: Record<string, unknown>): VectorLayerDefinition | null {
   if (typeof layer.id !== "string") return null;
+  const overlayFamily = asOverlayFamily(layer.overlayFamily);
+  const reserved = isReservedPhysicalLayerId(layer.id);
   return {
     id: layer.id,
     kind: "vector",
@@ -278,8 +305,8 @@ function parseVectorLayer(layer: Record<string, unknown>): VectorLayerDefinition
     opacity: asOpacity(layer.opacity),
     blendMode: asBlendMode(layer.blendMode),
     selector: {},
-    style: asStyle(layer.style),
-    overlayFamily: asOverlayFamily(layer.overlayFamily),
+    style: reserved ? ((asPartialStyle(layer.style) ?? {}) as VectorLayerStyle) : asStyle(layer.style),
+    ...(overlayFamily ? { overlayFamily } : {}),
   };
 }
 

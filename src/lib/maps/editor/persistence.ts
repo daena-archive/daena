@@ -1,7 +1,19 @@
-import { collectionBytes, sha256Hex } from "../native-vector/source";
-import type { VectorFeatureCollection } from "../native-vector/types";
+import { collectionBytes, isReservedPhysicalLayerId, sha256Hex } from "../native-vector/source";
+import type { MapLayerDefinition, VectorFeatureCollection, VectorLayerStyle } from "../native-vector/types";
 import { layersFieldValue } from "./commands";
 import type { MapDocument } from "./model";
+
+const PHYSICAL_LAYER_STYLE_KEYS = ["fill", "fillOpacity", "stroke", "strokeWidth", "pointRadius"] as const;
+
+function canonicalizeLayerForSave(layer: MapLayerDefinition): MapLayerDefinition {
+  if (!isReservedPhysicalLayerId(layer.id) || layer.kind !== "vector") return layer;
+  const style = {} as VectorLayerStyle;
+  for (const key of PHYSICAL_LAYER_STYLE_KEYS) {
+    if (layer.style[key] !== undefined) (style as Record<string, unknown>)[key] = layer.style[key];
+  }
+  const { overlayFamily: _overlayFamily, ...rest } = layer;
+  return { ...rest, style };
+}
 
 export type MapEditDraftPackage = {
   schemaVersion: 1;
@@ -14,7 +26,7 @@ export type MapEditDraftPackage = {
 };
 
 export function encodeLayersField(document: MapDocument) {
-  return layersFieldValue(document.layers);
+  return layersFieldValue(document.layers.map(canonicalizeLayerForSave));
 }
 
 export function encodeGeoJsonBytes(collection: VectorFeatureCollection): Uint8Array {

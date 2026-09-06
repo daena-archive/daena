@@ -758,8 +758,10 @@ export interface AtlasStudioInspectResult {
 }
 export interface AtlasRegionProposal {
   detector: string;
+  regionId: number;
   label: string;
   epochDependent: boolean;
+  cellCount: number;
   geometry: { type: "Polygon"; coordinates: number[][][] } | { type: "MultiPolygon"; coordinates: number[][][][] };
 }
 export type { PlanetaryConfiguration, PlanetaryPreset };

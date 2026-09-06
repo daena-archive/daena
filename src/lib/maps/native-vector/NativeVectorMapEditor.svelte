@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount, tick, type Component } from "svelte";
+import { onMount, tick, untrack, type Component } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
   ChevronDown,
@@ -116,6 +116,25 @@ import {
   type AtlasOverlayAuthoring,
   type OverlayFamily,
 } from "../atlas/overlay-family.ts";
+import LandmassSelectionBar from "../physical/LandmassSelectionBar.svelte";
+import {
+  combineModeFromModifiers,
+  combineSelection,
+  displayLandmassGeometry,
+  featureFromSelection,
+  hoverCoversPoint,
+  hoverIsRedundant,
+  hoverPreviewFeature,
+  invertSelection,
+  LANDMASS_HOVER_DELAY_MS,
+  occupiedGeometries,
+  previewFeature,
+  selectionFromProposal,
+  selectionMinusOccupied,
+  withGeometry,
+  type LandmassSelection,
+} from "../physical/landmass-selection.ts";
+import type { AtlasRegionProposal } from "$lib/project/types";
 import DetachPhysicalLayerDialog from "../physical/DetachPhysicalLayerDialog.svelte";
 import {
   buildPhysicalDetachPlan,
@@ -295,6 +314,27 @@ let simplifyTolerance = $state("0.5");
 let operationNotice = $state("");
 let layersCollapsed = $state(false);
 let overlayCreateFamily = $state<OverlayFamily>("political");
+let landmassSelection = $state<LandmassSelection | null>(null);
+let includeOccupied = $state(false);
+let landmassHover = $state<LandmassSelection | null>(null);
+let landmassHoverTimer: ReturnType<typeof setTimeout> | undefined;
+let landmassHoverRequest = 0;
+let landmassHint = $state("");
+let landmassBusy = $state(false);
+let landmassRequest = 0;
+let landGeometryCache: {
+  mapId: string;
+  epoch: number;
+  generation: string;
+  proposal: AtlasRegionProposal;
+} | null = null;
+const landmassWorldKey = $derived(
+  JSON.stringify(
+    mapField?.value && typeof mapField.value === "object" && "generation" in mapField.value
+      ? (mapField.value as { generation?: unknown }).generation
+      : null,
+  ),
+);
 let historyCollapsed = $state(true);
 let epochEra = $state<"past" | "future">("past");
 let epochYearsAbs = $state(0);
@@ -1299,6 +1339,19 @@ function mountEditor() {
     get pickArmed() {
       return pickArmed;
     },
+    onCoordinateClick(authored, modifiers) {
+      if (tool !== "landmass") return false;
+      clearLandmassHover();
+      void selectLandmassAt(authored[0], authored[1], combineModeFromModifiers(modifiers.shiftKey, modifiers.altKey));
+      return true;
+    },
+    onCoordinateHover(authored) {
+      if (tool !== "landmass" || !authored) {
+        clearLandmassHover();
+        return;
+      }
+      scheduleLandmassHover(authored[0], authored[1]);
+    },
     onMapPick(anchor) {
       if (picking && onpick) {
         onpick(anchor);
@@ -1326,7 +1379,12 @@ function mountEditor() {
   }
   editor = created;
   syncSnapToEditor();
-  editor.setMode(canDraw || tool === "select" || tool === "static" || tool.startsWith("measure-") ? tool : "static");
+  editor.setMode(
+    canDraw || tool === "select" || tool === "static" || tool === "landmass" || tool.startsWith("measure-")
+      ? tool
+      : "static",
+  );
+  paintLandmassPreview();
   requestAnimationFrame(() => editor?.resize());
   publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
 }
@@ -1600,7 +1658,7 @@ function toggleSnapTargetLayer(layerId: string) {
 function cancelGeometryPreview() {
   geometryPreview = null;
   operationNotice = "";
-  editor?.setGeometryPreview(null);
+  paintLandmassPreview();
 }
 
 function startGeometryOperation(operation: GeometryOperationKind) {
@@ -1658,12 +1716,17 @@ function updateMeasureFromSelection() {
 }
 
 function setTool(next: VectorDrawMode) {
-  if (!canDraw && next !== "static" && next !== "select" && !next.startsWith("measure-")) return;
+  if (!canDraw && next !== "static" && next !== "select" && next !== "landmass" && !next.startsWith("measure-")) return;
   cancelGeometryPreview();
+  if (next !== "landmass") clearLandmassHover();
   tool = next;
   measureReadout = "";
   editor?.clearMeasure();
-  editor?.setMode(!canDraw && !next.startsWith("measure-") ? "static" : next);
+  editor?.setMode(
+    canDraw || next === "select" || next === "static" || next === "landmass" || next.startsWith("measure-")
+      ? next
+      : "static",
+  );
   if (next === "measure-length" || next === "measure-area") updateMeasureFromSelection();
 }
 
@@ -1676,8 +1739,8 @@ function switchLayer(layerId: string) {
   editor?.setMode(tool);
 }
 
-function createOverlayLayer(family: OverlayFamily) {
-  if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return;
+function createOverlayLayer(family: OverlayFamily): string | null {
+  if (!commandStack || layers.filter(isVectorLayer).length >= VECTOR_MAX_LAYERS) return null;
   const built = buildCreateOverlayLayer(
     commandStack.document,
     nextOverlayLayerName(layers, family),
@@ -1686,6 +1749,219 @@ function createOverlayLayer(family: OverlayFamily) {
   );
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
+  return built.layer.id;
+}
+
+function activeOccupiedGeometries() {
+  const layerId = overlayAuthoring?.activeLayerId;
+  if (!layerId) return [];
+  return occupiedGeometries(overlayFeatures.filter((feature) => feature.properties.daena.layerId === layerId));
+}
+
+function displayLandmass(selection: LandmassSelection) {
+  const geometry = displayLandmassGeometry(selection, activeOccupiedGeometries(), includeOccupied);
+  return geometry ? withGeometry(selection, geometry) : null;
+}
+
+function paintLandmassPreview() {
+  if (geometryPreview) return;
+  const features = [];
+  if (landmassHover && !hoverIsRedundant(landmassHover, landmassSelection)) {
+    const hover = displayLandmass(landmassHover);
+    if (hover) features.push(hoverPreviewFeature(hover));
+  }
+  if (landmassSelection) {
+    const selected = displayLandmass(landmassSelection);
+    if (selected) features.push(previewFeature(selected));
+  }
+  editor?.setGeometryPreview(features.length ? features : null);
+}
+
+function clearLandmassHover() {
+  landmassHoverRequest += 1;
+  if (landmassHoverTimer) {
+    clearTimeout(landmassHoverTimer);
+    landmassHoverTimer = undefined;
+  }
+  if (!landmassHover) return;
+  landmassHover = null;
+  paintLandmassPreview();
+}
+
+function scheduleLandmassHover(longitude: number, latitude: number) {
+  if (tool !== "landmass" || landmassBusy) return;
+  if (hoverCoversPoint(landmassHover, longitude, latitude)) return;
+  if (hoverCoversPoint(landmassSelection, longitude, latitude)) {
+    clearLandmassHover();
+    return;
+  }
+  if (landmassHoverTimer) clearTimeout(landmassHoverTimer);
+  landmassHoverTimer = setTimeout(() => void hoverLandmassAt(longitude, latitude), LANDMASS_HOVER_DELAY_MS);
+}
+
+async function hoverLandmassAt(longitude: number, latitude: number) {
+  const epoch = appliedEpochOffsetYears;
+  const currentMap = mapId;
+  const generation = landmassWorldKey;
+  if (!currentMap || tool !== "landmass" || landmassBusy) return;
+  if (hoverCoversPoint(landmassHover, longitude, latitude)) return;
+  const request = ++landmassHoverRequest;
+  try {
+    const proposal = await project.physicalProposeRegion(
+      currentMap,
+      epoch,
+      Math.round(longitude * 1_000_000),
+      Math.round(latitude * 1_000_000),
+      "landmass",
+    );
+    if (
+      request !== landmassHoverRequest ||
+      tool !== "landmass" ||
+      appliedEpochOffsetYears !== epoch ||
+      mapId !== currentMap ||
+      landmassWorldKey !== generation
+    ) {
+      return;
+    }
+    const next = selectionFromProposal(proposal, epoch);
+    landmassHover = hoverIsRedundant(next, landmassSelection) ? null : next;
+    paintLandmassPreview();
+  } catch {
+    if (request !== landmassHoverRequest) return;
+    clearLandmassHover();
+  }
+}
+
+function clearLandmassSelection(hint = "") {
+  landmassRequest += 1;
+  landmassBusy = false;
+  landmassSelection = null;
+  landGeometryCache = null;
+  landmassHint = hint;
+  clearLandmassHover();
+  paintLandmassPreview();
+}
+
+function commitLandmassToLayer(layerId: string, subtractOccupied = false) {
+  const selection = landmassSelection;
+  if (!selection) return;
+  const prepared = subtractOccupied
+    ? selectionMinusOccupied(selection, activeOccupiedGeometries(), includeOccupied)
+    : { ok: true as const, selection };
+  if (!prepared.ok) {
+    landmassHint = prepared.detail;
+    return;
+  }
+  addOverlayFeature(featureFromSelection(prepared.selection, layerId));
+  landmassHint = `${selection.label} added. Set its color, then save.`;
+  landmassSelection = null;
+  clearLandmassHover();
+  paintLandmassPreview();
+  setTool("select");
+}
+
+function createFromLandmassSelection() {
+  if (!landmassSelection) return;
+  const layerId = createOverlayLayer(overlayCreateFamily);
+  if (!layerId) {
+    landmassHint = "Could not create overlay.";
+    return;
+  }
+  commitLandmassToLayer(layerId);
+}
+
+function addFromLandmassSelection() {
+  const layer = overlayLayers.find((item) => item.id === overlayAuthoring?.activeLayerId);
+  if (!layer || layer.locked || !layer.defaultVisible) {
+    landmassHint = "Create or select an unlocked overlay first.";
+    return;
+  }
+  commitLandmassToLayer(layer.id, true);
+}
+
+async function invertLandmassSelection() {
+  const selection = landmassSelection;
+  const epoch = appliedEpochOffsetYears;
+  const generation = landmassWorldKey;
+  const currentMap = mapId;
+  if (!selection || !currentMap || landmassBusy) return;
+  const request = ++landmassRequest;
+  landmassBusy = true;
+  landmassHint = "Inverting selection…";
+  try {
+    let land =
+      landGeometryCache?.mapId === currentMap &&
+      landGeometryCache.epoch === epoch &&
+      landGeometryCache.generation === generation
+        ? landGeometryCache.proposal
+        : null;
+    if (!land) {
+      land = await project.physicalProposeRegion(currentMap, epoch, 0, 0, "land");
+      if (
+        request !== landmassRequest ||
+        appliedEpochOffsetYears !== epoch ||
+        mapId !== currentMap ||
+        landmassWorldKey !== generation
+      ) {
+        return;
+      }
+      landGeometryCache = { mapId: currentMap, epoch, generation, proposal: land };
+    }
+    if (request !== landmassRequest) return;
+    const next = invertSelection(selection, land);
+    if (!next.ok) {
+      landmassHint = next.detail;
+      return;
+    }
+    landmassSelection = next.selection;
+    landmassHint = next.selection ? "Selection inverted over all land." : "Selection cleared.";
+    paintLandmassPreview();
+  } catch (cause) {
+    if (request !== landmassRequest) return;
+    landmassHint = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (request === landmassRequest) landmassBusy = false;
+  }
+}
+
+async function selectLandmassAt(longitude: number, latitude: number, mode: "replace" | "add" | "subtract") {
+  const epoch = appliedEpochOffsetYears;
+  const currentMap = mapId;
+  const generation = landmassWorldKey;
+  if (!currentMap || landmassBusy) return;
+  const request = ++landmassRequest;
+  landmassBusy = true;
+  landmassHint = "Selecting landmass…";
+  try {
+    const proposal = await project.physicalProposeRegion(
+      currentMap,
+      epoch,
+      Math.round(longitude * 1_000_000),
+      Math.round(latitude * 1_000_000),
+      "landmass",
+    );
+    if (
+      request !== landmassRequest ||
+      appliedEpochOffsetYears !== epoch ||
+      mapId !== currentMap ||
+      landmassWorldKey !== generation
+    ) {
+      return;
+    }
+    const next = combineSelection(landmassSelection, proposal, epoch, mode);
+    if (!next.ok) {
+      landmassHint = next.detail;
+      return;
+    }
+    landmassSelection = next.selection;
+    landmassHint = next.selection ? "Landmass selected. Shift-click adds, Alt-click subtracts." : "Selection cleared.";
+    paintLandmassPreview();
+  } catch (cause) {
+    if (request !== landmassRequest) return;
+    landmassHint = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (request === landmassRequest) landmassBusy = false;
+  }
 }
 
 function setOverlayActiveLayer(id: string) {
@@ -2098,7 +2374,40 @@ $effect(() => {
   if ((picking || linkArming) && editor) editor.setMode("static");
 });
 
+$effect(() => {
+  appliedEpochOffsetYears;
+  untrack(() => {
+    if (landmassHover) clearLandmassHover();
+    if (landmassSelection && landmassSelection.epochOffsetYears !== appliedEpochOffsetYears) {
+      clearLandmassSelection("Landmass selection cleared because the epoch changed.");
+    }
+  });
+});
+
+$effect(() => {
+  mapId;
+  landmassWorldKey;
+  untrack(() => {
+    if (landmassSelection || landGeometryCache || landmassHover) {
+      clearLandmassSelection("Landmass selection cleared because the map changed.");
+    }
+  });
+});
+
+$effect(() => {
+  includeOccupied;
+  overlayAuthoring?.activeLayerId;
+  overlayFeatures;
+  untrack(() => paintLandmassPreview());
+});
+
 function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape" && (landmassSelection || tool === "landmass")) {
+    event.preventDefault();
+    if (landmassSelection) clearLandmassSelection();
+    else setTool("select");
+    return;
+  }
   if (event.key === "Escape" && linkPanelOpen) {
     event.preventDefault();
     closeLinkPanel();
@@ -2317,6 +2626,17 @@ onMount(() => {
             title="Freehand"
             disabled={!canDraw}
             onclick={() => setTool("freehand")}><Pencil {...iconProps} /></button>
+          {#if physicalMap}
+            <button
+              type="button"
+              class="icon-button"
+              class:active={tool === "landmass"}
+              aria-pressed={tool === "landmass"}
+              aria-label="Landmass"
+              title="Select landmass. Shift adds, Alt subtracts."
+              disabled={!mapId}
+              onclick={() => setTool("landmass")}><Mountain {...iconProps} /></button>
+          {/if}
           <button
             type="button"
             class="icon-button"
@@ -2931,8 +3251,32 @@ onMount(() => {
                         New overlay
                       </button>
                     </div>
+                    {#if physicalMap}
+                      <LandmassSelectionBar
+                        selection={landmassSelection}
+                        canCreate={!busy}
+                        canAdd={Boolean(
+                          overlayLayers.find((layer) => layer.id === overlayAuthoring?.activeLayerId) &&
+                          !overlayLayers.find((layer) => layer.id === overlayAuthoring?.activeLayerId)?.locked &&
+                          overlayLayers.find((layer) => layer.id === overlayAuthoring?.activeLayerId)?.defaultVisible,
+                        ) && !(landmassSelection && !includeOccupied && !displayLandmass(landmassSelection))}
+                        busy={busy || landmassBusy}
+                        hint={landmassHint ||
+                          (tool === "landmass" ? "Click land to select the connected landmass at this epoch." : "")}
+                        bind:includeOccupied
+                        showIncludeOccupied={activeOccupiedGeometries().length > 0}
+                        covered={Boolean(landmassSelection && !includeOccupied && !displayLandmass(landmassSelection))}
+                        oncreate={createFromLandmassSelection}
+                        onadd={addFromLandmassSelection}
+                        oninvert={() => void invertLandmassSelection()}
+                        onclear={() => clearLandmassSelection()} />
+                    {/if}
                     {#if overlayLayers.length === 0}
-                      <p class="empty-note">Create an overlay to draw political, cultural, or other regions.</p>
+                      <p class="empty-note">
+                        {physicalMap
+                          ? "Select a landmass, then create an overlay, or create an overlay and draw."
+                          : "Create an overlay to draw political, cultural, or other regions."}
+                      </p>
                     {:else}
                       <div class="layer-list" role="list">
                         {#each overlayLayers as layer (layer.id)}

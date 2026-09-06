@@ -14,6 +14,7 @@ export type VectorDrawMode =
   | "polygon"
   | "rectangle"
   | "freehand"
+  | "landmass"
   | "measure-distance"
   | "measure-length"
   | "measure-area";

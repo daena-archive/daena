@@ -454,6 +454,20 @@ export const project = {
       epochOffsetYears,
       query,
     }),
+  physicalProposeRegion: (
+    mapEntityId: string,
+    epochOffsetYears: number,
+    lonMicro: number,
+    latMicro: number,
+    detector: "landmass" | "watershed" | "land",
+  ) =>
+    invoke<AtlasRegionProposal>("project_physical_propose_region", {
+      mapEntityId,
+      epochOffsetYears,
+      lonMicro,
+      latMicro,
+      detector,
+    }),
   physicalMaterializeEvents: (
     mapEntityId: string,
     input: PhysicalEventMaterializationRequest,
@@ -495,7 +509,7 @@ export const project = {
     sessionToken: string,
     lonMicro: number,
     latMicro: number,
-    detector: "landmass" | "watershed",
+    detector: "landmass" | "watershed" | "land",
   ) =>
     invoke<AtlasRegionProposal>("project_atlas_studio_propose_region", {
       input: { sessionToken, lonMicro, latMicro, detector },

@@ -45,6 +45,7 @@ import {
   toMicrodegrees,
 } from "../physical/route-suggest.ts";
 import type {
+  AtlasRegionProposal,
   FindPlaceCandidate,
   FindPlaceQuery,
   FindPlaceResult,
@@ -61,11 +62,30 @@ import AtlasOverlayPanel from "./AtlasOverlayPanel.svelte";
 import { simplifyFreehandGeometry } from "../native-vector/geometry.ts";
 import { daenaProperties, type VectorFeature } from "../native-vector/types.ts";
 import {
+  combineModeFromModifiers,
+  combineSelection,
+  displayLandmassGeometry,
+  featureFromSelection,
+  hoverCoversPoint,
+  hoverIsRedundant,
+  hoverPreviewFeature,
+  invertSelection,
+  occupiedGeometries,
+  HOVER_PREVIEW_ID,
+  LANDMASS_HOVER_DELAY_MS,
+  previewFeature,
+  selectionFromProposal,
+  selectionMinusOccupied,
+  withGeometry,
+  type LandmassSelection,
+} from "../physical/landmass-selection.ts";
+import {
   overlayFamilyLabel,
   overlayFeaturesForLayer,
   overlayLayerFamily,
   type AtlasOverlayAuthoring,
   type OverlayDrawTool,
+  type OverlayFamily,
 } from "./overlay-family.ts";
 
 const EPOCH_MIN = -100_000;
@@ -214,12 +234,27 @@ let routeSource: VectorSource | null = null;
 let routeLayer: VectorLayer | null = null;
 let overlaySource: VectorSource | null = null;
 let overlayLayer: VectorLayer | null = null;
+let landmassSource: VectorSource | null = null;
+let landmassLayer: VectorLayer | null = null;
 let overlayDraw: Draw | null = null;
 let overlayTool = $state<OverlayDrawTool>("select");
 let overlaySelectedId = $state<string | null>(null);
 let overlayDetectHint = $state("");
 let overlayDetectBusy = false;
+let landmassRequest = 0;
 let overlaySyncing = false;
+let overlayCreateFamily = $state<OverlayFamily>("political");
+let landmassSelection = $state<LandmassSelection | null>(null);
+let includeOccupied = $state(false);
+let landmassHover = $state<LandmassSelection | null>(null);
+let landmassHoverTimer: ReturnType<typeof setTimeout> | undefined;
+let landmassHoverRequest = 0;
+let landGeometryCache: {
+  mapId: string;
+  epoch: number;
+  generation: number;
+  proposal: AtlasRegionProposal;
+} | null = null;
 let mapLifecycle: MapLifecycle | undefined;
 let opening = false;
 let reopenPending = false;
@@ -570,6 +605,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       layers: [
         new TileLayer({ source: tileSource, preload: 1 }),
         authoredOverlayLayer(),
+        landmassSelectionLayer(),
         routeOverlayLayer(),
         findPlaceOverlayLayer(),
       ],
@@ -593,8 +629,14 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   map.on("pointermove", (event) => {
     const [longitude, latitude] = toLonLat(event.coordinate);
     cursor = `${longitude.toFixed(4)}°, ${latitude.toFixed(4)}°`;
-    scheduleInspect(longitude, latitude);
+    if (overlayTool === "landmass") {
+      if (!event.dragging) scheduleLandmassHover(longitude, latitude);
+    } else {
+      clearLandmassHover();
+      scheduleInspect(longitude, latitude);
+    }
   });
+  map.getViewport().addEventListener("pointerleave", () => clearLandmassHover());
   map.on("singleclick", (event) => {
     if (inspectHover) clearTimeout(inspectHover);
     const suggestionId = map?.forEachFeatureAtPixel(event.pixel, (feature) => feature.get("suggestionId"));
@@ -619,8 +661,15 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       inspectAt(longitude, latitude);
       return;
     }
-    if (overlayTool === "landmass" || overlayTool === "watershed") {
-      void acceptDetectedRegion(longitude, latitude, overlayTool);
+    if (overlayTool === "landmass") {
+      clearLandmassHover();
+      const origin = event.originalEvent;
+      void selectDetectedRegion(
+        longitude,
+        latitude,
+        Boolean(origin && "shiftKey" in origin && origin.shiftKey),
+        Boolean(origin && "altKey" in origin && origin.altKey),
+      );
       return;
     }
     if (overlayTool === "select") {
@@ -992,6 +1041,10 @@ function onViewportKey(event: KeyboardEvent) {
     inspectAt(center[0], center[1], true);
   } else if (event.key === "Escape") {
     event.preventDefault();
+    if (landmassSelection) {
+      clearLandmassSelection();
+      return;
+    }
     if (routingArming || routeSearching || routeResult || routeError) {
       clearRouting();
       return;
@@ -1214,38 +1267,250 @@ function syncOverlayDraw() {
   map.addInteraction(overlayDraw);
 }
 
-async function acceptDetectedRegion(longitude: number, latitude: number, detector: "landmass" | "watershed") {
-  const token = session?.sessionToken;
+function landmassPreviewStyle(feature: { getId: () => unknown }) {
+  const hover = String(feature.getId() ?? "") === HOVER_PREVIEW_ID;
+  return new Style({
+    fill: new Fill({ color: hover ? "rgba(243, 211, 154, 0.12)" : "rgba(243, 211, 154, 0.28)" }),
+    stroke: new Stroke({ color: "#f3d39a", width: hover ? 1.5 : 2, lineDash: hover ? [4, 4] : [6, 4] }),
+  });
+}
+
+function landmassSelectionLayer() {
+  landmassSource = new VectorSource();
+  landmassLayer = new VectorLayer({
+    source: landmassSource,
+    zIndex: 11,
+    style: (feature) => landmassPreviewStyle(feature),
+  });
+  paintLandmassSelection();
+  return landmassLayer;
+}
+
+function activeOccupiedGeometries() {
   const authoring = overlayAuthoring;
   const layerId = authoring?.activeLayerId;
-  if (!token || !authoring || !layerId) {
-    overlayDetectHint = "Create an overlay first.";
+  if (!authoring || !layerId) return [];
+  return occupiedGeometries(overlayFeaturesForLayer(authoring.features, layerId));
+}
+
+function paintLandmassItem(selection: LandmassSelection, hover: boolean) {
+  if (!landmassSource) return;
+  const geometry = displayLandmassGeometry(selection, activeOccupiedGeometries(), includeOccupied);
+  if (!geometry) return;
+  const olFeature = readOlOverlayFeature(
+    hover ? hoverPreviewFeature(withGeometry(selection, geometry)) : previewFeature(withGeometry(selection, geometry)),
+  );
+  if (olFeature) landmassSource.addFeature(olFeature);
+}
+
+function paintLandmassSelection() {
+  if (!landmassSource) return;
+  landmassSource.clear();
+  if (landmassHover && !hoverIsRedundant(landmassHover, landmassSelection)) {
+    paintLandmassItem(landmassHover, true);
+  }
+  if (landmassSelection) paintLandmassItem(landmassSelection, false);
+  landmassLayer?.changed();
+}
+
+function clearLandmassHover() {
+  landmassHoverRequest += 1;
+  if (landmassHoverTimer) {
+    clearTimeout(landmassHoverTimer);
+    landmassHoverTimer = undefined;
+  }
+  if (!landmassHover) return;
+  landmassHover = null;
+  paintLandmassSelection();
+}
+
+function scheduleLandmassHover(longitude: number, latitude: number) {
+  if (overlayTool !== "landmass" || overlayDetectBusy || !landmassHydrologyReady()) return;
+  if (hoverCoversPoint(landmassHover, longitude, latitude)) return;
+  if (hoverCoversPoint(landmassSelection, longitude, latitude)) {
+    clearLandmassHover();
     return;
   }
-  if (overlayDetectBusy) return;
-  overlayDetectBusy = true;
-  overlayDetectHint = detector === "landmass" ? "Selecting landmass…" : "Selecting watershed…";
+  if (landmassHoverTimer) clearTimeout(landmassHoverTimer);
+  landmassHoverTimer = setTimeout(() => void hoverLandmassAt(longitude, latitude), LANDMASS_HOVER_DELAY_MS);
+}
+
+async function hoverLandmassAt(longitude: number, latitude: number) {
+  const token = session?.sessionToken;
+  const epoch = offsetYears;
+  const generation = session?.capturedContentGeneration;
+  if (!token || overlayTool !== "landmass" || overlayDetectBusy || !landmassHydrologyReady() || generation == null) {
+    return;
+  }
+  if (hoverCoversPoint(landmassHover, longitude, latitude)) return;
+  const request = ++landmassHoverRequest;
   try {
-    const proposal = await project.atlasStudioProposeRegion(token, toMicro(longitude), toMicro(latitude), detector);
-    const feature: VectorFeature = {
-      type: "Feature",
-      id: crypto.randomUUID(),
-      properties: daenaProperties(layerId, "region", proposal.label),
-      geometry: proposal.geometry,
-    };
-    feature.properties.daena.custom = {
-      detector: proposal.detector,
-      epochDependent: proposal.epochDependent,
-      capturedOffsetYears: offsetYears,
-    };
-    overlaySelectedId = feature.id;
-    overlayDetectHint = `${proposal.label} added. Set its color, then save.`;
-    authoring.addFeature(feature);
-    paintOverlayFeature(feature);
+    const proposal = await project.atlasStudioProposeRegion(token, toMicro(longitude), toMicro(latitude), "landmass");
+    if (
+      request !== landmassHoverRequest ||
+      overlayTool !== "landmass" ||
+      session?.sessionToken !== token ||
+      offsetYears !== epoch ||
+      session?.capturedContentGeneration !== generation ||
+      !landmassHydrologyReady()
+    ) {
+      return;
+    }
+    const next = selectionFromProposal(proposal, epoch);
+    landmassHover = hoverIsRedundant(next, landmassSelection) ? null : next;
+    paintLandmassSelection();
+  } catch {
+    if (request !== landmassHoverRequest) return;
+    clearLandmassHover();
+  }
+}
+
+function clearLandmassSelection(hint = "") {
+  landmassRequest += 1;
+  overlayDetectBusy = false;
+  landmassSelection = null;
+  landGeometryCache = null;
+  overlayDetectHint = hint;
+  clearLandmassHover();
+  paintLandmassSelection();
+}
+
+function commitLandmassSelection(layerId: string, subtractOccupied = false) {
+  const authoring = overlayAuthoring;
+  const selection = landmassSelection;
+  if (!authoring || !selection) return;
+  const prepared = subtractOccupied
+    ? selectionMinusOccupied(selection, activeOccupiedGeometries(), includeOccupied)
+    : { ok: true as const, selection };
+  if (!prepared.ok) {
+    overlayDetectHint = prepared.detail;
+    return;
+  }
+  const feature = featureFromSelection(prepared.selection, layerId);
+  overlaySelectedId = feature.id;
+  authoring.addFeature(feature);
+  paintOverlayFeature(feature);
+  overlayTool = "select";
+  overlayDetectHint = `${selection.label} added. Set its color, then save.`;
+  landmassSelection = null;
+  clearLandmassHover();
+  paintLandmassSelection();
+}
+
+function createFromLandmassSelection() {
+  const authoring = overlayAuthoring;
+  if (!authoring || !landmassSelection) return;
+  const layerId = authoring.createLayer(overlayCreateFamily);
+  if (!layerId) {
+    overlayDetectHint = "Could not create overlay.";
+    return;
+  }
+  commitLandmassSelection(layerId);
+}
+
+function addFromLandmassSelection() {
+  const authoring = overlayAuthoring;
+  const layerId = authoring?.activeLayerId;
+  const layer = authoring?.layers.find((item) => item.id === layerId);
+  if (!authoring || !layerId || !layer || layer.locked || !layer.defaultVisible) {
+    overlayDetectHint = "Create or select an unlocked overlay first.";
+    return;
+  }
+  commitLandmassSelection(layerId, true);
+}
+
+function landmassHydrologyReady() {
+  return Boolean(session && session.mapEntityId === mapId && session.offsetYears === offsetYears);
+}
+
+async function invertLandmassSelection() {
+  const selection = landmassSelection;
+  const token = session?.sessionToken;
+  const epoch = offsetYears;
+  const generation = session?.capturedContentGeneration;
+  if (!selection || !token || overlayDetectBusy) return;
+  if (!landmassHydrologyReady() || generation == null) {
+    overlayDetectHint = "Wait for the epoch to finish updating.";
+    return;
+  }
+  const request = ++landmassRequest;
+  overlayDetectBusy = true;
+  overlayDetectHint = "Inverting selection…";
+  try {
+    let land =
+      landGeometryCache?.mapId === mapId &&
+      landGeometryCache.epoch === epoch &&
+      landGeometryCache.generation === generation
+        ? landGeometryCache.proposal
+        : null;
+    if (!land) {
+      land = await project.atlasStudioProposeRegion(token, 0, 0, "land");
+      if (
+        request !== landmassRequest ||
+        session?.sessionToken !== token ||
+        offsetYears !== epoch ||
+        session?.capturedContentGeneration !== generation ||
+        !landmassHydrologyReady()
+      ) {
+        return;
+      }
+      landGeometryCache = { mapId, epoch, generation, proposal: land };
+    }
+    if (request !== landmassRequest) return;
+    const next = invertSelection(selection, land);
+    if (!next.ok) {
+      overlayDetectHint = next.detail;
+      return;
+    }
+    landmassSelection = next.selection;
+    overlayDetectHint = next.selection ? "Selection inverted over all land." : "Selection cleared.";
+    paintLandmassSelection();
   } catch (cause) {
+    if (request !== landmassRequest) return;
     overlayDetectHint = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    overlayDetectBusy = false;
+    if (request === landmassRequest) overlayDetectBusy = false;
+  }
+}
+
+async function selectDetectedRegion(longitude: number, latitude: number, shiftKey: boolean, altKey: boolean) {
+  const token = session?.sessionToken;
+  const epoch = offsetYears;
+  const generation = session?.capturedContentGeneration;
+  if (!token || overlayDetectBusy) return;
+  if (!landmassHydrologyReady() || generation == null) {
+    overlayDetectHint = "Wait for the epoch to finish updating.";
+    return;
+  }
+  const request = ++landmassRequest;
+  overlayDetectBusy = true;
+  overlayDetectHint = "Selecting landmass…";
+  try {
+    const proposal = await project.atlasStudioProposeRegion(token, toMicro(longitude), toMicro(latitude), "landmass");
+    if (
+      request !== landmassRequest ||
+      session?.sessionToken !== token ||
+      offsetYears !== epoch ||
+      session?.capturedContentGeneration !== generation ||
+      !landmassHydrologyReady()
+    ) {
+      return;
+    }
+    const next = combineSelection(landmassSelection, proposal, epoch, combineModeFromModifiers(shiftKey, altKey));
+    if (!next.ok) {
+      overlayDetectHint = next.detail;
+      return;
+    }
+    landmassSelection = next.selection;
+    overlayDetectHint = next.selection
+      ? "Landmass selected. Shift-click adds, Alt-click subtracts."
+      : "Selection cleared.";
+    paintLandmassSelection();
+  } catch (cause) {
+    if (request !== landmassRequest) return;
+    overlayDetectHint = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (request === landmassRequest) overlayDetectBusy = false;
   }
 }
 
@@ -1615,6 +1880,26 @@ $effect(() => {
 });
 
 $effect(() => {
+  offsetYears;
+  untrack(() => {
+    if (landmassHover) clearLandmassHover();
+    if (landmassSelection && landmassSelection.epochOffsetYears !== offsetYears) {
+      clearLandmassSelection("Landmass selection cleared because the epoch changed.");
+    }
+  });
+});
+
+$effect(() => {
+  mapId;
+  session?.capturedContentGeneration;
+  untrack(() => {
+    if (landmassSelection || landGeometryCache || landmassHover) {
+      clearLandmassSelection("Landmass selection cleared because the map changed.");
+    }
+  });
+});
+
+$effect(() => {
   overlaySelectedId;
   overlayAuthoring?.layers;
   overlayAuthoring?.features;
@@ -1630,9 +1915,17 @@ $effect(() => {
 });
 
 $effect(() => {
+  includeOccupied;
+  overlayAuthoring?.activeLayerId;
+  overlayAuthoring?.features;
+  untrack(() => paintLandmassSelection());
+});
+
+$effect(() => {
   overlayTool;
   overlayAuthoring?.activeLayerId;
   untrack(() => {
+    if (overlayTool !== "landmass") clearLandmassHover();
     if (overlayTool !== "select" && (routingArming || routeSearching || routeResult || routeError)) {
       clearRouting();
     }
@@ -1774,7 +2067,21 @@ onDestroy(() => {
           authoring={overlayAuthoring}
           bind:tool={overlayTool}
           bind:selectedFeatureId={overlaySelectedId}
-          bind:detectHint={overlayDetectHint} />
+          bind:detectHint={overlayDetectHint}
+          bind:createFamily={overlayCreateFamily}
+          selection={landmassSelection}
+          bind:includeOccupied
+          showIncludeOccupied={activeOccupiedGeometries().length > 0}
+          covered={Boolean(
+            landmassSelection &&
+            !includeOccupied &&
+            activeOccupiedGeometries().length > 0 &&
+            !displayLandmassGeometry(landmassSelection, activeOccupiedGeometries(), false),
+          )}
+          onCreateFromSelection={createFromLandmassSelection}
+          onAddFromSelection={addFromLandmassSelection}
+          onInvertSelection={() => void invertLandmassSelection()}
+          onClearSelection={() => clearLandmassSelection()} />
       {/if}
       <section class="place" aria-label="Place" aria-live="polite">
         <div class="place-head">

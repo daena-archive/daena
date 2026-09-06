@@ -9,7 +9,7 @@ import {
 
 export type { OverlayFamily };
 
-export type OverlayDrawTool = "select" | "freehand" | "polygon" | "landmass" | "watershed";
+export type OverlayDrawTool = "select" | "freehand" | "polygon" | "landmass";
 
 export const OVERLAY_FAMILIES: readonly OverlayFamily[] = [
   "political",
@@ -49,7 +49,7 @@ export type AtlasOverlayAuthoring = {
   canUndo: boolean;
   canRedo: boolean;
   busy: boolean;
-  createLayer: (family: OverlayFamily) => void;
+  createLayer: (family: OverlayFamily) => string | null;
   setActiveLayer: (id: string) => void;
   renameLayer: (id: string, name: string) => void;
   deleteLayer: (id: string) => void;

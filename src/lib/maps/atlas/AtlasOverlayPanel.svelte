@@ -1,6 +1,8 @@
 <script lang="ts">
 import { Hexagon, MousePointer2, Pencil, Redo2, Save, Trash2, Undo2 } from "@lucide/svelte";
 import { featureName } from "../native-vector/types";
+import LandmassSelectionBar from "../physical/LandmassSelectionBar.svelte";
+import type { LandmassSelection } from "../physical/landmass-selection.ts";
 import {
   OVERLAY_FAMILIES,
   overlayFamilyLabel,
@@ -15,11 +17,29 @@ let {
   tool = $bindable("select"),
   selectedFeatureId = $bindable(null),
   detectHint = $bindable(""),
+  createFamily = $bindable("political"),
+  selection = null,
+  includeOccupied = $bindable(false),
+  showIncludeOccupied = false,
+  covered = false,
+  onCreateFromSelection,
+  onAddFromSelection,
+  onInvertSelection,
+  onClearSelection,
 }: {
   authoring: AtlasOverlayAuthoring;
   tool?: OverlayDrawTool;
   selectedFeatureId?: string | null;
   detectHint?: string;
+  createFamily?: OverlayFamily;
+  selection?: LandmassSelection | null;
+  includeOccupied?: boolean;
+  showIncludeOccupied?: boolean;
+  covered?: boolean;
+  onCreateFromSelection?: () => void;
+  onAddFromSelection?: () => void;
+  onInvertSelection?: () => void;
+  onClearSelection?: () => void;
 } = $props();
 
 function setTool(next: OverlayDrawTool, hint: string) {
@@ -39,8 +59,6 @@ const regionStyle = $derived({
   stroke: selected?.properties.daena.style?.stroke ?? activeLayer?.style.stroke ?? "#5e4893",
   strokeWidth: selected?.properties.daena.style?.strokeWidth ?? activeLayer?.style.strokeWidth ?? 1.5,
 });
-let createFamily = $state<OverlayFamily>("political");
-
 function onRenameSelected(value: string) {
   if (!selected) return;
   authoring.renameFeature(selected.id, value.trim() || null);
@@ -61,8 +79,31 @@ function onRenameSelected(value: string) {
     </button>
   </div>
   {#if authoring.layers.length === 0}
-    <p class="note">Create an overlay, then draw or auto-select a region.</p>
+    <p class="note">Select a landmass, then create an overlay, or create an overlay and draw.</p>
   {/if}
+  <div class="tools" role="toolbar" aria-label="Landmass tools">
+    <button
+      type="button"
+      class:active={tool === "landmass"}
+      aria-pressed={tool === "landmass"}
+      onclick={() =>
+        setTool("landmass", "Click land to select the connected landmass at this epoch. Shift adds, Alt subtracts.")}>
+      Landmass
+    </button>
+  </div>
+  <LandmassSelectionBar
+    {selection}
+    canCreate={!authoring.busy}
+    canAdd={Boolean(activeLayer && !activeLayer.locked && activeLayer.defaultVisible) && !(covered && !includeOccupied)}
+    busy={authoring.busy}
+    hint={detectHint}
+    bind:includeOccupied
+    {showIncludeOccupied}
+    {covered}
+    oncreate={() => onCreateFromSelection?.()}
+    onadd={() => onAddFromSelection?.()}
+    oninvert={() => onInvertSelection?.()}
+    onclear={() => onClearSelection?.()} />
   {#if activeLayer}
     <label>
       Overlay name
@@ -138,26 +179,7 @@ function onRenameSelected(value: string) {
         onclick={() => setTool("polygon", "Click to place polygon vertices.")}>
         <Hexagon {...iconProps} /> Polygon
       </button>
-      <button
-        type="button"
-        class:active={tool === "landmass"}
-        aria-pressed={tool === "landmass"}
-        disabled={activeLayer.locked || !activeLayer.defaultVisible}
-        onclick={() => setTool("landmass", "Click land to capture the connected landmass at this epoch.")}>
-        Landmass
-      </button>
-      <button
-        type="button"
-        class:active={tool === "watershed"}
-        aria-pressed={tool === "watershed"}
-        disabled={activeLayer.locked || !activeLayer.defaultVisible}
-        onclick={() => setTool("watershed", "Click land to capture the watershed at this epoch.")}>
-        Watershed
-      </button>
     </div>
-    {#if detectHint}
-      <p class="note" role="status">{detectHint}</p>
-    {/if}
     <div class="history">
       <button type="button" disabled={!authoring.canUndo || authoring.busy} onclick={() => authoring.undo()}>
         <Undo2 {...iconProps} /> Undo

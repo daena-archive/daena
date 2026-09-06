@@ -2720,6 +2720,28 @@ mod tests {
     }
 
     #[test]
+    fn antimeridian_land_shares_one_island_id() {
+        let width = 8u32;
+        let height = 4u32;
+        let grid = Grid::new(width, height, crate::DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-400_000; grid.sample_count()];
+        for row in 1..3 {
+            elevations[grid.index(row, 0)] = 200_000;
+            elevations[grid.index(row, width - 1)] = 200_000;
+        }
+        let field = synthetic_field(width, height, elevations, 0);
+        let climate = synthetic_climate(&field, 200);
+        let drainage = empty_drainage(&field);
+        let hydrology = derive_hydrology(&field, &climate, &drainage, 1).unwrap();
+        let left = hydrology.island_id[grid.index(1, 0)];
+        let right = hydrology.island_id[grid.index(1, width - 1)];
+        assert_ne!(left, u32::MAX);
+        assert_eq!(left, right);
+        let mid = hydrology.island_id[grid.index(1, 3)];
+        assert_eq!(mid, u32::MAX);
+    }
+
+    #[test]
     fn nearest_sea_cell_walks_ocean_labeled_land() {
         let width = 8;
         let height = 6;

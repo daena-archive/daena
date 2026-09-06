@@ -22,6 +22,7 @@ import { collectionSignature, createFeatureCodec } from "./feature-codec";
 import { anchorForFeature, featureAtPixel } from "./hit-testing";
 import { createInteractionManager, type MeasureReadout, type SnapOptions } from "./interaction-manager";
 import { createLayerRegistry, type RasterLayerSource } from "./layer-registry";
+import { HOVER_PREVIEW_ID } from "../physical/landmass-selection";
 import { bindMapLifecycle } from "./lifecycle";
 import {
   maxZoomForCoordinateSpace,
@@ -100,6 +101,8 @@ export function createMapAdapter(
     onDoubleClick?: (featureId: string) => void;
     pickArmed?: boolean;
     onMapPick?: (anchor: MapAnchor) => void;
+    onCoordinateClick?: (authored: [number, number], modifiers: { shiftKey: boolean; altKey: boolean }) => boolean;
+    onCoordinateHover?: (authored: [number, number] | null) => void;
     backgrounds?: readonly RuntimeBackground[];
     background?: RuntimeBackground | null;
     rasters?: ReadonlyMap<string, RasterLayerSource>;
@@ -127,12 +130,17 @@ export function createMapAdapter(
     labelsVisible: session.labelsVisible,
   });
   const previewSource = new VectorSource({ wrapX: false });
+  const previewStyle = new Style({
+    fill: new Fill({ color: "rgba(213, 171, 108, 0.22)" }),
+    stroke: new Stroke({ color: "#d5ab6c", width: 2, lineDash: [10, 8] }),
+  });
+  const hoverPreviewStyle = new Style({
+    fill: new Fill({ color: "rgba(213, 171, 108, 0.12)" }),
+    stroke: new Stroke({ color: "#d5ab6c", width: 1.5, lineDash: [4, 4] }),
+  });
   const previewLayer = new VectorLayer({
     source: previewSource,
-    style: new Style({
-      fill: new Fill({ color: "rgba(213, 171, 108, 0.22)" }),
-      stroke: new Stroke({ color: "#d5ab6c", width: 2, lineDash: [10, 8] }),
-    }),
+    style: (feature) => (String(feature.getId() ?? "") === HOVER_PREVIEW_ID ? hoverPreviewStyle : previewStyle),
     zIndex: 9_000,
   });
   const backgrounds = createBackgroundRegistry((detail) => {
@@ -266,11 +274,19 @@ export function createMapAdapter(
   };
 
   map.on("pointermove", (event) => {
-    if (disposed || event.dragging || session.pickArmed) return;
+    if (disposed) return;
+    if (event.dragging || session.pickArmed) {
+      session.onCoordinateHover?.(null);
+      return;
+    }
     const next = featureAtPixel(map, registry, event.pixel);
     const id = next ? String(next.getId() ?? "") : null;
     if (id !== registry.hoveredId) registry.setHovered(id);
+    session.onCoordinateHover?.(viewToAuthored(event.coordinate as [number, number], space));
   });
+  const viewport = map.getViewport();
+  const onPointerLeave = () => session.onCoordinateHover?.(null);
+  viewport.addEventListener("pointerleave", onPointerLeave);
   map.on("singleclick", (event) => {
     if (session.pickArmed) {
       session.onMapPick?.(
@@ -282,7 +298,13 @@ export function createMapAdapter(
           codec,
         ),
       );
+      return;
     }
+    const origin = event.originalEvent;
+    session.onCoordinateClick?.(viewToAuthored(event.coordinate as [number, number], space), {
+      shiftKey: Boolean(origin && "shiftKey" in origin && origin.shiftKey),
+      altKey: Boolean(origin && "altKey" in origin && origin.altKey),
+    });
   });
   map.on("dblclick", (event) => {
     if (session.pickArmed || interactions.currentMode() !== "static") return;
@@ -454,6 +476,7 @@ export function createMapAdapter(
     dispose() {
       if (disposed) return;
       disposed = true;
+      viewport.removeEventListener("pointerleave", onPointerLeave);
       previewSource.clear(true);
       interactions.dispose();
       registry.dispose();

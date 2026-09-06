@@ -402,7 +402,9 @@ const listedRasters = $derived(
 const unitsLabel = $derived(measurementSummary(coordinateSpace));
 const snapEnabled = $derived(commandStack ? snapEnabledFromDescriptor(commandStack.document.descriptor) : true);
 const selectedOpFeatures = $derived(
-  commandStack?.document.collection.features.filter((feature) => selectedFeatureIds.includes(feature.id)) ?? [],
+  selectedFeatureIds
+    .map((id) => commandStack?.document.collection.features.find((feature) => feature.id === id))
+    .filter((feature): feature is VectorFeature => Boolean(feature)),
 );
 const linkedEntityNames = $derived(
   new Map([...featureLinks].map(([featureId, link]) => [featureId, link.label || link.entityId])),
@@ -3567,6 +3569,16 @@ onMount(() => {
                           disabled={!canRunOperation("split", selectedOpFeatures)}
                           onclick={() => startGeometryOperation("split")}
                           ><Scissors size={12} strokeWidth={1.8} /> Split</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("reverse", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("reverse")}>Reverse</button>
+                        <button
+                          type="button"
+                          class="quiet-button small"
+                          disabled={!canRunOperation("merge-lines", selectedOpFeatures)}
+                          onclick={() => startGeometryOperation("merge-lines")}>Merge</button>
                         <label class="inline-field"
                           ><span>Buffer</span><input
                             type="number"

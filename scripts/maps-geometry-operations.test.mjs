@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { applyGeometryOperationCommand, setSnapSettingsCommand } from "../src/lib/maps/editor/commands.ts";
 import { createMapDocument, documentHash } from "../src/lib/maps/editor/model.ts";
-import { runGeometryOperation } from "../src/lib/maps/editor/geometry-operations.ts";
+import { canRunOperation, runGeometryOperation } from "../src/lib/maps/editor/geometry-operations.ts";
 import { buildPreview, commitSelectionIds } from "../src/lib/maps/editor/geometry-preview.ts";
 
 const layerId = "11111111-1111-4111-8111-111111111111";
@@ -9,7 +9,14 @@ const squareA = {
   type: "Feature",
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   properties: {
-    daena: { layerId, semanticType: "region", name: "A", style: null, label: null, custom: {} },
+    daena: {
+      layerId,
+      semanticType: "region",
+      name: "A",
+      style: { fill: "#f00", fillOpacity: 0.5, stroke: "#000", strokeWidth: 1, pointRadius: 4 },
+      label: null,
+      custom: { region: "north" },
+    },
   },
   geometry: {
     type: "Polygon",
@@ -90,20 +97,170 @@ const union = runGeometryOperation(document, "union", [squareA.id, squareB.id]);
 assert.equal(union.ok, true);
 if (union.ok) {
   assert.equal(union.features.length, 1);
-  assert.equal(union.removedIds.length, 2);
+  assert.equal(union.features[0].id, squareA.id);
+  assert.equal(union.features[0].properties.daena.name, "A");
+  assert.equal(union.features[0].properties.daena.style?.fill, "#f00");
+  assert.equal(union.features[0].properties.daena.custom.region, "north");
+  assert.deepEqual(union.removedIds, [squareA.id, squareB.id]);
   const again = runGeometryOperation(document, "union", [squareA.id, squareB.id]);
   assert.ok(again.ok);
   if (again.ok) {
+    assert.equal(again.features[0].id, squareA.id);
     assert.deepEqual(again.features[0].geometry, union.features[0].geometry);
   }
 }
 
+const difference = runGeometryOperation(document, "difference", [squareA.id, squareB.id]);
+assert.equal(difference.ok, true);
+if (difference.ok) {
+  assert.equal(difference.features[0].id, squareA.id);
+  assert.deepEqual(difference.removedIds, [squareA.id]);
+}
+
 const intersection = runGeometryOperation(document, "intersection", [squareA.id, squareB.id]);
 assert.equal(intersection.ok, true);
+if (intersection.ok) {
+  assert.equal(intersection.removedIds.length, 0);
+  assert.notEqual(intersection.features[0].id, squareA.id);
+  assert.notEqual(intersection.features[0].id, squareB.id);
+}
 
 const split = runGeometryOperation(document, "split", [line.id, squareA.id]);
 assert.equal(split.ok, true);
-if (split.ok) assert.ok(split.features.length >= 2);
+if (split.ok) {
+  assert.ok(split.features.length >= 2);
+  assert.equal(split.features[0].id, line.id);
+  assert.notEqual(split.features[1].id, line.id);
+}
+
+const cutter = {
+  type: "Feature",
+  id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  properties: {
+    daena: { layerId, semanticType: "route", name: "cut", style: null, label: null, custom: {} },
+  },
+  geometry: {
+    type: "LineString",
+    coordinates: [
+      [5, -1],
+      [5, 11],
+    ],
+  },
+};
+const polygonDoc = createMapDocument({
+  ...document,
+  collection: { type: "FeatureCollection", features: [squareA, cutter] },
+});
+function ringArea(ring) {
+  let sum = 0;
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    sum += ring[index][0] * ring[index + 1][1] - ring[index + 1][0] * ring[index][1];
+  }
+  return Math.abs(sum) / 2;
+}
+
+const polygonSplit = runGeometryOperation(polygonDoc, "split", [squareA.id, cutter.id]);
+assert.equal(polygonSplit.ok, true);
+if (polygonSplit.ok) {
+  assert.equal(polygonSplit.features.length, 2);
+  assert.equal(polygonSplit.features[0].id, squareA.id);
+  assert.notEqual(polygonSplit.features[1].id, squareA.id);
+  assert.equal(polygonSplit.features[0].geometry.type, "Polygon");
+  assert.equal(polygonSplit.features[1].geometry.type, "Polygon");
+  const left = ringArea(polygonSplit.features[0].geometry.coordinates[0]);
+  const right = ringArea(polygonSplit.features[1].geometry.coordinates[0]);
+  assert.ok(Math.abs(left - 50) < 1e-6, `expected half area 50, got ${left}`);
+  assert.ok(Math.abs(right - 50) < 1e-6, `expected half area 50, got ${right}`);
+}
+
+assert.equal(canRunOperation("split", [squareA, cutter]), true);
+assert.equal(canRunOperation("split", [cutter, squareA]), true);
+assert.equal(canRunOperation("split", [squareA, squareB]), false);
+assert.equal(canRunOperation("buffer", [line]), true);
+
+const missCutter = {
+  type: "Feature",
+  id: "abababab-abab-4aba-8aba-abababababab",
+  properties: {
+    daena: { layerId, semanticType: "route", name: "miss", style: null, label: null, custom: {} },
+  },
+  geometry: {
+    type: "LineString",
+    coordinates: [
+      [20, 20],
+      [30, 30],
+    ],
+  },
+};
+const missDoc = createMapDocument({
+  ...document,
+  collection: { type: "FeatureCollection", features: [squareA, missCutter] },
+});
+const missed = runGeometryOperation(missDoc, "split", [squareA.id, missCutter.id]);
+assert.equal(missed.ok, false);
+if (!missed.ok) assert.match(missed.detail, /does not cross/);
+
+const reversed = runGeometryOperation(document, "reverse", [line.id]);
+assert.equal(reversed.ok, true);
+if (reversed.ok) {
+  assert.equal(reversed.features[0].id, line.id);
+  assert.deepEqual(reversed.features[0].geometry.coordinates, [
+    [20, 7.5],
+    [0, 7.5],
+  ]);
+}
+
+const lineA = {
+  type: "Feature",
+  id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+  properties: {
+    daena: { layerId, semanticType: "route", name: "LA", style: null, label: null, custom: {} },
+  },
+  geometry: {
+    type: "LineString",
+    coordinates: [
+      [0, 0],
+      [10, 0],
+    ],
+  },
+};
+const lineB = {
+  type: "Feature",
+  id: "99999999-9999-4999-8999-999999999999",
+  properties: {
+    daena: { layerId, semanticType: "route", name: "LB", style: null, label: null, custom: {} },
+  },
+  geometry: {
+    type: "LineString",
+    coordinates: [
+      [10, 0],
+      [20, 0],
+    ],
+  },
+};
+const mergeDoc = createMapDocument({
+  ...document,
+  collection: { type: "FeatureCollection", features: [lineA, lineB] },
+});
+const merged = runGeometryOperation(mergeDoc, "merge-lines", [lineA.id, lineB.id]);
+assert.equal(merged.ok, true);
+if (merged.ok) {
+  assert.equal(merged.features[0].id, lineA.id);
+  assert.deepEqual(merged.features[0].geometry.coordinates, [
+    [0, 0],
+    [10, 0],
+    [20, 0],
+  ]);
+  assert.deepEqual(merged.removedIds, [lineA.id, lineB.id]);
+}
+
+const disconnectedDoc = createMapDocument({
+  ...document,
+  collection: { type: "FeatureCollection", features: [line, lineA] },
+});
+const disconnected = runGeometryOperation(disconnectedDoc, "merge-lines", [line.id, lineA.id]);
+assert.equal(disconnected.ok, false);
+if (!disconnected.ok) assert.match(disconnected.detail, /not connected/);
 
 const preview = buildPreview(document, "union", [squareA.id, squareB.id]);
 assert.ok(preview.preview);
@@ -183,6 +340,7 @@ const imageDoc = createMapDocument({
 const imageBuffer = runGeometryOperation(imageDoc, "buffer", [pointFeature.id], { bufferDistance: 2 });
 assert.equal(imageBuffer.ok, true);
 if (imageBuffer.ok) {
+  assert.equal(imageBuffer.features[0].id, pointFeature.id);
   const ring = imageBuffer.features[0].geometry.coordinates[0];
   const xs = ring.map((position) => position[0]);
   const ys = ring.map((position) => position[1]);

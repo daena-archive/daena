@@ -20,6 +20,7 @@ pub mod history;
 pub mod hydrology;
 pub mod planetary;
 pub mod resolution;
+pub mod routing;
 pub mod tectonics;
 
 pub const SOURCE_MAGIC: [u8; 8] = *b"DAENAPW1";

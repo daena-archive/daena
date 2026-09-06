@@ -5,6 +5,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Map from "ol/Map.js";
 import View from "ol/View.js";
 import Feature from "ol/Feature.js";
+import LineString from "ol/geom/LineString.js";
+import MultiLineString from "ol/geom/MultiLineString.js";
 import Point from "ol/geom/Point.js";
 import TileLayer from "ol/layer/Tile.js";
 import VectorLayer from "ol/layer/Vector.js";
@@ -34,7 +36,21 @@ import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
 import MapLocationLinkPanel from "../native-vector/MapLocationLinkPanel.svelte";
 import FindPlacePanel from "../physical/FindPlacePanel.svelte";
-import type { FindPlaceCandidate, FindPlaceQuery, FindPlaceResult } from "$lib/project/types";
+import RouteSuggestPanel from "../physical/RouteSuggestPanel.svelte";
+import {
+  existingRoutePolylines,
+  routeEndpoints,
+  routeFeatureFromSuggestion,
+  routeGeometryFromSuggestion,
+  toMicrodegrees,
+} from "../physical/route-suggest.ts";
+import type {
+  FindPlaceCandidate,
+  FindPlaceQuery,
+  FindPlaceResult,
+  RouteSuggestion,
+  RouteSuggestResult,
+} from "$lib/project/types";
 import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import { PHYSICAL_COORDINATE_SPACE, authoredToNormalized } from "../editor/coordinate-space";
 import { bindMapLifecycle, type MapLifecycle } from "../openlayers/lifecycle";
@@ -182,11 +198,20 @@ let findPlaceResult = $state<FindPlaceResult | null>(null);
 let findPlaceSelectedId = $state<number | null>(null);
 let findPlaceSearching = $state(false);
 let findPlaceError = $state("");
+let routeResult = $state<RouteSuggestResult | null>(null);
+let routeSelectedId = $state<number | null>(null);
+let routeSearching = $state(false);
+let routeError = $state("");
+let routingArming = $state(false);
+let routingStart = $state<[number, number] | null>(null);
+let routeRequest = 0;
 let unlisten: UnlistenFn | undefined;
 let map: Map | null = null;
 let tileSource: XYZ | null = null;
 let findPlaceSource: VectorSource | null = null;
 let findPlaceLayer: VectorLayer | null = null;
+let routeSource: VectorSource | null = null;
+let routeLayer: VectorLayer | null = null;
 let overlaySource: VectorSource | null = null;
 let overlayLayer: VectorLayer | null = null;
 let overlayDraw: Draw | null = null;
@@ -471,6 +496,8 @@ async function openSession() {
       tileSource = null;
       findPlaceLayer = null;
       findPlaceSource = null;
+      routeLayer = null;
+      routeSource = null;
       const overview = applyWorldConstraints();
       const center: [number, number] = keepCenter ?? [0, 20];
       mountMap(next, { center, zoom: keepZoom ?? overview });
@@ -540,7 +567,12 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   try {
     map = new Map({
       target: container,
-      layers: [new TileLayer({ source: tileSource, preload: 1 }), authoredOverlayLayer(), findPlaceOverlayLayer()],
+      layers: [
+        new TileLayer({ source: tileSource, preload: 1 }),
+        authoredOverlayLayer(),
+        routeOverlayLayer(),
+        findPlaceOverlayLayer(),
+      ],
       view: new View({
         projection: "EPSG:3857",
         center: fromLonLat(initial?.center ?? [0, 20]),
@@ -565,6 +597,12 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
   });
   map.on("singleclick", (event) => {
     if (inspectHover) clearTimeout(inspectHover);
+    const suggestionId = map?.forEachFeatureAtPixel(event.pixel, (feature) => feature.get("suggestionId"));
+    if (typeof suggestionId === "number" && !routingArming) {
+      const suggestion = routeResult?.suggestions.find((item: RouteSuggestion) => item.id === suggestionId);
+      if (suggestion) selectRoute(suggestion);
+      return;
+    }
     const candidateId = map?.forEachFeatureAtPixel(event.pixel, (feature) => feature.get("candidateId"));
     if (typeof candidateId === "number") {
       const candidate = findPlaceResult?.candidates.find((item: FindPlaceCandidate) => item.id === candidateId);
@@ -572,6 +610,10 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       return;
     }
     const [longitude, latitude] = toLonLat(event.coordinate);
+    if (routingArming) {
+      pickRoutingPoint(longitude, latitude);
+      return;
+    }
     if (linkArming) {
       openLinkPanel(longitude, latitude);
       inspectAt(longitude, latitude);
@@ -950,6 +992,10 @@ function onViewportKey(event: KeyboardEvent) {
     inspectAt(center[0], center[1], true);
   } else if (event.key === "Escape") {
     event.preventDefault();
+    if (routingArming || routeSearching || routeResult || routeError) {
+      clearRouting();
+      return;
+    }
     if (linking) {
       closeLinkPanel(true);
       return;
@@ -992,6 +1038,7 @@ function onViewportKey(event: KeyboardEvent) {
 function setOffsetYears(next: number) {
   offsetYears = clampEpoch(next, EPOCH_STEP);
   clearFindPlace();
+  clearRouting();
   scheduleSession();
 }
 
@@ -1252,6 +1299,196 @@ function clearFindPlace() {
   findPlaceSource?.clear();
 }
 
+function clearRouting() {
+  routeRequest += 1;
+  routingArming = false;
+  routingStart = null;
+  routeResult = null;
+  routeSelectedId = null;
+  routeError = "";
+  routeSearching = false;
+  syncRouteOverlay();
+}
+
+function armRouting() {
+  if (routingArming) {
+    clearRouting();
+    return;
+  }
+  if (linkArming) linkArming = false;
+  overlayTool = "select";
+  overlayDetectHint = "";
+  routeRequest += 1;
+  routeSearching = false;
+  routingArming = true;
+  routingStart = null;
+  routeResult = null;
+  routeSelectedId = null;
+  routeError = "";
+  clearPicked();
+  host?.focus();
+}
+
+function pickRoutingPoint(longitude: number, latitude: number) {
+  if (!routingStart) {
+    routingStart = [longitude, latitude];
+    syncRouteOverlay();
+    return;
+  }
+  const start = routingStart;
+  routingArming = false;
+  void runSuggestRoutes(start, [longitude, latitude]);
+}
+
+function selectRoute(suggestion: RouteSuggestion) {
+  routeSelectedId = suggestion.id;
+  syncRouteOverlay();
+}
+
+function acceptRoute(suggestion: RouteSuggestion) {
+  const authoring = overlayAuthoring;
+  if (!authoring) {
+    routeError = "Open Atlas from the physical map editor to keep a road.";
+    return;
+  }
+  const feature = routeFeatureFromSuggestion(suggestion, offsetYears, "");
+  if (!feature) return;
+  const error = authoring.addRoute(feature);
+  if (error) {
+    routeError = error;
+    return;
+  }
+  clearRouting();
+}
+
+function routeLineGeometry(geometry: VectorFeature["geometry"]) {
+  if (geometry.type === "LineString") {
+    return new LineString(geometry.coordinates.map((point) => fromLonLat([point[0], point[1]])));
+  }
+  if (geometry.type === "MultiLineString") {
+    return new MultiLineString(
+      geometry.coordinates.map((line) => line.map((point) => fromLonLat([point[0], point[1]]))),
+    );
+  }
+  return null;
+}
+
+function routeOverlayLayer() {
+  routeSource = new VectorSource();
+  routeLayer = new VectorLayer({
+    source: routeSource,
+    zIndex: 15,
+    style: (feature) => {
+      const point = feature.get("routePoint");
+      if (point) {
+        const start = point === "start";
+        return new Style({
+          image: new CircleStyle({
+            radius: start ? 7 : 6,
+            fill: new Fill({ color: start ? "#58c4a8" : "#e6b03c" }),
+            stroke: new Stroke({ color: "#1b2822", width: 1.5 }),
+          }),
+        });
+      }
+      const suggestionId = feature.get("suggestionId");
+      const selected = suggestionId === routeSelectedId;
+      const accepted = feature.get("accepted") === true;
+      if (accepted) {
+        return new Style({
+          stroke: new Stroke({ color: "#c4a574", width: 2.4, lineCap: "round", lineJoin: "round" }),
+        });
+      }
+      const width = selected ? 4 : 2.2;
+      return [
+        new Style({
+          stroke: new Stroke({
+            color: "#1b2822",
+            width: width + 2.4,
+            lineCap: "round",
+            lineJoin: "round",
+          }),
+        }),
+        new Style({
+          stroke: new Stroke({
+            color: selected ? "#e6b03c" : "#8f7a4a",
+            width,
+            lineCap: "round",
+            lineJoin: "round",
+          }),
+        }),
+      ];
+    },
+  });
+  syncRouteOverlay();
+  return routeLayer;
+}
+
+function syncRouteOverlay() {
+  routeSource?.clear();
+  if (!routeSource) return;
+  for (const feature of overlayAuthoring?.routeFeatures ?? []) {
+    const geometry = feature.geometry;
+    const line = routeLineGeometry(geometry);
+    if (!line) continue;
+    const olFeature = new Feature({ geometry: line, accepted: true });
+    olFeature.setId(feature.id);
+    routeSource.addFeature(olFeature);
+  }
+  if (routeResult) {
+    for (const suggestion of routeResult.suggestions) {
+      const geometry = routeGeometryFromSuggestion(suggestion);
+      if (!geometry) continue;
+      const line = routeLineGeometry(geometry);
+      if (!line) continue;
+      const olFeature = new Feature({
+        geometry: line,
+        suggestionId: suggestion.id,
+      });
+      routeSource.addFeature(olFeature);
+    }
+    const selected =
+      routeResult.suggestions.find((item: RouteSuggestion) => item.id === routeSelectedId) ??
+      routeResult.suggestions[0];
+    const ends = selected ? routeEndpoints(selected) : null;
+    if (ends) {
+      routeSource.addFeature(new Feature({ geometry: new Point(fromLonLat(ends.start)), routePoint: "start" }));
+      routeSource.addFeature(new Feature({ geometry: new Point(fromLonLat(ends.end)), routePoint: "end" }));
+    }
+  } else if (routingStart) {
+    routeSource.addFeature(new Feature({ geometry: new Point(fromLonLat(routingStart)), routePoint: "start" }));
+  }
+  routeLayer?.changed();
+}
+
+async function runSuggestRoutes(start: [number, number], end: [number, number]) {
+  const generation = ++routeRequest;
+  routeSearching = true;
+  routeError = "";
+  try {
+    const [startLon, startLat] = toMicrodegrees(start[0], start[1]);
+    const [endLon, endLat] = toMicrodegrees(end[0], end[1]);
+    const next = await project.physicalSuggestRoutes(mapId, offsetYears, {
+      startLongitudeMicrodegrees: startLon,
+      startLatitudeMicrodegrees: startLat,
+      endLongitudeMicrodegrees: endLon,
+      endLatitudeMicrodegrees: endLat,
+      existingRoutes: existingRoutePolylines(overlayAuthoring?.routeFeatures ?? []),
+    });
+    if (generation !== routeRequest) return;
+    routeResult = next;
+    routeSelectedId = next.suggestions[0]?.id ?? null;
+    syncRouteOverlay();
+  } catch (cause) {
+    if (generation !== routeRequest) return;
+    routeError = cause instanceof Error ? cause.message : String(cause);
+    routeResult = null;
+    routeSelectedId = null;
+    syncRouteOverlay();
+  } finally {
+    if (generation === routeRequest) routeSearching = false;
+  }
+}
+
 function selectFindPlace(candidate: FindPlaceCandidate) {
   findPlaceSelectedId = candidate.id;
   findPlaceLayer?.changed();
@@ -1319,6 +1556,7 @@ async function applyPreset(id: string) {
   const ids = new Set((preset.activeLayerIds as string[] | undefined) ?? []);
   layers = layers.map((layer) => ({ ...layer, enabled: ids.has(layer.id) }));
   clearFindPlace();
+  clearRouting();
   await openSession();
 }
 
@@ -1384,9 +1622,22 @@ $effect(() => {
 });
 
 $effect(() => {
+  overlayAuthoring?.routeFeatures.map((feature: VectorFeature) => feature.id).join();
+  routeResult;
+  routeSelectedId;
+  routingStart;
+  untrack(() => syncRouteOverlay());
+});
+
+$effect(() => {
   overlayTool;
   overlayAuthoring?.activeLayerId;
-  untrack(() => syncOverlayDraw());
+  untrack(() => {
+    if (overlayTool !== "select" && (routingArming || routeSearching || routeResult || routeError)) {
+      clearRouting();
+    }
+    syncOverlayDraw();
+  });
 });
 
 $effect(() => {
@@ -1411,6 +1662,8 @@ onDestroy(() => {
   tileSource = null;
   findPlaceLayer = null;
   findPlaceSource = null;
+  routeLayer = null;
+  routeSource = null;
   overlayLayer = null;
   overlaySource = null;
   if (session) {
@@ -1489,6 +1742,19 @@ onDestroy(() => {
         onselect={selectFindPlace}
         onpin={pinFindPlace}
         onclear={clearFindPlace} />
+      <RouteSuggestPanel
+        variant="studio"
+        disabled={loading}
+        searching={routeSearching}
+        error={routeError}
+        arming={routingArming}
+        startPicked={Boolean(routingStart)}
+        result={routeResult}
+        selectedId={routeSelectedId}
+        onarm={armRouting}
+        onselect={selectRoute}
+        onaccept={acceptRoute}
+        oncancel={clearRouting} />
       <MapLayerVisibilityList
         variant="studio"
         groups={studioLayerBook}
@@ -1559,7 +1825,7 @@ onDestroy(() => {
             <li>+ / − zoom</li>
             <li>Home or 0 resets the view</li>
             <li>Enter inspects the map center</li>
-            <li>Escape clears inspection or drawing</li>
+            <li>Escape clears inspection, drawing, or suggested routing</li>
             <li>⌘/Ctrl+Z undo overlay edits</li>
             <li>⌘/Ctrl+S save overlay edits</li>
           </ul>
@@ -1628,7 +1894,13 @@ onDestroy(() => {
             host?.focus();
           }} />
       {/if}
-      {#if linkArming}
+      {#if routingArming}
+        <p class="pick-arming" role="status">
+          {routingStart ? "Click the end on land · Escape to cancel" : "Click the start on land · Escape to cancel"}
+        </p>
+      {:else if routeSearching}
+        <p class="pick-arming" role="status">Finding land routes…</p>
+      {:else if linkArming}
         <p class="pick-arming" role="status">Click the map to choose a link location · Escape to cancel</p>
       {/if}
       {#if picked}

@@ -315,6 +315,34 @@ export interface FindPlaceResult {
   candidateCount: number;
   candidates: FindPlaceCandidate[];
 }
+export interface RouteSuggestQuery {
+  startLongitudeMicrodegrees: number;
+  startLatitudeMicrodegrees: number;
+  endLongitudeMicrodegrees: number;
+  endLatitudeMicrodegrees: number;
+  existingRoutes?: number[][][];
+}
+export interface RouteSuggestion {
+  id: number;
+  strategy: string;
+  label: string;
+  tradeoff: string;
+  reasons: string[];
+  lengthM: number;
+  climbM: number;
+  maxSlopePpm: number;
+  riverCrossings: number;
+  lakeCells: number;
+  iceCells: number;
+  existingRoadCells: number;
+  cellCount: number;
+  coordinates: number[][][];
+  cells: number[];
+}
+export interface RouteSuggestResult {
+  suggestionCount: number;
+  suggestions: RouteSuggestion[];
+}
 export interface PhysicalClimateProducts {
   derivationVersion: number;
   width: number;

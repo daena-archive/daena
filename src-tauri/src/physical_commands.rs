@@ -1595,6 +1595,69 @@ pub(super) async fn project_physical_find_place(
 }
 
 #[tauri::command]
+pub(super) async fn project_physical_suggest_routes(
+    state: tauri::State<'_, SharedCore>,
+    map_entity_id: String,
+    epoch_offset_years: i64,
+    query: daena_physical::routing::RouteSuggestQuery,
+) -> Result<daena_physical::routing::RouteSuggestResult, String> {
+    with_read_project(state, move |project| {
+        let descriptor = project
+            .list_fields(map_entity_id.clone())?
+            .into_iter()
+            .find(|field| field.namespace == daena_core::maps::MAP_NAMESPACE && field.key == "map")
+            .ok_or_else(|| CoreError::Validation("maps:map descriptor is missing".into()))?;
+        let source_id = descriptor
+            .value
+            .get("sourceAssetId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| CoreError::Validation("maps: sourceAssetId is missing".into()))?;
+        let generation =
+            descriptor.value.get("generation").cloned().ok_or_else(|| {
+                CoreError::Validation("maps: physical generation is missing".into())
+            })?;
+        let bytes = project.asset_bytes(source_id.to_string())?;
+        let validated = daena_core::maps::physical::validate_source(&bytes, &generation)?;
+        let world = &validated.world;
+        let physics = load_or_fill_static_derived(
+            &project.info().ok_or(CoreError::ProjectNotOpen)?.root,
+            &validated.identity,
+            world,
+            &generation,
+            validated.report.reference_water_inventory_m3,
+        )
+        .map_err(CoreError::Validation)?;
+        let normalized_epoch = daena_physical::history::normalize_epoch_offset(epoch_offset_years)
+            .map_err(|error| CoreError::Validation(error.to_string()))?;
+        let result = if normalized_epoch == 0 {
+            daena_physical::routing::suggest_routes(
+                &physics.hydrology,
+                Some(&physics.climate),
+                &query,
+            )
+        } else {
+            let (historical, _, _) = derive_reopened_historical_from_static(
+                world,
+                &generation,
+                validated.report.reference_water_inventory_m3,
+                normalized_epoch,
+                &physics,
+                &mut daena_physical::NoopProgress,
+            )
+            .map_err(CoreError::Validation)?;
+            daena_physical::routing::suggest_routes(
+                &historical.hydrology,
+                Some(&historical.climate),
+                &query,
+            )
+        }
+        .map_err(|error| CoreError::Validation(error.to_string()))?;
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
 pub(super) fn project_physical_clear_epoch_cache() -> Result<(), String> {
     clear_historical_epoch_cache()
 }

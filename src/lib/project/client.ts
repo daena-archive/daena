@@ -58,6 +58,8 @@ import type {
   MutationOptions,
   FindPlaceQuery,
   FindPlaceResult,
+  RouteSuggestQuery,
+  RouteSuggestResult,
   PhysicalClimateProducts,
   PhysicalEventMaterializationRequest,
   PhysicalEventMaterializationResult,
@@ -442,6 +444,12 @@ export const project = {
     }),
   physicalFindPlace: (mapEntityId: string, epochOffsetYears: number, query: FindPlaceQuery) =>
     invoke<FindPlaceResult>("project_physical_find_place", {
+      mapEntityId,
+      epochOffsetYears,
+      query,
+    }),
+  physicalSuggestRoutes: (mapEntityId: string, epochOffsetYears: number, query: RouteSuggestQuery) =>
+    invoke<RouteSuggestResult>("project_physical_suggest_routes", {
       mapEntityId,
       epochOffsetYears,
       query,

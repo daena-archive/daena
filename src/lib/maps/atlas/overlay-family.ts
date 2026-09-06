@@ -57,6 +57,8 @@ export type AtlasOverlayAuthoring = {
   updateLayerStyle: (id: string, patch: Partial<VectorLayerStyle>) => void;
   updateLayerOpacity: (id: string, opacity: number) => void;
   addFeature: (feature: VectorFeature) => void;
+  routeFeatures: VectorFeature[];
+  addRoute: (feature: VectorFeature) => string | null;
   renameFeature: (id: string, name: string | null) => void;
   updateFeatureStyle: (id: string, patch: Partial<VectorLayerStyle>) => void;
   deleteFeatures: (ids: string[]) => void;

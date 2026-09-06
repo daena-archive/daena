@@ -8,6 +8,8 @@ let {
   mapId,
   anchor = $bindable<MapAnchor | null>(null),
   arming = false,
+  seedName = "",
+  seedRole = "",
   onclose,
   onresnap,
   onlinked,
@@ -16,6 +18,8 @@ let {
   mapId: string;
   anchor?: MapAnchor | null;
   arming?: boolean;
+  seedName?: string;
+  seedRole?: string;
   onclose: () => void;
   onresnap: () => void;
   onlinked?: (entityId: string) => void;
@@ -115,6 +119,10 @@ function fillCoordinates(value: MapAnchor | null) {
 }
 
 function applyCoordinates() {
+  if (anchor?.kind === "provider-feature") {
+    status = "This location is bound to a map feature";
+    return;
+  }
   const x = Number(pointX);
   const y = Number(pointY);
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
@@ -222,6 +230,29 @@ async function unlink(pin: MapPin) {
   }
 }
 
+let hydroNamed = false;
+$effect(() => {
+  if (hydroNamed || anchor?.kind !== "provider-feature") return;
+  if (anchor.featureKind === "physical-lake") {
+    role = "lake";
+    mode = "create";
+    hydroNamed = true;
+  } else if (anchor.featureKind === "physical-river") {
+    role = "river";
+    mode = "create";
+    hydroNamed = true;
+  } else if (anchor.featureKind === "physical-landmass") {
+    role = "landmass";
+    mode = "create";
+    hydroNamed = true;
+  } else if (anchor.featureKind === "geojson-feature") {
+    if (seedRole.trim()) role = seedRole.trim();
+    if (seedName.trim()) createName = seedName.trim();
+    if (seedRole.trim() || seedName.trim()) mode = "create";
+    hydroNamed = true;
+  }
+});
+
 $effect(() => {
   void refreshCreateTypes();
 });
@@ -243,6 +274,13 @@ $effect(() => {
 $effect(() => {
   if (!anchor) return;
   if (anchor.kind === "provider-feature") {
+    if (
+      anchor.featureKind === "physical-lake" ||
+      anchor.featureKind === "physical-river" ||
+      anchor.featureKind === "physical-landmass" ||
+      anchor.featureKind === "geojson-feature"
+    )
+      return;
     createName = `${anchor.featureKind} ${anchor.featureId}`.trim();
   } else if (!createName.trim()) {
     createName = "Untitled place";
@@ -259,15 +297,21 @@ $effect(() => {
     <button type="button" class="quiet" aria-label="Close link panel" onclick={onclose}>×</button>
   </header>
 
-  {#if !arming}
-    <div class="coords">
-      <label>X<input type="number" min="0" max="1" step="0.001" bind:value={pointX} /></label>
-      <label>Y<input type="number" min="0" max="1" step="0.001" bind:value={pointY} /></label>
-    </div>
-    <div class="row">
-      <button type="button" class="quiet" onclick={applyCoordinates}>Apply coordinates</button>
-      <button type="button" class="quiet" onclick={onresnap}>Use map click</button>
-    </div>
+  {#if arming || !anchor}
+    <p class="hint">Click the map to choose a location.</p>
+  {/if}
+
+  {#if !arming && anchor}
+    {#if anchor.kind !== "provider-feature"}
+      <div class="coords">
+        <label>X<input type="number" min="0" max="1" step="0.001" bind:value={pointX} /></label>
+        <label>Y<input type="number" min="0" max="1" step="0.001" bind:value={pointY} /></label>
+      </div>
+      <div class="row">
+        <button type="button" class="quiet" onclick={applyCoordinates}>Apply coordinates</button>
+        <button type="button" class="quiet" onclick={onresnap}>Use map click</button>
+      </div>
+    {/if}
 
     {#if contextualExisting.length > 0}
       <div class="existing-links" aria-label="Links at this location">
@@ -323,7 +367,21 @@ $effect(() => {
         disabled={busy || !anchor || !selectedEntityId}
         onclick={() => void linkExisting()}>Link entity</button>
     {:else}
-      <input type="text" placeholder="New entry name" maxlength="120" bind:value={createName} />
+      <input
+        type="text"
+        placeholder={role === "lake"
+          ? "Lake name"
+          : role === "river"
+            ? "River name"
+            : role === "landmass"
+              ? "Landmass name"
+              : role === "city"
+                ? "City name"
+                : role === "province"
+                  ? "Province name"
+                  : "New entry name"}
+        maxlength="120"
+        bind:value={createName} />
       {#if createTypes.length === 0}
         <p class="hint">Enable a lore module with entity types to create entries from the map.</p>
       {:else}
@@ -339,8 +397,6 @@ $effect(() => {
         disabled={busy || !anchor || !createName.trim() || !createType}
         onclick={() => void createAndLink()}>Create and link</button>
     {/if}
-  {:else}
-    <p class="hint">Click the map to choose a location.</p>
   {/if}
 
   {#if status}<p class="status" role="status">{status}</p>{/if}

@@ -26,6 +26,7 @@ let {
   onAddFromSelection,
   onInvertSelection,
   onClearSelection,
+  onNamePlace,
 }: {
   authoring: AtlasOverlayAuthoring;
   tool?: OverlayDrawTool;
@@ -40,6 +41,7 @@ let {
   onAddFromSelection?: () => void;
   onInvertSelection?: () => void;
   onClearSelection?: () => void;
+  onNamePlace?: (featureId: string) => void;
 } = $props();
 
 function setTool(next: OverlayDrawTool, hint: string) {
@@ -324,7 +326,7 @@ function regionFill(featureId: string) {
     <div class="block">
       <span class="kicker">Regions</span>
       {#if regions.length === 0}
-        <p class="note">Draw, or add a landmass, then name and restyle each region here.</p>
+        <p class="note">Draw, or add a landmass, then name it as a Place.</p>
       {:else}
         <ul class="region-list">
           {#each regions as feature (feature.id)}
@@ -360,6 +362,13 @@ function regionFill(featureId: string) {
         </ul>
       {/if}
       {#if selected}
+        <button
+          type="button"
+          class="primary"
+          disabled={authoring.busy || !onNamePlace}
+          onclick={() => onNamePlace?.(selected.id)}>
+          Place
+        </button>
         <div class="style-grid" aria-label="Selected region appearance">
           <label>
             Stroke
@@ -572,7 +581,8 @@ function regionFill(featureId: string) {
 .tools button,
 .history button,
 .danger,
-.create-row button {
+.create-row button,
+.block > .primary {
   border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 7px;
   background: #0f1a16;
@@ -589,7 +599,8 @@ function regionFill(featureId: string) {
     color 180ms ease,
     opacity 180ms ease;
 }
-.create-row .primary {
+.create-row .primary,
+.block > .primary {
   background: #d5ab6c;
   color: #1b2822;
   border-color: #d5ab6c;

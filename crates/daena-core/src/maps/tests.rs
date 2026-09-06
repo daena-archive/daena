@@ -420,6 +420,54 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "fallbackPoint": [0.5, 0.5]
     }))
     .is_err());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-lake",
+        "featureId": "lake:12",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-river",
+        "featureId": "river:4:18",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-river",
+        "featureId": "river-000004",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-landmass",
+        "featureId": "landmass:12",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-landmass",
+        "featureId": "island-000012",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "geojson-feature",
+        "featureId": feature_id,
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
 }
 
 #[test]

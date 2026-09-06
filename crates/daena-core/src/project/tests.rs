@@ -5692,6 +5692,72 @@ fn feature_resolution_returns_unresolved_when_geojson_lacks_feature() {
 }
 
 #[test]
+fn feature_resolution_uses_physical_authored_geojson() {
+    let (store, root, accepted, map_field, layers_field, authored_source_id) =
+        physical_detach_fixture("physical-authored-resolution");
+    let authored_before = store.asset(authored_source_id.clone()).unwrap();
+    let (layers_next, detached, _) = physical_detach_layers_and_features(
+        &layers_field.value,
+        "rivers",
+        &[("derived-river-1", [[10.0, 10.0], [12.0, 11.0]])],
+    );
+    let detached_bytes = serde_json::to_vec(&detached).unwrap();
+    let upload_hash = format!("sha256:{:x}", Sha256::digest(&detached_bytes));
+    store
+        .apply_map_edit(
+            accepted.entity.id.clone(),
+            map_field.value.clone(),
+            layers_next,
+            detached_bytes,
+            upload_hash,
+            &map_field.revision,
+            &layers_field.revision,
+            &authored_before.revision,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    let stored: serde_json::Value =
+        serde_json::from_slice(&store.asset_bytes(authored_source_id).unwrap()).unwrap();
+    let feature_id = stored["features"][0]["id"].as_str().unwrap().to_string();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Named region".into(),
+            entity_type: Some("daena.lore:place".into()),
+        })
+        .unwrap();
+    store
+        .set_field(FieldValue {
+            entity_id: place.id,
+            namespace: crate::maps::MAP_NAMESPACE.into(),
+            key: "locations".into(),
+            value: serde_json::json!({
+                "schemaVersion": 1,
+                "locations": [{
+                    "id": Uuid::new_v4().to_string(),
+                    "mapEntityId": accepted.entity.id,
+                    "role": "province",
+                    "label": "Named region",
+                    "anchor": {
+                        "kind": "provider-feature",
+                        "provider": "daena-physical",
+                        "featureKind": "geojson-feature",
+                        "featureId": feature_id,
+                        "fallbackPoint": [0.5, 0.5]
+                    },
+                    "validity": {"from": null, "to": null}
+                }]
+            }),
+            revision: String::new(),
+        })
+        .unwrap();
+    let projection = store.map_location_projection(accepted.entity.id).unwrap();
+    assert_eq!(projection[0]["resolution"], "resolved");
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn asset_replacement_rejects_wrong_hash_size_and_revision() {
     let store = ProjectStore::in_memory().unwrap();
     let entity = store

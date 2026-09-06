@@ -31,6 +31,7 @@ import {
   type AtlasStudioProgress,
   type AtlasStudioSessionStatus,
   type AtlasStudioSurfaceSample,
+  type MapPin as ProjectMapPin,
 } from "$lib/project/client";
 import type { MapLayerDefinition } from "../native-vector/types";
 import MapViewControls from "../native-vector/MapViewControls.svelte";
@@ -52,11 +53,12 @@ import type {
   RouteSuggestion,
   RouteSuggestResult,
 } from "$lib/project/types";
-import type { MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import { PHYSICAL_PROVIDER, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
 import {
   PHYSICAL_COORDINATE_SPACE,
   authoredToNormalized,
   mapPositions,
+  normalizedToAuthored,
   wrapGeographicPosition,
   wrapLongitude,
 } from "../editor/coordinate-space";
@@ -66,7 +68,7 @@ import MapLayerVisibilityList from "../MapLayerVisibilityList.svelte";
 import { ATLAS_DETAIL_ALGORITHM_VERSION, atlasStyleLabel, isAtlasLayerEnabledByDefault } from "./constants.ts";
 import AtlasOverlayPanel from "./AtlasOverlayPanel.svelte";
 import { simplifyFreehandGeometry } from "../native-vector/geometry.ts";
-import { daenaProperties, type VectorFeature } from "../native-vector/types.ts";
+import { daenaProperties, featureName, type VectorFeature } from "../native-vector/types.ts";
 import {
   combineModeFromModifiers,
   combineSelection,
@@ -89,6 +91,7 @@ import {
   overlayFamilyLabel,
   overlayFeaturesForLayer,
   overlayLayerFamily,
+  overlayPlaceRole,
   type AtlasOverlayAuthoring,
   type OverlayDrawTool,
 } from "./overlay-family.ts";
@@ -148,6 +151,7 @@ let picked = $state<{ lng: number; lat: number; x: number; y: number; flip: bool
 let placeModal = $state(false);
 let guideOpen = $state(false);
 let pickedSample = $state<{ lng: number; lat: number; surface: AtlasStudioSurfaceSample } | null>(null);
+let pickedHits = $state<AtlasStudioInspectHit[]>([]);
 let modalSample = $state<{ lng: number; lat: number; surface: AtlasStudioSurfaceSample } | null>(null);
 let sampledPoint = $state<{ lng: number; lat: number } | null>(null);
 let pinSeq = 0;
@@ -245,6 +249,13 @@ let map: Map | null = null;
 let tileSource: XYZ | null = null;
 let findPlaceSource: VectorSource | null = null;
 let findPlaceLayer: VectorLayer | null = null;
+let namedWaterSource: VectorSource | null = null;
+let namedWaterLayer: VectorLayer | null = null;
+let namedWaterPins = $state<ProjectMapPin[]>([]);
+let namedPlacePins = $state<ProjectMapPin[]>([]);
+const PHYSICAL_LAKE_FEATURE_KIND = "physical-lake";
+const PHYSICAL_RIVER_FEATURE_KIND = "physical-river";
+const PHYSICAL_LANDMASS_FEATURE_KIND = "physical-landmass";
 let routeSource: VectorSource | null = null;
 let routeLayer: VectorLayer | null = null;
 let overlaySource: VectorSource | null = null;
@@ -254,6 +265,8 @@ let landmassLayer: VectorLayer | null = null;
 let overlayDraw: Draw | null = null;
 let overlayTool = $state<OverlayDrawTool>("select");
 let overlaySelectedId = $state<string | null>(null);
+let overlayLinkSeedName = $state("");
+let overlayLinkSeedRole = $state("");
 let overlayDetectHint = $state("");
 let overlayDetectBusy = false;
 let landmassRequest = 0;
@@ -425,6 +438,12 @@ function explainStudioError(raw: string) {
 }
 
 function derivedExplanation(hit: AtlasStudioInspectHit) {
+  if (hit.kind === PHYSICAL_LAKE_FEATURE_KIND || hit.kind === PHYSICAL_RIVER_FEATURE_KIND) {
+    return "Generated water at this epoch. Naming creates a Place; the geometry stays derived.";
+  }
+  if (hit.kind === PHYSICAL_LANDMASS_FEATURE_KIND) {
+    return "Generated land at this epoch. Naming creates a Place; the geometry stays derived.";
+  }
   if (hit.kind === "derived-tributary") {
     return "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio.";
   }
@@ -432,6 +451,21 @@ function derivedExplanation(hit: AtlasStudioInspectHit) {
     return "Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit.";
   }
   return "Authored or semantic map feature from the captured project snapshot.";
+}
+
+function claimableHit(hit: AtlasStudioInspectHit) {
+  return (
+    hit.kind === PHYSICAL_LAKE_FEATURE_KIND ||
+    hit.kind === PHYSICAL_RIVER_FEATURE_KIND ||
+    hit.kind === PHYSICAL_LANDMASS_FEATURE_KIND
+  );
+}
+
+function namedPlaceLabel(hit: AtlasStudioInspectHit) {
+  const pin = namedPlacePins.find(
+    (entry) => entry.featureId === hit.id || (entry.featureKind === hit.kind && entry.featureId === hit.id),
+  );
+  return pin?.label?.trim() || hit.label || hit.id;
 }
 
 function styleLabel(id: string) {
@@ -546,6 +580,8 @@ async function openSession() {
       tileSource = null;
       findPlaceLayer = null;
       findPlaceSource = null;
+      namedWaterLayer = null;
+      namedWaterSource = null;
       routeLayer = null;
       routeSource = null;
       const overview = applyWorldConstraints();
@@ -623,6 +659,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
         landmassSelectionLayer(),
         routeOverlayLayer(),
         findPlaceOverlayLayer(),
+        namedWaterOverlayLayer(),
       ],
       view: new View({
         projection: "EPSG:3857",
@@ -648,7 +685,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
       if (!event.dragging) scheduleLandmassHover(longitude, latitude);
     } else {
       clearLandmassHover();
-      scheduleInspect(longitude, latitude);
+      if (!picked) scheduleInspect(longitude, latitude);
     }
   });
   map.getViewport().addEventListener("pointerleave", () => clearLandmassHover());
@@ -699,6 +736,7 @@ function mountMap(status: AtlasStudioSessionStatus, initial?: { center: [number,
     }
     if (overlayTool === "freehand" || overlayTool === "polygon") return;
     pickedSample = null;
+    pickedHits = [];
     setPicked(longitude, latitude);
     inspectAt(longitude, latitude, true);
   });
@@ -989,11 +1027,15 @@ function inspectAt(lng: number, lat: number, pin = false) {
       hits = next.hits;
       surface = next.surface;
       sampledPoint = { lng, lat };
-      if (seq === pinSeq) pickedSample = { lng, lat, surface: next.surface };
+      if (seq === pinSeq) {
+        pickedSample = { lng, lat, surface: next.surface };
+        pickedHits = next.hits;
+      }
     })
     .catch(() => {
       if (seq !== inspectSeq) return;
       hits = [];
+      if (seq === pinSeq) pickedHits = [];
     });
 }
 
@@ -1077,6 +1119,155 @@ function openLinkPanel(lng: number, lat: number) {
   linkArming = false;
   linking = true;
   clearPicked(false);
+}
+
+function nameClaimHit(hit: AtlasStudioInspectHit) {
+  const point = sampledPoint ?? picked;
+  if (!point) return;
+  overlayLinkSeedName = "";
+  overlayLinkSeedRole = "";
+  const [nx, ny] = authoredToNormalized(wrapLon(point.lng), point.lat, PHYSICAL_COORDINATE_SPACE);
+  linkAnchor = {
+    kind: "provider-feature",
+    provider: PHYSICAL_PROVIDER,
+    featureKind: hit.kind,
+    featureId: hit.id,
+    fallbackPoint: [nx, ny],
+  };
+  linkArming = false;
+  linking = true;
+  clearPicked(false);
+}
+
+function pickNameActions() {
+  return pickedHits.flatMap((hit) => {
+    if (claimableHit(hit)) {
+      const named = namedWaterPins.some((pin) => pin.featureKind === hit.kind && pin.featureId === hit.id);
+      return [
+        {
+          label: named ? `Rename ${namedPlaceLabel(hit)}` : `Name ${namedPlaceLabel(hit)}`,
+          run: () => nameClaimHit(hit),
+        },
+      ];
+    }
+    if (overlayFeatureForHit(hit.id)) {
+      const named = namedPlacePins.some((pin) => pin.featureId === hit.id);
+      return [
+        {
+          label: named ? `Rename ${namedPlaceLabel(hit)}` : `Place ${namedPlaceLabel(hit)}`,
+          run: () => void nameOverlayFeature(hit.id),
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+function overlayFeatureForHit(id: string) {
+  return overlayAuthoring?.features.find((feature) => feature.id === id) ?? null;
+}
+
+async function nameOverlayFeature(featureId: string) {
+  const authoring = overlayAuthoring;
+  const feature = overlayFeatureForHit(featureId);
+  if (!authoring || !feature) return;
+  if (authoring.dirty) {
+    overlayDetectHint = "Saving overlay…";
+    try {
+      await authoring.save();
+    } catch {
+      overlayDetectHint = "Save the overlay before creating a Place.";
+      return;
+    }
+  }
+  const positions = feature.geometry.coordinates.flat(Infinity) as number[];
+  if (positions.length < 2) {
+    overlayDetectHint = "That region has no geometry to bind.";
+    return;
+  }
+  const layer = authoring.layers.find((item) => item.id === feature.properties.daena.layerId);
+  overlayLinkSeedName = featureName(feature) ?? "";
+  overlayLinkSeedRole = overlayPlaceRole(layer ? overlayLayerFamily(layer) : "custom");
+  const [nx, ny] = authoredToNormalized(wrapLon(positions[0]), positions[1], PHYSICAL_COORDINATE_SPACE);
+  linkAnchor = {
+    kind: "provider-feature",
+    provider: PHYSICAL_PROVIDER,
+    featureKind: "geojson-feature",
+    featureId: feature.id,
+    fallbackPoint: [nx, ny],
+  };
+  overlaySelectedId = feature.id;
+  overlayTool = "select";
+  overlayDetectHint = "";
+  linkArming = false;
+  linking = true;
+  clearPicked(false);
+}
+
+async function onPlaceLinked() {
+  await syncNamedWater();
+  const anchor = linkAnchor;
+  if (anchor?.kind !== "provider-feature" || anchor.featureKind !== "geojson-feature") return;
+  const pin = namedPlacePins.find((entry) => entry.featureId === anchor.featureId);
+  const label = pin?.label?.trim();
+  if (label) overlayAuthoring?.renameFeature(anchor.featureId, label);
+}
+
+function namedWaterOverlayLayer() {
+  namedWaterSource = new VectorSource();
+  namedWaterLayer = new VectorLayer({
+    source: namedWaterSource,
+    zIndex: 21,
+    style: (feature) =>
+      new Style({
+        image: new CircleStyle({
+          radius: 5,
+          fill: new Fill({
+            color: feature.get("kind") === PHYSICAL_LANDMASS_FEATURE_KIND ? "#d5ab6c" : "#7ec8e3",
+          }),
+          stroke: new Stroke({ color: "#1b2822", width: 1.2 }),
+        }),
+        text: new Text({
+          text: String(feature.get("label") ?? ""),
+          fill: new Fill({ color: "#edf2ec" }),
+          stroke: new Stroke({ color: "#1b2822", width: 3 }),
+          font: "700 12px system-ui",
+          offsetY: -12,
+        }),
+      }),
+  });
+  void syncNamedWater();
+  return namedWaterLayer;
+}
+
+async function syncNamedWater() {
+  const pins = await project.listMapPins(mapId).catch(() => []);
+  namedPlacePins = pins;
+  namedWaterPins = pins.filter(
+    (pin) =>
+      pin.featureKind === PHYSICAL_LAKE_FEATURE_KIND ||
+      pin.featureKind === PHYSICAL_RIVER_FEATURE_KIND ||
+      pin.featureKind === PHYSICAL_LANDMASS_FEATURE_KIND,
+  );
+  namedWaterSource?.clear();
+  if (!namedWaterSource) return;
+  for (const pin of namedWaterPins) {
+    const anchor = pin.anchor as MapAnchor | undefined;
+    const fallback =
+      anchor?.kind === "provider-feature"
+        ? anchor.fallbackPoint
+        : pin.bounds[0] != null && pin.bounds[1] != null
+          ? ([pin.bounds[0], pin.bounds[1]] as [number, number])
+          : null;
+    if (!fallback) continue;
+    const [lng, lat] = normalizedToAuthored(fallback[0], fallback[1], PHYSICAL_COORDINATE_SPACE);
+    const feature = new Feature({
+      geometry: new Point(fromLonLat([lng, lat])),
+      label: pin.label || pin.role,
+      kind: pin.featureKind,
+    });
+    namedWaterSource.addFeature(feature);
+  }
 }
 
 function closeLinkPanel(focusMap = false) {
@@ -1172,7 +1363,6 @@ function sidebarPaneBadge(id: SidebarPane) {
   if (id === "find") {
     return (findPlaceResult?.candidateCount ?? 0) + (routeResult?.suggestionCount ?? 0);
   }
-  if (id === "inspect") return hits.length;
   return 0;
 }
 
@@ -1343,7 +1533,7 @@ function commitDrawnFeature(olFeature: Feature) {
   overlaySource?.removeFeature(olFeature);
   overlaySelectedId = feature.id;
   overlayTool = "select";
-  overlayDetectHint = "Region added. Set its color, then save.";
+  overlayDetectHint = "Region added. Name it as a Place, then save.";
   authoring.addFeature(feature);
   paintOverlayFeature(feature);
 }
@@ -1994,6 +2184,7 @@ $effect(() => {
     if (landmassSelection || landGeometryCache || landmassHover) {
       clearLandmassSelection("Landmass selection cleared because the map changed.");
     }
+    void syncNamedWater();
   });
 });
 
@@ -2053,6 +2244,8 @@ onDestroy(() => {
   tileSource = null;
   findPlaceLayer = null;
   findPlaceSource = null;
+  namedWaterLayer = null;
+  namedWaterSource = null;
   routeLayer = null;
   routeSource = null;
   overlayLayer = null;
@@ -2405,7 +2598,8 @@ onDestroy(() => {
                 onCreateFromSelection={createFromLandmassSelection}
                 onAddFromSelection={addFromLandmassSelection}
                 onInvertSelection={() => void invertLandmassSelection()}
-                onClearSelection={() => clearLandmassSelection()} />
+                onClearSelection={() => clearLandmassSelection()}
+                onNamePlace={(id) => void nameOverlayFeature(id)} />
             {:else}
               <p class="pane-empty">This map has no overlay authoring session.</p>
             {/if}
@@ -2417,16 +2611,7 @@ onDestroy(() => {
             role="tabpanel"
             aria-labelledby="atlas-tab-inspect">
             <section class="place" aria-label="Place" aria-live="polite">
-              <div class="place-head">
-                <strong>Place</strong>
-                <button
-                  type="button"
-                  class="quiet"
-                  disabled={!surface || !sampledPoint}
-                  onclick={() => openPlaceDetails(false)}>
-                  Details
-                </button>
-              </div>
+              <strong>Place</strong>
               {#if surface}
                 <dl class="place-summary">
                   <div>
@@ -2463,7 +2648,7 @@ onDestroy(() => {
                 <strong>Features</strong>
                 {#each hits as hit}
                   <p>
-                    <span>{hit.label ?? hit.id}</span>
+                    <span>{namedPlaceLabel(hit)}</span>
                     <small>{hit.kind}{hit.derived ? " · derived" : ""}</small>
                     <small>{derivedExplanation(hit)}</small>
                   </p>
@@ -2560,6 +2745,9 @@ onDestroy(() => {
           bind:anchor={linkAnchor}
           arming={linkArming}
           onclose={() => closeLinkPanel(true)}
+          seedName={overlayLinkSeedName}
+          seedRole={overlayLinkSeedRole}
+          onlinked={() => void onPlaceLinked()}
           onresnap={() => {
             linking = false;
             linkArming = true;
@@ -2597,6 +2785,9 @@ onDestroy(() => {
             <span>Sampling this point…</span>
           {/if}
           <div class="actions">
+            {#each pickNameActions() as action (action.label)}
+              <button type="button" onclick={action.run}>{action.label}</button>
+            {/each}
             <button type="button" onclick={() => picked && openLinkPanel(picked.lng, picked.lat)}>
               Link to entity
             </button>
@@ -2974,17 +3165,6 @@ onDestroy(() => {
   border-radius: 10px;
   background: rgb(255 255 255 / 3%);
 }
-.place-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.place-head .quiet {
-  padding: 4px 8px;
-  background: rgb(255 255 255 / 8%);
-  font-weight: 650;
-}
 .place dl,
 .place p {
   margin: 0;
@@ -3026,7 +3206,7 @@ onDestroy(() => {
   z-index: 2;
   display: grid;
   gap: 4px;
-  max-width: min(260px, calc(100% - 24px));
+  max-width: min(280px, calc(100% - 24px));
   padding: 8px 30px 8px 10px;
   border: 1px solid var(--theme-neutral-border-strong, #405047);
   border-radius: 8px;

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::overlay::{
-    hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature,
+    hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature, OverlayHit,
 };
 use daena_atlas::studio::{
     render_studio_tile_with_style_overlays, tile_count, AtlasStudioSceneRequestV1,
@@ -930,8 +930,8 @@ pub async fn project_atlas_studio_inspect(
     let include_tributaries = scene.active_layer_ids.iter().any(|id| id == "labels")
         || scene.active_layer_ids.iter().any(|id| id == "rivers");
     let surface = prepared.sample_surface(input.lon_micro, input.lat_micro);
+    let mut features = overlays.as_ref().clone();
     if include_tributaries {
-        let mut features = overlays.as_ref().clone();
         for tributary in prepared.drainage.tributaries.iter().take(32) {
             if let Some(first) = tributary.path.first() {
                 features.push(AuthoredFeature {
@@ -945,21 +945,41 @@ pub async fn project_atlas_studio_inspect(
                 });
             }
         }
-        return Ok(AtlasInspectResult {
-            hits: hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32),
-            surface,
-        });
     }
-    Ok(AtlasInspectResult {
-        hits: hit_test_features(
-            overlays.as_slice(),
+    let mut hits = hit_test_features(&features, input.lon_micro, input.lat_micro, radius, 32);
+    let claim = daena_physical::hydro_claim::claim_at(
+        &prepared.hydrology,
+        input.lon_micro,
+        input.lat_micro,
+        radius,
+    )
+    .map(|claim| (claim.id, claim.layer_id, claim.kind, claim.label))
+    .or_else(|| {
+        daena_physical::landmass_claim::claim_at(
+            &prepared.hydrology,
             input.lon_micro,
             input.lat_micro,
-            radius,
-            32,
-        ),
-        surface,
-    })
+        )
+        .map(|claim| (claim.id, claim.layer_id, claim.kind, claim.label))
+    });
+    if let Some((id, layer_id, kind, label)) = claim {
+        if !hits.iter().any(|hit| hit.id == id) {
+            hits.insert(
+                0,
+                OverlayHit {
+                    id,
+                    layer_id: layer_id.into(),
+                    kind: kind.into(),
+                    label: Some(label),
+                    derived: false,
+                },
+            );
+            if hits.len() > 32 {
+                hits.truncate(32);
+            }
+        }
+    }
+    Ok(AtlasInspectResult { hits, surface })
 }
 
 #[derive(Debug, Deserialize)]

@@ -41,28 +41,69 @@ impl ProjectStore {
         let (Some(feature_kind), Some(feature_id)) = (feature_kind, feature_id) else {
             return "resolved";
         };
+        if feature_kind == crate::maps::PHYSICAL_LAKE_FEATURE_KIND
+            || feature_kind == crate::maps::PHYSICAL_RIVER_FEATURE_KIND
+            || feature_kind == crate::maps::PHYSICAL_LANDMASS_FEATURE_KIND
+        {
+            return if daena_physical::hydro_claim::is_valid_id(feature_kind, feature_id)
+                || daena_physical::landmass_claim::is_valid_id(feature_kind, feature_id)
+            {
+                "resolved"
+            } else {
+                "unresolved"
+            };
+        }
         if feature_kind != "geojson-feature" {
             return "unresolved";
         }
-        let source: Option<(String, String)> = self.connection.query_row(
-            "SELECT a.path,a.content_hash FROM entity_fields f JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
-            rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE], |row| Ok((row.get(0)?, row.get(1)?))).optional().ok().flatten();
-        let Some((source_path, content_hash)) = source else {
+        let source: Option<(
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = self
+            .connection
+            .query_row(
+                "SELECT a.path,a.content_hash,authored.path,authored.content_hash FROM entity_fields f LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') LEFT JOIN assets authored ON authored.id=json_extract(f.value, '$.authoredSourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",
+                rusqlite::params![map_entity_id, crate::maps::MAP_NAMESPACE],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let Some((source_path, source_hash, authored_path, authored_hash)) = source else {
             return "unresolved";
         };
-        let source_path = self
-            .root
-            .as_ref()
-            .and_then(|root| runtime_asset_path(root, &content_hash).ok())
-            .unwrap_or_else(|| PathBuf::from(source_path));
-        let Ok(bytes) = std::fs::read(source_path) else {
-            return "unresolved";
-        };
-        if crate::maps::vector::contains_feature_id(&bytes, feature_id) {
+        if self.geojson_contains_feature(source_path, source_hash, feature_id)
+            || self.geojson_contains_feature(authored_path, authored_hash, feature_id)
+        {
             "resolved"
         } else {
             "unresolved"
         }
+    }
+
+    fn geojson_contains_feature(
+        &self,
+        path: Option<String>,
+        content_hash: Option<String>,
+        feature_id: &str,
+    ) -> bool {
+        let source_path = content_hash
+            .as_deref()
+            .and_then(|hash| {
+                self.root
+                    .as_ref()
+                    .and_then(|root| runtime_asset_path(root, hash).ok())
+            })
+            .or_else(|| path.map(PathBuf::from));
+        let Some(source_path) = source_path else {
+            return false;
+        };
+        let Ok(bytes) = std::fs::read(source_path) else {
+            return false;
+        };
+        crate::maps::vector::contains_feature_id(&bytes, feature_id)
     }
 
     pub(crate) fn rebuild_maps_projection(&self) -> Result<(), CoreError> {

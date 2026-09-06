@@ -4,6 +4,7 @@ import {
   nextOverlayLayerName,
   overlayFamilyFromName,
   overlayNameSuggestions,
+  overlayPlaceRole,
   uniqueOverlayLayerName,
 } from "../src/lib/maps/atlas/overlay-family.ts";
 
@@ -35,3 +36,7 @@ assert.equal(
   "linguistic",
 );
 assert.equal(overlayNameSuggestions("xyz").length, 0);
+
+assert.equal(overlayPlaceRole("political"), "province");
+assert.equal(overlayPlaceRole("custom"), "city");
+assert.equal(overlayPlaceRole("cultural"), "cultural");

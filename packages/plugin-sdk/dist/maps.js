@@ -2,6 +2,9 @@ export const MAP_ENTITY_TYPE = "daena.maps:world-map";
 export const MAP_NAMESPACE = "maps";
 export const VECTOR_PROVIDER = "daena-openlayers";
 export const PHYSICAL_PROVIDER = "daena-physical";
+export const PHYSICAL_LAKE_FEATURE_KIND = "physical-lake";
+export const PHYSICAL_RIVER_FEATURE_KIND = "physical-river";
+export const PHYSICAL_LANDMASS_FEATURE_KIND = "physical-landmass";
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"];
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export const IMAGE_MAX_ENCODED_BYTES = 32 * 1024 * 1024;

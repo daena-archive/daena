@@ -45,9 +45,9 @@
           "required": ["kind", "provider", "featureKind", "featureId", "fallbackPoint"],
           "properties": {
             "kind": { "const": "provider-feature" },
-            "provider": { "const": "daena-openlayers" },
-            "featureKind": { "const": "geojson-feature" },
-            "featureId": { "type": "string", "minLength": 1 },
+            "provider": { "enum": ["daena-openlayers", "daena-physical"] },
+            "featureKind": { "enum": ["geojson-feature", "physical-lake", "physical-river", "physical-landmass"] },
+            "featureId": { "type": "string", "minLength": 1, "maxLength": 128 },
             "fallbackPoint": { "$ref": "#/$defs/point" }
           }
         },

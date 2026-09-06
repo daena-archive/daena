@@ -79,6 +79,12 @@ export function overlayLayerFamily(layer: VectorLayerDefinition): OverlayFamily 
   return layer.overlayFamily ?? "custom";
 }
 
+export function overlayPlaceRole(family: OverlayFamily): string {
+  if (family === "political") return "province";
+  if (family === "custom") return "city";
+  return family;
+}
+
 export function isOverlayLayer(layer: MapLayerDefinition): layer is VectorLayerDefinition {
   return layer.kind === "vector" && Boolean(layer.overlayFamily);
 }

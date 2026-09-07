@@ -26,10 +26,12 @@ import {
   unitsForCoordinateSpace,
 } from "../editor/measurement";
 import { viewToAuthored } from "../editor/coordinate-space";
+import type { SpatialExtent } from "../editor/spatial-index";
 import { kindForDrawMode, simplifyFreehandGeometry } from "../native-vector/geometry";
 import {
   BASE_LAYER_ID,
   layerAcceptsEdits,
+  layerIsSelectable,
   type VectorDrawMode,
   type VectorLayerDefinition,
 } from "../native-vector/types";
@@ -121,11 +123,23 @@ export function createInteractionManager(options: {
 
   const featureSelectable = (feature: Feature<Geometry>) => {
     const layerId = String(feature.get("daenaLayerId") ?? "");
-    const layer = registry.layerById(layerId);
     if (layerId === BASE_LAYER_ID) return currentMode === "static";
-    if (!layer || layer.kind !== "vector" || !layer.defaultVisible) return false;
-    if (currentMode === "static") return true;
-    return !layer.locked;
+    return layerIsSelectable(registry.layerById(layerId), { viewMode: currentMode === "static" });
+  };
+
+  const authoredExtentFromView = (extent: number[]): SpatialExtent => {
+    const corners = [
+      viewToAuthored([extent[0], extent[1]], options.coordinateSpace),
+      viewToAuthored([extent[2], extent[1]], options.coordinateSpace),
+      viewToAuthored([extent[0], extent[3]], options.coordinateSpace),
+      viewToAuthored([extent[2], extent[3]], options.coordinateSpace),
+    ];
+    return [
+      Math.min(corners[0][0], corners[1][0], corners[2][0], corners[3][0]),
+      Math.min(corners[0][1], corners[1][1], corners[2][1], corners[3][1]),
+      Math.max(corners[0][0], corners[1][0], corners[2][0], corners[3][0]),
+      Math.max(corners[0][1], corners[1][1], corners[2][1], corners[3][1]),
+    ];
   };
 
   const select = new Select({
@@ -198,21 +212,13 @@ export function createInteractionManager(options: {
       if (feature.get("kind") === "snap-indicator") overlaySource.removeFeature(feature);
     });
     if (!coordinate || !snapOptions.enabled) return;
-    let closest: number[] | null = null;
-    let best = Infinity;
-    for (const feature of registry.snapSource.getFeatures()) {
-      const geometry = feature.getGeometry();
-      if (!geometry) continue;
-      const candidate = geometry.getClosestPoint(coordinate);
-      const dx = candidate[0] - coordinate[0];
-      const dy = candidate[1] - coordinate[1];
-      const distanceSq = dx * dx + dy * dy;
-      if (distanceSq < best) {
-        best = distanceSq;
-        closest = candidate;
-      }
-    }
-    if (!closest || best > 256) return;
+    const nearest = registry.snapSource.getClosestFeatureToCoordinate(coordinate);
+    const geometry = nearest?.getGeometry();
+    const closest = geometry ? geometry.getClosestPoint(coordinate) : null;
+    if (!closest) return;
+    const dx = closest[0] - coordinate[0];
+    const dy = closest[1] - coordinate[1];
+    if (dx * dx + dy * dy > 256) return;
     const indicator = new Feature(new Point(closest));
     indicator.set("kind", "snap-indicator");
     overlaySource.addFeature(indicator);
@@ -368,22 +374,20 @@ export function createInteractionManager(options: {
     if (currentMode !== "select" && !(currentMode === "static" && options.allowLockedBoxSelection === true)) return;
     const extent = dragBox.getGeometry().getExtent();
     select.getFeatures().clear();
-    registry.forEachVectorFeature((feature) => {
-      const layerId = String(feature.get("daenaLayerId") ?? "");
-      const layer = registry.layerById(layerId);
+    const consider = (feature: Feature<Geometry>) => {
       if (!featureSelectable(feature)) return;
       const geometry = feature.getGeometry();
-      if (!geometry) return;
-      const featureExtent = geometry.getExtent();
-      if (
-        featureExtent[0] <= extent[2] &&
-        featureExtent[2] >= extent[0] &&
-        featureExtent[1] <= extent[3] &&
-        featureExtent[3] >= extent[1]
-      ) {
-        select.getFeatures().push(feature);
+      if (!geometry || !geometry.intersectsExtent(extent)) return;
+      select.getFeatures().push(feature);
+    };
+    if (registry.indexSize() === 0) {
+      registry.forEachVectorFeature(consider);
+    } else {
+      for (const record of registry.queryExtent(authoredExtentFromView(extent))) {
+        const feature = registry.getFeatureById(record.id);
+        if (feature) consider(feature);
       }
-    });
+    }
     options.onSelectionChange();
   });
   modify.on("modifyend", () => options.onSourceCommitted());

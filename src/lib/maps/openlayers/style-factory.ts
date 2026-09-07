@@ -10,6 +10,7 @@ import {
   BASE_LAYER_ID,
   DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
+  layerIsSnapTarget,
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "../native-vector/types.ts";
@@ -184,8 +185,7 @@ export function snapTargetFeatures(
 ): VectorFeatureCollection {
   const enabled = new Set<string>();
   for (const layer of layers) {
-    if (!layer.defaultVisible) continue;
-    if (!layer.locked || snapTargetLayerIds.has(layer.id)) enabled.add(layer.id);
+    if (layerIsSnapTarget(layer, snapTargetLayerIds)) enabled.add(layer.id);
   }
   if (baseVisible(layers)) enabled.add(BASE_LAYER_ID);
   return {

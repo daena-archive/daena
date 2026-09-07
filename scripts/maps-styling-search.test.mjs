@@ -71,6 +71,58 @@ const registry = createLayerRegistry(
   projectionFromCoordinateSpace(space),
 );
 assert.equal(registry.sourceFor(layer.id)?.getFeatures().length, 1, "initial map load populates its OpenLayers source");
+
+const neighbor = {
+  ...feature,
+  id: "00000000-0000-4000-8000-00000000000a",
+  properties: { daena: { ...feature.properties.daena, name: "Neighbor" } },
+  geometry: { type: "Point", coordinates: [40, 50] },
+};
+const live = createLayerRegistry(
+  { type: "FeatureCollection", features: [feature, neighbor] },
+  document.layers,
+  codec,
+  space,
+  projectionFromCoordinateSpace(space),
+);
+const kept = live.getFeatureById(neighbor.id);
+const moved = live.getFeatureById(feature.id);
+live.replaceCollection({
+  type: "FeatureCollection",
+  features: [
+    neighbor,
+    {
+      ...feature,
+      geometry: { type: "Point", coordinates: [21, 31] },
+    },
+  ],
+});
+assert.equal(live.getFeatureById(neighbor.id), kept, "unrelated OpenLayers features survive a vertex edit");
+assert.equal(live.getFeatureById(feature.id), moved, "the edited feature is patched in place");
+assert.deepEqual(live.getFeatureById(feature.id)?.getGeometry()?.getCoordinates(), [21, 31]);
+assert.equal(
+  live.queryExtent([19, 29, 22, 32]).some((record) => record.id === feature.id),
+  true,
+);
+live.replaceCollection({ type: "FeatureCollection", features: [neighbor] });
+assert.equal(live.getFeatureById(feature.id), null);
+assert.equal(live.getFeatureById(neighbor.id), kept);
+
+const other = {
+  ...layer,
+  id: "other",
+  name: "Other",
+  order: 1,
+};
+const relocated = {
+  ...neighbor,
+  properties: { daena: { ...neighbor.properties.daena, layerId: other.id } },
+};
+live.sync([layer, other], { type: "FeatureCollection", features: [relocated] });
+assert.equal(live.getFeatureById(neighbor.id), kept, "moving a feature between layers keeps the OpenLayers object");
+assert.equal(live.sourceFor(layer.id)?.getFeatures().length, 0);
+assert.equal(live.sourceFor(other.id)?.getFeatures().length, 1);
+live.dispose();
 registry.dispose();
 
 const importedBase = {

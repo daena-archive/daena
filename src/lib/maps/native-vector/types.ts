@@ -131,10 +131,30 @@ export function vectorLayers(layers: readonly MapLayerDefinition[]): VectorLayer
   return layers.filter(isVectorLayer);
 }
 
+export function layerIsVisible(layer: MapLayerDefinition | undefined): boolean {
+  return Boolean(layer?.defaultVisible);
+}
+
+export function layerIsSelectable(
+  layer: MapLayerDefinition | undefined,
+  options: { viewMode?: boolean } = {},
+): layer is VectorLayerDefinition {
+  if (!layer || layer.kind !== "vector" || !layer.defaultVisible) return false;
+  if (options.viewMode) return true;
+  return layer.id !== BASE_LAYER_ID && !layer.locked;
+}
+
 export function layerAcceptsEdits(layer: MapLayerDefinition | undefined): layer is VectorLayerDefinition {
-  return Boolean(
-    layer && layer.kind === "vector" && layer.defaultVisible && !layer.locked && layer.id !== BASE_LAYER_ID,
-  );
+  return layerIsSelectable(layer);
+}
+
+export function layerIsSnapTarget(
+  layer: MapLayerDefinition | undefined,
+  snapTargetLayerIds: ReadonlySet<string> = new Set(),
+): boolean {
+  if (!layer || layer.kind !== "vector" || !layer.defaultVisible) return false;
+  if (layer.id === BASE_LAYER_ID) return true;
+  return !layer.locked || snapTargetLayerIds.has(layer.id);
 }
 
 export function daenaProperties(

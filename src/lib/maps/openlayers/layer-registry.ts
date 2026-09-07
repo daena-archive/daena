@@ -11,12 +11,20 @@ import type Projection from "ol/proj/Projection.js";
 import type { MapCoordinateSpace } from "../../../../packages/plugin-sdk/src/maps.ts";
 import { authoredExtentToViewExtent, extentOf } from "../editor/coordinate-space.ts";
 import {
+  createSpatialIndex,
+  recordsFromCollection,
+  type SpatialExtent,
+  type SpatialRecord,
+} from "../editor/spatial-index.ts";
+import {
   BASE_LAYER_ID,
   DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
   isRasterLayer,
   isVectorLayer,
+  layerIsVisible,
   type MapLayerDefinition,
+  type VectorFeature,
   type VectorFeatureCollection,
   type VectorLayerDefinition,
 } from "../native-vector/types.ts";
@@ -41,6 +49,9 @@ export type LayerRegistry = {
   isSelectableVectorLayer: (layer: BaseLayer) => boolean;
   getFeatureById: (id: string) => Feature<Geometry> | null;
   forEachVectorFeature: (callback: (feature: Feature<Geometry>) => void) => void;
+  queryExtent: (extent: SpatialExtent) => SpatialRecord[];
+  indexSize: () => number;
+  syncIndex: (collection: VectorFeatureCollection) => void;
   setHovered: (id: string | null) => void;
   sync: (
     layers: readonly MapLayerDefinition[],
@@ -98,6 +109,8 @@ export function createLayerRegistry(
   let lastSignature = "";
   let currentRasters = new Map<string, RasterLayerSource>();
   let snapTargetLayerIds = new Set<string>();
+  const spatialIndex = createSpatialIndex();
+  const featureSignatures = new Map<string, string>();
   const group = new LayerGroup({ layers: [] });
   const vectorEntries = new Map<string, { layer: VectorLayer; source: VectorSource }>();
   const rasterEntries = new Map<string, ImageLayer<any>>();
@@ -169,19 +182,67 @@ export function createLayerRegistry(
     return olLayer;
   };
 
-  const featuresForLayer = (next: VectorFeatureCollection, layerId: string) =>
-    codec.readOlFeatures({
-      type: "FeatureCollection",
-      features: next.features.filter((feature) => featureLayerId(feature) === layerId),
-    });
+  const assignOlFeature = (target: Feature<Geometry>, authored: VectorFeature) => {
+    const [fresh] = codec.readOlFeatures({ type: "FeatureCollection", features: [authored] });
+    if (!fresh) return;
+    target.setGeometry(fresh.getGeometry());
+    target.set("daenaLayerId", fresh.get("daenaLayerId"));
+    target.set("kind", fresh.get("kind"));
+    target.set("name", fresh.get("name"));
+    target.set("daenaStyle", fresh.get("daenaStyle") ?? null);
+    target.set("daenaLabel", fresh.get("daenaLabel") ?? null);
+    target.set("daenaCustom", fresh.get("daenaCustom") ?? {});
+  };
+
+  const rebuildIndex = (next: VectorFeatureCollection) => {
+    spatialIndex.replaceAll(recordsFromCollection(next));
+  };
 
   const applyCollection = (next: VectorFeatureCollection) => {
-    for (const layer of runtimeVectorLayers()) {
-      const entry = ensureVector(layer);
-      entry.source.clear(true);
-      entry.source.addFeatures(featuresForLayer(next, layer.id));
+    const runtime = runtimeVectorLayers();
+    const runtimeIds = new Set(runtime.map((layer) => layer.id));
+    for (const layer of runtime) ensureVector(layer);
+    const existingById = new Map<string, { feature: Feature<Geometry>; layerId: string }>();
+    for (const [layerId, entry] of vectorEntries) {
+      for (const feature of entry.source.getFeatures()) {
+        const id = String(feature.getId() ?? "");
+        if (!id) continue;
+        existingById.set(id, { feature: feature as Feature<Geometry>, layerId });
+      }
+    }
+    const keep = new Set<string>();
+    for (const authored of next.features) {
+      const targetLayerId = featureLayerId(authored);
+      if (!runtimeIds.has(targetLayerId)) continue;
+      const target = vectorEntries.get(targetLayerId);
+      if (!target) continue;
+      keep.add(authored.id);
+      const signature = JSON.stringify(authored);
+      const current = existingById.get(authored.id);
+      if (current) {
+        if (current.layerId !== targetLayerId) {
+          vectorEntries.get(current.layerId)?.source.removeFeature(current.feature);
+          target.source.addFeature(current.feature);
+        }
+        if (featureSignatures.get(authored.id) !== signature) assignOlFeature(current.feature, authored);
+      } else {
+        const [created] = codec.readOlFeatures({ type: "FeatureCollection", features: [authored] });
+        if (!created) continue;
+        created.setId(authored.id);
+        target.source.addFeature(created);
+      }
+      featureSignatures.set(authored.id, signature);
+    }
+    for (const [id, current] of existingById) {
+      if (keep.has(id)) continue;
+      vectorEntries.get(current.layerId)?.source.removeFeature(current.feature);
+      selectedIds.delete(id);
+    }
+    for (const id of [...featureSignatures.keys()]) {
+      if (!keep.has(id)) featureSignatures.delete(id);
     }
     lastSignature = collectionSignature(next);
+    rebuildIndex(next);
     snapSource.clear(true);
     snapSource.addFeatures(
       codec.readOlFeatures(snapTargetFeatures(next, currentLayers.filter(isVectorLayer), snapTargetLayerIds)),
@@ -245,7 +306,7 @@ export function createLayerRegistry(
     },
     vectorOlLayers() {
       return runtimeVectorLayers()
-        .filter((layer) => layer.defaultVisible)
+        .filter((layer) => layerIsVisible(layer))
         .flatMap((layer) => {
           const entry = vectorEntries.get(layer.id);
           return entry ? [entry.layer] : [];
@@ -256,7 +317,7 @@ export function createLayerRegistry(
     },
     isSelectableVectorLayer(layer) {
       return runtimeVectorLayers().some(
-        (daena) => daena.defaultVisible && vectorEntries.get(daena.id)?.layer === layer,
+        (daena) => layerIsVisible(daena) && vectorEntries.get(daena.id)?.layer === layer,
       );
     },
     getFeatureById(id) {
@@ -271,6 +332,15 @@ export function createLayerRegistry(
         for (const feature of entry.source.getFeatures()) callback(feature as Feature<Geometry>);
       }
     },
+    queryExtent(extent) {
+      return spatialIndex.query(extent);
+    },
+    indexSize() {
+      return spatialIndex.size();
+    },
+    syncIndex(collection) {
+      rebuildIndex(collection);
+    },
     setHovered(id) {
       hoveredId = id;
       registry.refreshStyle();
@@ -279,13 +349,13 @@ export function createLayerRegistry(
       currentLayers = [...nextLayers];
       registry.layers = currentLayers;
       currentRasters = new Map(rasters);
-      group.setLayers(new Collection(orderedOlLayers(currentRasters)));
       if (collectionSignature(nextCollection) !== lastSignature) {
-        selectedIds.clear();
         applyCollection(nextCollection);
       } else {
+        rebuildIndex(nextCollection);
         registry.syncSnap(nextCollection);
       }
+      group.setLayers(new Collection(orderedOlLayers(currentRasters)));
       registry.refreshStyle();
     },
     syncLayers(nextLayers) {
@@ -295,7 +365,6 @@ export function createLayerRegistry(
       registry.refreshStyle();
     },
     replaceCollection(next) {
-      selectedIds.clear();
       applyCollection(next);
       registry.refreshStyle();
     },
@@ -322,6 +391,8 @@ export function createLayerRegistry(
       for (const entry of vectorEntries.values()) entry.layer.changed();
     },
     dispose() {
+      spatialIndex.clear();
+      featureSignatures.clear();
       for (const entry of vectorEntries.values()) entry.source.clear(true);
       vectorEntries.clear();
       for (const layer of rasterEntries.values()) layer.setSource(null);

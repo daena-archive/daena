@@ -196,6 +196,7 @@ export function createMapAdapter(
     const nextSignature = collectionSignature(collection);
     if (nextSignature === registry.lastSignature) return;
     registry.lastSignature = nextSignature;
+    registry.syncIndex(collection);
     registry.syncSnap(collection);
     session.onCommand?.({ type: "replace-collection", collection, label, coalesceKey });
   };

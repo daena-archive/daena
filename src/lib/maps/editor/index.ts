@@ -94,6 +94,16 @@ export {
   type GeometryOpResult,
 } from "./geometry-operations";
 export { buildPreview, commitSelectionIds, type GeometryPreview } from "./geometry-preview";
+export {
+  createSpatialIndex,
+  extentOfGeometry,
+  extentsOverlap,
+  geometryIntersectsExtent,
+  recordsFromCollection,
+  type SpatialExtent,
+  type SpatialIndex,
+  type SpatialRecord,
+} from "./spatial-index";
 export { emptySelection, selectionFromIds, selectionHas, toggleSelectionId, type SelectionState } from "./selection";
 export {
   buildMapSearchIndex,

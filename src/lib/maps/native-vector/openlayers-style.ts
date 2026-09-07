@@ -4,7 +4,13 @@ import Fill from "ol/style/Fill.js";
 import Stroke from "ol/style/Stroke.js";
 import Style from "ol/style/Style.js";
 import Text from "ol/style/Text.js";
-import { BASE_LAYER_ID, featureLayerId, type VectorFeatureCollection, type VectorLayerDefinition } from "./types";
+import {
+  BASE_LAYER_ID,
+  featureLayerId,
+  layerIsSnapTarget,
+  type VectorFeatureCollection,
+  type VectorLayerDefinition,
+} from "./types";
 
 function colorWithOpacity(color: string, opacity: number) {
   if (!color.startsWith("#") || (color.length !== 7 && color.length !== 4)) return color;
@@ -38,9 +44,7 @@ export function snapTargetFeatures(
 ): VectorFeatureCollection {
   const enabled = new Set<string>();
   for (const layer of layers) {
-    if (!layer.defaultVisible) continue;
-    if (!layer.locked) enabled.add(layer.id);
-    else if (snapTargetLayerIds.has(layer.id)) enabled.add(layer.id);
+    if (layerIsSnapTarget(layer, snapTargetLayerIds)) enabled.add(layer.id);
   }
   if (baseVisible(layers)) enabled.add(BASE_LAYER_ID);
   return {

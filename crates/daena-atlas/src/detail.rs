@@ -41,7 +41,7 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
 fn domain_prefix(algorithm_version: u32) -> &'static [u8] {
     match algorithm_version {
         1 => b"daena-atlas-detail-v1\0",
-        _ => b"daena-atlas-detail-v1\0",
+        _ => b"daena-atlas-detail-v2\0",
     }
 }
 
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn residual_is_independent_of_query_resolution_and_epoch_year() {
+    fn residual_is_independent_of_query_resolution() {
         let (model, sea, sdf, identity) = model();
         let samples = [
             (-30_000_000, 10_000_000),
@@ -377,8 +377,6 @@ mod tests {
                 .unwrap()
                 .detail
         };
-        // Different level may change amplitude sampling density, but the PRF
-        // at a shared lattice coordinate family stays world-addressed.
         assert_eq!(
             model.canonical_at(12_000_000, -4_000_000),
             other.canonical_at(12_000_000, -4_000_000)

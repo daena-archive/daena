@@ -24,8 +24,8 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 1;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 1;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
@@ -253,6 +253,7 @@ pub struct AtlasPreparedScene {
     pub storm_intensity_ppm: Vec<i32>,
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
+    pub orometry: Vec<amplify::MountainFeature>,
 }
 
 impl AtlasPreparedScene {
@@ -469,29 +470,47 @@ fn drainage_from_refined(refined: &refine::RefinedHydrology) -> drainage::Derive
                 source_cell: tributary.source_index,
                 join_cell: tributary.join_index,
                 parent_river_id: tributary.parent_river_id,
+                ordinal: tributary.ordinal,
                 watershed_id: tributary.watershed_id,
+                width_mm: tributary.width_mm,
+                depth_mm: tributary.depth_mm,
                 path: tributary.path.clone(),
             })
             .collect(),
     }
 }
 
-fn amplification_from_controls(
+fn structure_controls(
     field: &daena_physical::PhysicalField,
     world: &daena_physical::tectonics::TectonicWorld,
     historical: &daena_physical::history::HistoricalWorld,
-    identity: &[u8],
-    variant: u32,
-    level: request::DetailLevel,
-    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<amplify::AmplificationModel, AtlasError> {
-    let controls = control::ControlFields::from_accepted(
+    forcing: daena_physical::history::HistoricalForcingParameters,
+    offset_years: i64,
+    reference_water_inventory_m3: u64,
+) -> Result<control::ControlFields, AtlasError> {
+    let canonical = daena_physical::history::HistoricalForcingParameters::default_for(
+        field.seed,
+        field.retry_index,
+    );
+    if offset_years == 0 && forcing == canonical {
+        return control::ControlFields::from_accepted(
+            field,
+            world,
+            &historical.climate,
+            &historical.hydrology,
+        );
+    }
+    let year0 = daena_physical::history::derive_historical_world_with_planet(
         field,
-        world,
-        &historical.climate,
-        &historical.hydrology,
-    )?;
-    amplify::build_amplification_model(&controls, identity, variant, level, check_cancelled)
+        reference_water_inventory_m3,
+        Some(&world.crust_by_cell),
+        canonical,
+        0,
+        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+        &mut daena_physical::NoopProgress,
+    )
+    .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, error.to_string()))?;
+    control::ControlFields::from_accepted(field, world, &year0.climate, &year0.hydrology)
 }
 
 pub fn prepare_from_source(
@@ -520,16 +539,17 @@ pub fn prepare_from_source(
     progress.report(AtlasPhase::Validating, 1, 1)?;
     progress.report(AtlasPhase::DerivingEpoch, 0, 1)?;
     progress.check_cancelled()?;
+    let resolved_forcing = forcing.unwrap_or_else(|| {
+        daena_physical::history::HistoricalForcingParameters::default_for(
+            field.seed,
+            field.retry_index,
+        )
+    });
     let historical = daena_physical::history::derive_historical_world_with_planet(
         &field,
         report.reference_water_inventory_m3,
         Some(&world.crust_by_cell),
-        forcing.unwrap_or_else(|| {
-            daena_physical::history::HistoricalForcingParameters::default_for(
-                field.seed,
-                field.retry_index,
-            )
-        }),
+        resolved_forcing,
         request.offset_years,
         daena_physical::planetary::PlanetaryConfiguration::earth_like(),
         &mut daena_physical::NoopProgress,
@@ -549,16 +569,27 @@ pub fn prepare_from_source(
         &historical.climate,
         &historical.hydrology,
     )?;
+    let structure_owned = if request.offset_years == 0 {
+        None
+    } else {
+        Some(structure_controls(
+            &field,
+            &world,
+            &historical,
+            resolved_forcing,
+            request.offset_years,
+            report.reference_water_inventory_m3,
+        )?)
+    };
+    let structure = structure_owned.as_ref().unwrap_or(&controls);
     let residual_key = cache::cache_key(&[
-        b"atlas-cache-residual-v1",
+        b"atlas-cache-residual-v2",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
         request.level.as_str().as_bytes(),
         &field.grid.width.to_le_bytes(),
         &field.grid.height.to_le_bytes(),
-        &request.offset_years.to_le_bytes(),
-        &forcing_fingerprint,
     ]);
     let mut residual_cache = cache::CacheLookup::Off;
     let expected_width = field
@@ -587,17 +618,15 @@ pub fn prepare_from_source(
                             variant: request.variant,
                             level: request.level,
                         },
-                        &controls,
+                        structure,
                         identity,
                     )
                 }
                 _ => {
                     residual_cache = cache::CacheLookup::Miss;
                     let mut cancelled = || progress.check_cancelled();
-                    let model = amplification_from_controls(
-                        &field,
-                        &world,
-                        &historical,
+                    let model = amplify::build_amplification_model(
+                        structure,
                         identity,
                         request.variant,
                         request.level,
@@ -618,10 +647,8 @@ pub fn prepare_from_source(
             cache::CacheLookupResult::Miss => {
                 residual_cache = cache::CacheLookup::Miss;
                 let mut cancelled = || progress.check_cancelled();
-                let model = amplification_from_controls(
-                    &field,
-                    &world,
-                    &historical,
+                let model = amplify::build_amplification_model(
+                    structure,
                     identity,
                     request.variant,
                     request.level,
@@ -641,10 +668,8 @@ pub fn prepare_from_source(
         }
     } else {
         let mut cancelled = || progress.check_cancelled();
-        amplification_from_controls(
-            &field,
-            &world,
-            &historical,
+        amplify::build_amplification_model(
+            structure,
             identity,
             request.variant,
             request.level,
@@ -735,6 +760,7 @@ pub fn prepare_from_source(
         (drainage_from_refined(&refined), refined.worked_mm)
     };
     amplification.detail.bake_absolute_elevation(&worked_mm);
+    let orometry = amplification.features;
     let model = amplification.detail;
     let visible_water = render::classify_visible_water(
         model.grid,
@@ -782,6 +808,7 @@ pub fn prepare_from_source(
         storm_intensity_ppm: controls.storm_intensity_ppm,
         residual_cache,
         drainage_cache,
+        orometry,
     })
 }
 
@@ -1389,6 +1416,287 @@ mod tests {
         .unwrap();
         assert_eq!(second.artifact_cache, cache::CacheLookup::Miss);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn residual_cache_hits_when_epoch_or_forcing_changes() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-residual-epoch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let forcing_a = daena_physical::history::HistoricalForcingParameters::default_for(
+            world.field.seed,
+            world.field.retry_index,
+        );
+        let mut forcing_b = forcing_a;
+        forcing_b.land_ice_amplitude_ppm = forcing_a.land_ice_amplitude_ppm.saturating_add(80_000);
+        let present = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            Some(forcing_a),
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(present.residual_cache, cache::CacheLookup::Miss);
+        let mut cold = request.clone();
+        cold.offset_years = -8_000;
+        let cold = prepare_from_source(
+            &world.source,
+            &identity,
+            &cold.normalize().unwrap(),
+            Some(forcing_b),
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(cold.residual_cache, cache::CacheLookup::Hit);
+        assert_eq!(cold.drainage_cache, cache::CacheLookup::Miss);
+        let present_hit = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            Some(forcing_a),
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(present_hit.drainage_cache, cache::CacheLookup::Hit);
+        assert_eq!(present_hit.drainage, present.drainage);
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let rebuilt = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            Some(forcing_a),
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(rebuilt.drainage_cache, cache::CacheLookup::Miss);
+        assert_eq!(rebuilt.drainage, present.drainage);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepare_orometry_ids_stable_across_epochs_and_residual_cache() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(128, 64).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-orometry-epoch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let ids = |scene: &AtlasPreparedScene| {
+            scene
+                .orometry
+                .iter()
+                .map(|feature| (feature.id.clone(), feature.kind, feature.basin_id))
+                .collect::<Vec<_>>()
+        };
+        let present = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut cold_req = request.clone();
+        cold_req.offset_years = -8_000;
+        let cold_req = cold_req.normalize().unwrap();
+        let cold = prepare_from_source(
+            &world.source,
+            &identity,
+            &cold_req,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut warm_req = request.clone();
+        warm_req.offset_years = 8_000;
+        let warm_req = warm_req.normalize().unwrap();
+        let warm = prepare_from_source(
+            &world.source,
+            &identity,
+            &warm_req,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(present.hydrology.sea_level_mm, cold.hydrology.sea_level_mm);
+        assert_ne!(present.hydrology.sea_level_mm, warm.hydrology.sea_level_mm);
+        assert_eq!(ids(&present), ids(&cold));
+        assert_eq!(ids(&cold), ids(&warm));
+        let cached_present = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(cached_present.residual_cache, cache::CacheLookup::Miss);
+        let cached_cold = prepare_from_source(
+            &world.source,
+            &identity,
+            &cold_req,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let cached_warm = prepare_from_source(
+            &world.source,
+            &identity,
+            &warm_req,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(cached_cold.residual_cache, cache::CacheLookup::Hit);
+        assert_eq!(cached_warm.residual_cache, cache::CacheLookup::Hit);
+        assert_eq!(ids(&cached_cold), ids(&cached_warm));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn structure_residual_identical_at_cold_and_warm_epochs() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let forcing = daena_physical::history::HistoricalForcingParameters::default_for(
+            world.field.seed,
+            world.field.retry_index,
+        );
+        let inventory = world.report.reference_water_inventory_m3;
+        let present_h = daena_physical::history::derive_historical_world_with_planet(
+            &world.field,
+            inventory,
+            Some(&world.tectonics.crust_by_cell),
+            forcing,
+            0,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+            &mut daena_physical::NoopProgress,
+        )
+        .unwrap();
+        let cold_h = daena_physical::history::derive_historical_world_with_planet(
+            &world.field,
+            inventory,
+            Some(&world.tectonics.crust_by_cell),
+            forcing,
+            -8_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+            &mut daena_physical::NoopProgress,
+        )
+        .unwrap();
+        let warm_h = daena_physical::history::derive_historical_world_with_planet(
+            &world.field,
+            inventory,
+            Some(&world.tectonics.crust_by_cell),
+            forcing,
+            8_000,
+            daena_physical::planetary::PlanetaryConfiguration::earth_like(),
+            &mut daena_physical::NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(cold_h.metrics.sea_level_mm, present_h.metrics.sea_level_mm);
+        assert_ne!(warm_h.metrics.sea_level_mm, present_h.metrics.sea_level_mm);
+        let present_c = structure_controls(
+            &world.field,
+            &world.tectonics,
+            &present_h,
+            forcing,
+            0,
+            inventory,
+        )
+        .unwrap();
+        let cold_c = structure_controls(
+            &world.field,
+            &world.tectonics,
+            &cold_h,
+            forcing,
+            -8_000,
+            inventory,
+        )
+        .unwrap();
+        let warm_c = structure_controls(
+            &world.field,
+            &world.tectonics,
+            &warm_h,
+            forcing,
+            8_000,
+            inventory,
+        )
+        .unwrap();
+        assert_eq!(present_c.sea_level_mm, cold_c.sea_level_mm);
+        assert_eq!(cold_c.sea_level_mm, warm_c.sea_level_mm);
+        assert_eq!(present_c.watershed_id, cold_c.watershed_id);
+        assert_eq!(present_c.lake_mask, cold_c.lake_mask);
+        let mut cancel = || Ok(());
+        let present_m = amplify::build_amplification_model(
+            &present_c,
+            &identity,
+            0,
+            request::DetailLevel::Standard,
+            &mut cancel,
+        )
+        .unwrap();
+        let cold_m = amplify::build_amplification_model(
+            &cold_c,
+            &identity,
+            0,
+            request::DetailLevel::Standard,
+            &mut cancel,
+        )
+        .unwrap();
+        let warm_m = amplify::build_amplification_model(
+            &warm_c,
+            &identity,
+            0,
+            request::DetailLevel::Standard,
+            &mut cancel,
+        )
+        .unwrap();
+        assert_eq!(present_m.detail.residual_mm, cold_m.detail.residual_mm);
+        assert_eq!(cold_m.detail.residual_mm, warm_m.detail.residual_mm);
+        let ids = |model: &amplify::AmplificationModel| {
+            model
+                .features
+                .iter()
+                .map(|feature| (feature.id.clone(), feature.kind))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&present_m), ids(&cold_m));
+        assert_eq!(ids(&cold_m), ids(&warm_m));
+        let cached_present = amplify::AmplificationModel::from_cached_detail(
+            present_m.detail.clone(),
+            &present_c,
+            &identity,
+        );
+        let cached_cold = amplify::AmplificationModel::from_cached_detail(
+            present_m.detail.clone(),
+            &cold_c,
+            &identity,
+        );
+        assert_eq!(ids(&cached_present), ids(&cached_cold));
     }
 
     struct CancelOnPhase {

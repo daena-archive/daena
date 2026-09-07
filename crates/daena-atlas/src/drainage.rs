@@ -11,7 +11,10 @@ pub struct DerivedTributary {
     pub source_cell: usize,
     pub join_cell: usize,
     pub parent_river_id: u32,
+    pub ordinal: u32,
     pub watershed_id: u32,
+    pub width_mm: u32,
+    pub depth_mm: u32,
     pub path: Vec<[i32; 2]>,
 }
 
@@ -31,7 +34,10 @@ impl DerivedDrainage {
             bytes.extend_from_slice(&(tributary.source_cell as u32).to_le_bytes());
             bytes.extend_from_slice(&(tributary.join_cell as u32).to_le_bytes());
             bytes.extend_from_slice(&tributary.parent_river_id.to_le_bytes());
+            bytes.extend_from_slice(&tributary.ordinal.to_le_bytes());
             bytes.extend_from_slice(&tributary.watershed_id.to_le_bytes());
+            bytes.extend_from_slice(&tributary.width_mm.to_le_bytes());
+            bytes.extend_from_slice(&tributary.depth_mm.to_le_bytes());
             bytes.extend_from_slice(&(tributary.path.len() as u32).to_le_bytes());
             for point in &tributary.path {
                 bytes.extend_from_slice(&point[0].to_le_bytes());
@@ -58,7 +64,10 @@ impl DerivedDrainage {
             let source_cell = read_u32(bytes, &mut offset)? as usize;
             let join_cell = read_u32(bytes, &mut offset)? as usize;
             let parent_river_id = read_u32(bytes, &mut offset)?;
+            let ordinal = read_u32(bytes, &mut offset)?;
             let watershed_id = read_u32(bytes, &mut offset)?;
+            let width_mm = read_u32(bytes, &mut offset)?;
+            let depth_mm = read_u32(bytes, &mut offset)?;
             let path_len = read_u32(bytes, &mut offset)? as usize;
             if path_len > MAX_TRACE_STEPS + 1 {
                 return Err(AtlasError::limit("derived tributary path is over budget"));
@@ -70,11 +79,14 @@ impl DerivedDrainage {
                 path.push([lon, lat]);
             }
             tributaries.push(DerivedTributary {
-                id: tributary_id(source_cell),
+                id: tributary_id(parent_river_id, ordinal),
                 source_cell,
                 join_cell,
                 parent_river_id,
+                ordinal,
                 watershed_id,
+                width_mm,
+                depth_mm,
                 path,
             });
         }
@@ -127,8 +139,8 @@ impl DerivedDrainage {
 }
 
 #[must_use]
-pub fn tributary_id(source_cell: usize) -> String {
-    format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{source_cell}")
+pub fn tributary_id(parent_river_id: u32, ordinal: u32) -> String {
+    format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{parent_river_id}:{ordinal}")
 }
 
 fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, AtlasError> {
@@ -167,11 +179,12 @@ mod tests {
         )
         .unwrap();
         for tributary in &scene.drainage.tributaries {
-            assert!(tributary.id.starts_with(&format!(
-                "atlas:tributary:v{}:",
-                ATLAS_DERIVED_DRAINAGE_VERSION
-            )));
+            assert_eq!(
+                tributary.id,
+                tributary_id(tributary.parent_river_id, tributary.ordinal)
+            );
             assert!(tributary.path.len() >= 2);
+            assert!(tributary.width_mm >= 400);
             for point in &tributary.path {
                 let cell = nearest_cell(scene.hydrology.grid, point[0], point[1]);
                 assert_eq!(scene.hydrology.watershed_id[cell], tributary.watershed_id);

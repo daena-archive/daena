@@ -1,9 +1,8 @@
-//! Derived drainage 3: bounded pit fill, watershed-constrained continuous
-//! flow, atlas-only tributaries, and multi-scale erosion during and after
-//! hierarchical amplification.
+//! Derived drainage: bounded pit fill, watershed-constrained continuous
+//! flow, atlas-only tributaries, and climate-state erosion on the structure lattice.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use daena_physical::hydrology::{BasinStatus, HydrologyField};
 
@@ -13,9 +12,9 @@ use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, sample_sdf_ppm,
 };
 use crate::erosion::{
-    apply_scale_erosion, lattice_index, lock_polar_rows, neighbor_at, ScaleErosion, DIRS,
-    EROSION_SCALES, FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM,
-    MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
+    apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
+    lock_polar_rows, neighbor_at, vegetation_resistance_ppm, ScaleErosion, DIRS, EROSION_SCALES,
+    FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM, MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
 };
 use crate::request::DetailLevel;
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION};
@@ -28,6 +27,7 @@ pub const MAX_FILL_MM: i32 = 4_800;
 const CANCELLATION_STRIDE: usize = 4_096;
 const MAX_TRACE_STEPS: usize = 64;
 const OCEAN: u32 = u32::MAX;
+const NO_PARENT_RIVER: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefinedTributary {
@@ -35,7 +35,10 @@ pub struct RefinedTributary {
     pub source_index: usize,
     pub join_index: usize,
     pub parent_river_id: u32,
+    pub ordinal: u32,
     pub watershed_id: u32,
+    pub width_mm: u32,
+    pub depth_mm: u32,
     pub path: Vec<[i32; 2]>,
 }
 
@@ -114,8 +117,72 @@ pub struct RefinedHydrology {
 
 impl RefinedTributary {
     #[must_use]
-    pub fn id_for(lattice_index: usize) -> String {
-        format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{lattice_index}")
+    pub fn id_for(parent_river_id: u32, ordinal: u32) -> String {
+        format!("atlas:tributary:v{ATLAS_DERIVED_DRAINAGE_VERSION}:{parent_river_id}:{ordinal}")
+    }
+}
+
+fn channel_discharge(accumulation: u32, runoff_mm: i32) -> u32 {
+    accumulation.saturating_mul(runoff_mm.clamp(0, 8_000) as u32)
+}
+
+fn channel_width_mm(accumulation: u32, runoff_mm: i32) -> u32 {
+    400u32
+        .saturating_add(channel_discharge(accumulation, runoff_mm) / 16)
+        .min(24_000)
+}
+
+fn channel_depth_mm(width_mm: u32) -> u32 {
+    (width_mm / 8).clamp(80, 3_000)
+}
+
+fn wrap_lon_micro(lon: i64) -> i32 {
+    let mut x = lon % 360_000_000;
+    if x <= -180_000_000 {
+        x += 360_000_000;
+    } else if x > 180_000_000 {
+        x -= 360_000_000;
+    }
+    x as i32
+}
+
+fn displace_meander(
+    path: &mut [[i32; 2]],
+    lattice_width: u32,
+    lattice_height: u32,
+    drainage_key: &[u8; 32],
+    discharge: u32,
+) {
+    if path.len() < 3 {
+        return;
+    }
+    let original = path.to_vec();
+    let amp = i64::from((discharge / 32).clamp(1, 1_200)) * 80;
+    for i in 1..original.len() - 1 {
+        let prev = original[i - 1];
+        let next = original[i + 1];
+        let mut dlon = i64::from(next[0]) - i64::from(prev[0]);
+        if dlon > 180_000_000 {
+            dlon -= 360_000_000;
+        } else if dlon < -180_000_000 {
+            dlon += 360_000_000;
+        }
+        let dlat = i64::from(next[1]) - i64::from(prev[1]);
+        let px = -dlat;
+        let py = dlon;
+        let scale = px.abs().max(py.abs()).max(1);
+        let cell_i = ((i64::from(original[i][0]) + 180_000_000) * i64::from(lattice_width)
+            / 360_000_000)
+            .clamp(0, i64::from(lattice_width) - 1) as u32;
+        let cell_j = ((i64::from(original[i][1]) + 90_000_000) * i64::from(lattice_height)
+            / 180_000_000)
+            .clamp(0, i64::from(lattice_height) - 1) as u32;
+        let prf = lattice_sample(drainage_key, cell_i, cell_j, 2);
+        let unit = ((prf >> 11) % 2_000_001) as i64 - 1_000_000;
+        let off = unit * amp / 1_000_000;
+        path[i][0] = wrap_lon_micro(i64::from(original[i][0]) + px * off / scale);
+        path[i][1] =
+            (i64::from(original[i][1]) + py * off / scale).clamp(-90_000_000, 90_000_000) as i32;
     }
 }
 
@@ -154,14 +221,17 @@ fn is_protected(hydrology: &HydrologyField, cell: usize) -> bool {
 fn river_occupancy(hydrology: &HydrologyField) -> (BTreeSet<usize>, Vec<u32>) {
     let count = hydrology.grid.sample_count();
     let mut cells = BTreeSet::new();
-    let mut river_at = vec![0_u32; count];
+    let mut river_at = vec![NO_PARENT_RIVER; count];
     for (index, path) in hydrology.river_coordinates.iter().enumerate() {
-        let id = hydrology.rivers.get(index).map_or(0, |river| river.id);
+        let source = hydrology
+            .rivers
+            .get(index)
+            .map_or(NO_PARENT_RIVER, |river| river.source_cell as u32);
         for point in path {
             let cell = nearest_cell(hydrology.grid, point[0], point[1]);
             cells.insert(cell);
-            if river_at[cell] == 0 {
-                river_at[cell] = id;
+            if river_at[cell] == NO_PARENT_RIVER || source < river_at[cell] {
+                river_at[cell] = source;
             }
         }
     }
@@ -499,6 +569,7 @@ fn extract_tributaries(
     hydrology: &HydrologyField,
     river_cells: &BTreeSet<usize>,
     river_at: &[u32],
+    runoff_mm: &[i32],
     sea_level_mm: i32,
     level: DetailLevel,
     drainage_key: &[u8; 32],
@@ -565,7 +636,7 @@ fn extract_tributaries(
             let mut current = index;
             let mut join = index;
             let mut seen = BTreeSet::from([current]);
-            let mut parent_river_id = 0_u32;
+            let mut parent_river_id = NO_PARENT_RIVER;
             for _ in 0..MAX_TRACE_STEPS {
                 let dest = primary[current];
                 if dest == NO_FLOW || dest as usize >= count || !seen.insert(dest as usize) {
@@ -594,18 +665,42 @@ fn extract_tributaries(
             if path.len() < 3 {
                 continue;
             }
+            let gauge = if accumulation.get(join).copied().unwrap_or(0) >= accumulation[index] {
+                join
+            } else {
+                index
+            };
+            let runoff = runoff_mm.get(gauge).copied().unwrap_or(0);
+            let discharge = channel_discharge(accumulation[gauge], runoff);
+            displace_meander(&mut path, width, height, drainage_key, discharge);
+            let width_mm = channel_width_mm(accumulation[gauge], runoff);
             features.push(RefinedTributary {
-                id: RefinedTributary::id_for(index),
+                id: String::new(),
                 source_index: index,
                 join_index: join,
                 parent_river_id,
+                ordinal: 0,
                 watershed_id: watershed,
+                width_mm,
+                depth_mm: channel_depth_mm(width_mm),
                 path,
             });
         }
     }
-    features.sort_by(|a, b| a.id.cmp(&b.id));
+    features.sort_by_key(|feature| feature.source_index);
     features.truncate(MAX_TRIBUTARIES);
+    features.sort_by(|a, b| {
+        a.parent_river_id
+            .cmp(&b.parent_river_id)
+            .then(a.source_index.cmp(&b.source_index))
+    });
+    let mut next_ordinal = BTreeMap::new();
+    for feature in &mut features {
+        let ordinal = next_ordinal.entry(feature.parent_river_id).or_insert(0_u32);
+        feature.ordinal = *ordinal;
+        feature.id = RefinedTributary::id_for(feature.parent_river_id, feature.ordinal);
+        *ordinal = ordinal.saturating_add(1);
+    }
     Ok(features)
 }
 
@@ -692,6 +787,7 @@ fn extract_deposition(
     accumulation: &[u32],
     hydrology: &HydrologyField,
     protected: &[bool],
+    runoff_mm: &[i32],
     sea_level_mm: i32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<Vec<DepositionFeature>, AtlasError> {
@@ -715,7 +811,11 @@ fn extract_deposition(
             let drop = (filled_mm[index] - filled_mm[dest as usize]).max(0);
             let slope_ppm = (i64::from(drop) * 1_000) / 2;
             let deposited = worked_mm[index] > filled_mm[index];
-            if !deposited && accumulation[index] < 24 {
+            let discharge = channel_discharge(
+                accumulation[index],
+                runoff_mm.get(index).copied().unwrap_or(0),
+            );
+            if !deposited && discharge < 24 {
                 continue;
             }
             let lon = lattice_lon_micro(i, width);
@@ -729,14 +829,13 @@ fn extract_deposition(
             if watershed == OCEAN {
                 continue;
             }
-            let kind =
-                if slope_ppm < i64::from(FAN_SLOPE_PPM) && accumulation[index] >= 12 && deposited {
-                    DepositionKind::Fan
-                } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && accumulation[index] >= 24 {
-                    DepositionKind::Floodplain
-                } else {
-                    continue;
-                };
+            let kind = if slope_ppm < i64::from(FAN_SLOPE_PPM) && discharge >= 12 && deposited {
+                DepositionKind::Fan
+            } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && discharge >= 24 {
+                DepositionKind::Floodplain
+            } else {
+                continue;
+            };
             if features.iter().any(|feature: &DepositionFeature| {
                 feature.kind == kind && feature.lattice_index == index
             }) {
@@ -777,21 +876,41 @@ fn erode(
     let mut worked = filled_mm.to_vec();
     let mut mountain_ppm = vec![0_i32; count];
     let mut runoff_ppm = vec![0_i32; count];
+    let mut freeze_thaw = vec![0_i32; count];
+    let mut aridity_ppm = vec![0_i32; count];
+    let mut glacial_ppm = vec![0_i32; count];
     for j in 0..height {
         for i in 0..width {
             let index = lattice_index(width, i, j);
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
-            runoff_ppm[index] = (i64::from(controls.sample_runoff(lon, lat).clamp(0, 4_000))
-                * 1_000_000
-                / 4_000) as i32;
+            let nh_summer = controls.sample_nh_summer_temperature(lon, lat);
+            let nh_winter = controls.sample_nh_winter_temperature(lon, lat);
+            let (summer, winter) = if lat >= 0 {
+                (nh_summer, nh_winter)
+            } else {
+                (nh_winter, nh_summer)
+            };
+            let vegetation = vegetation_resistance_ppm(
+                controls.sample_humidity(lon, lat),
+                controls.sample_precipitation(lon, lat),
+                controls.sample_temperature(lon, lat),
+            );
+            runoff_ppm[index] = fluvial_gain_ppm(
+                controls.sample_runoff(lon, lat),
+                controls.sample_precipitation(lon, lat),
+                vegetation,
+            );
+            freeze_thaw[index] = freeze_thaw_ppm(summer, winter);
+            aridity_ppm[index] = controls.sample_aridity(lon, lat).clamp(0, 1_000_000);
+            glacial_ppm[index] = glacial_work_ppm(controls.sample_ice_thickness(lon, lat), summer);
         }
     }
     let peaks = model
         .features
         .iter()
-        .filter(|feature| feature.kind == MountainKind::Peak)
+        .filter(|feature| matches!(feature.kind, MountainKind::Peak | MountainKind::Ridge))
         .map(|feature| feature.lattice_index)
         .collect::<Vec<_>>();
     let land_at = |lon: i32, lat: i32| model.detail.canonical_at(lon, lat) >= controls.sea_level_mm;
@@ -805,6 +924,9 @@ fn erode(
             protected,
             mountain_ppm: &mountain_ppm,
             runoff_ppm: &runoff_ppm,
+            freeze_thaw_ppm: &freeze_thaw,
+            aridity_ppm: &aridity_ppm,
+            glacial_ppm: &glacial_ppm,
             primary,
             secondary,
             weight,
@@ -900,6 +1022,17 @@ pub fn build_refined_hydrology(
         check_cancelled,
     )?;
     let (river_cells, river_at) = river_occupancy(hydrology);
+    let mut runoff_mm = vec![0_i32; count];
+    for j in 0..height {
+        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
+            check_cancelled()?;
+        }
+        for i in 0..width {
+            let lon = lattice_lon_micro(i, width);
+            let lat = lattice_lat_micro(j, height);
+            runoff_mm[lattice_index(width, i, j)] = controls.sample_runoff(lon, lat);
+        }
+    }
     let tributaries = extract_tributaries(
         width,
         height,
@@ -909,6 +1042,7 @@ pub fn build_refined_hydrology(
         hydrology,
         &river_cells,
         &river_at,
+        &runoff_mm,
         controls.sea_level_mm,
         model.detail.level,
         &drainage_key,
@@ -950,6 +1084,7 @@ pub fn build_refined_hydrology(
         &accumulation,
         hydrology,
         &protected,
+        &runoff_mm,
         controls.sea_level_mm,
         check_cancelled,
     )?;
@@ -984,7 +1119,10 @@ impl RefinedHydrology {
             bytes.extend_from_slice(&(tributary.source_index as u32).to_le_bytes());
             bytes.extend_from_slice(&(tributary.join_index as u32).to_le_bytes());
             bytes.extend_from_slice(&tributary.parent_river_id.to_le_bytes());
+            bytes.extend_from_slice(&tributary.ordinal.to_le_bytes());
             bytes.extend_from_slice(&tributary.watershed_id.to_le_bytes());
+            bytes.extend_from_slice(&tributary.width_mm.to_le_bytes());
+            bytes.extend_from_slice(&tributary.depth_mm.to_le_bytes());
             bytes.extend_from_slice(&(tributary.path.len() as u32).to_le_bytes());
             for point in &tributary.path {
                 bytes.extend_from_slice(&point[0].to_le_bytes());
@@ -1018,7 +1156,10 @@ impl RefinedHydrology {
             let source_index = read_u32(bytes, &mut offset)? as usize;
             let join_index = read_u32(bytes, &mut offset)? as usize;
             let parent_river_id = read_u32(bytes, &mut offset)?;
+            let ordinal = read_u32(bytes, &mut offset)?;
             let watershed_id = read_u32(bytes, &mut offset)?;
+            let width_mm = read_u32(bytes, &mut offset)?;
+            let depth_mm = read_u32(bytes, &mut offset)?;
             let path_len = read_u32(bytes, &mut offset)? as usize;
             if path_len > MAX_TRACE_STEPS + 1 {
                 return Err(AtlasError::limit("tributary path is over budget"));
@@ -1030,11 +1171,14 @@ impl RefinedHydrology {
                 path.push([lon, lat]);
             }
             tributaries.push(RefinedTributary {
-                id: RefinedTributary::id_for(source_index),
+                id: RefinedTributary::id_for(parent_river_id, ordinal),
                 source_index,
                 join_index,
                 parent_river_id,
+                ordinal,
                 watershed_id,
+                width_mm,
+                depth_mm,
                 path,
             });
         }
@@ -1145,7 +1289,7 @@ mod tests {
     use daena_physical::Grid;
     use daena_physical::NoopProgress as PhysicalNoop;
     use std::cell::Cell;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::time::Instant;
 
@@ -1283,7 +1427,7 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 1);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 2);
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);
@@ -1310,11 +1454,13 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         for tributary in &refined.tributaries {
-            assert!(tributary.id.starts_with(&format!(
-                "atlas:tributary:v{}:",
-                ATLAS_DERIVED_DRAINAGE_VERSION
-            )));
+            assert_eq!(
+                tributary.id,
+                RefinedTributary::id_for(tributary.parent_river_id, tributary.ordinal)
+            );
             assert!(tributary.path.len() >= 3);
+            assert!(tributary.width_mm >= 400);
+            assert!(tributary.depth_mm >= 80);
             for point in &tributary.path {
                 let cell = nearest_cell(hydrology.grid, point[0], point[1]);
                 let watershed = hydrology.watershed_id[cell];
@@ -1331,14 +1477,15 @@ mod tests {
                 ATLAS_DERIVED_DRAINAGE_VERSION
             )));
         }
-        let river_ids = hydrology
+        let river_sources = hydrology
             .rivers
             .iter()
-            .map(|river| river.id)
+            .map(|river| river.source_cell as u32)
             .collect::<BTreeSet<_>>();
         for tributary in &refined.tributaries {
             assert!(
-                tributary.parent_river_id == 0 || river_ids.contains(&tributary.parent_river_id)
+                tributary.parent_river_id == NO_PARENT_RIVER
+                    || river_sources.contains(&tributary.parent_river_id)
             );
         }
         for valley in &refined.valleys {
@@ -1554,5 +1701,338 @@ mod tests {
             checks.get() > 3,
             "cancellation returned before mid-pipeline lattice checks"
         );
+    }
+
+    #[test]
+    fn climate_operators_change_worked_surface_without_moving_orometry() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let forcing =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let structure = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &world.climate,
+            &world.hydrology,
+        )
+        .unwrap();
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&structure, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        assert!(model.features.iter().any(|f| f.kind == MountainKind::Peak));
+        assert!(model.features.iter().any(|f| f.kind == MountainKind::Ridge));
+        let year0_sdf = signed_coastal_distance_ppm(
+            world.field.grid,
+            &world.field.elevations_mm,
+            world.hydrology.sea_level_mm,
+        );
+        let mut run = |offset: i64| {
+            let historical = derive_historical_world_with_planet(
+                &world.field,
+                world.report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                forcing,
+                offset,
+                world.climate.planetary,
+                &mut PhysicalNoop,
+            )
+            .unwrap();
+            let sdf = signed_coastal_distance_ppm(
+                world.field.grid,
+                &world.field.elevations_mm,
+                historical.metrics.sea_level_mm,
+            );
+            let controls = ControlFields::from_accepted(
+                &world.field,
+                &world.tectonics,
+                &historical.climate,
+                &historical.hydrology,
+            )
+            .unwrap();
+            let refined = build_refined_hydrology(
+                &model,
+                &controls,
+                &historical.hydrology,
+                &sdf,
+                &identity,
+                &mut cancel,
+            )
+            .unwrap();
+            (historical.metrics.land_ice_m3, refined)
+        };
+        let (_, present) = run(0);
+        let (cold_ice, cold) = run(-8_000);
+        let (warm_ice, warm) = run(8_000);
+        assert_ne!(cold_ice, warm_ice);
+        assert_eq!(present.erosion_key, cold.erosion_key);
+        assert_eq!(cold.erosion_key, warm.erosion_key);
+        let crests_hold = |refined: &RefinedHydrology| {
+            for crest in model
+                .features
+                .iter()
+                .filter(|feature| matches!(feature.kind, MountainKind::Peak | MountainKind::Ridge))
+            {
+                let width = refined.lattice_width;
+                let j = crest.lattice_index as u32 / width;
+                let i = crest.lattice_index as u32 % width;
+                let crest_sdf = sample_sdf_ppm(
+                    world.field.grid,
+                    &year0_sdf,
+                    crest.lon_micro,
+                    crest.lat_micro,
+                );
+                if crest_sdf.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                    continue;
+                }
+                let crest_elev = refined.worked_mm[crest.lattice_index];
+                for dir in DIRS {
+                    if let Some((ni, nj, neighbor)) =
+                        neighbor_at(width, refined.lattice_height, i, j, dir)
+                    {
+                        if j == 0
+                            || j + 1 == refined.lattice_height
+                            || nj == 0
+                            || nj + 1 == refined.lattice_height
+                        {
+                            continue;
+                        }
+                        let nlon = lattice_lon_micro(ni, width);
+                        let nlat = lattice_lat_micro(nj, refined.lattice_height);
+                        let neighbor_sdf = sample_sdf_ppm(world.field.grid, &year0_sdf, nlon, nlat);
+                        if neighbor_sdf.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                            continue;
+                        }
+                        assert!(
+                            crest_elev + crate::detail::MAX_RESIDUAL_MM
+                                >= refined.worked_mm[neighbor],
+                            "{} {} lost crest tolerance",
+                            crest.kind.as_str(),
+                            crest.id
+                        );
+                    }
+                }
+            }
+        };
+        crests_hold(&present);
+        crests_hold(&cold);
+        crests_hold(&warm);
+        let interior = |refined: &RefinedHydrology| {
+            let width = refined.lattice_width;
+            let mut cut = 0_i64;
+            let mut rough = 0_i64;
+            for j in 1..refined.lattice_height.saturating_sub(1) {
+                for i in 0..width {
+                    let index = lattice_index(width, i, j);
+                    if refined.protected[index] {
+                        continue;
+                    }
+                    let lon = lattice_lon_micro(i, width);
+                    let lat = lattice_lat_micro(j, refined.lattice_height);
+                    let sdf_ppm = sample_sdf_ppm(world.field.grid, &year0_sdf, lon, lat);
+                    if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                        continue;
+                    }
+                    if refined.source_mm[index] < world.hydrology.sea_level_mm {
+                        continue;
+                    }
+                    cut += i64::from(refined.filled_mm[index] - refined.worked_mm[index]).abs();
+                    let east = lattice_index(width, (i + 1) % width, j);
+                    rough += i64::from(refined.worked_mm[index] - refined.worked_mm[east]).abs();
+                }
+            }
+            (cut, rough)
+        };
+        let present_work = interior(&present);
+        let cold_work = interior(&cold);
+        let warm_work = interior(&warm);
+        assert_ne!(present.worked_mm, cold.worked_mm);
+        assert_ne!(cold.worked_mm, warm.worked_mm);
+        assert_ne!(
+            cold_work, warm_work,
+            "cold vs warm interior gully/roughness"
+        );
+        assert_ne!(present_work, cold_work);
+    }
+
+    #[test]
+    fn epoch_hydrology_keeps_river_ids_while_channels_change() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let forcing =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let structure = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &world.climate,
+            &world.hydrology,
+        )
+        .unwrap();
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&structure, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let mut run = |offset: i64| {
+            let historical = derive_historical_world_with_planet(
+                &world.field,
+                world.report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                forcing,
+                offset,
+                world.climate.planetary,
+                &mut PhysicalNoop,
+            )
+            .unwrap();
+            let sdf = signed_coastal_distance_ppm(
+                world.field.grid,
+                &world.field.elevations_mm,
+                historical.metrics.sea_level_mm,
+            );
+            let controls = ControlFields::from_accepted(
+                &world.field,
+                &world.tectonics,
+                &historical.climate,
+                &historical.hydrology,
+            )
+            .unwrap();
+            let refined = build_refined_hydrology(
+                &model,
+                &controls,
+                &historical.hydrology,
+                &sdf,
+                &identity,
+                &mut cancel,
+            )
+            .unwrap();
+            (historical.hydrology, refined)
+        };
+        let (present_h, present) = run(0);
+        let (cold_h, cold) = run(-8_000);
+        let (warm_h, warm) = run(8_000);
+        let ids = |hydrology: &HydrologyField| {
+            hydrology
+                .rivers
+                .iter()
+                .map(|river| daena_physical::hydro_claim::river_id(river.source_cell))
+                .collect::<BTreeSet<_>>()
+        };
+        let mouths = |hydrology: &HydrologyField| {
+            let mut map = BTreeMap::new();
+            for river in &hydrology.rivers {
+                map.entry(river.source_cell)
+                    .and_modify(|mouth: &mut usize| *mouth = (*mouth).min(river.mouth_cell))
+                    .or_insert(river.mouth_cell);
+            }
+            map
+        };
+        let path_for = |hydrology: &HydrologyField, source: usize| {
+            hydrology
+                .rivers
+                .iter()
+                .zip(&hydrology.river_coordinates)
+                .filter(|(river, _)| river.source_cell == source)
+                .min_by_key(|(river, _)| (river.mouth_cell, river.id))
+                .map(|(_, path)| path.clone())
+        };
+        let present_ids = ids(&present_h);
+        let cold_ids = ids(&cold_h);
+        let warm_ids = ids(&warm_h);
+        let shared_cold = present_ids
+            .intersection(&cold_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        let shared_warm = present_ids
+            .intersection(&warm_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(!shared_cold.is_empty(), "no shared river spines at cold");
+        assert!(!shared_warm.is_empty(), "no shared river spines at warm");
+        let present_mouths = mouths(&present_h);
+        let cold_mouths = mouths(&cold_h);
+        let warm_mouths = mouths(&warm_h);
+        for (hydrology, shared) in [
+            (&present_h, &shared_cold),
+            (&cold_h, &shared_cold),
+            (&warm_h, &shared_warm),
+        ] {
+            for id in shared {
+                let claim = daena_physical::hydro_claim::resolve(
+                    hydrology,
+                    daena_physical::hydro_claim::KIND_RIVER,
+                    id,
+                );
+                assert_eq!(
+                    claim.as_ref().map(|claim| claim.id.as_str()),
+                    Some(id.as_str())
+                );
+            }
+        }
+        let spine_moved =
+            |shared: &[String], other_mouths: &BTreeMap<usize, usize>, other: &HydrologyField| {
+                shared.iter().any(|id| {
+                    let source: usize = id
+                        .strip_prefix("river:")
+                        .and_then(|rest| rest.parse().ok())
+                        .expect("source spine");
+                    other_mouths
+                        .get(&source)
+                        .is_some_and(|mouth| *mouth != present_mouths[&source])
+                        || path_for(&present_h, source) != path_for(other, source)
+                })
+            };
+        assert!(
+            spine_moved(&shared_cold, &cold_mouths, &cold_h)
+                || spine_moved(&shared_warm, &warm_mouths, &warm_h),
+            "shared spines must change mouth or path across epochs"
+        );
+        assert_eq!(present.drainage_key, cold.drainage_key);
+        assert_eq!(cold.drainage_key, warm.drainage_key);
+        let widths = |refined: &RefinedHydrology| {
+            refined
+                .tributaries
+                .iter()
+                .map(|tributary| {
+                    (
+                        tributary.parent_river_id,
+                        tributary.ordinal,
+                        tributary.width_mm,
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let paths = |refined: &RefinedHydrology| {
+            refined
+                .tributaries
+                .iter()
+                .map(|tributary| {
+                    (
+                        tributary.parent_river_id,
+                        tributary.ordinal,
+                        tributary.path.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(widths(&present), widths(&cold));
+        assert_ne!(paths(&present), paths(&cold));
+        assert_ne!(paths(&cold), paths(&warm));
+        assert!(!present.tributaries.is_empty());
+        for tributary in present
+            .tributaries
+            .iter()
+            .chain(&cold.tributaries)
+            .chain(&warm.tributaries)
+        {
+            assert_eq!(
+                tributary.id,
+                RefinedTributary::id_for(tributary.parent_river_id, tributary.ordinal)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "phase E: epoch sea must move one shoreline (>= 16 envelope land-sign flips); continent identity unchanged"]
+    fn epoch_sea_moves_one_shoreline() {
+        unimplemented!("phase E coastline-flip coverage");
     }
 }

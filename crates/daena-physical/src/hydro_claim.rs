@@ -1,8 +1,8 @@
 //! Stable identities for generated lakes and rivers.
 //!
 //! Derived hydrology GeoJSON uses list indexes. Claims instead key a lake by
-//! basin `minimum_cell` and a river by `source_cell` + `mouth_cell` so a name
-//! can follow the water across overlay redraws without copying geometry.
+//! basin `minimum_cell` and a river by `source_cell` so a name can follow the
+//! spine when sea-level moves the mouth.
 
 use crate::hydrology::{BasinStatus, HydrologyField};
 use crate::Grid;
@@ -28,8 +28,8 @@ pub fn lake_id(minimum_cell: usize) -> String {
 }
 
 #[must_use]
-pub fn river_id(source_cell: usize, mouth_cell: usize) -> String {
-    format!("river:{source_cell}:{mouth_cell}")
+pub fn river_id(source_cell: usize) -> String {
+    format!("river:{source_cell}")
 }
 
 #[must_use]
@@ -70,12 +70,13 @@ pub fn resolve(hydrology: &HydrologyField, kind: &str, id: &str) -> Option<Hydro
                 .and_then(|basin| lake_claim(hydrology, basin.minimum_cell))
         }
         KIND_RIVER => {
-            let (source, mouth) = parse_river_id(id)?;
+            let source = parse_river_id(id)?;
             hydrology
                 .rivers
                 .iter()
                 .zip(&hydrology.river_coordinates)
-                .find(|(river, _)| river.source_cell == source && river.mouth_cell == mouth)
+                .filter(|(river, _)| river.source_cell == source)
+                .min_by_key(|(river, _)| (river.mouth_cell, river.id))
                 .map(|(river, path)| river_claim(river, path))
         }
         _ => None,
@@ -145,7 +146,7 @@ fn river_claim(river: &crate::hydrology::RiverSegment, path: &[[i32; 2]]) -> Hyd
         .unwrap_or([0, 0]);
     HydroClaim {
         kind: KIND_RIVER,
-        id: river_id(river.source_cell, river.mouth_cell),
+        id: river_id(river.source_cell),
         layer_id: LAYER_RIVERS,
         label: format!("River order {}", river.strahler_order),
         lon_micro: point[0],
@@ -165,10 +166,8 @@ fn parse_lake_id(id: &str) -> Option<usize> {
     id.strip_prefix("lake:")?.parse().ok()
 }
 
-fn parse_river_id(id: &str) -> Option<(usize, usize)> {
-    let rest = id.strip_prefix("river:")?;
-    let (source, mouth) = rest.split_once(':')?;
-    Some((source.parse().ok()?, mouth.parse().ok()?))
+fn parse_river_id(id: &str) -> Option<usize> {
+    id.strip_prefix("river:")?.parse().ok()
 }
 
 fn cell_from_microdegrees(grid: Grid, lon: i32, lat: i32) -> usize {
@@ -309,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn river_claim_uses_source_and_mouth() {
+    fn river_claim_uses_source_cell() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut hydrology = empty_hydrology(grid);
         let source = grid.index(2, 4);
@@ -328,11 +327,38 @@ mod tests {
         hydrology.river_coordinates.push(vec![start, end]);
         let claim = claim_at(&hydrology, start[0], start[1], 50_000).expect("river");
         assert_eq!(claim.kind, KIND_RIVER);
-        assert_eq!(claim.id, river_id(source, mouth));
+        assert_eq!(claim.id, river_id(source));
         assert_eq!(claim.label, "River order 3");
         assert!(is_valid_id(KIND_RIVER, &claim.id));
         assert!(!is_valid_id(KIND_RIVER, "river-000099"));
+        assert!(!is_valid_id(KIND_RIVER, "river:4:18"));
         assert!(resolve(&hydrology, KIND_RIVER, &claim.id).is_some());
+    }
+
+    #[test]
+    fn river_claim_survives_mouth_movement() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut hydrology = empty_hydrology(grid);
+        let source = grid.index(2, 4);
+        let old_mouth = grid.index(5, 10);
+        let new_mouth = grid.index(4, 9);
+        let start = coordinate_for_cell(grid, source);
+        let end = coordinate_for_cell(grid, new_mouth);
+        hydrology.rivers.push(RiverSegment {
+            id: 1,
+            source_cell: source,
+            mouth_cell: new_mouth,
+            strahler_order: 2,
+            destination: BasinDestination::Ocean,
+            spill_outlet: false,
+            coordinate_count: 2,
+        });
+        hydrology.river_coordinates.push(vec![start, end]);
+        let id = river_id(source);
+        assert_ne!(id, format!("river:{source}:{old_mouth}"));
+        let resolved = resolve(&hydrology, KIND_RIVER, &id).expect("spine");
+        assert_eq!(resolved.id, id);
+        assert_eq!(resolved.kind, KIND_RIVER);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use daena_atlas::amplify::{inspect_orometry, OROMETRY_LAYER};
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::overlay::{
     hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature, OverlayHit,
@@ -962,6 +963,7 @@ pub async fn project_atlas_studio_inspect(
         )
         .map(|claim| (claim.id, claim.layer_id, claim.kind, claim.label))
     });
+    let has_claim = claim.is_some();
     if let Some((id, layer_id, kind, label)) = claim {
         if !hits.iter().any(|hit| hit.id == id) {
             hits.insert(
@@ -979,6 +981,21 @@ pub async fn project_atlas_studio_inspect(
             }
         }
     }
+    let orometry_at = if has_claim { 1 } else { 0 };
+    let orometry_hits =
+        inspect_orometry(&prepared.orometry, input.lon_micro, input.lat_micro, radius)
+            .into_iter()
+            .filter(|hit| !hits.iter().any(|existing| existing.id == hit.id))
+            .map(|hit| OverlayHit {
+                id: hit.id,
+                layer_id: OROMETRY_LAYER.into(),
+                kind: format!("orometry-{}", hit.kind.as_str()),
+                label: Some(hit.label),
+                derived: true,
+            })
+            .collect::<Vec<_>>();
+    hits.splice(orometry_at..orometry_at, orometry_hits);
+    hits.truncate(32);
     Ok(AtlasInspectResult { hits, surface })
 }
 

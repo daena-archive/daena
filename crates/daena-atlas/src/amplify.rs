@@ -1,21 +1,19 @@
-//! Detail algorithm 6: interpolated landform grain, divide-tree ridge and
-//! valley *paths*, pit fill, and coastline reconstruction.
+//! Structure residual: interpolated landform grain, divide-tree ridge and
+//! valley *paths*, and pit fill. Callers must pass year-0 / accepted
+//! hydrology (`structure_controls` in `lib.rs`). Pit-fill, coastline grain,
+//! and watershed priors use that year-0 sea/lakes/watersheds — not epoch
+//! climate. Epoch operators belong in refine.
 
 use daena_physical::Grid;
 
-use crate::control::{
-    ControlFields, CLIMATE_CLASS_ALPINE, CLIMATE_CLASS_ARID, CLIMATE_CLASS_COLD_GRASSLAND,
-    CLIMATE_CLASS_FOREST, CLIMATE_CLASS_GRASSLAND, CLIMATE_CLASS_ICE, CLIMATE_CLASS_SHRUBLAND,
-    CLIMATE_CLASS_TROPICAL_FOREST, CLIMATE_CLASS_TUNDRA,
-};
+use crate::control::ControlFields;
 use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
     sample_field_mm, sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
-    accumulate_flow, apply_scale_erosion, assign_simple_flow, lattice_index, lock_polar_rows,
-    neighbor_at, priority_fill_pits, HIERARCHICAL_EROSION_STEP_MM, HIERARCHICAL_FILL_MM,
-    HIERARCHICAL_SCALES,
+    accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
+    priority_fill_pits, HIERARCHICAL_FILL_MM,
 };
 use crate::projection::bilinear_i32;
 use crate::request::DetailLevel;
@@ -26,8 +24,6 @@ pub const MOUNTAIN_OROMETRY_DOMAIN: &str = "mountain-orometry";
 pub const COASTLINE_SYNTHESIS_DOMAIN: &str = "coastline-synthesis";
 pub const COASTAL_RAMP_MM: i32 = 72_000;
 pub const COASTAL_DISPLACE_PPM: i32 = 380_000;
-pub const MOUNTAIN_WINDOW_WIDTH: u32 = 16;
-pub const MOUNTAIN_WINDOW_HEIGHT: u32 = 12;
 pub const MAX_MOUNTAIN_FEATURES: usize = 768;
 pub const MAX_PEAKS_PER_SYSTEM: usize = 48;
 pub const MIN_PEAK_SEPARATION: u32 = 6;
@@ -35,36 +31,41 @@ pub const RIDGE_SYNTHESIS_MM: i32 = 780_000;
 pub const VALLEY_SYNTHESIS_MM: i32 = 520_000;
 pub const PLAINS_VALLEY_MM: i32 = 96_000;
 pub const OROMETRY_FALLOFF: u32 = 8;
+/// Inspect hit `layer_id` only (same role as `landmass`). Not a paint layer.
+pub const OROMETRY_LAYER: &str = "orometry";
+/// High, low-influence physical masks. Edges are later refine erosion sites.
+const UPLAND_HEIGHT_MM: i32 = 80_000;
+const PLATEAU_RELIEF_MM: i32 = 120_000;
+const MIN_UPLAND_CELLS: usize = 2;
 const CANCELLATION_STRIDE: usize = 4_096;
 
-fn mountain_window_size(grid: Grid) -> (u32, u32) {
-    (
-        MOUNTAIN_WINDOW_WIDTH.min(grid.width),
-        MOUNTAIN_WINDOW_HEIGHT.min(grid.height),
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum MountainKind {
+    System,
     Peak,
     Saddle,
     Ridge,
     SecondaryRidge,
     Valley,
     Foothill,
+    Plateau,
+    Upland,
 }
 
 impl MountainKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Peak => "peak",
             Self::Saddle => "saddle",
             Self::Ridge => "ridge",
             Self::SecondaryRidge => "secondary-ridge",
             Self::Valley => "valley",
             Self::Foothill => "foothill",
+            Self::Plateau => "plateau",
+            Self::Upland => "upland",
         }
     }
 }
@@ -74,16 +75,25 @@ pub struct MountainFeature {
     pub id: String,
     pub kind: MountainKind,
     pub lattice_index: usize,
+    pub physical_cell: usize,
+    pub system_id: String,
+    pub parent_id: Option<String>,
+    pub basin_id: Option<u32>,
     pub lon_micro: i32,
     pub lat_micro: i32,
     pub elevation_mm: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrometryInspectHit {
+    pub id: String,
+    pub kind: MountainKind,
+    pub label: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AmplificationModel {
     pub detail: AtlasDetailModel,
-    pub mountain_origin_row: u32,
-    pub mountain_origin_col: u32,
     pub mountain_system_count: u32,
     pub features: Vec<MountainFeature>,
     pub orometry_key: [u8; 32],
@@ -102,61 +112,13 @@ fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i3
     let mountain = controls
         .sample_mountain_influence(lon_micro, lat_micro)
         .clamp(0, 1_000_000);
-    let ice = controls.sample_ice_thickness(lon_micro, lat_micro).max(0);
-    let runoff = controls.sample_runoff(lon_micro, lat_micro).clamp(0, 4_000);
-    let precip = controls
-        .sample_precipitation(lon_micro, lat_micro)
-        .clamp(0, 4_000);
-    let humidity = controls
-        .sample_humidity(lon_micro, lat_micro)
-        .clamp(0, 1_000_000);
-    let aridity = controls
-        .sample_aridity(lon_micro, lat_micro)
-        .clamp(0, 1_000_000);
-    let lake = controls.sample_lake_mask(lon_micro, lat_micro);
-    let climate = controls.sample_climate_class(lon_micro, lat_micro);
-    let sea = controls.sea_level_mm;
-    if lake > 0 {
-        return 16;
-    }
     let magnitude = elevation.unsigned_abs().min(8_000_000);
     let scaled = (u64::from(magnitude) * 64_000 / 8_000_000) as i32;
     let mut amplitude = scaled.clamp(18_000, 64_000);
     amplitude = ((i64::from(amplitude) * i64::from(crust.max(220_000))) / 1_000_000) as i32;
     amplitude = amplitude.saturating_add(((i64::from(mountain) * 72_000) / 1_000_000) as i32);
-    if elevation < sea {
-        amplitude = amplitude.min(180);
-    }
-    if ice > 800 {
-        amplitude = ((i64::from(amplitude) * 220_000) / 1_000_000) as i32;
-    }
-    amplitude = match climate {
-        CLIMATE_CLASS_ICE | CLIMATE_CLASS_ALPINE => {
-            ((i64::from(amplitude) * 180_000) / 1_000_000) as i32
-        }
-        CLIMATE_CLASS_TUNDRA => ((i64::from(amplitude) * 720_000) / 1_000_000) as i32,
-        CLIMATE_CLASS_ARID => ((i64::from(amplitude) * 1_180_000) / 1_000_000) as i32,
-        CLIMATE_CLASS_SHRUBLAND => ((i64::from(amplitude) * 1_080_000) / 1_000_000) as i32,
-        CLIMATE_CLASS_COLD_GRASSLAND | CLIMATE_CLASS_GRASSLAND => amplitude,
-        CLIMATE_CLASS_FOREST | CLIMATE_CLASS_TROPICAL_FOREST => {
-            ((i64::from(amplitude) * 900_000) / 1_000_000) as i32
-        }
-        _ => amplitude,
-    };
-    if runoff > 400 && mountain < 200_000 {
-        amplitude = ((i64::from(amplitude) * 860_000) / 1_000_000) as i32;
-    }
-    if precip < 200 && climate == CLIMATE_CLASS_ARID {
-        amplitude = amplitude.saturating_add(8_000);
-    }
-    if aridity > 700_000 {
-        amplitude = amplitude.saturating_add(5_000);
-    }
-    if humidity > 750_000 && mountain < 200_000 {
-        amplitude = ((i64::from(amplitude) * 920_000) / 1_000_000) as i32;
-    }
-    if elevation < sea {
-        return amplitude.clamp(48, 180);
+    if crust < 500_000 {
+        return amplitude.min(180).clamp(48, 180);
     }
     amplitude.clamp(12_000, 140_000)
 }
@@ -165,14 +127,9 @@ fn control_shaped_unit(controls: &ControlFields, lon_micro: i32, lat_micro: i32,
     let mountain = controls
         .sample_mountain_influence(lon_micro, lat_micro)
         .clamp(0, 1_000_000);
-    let runoff = controls.sample_runoff(lon_micro, lat_micro).clamp(0, 4_000);
     let ridged = if unit < 0 { -unit / 2 } else { unit };
-    let valley = if unit > 0 { unit / 2 } else { unit };
-    let mountain_mix = (i64::from(unit) * i64::from(1_000_000 - mountain)
-        + i64::from(ridged) * i64::from(mountain))
-        / 1_000_000;
-    let runoff_ppm = (i64::from(runoff) * 1_000_000 / 4_000).clamp(0, 700_000);
-    ((mountain_mix * (1_000_000 - runoff_ppm) + i64::from(valley) * runoff_ppm) / 1_000_000) as i32
+    ((i64::from(unit) * i64::from(1_000_000 - mountain) + i64::from(ridged) * i64::from(mountain))
+        / 1_000_000) as i32
 }
 
 fn octave_factor(level: DetailLevel, octave: u32) -> u32 {
@@ -364,37 +321,50 @@ fn sample_octave(
     sample_field_mm(lattice, field, lon_micro, lat_micro)
 }
 
-#[must_use]
-pub fn mountain_window_origin(controls: &ControlFields) -> (u32, u32) {
-    let mut best_sum = i64::MIN;
-    let mut best = (0, 0);
-    let (window_w, window_h) = mountain_window_size(controls.grid);
-    let max_row = controls.grid.height.saturating_sub(window_h);
-    let max_col = controls.grid.width.saturating_sub(window_w);
-    for row in 0..=max_row {
-        for col in 0..=max_col {
-            let mut sum = 0_i64;
-            for dr in 0..window_h {
-                for dc in 0..window_w {
-                    let cell = controls.grid.index(row + dr, col + dc);
-                    sum += i64::from(controls.mountain_influence_ppm[cell]);
-                }
-            }
-            if sum > best_sum {
-                best_sum = sum;
-                best = (row, col);
-            }
-        }
-    }
-    best
-}
-
 fn feature_id(kind: MountainKind, index: usize) -> String {
     format!(
         "atlas:orometry:v{}:{}:{index}",
         ATLAS_DETAIL_ALGORITHM_VERSION,
         kind.as_str()
     )
+}
+
+fn physical_lonlat(grid: Grid, cell: usize) -> (i32, i32) {
+    let (row, col) = grid.row_col(cell);
+    (
+        lattice_lon_micro(col, grid.width),
+        lattice_lat_micro(row, grid.height),
+    )
+}
+
+fn physical_basin_id(controls: &ControlFields, lon_micro: i32, lat_micro: i32) -> Option<u32> {
+    let sampled = controls.sample_basin_id(lon_micro, lat_micro);
+    if sampled < 0 || sampled == i32::MAX {
+        None
+    } else {
+        u32::try_from(sampled).ok()
+    }
+}
+
+fn new_feature(
+    kind: MountainKind,
+    lattice_index: usize,
+    lon: i32,
+    lat: i32,
+    elevation: i32,
+) -> MountainFeature {
+    MountainFeature {
+        id: String::new(),
+        kind,
+        lattice_index,
+        physical_cell: 0,
+        system_id: String::new(),
+        parent_id: None,
+        basin_id: None,
+        lon_micro: lon,
+        lat_micro: lat,
+        elevation_mm: elevation,
+    }
 }
 
 struct UnionFind {
@@ -449,41 +419,31 @@ fn lattice_neighbors(width: u32, height: u32, i: u32, j: u32) -> Vec<(u32, u32)>
     neighbors
 }
 
-fn mountain_system_labels(controls: &ControlFields) -> (Vec<i32>, u32, (u32, u32)) {
+fn mountain_system_labels(controls: &ControlFields) -> (Vec<i32>, Vec<usize>) {
     let count = controls.grid.sample_count();
     let mut labels = vec![-1_i32; count];
+    let mut min_cells = Vec::new();
     let mut next = 0_i32;
-    let mut best_size = 0_u32;
-    let mut best_origin = (0, 0);
     for cell in 0..count {
         if labels[cell] >= 0 || controls.mountain_influence_ppm[cell] <= 0 {
             continue;
         }
         let mut stack = vec![cell];
         labels[cell] = next;
-        let mut size = 1_u32;
-        let (mut origin_row, mut origin_col) = controls.grid.row_col(cell);
+        let mut min_cell = cell;
         while let Some(current) = stack.pop() {
-            let (row, col) = controls.grid.row_col(current);
-            if (row, col) < (origin_row, origin_col) {
-                origin_row = row;
-                origin_col = col;
-            }
+            min_cell = min_cell.min(current);
             for neighbor in controls.grid.neighbors(current) {
                 if labels[neighbor] < 0 && controls.mountain_influence_ppm[neighbor] > 0 {
                     labels[neighbor] = next;
-                    size += 1;
                     stack.push(neighbor);
                 }
             }
         }
-        if size > best_size || (size == best_size && (origin_row, origin_col) < best_origin) {
-            best_size = size;
-            best_origin = (origin_row, origin_col);
-        }
+        min_cells.push(min_cell);
         next += 1;
     }
-    (labels, next.max(0) as u32, best_origin)
+    (labels, min_cells)
 }
 
 fn lattice_path(width: u32, height: u32, start: usize, end: usize) -> Vec<usize> {
@@ -536,14 +496,7 @@ fn push_feature(
     {
         return;
     }
-    features.push(MountainFeature {
-        id: feature_id(kind, index),
-        kind,
-        lattice_index: index,
-        lon_micro: lon,
-        lat_micro: lat,
-        elevation_mm: elevation,
-    });
+    features.push(new_feature(kind, index, lon, lat, elevation));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -801,14 +754,7 @@ fn extract_mountain_features(
                 peaks_in_system[system_slot] += 1;
             }
             ridge_cells.push(index);
-            features.push(MountainFeature {
-                id: feature_id(MountainKind::Peak, index),
-                kind: MountainKind::Peak,
-                lattice_index: index,
-                lon_micro: lon,
-                lat_micro: lat,
-                elevation_mm: elev,
-            });
+            features.push(new_feature(MountainKind::Peak, index, lon, lat, elev));
         }
         for neighbor in merge_slots {
             let pa = uf.find(slot);
@@ -961,11 +907,410 @@ fn extract_mountain_features(
     valley_cells.sort_unstable();
     valley_cells.dedup();
     features.truncate(MAX_MOUNTAIN_FEATURES);
-    features.sort_by(|a, b| a.id.cmp(&b.id));
     OrometryPlan {
         features,
         ridge_cells,
         valley_cells,
+    }
+}
+
+fn complete_orometry(
+    controls: &ControlFields,
+    lattice_width: u32,
+    mut features: Vec<MountainFeature>,
+    system_labels: &[i32],
+    system_min_cells: &[usize],
+) -> Vec<MountainFeature> {
+    append_system_features(&mut features, controls, system_min_cells);
+    append_upland_features(&mut features, controls);
+    bind_structure_graph(
+        &mut features,
+        controls,
+        lattice_width,
+        system_labels,
+        system_min_cells,
+    );
+    features.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.kind.cmp(&b.kind)));
+    features
+}
+
+fn append_system_features(
+    features: &mut Vec<MountainFeature>,
+    controls: &ControlFields,
+    system_min_cells: &[usize],
+) {
+    for &min_cell in system_min_cells {
+        let (lon, lat) = physical_lonlat(controls.grid, min_cell);
+        let elevation = controls.elevation_mm[min_cell];
+        features.push(new_feature(
+            MountainKind::System,
+            min_cell,
+            lon,
+            lat,
+            elevation,
+        ));
+    }
+}
+
+fn is_upland_cell(controls: &ControlFields, cell: usize) -> bool {
+    controls.elevation_mm[cell] >= controls.sea_level_mm.saturating_add(UPLAND_HEIGHT_MM)
+        && controls.mountain_influence_ppm[cell] <= 0
+}
+
+fn local_relief_mm(controls: &ControlFields, cell: usize) -> i32 {
+    let mut min_elev = controls.elevation_mm[cell];
+    let mut max_elev = min_elev;
+    for neighbor in controls.grid.neighbors(cell) {
+        let elev = controls.elevation_mm[neighbor];
+        min_elev = min_elev.min(elev);
+        max_elev = max_elev.max(elev);
+    }
+    max_elev.saturating_sub(min_elev)
+}
+
+fn append_upland_features(features: &mut Vec<MountainFeature>, controls: &ControlFields) {
+    let count = controls.grid.sample_count();
+    let mut seen = vec![false; count];
+    for cell in 0..count {
+        if seen[cell] || !is_upland_cell(controls, cell) {
+            continue;
+        }
+        let mut stack = vec![cell];
+        seen[cell] = true;
+        let mut min_cell = cell;
+        let mut high_cell = cell;
+        let mut size = 0_usize;
+        let mut max_relief = local_relief_mm(controls, cell);
+        while let Some(current) = stack.pop() {
+            min_cell = min_cell.min(current);
+            size += 1;
+            if controls.elevation_mm[current] > controls.elevation_mm[high_cell]
+                || (controls.elevation_mm[current] == controls.elevation_mm[high_cell]
+                    && current < high_cell)
+            {
+                high_cell = current;
+            }
+            max_relief = max_relief.max(local_relief_mm(controls, current));
+            for neighbor in controls.grid.neighbors(current) {
+                if !seen[neighbor] && is_upland_cell(controls, neighbor) {
+                    seen[neighbor] = true;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        if size < MIN_UPLAND_CELLS {
+            continue;
+        }
+        let kind = if max_relief <= PLATEAU_RELIEF_MM {
+            MountainKind::Plateau
+        } else {
+            MountainKind::Upland
+        };
+        let (lon, lat) = physical_lonlat(controls.grid, high_cell);
+        features.push(new_feature(
+            kind,
+            min_cell,
+            lon,
+            lat,
+            controls.elevation_mm[high_cell],
+        ));
+    }
+}
+
+fn system_label_at(grid: Grid, system_labels: &[i32], cell: usize) -> i32 {
+    if let Some(&label) = system_labels.get(cell) {
+        if label >= 0 {
+            return label;
+        }
+    }
+    grid.neighbors(cell)
+        .into_iter()
+        .filter_map(|neighbor| {
+            let label = *system_labels.get(neighbor)?;
+            (label >= 0).then_some(label)
+        })
+        .min()
+        .unwrap_or(-1)
+}
+
+/// IDs are `atlas:orometry:v{ver}:{kind}:{physical_cell}` plus `:{ordinal}`
+/// when two same-kind features share a cell (lon/lat rank, not insertion).
+/// Parent search uses lattice chebyshev until nested LOD (phase F).
+fn bind_structure_graph(
+    features: &mut [MountainFeature],
+    controls: &ControlFields,
+    lattice_width: u32,
+    system_labels: &[i32],
+    system_min_cells: &[usize],
+) {
+    for feature in features.iter_mut() {
+        feature.physical_cell = if matches!(
+            feature.kind,
+            MountainKind::System | MountainKind::Plateau | MountainKind::Upland
+        ) {
+            feature.lattice_index
+        } else {
+            nearest_cell(controls.grid, feature.lon_micro, feature.lat_micro)
+        };
+        feature.basin_id = physical_basin_id(controls, feature.lon_micro, feature.lat_micro);
+        if matches!(feature.kind, MountainKind::Plateau | MountainKind::Upland) {
+            continue;
+        }
+        let label = system_label_at(controls.grid, system_labels, feature.physical_cell);
+        if label >= 0 {
+            if let Some(&min_cell) = system_min_cells.get(label as usize) {
+                feature.system_id = feature_id(MountainKind::System, min_cell);
+            }
+        }
+    }
+    let mut groups: std::collections::BTreeMap<(MountainKind, usize), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, feature) in features.iter().enumerate() {
+        groups
+            .entry((feature.kind, feature.physical_cell))
+            .or_default()
+            .push(index);
+    }
+    for slots in groups.values_mut() {
+        slots.sort_by(|&a, &b| {
+            features[a]
+                .lon_micro
+                .cmp(&features[b].lon_micro)
+                .then_with(|| features[a].lat_micro.cmp(&features[b].lat_micro))
+        });
+        for (ordinal, &slot) in slots.iter().enumerate() {
+            let base = feature_id(features[slot].kind, features[slot].physical_cell);
+            features[slot].id = if slots.len() == 1 {
+                base
+            } else {
+                format!("{base}:{ordinal}")
+            };
+        }
+    }
+    let ridge_slots = features
+        .iter()
+        .enumerate()
+        .filter(|(_, feature)| {
+            matches!(
+                feature.kind,
+                MountainKind::Ridge | MountainKind::SecondaryRidge
+            )
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let peak_slots = features
+        .iter()
+        .enumerate()
+        .filter(|(_, feature)| feature.kind == MountainKind::Peak)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    for index in 0..features.len() {
+        let kind = features[index].kind;
+        let system_parent =
+            (!features[index].system_id.is_empty()).then(|| features[index].system_id.clone());
+        features[index].parent_id = match kind {
+            MountainKind::System | MountainKind::Plateau | MountainKind::Upland => None,
+            MountainKind::Ridge | MountainKind::SecondaryRidge | MountainKind::Saddle => {
+                system_parent
+            }
+            MountainKind::Peak => nearest_in_system(features, &ridge_slots, index, lattice_width)
+                .map(|slot| features[slot].id.clone())
+                .or(system_parent),
+            MountainKind::Valley | MountainKind::Foothill => {
+                nearest_in_system(features, &peak_slots, index, lattice_width)
+                    .map(|slot| features[slot].id.clone())
+                    .or(system_parent)
+            }
+        };
+    }
+}
+
+fn nearest_in_system(
+    features: &[MountainFeature],
+    candidates: &[usize],
+    index: usize,
+    lattice_width: u32,
+) -> Option<usize> {
+    let system_id = &features[index].system_id;
+    if system_id.is_empty() {
+        return None;
+    }
+    candidates
+        .iter()
+        .copied()
+        .filter(|&slot| slot != index && features[slot].system_id == *system_id)
+        .min_by_key(|&slot| {
+            (
+                chebyshev(
+                    lattice_width,
+                    features[index].lattice_index,
+                    features[slot].lattice_index,
+                ),
+                features[slot].id.clone(),
+            )
+        })
+}
+
+fn wrap_dlon_micro(a: i32, b: i32) -> i64 {
+    let mut delta = i64::from(a) - i64::from(b);
+    if delta > 180_000_000 {
+        delta -= 360_000_000;
+    } else if delta < -180_000_000 {
+        delta += 360_000_000;
+    }
+    delta
+}
+
+fn orometry_distance2(lon_a: i32, lat_a: i32, lon_b: i32, lat_b: i32) -> i64 {
+    let dlon = wrap_dlon_micro(lon_a, lon_b);
+    let dlat = i64::from(lat_a) - i64::from(lat_b);
+    dlon.saturating_mul(dlon)
+        .saturating_add(dlat.saturating_mul(dlat))
+}
+
+fn is_ridge_kind(kind: MountainKind) -> bool {
+    matches!(kind, MountainKind::Ridge | MountainKind::SecondaryRidge)
+}
+
+fn nearest_of_kind<'a>(
+    features: &'a [MountainFeature],
+    kind: MountainKind,
+    system_id: &str,
+    lon_micro: i32,
+    lat_micro: i32,
+) -> Option<&'a MountainFeature> {
+    features
+        .iter()
+        .filter(|feature| feature.kind == kind && feature.system_id == system_id)
+        .min_by(|a, b| {
+            orometry_distance2(a.lon_micro, a.lat_micro, lon_micro, lat_micro)
+                .cmp(&orometry_distance2(
+                    b.lon_micro,
+                    b.lat_micro,
+                    lon_micro,
+                    lat_micro,
+                ))
+                .then_with(|| a.id.cmp(&b.id))
+        })
+}
+
+fn ridge_parent<'a>(
+    features: &'a [MountainFeature],
+    peak: &MountainFeature,
+) -> Option<&'a MountainFeature> {
+    peak.parent_id.as_deref().and_then(|parent| {
+        features
+            .iter()
+            .find(|feature| feature.id == parent && is_ridge_kind(feature.kind))
+    })
+}
+
+#[must_use]
+pub fn inspect_orometry(
+    features: &[MountainFeature],
+    lon_micro: i32,
+    lat_micro: i32,
+    radius_micro: i32,
+) -> Vec<OrometryInspectHit> {
+    let radius2 = i64::from(radius_micro.max(1)).saturating_mul(i64::from(radius_micro.max(1)));
+    let nearest = features.iter().filter_map(|feature| {
+        let distance =
+            orometry_distance2(feature.lon_micro, feature.lat_micro, lon_micro, lat_micro);
+        (distance <= radius2).then_some((distance, feature.id.as_str(), feature))
+    });
+    let Some((_, _, nearest)) = nearest.min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+    else {
+        return Vec::new();
+    };
+    if matches!(nearest.kind, MountainKind::Plateau | MountainKind::Upland) {
+        return vec![orometry_hit(nearest)];
+    }
+    let system_id = if nearest.kind == MountainKind::System {
+        nearest.id.as_str()
+    } else {
+        nearest.system_id.as_str()
+    };
+    let system = features
+        .iter()
+        .find(|feature| feature.kind == MountainKind::System && feature.id == system_id);
+    let (ridge, peak) = match nearest.kind {
+        MountainKind::Peak => (ridge_parent(features, nearest), Some(nearest)),
+        MountainKind::Ridge | MountainKind::SecondaryRidge => {
+            let child = features
+                .iter()
+                .filter(|feature| {
+                    feature.kind == MountainKind::Peak
+                        && feature.parent_id.as_deref() == Some(nearest.id.as_str())
+                })
+                .min_by(|a, b| {
+                    orometry_distance2(a.lon_micro, a.lat_micro, lon_micro, lat_micro)
+                        .cmp(&orometry_distance2(
+                            b.lon_micro,
+                            b.lat_micro,
+                            lon_micro,
+                            lat_micro,
+                        ))
+                        .then_with(|| a.id.cmp(&b.id))
+                })
+                .or_else(|| {
+                    nearest_of_kind(
+                        features,
+                        MountainKind::Peak,
+                        system_id,
+                        lon_micro,
+                        lat_micro,
+                    )
+                });
+            (Some(nearest), child)
+        }
+        _ => {
+            let peak = nearest_of_kind(
+                features,
+                MountainKind::Peak,
+                system_id,
+                lon_micro,
+                lat_micro,
+            );
+            let ridge = peak
+                .and_then(|feature| ridge_parent(features, feature))
+                .or_else(|| {
+                    features
+                        .iter()
+                        .filter(|feature| {
+                            is_ridge_kind(feature.kind) && feature.system_id == system_id
+                        })
+                        .min_by(|a, b| {
+                            orometry_distance2(a.lon_micro, a.lat_micro, lon_micro, lat_micro)
+                                .cmp(&orometry_distance2(
+                                    b.lon_micro,
+                                    b.lat_micro,
+                                    lon_micro,
+                                    lat_micro,
+                                ))
+                                .then_with(|| a.id.cmp(&b.id))
+                        })
+                });
+            (ridge, peak)
+        }
+    };
+    let mut hits = Vec::new();
+    if let Some(feature) = system {
+        hits.push(orometry_hit(feature));
+    }
+    if let Some(feature) = ridge {
+        hits.push(orometry_hit(feature));
+    }
+    if let Some(feature) = peak {
+        hits.push(orometry_hit(feature));
+    }
+    hits
+}
+
+fn orometry_hit(feature: &MountainFeature) -> OrometryInspectHit {
+    OrometryInspectHit {
+        id: feature.id.clone(),
+        kind: feature.kind,
+        label: feature.kind.as_str().to_string(),
     }
 }
 
@@ -1015,16 +1360,11 @@ fn upsample_residual(
 }
 
 fn land_mask_ppm(controls: &ControlFields) -> Vec<i32> {
+    let sea = controls.sea_level_mm;
     controls
         .elevation_mm
         .iter()
-        .map(|elevation| {
-            if *elevation >= controls.sea_level_mm {
-                1_000_000
-            } else {
-                0
-            }
-        })
+        .map(|elevation| if *elevation >= sea { 1_000_000 } else { 0 })
         .collect()
 }
 
@@ -1146,101 +1486,11 @@ fn synthesize_coastline(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn erode_residual_octave(
-    controls: &ControlFields,
-    sdf: &[i32],
-    identity: &[u8],
-    variant: u32,
-    width: u32,
-    height: u32,
-    residual: &mut [i32],
-    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<(), AtlasError> {
-    let count = residual.len();
-    let mut surface = vec![0_i32; count];
-    let mut protected = vec![false; count];
-    let mut mountain_ppm = vec![0_i32; count];
-    let mut runoff_ppm = vec![0_i32; count];
-    let mut watershed = vec![-1_i32; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            surface[index] = controls.sample_elevation(lon, lat) + residual[index];
-            protected[index] = controls.sample_lake_mask(lon, lat) > 0
-                && controls.sample_mountain_influence(lon, lat) <= 0;
-            mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
-            runoff_ppm[index] = (i64::from(controls.sample_runoff(lon, lat).clamp(0, 4_000))
-                * 1_000_000
-                / 4_000) as i32;
-            watershed[index] = controls.sample_watershed_id(lon, lat);
-        }
-    }
-    lock_polar_rows(width, height, &mut surface);
-    let (primary, secondary, weight) = assign_simple_flow(
-        width,
-        height,
-        &surface,
-        &watershed,
-        controls.sea_level_mm,
-        check_cancelled,
-    )?;
-    let accumulation = accumulate_flow(
-        &surface,
-        &primary,
-        &secondary,
-        &weight,
-        controls.sea_level_mm,
-        check_cancelled,
-    )?;
-    let erosion_key = domain_key(
-        identity,
-        ATLAS_DETAIL_ALGORITHM_VERSION,
-        variant,
-        crate::erosion::MULTI_SCALE_EROSION_DOMAIN,
-    );
-    let filled = surface.clone();
-    let land_at = |lon: i32, lat: i32| controls.sample_elevation(lon, lat) >= controls.sea_level_mm;
-    apply_scale_erosion(
-        crate::erosion::ScaleErosion {
-            grid: controls.grid,
-            width,
-            height,
-            sea_level_mm: controls.sea_level_mm,
-            sdf,
-            protected: &protected,
-            mountain_ppm: &mountain_ppm,
-            runoff_ppm: &runoff_ppm,
-            primary: &primary,
-            secondary: &secondary,
-            weight: &weight,
-            accumulation: &accumulation,
-            erosion_key: &erosion_key,
-            peaks: &[],
-            filled_mm: &filled,
-            land_at: &land_at,
-            scales: &HIERARCHICAL_SCALES,
-            max_step_mm: HIERARCHICAL_EROSION_STEP_MM,
-        },
-        &mut surface,
-        check_cancelled,
-    )?;
-    for j in 0..height {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            residual[index] = surface[index] - controls.sample_elevation(lon, lat);
-        }
-    }
-    Ok(())
-}
-
+/// Structure residual from year-0 / accepted hydrology.
+///
+/// `controls` must be year-0 (`structure_controls`). Sea, lakes, and
+/// watersheds on that snapshot drive pit-fill and coastline grain. Do not pass
+/// epoch hydrology or climate; those operators belong in refine.
 pub fn build_amplification_model(
     controls: &ControlFields,
     identity: &[u8],
@@ -1248,11 +1498,9 @@ pub fn build_amplification_model(
     level: DetailLevel,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<AmplificationModel, AtlasError> {
-    let sdf = crate::detail::signed_coastal_distance_ppm(
-        controls.grid,
-        &controls.elevation_mm,
-        controls.sea_level_mm,
-    );
+    let sea = controls.sea_level_mm;
+    let sdf =
+        crate::detail::signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
     let (mut width, mut height, mut residual_mm) = build_octave(
         controls,
         identity,
@@ -1260,16 +1508,6 @@ pub fn build_amplification_model(
         octave_factor(level, 0),
         octave_weight_ppm(0),
         0,
-        check_cancelled,
-    )?;
-    erode_residual_octave(
-        controls,
-        &sdf,
-        identity,
-        variant,
-        width,
-        height,
-        &mut residual_mm,
         check_cancelled,
     )?;
     for octave in 1..=2 {
@@ -1307,18 +1545,6 @@ pub fn build_amplification_model(
         }
         width = next_width;
         height = next_height;
-        if octave < 2 {
-            erode_residual_octave(
-                controls,
-                &sdf,
-                identity,
-                variant,
-                width,
-                height,
-                &mut residual_mm,
-                check_cancelled,
-            )?;
-        }
     }
     mean_remove(
         controls.grid,
@@ -1340,7 +1566,7 @@ pub fn build_amplification_model(
             let lat = lattice_lat_micro(j, height);
             surface[index] = controls.sample_elevation(lon, lat) + residual_mm[index];
             protected[index] = controls.sample_lake_mask(lon, lat) > 0;
-            land[index] = controls.sample_elevation(lon, lat) >= controls.sea_level_mm;
+            land[index] = controls.sample_elevation(lon, lat) >= sea;
             mountain[index] = controls.sample_mountain_influence(lon, lat) > 0;
             mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
             watershed[index] = controls.sample_watershed_id(lon, lat);
@@ -1352,7 +1578,7 @@ pub fn build_amplification_model(
         height,
         &surface,
         &protected,
-        controls.sea_level_mm,
+        sea,
         HIERARCHICAL_FILL_MM,
         check_cancelled,
     )?;
@@ -1364,22 +1590,17 @@ pub fn build_amplification_model(
             residual_mm[index] = surface[index] - controls.sample_elevation(lon, lat);
         }
     }
-    let (system_labels, system_count, origin) = mountain_system_labels(controls);
+    let (system_labels, system_min_cells) = mountain_system_labels(controls);
+    let system_count = system_min_cells.len() as u32;
     let plan = extract_mountain_features(controls, width, height, &residual_mm, &system_labels);
-    let (primary, secondary, weight) = assign_simple_flow(
-        width,
-        height,
-        &surface,
-        &watershed,
-        controls.sea_level_mm,
-        check_cancelled,
-    )?;
+    let (primary, secondary, weight) =
+        assign_simple_flow(width, height, &surface, &watershed, sea, check_cancelled)?;
     let accumulation = accumulate_flow(
         &surface,
         &primary,
         &secondary,
         &weight,
-        controls.sea_level_mm,
+        sea,
         check_cancelled,
     )?;
     let ridge_cells = plan.ridge_cells;
@@ -1444,10 +1665,14 @@ pub fn build_amplification_model(
             variant,
             level,
         },
-        mountain_origin_row: origin.0,
-        mountain_origin_col: origin.1,
         mountain_system_count: system_count,
-        features: plan.features,
+        features: complete_orometry(
+            controls,
+            width,
+            plan.features,
+            &system_labels,
+            &system_min_cells,
+        ),
         orometry_key,
     })
 }
@@ -1459,15 +1684,22 @@ impl AmplificationModel {
         controls: &ControlFields,
         identity: &[u8],
     ) -> Self {
-        let (system_labels, system_count, origin) = mountain_system_labels(controls);
-        let features = extract_mountain_features(
+        let (system_labels, system_min_cells) = mountain_system_labels(controls);
+        let system_count = system_min_cells.len() as u32;
+        let features = complete_orometry(
             controls,
             detail.lattice_width,
-            detail.lattice_height,
-            &detail.residual_mm,
+            extract_mountain_features(
+                controls,
+                detail.lattice_width,
+                detail.lattice_height,
+                &detail.residual_mm,
+                &system_labels,
+            )
+            .features,
             &system_labels,
-        )
-        .features;
+            &system_min_cells,
+        );
         let orometry_key = domain_key(
             identity,
             detail.algorithm_version,
@@ -1476,8 +1708,6 @@ impl AmplificationModel {
         );
         Self {
             detail,
-            mountain_origin_row: origin.0,
-            mountain_origin_col: origin.1,
             mountain_system_count: system_count,
             features,
             orometry_key,
@@ -1620,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn mountain_window_clamps_to_grids_smaller_than_nominal_window() {
+    fn small_grid_amplification_builds() {
         let settings = daena_physical::GenerationSettings {
             width: 16,
             height: 8,
@@ -1636,7 +1866,6 @@ mod tests {
             &world.hydrology,
         )
         .unwrap();
-        assert_eq!(mountain_window_origin(&controls), (0, 0));
         let identity = spike_identity_from_source(&world.source);
         let mut cancel = || Ok(());
         build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
@@ -1646,7 +1875,9 @@ mod tests {
     #[test]
     fn amplification_conserves_macro_sign_topology_and_drainage() {
         let world = golden_world();
-        let (controls, identity, sea, sdf) = controls_at(0);
+        let (controls, identity, _, _) = controls_at(0);
+        let sea = controls.sea_level_mm;
+        let sdf = signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
         let mut cancel = || Ok(());
         let started = Instant::now();
         let model =
@@ -1746,31 +1977,9 @@ mod tests {
             .features
             .iter()
             .any(|f| matches!(f.kind, MountainKind::Saddle | MountainKind::Ridge)));
-        let mut flipped = 0_u32;
-        let mut coastal = 0_u32;
-        for j in 0..model.detail.lattice_height {
-            for i in 0..model.detail.lattice_width {
-                let lon = lattice_lon_micro(i, model.detail.lattice_width);
-                let lat = lattice_lat_micro(j, model.detail.lattice_height);
-                let sdf_ppm = sample_sdf_ppm(model.detail.grid, &sdf, lon, lat);
-                if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
-                    continue;
-                }
-                coastal += 1;
-                let canonical = model.detail.canonical_at(lon, lat);
-                let refined = model.detail.refined_at(lon, lat, sea, sdf_ppm);
-                if (canonical >= sea) != (refined >= sea) {
-                    flipped += 1;
-                }
-            }
-        }
-        assert!(coastal > 0);
-        assert!(
-            flipped >= 16,
-            "coastline synthesis did not reconstruct the shore ({flipped} sign flips)"
-        );
         assert!(model.features.iter().all(|feature| {
-            controls.sample_mountain_influence(feature.lon_micro, feature.lat_micro) > 0
+            matches!(feature.kind, MountainKind::Plateau | MountainKind::Upland)
+                || controls.sample_mountain_influence(feature.lon_micro, feature.lat_micro) > 0
         }));
         let mut cancel_octave = || Ok(());
         let (octave_w, octave_h, octave) = build_octave(
@@ -1902,7 +2111,111 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 1);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
+    }
+
+    #[test]
+    fn epoch_controls_change_structure_residual_without_year0_wrapper() {
+        let (present, identity, present_sea, _) = controls_at(0);
+        let (cold, _, cold_sea, _) = controls_at(-8_000);
+        assert_ne!(cold_sea, present_sea);
+        let mut cancel = || Ok(());
+        let present_model =
+            build_amplification_model(&present, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let cold_model =
+            build_amplification_model(&cold, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        assert_ne!(
+            present_model.detail.residual_mm,
+            cold_model.detail.residual_mm
+        );
+    }
+
+    #[test]
+    fn orometry_ids_use_physical_cell_and_inspect_lists_system_ridge_peak() {
+        let (controls, identity, _, _) = controls_at(0);
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        assert!(model
+            .features
+            .iter()
+            .any(|feature| feature.kind == MountainKind::System));
+        assert!(model
+            .features
+            .iter()
+            .any(|feature| matches!(feature.kind, MountainKind::Plateau | MountainKind::Upland)));
+        for feature in &model.features {
+            let prefix = feature_id(feature.kind, feature.physical_cell);
+            assert!(
+                feature.id == prefix || feature.id.starts_with(&format!("{prefix}:")),
+                "orometry id missing physical cell: {}",
+                feature.id
+            );
+            if matches!(feature.kind, MountainKind::Plateau | MountainKind::Upland) {
+                assert!(feature.system_id.is_empty());
+                assert!(feature.parent_id.is_none());
+                continue;
+            }
+            assert_eq!(
+                feature.physical_cell,
+                nearest_cell(controls.grid, feature.lon_micro, feature.lat_micro)
+            );
+            if feature.kind != MountainKind::System
+                && feature.lattice_index != feature.physical_cell
+            {
+                assert!(
+                    !feature.id.ends_with(&format!(":{}", feature.lattice_index)),
+                    "orometry id still keyed on finest lattice: {}",
+                    feature.id
+                );
+            }
+            if feature.kind == MountainKind::System {
+                assert!(feature.parent_id.is_none());
+                assert_eq!(feature.id, prefix);
+            }
+            if controls.sample_elevation(feature.lon_micro, feature.lat_micro)
+                < controls.sea_level_mm
+            {
+                assert!(feature.basin_id.is_none());
+            }
+        }
+        let peak = model
+            .features
+            .iter()
+            .find(|feature| feature.kind == MountainKind::Peak)
+            .expect("peak");
+        let hits = inspect_orometry(&model.features, peak.lon_micro, peak.lat_micro, 2_000_000);
+        assert!(hits.len() >= 2, "inspect chain {hits:?}");
+        assert_eq!(hits[0].kind, MountainKind::System);
+        assert_eq!(hits.last().map(|hit| hit.kind), Some(MountainKind::Peak));
+        assert!(hits.iter().any(|hit| is_ridge_kind(hit.kind)));
+        let ridge = model
+            .features
+            .iter()
+            .find(|feature| is_ridge_kind(feature.kind))
+            .expect("ridge");
+        let ridge_hits =
+            inspect_orometry(&model.features, ridge.lon_micro, ridge.lat_micro, 2_000_000);
+        assert_eq!(ridge_hits[0].kind, MountainKind::System);
+        assert!(
+            ridge_hits.iter().any(|hit| hit.id == ridge.id),
+            "inspect replaced the clicked ridge: {ridge_hits:?}"
+        );
+        let detailed =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Detailed, &mut cancel)
+                .unwrap();
+        let systems = |model: &AmplificationModel| {
+            model
+                .features
+                .iter()
+                .filter(|feature| feature.kind == MountainKind::System)
+                .map(|feature| feature.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(systems(&model), systems(&detailed));
     }
 
     #[test]

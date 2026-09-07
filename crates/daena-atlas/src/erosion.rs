@@ -1,5 +1,5 @@
-//! Multi-scale fluvial, thermal, and deposition processes used during
-//! hierarchical amplification and after the finest lattice exists.
+//! Multi-scale fluvial, thermal, arid, and glacial processes on the structure
+//! lattice. Magnitudes come from climate state at `t` (and lagged ice), not `|t|`.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -22,6 +22,8 @@ pub const HIERARCHICAL_SCALES: [u32; 1] = [1];
 pub const THERMAL_SLOPE_PPM: i32 = 180_000;
 pub const FAN_SLOPE_PPM: i32 = 40_000;
 pub const FLOODPLAIN_SLOPE_PPM: i32 = 18_000;
+const PRECIP_REF_MM: i32 = 4_000;
+const ICE_REF_MM: i32 = 400_000;
 const CANCELLATION_STRIDE: usize = 4_096;
 pub const NO_FLOW: u32 = u32::MAX;
 pub const DIRS: [(i32, i32); 8] = [
@@ -122,6 +124,62 @@ pub fn neighbor_at(
     let ni = (i as i32 + dir.0).rem_euclid(width as i32) as u32;
     let nj = nj as u32;
     Some((ni, nj, lattice_index(width, ni, nj)))
+}
+
+#[must_use]
+pub fn vegetation_resistance_ppm(humidity_ppm: i32, precip_mm: i32, temp_centi: i32) -> i32 {
+    let wet = (i64::from(precip_mm.clamp(0, PRECIP_REF_MM)) * 1_000_000) / i64::from(PRECIP_REF_MM);
+    let humid = i64::from(humidity_ppm.clamp(0, 1_000_000));
+    let comfort = if temp_centi <= -500 || temp_centi >= 4_000 {
+        0
+    } else if temp_centi < 1_000 {
+        i64::from(temp_centi + 500) * 1_000_000 / 1_500
+    } else if temp_centi <= 2_500 {
+        1_000_000
+    } else {
+        i64::from(4_000 - temp_centi) * 1_000_000 / 1_500
+    };
+    ((wet * humid / 1_000_000) * comfort / 1_000_000) as i32
+}
+
+#[must_use]
+pub fn freeze_thaw_ppm(summer_centi: i32, winter_centi: i32) -> i32 {
+    if winter_centi < 0 && summer_centi > 0 {
+        1_000_000
+    } else if summer_centi <= 0 {
+        450_000
+    } else if winter_centi <= 200 {
+        600_000
+    } else {
+        100_000
+    }
+}
+
+#[must_use]
+pub fn glacial_work_ppm(ice_mm: i32, summer_centi: i32) -> i32 {
+    if ice_mm <= 0 {
+        return 0;
+    }
+    let ice = (i64::from(ice_mm.clamp(0, ICE_REF_MM)) * 1_000_000) / i64::from(ICE_REF_MM);
+    let cold = if summer_centi <= 0 {
+        1_000_000
+    } else if summer_centi >= 1_200 {
+        0
+    } else {
+        i64::from(1_200 - summer_centi) * 1_000_000 / 1_200
+    };
+    (ice * cold / 1_000_000) as i32
+}
+
+#[must_use]
+pub fn fluvial_gain_ppm(runoff_mm: i32, precip_mm: i32, vegetation_ppm: i32) -> i32 {
+    let runoff =
+        (i64::from(runoff_mm.clamp(0, PRECIP_REF_MM)) * 1_000_000) / i64::from(PRECIP_REF_MM);
+    let precip =
+        (i64::from(precip_mm.clamp(0, PRECIP_REF_MM)) * 1_000_000) / i64::from(PRECIP_REF_MM);
+    let resist = 1_000_000 - i64::from(vegetation_ppm.clamp(0, 1_000_000)) / 2;
+    let mixed = ((runoff + precip) / 2) * resist / 1_000_000;
+    mixed.clamp(0, 1_250_000) as i32
 }
 
 fn dist_ppm(dir: (i32, i32)) -> i32 {
@@ -341,6 +399,7 @@ fn restore_coastal_sign(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn thermal_delta(
     width: u32,
     height: u32,
@@ -348,6 +407,9 @@ fn thermal_delta(
     protected: &[bool],
     sea_level_mm: i32,
     mountain_ppm: &[i32],
+    freeze_thaw_ppm: &[i32],
+    aridity_ppm: &[i32],
+    glacial_ppm: &[i32],
     max_step_mm: i32,
 ) -> Vec<i32> {
     let count = worked.len();
@@ -355,7 +417,12 @@ fn thermal_delta(
     for j in 1..height.saturating_sub(1) {
         for i in 0..width {
             let index = lattice_index(width, i, j);
-            if protected[index] || worked[index] < sea_level_mm || mountain_ppm[index] > 500_000 {
+            if protected[index] || worked[index] < sea_level_mm {
+                continue;
+            }
+            let ice = i64::from(glacial_ppm[index].clamp(0, 1_000_000));
+            let mountain = mountain_ppm[index] > 500_000;
+            if mountain && ice == 0 {
                 continue;
             }
             let mut steepest = 0_i64;
@@ -374,11 +441,25 @@ fn thermal_delta(
                     dest = neighbor as u32;
                 }
             }
-            if dest == NO_FLOW || steepest < i64::from(THERMAL_SLOPE_PPM) {
+            if dest == NO_FLOW {
                 continue;
             }
-            let flux = ((steepest - i64::from(THERMAL_SLOPE_PPM)) / 20_000)
-                .clamp(0, i64::from(max_step_mm / 2)) as i32;
+            let frost = i64::from(freeze_thaw_ppm[index].clamp(0, 1_000_000));
+            let arid = i64::from(aridity_ppm[index].clamp(0, 1_000_000));
+            let mut flux = 0_i64;
+            if !mountain {
+                if steepest >= i64::from(THERMAL_SLOPE_PPM) {
+                    flux +=
+                        ((steepest - i64::from(THERMAL_SLOPE_PPM)) / 20_000) * frost / 1_000_000;
+                }
+                if steepest >= i64::from(FAN_SLOPE_PPM) && arid > 350_000 {
+                    flux += ((steepest - i64::from(FAN_SLOPE_PPM)) / 40_000) * arid / 1_000_000;
+                }
+            }
+            if ice > 0 && steepest >= i64::from(THERMAL_SLOPE_PPM) / 4 {
+                flux += ((steepest - i64::from(THERMAL_SLOPE_PPM) / 4) / 12_000) * ice / 1_000_000;
+            }
+            let flux = flux.clamp(0, i64::from(max_step_mm / 2)) as i32;
             if flux == 0 {
                 continue;
             }
@@ -397,6 +478,8 @@ fn fluvial_and_deposition_delta(
     protected: &[bool],
     mountain_ppm: &[i32],
     runoff_ppm: &[i32],
+    aridity_ppm: &[i32],
+    glacial_ppm: &[i32],
     primary: &[u32],
     secondary: &[u32],
     weight: &[u32],
@@ -411,10 +494,33 @@ fn fluvial_and_deposition_delta(
     for j in 1..height.saturating_sub(1) {
         for i in 0..width {
             let index = lattice_index(width, i, j);
-            if protected[index] || worked[index] < sea_level_mm || mountain_ppm[index] > 500_000 {
+            if protected[index] || worked[index] < sea_level_mm {
                 continue;
             }
-            let dest = walk_flow(primary, index, scale, count);
+            let ice = glacial_ppm[index].clamp(0, 1_000_000);
+            if ice > 0 {
+                let ice_dest = walk_flow(primary, index, scale.saturating_mul(2).max(1), count);
+                if ice_dest != NO_FLOW && (ice_dest as usize) < count && ice_dest != index as u32 {
+                    let drop = (worked[index] - worked[ice_dest as usize]).max(0);
+                    let extra =
+                        ((i64::from(drop.min(max_step_mm / 4)) * i64::from(ice)) / 1_000_000)
+                            .clamp(0, i64::from(max_step_mm / 4)) as i32;
+                    if extra > 0 {
+                        delta[index] = delta[index].saturating_sub(extra);
+                        delta[ice_dest as usize] = delta[ice_dest as usize].saturating_add(extra);
+                    }
+                }
+            }
+            if mountain_ppm[index] > 500_000 {
+                continue;
+            }
+            let hops = if aridity_ppm[index] > 400_000 {
+                scale.max(2) / 2
+            } else {
+                scale
+            }
+            .max(1);
+            let dest = walk_flow(primary, index, hops, count);
             if dest == NO_FLOW || dest as usize >= count || dest == index as u32 {
                 continue;
             }
@@ -426,7 +532,7 @@ fn fluvial_and_deposition_delta(
                 continue;
             }
             let damp = 1_000_000 - mountain_ppm[index] / 2;
-            let runoff = runoff_ppm[index].clamp(250_000, 1_250_000);
+            let runoff = runoff_ppm[index].clamp(0, 1_250_000);
             let prf = lattice_sample(erosion_key, i, j, scale);
             let prf_damp = 1_000_000 - ((prf >> 11) % 25_000) as i32;
             let accum = accumulation[index].max(1);
@@ -442,18 +548,9 @@ fn fluvial_and_deposition_delta(
                 continue;
             }
             delta[index] = delta[index].saturating_sub(flux);
-            let hops = i64::from(scale.max(1));
-            let slope_ppm = (i64::from(drop) * 1_000) / hops;
-            let mut deposit = flux;
-            if slope_ppm < i64::from(FAN_SLOPE_PPM) && mountain_ppm[index] > 80_000 {
-                deposit = flux;
-            }
-            if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) {
-                deposit = flux;
-            }
-            let share = ((i64::from(deposit) * i64::from(weight[index])) / 1_000_000) as i32;
+            let share = ((i64::from(flux) * i64::from(weight[index])) / 1_000_000) as i32;
             delta[dest as usize] = delta[dest as usize].saturating_add(share);
-            let rest = deposit.saturating_sub(share);
+            let rest = flux.saturating_sub(share);
             if rest > 0 && secondary[index] != NO_FLOW && (secondary[index] as usize) < count {
                 delta[secondary[index] as usize] =
                     delta[secondary[index] as usize].saturating_add(rest);
@@ -474,6 +571,9 @@ pub struct ScaleErosion<'a> {
     pub protected: &'a [bool],
     pub mountain_ppm: &'a [i32],
     pub runoff_ppm: &'a [i32],
+    pub freeze_thaw_ppm: &'a [i32],
+    pub aridity_ppm: &'a [i32],
+    pub glacial_ppm: &'a [i32],
     pub primary: &'a [u32],
     pub secondary: &'a [u32],
     pub weight: &'a [u32],
@@ -527,6 +627,8 @@ pub fn apply_scale_erosion(
             params.protected,
             params.mountain_ppm,
             params.runoff_ppm,
+            params.aridity_ppm,
+            params.glacial_ppm,
             params.primary,
             params.secondary,
             params.weight,
@@ -543,6 +645,9 @@ pub fn apply_scale_erosion(
             params.protected,
             params.sea_level_mm,
             params.mountain_ppm,
+            params.freeze_thaw_ppm,
+            params.aridity_ppm,
+            params.glacial_ppm,
             params.max_step_mm,
         );
         for index in 0..count {
@@ -575,4 +680,116 @@ pub fn apply_scale_erosion(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daena_physical::Grid;
+
+    fn ramp_params(
+        count: usize,
+        width: u32,
+        height: u32,
+    ) -> (Vec<i32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+        let mut filled = vec![0_i32; count];
+        let mut primary = vec![NO_FLOW; count];
+        let mut weight = vec![0_u32; count];
+        let mut accumulation = vec![1_u32; count];
+        for j in 0..height {
+            for i in 0..width {
+                let index = lattice_index(width, i, j);
+                filled[index] = 80_000 + (height as i32 - 1 - j as i32) * 40_000;
+                if j + 1 < height {
+                    primary[index] = lattice_index(width, i, j + 1) as u32;
+                    weight[index] = 1_000_000;
+                }
+                accumulation[index] = 16;
+            }
+        }
+        (filled, primary, weight, accumulation)
+    }
+
+    #[test]
+    fn vegetation_and_glacial_gains_track_climate_state_not_year() {
+        let lush = vegetation_resistance_ppm(800_000, 2_000, 1_800);
+        let desert = vegetation_resistance_ppm(80_000, 80, 3_200);
+        let frozen = vegetation_resistance_ppm(400_000, 800, -1_200);
+        assert!(lush > desert);
+        assert!(lush > frozen);
+        assert_eq!(freeze_thaw_ppm(1_200, -800), 1_000_000);
+        assert!(freeze_thaw_ppm(2_400, 1_800) < freeze_thaw_ppm(1_200, -800));
+        assert!(glacial_work_ppm(200_000, -200) > glacial_work_ppm(200_000, 1_500));
+        assert_eq!(glacial_work_ppm(0, -400), 0);
+        let wet = fluvial_gain_ppm(2_000, 2_400, desert);
+        let dry = fluvial_gain_ppm(200, 80, lush);
+        assert!(wet > dry);
+        assert!(dry < 80_000);
+    }
+
+    #[test]
+    fn climate_state_changes_work_on_fixed_surface() {
+        let grid = Grid {
+            width: 4,
+            height: 2,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+        };
+        let width = 8_u32;
+        let height = 4_u32;
+        let count = 32;
+        let (filled, primary, weight, accumulation) = ramp_params(count, width, height);
+        let protected = vec![false; count];
+        let mountain = vec![0_i32; count];
+        let sdf = vec![1_000_000_i32; grid.sample_count()];
+        let secondary = vec![NO_FLOW; count];
+        let key = [7_u8; 32];
+        let erode = |runoff: i32, frost: i32, arid: i32, ice: i32, mountains: &[i32]| {
+            let mut surface = filled.clone();
+            let runoff_ppm = vec![runoff; count];
+            let freeze = vec![frost; count];
+            let aridity = vec![arid; count];
+            let glacial = vec![ice; count];
+            let land_at = |_lon: i32, _lat: i32| true;
+            let mut cancel = || Ok(());
+            apply_scale_erosion(
+                ScaleErosion {
+                    grid,
+                    width,
+                    height,
+                    sea_level_mm: 0,
+                    sdf: &sdf,
+                    protected: &protected,
+                    mountain_ppm: mountains,
+                    runoff_ppm: &runoff_ppm,
+                    freeze_thaw_ppm: &freeze,
+                    aridity_ppm: &aridity,
+                    glacial_ppm: &glacial,
+                    primary: &primary,
+                    secondary: &secondary,
+                    weight: &weight,
+                    accumulation: &accumulation,
+                    erosion_key: &key,
+                    peaks: &[],
+                    filled_mm: &filled,
+                    land_at: &land_at,
+                    scales: &[1],
+                    max_step_mm: MAX_EROSION_STEP_MM,
+                },
+                &mut surface,
+                &mut cancel,
+            )
+            .unwrap();
+            surface
+        };
+        let wet = erode(1_000_000, 100_000, 0, 0, &mountain);
+        let dry = erode(80_000, 100_000, 800_000, 0, &mountain);
+        let cold = erode(200_000, 1_000_000, 0, 800_000, &mountain);
+        assert_ne!(wet, dry);
+        assert_ne!(cold, dry);
+        let high = vec![600_000_i32; count];
+        let iced = erode(0, 0, 0, 800_000, &high);
+        let bare = erode(0, 0, 0, 0, &high);
+        assert_eq!(bare, filled);
+        assert_ne!(iced, filled);
+    }
 }

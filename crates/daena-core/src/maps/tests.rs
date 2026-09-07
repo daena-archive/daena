@@ -432,10 +432,18 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "kind": "provider-feature",
         "provider": PHYSICAL_PROVIDER,
         "featureKind": "physical-river",
-        "featureId": "river:4:18",
+        "featureId": "river:4",
         "fallbackPoint": [0.5, 0.5]
     }))
     .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "physical-river",
+        "featureId": "river:4:18",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
     assert!(anchor(&serde_json::json!({
         "kind": "provider-feature",
         "provider": PHYSICAL_PROVIDER,

@@ -9,6 +9,7 @@ export type OverlayFamily = "political" | "cultural" | "religious" | "linguistic
 export type VectorDrawMode =
   | "static"
   | "select"
+  | "trace"
   | "point"
   | "linestring"
   | "polygon"

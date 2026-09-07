@@ -5,7 +5,6 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronRight,
-  Circle,
   CircleHelp,
   Copy,
   Download,
@@ -20,29 +19,20 @@ import {
   LoaderCircle,
   Lock,
   LockOpen,
-  Magnet,
   Map as MapIcon,
   Maximize2,
   Minimize2,
   Mountain,
-  MousePointer2,
-  Move,
   Pencil,
-  Redo2,
   RefreshCw,
   RotateCcw,
-  Ruler,
   Save,
   Scissors,
   Search,
   Settings2,
-  Slash,
   SlidersHorizontal,
-  Square,
   SquarePlus,
-  SquareStack,
   Trash2,
-  Undo2,
 } from "@lucide/svelte";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import {
@@ -67,6 +57,8 @@ import {
   type MapStyleV2,
 } from "../../../../packages/plugin-sdk/src/maps";
 import NativeVectorImporter from "./NativeVectorImporter.svelte";
+import MapEditorTools from "./MapEditorTools.svelte";
+import MapGeometryOps from "./MapGeometryOps.svelte";
 import MapLocationLinkPanel from "./MapLocationLinkPanel.svelte";
 import { createMapAdapter, liveMapAdapterCount, RENDERER_UNAVAILABLE, type MapAdapter } from "../openlayers/MapAdapter";
 import type { RuntimeBackground } from "../openlayers/background-registry";
@@ -84,6 +76,7 @@ import {
   VECTOR_PROVIDER,
   DEFAULT_VECTOR_LAYER_STYLE,
   featureLayerId,
+  layerAcceptsEdits,
   featureName,
   featureSemanticType,
   isRasterLayer,
@@ -197,12 +190,15 @@ import {
   snapEnabledFromDescriptor,
   buildPreview,
   commitSelectionIds,
-  canRunOperation,
+  copyFeaturesForPaste,
+  decodeFeatureClipboard,
+  encodeFeatureClipboard,
   formatMeasurement,
   measureFeature,
   unitsForCoordinateSpace,
   buildMapSearchIndex,
   searchMapFeatures,
+  selectableFeatureIds,
   type GeometryPreview,
   type GeometryOperationKind,
   type MapCommand,
@@ -247,7 +243,8 @@ let layersField = $state<FieldValue | null>(null);
 let mapField = $state<FieldValue | null>(null);
 let sourceAsset = $state<Asset | null>(null);
 let activeLayerId = $state<string | null>(null);
-let tool = $state<VectorDrawMode>("select");
+let tool = $state<VectorDrawMode>("static");
+let featureClipboard = $state<VectorFeature[]>([]);
 let editorState = $state<VectorEditorState>(initialVectorEditorState());
 let busy = $state(false);
 let recoveryPath = $state("");
@@ -923,6 +920,38 @@ function duplicateSelectedFeatures() {
   dispatchCommand(duplicateFeaturesCommand(copies));
 }
 
+function copySelectedFeatures() {
+  if (!commandStack || !editor) return;
+  const ids = editor.selectedFeatureIds();
+  const selected = commandStack.document.collection.features.filter((feature) => ids.includes(feature.id));
+  if (selected.length === 0) return;
+  featureClipboard = cloneCollection({ type: "FeatureCollection", features: selected }).features;
+  const encoded = encodeFeatureClipboard(selected);
+  void navigator.clipboard?.writeText(encoded).catch(() => undefined);
+}
+
+async function pasteFeatures() {
+  if (!commandStack || !canDraw || !activeLayerId || !layerAcceptsEdits(activeLayer ?? undefined)) return;
+  let source = featureClipboard;
+  try {
+    const text = await navigator.clipboard.readText();
+    source = decodeFeatureClipboard(text) ?? source;
+  } catch {
+    source = featureClipboard;
+  }
+  if (source.length === 0) return;
+  const [offsetX, offsetY] = duplicateOffset(coordinateSpace);
+  const copies = copyFeaturesForPaste(source, offsetX, offsetY, activeLayerId);
+  dispatchCommand(duplicateFeaturesCommand(copies));
+  editor?.selectFeatureIds(copies.map((feature) => feature.id));
+}
+
+function selectAllFeatures() {
+  if (!commandStack || !editor) return;
+  const ids = selectableFeatureIds(commandStack.document.collection.features, layers, tool === "static");
+  editor.selectFeatureIds(ids);
+}
+
 function renameSelectedFeature(name: string | null) {
   if (!commandStack || !selectedFeature) return;
   const previous = featureName(selectedFeature);
@@ -1527,7 +1556,7 @@ async function load() {
     }
     const ordered = [...layers].sort((left, right) => right.order - left.order || left.id.localeCompare(right.id));
     activeLayerId = ordered.some((layer) => layer.id === activeLayerId) ? activeLayerId : (ordered[0]?.id ?? null);
-    tool = "select";
+    tool = "static";
     selectedFeature = null;
     applyEditorEvent({ type: "loaded" });
     recoveryPath = "";
@@ -1738,8 +1767,8 @@ function switchLayer(layerId: string) {
   editor?.switchLayer(layerId);
   activeLayerId = layerId;
   const layer = layers.find((item) => item.id === layerId);
-  tool = layer?.locked ? "static" : "select";
-  editor?.setMode(tool);
+  if (!layer || !isVectorLayer(layer) || layer.locked) setTool("static");
+  else editor?.setMode(tool);
 }
 
 function createOverlayLayer(name?: string): string | null {
@@ -2176,9 +2205,8 @@ function toggleLock(layer: MapLayerDefinition) {
   const nextLocked = !layer.locked;
   dispatchCommand(setLayerLockedCommand(layer.id, nextLocked, layer.locked));
   if (layer.id === activeLayerId) {
-    tool = nextLocked || !isVectorLayer(layer) ? "static" : "select";
-    editor?.switchLayer(layer.id);
-    editor?.setMode(tool);
+    if (nextLocked || !isVectorLayer(layer)) setTool("static");
+    else editor?.setMode(tool);
   }
 }
 
@@ -2434,11 +2462,16 @@ function onKey(event: KeyboardEvent) {
     cancelGeometryPreview();
     return;
   }
+  if (event.key === "Escape" && tool === "trace") {
+    event.preventDefault();
+    setTool("static");
+    return;
+  }
   if (event.key === "Escape" && measureReadout) {
     event.preventDefault();
     measureReadout = "";
     editor?.clearMeasure();
-    if (tool.startsWith("measure-")) setTool("select");
+    if (tool.startsWith("measure-")) setTool("static");
     return;
   }
   if (event.key === "Escape" && selectedFeatureIds.length > 0) {
@@ -2459,12 +2492,25 @@ function onKey(event: KeyboardEvent) {
     event.preventDefault();
     if (event.shiftKey) redoEdit();
     else undoEdit();
+  } else if (meta && event.key.toLowerCase() === "c") {
+    event.preventDefault();
+    copySelectedFeatures();
+  } else if (meta && event.key.toLowerCase() === "v") {
+    event.preventDefault();
+    void pasteFeatures();
+  } else if (meta && event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    duplicateSelectedFeatures();
+  } else if (meta && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    selectAllFeatures();
   } else if (!meta && !renamingId && !picking) {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       deleteSelectedFeatures();
     } else if (event.key === "v" || event.key === "h") setTool("static");
     if (event.key === "s") setTool("select");
+    if (event.key === "t") setTool("trace");
     if (event.key === "p") setTool("point");
     if (event.key === "l") setTool("linestring");
     if (event.key === "g") setTool("polygon");
@@ -2576,137 +2622,21 @@ onMount(() => {
             onclick={() => requestLinkFromToolbar()}><Link2 {...iconProps} /></button>
         {/if}
         {#if !studioOpen}
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "static"}
-            aria-pressed={tool === "static"}
-            aria-label="Pan"
-            title="Pan"
-            onclick={() => setTool("static")}><Move {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "select"}
-            aria-pressed={tool === "select"}
-            aria-label="Select"
-            title="Select"
-            onclick={() => setTool("select")}><MousePointer2 {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "point"}
-            aria-pressed={tool === "point"}
-            aria-label="Point"
-            title="Point"
-            disabled={!canDraw}
-            onclick={() => setTool("point")}><Circle {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "linestring"}
-            aria-pressed={tool === "linestring"}
-            aria-label="Line"
-            title="Line"
-            disabled={!canDraw}
-            onclick={() => setTool("linestring")}><Slash {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "polygon"}
-            aria-pressed={tool === "polygon"}
-            aria-label="Polygon"
-            title="Polygon"
-            disabled={!canDraw}
-            onclick={() => setTool("polygon")}><Hexagon {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "rectangle"}
-            aria-pressed={tool === "rectangle"}
-            aria-label="Rectangle"
-            title="Rectangle"
-            disabled={!canDraw}
-            onclick={() => setTool("rectangle")}><Square {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "freehand"}
-            aria-pressed={tool === "freehand"}
-            aria-label="Freehand"
-            title="Freehand"
-            disabled={!canDraw}
-            onclick={() => setTool("freehand")}><Pencil {...iconProps} /></button>
-          {#if physicalMap}
-            <button
-              type="button"
-              class="icon-button"
-              class:active={tool === "landmass"}
-              aria-pressed={tool === "landmass"}
-              aria-label="Landmass"
-              title="Select landmass. Shift adds, Alt subtracts."
-              disabled={!mapId}
-              onclick={() => setTool("landmass")}><Mountain {...iconProps} /></button>
-          {/if}
-          <button
-            type="button"
-            class="icon-button"
-            class:active={snapEnabled}
-            aria-pressed={snapEnabled}
-            aria-label={snapEnabled ? "Snap on" : "Snap off"}
-            title={snapEnabled ? "Snap on (\\)" : "Snap off (\\)"}
-            disabled={!editor}
-            onclick={() => toggleSnapEnabled()}><Magnet {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={snapConfigOpen}
-            aria-pressed={snapConfigOpen}
-            aria-label="Snap settings"
-            title="Snap settings"
-            disabled={!editor}
-            onclick={() => (snapConfigOpen = !snapConfigOpen)}><CircleHelp {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "measure-distance"}
-            aria-pressed={tool === "measure-distance"}
-            aria-label="Measure distance"
-            title="Measure distance (D)"
-            disabled={!editor}
-            onclick={() => setTool("measure-distance")}><Ruler {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "measure-length"}
-            aria-pressed={tool === "measure-length"}
-            aria-label="Measure length"
-            title="Measure length (Shift+M)"
-            disabled={!editor}
-            onclick={() => setTool("measure-length")}><Slash {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            class:active={tool === "measure-area"}
-            aria-pressed={tool === "measure-area"}
-            aria-label="Measure area"
-            title="Measure area (Shift+A)"
-            disabled={!editor}
-            onclick={() => setTool("measure-area")}><SquareStack {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            aria-label="Undo"
-            title="Undo"
-            disabled={!canUndo}
-            onclick={() => undoEdit()}><Undo2 {...iconProps} /></button>
-          <button
-            type="button"
-            class="icon-button"
-            aria-label="Redo"
-            title="Redo"
-            disabled={!canRedo}
-            onclick={() => redoEdit()}><Redo2 {...iconProps} /></button>
+          <MapEditorTools
+            {tool}
+            {canDraw}
+            {physicalMap}
+            {mapId}
+            {snapEnabled}
+            {snapConfigOpen}
+            {canUndo}
+            {canRedo}
+            editorReady={Boolean(editor)}
+            onset={setTool}
+            ontogglesnap={toggleSnapEnabled}
+            ontogglesnapconfig={() => (snapConfigOpen = !snapConfigOpen)}
+            onundo={undoEdit}
+            onredo={redoEdit} />
           <button
             type="button"
             class="icon-button"
@@ -3535,80 +3465,15 @@ onMount(() => {
                   <span class="section-count">{selectedOpFeatures.length}</span>
                 </summary>
                 <div class="section-body">
-                  <div class="geometry-ops" aria-label="Geometry operations">
-                    {#if geometryPreview}
-                      <p class="section-note">Preview: {geometryPreview.label}. Commit or cancel to finish.</p>
-                      <div class="quick-add-row">
-                        <button type="button" class="primary-button small" onclick={() => commitGeometryPreview()}
-                          >Apply</button>
-                        <button type="button" class="quiet-button small" onclick={() => cancelGeometryPreview()}
-                          >Cancel</button>
-                      </div>
-                    {:else}
-                      <div class="quick-add-row">
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("union", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("union")}>Union</button>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("difference", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("difference")}>Diff</button>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("intersection", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("intersection")}>Intersect</button>
-                      </div>
-                      <div class="quick-add-row">
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("split", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("split")}
-                          ><Scissors size={12} strokeWidth={1.8} /> Split</button>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("reverse", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("reverse")}>Reverse</button>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("merge-lines", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("merge-lines")}>Merge</button>
-                        <label class="inline-field"
-                          ><span>Buffer</span><input
-                            type="number"
-                            min="0"
-                            step="any"
-                            bind:value={bufferDistance}
-                            aria-label="Buffer distance" /></label>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("buffer", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("buffer")}>Run</button>
-                      </div>
-                      <div class="quick-add-row">
-                        <label class="inline-field"
-                          ><span>Simplify</span><input
-                            type="number"
-                            min="0"
-                            step="any"
-                            bind:value={simplifyTolerance}
-                            aria-label="Simplify tolerance" /></label>
-                        <button
-                          type="button"
-                          class="quiet-button small"
-                          disabled={!canRunOperation("simplify", selectedOpFeatures)}
-                          onclick={() => startGeometryOperation("simplify")}>Run</button>
-                      </div>
-                      {#if operationNotice}<p class="field-hint" role="status">{operationNotice}</p>{/if}
-                    {/if}
-                  </div>
+                  <MapGeometryOps
+                    features={selectedOpFeatures}
+                    preview={geometryPreview}
+                    bind:bufferDistance
+                    bind:simplifyTolerance
+                    notice={operationNotice}
+                    onrun={startGeometryOperation}
+                    oncommit={commitGeometryPreview}
+                    oncancel={cancelGeometryPreview} />
                 </div>
               </details>
             {/if}

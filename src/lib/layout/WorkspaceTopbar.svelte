@@ -180,7 +180,8 @@ const actionContent = $derived(actions ?? children);
   min-width: 34px;
   padding: 0;
 }
-:global([data-workspace-topbar-actions] > button.icon-button) {
+:global([data-workspace-topbar-actions] > button.icon-button),
+:global([data-workspace-topbar-actions] button.icon-button) {
   width: 34px;
   min-width: 34px;
   padding: 0;
@@ -190,7 +191,9 @@ const actionContent = $derived(actions ?? children);
 :global(.workspace-topbar-action:hover),
 :global(.workspace-topbar-action:focus-visible),
 :global([data-workspace-topbar-actions] > button:hover),
-:global([data-workspace-topbar-actions] > button:focus-visible) {
+:global([data-workspace-topbar-actions] > button:focus-visible),
+:global([data-workspace-topbar-actions] button.icon-button:hover),
+:global([data-workspace-topbar-actions] button.icon-button:focus-visible) {
   border-color: var(--theme-neutral-border-strong, #b9c4ba);
   background: var(--theme-success-bg, #f2f6f2);
   color: var(--theme-success-text, #2f4e35);
@@ -201,13 +204,16 @@ const actionContent = $derived(actions ?? children);
 :global(.workspace-topbar-action.primary),
 :global([data-workspace-topbar-actions] > button.active),
 :global([data-workspace-topbar-actions] > button[aria-pressed="true"]),
-:global([data-workspace-topbar-actions] > button.primary) {
+:global([data-workspace-topbar-actions] > button.primary),
+:global([data-workspace-topbar-actions] button.icon-button.active),
+:global([data-workspace-topbar-actions] button.icon-button[aria-pressed="true"]) {
   border-color: var(--theme-neutral-border-strong, #b8c9ba);
   background: var(--theme-success-bg, #e4ece4);
   color: var(--theme-success-text, #2f4e35);
 }
 :global(.workspace-topbar-action:disabled),
-:global([data-workspace-topbar-actions] > button:disabled) {
+:global([data-workspace-topbar-actions] > button:disabled),
+:global([data-workspace-topbar-actions] button.icon-button:disabled) {
   opacity: 0.38;
   cursor: not-allowed;
 }

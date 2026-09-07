@@ -1,5 +1,9 @@
 import Feature from "ol/Feature.js";
+import LineString from "ol/geom/LineString.js";
+import MultiLineString from "ol/geom/MultiLineString.js";
+import MultiPolygon from "ol/geom/MultiPolygon.js";
 import Point from "ol/geom/Point.js";
+import Polygon from "ol/geom/Polygon.js";
 import type Geometry from "ol/geom/Geometry.js";
 import Draw from "ol/interaction/Draw.js";
 import { createBox } from "ol/interaction/Draw.js";
@@ -27,11 +31,13 @@ import {
 } from "../editor/measurement";
 import { viewToAuthored } from "../editor/coordinate-space";
 import type { SpatialExtent } from "../editor/spatial-index";
+import { closestHitOnLine, isClosedPath, traceSubpath, type PathHit } from "../editor/trace";
 import { kindForDrawMode, simplifyFreehandGeometry } from "../native-vector/geometry";
 import {
   BASE_LAYER_ID,
   layerAcceptsEdits,
   layerIsSelectable,
+  layerIsVisible,
   type VectorDrawMode,
   type VectorLayerDefinition,
 } from "../native-vector/types";
@@ -71,6 +77,31 @@ function isDrawMode(mode: VectorDrawMode): mode is "point" | "linestring" | "pol
   return mode === "point" || mode === "linestring" || mode === "polygon" || mode === "rectangle" || mode === "freehand";
 }
 
+type TraceTarget = { path: number[][]; closed: boolean; hit: PathHit };
+
+function olTracePaths(geometry: Geometry): Array<{ path: number[][]; closed: boolean }> {
+  const type = geometry.getType();
+  if (type === "LineString") {
+    const path = (geometry as LineString).getCoordinates();
+    return [{ path, closed: isClosedPath(path) }];
+  }
+  if (type === "MultiLineString") {
+    return (geometry as MultiLineString).getCoordinates().map((path) => ({ path, closed: isClosedPath(path) }));
+  }
+  if (type === "Polygon") {
+    const ring = (geometry as Polygon).getLinearRing(0)?.getCoordinates() ?? [];
+    return ring.length >= 2 ? [{ path: ring, closed: true }] : [];
+  }
+  if (type === "MultiPolygon") {
+    return (geometry as MultiPolygon)
+      .getPolygons()
+      .map((polygon) => polygon.getLinearRing(0)?.getCoordinates() ?? [])
+      .filter((ring) => ring.length >= 2)
+      .map((path) => ({ path, closed: true }));
+  }
+  return [];
+}
+
 export function createInteractionManager(options: {
   map: Map;
   view: View;
@@ -87,12 +118,13 @@ export function createInteractionManager(options: {
   allowLockedBoxSelection?: boolean;
 }): InteractionManager {
   const { map, view, registry, codec } = options;
-  let currentMode: VectorDrawMode = options.readOnly ? "static" : "select";
+  let currentMode: VectorDrawMode = "static";
   let activeLayerId = options.getActiveLayerId();
   let draw: Draw | null = null;
   let snap: Snap | null = null;
   let snapOptions: SnapOptions = { ...DEFAULT_SNAP };
   let measureSketch: Feature<Geometry> | null = null;
+  let traceStart: TraceTarget | null = null;
 
   const overlaySource = new VectorSource({ wrapX: false });
   const overlayLayer = new VectorLayer({
@@ -125,6 +157,85 @@ export function createInteractionManager(options: {
     const layerId = String(feature.get("daenaLayerId") ?? "");
     if (layerId === BASE_LAYER_ID) return currentMode === "static";
     return layerIsSelectable(registry.layerById(layerId), { viewMode: currentMode === "static" });
+  };
+
+  const clearTracePreview = () => {
+    overlaySource.getFeatures().forEach((feature) => {
+      if (feature.get("kind") === "trace-preview") overlaySource.removeFeature(feature);
+    });
+  };
+
+  const paintTracePreview = (coordinates: number[][]) => {
+    clearTracePreview();
+    if (coordinates.length === 0) return;
+    const distinct =
+      coordinates.length >= 2 && (coordinates[0][0] !== coordinates[1][0] || coordinates[0][1] !== coordinates[1][1]);
+    const preview =
+      coordinates.length >= 2 && distinct
+        ? new Feature(new LineString(coordinates))
+        : new Feature(new Point(coordinates[0]));
+    preview.set("kind", "trace-preview");
+    overlaySource.addFeature(preview);
+  };
+
+  const findTraceTarget = (coordinate: number[]): TraceTarget | null => {
+    const pixel = (view.getResolution() ?? 1) * 16;
+    const maxDist = pixel * pixel;
+    const candidates: Feature<Geometry>[] = [];
+    if (registry.indexSize() === 0) {
+      registry.forEachVectorFeature((feature) => candidates.push(feature));
+    } else {
+      for (const record of registry.queryExtent(
+        authoredExtentFromView([
+          coordinate[0] - pixel,
+          coordinate[1] - pixel,
+          coordinate[0] + pixel,
+          coordinate[1] + pixel,
+        ]),
+      )) {
+        const feature = registry.getFeatureById(record.id);
+        if (feature) candidates.push(feature);
+      }
+    }
+    let best: TraceTarget | null = null;
+    for (const feature of candidates) {
+      const layerId = String(feature.get("daenaLayerId") ?? "");
+      if (!layerIsVisible(registry.layerById(layerId))) continue;
+      const geometry = feature.getGeometry();
+      if (!geometry) continue;
+      for (const candidate of olTracePaths(geometry)) {
+        if (candidate.path.length < 2) continue;
+        const hit = closestHitOnLine(candidate.path, coordinate);
+        if (!hit || hit.distanceSq > maxDist) continue;
+        if (!best || hit.distanceSq < best.hit.distanceSq) best = { ...candidate, hit };
+      }
+    }
+    return best;
+  };
+
+  const sameTracePath = (left: { path: number[][]; closed: boolean }, right: { path: number[][]; closed: boolean }) =>
+    left.closed === right.closed &&
+    left.path.length === right.path.length &&
+    left.path.every((point, index) => point[0] === right.path[index][0] && point[1] === right.path[index][1]);
+
+  const commitTrace = (start: TraceTarget, end: PathHit) => {
+    const editable = activeEditableLayer();
+    const source = editable ? registry.sourceFor(editable.id) : null;
+    if (!editable || !source) return;
+    const coordinates = traceSubpath(start.path, start.hit, end, start.closed);
+    if (coordinates.length < 2) {
+      options.onDiagnostic?.("geometry.trace.invalid", "Trace did not produce a usable path.");
+      return;
+    }
+    const feature = new Feature(new LineString(coordinates));
+    feature.setId(crypto.randomUUID());
+    feature.setProperties({
+      daenaLayerId: editable.id,
+      kind: "route",
+      name: null,
+    });
+    source.addFeature(feature);
+    queueMicrotask(() => options.onSourceCommitted());
   };
 
   const authoredExtentFromView = (extent: number[]): SpatialExtent => {
@@ -275,6 +386,7 @@ export function createInteractionManager(options: {
   const configureMode = (mode: VectorDrawMode) => {
     removeDrawingInteractions();
     clearMeasureReadout();
+    traceStart = null;
     currentMode = options.readOnly ? "static" : mode;
     pruneSelection();
     if (options.readOnly) {
@@ -311,6 +423,11 @@ export function createInteractionManager(options: {
       });
       map.addInteraction(draw);
       attachSnap();
+      return;
+    }
+
+    if (currentMode === "trace") {
+      if (editable && snapOptions.enabled) attachSnap();
       return;
     }
 
@@ -395,9 +512,39 @@ export function createInteractionManager(options: {
 
   map.on("pointermove", (event) => {
     if (event.dragging || options.getPickArmed()) return;
+    if (currentMode === "trace") {
+      const hover = findTraceTarget(event.coordinate);
+      if (traceStart && hover && sameTracePath(traceStart, hover)) {
+        paintTracePreview(traceSubpath(traceStart.path, traceStart.hit, hover.hit, traceStart.closed));
+      } else if (traceStart) {
+        paintTracePreview([traceStart.hit.point]);
+      } else {
+        clearTracePreview();
+      }
+      updateSnapIndicator(hover ? hover.hit.point : event.coordinate);
+      return;
+    }
     const shouldIndicate =
       snapOptions.enabled && (isDrawMode(currentMode) || currentMode === "select" || isMeasureMode(currentMode));
     updateSnapIndicator(shouldIndicate ? event.coordinate : null);
+  });
+  map.on("singleclick", (event) => {
+    if (currentMode !== "trace" || options.getPickArmed() || options.readOnly) return;
+    const target = findTraceTarget(event.coordinate);
+    if (!target) {
+      traceStart = null;
+      clearTracePreview();
+      return;
+    }
+    event.stopPropagation();
+    if (!traceStart || !sameTracePath(traceStart, target)) {
+      traceStart = target;
+      paintTracePreview([target.hit.point]);
+      return;
+    }
+    commitTrace(traceStart, target.hit);
+    traceStart = null;
+    clearTracePreview();
   });
 
   configureMode(currentMode);

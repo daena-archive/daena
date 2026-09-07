@@ -25,6 +25,8 @@ for (const path of runtimeFiles) assert.equal(existsSync(resolve(root, path)), t
 
 const components = [
   "src/lib/maps/native-vector/NativeVectorImporter.svelte",
+  "src/lib/maps/native-vector/MapEditorTools.svelte",
+  "src/lib/maps/native-vector/MapGeometryOps.svelte",
   "src/lib/maps/native-vector/NativeVectorMapEditor.svelte",
   "src/lib/maps/physical/PhysicalMapEditor.svelte",
   "src/lib/maps/physical/PhysicalWorldView.svelte",

@@ -106,6 +106,13 @@ export {
 } from "./spatial-index";
 export { emptySelection, selectionFromIds, selectionHas, toggleSelectionId, type SelectionState } from "./selection";
 export {
+  copyFeaturesForPaste,
+  decodeFeatureClipboard,
+  encodeFeatureClipboard,
+  selectableFeatureIds,
+} from "./clipboard";
+export { closestHitOnLine, isClosedPath, traceSubpath, type PathHit } from "./trace";
+export {
   buildMapSearchIndex,
   searchMapFeatures,
   type MapFeatureSearchEntry,

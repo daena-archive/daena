@@ -24,7 +24,7 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 13;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 2;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -40,8 +40,7 @@ const ALPINE_HEIGHT_MM: i32 = 1_500_000;
 const TUNDRA_WARM_CENTI_C: i32 = 1_000;
 const TROPICAL_ANNUAL_CENTI_C: i32 = 1_800;
 const TROPICAL_COLD_CENTI_C: i32 = 1_000;
-const TROPICAL_PRECIPITATION_MM: u32 = 1_500;
-const FOREST_PRECIPITATION_MM: u32 = 800;
+const FOREST_PRECIPITATION_MM: u32 = 500;
 const GRASSLAND_PRECIPITATION_MM: u32 = 450;
 const DESERT_PRECIPITATION_MM: u32 = 250;
 const DESERT_ARIDITY_PPM: u32 = 800_000;
@@ -49,7 +48,6 @@ const SHRUBLAND_ARIDITY_PPM: u32 = 500_000;
 const GRASSLAND_ARIDITY_PPM: u32 = 200_000;
 const COLD_GRASSLAND_ANNUAL_CENTI_C: i32 = 500;
 const COLD_GRASSLAND_WINTER_CENTI_C: i32 = -1_000;
-const TROPICAL_HUMIDITY_PPM: u32 = 550_000;
 const FOREST_HUMIDITY_PPM: u32 = 350_000;
 const MARITIME_HUMIDITY_PPM: u32 = 700_000;
 const UNKNOWN_BIOME_FILL: [u8; 3] = [120, 120, 124];
@@ -65,7 +63,9 @@ const STORM_SEED_BLOCK: u32 = 6;
 const STORM_PRONE_PPM: u32 = 100_000;
 const STORM_CURRENT_STEER_PPM: i32 = 650_000;
 const STORM_CLIMATE_YEAR_MILLI_AT_FULL: u32 = 80_000;
-const EARTH_EQUATOR_BASE_CENTI_C: i32 = 1_400;
+const EARTH_EQUATOR_BASE_CENTI_C: i32 = 2_200;
+const SST_REFERENCE_CENTI_C: i32 = 1_400;
+const LAND_MOISTURE_RECYCLE: f64 = 0.40;
 pub const CLIMATE_WIND_BAND_COUNT: u32 = 6;
 pub const WIND_BAND_HADLEY: u32 = 0;
 pub const WIND_BAND_FERREL: u32 = 1;
@@ -116,16 +116,16 @@ pub struct ClimateSettings {
 impl ClimateSettings {
     pub fn default_for(_grid: Grid) -> Self {
         Self {
-            global_temperature_centi_c: 1_400,
-            latitude_cooling_centi_c: 3_200,
+            global_temperature_centi_c: 2_200,
+            latitude_cooling_centi_c: 4_200,
             altitude_lapse_centi_c_per_km: 650,
             maritime_moderation_centi_c: 1_000,
             maritime_scale_km: 3_000,
-            ocean_moisture_mm_per_year: 1_600,
+            ocean_moisture_mm_per_year: 2_000,
             moisture_decay_ppm: 940_000,
             moisture_decay_scale_km: 8_000,
             convergence_ppm: 120_000,
-            base_precipitation_ppm: 200_000,
+            base_precipitation_ppm: 280_000,
             orographic_precipitation_ppm: 18_000_000,
             hydrology_preset: HydrologyPreset::Balanced,
             planetary: PlanetaryConfiguration::earth_like(),
@@ -846,7 +846,11 @@ fn temperature_field(
             (cell_geometry.latitude.abs() / std::f64::consts::FRAC_PI_2).clamp(0.0, 1.0);
         let latitude_cooling =
             f64::from(settings.latitude_cooling_centi_c) * latitude_fraction.powf(1.35);
-        let altitude_km = (f64::from(field.elevations_mm[cell] - field.sea_level_mm)) / 1_000_000.0;
+        let altitude_km = f64::from(
+            field.elevations_mm[cell]
+                .saturating_sub(field.sea_level_mm)
+                .max(0),
+        ) / 1_000_000.0;
         let altitude_cooling = altitude_km * f64::from(settings.altitude_lapse_centi_c_per_km);
         let continental_temperature = base - latitude_cooling - altitude_cooling;
         let maritime_temperature = base - latitude_cooling * 0.58 - altitude_cooling * 0.62
@@ -1460,8 +1464,12 @@ fn potential_evapotranspiration_mm(temperature_centi_c: i32) -> f64 {
     if t <= 0.0 {
         40.0
     } else {
-        (40.0 + 70.0 * t).clamp(40.0, 4_000.0)
+        (40.0 + 42.0 * t).clamp(40.0, 4_000.0)
     }
+}
+
+fn moisture_temperature_factor(temperature_centi_c: i32) -> f64 {
+    (1.0 + f64::from(temperature_centi_c - SST_REFERENCE_CENTI_C) / 4_500.0).clamp(0.35, 1.75)
 }
 
 fn ocean_evaporation_mm(
@@ -1473,7 +1481,7 @@ fn ocean_evaporation_mm(
     current_north: i32,
 ) -> f64 {
     let frozen = if temperature_centi_c < 0 { 0.18 } else { 1.0 };
-    let sst = (1.0 + f64::from(temperature_centi_c - 1_400) / 4_500.0).clamp(0.35, 1.75);
+    let sst = moisture_temperature_factor(temperature_centi_c);
     let speed =
         f64::from(current_east).hypot(f64::from(current_north)) / f64::from(MAX_CURRENT_MILLI);
     let current = 1.0 + 0.20 * speed.clamp(0.0, 1.0);
@@ -1700,7 +1708,8 @@ fn transport_moisture(
                     f64::from(settings.ocean_moisture_mm_per_year)
                         * source_multiplier
                         * source_factor
-                        * 0.22
+                        * LAND_MOISTURE_RECYCLE
+                        * moisture_temperature_factor(temperatures[cell])
                 } else {
                     0.0
                 };
@@ -2193,23 +2202,24 @@ pub fn classify_biome_cell(
         }
         return BIOME_DESERT;
     }
+    let cold_grassland =
+        annual_centi_c < COLD_GRASSLAND_ANNUAL_CENTI_C || cold < COLD_GRASSLAND_WINTER_CENTI_C;
     if aridity_ppm >= SHRUBLAND_ARIDITY_PPM || precipitation_mm < GRASSLAND_PRECIPITATION_MM {
+        if cold_grassland {
+            return BIOME_COLD_GRASSLAND;
+        }
         return BIOME_SHRUBLAND;
     }
     let grassland = aridity_ppm >= GRASSLAND_ARIDITY_PPM
         || precipitation_mm < FOREST_PRECIPITATION_MM
         || humidity_ppm < FOREST_HUMIDITY_PPM;
     if grassland {
-        if annual_centi_c < COLD_GRASSLAND_ANNUAL_CENTI_C || cold < COLD_GRASSLAND_WINTER_CENTI_C {
+        if cold_grassland {
             return BIOME_COLD_GRASSLAND;
         }
         return BIOME_TEMPERATE_GRASSLAND;
     }
-    if annual_centi_c >= TROPICAL_ANNUAL_CENTI_C
-        && cold >= TROPICAL_COLD_CENTI_C
-        && precipitation_mm >= TROPICAL_PRECIPITATION_MM
-        && humidity_ppm >= TROPICAL_HUMIDITY_PPM
-    {
+    if annual_centi_c >= TROPICAL_ANNUAL_CENTI_C && cold >= TROPICAL_COLD_CENTI_C {
         return BIOME_TROPICAL_FOREST;
     }
     BIOME_TEMPERATE_FOREST
@@ -2997,6 +3007,10 @@ mod tests {
         }
     }
 
+    fn count_biome(classes: &[u32], class: u32) -> usize {
+        classes.iter().filter(|value| **value == class).count()
+    }
+
     #[test]
     fn uniform_runoff_uses_exact_spherical_area() {
         let expected =
@@ -3153,6 +3167,68 @@ mod tests {
         assert!(
             climate.metrics.mean_temperature_centi_c <= climate.metrics.maximum_temperature_centi_c
         );
+    }
+
+    #[test]
+    fn seafloor_depth_does_not_warm_ocean_air() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let settings = ClimateSettings::default_for(grid);
+        let shallow = field(grid, vec![-100_000; grid.sample_count()], 0);
+        let deep = field(grid, vec![-4_000_000; grid.sample_count()], 0);
+        let shallow_climate = derive_current_climate(
+            &shallow,
+            settings,
+            shallow.seed,
+            shallow.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let deep_climate = derive_current_climate(
+            &deep,
+            settings,
+            deep.seed,
+            deep.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(
+            shallow_climate.temperature_centi_c,
+            deep_climate.temperature_centi_c
+        );
+        let mut mixed_shallow = vec![-100_000; grid.sample_count()];
+        let mut mixed_deep = vec![-4_000_000; grid.sample_count()];
+        for col in 0..grid.width {
+            mixed_shallow[grid.index(4, col)] = 200_000;
+            mixed_deep[grid.index(4, col)] = 200_000;
+        }
+        let land_shallow = derive_current_climate(
+            &field(grid, mixed_shallow, 0),
+            settings,
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let land_deep = derive_current_climate(
+            &field(grid, mixed_deep, 0),
+            settings,
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        for col in 0..grid.width {
+            let land = grid.index(4, col);
+            assert_eq!(
+                land_shallow.temperature_centi_c[land],
+                land_deep.temperature_centi_c[land]
+            );
+            let ocean = grid.index(3, col);
+            assert_eq!(
+                land_shallow.temperature_centi_c[ocean],
+                land_deep.temperature_centi_c[ocean]
+            );
+        }
     }
 
     #[test]
@@ -3760,7 +3836,7 @@ mod tests {
         elevations[grid.index(3, 0)] = -2_000;
         let physical = field(grid, elevations, 0);
         let mut settings = ClimateSettings::default_for(grid);
-        settings.planetary.semi_major_axis_milli_au = 5_000_000;
+        settings.planetary.semi_major_axis_milli_au = 12_000_000;
         settings.planetary.preset = crate::planetary::PlanetaryPreset::Custom;
         let climate = derive_current_climate(
             &physical,
@@ -4261,6 +4337,10 @@ mod tests {
             BIOME_TEMPERATE_GRASSLAND
         );
         assert_eq!(
+            classify_biome_cell(true, 200, 0, 200, 1_200, -1_400, 300, 400_000, 600_000),
+            BIOME_COLD_GRASSLAND
+        );
+        assert_eq!(
             classify_biome_cell(true, 200, 0, 1_200, 1_800, 600, 1_200, 100_000, 80_000),
             BIOME_TEMPERATE_GRASSLAND
         );
@@ -4270,6 +4350,10 @@ mod tests {
         );
         assert_eq!(
             classify_biome_cell(true, 200, 0, 2_400, 2_600, 2_200, 2_400, 700_000, 40_000),
+            BIOME_TROPICAL_FOREST
+        );
+        assert_eq!(
+            classify_biome_cell(true, 80_000, 0, 2_200, 2_400, 2_000, 500, 350_000, 100_000),
             BIOME_TROPICAL_FOREST
         );
         assert_eq!(biome_name(BIOME_DESERT), "desert");
@@ -4304,6 +4388,118 @@ mod tests {
             .skip(1)
             .all(|class| *class != BIOME_OCEAN));
         assert_ne!(climate.metrics.dominant_land_biome, BIOME_OCEAN);
+    }
+
+    #[test]
+    fn equatorial_coastal_lowlands_can_be_tropical_forest() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        let equator = grid.height / 2;
+        for row in equator.saturating_sub(2)..(equator + 3).min(grid.height) {
+            for col in 16..40 {
+                elevations[grid.index(row, col)] = 80_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let trop = count_biome(&climate.biome_class, BIOME_TROPICAL_FOREST);
+        assert!(
+            trop > 0,
+            "equatorial lowlands produced no tropical forest (max land T={}, max land P={})",
+            climate
+                .temperature_centi_c
+                .iter()
+                .enumerate()
+                .filter(|(cell, _)| physical.elevations_mm[*cell] > physical.sea_level_mm)
+                .map(|(_, temperature)| *temperature)
+                .max()
+                .unwrap_or(0),
+            climate
+                .precipitation_mm_per_year
+                .iter()
+                .enumerate()
+                .filter(|(cell, _)| physical.elevations_mm[*cell] > physical.sea_level_mm)
+                .map(|(_, precipitation)| *precipitation)
+                .max()
+                .unwrap_or(0)
+        );
+    }
+
+    #[test]
+    fn earth_like_world_covers_tropical_temperate_and_cold_grassland() {
+        let world = crate::generate_world(
+            crate::GenerationSettings {
+                width: 64,
+                height: 32,
+                radius_metres: DEFAULT_RADIUS_METRES,
+                target_land_fraction_ppm: 300_000,
+            },
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let trop = count_biome(&world.climate.biome_class, BIOME_TROPICAL_FOREST);
+        let temperate = count_biome(&world.climate.biome_class, BIOME_TEMPERATE_FOREST);
+        let cold_grass = count_biome(&world.climate.biome_class, BIOME_COLD_GRASSLAND);
+        assert!(
+            trop > 0 && temperate > 0 && cold_grass > 0,
+            "tropical forest={trop} temperate forest={temperate} cold grassland={cold_grass}"
+        );
+    }
+
+    #[test]
+    fn midlatitude_coasts_can_be_temperate_forest() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        for row in 22..27 {
+            for col in 16..40 {
+                elevations[grid.index(row, col)] = 80_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let temperate = count_biome(&climate.biome_class, BIOME_TEMPERATE_FOREST);
+        assert!(
+            temperate > 0,
+            "midlatitude coasts produced no temperate forest"
+        );
+    }
+
+    #[test]
+    fn cold_continental_interiors_can_be_cold_grassland() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        for row in 24..30 {
+            for col in 8..56 {
+                elevations[grid.index(row, col)] = 200_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let cold_grass = count_biome(&climate.biome_class, BIOME_COLD_GRASSLAND);
+        assert!(cold_grass > 0, "cold interior produced no cold grassland");
     }
 
     #[test]

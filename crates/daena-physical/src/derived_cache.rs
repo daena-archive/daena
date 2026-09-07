@@ -17,7 +17,7 @@ use crate::{
     GeneratedWorld, Grid, PhysicalError, PhysicalErrorCode, Segment, MAX_DERIVED_GEOJSON_BYTES,
 };
 
-pub const CACHE_FORMAT_VERSION: u32 = 9;
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 pub const CACHE_FILE_NAME: &str = "static.bin";
 const MAGIC: &[u8; 8] = b"DAENAPDC";
 const MAX_CACHE_BYTES: usize = MAX_DERIVED_GEOJSON_BYTES.saturating_add(64 * 1024 * 1024);

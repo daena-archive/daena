@@ -509,7 +509,7 @@ function studioRequest() {
     mapEntityId: mapId,
     offsetYears,
     algorithmVersion: ATLAS_DETAIL_ALGORITHM_VERSION,
-    level: "detailed" as const,
+    level: "standard" as const,
     variant: 0,
     styleId,
     activeLayerIds: atlasLayerIds(),

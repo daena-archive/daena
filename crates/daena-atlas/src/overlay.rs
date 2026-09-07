@@ -6,6 +6,7 @@ use daena_physical::Grid;
 
 use serde::{Deserialize, Serialize};
 
+use crate::amplify::MountainFeature;
 use crate::detail::domain_key;
 use crate::detail::lattice_sample;
 use crate::drainage::DerivedTributary;
@@ -21,6 +22,17 @@ const PAPER_CELL_MICRO: i64 = 100_000;
 
 const FRAME_PX: u32 = 8;
 const FLOW_ARROW_MIN_MILLI: f32 = 80.0;
+
+#[derive(Debug, Clone)]
+pub struct OverlayDebug<'a> {
+    pub grid: Grid,
+    pub lattice_width: u32,
+    pub lattice_height: u32,
+    pub structure_residual_mm: &'a [i32],
+    pub worked_residual_mm: &'a [i32],
+    pub runoff_mm: &'a [i32],
+    pub orometry: &'a [MountainFeature],
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -429,6 +441,7 @@ pub fn composite_overlays(
     tributaries: &[DerivedTributary],
     winds: Option<(&[i32], &[i32])>,
     currents: Option<(&[i32], &[i32])>,
+    debug: Option<OverlayDebug<'_>>,
 ) {
     let view = request.view().unwrap_or(ProjectedView {
         projection: request.projection,
@@ -633,8 +646,141 @@ pub fn composite_overlays(
             }
         }
     }
+    if let Some(debug) = debug.filter(|_| request.debug_layers_enabled()) {
+        paint_debug_layers(buffer, view, request, hydrology, tributaries, debug);
+    }
     if style.paper_grain_ppm > 0 {
         apply_paper_grain(buffer, request, style, identity);
+    }
+}
+
+fn paint_debug_layers(
+    buffer: &mut [u8],
+    view: ProjectedView,
+    request: &AtlasRenderRequest,
+    hydrology: &HydrologyField,
+    tributaries: &[DerivedTributary],
+    debug: OverlayDebug<'_>,
+) {
+    let width = view.width;
+    let height = view.height;
+    let lattice = Grid {
+        width: debug.lattice_width,
+        height: debug.lattice_height,
+        radius_metres: debug.grid.radius_metres,
+    };
+    let residual = request.layer_enabled("debug-residual");
+    let erosion = request.layer_enabled("debug-erosion");
+    let sediment = request.layer_enabled("debug-sediment");
+    let runoff = request.layer_enabled("debug-runoff");
+    let sea = request.layer_enabled("debug-sea-level");
+    let ice = request.layer_enabled("debug-ice");
+    if residual || erosion || sediment || runoff || sea || ice {
+        for y in 0..height {
+            for x in 0..width {
+                let (lon, lat) = view.pixel_center(x, y);
+                if residual && !debug.structure_residual_mm.is_empty() {
+                    let value = crate::detail::sample_field_mm(
+                        lattice,
+                        debug.structure_residual_mm,
+                        lon,
+                        lat,
+                    );
+                    let t = ((value.saturating_add(80_000)).clamp(0, 160_000) as u64 * 1_000_000
+                        / 160_000) as u32;
+                    put_pixel(buffer, width, height, x as i32, y as i32, [180, 60, 180], t);
+                }
+                if (erosion || sediment)
+                    && !debug.structure_residual_mm.is_empty()
+                    && !debug.worked_residual_mm.is_empty()
+                {
+                    let structure = crate::detail::sample_field_mm(
+                        lattice,
+                        debug.structure_residual_mm,
+                        lon,
+                        lat,
+                    );
+                    let worked =
+                        crate::detail::sample_field_mm(lattice, debug.worked_residual_mm, lon, lat);
+                    let delta = worked.saturating_sub(structure);
+                    if erosion && delta < 0 {
+                        let t = ((-delta).clamp(0, 40_000) as u64 * 700_000 / 40_000) as u32;
+                        put_pixel(buffer, width, height, x as i32, y as i32, [220, 90, 20], t);
+                    }
+                    if sediment && delta > 0 {
+                        let t = (delta.clamp(0, 40_000) as u64 * 700_000 / 40_000) as u32;
+                        put_pixel(buffer, width, height, x as i32, y as i32, [220, 200, 40], t);
+                    }
+                }
+                if runoff && !debug.runoff_mm.is_empty() {
+                    let value =
+                        crate::detail::sample_field_mm(debug.grid, debug.runoff_mm, lon, lat)
+                            .max(0);
+                    let t = (value.clamp(0, 4_000) as u64 * 500_000 / 4_000) as u32;
+                    put_pixel(buffer, width, height, x as i32, y as i32, [20, 160, 200], t);
+                }
+                if sea && hydrology.water_level_mm.len() == debug.grid.sample_count() {
+                    let elev = crate::detail::sample_field_mm(
+                        debug.grid,
+                        &hydrology.water_level_mm,
+                        lon,
+                        lat,
+                    );
+                    let band = (elev.abs_diff(hydrology.sea_level_mm) as i32).min(80_000);
+                    if band < 12_000 {
+                        put_pixel(
+                            buffer,
+                            width,
+                            height,
+                            x as i32,
+                            y as i32,
+                            [80, 40, 160],
+                            450_000,
+                        );
+                    }
+                }
+                if ice {
+                    let cell = crate::detail::nearest_cell(debug.grid, lon, lat);
+                    if hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
+                        put_pixel(
+                            buffer,
+                            width,
+                            height,
+                            x as i32,
+                            y as i32,
+                            [210, 230, 255],
+                            400_000,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if request.layer_enabled("debug-drainage") {
+        for path in &hydrology.river_coordinates {
+            for window in path.windows(2) {
+                draw_geodesic_segment(buffer, view, window[0], window[1], [40, 90, 255], 900_000);
+            }
+        }
+        for tributary in tributaries {
+            for window in tributary.path.windows(2) {
+                draw_geodesic_segment(buffer, view, window[0], window[1], [80, 160, 255], 700_000);
+            }
+        }
+    }
+    if request.layer_enabled("debug-features") {
+        for feature in debug.orometry.iter().take(256) {
+            if let Some((x, y)) = project_point(view, feature.lon_micro, feature.lat_micro) {
+                for dx in -2..=2 {
+                    put_pixel(buffer, width, height, x + dx, y - 2, [40, 200, 70], 900_000);
+                    put_pixel(buffer, width, height, x + dx, y + 2, [40, 200, 70], 900_000);
+                }
+                for dy in -2..=2 {
+                    put_pixel(buffer, width, height, x - 2, y + dy, [40, 200, 70], 900_000);
+                    put_pixel(buffer, width, height, x + 2, y + dy, [40, 200, 70], 900_000);
+                }
+            }
+        }
     }
 }
 
@@ -981,11 +1127,11 @@ mod tests {
             &mut buffer,
             view,
             &[
-                [-20_000_000, -10_000_000],
-                [20_000_000, -10_000_000],
-                [20_000_000, 10_000_000],
-                [-20_000_000, 10_000_000],
-                [-20_000_000, -10_000_000],
+                [-60_000_000, -40_000_000],
+                [60_000_000, -40_000_000],
+                [60_000_000, 40_000_000],
+                [-60_000_000, 40_000_000],
+                [-60_000_000, -40_000_000],
             ],
             [200, 40, 40],
             1_000_000,

@@ -14,6 +14,7 @@ use daena_physical::history::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::calendar::{
     physical_offset_for_authored_year, year_in_interval, PhysicalCalendarBinding,
@@ -25,6 +26,7 @@ use super::{
 };
 use crate::error::CoreError;
 use crate::project::ProjectStore;
+use daena_atlas::constraint::{AtlasConstraint, AtlasConstraintKind, MAX_CONSTRAINTS};
 use daena_atlas::overlay::AuthoredFeature;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,7 +89,7 @@ impl AtlasStudioSessionRequestV1 {
             map_entity_id: map_entity_id.into(),
             offset_years: 0,
             algorithm_version: daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION,
-            level: DetailLevel::Detailed,
+            level: DetailLevel::Standard,
             variant: 0,
             style_id: RELIEF_STYLE_ID.to_string(),
             active_layer_ids: ATLAS_DEFAULT_VISIBLE_LAYER_IDS
@@ -107,8 +109,8 @@ impl AtlasStudioSessionRequestV1 {
         if self.algorithm_version != daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION {
             return Err(studio_invalid("unsupported atlas detail algorithm"));
         }
-        if self.level != DetailLevel::Detailed {
-            return Err(studio_invalid("atlas studio requires detailed level"));
+        if self.level == DetailLevel::Print {
+            return Err(studio_invalid("atlas studio does not build print"));
         }
         if self.variant != 0 {
             return Err(studio_invalid("atlas studio requires variant 0"));
@@ -163,7 +165,7 @@ impl AtlasStudioSessionRequestV1 {
             map_entity_id: self.map_entity_id,
             offset_years: self.offset_years,
             algorithm_version: daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION,
-            level: DetailLevel::Detailed,
+            level: self.level,
             variant: 0,
             style_id: self.style_id,
             active_layer_ids: layers,
@@ -253,6 +255,7 @@ pub struct AtlasRenderSnapshot {
     pub database_epoch: String,
     pub map_entity_id: String,
     pub overlays: Vec<AuthoredFeature>,
+    pub constraints: Vec<AtlasConstraint>,
     pub diagnostics: Vec<String>,
     pub binding_revision: Option<String>,
 }
@@ -355,6 +358,14 @@ fn role_name(role: &str) -> String {
         "tectonic-boundaries" => "Plate boundaries".into(),
         "volcanic-centers" => "Volcanic centers".into(),
         "watersheds" => "Watersheds".into(),
+        "debug-residual" => "Debug residual".into(),
+        "debug-erosion" => "Debug erosion".into(),
+        "debug-sediment" => "Debug sediment".into(),
+        "debug-runoff" => "Debug runoff".into(),
+        "debug-drainage" => "Debug drainage".into(),
+        "debug-sea-level" => "Debug sea level".into(),
+        "debug-ice" => "Debug ice".into(),
+        "debug-features" => "Debug features".into(),
         other => other.to_string(),
     }
 }
@@ -571,7 +582,7 @@ pub fn capture_snapshot(
         binding_revision = Some(binding_field.revision.clone());
         request.binding_revision = binding_revision.clone();
     }
-    let request = request
+    let mut request = request
         .normalize()
         .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
     let known_ids = capabilities_for_map(project, map_entity_id)?
@@ -608,6 +619,8 @@ pub fn capture_snapshot(
         &request,
         &mut diagnostics,
     )?;
+    let constraints = collect_constraints(project, &descriptor, &mut diagnostics)?;
+    request.constraints = constraints.clone();
     Ok(AtlasRenderSnapshot {
         estimate: request.estimate(),
         request,
@@ -619,6 +632,7 @@ pub fn capture_snapshot(
         database_epoch: project.database_epoch().to_string(),
         map_entity_id: map_entity_id.to_string(),
         overlays,
+        constraints,
         diagnostics,
         binding_revision,
     })
@@ -649,9 +663,63 @@ pub fn capture_studio_session(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtlasCacheRegenScope {
+    World,
+    Epoch,
+    Visible,
+    Feature,
+}
+
+impl AtlasCacheRegenScope {
+    pub fn parse(value: &str) -> Result<Self, CoreError> {
+        match value {
+            "world" | "" => Ok(Self::World),
+            "epoch" => Ok(Self::Epoch),
+            "visible" => Ok(Self::Visible),
+            "feature" => Ok(Self::Feature),
+            other => Err(CoreError::Validation(format!(
+                "atlas.studio.request.invalid: unsupported atlas cache regen scope {other}"
+            ))),
+        }
+    }
+}
+
 pub fn regenerate_atlas_cache(
     project: &ProjectStore,
 ) -> Result<AtlasCacheRegenerateResult, CoreError> {
+    regenerate_atlas_cache_scoped(project, AtlasCacheRegenScope::World)
+}
+
+pub fn regenerate_atlas_cache_scoped(
+    project: &ProjectStore,
+    scope: AtlasCacheRegenScope,
+) -> Result<AtlasCacheRegenerateResult, CoreError> {
+    if matches!(scope, AtlasCacheRegenScope::Visible) {
+        return Ok(AtlasCacheRegenerateResult { deleted_entries: 0 });
+    }
+    if matches!(
+        scope,
+        AtlasCacheRegenScope::Epoch | AtlasCacheRegenScope::Feature
+    ) {
+        let root = project.info().ok_or(CoreError::ProjectNotOpen)?.root;
+        let cache_dir = atlas_cache_dir(Path::new(&root));
+        if !cache_dir.exists() {
+            return Ok(AtlasCacheRegenerateResult { deleted_entries: 0 });
+        }
+        let cache = daena_atlas::cache::AtlasDiskCache::open(&cache_dir)
+            .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
+        let kinds = vec![
+            daena_atlas::cache::KIND_DRAINAGE,
+            daena_atlas::cache::KIND_ARTIFACT,
+        ];
+        let deleted = cache
+            .delete_kinds(&kinds)
+            .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
+        return Ok(AtlasCacheRegenerateResult {
+            deleted_entries: deleted,
+        });
+    }
     let root = project.info().ok_or(CoreError::ProjectNotOpen)?.root;
     let cache = atlas_cache_dir(Path::new(&root));
     if !cache.exists() {
@@ -723,6 +791,109 @@ fn is_atlas_cache_entry_name(name: &str) -> bool {
         || name.ends_with(".json.part")
 }
 
+fn collect_constraints(
+    project: &ProjectStore,
+    descriptor: &MapDescriptor,
+    diagnostics: &mut Vec<String>,
+) -> Result<Vec<AtlasConstraint>, CoreError> {
+    let mut constraints = Vec::new();
+    let Some(authored_id) = descriptor.authored_source_asset_id.as_deref() else {
+        return Ok(constraints);
+    };
+    let Ok(bytes) = project.asset_bytes(authored_id.to_string()) else {
+        return Ok(constraints);
+    };
+    let Ok(collection) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok(constraints);
+    };
+    let Some(features) = collection.get("features").and_then(Value::as_array) else {
+        return Ok(constraints);
+    };
+    for feature in features {
+        let Some(kind) = feature
+            .pointer("/properties/daena/constraintKind")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(kind) = AtlasConstraintKind::parse(kind) else {
+            diagnostics.push(format!("unsupported atlas constraint kind {kind}"));
+            continue;
+        };
+        let mut path = Vec::new();
+        collect_coordinates(feature.get("geometry"), &mut path);
+        if path.is_empty() {
+            continue;
+        }
+        let id = constraint_feature_id(feature, kind, &path);
+        if path.len() > daena_atlas::constraint::MAX_CONSTRAINT_PATH {
+            diagnostics.push(format!("atlas constraint {id} path exceeded budget"));
+            continue;
+        }
+        let geometry_type = feature
+            .pointer("/geometry/type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        constraints.push(AtlasConstraint {
+            id,
+            kind,
+            path,
+            closed: matches!(geometry_type, "Polygon" | "MultiPolygon"),
+            revision: constraint_revision(feature),
+        });
+        if constraints.len() >= MAX_CONSTRAINTS {
+            diagnostics.push("authored constraint count exceeded the snapshot budget".into());
+            break;
+        }
+    }
+    Ok(constraints)
+}
+
+fn constraint_feature_id(feature: &Value, kind: AtlasConstraintKind, path: &[[i32; 2]]) -> String {
+    feature
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| feature.pointer("/properties/id").and_then(Value::as_str))
+        .or_else(|| {
+            feature
+                .pointer("/properties/daena/id")
+                .and_then(Value::as_str)
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            let mut hasher = Sha256::new();
+            hasher.update(kind.as_str().as_bytes());
+            hasher.update([u8::from(
+                feature
+                    .pointer("/geometry/type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|geometry| matches!(geometry, "Polygon" | "MultiPolygon")),
+            )]);
+            hasher.update((path.len() as u32).to_le_bytes());
+            for point in path {
+                hasher.update(point[0].to_le_bytes());
+                hasher.update(point[1].to_le_bytes());
+            }
+            let digest = hasher.finalize();
+            format!(
+                "constraint-{}-{:02x}{:02x}{:02x}{:02x}",
+                kind.as_str(),
+                digest[0],
+                digest[1],
+                digest[2],
+                digest[3]
+            )
+        })
+}
+
+fn constraint_revision(feature: &Value) -> Option<String> {
+    feature
+        .pointer("/properties/daena/revision")
+        .or_else(|| feature.pointer("/properties/revision"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
 fn collect_overlays(
     project: &ProjectStore,
     descriptor: &MapDescriptor,
@@ -776,6 +947,13 @@ fn parse_geojson_overlays(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        if feature
+            .pointer("/properties/daena/constraintKind")
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            continue;
+        }
         if layer_id.is_empty() || !request.layer_enabled(&layer_id) {
             continue;
         }
@@ -1251,5 +1429,34 @@ mod tests {
         request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
         request.style_id = "not-a-style".into();
         assert!(request.normalize().is_err());
+        request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
+        request.level = DetailLevel::Print;
+        assert!(request.normalize().is_err());
+        request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
+        request.level = DetailLevel::Detailed;
+        assert_eq!(request.normalize().unwrap().level, DetailLevel::Detailed);
+        request = AtlasStudioSessionRequestV1::iteration_1("00000000-0000-4000-8000-000000000001");
+        assert_eq!(request.normalize().unwrap().level, DetailLevel::Standard);
+    }
+
+    #[test]
+    fn constraint_ids_are_content_stable_without_feature_id() {
+        let feature = serde_json::json!({
+            "properties": {
+                "daena": { "constraintKind": "force-lake", "revision": "3" }
+            },
+            "geometry": { "type": "Polygon" }
+        });
+        let path = [[0, 0], [1_000_000, 0], [1_000_000, 1_000_000]];
+        let first = constraint_feature_id(&feature, AtlasConstraintKind::ForceLake, &path);
+        let second = constraint_feature_id(&feature, AtlasConstraintKind::ForceLake, &path);
+        assert_eq!(first, second);
+        assert!(first.starts_with("constraint-force-lake-"));
+        assert_eq!(constraint_revision(&feature).as_deref(), Some("3"));
+        let with_id = serde_json::json!({ "id": "lake-a", "properties": {} });
+        assert_eq!(
+            constraint_feature_id(&with_id, AtlasConstraintKind::ForceLake, &path),
+            "lake-a"
+        );
     }
 }

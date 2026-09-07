@@ -6,6 +6,7 @@
 
 pub mod amplify;
 pub mod cache;
+pub mod constraint;
 pub mod control;
 pub mod detail;
 pub mod drainage;
@@ -24,7 +25,7 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 4;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5;
 pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
@@ -254,6 +255,8 @@ pub struct AtlasPreparedScene {
     pub residual_cache: cache::CacheLookup,
     pub drainage_cache: cache::CacheLookup,
     pub orometry: Vec<amplify::MountainFeature>,
+    pub structure_residual_mm: Vec<i32>,
+    pub runoff_mm: Vec<i32>,
 }
 
 impl AtlasPreparedScene {
@@ -513,6 +516,176 @@ fn structure_controls(
     control::ControlFields::from_accepted(field, world, &year0.climate, &year0.hydrology)
 }
 
+fn residual_cache_key(
+    identity: &[u8],
+    variant: u32,
+    level: request::DetailLevel,
+    grid_width: u32,
+    grid_height: u32,
+) -> [u8; 32] {
+    cache::cache_key(&[
+        b"atlas-cache-residual-v2",
+        identity,
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
+        &variant.to_le_bytes(),
+        level.as_str().as_bytes(),
+        &grid_width.to_le_bytes(),
+        &grid_height.to_le_bytes(),
+    ])
+}
+
+fn octave_stack_cache_key(
+    identity: &[u8],
+    variant: u32,
+    factor: u32,
+    grid_width: u32,
+    grid_height: u32,
+) -> [u8; 32] {
+    cache::cache_key(&[
+        b"atlas-cache-octave-stack-v1",
+        identity,
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
+        &variant.to_le_bytes(),
+        &factor.to_le_bytes(),
+        &grid_width.to_le_bytes(),
+        &grid_height.to_le_bytes(),
+    ])
+}
+
+fn load_octave_stack(
+    cache: &cache::AtlasDiskCache,
+    identity: &[u8],
+    variant: u32,
+    factor: u32,
+    grid_width: u32,
+    grid_height: u32,
+) -> Option<(u32, u32, u32, Vec<i32>)> {
+    let key = octave_stack_cache_key(identity, variant, factor, grid_width, grid_height);
+    let cache::CacheLookupResult::Hit(payload) = cache.get(cache::KIND_OCTAVE_STACK, &key) else {
+        return None;
+    };
+    let (width, height, residual_mm) = cache::decode_residual(&payload).ok()?;
+    let expected_width = grid_width.saturating_mul(factor);
+    let expected_height = grid_height.saturating_mul(factor);
+    if width != expected_width || height != expected_height {
+        return None;
+    }
+    Some((factor, width, height, residual_mm))
+}
+
+fn structure_amplification(
+    structure: &control::ControlFields,
+    identity: &[u8],
+    variant: u32,
+    level: request::DetailLevel,
+    cache: Option<&cache::AtlasDiskCache>,
+    progress: &mut dyn AtlasProgress,
+) -> Result<(amplify::AmplificationModel, cache::CacheLookup), AtlasError> {
+    let Some(cache) = cache else {
+        let mut cancelled = || progress.check_cancelled();
+        return Ok((
+            amplify::build_amplification_model(
+                structure,
+                identity,
+                variant,
+                level,
+                &mut cancelled,
+            )?,
+            cache::CacheLookup::Off,
+        ));
+    };
+    let residual_key = residual_cache_key(
+        identity,
+        variant,
+        level,
+        structure.grid.width,
+        structure.grid.height,
+    );
+    let expected_width = structure.grid.width.saturating_mul(level.lattice_factor());
+    let expected_height = structure.grid.height.saturating_mul(level.lattice_factor());
+    if let cache::CacheLookupResult::Hit(payload) = cache.get(cache::KIND_RESIDUAL, &residual_key) {
+        if let Ok((lattice_width, lattice_height, residual_mm)) = cache::decode_residual(&payload) {
+            if lattice_width == expected_width && lattice_height == expected_height {
+                return Ok((
+                    amplify::AmplificationModel::from_cached_detail(
+                        detail::AtlasDetailModel {
+                            grid: structure.grid,
+                            elevations_mm: structure.elevation_mm.clone(),
+                            residual_mm,
+                            lattice_width,
+                            lattice_height,
+                            algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
+                            variant,
+                            level,
+                        },
+                        structure,
+                        identity,
+                    ),
+                    cache::CacheLookup::Hit,
+                ));
+            }
+        }
+    }
+    let finest = level.lattice_factor();
+    let start = [16_u32, 8, 4]
+        .into_iter()
+        .filter(|factor| *factor <= finest)
+        .find_map(|factor| {
+            load_octave_stack(
+                cache,
+                identity,
+                variant,
+                factor,
+                structure.grid.width,
+                structure.grid.height,
+            )
+        });
+    let mut cancelled = || progress.check_cancelled();
+    let (width, height, residual_mm) = amplify::stack_octaves_from(
+        structure,
+        identity,
+        variant,
+        finest,
+        start,
+        &mut cancelled,
+        &mut |factor, width, height, residual_mm| {
+            if !amplify::cacheable_stack_factor(factor) {
+                return;
+            }
+            let key = octave_stack_cache_key(
+                identity,
+                variant,
+                factor,
+                structure.grid.width,
+                structure.grid.height,
+            );
+            let _ = cache.put(
+                cache::KIND_OCTAVE_STACK,
+                &key,
+                &cache::encode_residual(width, height, residual_mm),
+            );
+        },
+    )?;
+    let model = amplify::finish_amplification_model(
+        structure,
+        identity,
+        variant,
+        level,
+        (width, height, residual_mm),
+        &mut cancelled,
+    )?;
+    let _ = cache.put(
+        cache::KIND_RESIDUAL,
+        &residual_key,
+        &cache::encode_residual(
+            model.detail.lattice_width,
+            model.detail.lattice_height,
+            &model.detail.residual_mm,
+        ),
+    );
+    Ok((model, cache::CacheLookup::Miss))
+}
+
 pub fn prepare_from_source(
     source_bytes: &[u8],
     identity: &[u8],
@@ -521,6 +694,27 @@ pub fn prepare_from_source(
     cache: Option<&cache::AtlasDiskCache>,
     progress: &mut dyn AtlasProgress,
 ) -> Result<AtlasPreparedScene, AtlasError> {
+    prepare_from_source_with_structure(
+        source_bytes,
+        identity,
+        request,
+        forcing,
+        cache,
+        None,
+        progress,
+    )
+    .map(|(scene, _)| scene)
+}
+
+pub fn prepare_from_source_with_structure(
+    source_bytes: &[u8],
+    identity: &[u8],
+    request: &request::AtlasRenderRequest,
+    forcing: Option<daena_physical::history::HistoricalForcingParameters>,
+    cache: Option<&cache::AtlasDiskCache>,
+    injected: Option<&amplify::AmplificationModel>,
+    progress: &mut dyn AtlasProgress,
+) -> Result<(AtlasPreparedScene, amplify::AmplificationModel), AtlasError> {
     progress.report(AtlasPhase::Validating, 0, 1)?;
     progress.check_cancelled()?;
     let request = request.clone().normalize()?;
@@ -534,6 +728,16 @@ pub fn prepare_from_source(
     let world = daena_physical::decode_source(source_bytes)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error))?;
     let field = world.physical_field();
+    let factor = request.level.lattice_factor() as usize;
+    let lattice_count = (field.grid.width as usize)
+        .saturating_mul(factor)
+        .saturating_mul(field.grid.height as usize)
+        .saturating_mul(factor);
+    if refine::refined_lattice_exceeds_budget(lattice_count) {
+        return Err(AtlasError::limit(
+            "refined lattice exceeded the in-process byte budget",
+        ));
+    }
     let report = daena_physical::validate_field_report(&field)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error.to_string()))?;
     progress.report(AtlasPhase::Validating, 1, 1)?;
@@ -582,16 +786,6 @@ pub fn prepare_from_source(
         )?)
     };
     let structure = structure_owned.as_ref().unwrap_or(&controls);
-    let residual_key = cache::cache_key(&[
-        b"atlas-cache-residual-v2",
-        identity,
-        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
-        &request.variant.to_le_bytes(),
-        request.level.as_str().as_bytes(),
-        &field.grid.width.to_le_bytes(),
-        &field.grid.height.to_le_bytes(),
-    ]);
-    let mut residual_cache = cache::CacheLookup::Off;
     let expected_width = field
         .grid
         .width
@@ -600,84 +794,29 @@ pub fn prepare_from_source(
         .grid
         .height
         .saturating_mul(request.level.lattice_factor());
-    let mut amplification = if let Some(cache) = cache {
-        match cache.get(cache::KIND_RESIDUAL, &residual_key) {
-            cache::CacheLookupResult::Hit(payload) => match cache::decode_residual(&payload) {
-                Ok((lattice_width, lattice_height, residual_mm))
-                    if lattice_width == expected_width && lattice_height == expected_height =>
-                {
-                    residual_cache = cache::CacheLookup::Hit;
-                    amplify::AmplificationModel::from_cached_detail(
-                        detail::AtlasDetailModel {
-                            grid: field.grid,
-                            elevations_mm: field.elevations_mm.clone(),
-                            residual_mm,
-                            lattice_width,
-                            lattice_height,
-                            algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
-                            variant: request.variant,
-                            level: request.level,
-                        },
-                        structure,
-                        identity,
-                    )
-                }
-                _ => {
-                    residual_cache = cache::CacheLookup::Miss;
-                    let mut cancelled = || progress.check_cancelled();
-                    let model = amplify::build_amplification_model(
-                        structure,
-                        identity,
-                        request.variant,
-                        request.level,
-                        &mut cancelled,
-                    )?;
-                    let _ = cache.put(
-                        cache::KIND_RESIDUAL,
-                        &residual_key,
-                        &cache::encode_residual(
-                            model.detail.lattice_width,
-                            model.detail.lattice_height,
-                            &model.detail.residual_mm,
-                        ),
-                    );
-                    model
-                }
-            },
-            cache::CacheLookupResult::Miss => {
-                residual_cache = cache::CacheLookup::Miss;
-                let mut cancelled = || progress.check_cancelled();
-                let model = amplify::build_amplification_model(
-                    structure,
-                    identity,
-                    request.variant,
-                    request.level,
-                    &mut cancelled,
-                )?;
-                let _ = cache.put(
-                    cache::KIND_RESIDUAL,
-                    &residual_key,
-                    &cache::encode_residual(
-                        model.detail.lattice_width,
-                        model.detail.lattice_height,
-                        &model.detail.residual_mm,
-                    ),
-                );
-                model
-            }
+    let (mut amplification, residual_cache) = match injected {
+        Some(model)
+            if model.detail.level == request.level
+                && model.detail.variant == request.variant
+                && model.detail.algorithm_version == ATLAS_DETAIL_ALGORITHM_VERSION
+                && model.detail.lattice_width == expected_width
+                && model.detail.lattice_height == expected_height =>
+        {
+            (model.clone(), cache::CacheLookup::Hit)
         }
-    } else {
-        let mut cancelled = || progress.check_cancelled();
-        amplify::build_amplification_model(
+        _ => structure_amplification(
             structure,
             identity,
             request.variant,
             request.level,
-            &mut cancelled,
-        )?
+            cache,
+            progress,
+        )?,
     };
+    let unbaked = amplification.clone();
+    let constraint_fp = constraint::fingerprint(&request.constraints);
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v1",
+        b"atlas-cache-drainage-v2",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
@@ -686,9 +825,10 @@ pub fn prepare_from_source(
         &request.offset_years.to_le_bytes(),
         &historical.hydrology.derivation_version.to_le_bytes(),
         &forcing_fingerprint,
+        &constraint_fp,
     ]);
     let mut drainage_cache = cache::CacheLookup::Off;
-    let (drainage, worked_mm) = if let Some(cache) = cache {
+    let (mut drainage, worked_mm) = if let Some(cache) = cache {
         match cache.get(cache::KIND_DRAINAGE, &drainage_key) {
             cache::CacheLookupResult::Hit(payload) => {
                 match drainage::DerivedDrainage::decode_product(&payload) {
@@ -702,25 +842,17 @@ pub fn prepare_from_source(
                     _ => {
                         drainage_cache = cache::CacheLookup::Miss;
                         let mut cancelled = || progress.check_cancelled();
-                        let refined = refine::build_refined_hydrology(
+                        let refined = refine::build_refined_hydrology_constrained(
                             &amplification,
                             &controls,
                             &historical.hydrology,
                             &sdf,
                             identity,
                             structure.sea_level_mm,
+                            &request.constraints,
                             &mut cancelled,
                         )?;
                         let drainage = drainage_from_refined(&refined);
-                        let _ = cache.put(
-                            cache::KIND_DRAINAGE,
-                            &drainage_key,
-                            &drainage.encode_product(
-                                refined.lattice_width,
-                                refined.lattice_height,
-                                &refined.worked_mm,
-                            ),
-                        );
                         (drainage, refined.worked_mm)
                     }
                 }
@@ -728,92 +860,107 @@ pub fn prepare_from_source(
             cache::CacheLookupResult::Miss => {
                 drainage_cache = cache::CacheLookup::Miss;
                 let mut cancelled = || progress.check_cancelled();
-                let refined = refine::build_refined_hydrology(
+                let refined = refine::build_refined_hydrology_constrained(
                     &amplification,
                     &controls,
                     &historical.hydrology,
                     &sdf,
                     identity,
                     structure.sea_level_mm,
+                    &request.constraints,
                     &mut cancelled,
                 )?;
                 let drainage = drainage_from_refined(&refined);
-                let _ = cache.put(
-                    cache::KIND_DRAINAGE,
-                    &drainage_key,
-                    &drainage.encode_product(
-                        refined.lattice_width,
-                        refined.lattice_height,
-                        &refined.worked_mm,
-                    ),
-                );
                 (drainage, refined.worked_mm)
             }
         }
     } else {
         let mut cancelled = || progress.check_cancelled();
-        let refined = refine::build_refined_hydrology(
+        let refined = refine::build_refined_hydrology_constrained(
             &amplification,
             &controls,
             &historical.hydrology,
             &sdf,
             identity,
             structure.sea_level_mm,
+            &request.constraints,
             &mut cancelled,
         )?;
         (drainage_from_refined(&refined), refined.worked_mm)
     };
+    constraint::apply_lock_to_drainage(&request.constraints, &mut drainage.tributaries);
+    if drainage_cache == cache::CacheLookup::Miss {
+        if let Some(cache) = cache {
+            let _ = cache.put(
+                cache::KIND_DRAINAGE,
+                &drainage_key,
+                &drainage.encode_product(
+                    amplification.detail.lattice_width,
+                    amplification.detail.lattice_height,
+                    &worked_mm,
+                ),
+            );
+        }
+    }
+    let structure_residual_mm = amplification.detail.residual_mm.clone();
     amplification.detail.bake_absolute_elevation(&worked_mm);
     let orometry = amplification.features;
     let model = amplification.detail;
+    let mut hydrology = historical.hydrology;
+    constraint::apply_to_hydrology(&request.constraints, &mut hydrology);
     let visible_water = render::classify_visible_water(
         model.grid,
         &model.elevations_mm,
-        historical.hydrology.sea_level_mm,
-        &historical.hydrology.lake_cells,
+        hydrology.sea_level_mm,
+        &hydrology.lake_cells,
     );
     progress.report(AtlasPhase::RefiningDetail, 1, 1)?;
-    Ok(AtlasPreparedScene {
-        identity: identity.to_vec(),
-        source_sha256,
-        style,
-        style_hash,
-        model,
-        hydrology: historical.hydrology,
-        sdf,
-        drainage,
-        tectonics: world,
-        visible_water,
-        climate_class: controls.climate_class,
-        temperature_centi_c: controls.temperature_centi_c,
-        temperature_nh_summer_centi_c: controls.temperature_nh_summer_centi_c,
-        temperature_nh_winter_centi_c: controls.temperature_nh_winter_centi_c,
-        wind_east_milli: controls.wind_east_milli,
-        wind_north_milli: controls.wind_north_milli,
-        wind_east_nh_summer_milli: controls.wind_east_nh_summer_milli,
-        wind_north_nh_summer_milli: controls.wind_north_nh_summer_milli,
-        wind_east_nh_winter_milli: controls.wind_east_nh_winter_milli,
-        wind_north_nh_winter_milli: controls.wind_north_nh_winter_milli,
-        wind_divergence_ppm: controls.wind_divergence_ppm,
-        wind_divergence_nh_summer_ppm: controls.wind_divergence_nh_summer_ppm,
-        wind_divergence_nh_winter_ppm: controls.wind_divergence_nh_winter_ppm,
-        wind_band: controls.wind_band,
-        wind_band_nh_summer: controls.wind_band_nh_summer,
-        wind_band_nh_winter: controls.wind_band_nh_winter,
-        current_east_milli: controls.current_east_milli,
-        current_north_milli: controls.current_north_milli,
-        precipitation_mm: controls.precipitation_mm,
-        humidity_ppm: controls.humidity_ppm,
-        aridity_ppm: controls.aridity_ppm,
-        precipitation_nh_summer_mm: controls.precipitation_nh_summer_mm,
-        precipitation_nh_winter_mm: controls.precipitation_nh_winter_mm,
-        storm_suitability_ppm: controls.storm_suitability_ppm,
-        storm_track_ppm: controls.storm_track_ppm,
-        storm_intensity_ppm: controls.storm_intensity_ppm,
-        residual_cache,
-        drainage_cache,
-        orometry,
-    })
+    Ok((
+        AtlasPreparedScene {
+            identity: identity.to_vec(),
+            source_sha256,
+            style,
+            style_hash,
+            model,
+            hydrology,
+            sdf,
+            drainage,
+            tectonics: world,
+            visible_water,
+            climate_class: controls.climate_class,
+            temperature_centi_c: controls.temperature_centi_c,
+            temperature_nh_summer_centi_c: controls.temperature_nh_summer_centi_c,
+            temperature_nh_winter_centi_c: controls.temperature_nh_winter_centi_c,
+            wind_east_milli: controls.wind_east_milli,
+            wind_north_milli: controls.wind_north_milli,
+            wind_east_nh_summer_milli: controls.wind_east_nh_summer_milli,
+            wind_north_nh_summer_milli: controls.wind_north_nh_summer_milli,
+            wind_east_nh_winter_milli: controls.wind_east_nh_winter_milli,
+            wind_north_nh_winter_milli: controls.wind_north_nh_winter_milli,
+            wind_divergence_ppm: controls.wind_divergence_ppm,
+            wind_divergence_nh_summer_ppm: controls.wind_divergence_nh_summer_ppm,
+            wind_divergence_nh_winter_ppm: controls.wind_divergence_nh_winter_ppm,
+            wind_band: controls.wind_band,
+            wind_band_nh_summer: controls.wind_band_nh_summer,
+            wind_band_nh_winter: controls.wind_band_nh_winter,
+            current_east_milli: controls.current_east_milli,
+            current_north_milli: controls.current_north_milli,
+            precipitation_mm: controls.precipitation_mm,
+            humidity_ppm: controls.humidity_ppm,
+            aridity_ppm: controls.aridity_ppm,
+            precipitation_nh_summer_mm: controls.precipitation_nh_summer_mm,
+            precipitation_nh_winter_mm: controls.precipitation_nh_winter_mm,
+            storm_suitability_ppm: controls.storm_suitability_ppm,
+            storm_track_ppm: controls.storm_track_ppm,
+            storm_intensity_ppm: controls.storm_intensity_ppm,
+            residual_cache,
+            drainage_cache,
+            orometry,
+            structure_residual_mm,
+            runoff_mm: controls.runoff_mm,
+        },
+        unbaked,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -913,6 +1060,17 @@ pub fn render_from_source_cached(
         &scene.tectonics,
         &scene.visible_water,
         scene.paint_fields(),
+        request
+            .debug_layers_enabled()
+            .then(|| overlay::OverlayDebug {
+                grid: scene.model.grid,
+                lattice_width: scene.model.lattice_width,
+                lattice_height: scene.model.lattice_height,
+                structure_residual_mm: &scene.structure_residual_mm,
+                worked_residual_mm: &scene.model.residual_mm,
+                runoff_mm: &scene.runoff_mm,
+                orometry: &scene.orometry,
+            }),
         progress,
     )?;
     let mut provenance = provenance::AtlasRenderProvenanceV1::for_request(
@@ -1701,6 +1859,138 @@ mod tests {
             &identity,
         );
         assert_eq!(ids(&cached_present), ids(&cached_cold));
+    }
+
+    #[test]
+    fn constraints_survive_residual_regen_without_mutating_source() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let source_before = world.source.clone();
+        let mut request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        request.level = request::DetailLevel::Standard;
+        let unconstrained = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let constraint = constraint::AtlasConstraint {
+            id: "force-lake".into(),
+            kind: constraint::AtlasConstraintKind::ForceLake,
+            path: vec![
+                [0, 0],
+                [40_000_000, 0],
+                [40_000_000, 40_000_000],
+                [0, 40_000_000],
+            ],
+            closed: true,
+            revision: Some("1".into()),
+        };
+        request.constraints = vec![constraint.clone()];
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-constraint-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = cache::AtlasDiskCache::open(&root).unwrap();
+        let first = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(first.residual_cache, cache::CacheLookup::Miss);
+        assert_eq!(
+            first.structure_residual_mm,
+            unconstrained.structure_residual_mm
+        );
+        let unconstrained_lakes = unconstrained
+            .hydrology
+            .lake_cells
+            .iter()
+            .filter(|cell| **cell)
+            .count();
+        let constrained_lakes = first
+            .hydrology
+            .lake_cells
+            .iter()
+            .filter(|cell| **cell)
+            .count();
+        assert!(constrained_lakes > unconstrained_lakes);
+        assert!(cache.delete_kinds(&[cache::KIND_RESIDUAL]).unwrap() > 0);
+        assert!(cache.delete_kinds(&[cache::KIND_DRAINAGE]).unwrap() > 0);
+        let second = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(second.residual_cache, cache::CacheLookup::Miss);
+        assert_eq!(second.drainage_cache, cache::CacheLookup::Miss);
+        assert_eq!(second.model.residual_mm, first.model.residual_mm);
+        assert_eq!(second.structure_residual_mm, first.structure_residual_mm);
+        assert_eq!(second.hydrology.lake_cells, first.hydrology.lake_cells);
+        assert_eq!(world.source, source_before);
+        assert_eq!(request.constraints, vec![constraint]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn debug_layers_off_keep_relief_pixels() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let mut request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        request.active_layer_ids = vec![
+            "ocean".into(),
+            "relief".into(),
+            "ice".into(),
+            "lakes".into(),
+        ];
+        let base_req = request.clone().normalize().unwrap();
+        let base = render_from_source(
+            &world.source,
+            &identity,
+            &base_req,
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let same = render_from_source(
+            &world.source,
+            &identity,
+            &base_req,
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(base.rgba, same.rgba);
+        request.active_layer_ids.push("debug-residual".into());
+        let debug = render_from_source(
+            &world.source,
+            &identity,
+            &request.normalize().unwrap(),
+            None,
+            None,
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_ne!(base.rgba, debug.rgba);
     }
 
     struct CancelOnPhase {

@@ -15,6 +15,7 @@ pub const CACHE_FORMAT_VERSION: u32 = 1;
 pub const KIND_RESIDUAL: u16 = 1;
 pub const KIND_DRAINAGE: u16 = 2;
 pub const KIND_ARTIFACT: u16 = 3;
+pub const KIND_OCTAVE_STACK: u16 = 4;
 pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_ENTRY_BYTES: u64 = 160 * 1024 * 1024;
 pub const MAX_ENTRIES: u32 = 64;
@@ -156,6 +157,34 @@ impl AtlasDiskCache {
             }
             CacheLookupResult::Miss
         }
+    }
+
+    pub fn delete_kinds(&self, kinds: &[u16]) -> Result<u32, AtlasError> {
+        let _guard = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut hexes = Vec::new();
+        {
+            let Ok(index) = self.index.lock() else {
+                return Ok(0);
+            };
+            for entry in &index.entries {
+                if kinds.contains(&entry.kind) {
+                    hexes.push(entry.key_hex.clone());
+                }
+            }
+        }
+        let mut deleted = 0_u32;
+        for hex in hexes {
+            let path = self.root.join(format!("{hex}.bin"));
+            if fs::remove_file(&path).is_ok() {
+                deleted = deleted.saturating_add(1);
+            }
+            self.drop_entry(&hex);
+        }
+        self.persist_index()?;
+        Ok(deleted)
     }
 
     pub fn put(&self, kind: u16, key: &[u8; 32], payload: &[u8]) -> Result<(), AtlasError> {
@@ -472,6 +501,34 @@ mod tests {
         match cache.get(KIND_RESIDUAL, &first) {
             CacheLookupResult::Miss => {}
             CacheLookupResult::Hit(_) => panic!("oldest entry should be evicted"),
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn delete_kinds_removes_epoch_entries_only() {
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-cache-kinds-{}",
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = AtlasDiskCache::open(&root)
+            .unwrap()
+            .with_limits(10_000, 1_000, 8);
+        let residual = cache_key(&[b"residual"]);
+        let drainage = cache_key(&[b"drainage"]);
+        cache.put(KIND_RESIDUAL, &residual, &[1; 32]).unwrap();
+        cache.put(KIND_DRAINAGE, &drainage, &[2; 32]).unwrap();
+        assert_eq!(cache.delete_kinds(&[KIND_DRAINAGE]).unwrap(), 1);
+        match cache.get(KIND_RESIDUAL, &residual) {
+            CacheLookupResult::Hit(_) => {}
+            CacheLookupResult::Miss => panic!("residual must survive epoch regen"),
+        }
+        match cache.get(KIND_DRAINAGE, &drainage) {
+            CacheLookupResult::Miss => {}
+            CacheLookupResult::Hit(_) => panic!("drainage must be deleted"),
         }
         let _ = fs::remove_dir_all(root);
     }

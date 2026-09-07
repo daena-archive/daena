@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use daena_physical::hydrology::{BasinStatus, HydrologyField};
 
 use crate::amplify::{apply_coastline, AmplificationModel, MountainKind};
+use crate::constraint::AtlasConstraint;
 use crate::control::ControlFields;
 use crate::detail::{
     domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
@@ -28,6 +29,16 @@ pub const MAX_DEPOSITION_FEATURES: usize = 64;
 pub const MAX_FILL_MM: i32 = 4_800;
 const CANCELLATION_STRIDE: usize = 4_096;
 const MAX_TRACE_STEPS: usize = 64;
+const REFINE_WORKING_BUFFERS: usize = 4;
+const REFINE_BUDGET_BYTES: usize = 96 * 1024 * 1024;
+
+#[must_use]
+pub fn refined_lattice_exceeds_budget(count: usize) -> bool {
+    count
+        .saturating_mul(std::mem::size_of::<i32>())
+        .saturating_mul(REFINE_WORKING_BUFFERS)
+        > REFINE_BUDGET_BYTES
+}
 const OCEAN: u32 = u32::MAX;
 const NO_PARENT_RIVER: u32 = u32::MAX;
 
@@ -1039,13 +1050,36 @@ pub fn build_refined_hydrology(
     structure_sea_level_mm: i32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<RefinedHydrology, AtlasError> {
+    build_refined_hydrology_constrained(
+        model,
+        controls,
+        hydrology,
+        sdf,
+        identity,
+        structure_sea_level_mm,
+        &[],
+        check_cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_refined_hydrology_constrained(
+    model: &AmplificationModel,
+    controls: &ControlFields,
+    hydrology: &HydrologyField,
+    sdf: &[i32],
+    identity: &[u8],
+    structure_sea_level_mm: i32,
+    constraints: &[AtlasConstraint],
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+) -> Result<RefinedHydrology, AtlasError> {
     check_cancelled()?;
     let width = model.detail.lattice_width;
     let height = model.detail.lattice_height;
     let count = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| AtlasError::limit("lattice count overflowed"))?;
-    if count * 4 > 96 * 1024 * 1024 {
+    if refined_lattice_exceeds_budget(count) {
         return Err(AtlasError::limit(
             "refined lattice exceeded the in-process byte budget",
         ));
@@ -1081,6 +1115,7 @@ pub fn build_refined_hydrology(
                     <= 0;
         }
     }
+    crate::constraint::apply_to_protected(constraints, width, height, &mut protected);
     let mut coastal_mm = source_mm.clone();
     apply_coastline(
         controls,
@@ -1095,6 +1130,14 @@ pub fn build_refined_hydrology(
         &mut coastal_mm,
         check_cancelled,
     )?;
+    crate::constraint::apply_to_coastal(
+        constraints,
+        width,
+        height,
+        &source_mm,
+        &mut coastal_mm,
+        &mut protected,
+    );
     let (filled_mm, filled_pit_count) = priority_fill(
         width,
         height,
@@ -1435,6 +1478,24 @@ mod tests {
         {
             None
         }
+    }
+
+    #[test]
+    fn print_production_lattice_exceeds_refine_budget() {
+        let cells = |level: DetailLevel| {
+            let factor = level.lattice_factor() as usize;
+            384_usize
+                .saturating_mul(factor)
+                .saturating_mul(192)
+                .saturating_mul(factor)
+        };
+        assert!(!refined_lattice_exceeds_budget(cells(
+            DetailLevel::Standard
+        )));
+        assert!(!refined_lattice_exceeds_budget(cells(
+            DetailLevel::Detailed
+        )));
+        assert!(refined_lattice_exceeds_budget(cells(DetailLevel::Print)));
     }
 
     fn fixture() -> (

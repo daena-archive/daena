@@ -145,7 +145,7 @@ impl AtlasStudioSceneRequestV1 {
             schema_version: ATLAS_STUDIO_SESSION_SCHEMA_VERSION,
             offset_years: 0,
             algorithm_version: ATLAS_DETAIL_ALGORITHM_VERSION,
-            level: DetailLevel::Detailed,
+            level: DetailLevel::Standard,
             variant: 0,
             style_id: crate::style::RELIEF_STYLE_ID.to_string(),
             active_layer_ids: STUDIO_SPIKE_LAYER_IDS
@@ -161,6 +161,9 @@ impl AtlasStudioSceneRequestV1 {
         }
         if self.algorithm_version != ATLAS_DETAIL_ALGORITHM_VERSION {
             return Err(studio_invalid("unsupported atlas detail algorithm"));
+        }
+        if self.level == DetailLevel::Print {
+            return Err(studio_invalid("atlas studio does not build print"));
         }
         let mut request = self.as_render_request(STUDIO_TILE_SIZE)?;
         request = request.normalize().map_err(map_studio_error)?;
@@ -204,6 +207,7 @@ impl AtlasStudioSceneRequestV1 {
             time_kind: "physical-offset-year".into(),
             authored_year: None,
             binding_revision: None,
+            constraints: Vec::new(),
         })
     }
 }
@@ -605,6 +609,17 @@ pub fn render_studio_tile_with_style_overlays(
             &scene.drainage.tributaries,
             Some((&scene.wind_east_milli, &scene.wind_north_milli)),
             Some((&scene.current_east_milli, &scene.current_north_milli)),
+            overlay_request
+                .debug_layers_enabled()
+                .then(|| crate::overlay::OverlayDebug {
+                    grid: scene.model.grid,
+                    lattice_width: scene.model.lattice_width,
+                    lattice_height: scene.model.lattice_height,
+                    structure_residual_mm: &scene.structure_residual_mm,
+                    worked_residual_mm: &scene.model.residual_mm,
+                    runoff_mm: &scene.runoff_mm,
+                    orometry: &scene.orometry,
+                }),
         );
         if request.layer_enabled("labels") {
             let n = tile_count(tile.z)?;
@@ -948,7 +963,10 @@ impl AtlasPreparedScene {
 mod tests {
     use super::*;
     use crate::projection::{mercator_y, ProjectedView};
-    use crate::{golden_world, prepare_from_source, spike_identity_from_source, NoopProgress};
+    use crate::{
+        golden_world, prepare_from_source, prepare_from_source_with_structure,
+        spike_identity_from_source, NoopProgress,
+    };
 
     fn prepared() -> (AtlasPreparedScene, AtlasStudioSceneRequestV1) {
         let world = golden_world();
@@ -1337,6 +1355,175 @@ mod tests {
             .map(|meta| meta.len())
             .sum();
         assert!(cache_bytes > 0);
+        let _ = std::fs::remove_dir_all(&root);
+        let rebuilt = prepare_from_source(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let rebuilt_tile =
+            render_studio_tile(&rebuilt, &scene_request, &tile, &mut NoopProgress).unwrap();
+        assert_eq!(cold_tile.png, rebuilt_tile.png);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn studio_prepares_standard_and_rejects_print() {
+        let scene = AtlasStudioSceneRequestV1::spike().normalize().unwrap();
+        assert_eq!(scene.level, DetailLevel::Standard);
+        let request = scene
+            .as_render_request(STUDIO_TILE_SIZE)
+            .unwrap()
+            .normalize()
+            .unwrap();
+        assert_eq!(request.level.lattice_factor(), 4);
+        assert_ne!(request.level, DetailLevel::Print);
+        let mut print = AtlasStudioSceneRequestV1::spike();
+        print.level = DetailLevel::Print;
+        assert_eq!(
+            print.normalize().unwrap_err().code,
+            CODE_STUDIO_REQUEST_INVALID
+        );
+        let mut detailed = AtlasStudioSceneRequestV1::spike();
+        detailed.level = DetailLevel::Detailed;
+        assert_eq!(detailed.normalize().unwrap().level, DetailLevel::Detailed);
+    }
+
+    #[test]
+    fn nested_standard_stack_reuses_for_detailed_prepare() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let mut standard = AtlasStudioSceneRequestV1::spike()
+            .as_render_request(STUDIO_TILE_SIZE)
+            .unwrap();
+        standard.level = DetailLevel::Standard;
+        let standard = standard.normalize().unwrap();
+        let mut detailed = standard.clone();
+        detailed.level = DetailLevel::Detailed;
+        let detailed = detailed.normalize().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-studio-stack-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = crate::cache::AtlasDiskCache::open(&root).unwrap();
+        let seeded = prepare_from_source(
+            &world.source,
+            &identity,
+            &standard,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(seeded.residual_cache, crate::cache::CacheLookup::Miss);
+        assert_eq!(seeded.model.level, DetailLevel::Standard);
+        let from_stack = prepare_from_source(
+            &world.source,
+            &identity,
+            &detailed,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(from_stack.residual_cache, crate::cache::CacheLookup::Miss);
+        assert_eq!(from_stack.model.level, DetailLevel::Detailed);
+        let cold = prepare_from_source(
+            &world.source,
+            &identity,
+            &detailed,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(from_stack.model.residual_mm, cold.model.residual_mm);
+        let warm = prepare_from_source(
+            &world.source,
+            &identity,
+            &detailed,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(warm.residual_cache, crate::cache::CacheLookup::Hit);
+        assert_eq!(warm.model.residual_mm, cold.model.residual_mm);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn studio_residual_hits_when_only_epoch_changes() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let scene_request = AtlasStudioSceneRequestV1::spike().normalize().unwrap();
+        let present = scene_request
+            .as_render_request(STUDIO_TILE_SIZE)
+            .unwrap()
+            .normalize()
+            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-studio-epoch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = crate::cache::AtlasDiskCache::open(&root).unwrap();
+        let cold = prepare_from_source(
+            &world.source,
+            &identity,
+            &present,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(cold.residual_cache, crate::cache::CacheLookup::Miss);
+        let mut epoch = present.clone();
+        epoch.offset_years = -8_000;
+        let epoch = epoch.normalize().unwrap();
+        let warm = prepare_from_source(
+            &world.source,
+            &identity,
+            &epoch,
+            None,
+            Some(&cache),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(warm.residual_cache, crate::cache::CacheLookup::Hit);
+        assert_eq!(warm.drainage_cache, crate::cache::CacheLookup::Miss);
+        let (present_scene, structure) = prepare_from_source_with_structure(
+            &world.source,
+            &identity,
+            &present,
+            None,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(present_scene.residual_cache, crate::cache::CacheLookup::Off);
+        let (reused, _) = prepare_from_source_with_structure(
+            &world.source,
+            &identity,
+            &epoch,
+            None,
+            None,
+            Some(&structure),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(reused.residual_cache, crate::cache::CacheLookup::Hit);
+        assert_eq!(reused.drainage_cache, crate::cache::CacheLookup::Off);
         let _ = std::fs::remove_dir_all(root);
     }
 

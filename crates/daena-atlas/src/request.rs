@@ -12,7 +12,7 @@ pub const MAX_PIXEL_COUNT: u64 = 33_554_432;
 pub const TILE_SIZE: u32 = 512;
 pub const TILE_HALO: u32 = 0;
 
-pub const ATLAS_LAYER_ROLES: [&str; 16] = [
+pub const ATLAS_LAYER_ROLES: [&str; 24] = [
     "ocean",
     "relief",
     "ice",
@@ -29,6 +29,14 @@ pub const ATLAS_LAYER_ROLES: [&str; 16] = [
     "graticule",
     "frame",
     "labels",
+    "debug-residual",
+    "debug-erosion",
+    "debug-sediment",
+    "debug-runoff",
+    "debug-drainage",
+    "debug-sea-level",
+    "debug-ice",
+    "debug-features",
 ];
 
 pub const ATLAS_DEFAULT_VISIBLE_LAYER_IDS: [&str; 5] =
@@ -156,6 +164,8 @@ pub struct AtlasRenderRequest {
     pub authored_year: Option<i64>,
     #[serde(default)]
     pub binding_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<crate::constraint::AtlasConstraint>,
 }
 
 impl AtlasRenderRequest {
@@ -178,12 +188,20 @@ impl AtlasRenderRequest {
             time_kind: default_time_kind(),
             authored_year: None,
             binding_revision: None,
+            constraints: Vec::new(),
         })
     }
 
     #[must_use]
     pub fn layer_enabled(&self, role: &str) -> bool {
         self.active_layer_ids.iter().any(|id| id == role)
+    }
+
+    #[must_use]
+    pub fn debug_layers_enabled(&self) -> bool {
+        self.active_layer_ids
+            .iter()
+            .any(|id| id.starts_with("debug-"))
     }
 
     pub fn view(&self) -> Result<ProjectedView, AtlasError> {
@@ -220,6 +238,22 @@ impl AtlasRenderRequest {
         mapped.sort();
         mapped.dedup();
         self.active_layer_ids = mapped;
+        if self.constraints.len() > crate::constraint::MAX_CONSTRAINTS {
+            return Err(AtlasError::limit("atlas constraint count exceeded budget"));
+        }
+        for constraint in &self.constraints {
+            if constraint.id.is_empty() {
+                return Err(AtlasError::invalid("atlas constraint id is required"));
+            }
+            if constraint.path.is_empty()
+                || constraint.path.len() > crate::constraint::MAX_CONSTRAINT_PATH
+            {
+                return Err(AtlasError::invalid(format!(
+                    "atlas constraint {} path is empty or over budget",
+                    constraint.id
+                )));
+            }
+        }
         if !matches!(
             self.time_kind.as_str(),
             "physical-offset-year" | "calendar-year"

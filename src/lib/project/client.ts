@@ -500,7 +500,8 @@ export const project = {
   atlasStudioClose: (sessionToken: string) => invoke<void>("project_atlas_studio_close", { sessionToken }),
   atlasStudioStatus: (sessionToken: string) =>
     invoke<AtlasStudioSessionStatus>("project_atlas_studio_status", { sessionToken }),
-  atlasStudioRegenerateCache: () => invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache"),
+  atlasStudioRegenerateCache: (scope?: "world" | "epoch" | "visible" | "feature") =>
+    invoke<{ deletedEntries: number }>("project_atlas_studio_regenerate_cache", { scope }),
   atlasStudioInspect: (sessionToken: string, lonMicro: number, latMicro: number, zoom: number) =>
     invoke<AtlasStudioInspectResult>("project_atlas_studio_inspect", {
       input: { sessionToken, lonMicro, latMicro, zoom },

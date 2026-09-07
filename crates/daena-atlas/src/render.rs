@@ -592,6 +592,7 @@ pub fn render_rgba(
     tectonics: &daena_physical::tectonics::TectonicWorld,
     water: &VisibleWater,
     paint: PaintFields<'_>,
+    debug: Option<crate::overlay::OverlayDebug<'_>>,
     progress: &mut dyn AtlasProgress,
 ) -> Result<Vec<u8>, AtlasError> {
     let view = request.view()?;
@@ -646,6 +647,7 @@ pub fn render_rgba(
         tributaries,
         Some((paint.wind_east_milli, paint.wind_north_milli)),
         Some((paint.current_east_milli, paint.current_north_milli)),
+        debug,
     );
     Ok(buffer)
 }

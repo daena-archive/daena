@@ -141,10 +141,62 @@ fn stack_octaves(
     finest: u32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(u32, u32, Vec<i32>), AtlasError> {
+    stack_octaves_from(
+        controls,
+        identity,
+        variant,
+        finest,
+        None,
+        check_cancelled,
+        &mut |_, _, _, _| {},
+    )
+}
+
+pub(crate) fn cacheable_stack_factor(factor: u32) -> bool {
+    factor == 4
+}
+
+pub(crate) type OctaveStackSink<'a> = dyn FnMut(u32, u32, u32, &[i32]) + 'a;
+
+pub(crate) fn stack_octaves_from(
+    controls: &ControlFields,
+    identity: &[u8],
+    variant: u32,
+    finest: u32,
+    start: Option<(u32, u32, u32, Vec<i32>)>,
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+    on_factor: &mut OctaveStackSink<'_>,
+) -> Result<(u32, u32, Vec<i32>), AtlasError> {
     let finest = finest.max(1);
-    let mut factor = 1_u32;
-    let (mut width, mut height, mut residual_mm) =
-        build_octave(controls, identity, variant, factor, check_cancelled)?;
+    let start = start.and_then(|(factor, width, height, residual_mm)| {
+        let expected_width = controls.grid.width.checked_mul(factor)?;
+        let expected_height = controls.grid.height.checked_mul(factor)?;
+        let count = (width as usize).checked_mul(height as usize)?;
+        if factor == 0
+            || factor > finest
+            || !factor.is_power_of_two()
+            || !finest.is_multiple_of(factor)
+            || width != expected_width
+            || height != expected_height
+            || residual_mm.len() != count
+        {
+            return None;
+        }
+        Some((factor, width, height, residual_mm))
+    });
+    let (mut factor, mut width, mut height, mut residual_mm) = if let Some(start) = start {
+        start
+    } else {
+        let (width, height, residual_mm) =
+            build_octave(controls, identity, variant, 1, check_cancelled)?;
+        (1_u32, width, height, residual_mm)
+    };
+    if factor == 0 || width == 0 || height == 0 {
+        return Err(AtlasError::limit("atlas octave stack start was empty"));
+    }
+    if cacheable_stack_factor(factor) {
+        on_factor(factor, width, height, &residual_mm);
+    }
     while factor < finest {
         factor = factor.saturating_mul(2);
         if factor > finest {
@@ -175,6 +227,9 @@ fn stack_octaves(
         }
         width = next_width;
         height = next_height;
+        if cacheable_stack_factor(factor) {
+            on_factor(factor, width, height, &residual_mm);
+        }
     }
     Ok((width, height, residual_mm))
 }
@@ -1596,16 +1651,35 @@ pub fn build_amplification_model(
     level: DetailLevel,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<AmplificationModel, AtlasError> {
-    let sea = controls.sea_level_mm;
-    let sdf =
-        crate::detail::signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
-    let (width, height, mut residual_mm) = stack_octaves(
+    let (width, height, residual_mm) = stack_octaves(
         controls,
         identity,
         variant,
         level.lattice_factor(),
         check_cancelled,
     )?;
+    finish_amplification_model(
+        controls,
+        identity,
+        variant,
+        level,
+        (width, height, residual_mm),
+        check_cancelled,
+    )
+}
+
+pub(crate) fn finish_amplification_model(
+    controls: &ControlFields,
+    identity: &[u8],
+    variant: u32,
+    level: DetailLevel,
+    stacked: (u32, u32, Vec<i32>),
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+) -> Result<AmplificationModel, AtlasError> {
+    let (width, height, mut residual_mm) = stacked;
+    let sea = controls.sea_level_mm;
+    let sdf =
+        crate::detail::signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
     mean_remove(
         controls.grid,
         width,
@@ -2025,14 +2099,8 @@ mod tests {
             ) || controls.sample_mountain_influence(feature.lon_micro, feature.lat_micro) > 0
         }));
         let mut cancel_octave = || Ok(());
-        let (octave_w, octave_h, octave) = build_octave(
-            &controls,
-            &identity,
-            0,
-            4,
-            &mut cancel_octave,
-        )
-        .unwrap();
+        let (octave_w, octave_h, octave) =
+            build_octave(&controls, &identity, 0, 4, &mut cancel_octave).unwrap();
         for j in [0, octave_h - 1] {
             let pole = octave[lattice_index(octave_w, 0, j)];
             for i in 1..octave_w {
@@ -2133,6 +2201,28 @@ mod tests {
         for index in 0..up.len() {
             assert_eq!(stacked[index], up[index].saturating_add(fine[index]));
         }
+        let continued = stack_octaves_from(
+            &controls,
+            &identity,
+            0,
+            8,
+            Some((4, src_w, src_h, src.clone())),
+            &mut cancel,
+            &mut |_, _, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(continued, (stack_w, stack_h, stacked.clone()));
+        let ignored = stack_octaves_from(
+            &controls,
+            &identity,
+            0,
+            4,
+            Some((8, stack_w, stack_h, stacked)),
+            &mut cancel,
+            &mut |_, _, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(ignored, (src_w, src_h, src));
     }
 
     #[test]
@@ -2261,7 +2351,7 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 4);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 5);
     }
 
     #[test]

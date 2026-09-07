@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use daena_atlas::amplify::{inspect_orometry, OROMETRY_LAYER};
+use daena_atlas::amplify::{inspect_orometry, AmplificationModel, OROMETRY_LAYER};
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::overlay::{
     hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature, OverlayHit,
@@ -19,12 +19,12 @@ use daena_atlas::studio::{
     STUDIO_TILE_SIZE,
 };
 use daena_atlas::{
-    prepare_from_source, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress, CancelFlag,
-    FlagProgress,
+    prepare_from_source_with_structure, AtlasError, AtlasPhase, AtlasPreparedScene, AtlasProgress,
+    CancelFlag, FlagProgress,
 };
 use daena_core::maps::atlas::{
-    atlas_cache_dir, capture_snapshot, capture_studio_session, regenerate_atlas_cache,
-    AtlasCacheRegenerateResult, AtlasStudioSessionRequestV1,
+    atlas_cache_dir, capture_snapshot, capture_studio_session, regenerate_atlas_cache_scoped,
+    AtlasCacheRegenScope, AtlasCacheRegenerateResult, AtlasStudioSessionRequestV1,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -125,10 +125,41 @@ struct PreparedSceneKey {
     algorithm_version: u32,
     detail_level: String,
     variant: u32,
+    constraint_fp: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct StructureKey {
+    project_id: String,
+    map_entity_id: String,
+    physical_identity: String,
+    content_generation: i64,
+    algorithm_version: u32,
+    detail_level: String,
+    variant: u32,
+}
+
+impl PreparedSceneKey {
+    fn structure_key(&self) -> StructureKey {
+        StructureKey {
+            project_id: self.project_id.clone(),
+            map_entity_id: self.map_entity_id.clone(),
+            physical_identity: self.physical_identity.clone(),
+            content_generation: self.content_generation,
+            algorithm_version: self.algorithm_version,
+            detail_level: self.detail_level.clone(),
+            variant: self.variant,
+        }
+    }
 }
 
 struct CachedPreparedScene {
     prepared: Arc<AtlasPreparedScene>,
+    last_used: Instant,
+}
+
+struct CachedStructure {
+    model: Arc<AmplificationModel>,
     last_used: Instant,
 }
 
@@ -158,6 +189,7 @@ struct StudioSession {
 pub struct AtlasStudioManager {
     sessions: BTreeMap<String, StudioSession>,
     prepared_scenes: BTreeMap<PreparedSceneKey, CachedPreparedScene>,
+    structures: BTreeMap<StructureKey, CachedStructure>,
     tile_gate: Arc<TileGate>,
 }
 
@@ -174,6 +206,8 @@ impl AtlasStudioManager {
         });
         self.prepared_scenes
             .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
+        self.structures
+            .retain(|_, cached| cached.last_used + SESSION_IDLE > now);
     }
 
     pub fn cancel_all(&mut self) {
@@ -182,6 +216,23 @@ impl AtlasStudioManager {
         }
         self.sessions.clear();
         self.prepared_scenes.clear();
+        self.structures.clear();
+    }
+
+    fn clear_visible_tiles(&mut self) -> u32 {
+        let mut deleted = 0_u32;
+        for session in self.sessions.values_mut() {
+            deleted = deleted.saturating_add(session.tile_cache.len() as u32);
+            session.tile_cache.clear();
+        }
+        deleted
+    }
+
+    fn invalidate_prepared(&mut self, drop_structures: bool) {
+        self.prepared_scenes.clear();
+        if drop_structures {
+            self.structures.clear();
+        }
     }
 
     fn cancel_map(&mut self, project_id: &str, map_entity_id: &str) {
@@ -263,6 +314,38 @@ impl AtlasStudioManager {
             key,
             CachedPreparedScene {
                 prepared,
+                last_used: Instant::now(),
+            },
+        );
+    }
+
+    fn structure(&mut self, key: &StructureKey) -> Option<Arc<AmplificationModel>> {
+        let cached = self.structures.get_mut(key)?;
+        cached.last_used = Instant::now();
+        Some(cached.model.clone())
+    }
+
+    fn remember_structure(&mut self, key: StructureKey, model: Arc<AmplificationModel>) {
+        if let Some(cached) = self.structures.get_mut(&key) {
+            cached.model = model;
+            cached.last_used = Instant::now();
+            return;
+        }
+        while self.structures.len() >= MAX_PREPARED_SCENES {
+            let oldest = self
+                .structures
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.structures.remove(&oldest);
+        }
+        self.structures.insert(
+            key,
+            CachedStructure {
+                model,
                 last_used: Instant::now(),
             },
         );
@@ -732,6 +815,7 @@ pub async fn project_atlas_studio_open(
         algorithm_version: capture.scene.algorithm_version,
         detail_level: capture.scene.level.as_str().to_string(),
         variant: capture.scene.variant,
+        constraint_fp: daena_atlas::constraint::fingerprint(&capture.snapshot.constraints),
     };
     let (style, style_raw) = daena_atlas::style::load_style(&capture.scene.style_id)
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -740,11 +824,19 @@ pub async fn project_atlas_studio_open(
     let identity = capture.snapshot.identity.clone();
     let source = capture.snapshot.source_bytes.clone();
     let forcing = capture.snapshot.forcing;
-    let render = capture
+    let mut render = capture
         .scene
         .as_render_request(STUDIO_TILE_SIZE)
         .and_then(daena_atlas::request::AtlasRenderRequest::normalize)
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    render.constraints = capture.snapshot.constraints.clone();
+    if matches!(render.level, daena_atlas::request::DetailLevel::Print) {
+        return Err(format!(
+            "{}: atlas studio does not build print",
+            daena_atlas::studio::CODE_STUDIO_REQUEST_INVALID
+        ));
+    }
+    let structure_key = prepared_key.structure_key();
     let prepared = studio
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?
@@ -752,6 +844,11 @@ pub async fn project_atlas_studio_open(
     let prepared = if let Some(prepared) = prepared {
         prepared
     } else {
+        let injected = studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?
+            .structure(&structure_key);
+        let injected_for_job = injected.clone();
         let mut progress = SessionProgress {
             app,
             token: token.clone(),
@@ -759,23 +856,27 @@ pub async fn project_atlas_studio_open(
         };
         let prepared = tauri::async_runtime::spawn_blocking(move || {
             let cache = AtlasDiskCache::open(&cache_dir).ok();
-            prepare_from_source(
+            prepare_from_source_with_structure(
                 &source,
                 identity.as_bytes(),
                 &render,
                 Some(forcing),
                 cache.as_ref(),
+                injected_for_job.as_deref(),
                 &mut progress,
             )
         })
         .await
         .map_err(|error| format!("{CODE_STUDIO_TILE_FAILED}: {error}"))?
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let (prepared, unbaked) = prepared;
         let prepared = Arc::new(prepared);
-        studio
+        let structure = injected.unwrap_or_else(|| Arc::new(unbaked));
+        let mut studio = studio
             .lock()
-            .map_err(|_| "atlas studio state is unavailable".to_string())?
-            .remember_prepared_scene(prepared_key, prepared.clone());
+            .map_err(|_| "atlas studio state is unavailable".to_string())?;
+        studio.remember_prepared_scene(prepared_key, prepared.clone());
+        studio.remember_structure(structure_key, structure);
         prepared
     };
     let session = StudioSession {
@@ -883,8 +984,30 @@ pub async fn project_atlas_studio_status(
 #[tauri::command]
 pub async fn project_atlas_studio_regenerate_cache(
     state: tauri::State<'_, SharedCore>,
+    studio: tauri::State<'_, Arc<Mutex<AtlasStudioManager>>>,
+    scope: Option<String>,
 ) -> Result<AtlasCacheRegenerateResult, String> {
-    with_read_project(state, regenerate_atlas_cache).await
+    let scope = AtlasCacheRegenScope::parse(scope.as_deref().unwrap_or("world"))
+        .map_err(|error| error.to_string())?;
+    if matches!(scope, AtlasCacheRegenScope::Visible) {
+        let deleted = studio
+            .lock()
+            .map_err(|_| "atlas studio state is unavailable".to_string())?
+            .clear_visible_tiles();
+        return Ok(AtlasCacheRegenerateResult {
+            deleted_entries: deleted,
+        });
+    }
+    let result = with_read_project(state, move |project| {
+        regenerate_atlas_cache_scoped(project, scope)
+    })
+    .await?;
+    let mut studio = studio
+        .lock()
+        .map_err(|_| "atlas studio state is unavailable".to_string())?;
+    studio.clear_visible_tiles();
+    studio.invalidate_prepared(matches!(scope, AtlasCacheRegenScope::World));
+    Ok(result)
 }
 
 pub fn cancel_atlas_studio(studio: &Arc<Mutex<AtlasStudioManager>>) -> Result<(), String> {
@@ -1162,7 +1285,7 @@ mod tests {
         let scene = AtlasStudioSceneRequestV1::spike().normalize().unwrap();
         let request = scene.as_render_request(STUDIO_TILE_SIZE).unwrap();
         let prepared = Arc::new(
-            prepare_from_source(
+            daena_atlas::prepare_from_source(
                 &world.source,
                 &identity,
                 &request,
@@ -1181,6 +1304,7 @@ mod tests {
             algorithm_version: scene.algorithm_version,
             detail_level: scene.level.as_str().to_string(),
             variant: scene.variant,
+            constraint_fp: daena_atlas::constraint::fingerprint(&[]),
         };
         manager.remember_prepared_scene(prepared_key.clone(), prepared.clone());
         let reused = manager.prepared_scene(&prepared_key).unwrap();
@@ -1253,9 +1377,19 @@ mod tests {
         assert!(!manager
             .adopt_overlay_snapshot(&overlay_token, "other-world", 0, Vec::new(), 3)
             .unwrap());
+        manager.remember_tile(&overlay_token, 3, 1, 2, vec![9, 8, 7]);
+        assert_eq!(
+            manager.tile_from_cache(&overlay_token, 3, 1, 2).as_deref(),
+            Some([9_u8, 8, 7].as_slice())
+        );
+        assert_eq!(
+            manager.tile_from_cache(&overlay_token, 3, 1, 2).as_deref(),
+            Some([9_u8, 8, 7].as_slice())
+        );
         manager.cancel_all();
         assert!(manager.sessions.is_empty());
         assert!(manager.prepared_scenes.is_empty());
+        assert!(manager.structures.is_empty());
     }
 
     #[test]

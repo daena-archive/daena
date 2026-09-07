@@ -23,6 +23,11 @@ in `src/lib/entity-lifecycle`.
 - Permanent deletion stays in Project Center → Archive. Everyday workspace menus
   only archive.
 
+Lore **Profile** is the structured capability on an entity (attributes, skills,
+traits). **Portrait** is the entity image. Storage for that image remains asset
+`role: profile`. Do not use “Sheet” or “Stats” as the product name. See
+[`ADR 0006`](./adr/0006-lore-profiles.md).
+
 ## Shared lifecycle
 
 Every first-party workspace uses the same actions:

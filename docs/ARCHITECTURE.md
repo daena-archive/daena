@@ -27,6 +27,9 @@ contracts remain in the focused plans below:
   Types author experience.
 - [`HOUSES.md`](./HOUSES.md) defines the Houses module and Tree view contracts.
 - [`LANGUAGE_MODULE.md`](./LANGUAGE_MODULE.md) defines the Language workspace and Grammar contracts.
+- [`LORE_PROFILES.md`](./LORE_PROFILES.md) is product intent for optional Lore
+  Profiles; [`ADR 0006`](./adr/0006-lore-profiles.md) constrains storage, owners,
+  history, and naming.
 
 Those documents may add detail but must not contradict the boundaries here.
 The consolidated [`ADR index`](./adr/README.md) records narrower decisions and

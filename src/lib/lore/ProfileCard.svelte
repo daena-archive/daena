@@ -1,15 +1,18 @@
 <script lang="ts">
-import { formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
+import { evaluateProfile, formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
 import { profilePresetLabel } from "./profilePresets.ts";
 
 let { profile }: { profile: ProfileDocument } = $props();
 
+const evaluated = $derived(evaluateProfile(profile));
 const rows = $derived(
-  profile.components.filter(profileCardShows).map((component) => ({
-    id: component.id,
-    name: component.name,
-    value: formatProfileValue(component),
-  })),
+  profile.components
+    .filter((component) => profileCardShows(component, evaluated.get(component.id) ?? null))
+    .map((component) => ({
+      id: component.id,
+      name: component.name,
+      value: formatProfileValue(component, evaluated.get(component.id) ?? null),
+    })),
 );
 const origin = $derived(
   profile.presetOrigin && profile.presetOrigin !== "custom" ? profilePresetLabel(profile.presetOrigin) : "",

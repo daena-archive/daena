@@ -32,6 +32,18 @@ function attribute(name: string, min: number, max: number, value: number): Profi
   };
 }
 
+function abilityModifier(name: string): ProfileComponent {
+  const source = componentId("attribute", name);
+  return {
+    id: componentId("derived", `${name} Modifier`),
+    kind: "derived",
+    name: `${name} Modifier`,
+    formula: `floor(({${source}} - 10) / 2)`,
+    dependencies: [source],
+    value: { type: "number", value: null },
+  };
+}
+
 function skill(name: string): ProfileComponent {
   return {
     id: componentId("skill", name),
@@ -203,6 +215,7 @@ export const PROFILE_PRESETS: ProfilePreset[] = [
       attribute("Intelligence", 1, 30, 10),
       attribute("Wisdom", 1, 30, 10),
       attribute("Charisma", 1, 30, 10),
+      ...["Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma"].map(abilityModifier),
       ...DND_SKILLS.map(skill),
       ...["Armor", "Weapons", "Tools", "Languages", "Saving Throws", "Skills"].map((name) =>
         proficiency(name, DND_PROFICIENCY_SCALE),
@@ -303,7 +316,134 @@ export function profileFromPreset(id: ProfilePresetOrigin): ProfileDocument {
     components: preset.components.map((component) => ({
       ...component,
       scale: component.scale ? [...component.scale] : undefined,
+      dependencies: component.dependencies ? [...component.dependencies] : undefined,
       value: { ...component.value },
     })),
+  };
+}
+
+export const DND_ABILITY_KEYS = [
+  "strength",
+  "dexterity",
+  "constitution",
+  "intelligence",
+  "wisdom",
+  "charisma",
+] as const;
+
+export type DndAbilityKey = (typeof DND_ABILITY_KEYS)[number];
+
+export type DndAncestry = {
+  id: string;
+  name: string;
+  lineage: string;
+  speed: number;
+  abilities: Partial<Record<DndAbilityKey, number>>;
+};
+
+const SPECIES_ID = componentId("tag", "Species");
+const SPEED_ID = componentId("attribute", "Speed");
+
+export const DND_ANCESTRIES: DndAncestry[] = [
+  { id: "hill-dwarf", name: "Hill Dwarf", lineage: "Dwarf", speed: 25, abilities: { constitution: 2, wisdom: 1 } },
+  {
+    id: "mountain-dwarf",
+    name: "Mountain Dwarf",
+    lineage: "Dwarf",
+    speed: 25,
+    abilities: { strength: 2, constitution: 2 },
+  },
+  { id: "high-elf", name: "High Elf", lineage: "Elf", speed: 30, abilities: { dexterity: 2, intelligence: 1 } },
+  { id: "wood-elf", name: "Wood Elf", lineage: "Elf", speed: 35, abilities: { dexterity: 2, wisdom: 1 } },
+  { id: "drow", name: "Drow", lineage: "Elf", speed: 30, abilities: { dexterity: 2, charisma: 1 } },
+  {
+    id: "lightfoot-halfling",
+    name: "Lightfoot Halfling",
+    lineage: "Halfling",
+    speed: 25,
+    abilities: { dexterity: 2, charisma: 1 },
+  },
+  {
+    id: "stout-halfling",
+    name: "Stout Halfling",
+    lineage: "Halfling",
+    speed: 25,
+    abilities: { dexterity: 2, constitution: 1 },
+  },
+  {
+    id: "human",
+    name: "Human",
+    lineage: "Human",
+    speed: 30,
+    abilities: { strength: 1, dexterity: 1, constitution: 1, intelligence: 1, wisdom: 1, charisma: 1 },
+  },
+  { id: "dragonborn", name: "Dragonborn", lineage: "Dragonborn", speed: 30, abilities: { strength: 2, charisma: 1 } },
+  {
+    id: "forest-gnome",
+    name: "Forest Gnome",
+    lineage: "Gnome",
+    speed: 25,
+    abilities: { intelligence: 2, dexterity: 1 },
+  },
+  {
+    id: "rock-gnome",
+    name: "Rock Gnome",
+    lineage: "Gnome",
+    speed: 25,
+    abilities: { intelligence: 2, constitution: 1 },
+  },
+  { id: "half-elf", name: "Half-Elf", lineage: "Half-Elf", speed: 30, abilities: { charisma: 2 } },
+  { id: "half-orc", name: "Half-Orc", lineage: "Half-Orc", speed: 30, abilities: { strength: 2, constitution: 1 } },
+  { id: "tiefling", name: "Tiefling", lineage: "Tiefling", speed: 30, abilities: { intelligence: 1, charisma: 2 } },
+];
+
+export function dndAncestriesByLineage(): { lineage: string; ancestries: DndAncestry[] }[] {
+  const groups: { lineage: string; ancestries: DndAncestry[] }[] = [];
+  for (const ancestry of DND_ANCESTRIES) {
+    const group = groups.find((candidate) => candidate.lineage === ancestry.lineage);
+    if (group) group.ancestries.push(ancestry);
+    else groups.push({ lineage: ancestry.lineage, ancestries: [ancestry] });
+  }
+  return groups;
+}
+
+export function matchingDndAncestry(profile: ProfileDocument): DndAncestry | undefined {
+  const species = profile.components.find((component) => component.id === SPECIES_ID);
+  if (!species || species.value.type !== "text" || !species.value.value) return undefined;
+  const name = species.value.value;
+  return DND_ANCESTRIES.find((ancestry) => ancestry.name === name);
+}
+
+function clampAbility(component: ProfileComponent, value: number): number {
+  if (component.min !== undefined) value = Math.max(component.min, value);
+  if (component.max !== undefined) value = Math.min(component.max, value);
+  return value;
+}
+
+export function applyDndAncestry(profile: ProfileDocument, ancestryId: string): ProfileDocument {
+  const next = ancestryId ? DND_ANCESTRIES.find((ancestry) => ancestry.id === ancestryId) : undefined;
+  if (ancestryId && !next) return profile;
+  const previous = matchingDndAncestry(profile);
+  return {
+    ...profile,
+    components: profile.components.map((component) => {
+      if (component.id === SPECIES_ID && component.value.type === "text") {
+        return { ...component, value: { type: "text", value: next?.name ?? null } };
+      }
+      if (component.id === SPEED_ID && component.value.type === "number") {
+        if (next) return { ...component, value: { type: "number", value: next.speed } };
+        if (previous && component.value.value === previous.speed) {
+          return { ...component, value: { type: "number", value: null } };
+        }
+        return component;
+      }
+      if (component.kind !== "attribute" || component.value.type !== "number") return component;
+      const key = DND_ABILITY_KEYS.find((ability) => component.id === `attribute-${ability}`);
+      if (!key) return component;
+      const delta = (next?.abilities[key] ?? 0) - (previous?.abilities[key] ?? 0);
+      if (!delta) return component;
+      const current = component.value.value ?? 10;
+      return { ...component, value: { type: "number", value: clampAbility(component, current + delta) } };
+    }),
   };
 }

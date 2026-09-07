@@ -4,13 +4,21 @@ import {
   allocationSpent,
   componentHasValue,
   emptyProfile,
+  evaluateProfile,
   formatProfileValue,
   canEditLoreProfile,
   parseProfile,
   profileCardShows,
   profileValidationErrors,
+  withDerivedDependencies,
 } from "../src/lib/lore/profile.ts";
-import { PROFILE_PRESETS, profileFromPreset } from "../src/lib/lore/profilePresets.ts";
+import { parseFormula } from "../src/lib/lore/profileFormula.ts";
+import {
+  PROFILE_PRESETS,
+  applyDndAncestry,
+  matchingDndAncestry,
+  profileFromPreset,
+} from "../src/lib/lore/profilePresets.ts";
 
 const liveLoreTypes = ["daena.lore:person", "daena.lore:faction", "daena.lore:species"];
 assert.equal(canEditLoreProfile("daena.lore:person", liveLoreTypes), true);
@@ -159,7 +167,7 @@ assert.ok(
     components: [
       {
         id: "derived",
-        kind: "derived",
+        kind: "foo",
         name: "Modifier",
         value: { type: "number", value: 2 },
       },
@@ -247,9 +255,293 @@ assert.equal(allocationRemaining(fantasy), 0);
 assert.equal(profileFromPreset("custom").components.length, 0);
 assert.equal(profileFromPreset("scifi").allocation, undefined);
 assert.ok(profileFromPreset("dnd").components.some((component) => component.kind === "proficiency"));
+
+function profileNumber(profile, id) {
+  const component = profile.components.find((entry) => entry.id === id);
+  return component?.value.type === "number" ? component.value.value : undefined;
+}
+function profileText(profile, id) {
+  const component = profile.components.find((entry) => entry.id === id);
+  return component?.value.type === "text" ? component.value.value : undefined;
+}
+const hill = applyDndAncestry(profileFromPreset("dnd"), "hill-dwarf");
+assert.equal(profileText(hill, "tag-species"), "Hill Dwarf");
+assert.equal(profileNumber(hill, "attribute-constitution"), 12);
+assert.equal(profileNumber(hill, "attribute-wisdom"), 11);
+assert.equal(profileNumber(hill, "attribute-strength"), 10);
+assert.equal(profileNumber(hill, "attribute-speed"), 25);
+assert.equal(matchingDndAncestry(hill)?.id, "hill-dwarf");
+const wood = applyDndAncestry(hill, "wood-elf");
+assert.equal(profileText(wood, "tag-species"), "Wood Elf");
+assert.equal(profileNumber(wood, "attribute-constitution"), 10);
+assert.equal(profileNumber(wood, "attribute-wisdom"), 11);
+assert.equal(profileNumber(wood, "attribute-dexterity"), 12);
+assert.equal(profileNumber(wood, "attribute-speed"), 35);
+const cleared = applyDndAncestry(wood, "");
+assert.equal(profileText(cleared, "tag-species"), null);
+assert.equal(profileNumber(cleared, "attribute-dexterity"), 10);
+assert.equal(profileNumber(cleared, "attribute-speed"), null);
+const human = applyDndAncestry(profileFromPreset("dnd"), "human");
+assert.equal(profileNumber(human, "attribute-strength"), 11);
+assert.equal(profileNumber(human, "attribute-charisma"), 11);
+assert.equal(profileNumber(human, "attribute-speed"), 30);
+assert.deepEqual(applyDndAncestry(profileFromPreset("dnd"), "beholder"), profileFromPreset("dnd"));
 assert.equal(
   profileCardShows(profileFromPreset("dnd").components.find((component) => component.name === "Hit Points")),
   false,
 );
+
+const parsedFormula = parseFormula("floor(({attribute-strength} - 10) / 2)");
+assert.equal("error" in parsedFormula, false);
+if (!("error" in parsedFormula)) {
+  assert.deepEqual(parsedFormula.dependencies, ["attribute-strength"]);
+}
+
+const dnd = parseProfile(profileFromPreset("dnd"));
+const dndValues = evaluateProfile(dnd);
+assert.equal(dndValues.get("derived-strength-modifier"), 0);
+assert.equal(
+  formatProfileValue(
+    dnd.components.find((component) => component.id === "derived-strength-modifier"),
+    dndValues.get("derived-strength-modifier") ?? null,
+  ),
+  "0",
+);
+assert.equal(
+  profileCardShows(
+    dnd.components.find((component) => component.id === "derived-strength-modifier"),
+    dndValues.get("derived-strength-modifier") ?? null,
+  ),
+  true,
+);
+const strong = structuredClone(dnd);
+const strength = strong.components.find((component) => component.id === "attribute-strength");
+if (strength?.value.type === "number") strength.value.value = 14;
+assert.equal(evaluateProfile(strong).get("derived-strength-modifier"), 2);
+assert.equal(strong.components.find((component) => component.id === "derived-strength-modifier")?.value.value, null);
+
+assert.ok(
+  profileValidationErrors({
+    schemaVersion: 1,
+    components: [
+      {
+        id: "mod",
+        kind: "derived",
+        name: "Modifier",
+        formula: "floor(({missing} - 10) / 2)",
+        value: { type: "number", value: null },
+      },
+    ],
+  }).some((error) => error.includes("unknown")),
+);
+assert.ok(
+  profileValidationErrors({
+    schemaVersion: 1,
+    components: [
+      {
+        id: "a",
+        kind: "derived",
+        name: "A",
+        formula: "{b}",
+        value: { type: "number", value: null },
+      },
+      {
+        id: "b",
+        kind: "derived",
+        name: "B",
+        formula: "{a}",
+        value: { type: "number", value: null },
+      },
+    ],
+  }).some((error) => error.includes("cycle")),
+);
+
+const divided = parseProfile({
+  schemaVersion: 1,
+  components: [
+    { id: "zero", kind: "attribute", name: "Zero", value: { type: "number", value: 0 } },
+    {
+      id: "ratio",
+      kind: "derived",
+      name: "Ratio",
+      formula: "10 / {zero}",
+      value: { type: "number", value: null },
+    },
+  ],
+});
+assert.equal(evaluateProfile(divided).get("ratio"), null);
+assert.equal(divided.components.find((component) => component.id === "zero")?.value.value, 0);
+
+const overridden = parseProfile({
+  schemaVersion: 1,
+  components: [
+    { id: "str", kind: "attribute", name: "Strength", value: { type: "number", value: 14 } },
+    {
+      id: "mod",
+      kind: "derived",
+      name: "Modifier",
+      formula: "floor(({str} - 10) / 2)",
+      override: 9,
+      value: { type: "number", value: 99 },
+    },
+  ],
+});
+assert.equal(overridden.components[1].value.value, null);
+assert.equal(overridden.components[1].override, 9);
+assert.equal(evaluateProfile(overridden).get("mod"), 9);
+assert.deepEqual(parseProfile(overridden).components[1].dependencies, ["str"]);
+
+const copyA = profileFromPreset("dnd");
+const copyB = profileFromPreset("dnd");
+const depsA = copyA.components.find((component) => component.id === "derived-strength-modifier")?.dependencies;
+const depsB = copyB.components.find((component) => component.id === "derived-strength-modifier")?.dependencies;
+assert.ok(depsA);
+assert.ok(depsB);
+assert.notEqual(depsA, depsB);
+depsA.push("x");
+assert.equal(depsB.includes("x"), false);
+
+const patched = withDerivedDependencies({
+  id: "mod",
+  kind: "derived",
+  name: "Modifier",
+  formula: "floor(({str} - 10) / 2)",
+  dependencies: ["stale"],
+  value: { type: "number", value: null },
+});
+assert.deepEqual(patched.dependencies, ["str"]);
+
+assert.equal(
+  formatProfileValue(
+    {
+      id: "mod",
+      kind: "derived",
+      name: "Modifier",
+      unit: "hp",
+      decimals: 1,
+      value: { type: "number", value: null },
+    },
+    2,
+  ),
+  "2.0 hp",
+);
+assert.equal(
+  componentHasValue({
+    id: "mod",
+    kind: "derived",
+    name: "Modifier",
+    formula: "{str}",
+    value: { type: "number", value: null },
+  }),
+  true,
+);
+assert.equal(
+  profileCardShows(
+    {
+      id: "ratio",
+      kind: "derived",
+      name: "Ratio",
+      formula: "10 / {zero}",
+      value: { type: "number", value: null },
+    },
+    null,
+  ),
+  true,
+);
+
+assert.ok(
+  profileValidationErrors({
+    schemaVersion: 1,
+    components: [
+      { id: "note", kind: "tag", name: "Note", value: { type: "text", value: "hi" } },
+      {
+        id: "mod",
+        kind: "derived",
+        name: "Modifier",
+        formula: "{note}",
+        value: { type: "number", value: null },
+      },
+    ],
+  }).some((error) => error.includes("numeric")),
+);
+assert.ok(
+  profileValidationErrors({
+    schemaVersion: 1,
+    components: [
+      { id: "str", kind: "attribute", name: "Strength", value: { type: "number", value: 18 } },
+      {
+        id: "mod",
+        kind: "derived",
+        name: "Modifier",
+        formula: "{str}",
+        max: 10,
+        value: { type: "number", value: null },
+      },
+    ],
+  }).some((error) => error.includes("above max")),
+);
+
+const ranked = parseProfile({
+  schemaVersion: 1,
+  components: [
+    {
+      id: "skill",
+      kind: "skill",
+      name: "Swordsmanship",
+      scale: ["Untrained", "Trained", "Expert"],
+      value: { type: "rank", value: "Expert" },
+    },
+    {
+      id: "rating",
+      kind: "derived",
+      name: "Rating",
+      formula: "{skill}",
+      value: { type: "number", value: null },
+    },
+  ],
+});
+assert.equal(evaluateProfile(ranked).get("rating"), 2);
+
+const pooled = parseProfile({
+  schemaVersion: 1,
+  components: [
+    {
+      id: "hp",
+      kind: "resource",
+      name: "Hit Points",
+      value: { type: "resource", current: null, max: 12, unit: null },
+    },
+    {
+      id: "cap",
+      kind: "derived",
+      name: "Cap",
+      formula: "{hp}",
+      value: { type: "number", value: null },
+    },
+  ],
+});
+assert.equal(evaluateProfile(pooled).get("cap"), 12);
+
+const literals = parseFormula("round(.5 + 5.)");
+assert.equal("error" in literals, false);
+if (!("error" in literals)) {
+  assert.equal(
+    evaluateProfile(
+      parseProfile({
+        schemaVersion: 1,
+        components: [
+          {
+            id: "n",
+            kind: "derived",
+            name: "N",
+            formula: "round(.5 + 5.)",
+            value: { type: "number", value: null },
+          },
+        ],
+      }),
+    ).get("n"),
+    6,
+  );
+}
 
 console.log("lore profiles passed");

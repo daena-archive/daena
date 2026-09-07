@@ -368,6 +368,7 @@ let assets = $state<Asset[]>([]);
 let assetBusyId = $state<string | null>(null);
 let assetDialog = $state<Asset | null>(null);
 let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
+let profileEditorOpen = $state(false);
 let entityMutationSnapshot = $state<MutationSnapshot>({ phase: "idle", message: "", detail: "" });
 const entityMutation = createMutationController({
   get: () => entityMutationSnapshot,
@@ -779,7 +780,8 @@ $effect(() => {
     metadataDialog !== null ||
     assetDialog !== null ||
     showExternalImport ||
-    entityEditDialog !== null;
+    entityEditDialog !== null ||
+    profileEditorOpen;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -790,6 +792,9 @@ $effect(() => {
     } else if (showCreateForm) {
       event.preventDefault();
       closeCreateForm();
+    } else if (profileEditorOpen) {
+      event.preventDefault();
+      profileEditorOpen = false;
     } else if (entityEditDialog) {
       event.preventDefault();
       if (!entityEditDialog.busy) closeEntityEditDialog();
@@ -8718,8 +8723,12 @@ onMount(() => {
               </InspectorSection>
             {/if}
             {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
-              <InspectorSection title="Profile" open={false}>
-                <ProfileEditor projectId={projectInfo.root} entityId={selected.id} entityName={selected.name} />
+              <InspectorSection title="Profile" open={false} sticky>
+                <ProfileEditor
+                  projectId={projectInfo.root}
+                  entityId={selected.id}
+                  entityName={selected.name}
+                  bind:open={profileEditorOpen} />
               </InspectorSection>
             {/if}
             <InspectorSection

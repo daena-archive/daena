@@ -42,6 +42,10 @@ pub(super) async fn project_physical_generate(
         input.evolution_preset.as_deref().unwrap_or("mature"),
     )
     .map_err(|error| error.to_string())?;
+    let tectonic_style = daena_physical::tectonics::TectonicStyle::parse(
+        input.tectonic_style.as_deref().unwrap_or("any"),
+    )
+    .map_err(|error| error.to_string())?;
     input
         .settings
         .planetary
@@ -101,6 +105,7 @@ pub(super) async fn project_physical_generate(
                 preset: evolution_preset,
             },
             input.settings.planetary,
+            tectonic_style,
             &mut progress,
         );
         let mut manager = match jobs_for_worker.lock() {
@@ -133,6 +138,7 @@ pub(super) async fn project_physical_generate(
                         "tectonicActivityPpm": world.tectonics.settings.tectonic_activity_ppm,
                         "islandActivityPpm": world.tectonics.settings.island_activity_ppm,
                         "evolutionPreset": evolution_preset.as_str(),
+                        "tectonicStyle": tectonic_style.as_str(),
                         "hazardDerivationVersion": daena_physical::hazards::HAZARD_DERIVATION_VERSION,
                         "historicalForcing": historical_forcing_products(historical_forcing),
                         "planetary": input.settings.planetary,
@@ -654,10 +660,21 @@ pub(super) fn compute_static_derived(
         .ok_or_else(|| "evolutionPreset is required for physical sources".to_string())?;
     let preset = daena_physical::evolution::EvolutionPreset::parse(preset)
         .map_err(|error| error.to_string())?;
+    let mut tectonic_settings = world.settings;
+    if let Some(value) = generation
+        .get("settings")
+        .and_then(|settings| settings.get("tectonicStyle"))
+    {
+        let style = value
+            .as_str()
+            .ok_or_else(|| "tectonicStyle must be a string".to_string())?;
+        tectonic_settings.style = daena_physical::tectonics::TectonicStyle::parse(style)
+            .map_err(|error| error.to_string())?;
+    }
     let mut initial_progress = daena_physical::NoopProgress;
     let initial_world = daena_physical::tectonics::generate_tectonic_world(
         world.grid,
-        world.settings,
+        tectonic_settings,
         world.target_land_fraction_ppm,
         world.seed,
         world.retry_index,

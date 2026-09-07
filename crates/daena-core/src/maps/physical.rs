@@ -306,6 +306,8 @@ pub fn validate_generation(value: &Value) -> Result<PhysicalMapGenerationSetting
         continental_plate_count: settings.continental_plate_count,
         tectonic_activity_ppm: settings.tectonic_activity_ppm,
         island_activity_ppm: settings.island_activity_ppm,
+        style: daena_physical::tectonics::TectonicStyle::parse(&settings.tectonic_style)
+            .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?,
     }
     .validate()
     .map_err(|error| invalid(CODE_INVALID_GENERATION, error.to_string()))?;
@@ -627,6 +629,18 @@ mod tests {
             "bondAlbedoPpm": 306_000,
             "meanDensityKgM3": 5_514,
         });
+        assert!(validate_generation(&invalid).is_err());
+    }
+
+    #[test]
+    fn missing_tectonic_style_defaults_to_any() {
+        let validated = validate_generation(&generation(None)).unwrap();
+        assert_eq!(validated.tectonic_style, "any");
+        let mut mega = generation(None);
+        mega["settings"]["tectonicStyle"] = serde_json::json!("mega");
+        assert_eq!(validate_generation(&mega).unwrap().tectonic_style, "mega");
+        let mut invalid = generation(None);
+        invalid["settings"]["tectonicStyle"] = serde_json::json!("island-arc");
         assert!(validate_generation(&invalid).is_err());
     }
 

@@ -52,12 +52,48 @@ const HOTSPOT_CHAIN_MAX: usize = 7;
 const HOTSPOT_STEP_RADIANS: f64 = 0.11;
 const TRANSFORM_TIE_RATIO_PPM: i64 = 1_000_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TectonicStyle {
+    #[default]
+    Any,
+    Mega,
+    GiantScraps,
+    Dual,
+    Scattered,
+}
+
+impl TectonicStyle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Mega => "mega",
+            Self::GiantScraps => "giant-scraps",
+            Self::Dual => "dual",
+            Self::Scattered => "scattered",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, PhysicalError> {
+        match value {
+            "any" => Ok(Self::Any),
+            "mega" => Ok(Self::Mega),
+            "giant-scraps" => Ok(Self::GiantScraps),
+            "dual" => Ok(Self::Dual),
+            "scattered" => Ok(Self::Scattered),
+            _ => Err(PhysicalError::InvalidSettings(
+                "tectonic style must be any, mega, giant-scraps, dual, or scattered".into(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TectonicSettings {
     pub plate_count: u16,
     pub continental_plate_count: u16,
     pub tectonic_activity_ppm: u32,
     pub island_activity_ppm: u32,
+    pub style: TectonicStyle,
 }
 
 impl TectonicSettings {
@@ -68,6 +104,7 @@ impl TectonicSettings {
             continental_plate_count: (u32::from(plate_count) * 45 / 100).max(2) as u16,
             tectonic_activity_ppm: 600_000,
             island_activity_ppm: 300_000,
+            style: TectonicStyle::Any,
         }
     }
 
@@ -495,10 +532,9 @@ fn boundary_step_cost(grid: Grid, cost_seed: u64, cell: usize, neighbor: usize) 
     edge_length_mm(grid, cell, neighbor).saturating_mul(1_000_000 + combined) / 1_000_000
 }
 
-fn continent_layout(seed: u32, retry_index: u32, settings: TectonicSettings) -> ContinentLayout {
-    let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalCratons);
+fn roll_layout_kind(stage_seed: u64) -> ContinentLayoutKind {
     let roll = splitmix64(stage_seed) % LAYOUT_WEIGHT_TOTAL;
-    let kind = if roll < LAYOUT_MEGA_WEIGHT {
+    if roll < LAYOUT_MEGA_WEIGHT {
         ContinentLayoutKind::Mega
     } else if roll < LAYOUT_MEGA_WEIGHT + LAYOUT_GIANT_SCRAPS_WEIGHT {
         ContinentLayoutKind::GiantScraps
@@ -506,8 +542,26 @@ fn continent_layout(seed: u32, retry_index: u32, settings: TectonicSettings) -> 
         ContinentLayoutKind::Dual
     } else {
         ContinentLayoutKind::Scattered
-    };
-    layout_for_kind(kind, stage_seed, settings)
+    }
+}
+
+fn layout_kind_for_style(style: TectonicStyle, stage_seed: u64) -> ContinentLayoutKind {
+    match style {
+        TectonicStyle::Any => roll_layout_kind(stage_seed),
+        TectonicStyle::Mega => ContinentLayoutKind::Mega,
+        TectonicStyle::GiantScraps => ContinentLayoutKind::GiantScraps,
+        TectonicStyle::Dual => ContinentLayoutKind::Dual,
+        TectonicStyle::Scattered => ContinentLayoutKind::Scattered,
+    }
+}
+
+fn continent_layout(seed: u32, retry_index: u32, settings: TectonicSettings) -> ContinentLayout {
+    let stage_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::ContinentalCratons);
+    layout_for_kind(
+        layout_kind_for_style(settings.style, stage_seed),
+        stage_seed,
+        settings,
+    )
 }
 
 fn layout_for_kind(
@@ -2901,6 +2955,7 @@ pub fn decode_source_v2(bytes: &[u8]) -> Result<TectonicWorld, String> {
         continental_plate_count,
         tectonic_activity_ppm,
         island_activity_ppm,
+        style: TectonicStyle::Any,
     };
     settings.validate().map_err(|error| error.to_string())?;
     if boundary_count > MAX_BOUNDARIES || volcanic_count > MAX_VOLCANIC_CENTERS {
@@ -4064,20 +4119,6 @@ mod tests {
         );
     }
 
-    fn world_for_retry(retry_index: u32) -> TectonicWorld {
-        let grid = Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap();
-        let mut progress = NoopProgress;
-        generate_tectonic_world(
-            grid,
-            TectonicSettings::default_for(grid),
-            300_000,
-            831_429,
-            retry_index,
-            &mut progress,
-        )
-        .unwrap()
-    }
-
     fn crust_groups_for(world: &TectonicWorld) -> (ContinentLayout, Vec<i16>) {
         let layout = continent_layout(world.seed, world.retry_index, world.settings);
         let stage_seed = derive_subsystem_seed(
@@ -4137,13 +4178,43 @@ mod tests {
 
     fn world_with_kind(kind: ContinentLayoutKind) -> TectonicWorld {
         let grid = Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap();
-        let settings = TectonicSettings::default_for(grid);
-        for retry in 0..64 {
-            if inferred_layout_kind(&continent_layout(831_429, retry, settings)) == kind {
-                return world_for_retry(retry);
-            }
+        let mut settings = TectonicSettings::default_for(grid);
+        settings.style = match kind {
+            ContinentLayoutKind::Mega => TectonicStyle::Mega,
+            ContinentLayoutKind::GiantScraps => TectonicStyle::GiantScraps,
+            ContinentLayoutKind::Dual => TectonicStyle::Dual,
+            ContinentLayoutKind::Scattered => TectonicStyle::Scattered,
+        };
+        generate_tectonic_world(grid, settings, 300_000, 831_429, 0, &mut NoopProgress).unwrap()
+    }
+
+    #[test]
+    fn any_style_matches_the_historical_layout_roll() {
+        let grid = Grid::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_RADIUS_METRES).unwrap();
+        let any = TectonicSettings::default_for(grid);
+        let mut pinned = any;
+        pinned.style = TectonicStyle::Mega;
+        for retry in 0..24 {
+            let stage_seed = derive_subsystem_seed(831_429, retry, SeedDomain::ContinentalCratons);
+            assert_eq!(
+                inferred_layout_kind(&continent_layout(831_429, retry, any)),
+                roll_layout_kind(stage_seed)
+            );
+            assert_eq!(
+                inferred_layout_kind(&continent_layout(831_429, retry, pinned)),
+                ContinentLayoutKind::Mega
+            );
         }
-        panic!("no retry produced {kind:?} for the fixture seed");
+    }
+
+    #[test]
+    fn source_codec_does_not_persist_tectonic_style() {
+        let world = world_with_kind(ContinentLayoutKind::Scattered);
+        assert_eq!(world.settings.style, TectonicStyle::Scattered);
+        let decoded = decode_source_v2(&encode_source_v2(&world).unwrap()).unwrap();
+        assert_eq!(decoded.settings.style, TectonicStyle::Any);
+        assert_eq!(decoded.elevations_mm, world.elevations_mm);
+        assert_eq!(decoded.crust_by_cell, world.crust_by_cell);
     }
 
     #[test]

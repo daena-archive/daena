@@ -769,6 +769,7 @@ export interface PhysicalGenerationInput {
   seed: number;
   retryIndex: number;
   evolutionPreset?: "young" | "mature" | "old";
+  tectonicStyle?: "any" | "mega" | "giant-scraps" | "dual" | "scattered";
   settings: {
     width: number;
     height: number;

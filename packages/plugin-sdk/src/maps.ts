@@ -169,6 +169,7 @@ export type MapDescriptor =
           continentalPlateCount: number;
           tectonicActivityPpm: number;
           islandActivityPpm: number;
+          tectonicStyle?: "any" | "mega" | "giant-scraps" | "dual" | "scattered";
           planetary?: {
             version: 1;
             preset: "earth-like" | "low-tilt" | "high-tilt" | "slow-rotating" | "close-orbit" | "custom";

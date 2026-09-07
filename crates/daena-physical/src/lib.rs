@@ -629,6 +629,7 @@ pub fn generate_world(
         retry_index,
         evolution::EvolutionSettings::default(),
         planetary::PlanetaryConfiguration::earth_like(),
+        tectonics::TectonicStyle::Any,
         progress,
     )
 }
@@ -639,10 +640,12 @@ pub fn generate_world_with_evolution(
     retry_index: u32,
     evolution_settings: evolution::EvolutionSettings,
     planetary: planetary::PlanetaryConfiguration,
+    tectonic_style: tectonics::TectonicStyle,
     progress: &mut dyn ProgressSink,
 ) -> Result<GeneratedWorld, PhysicalError> {
     let grid = settings.grid()?;
-    let tectonic_settings = tectonics::TectonicSettings::default_for(grid);
+    let mut tectonic_settings = tectonics::TectonicSettings::default_for(grid);
+    tectonic_settings.style = tectonic_style;
     let mut tectonics = tectonics::generate_tectonic_world(
         grid,
         tectonic_settings,
@@ -1019,6 +1022,45 @@ mod tests {
         };
         let mut progress = NoopProgress;
         generate_world(settings, 831_429, 0, &mut progress).unwrap()
+    }
+
+    #[test]
+    fn generate_world_honors_pinned_tectonic_style() {
+        let settings = GenerationSettings {
+            width: 8,
+            height: 4,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let mega = generate_world_with_evolution(
+            settings,
+            831_429,
+            0,
+            evolution::EvolutionSettings::default(),
+            planetary::PlanetaryConfiguration::earth_like(),
+            tectonics::TectonicStyle::Mega,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let scattered = generate_world_with_evolution(
+            settings,
+            831_429,
+            0,
+            evolution::EvolutionSettings::default(),
+            planetary::PlanetaryConfiguration::earth_like(),
+            tectonics::TectonicStyle::Scattered,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(
+            mega.tectonics.settings.style,
+            tectonics::TectonicStyle::Mega
+        );
+        assert_eq!(
+            scattered.tectonics.settings.style,
+            tectonics::TectonicStyle::Scattered
+        );
+        assert_ne!(mega.field.elevations_mm, scattered.field.elevations_mm);
     }
 
     #[test]

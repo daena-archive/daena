@@ -322,6 +322,8 @@ pub struct PhysicalMapGenerationSettings {
     pub island_activity_ppm: u32,
     #[serde(rename = "evolutionPreset")]
     pub evolution_preset: String,
+    #[serde(rename = "tectonicStyle", default = "default_tectonic_style")]
+    pub tectonic_style: String,
     #[serde(rename = "historicalForcing")]
     pub historical_forcing: HistoricalForcingSettings,
     #[serde(
@@ -332,6 +334,12 @@ pub struct PhysicalMapGenerationSettings {
     pub hazard_derivation_version: Option<u16>,
     #[serde(default)]
     pub planetary: daena_physical::planetary::PlanetaryConfiguration,
+}
+
+fn default_tectonic_style() -> String {
+    daena_physical::tectonics::TectonicStyle::Any
+        .as_str()
+        .to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

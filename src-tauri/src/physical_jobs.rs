@@ -115,6 +115,8 @@ pub(super) struct PhysicalGenerationInput {
     pub(super) retry_index: u32,
     #[serde(default)]
     pub(super) evolution_preset: Option<String>,
+    #[serde(default)]
+    pub(super) tectonic_style: Option<String>,
     pub(super) settings: PhysicalGenerationSettingsInput,
 }
 

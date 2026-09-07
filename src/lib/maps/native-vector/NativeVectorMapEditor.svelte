@@ -4337,8 +4337,7 @@ onMount(() => {
   align-items: center;
 }
 .quick-add-row .quiet-button.small,
-.quick-add-row .ghost-btn.small,
-.quick-add-row .primary-button.small {
+.quick-add-row .ghost-btn.small {
   padding: 6px 9px;
   border-radius: 7px;
   font-weight: 650;
@@ -4963,30 +4962,6 @@ onMount(() => {
   color: var(--ink-faint);
   font-size: 10px;
   line-height: 1.4;
-}
-.inline-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-weight: 500;
-  font-size: 11px;
-  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-}
-.inline-field input {
-  width: 84px;
-  padding: 6px 7px;
-  border: 1px solid var(--line, #e4e1d8);
-  border-radius: 7px;
-  background: var(--surface, #fffefa);
-  color: var(--ink);
-  font-weight: 500;
-  font-size: 11px;
-  font-family: var(--font-body, Inter, ui-sans-serif, system-ui, sans-serif);
-}
-.geometry-ops {
-  display: grid;
-  gap: 8px;
 }
 .sub-section {
   border: 1px solid var(--line, #e4e1d8);

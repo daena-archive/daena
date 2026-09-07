@@ -53,9 +53,25 @@ function nextPhysicalSeed(fallback = 0) {
   return values[0] ?? fallback;
 }
 
+function tectonicStyleHint(style: "any" | "mega" | "giant-scraps" | "dual" | "scattered") {
+  switch (style) {
+    case "mega":
+      return "One dominant landmass with a large interior.";
+    case "giant-scraps":
+      return "One huge continent plus smaller scraps.";
+    case "dual":
+      return "Two major continents.";
+    case "scattered":
+      return "Many smaller lands and islands.";
+    default:
+      return "Each seed picks a different continent arrangement.";
+  }
+}
+
 let name = $state("Physical World");
 let seed = $state(nextPhysicalSeed());
 let evolutionPreset = $state<"young" | "mature" | "old">("mature");
+let tectonicStyle = $state<"any" | "mega" | "giant-scraps" | "dual" | "scattered">("any");
 let planetary = $state<PlanetaryConfiguration>(earthLikePlanetary());
 let advancedPlanet = $state(false);
 let yearLengthError = $state<string | null>(null);
@@ -554,6 +570,7 @@ async function generate() {
       seed,
       retryIndex: 0,
       evolutionPreset,
+      tectonicStyle,
       settings: {
         width: 384,
         height: 192,
@@ -640,6 +657,15 @@ onMount(() => {
               <option value="mature">Mature</option>
               <option value="old">Old</option>
             </select></label>
+          <label class="physical-field"
+            >Continent layout<select bind:value={tectonicStyle} disabled={busy}>
+              <option value="any">Surprise me</option>
+              <option value="mega">One continent</option>
+              <option value="giant-scraps">Continent and islands</option>
+              <option value="dual">Two continents</option>
+              <option value="scattered">Island world</option>
+            </select></label>
+          <p class="physical-hint">{tectonicStyleHint(tectonicStyle)}</p>
           <p class="physical-hint">
             Preview is low resolution. Accepting locks coasts, elevation, climate, ice, and rivers.
           </p>

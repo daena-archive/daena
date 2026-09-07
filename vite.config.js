@@ -47,9 +47,8 @@ export default defineConfig(async () => ({
     chunkSizeWarningLimit: 4000,
   },
 
-  // Keep Deno's node_modules layout from stale uuid paths during dep prebundling.
   optimizeDeps: {
-    include: ["vis-timeline/standalone", "uuid", "ol", "@xyflow/svelte", "elkjs"],
+    include: ["vis-timeline/standalone", "ol", "@xyflow/svelte", "elkjs"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

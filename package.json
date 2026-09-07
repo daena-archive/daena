@@ -17,7 +17,6 @@
     "check:maps:atlas": "node --experimental-strip-types scripts/maps-overlay-family.test.mjs && node --experimental-strip-types scripts/maps-atlas-refresh.test.mjs && node scripts/maps-atlas.test.mjs",
     "check:maps:native-vector": "node scripts/maps-openlayers.test.mjs && node --experimental-strip-types scripts/maps-editor-commands.test.mjs && node --experimental-strip-types scripts/maps-physical-detach.test.mjs && node --experimental-strip-types scripts/maps-field-persistence.test.mjs && node --experimental-strip-types scripts/maps-native-vector-editor.test.mjs && node --experimental-strip-types scripts/maps-coordinate-space.test.mjs && node --experimental-strip-types scripts/maps-geometry-operations.test.mjs && node --experimental-strip-types scripts/maps-styling-search.test.mjs && node --experimental-strip-types scripts/maps-spatial-index.test.mjs && node --experimental-strip-types scripts/maps-trace-clipboard.test.mjs",
     "check:maps:physical": "node scripts/maps-physical.test.mjs && node --experimental-strip-types scripts/maps-physical-surface.test.mjs && node --experimental-strip-types scripts/maps-landmass-selection.test.mjs",
-    "check:maps:physical-benchmark": "node scripts/maps-physical-benchmark.mjs",
     "check:plugin-isolation": "node scripts/check-plugin-isolation.mjs",
     "check:timeline-calendar": "node --experimental-strip-types scripts/timeline-calendar.test.mjs && node --experimental-strip-types scripts/timeline-projection.test.mjs && node --experimental-strip-types scripts/timeline-tabs.test.mjs && node --experimental-strip-types scripts/chronology.test.mjs && node --experimental-strip-types scripts/date-field.test.mjs && node --experimental-strip-types scripts/lore-timeline-relations.test.mjs && node --experimental-strip-types scripts/entity-type-labels.test.mjs && node scripts/timeline-ux.test.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -93,7 +92,6 @@
     "@types/hast": "^3.0.4",
     "@types/mdast": "^4.0.4",
     "@xyflow/svelte": "^1.6.5",
-    "@xyflow/system": "^0.0.81",
     "cytoscape": "^3.34.0",
     "elkjs": "^0.12.0",
     "hast-util-to-mdast": "^10.1.2",
@@ -111,7 +109,6 @@
     "tiptap-text-direction": "^0.5.0",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
-    "uuid": "^14.0.1",
     "vis-timeline": "^8.5.3"
   },
   "devDependencies": {

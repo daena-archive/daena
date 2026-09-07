@@ -188,8 +188,9 @@ import {
   applyGeometryOperationCommand,
   setSnapSettingsCommand,
   snapEnabledFromDescriptor,
-  buildPreview,
   commitSelectionIds,
+  operationLabel,
+  type GeometryOpProgress,
   copyFeaturesForPaste,
   decodeFeatureClipboard,
   encodeFeatureClipboard,
@@ -301,6 +302,9 @@ let studioApi = $state<{
   exportView: () => AtlasRenderRequest | null;
 } | null>(null);
 let geometryPreview = $state<GeometryPreview | null>(null);
+let geometryJob = $state<AbortController | null>(null);
+let geometryJobGeneration = 0;
+let operationProgress = $state<GeometryOpProgress | null>(null);
 let measureReadout = $state("");
 let snapVertex = $state(true);
 let snapEdge = $state(true);
@@ -1688,23 +1692,48 @@ function toggleSnapTargetLayer(layerId: string) {
 }
 
 function cancelGeometryPreview() {
+  geometryJob?.abort();
+  geometryJob = null;
+  geometryJobGeneration += 1;
+  operationProgress = null;
   geometryPreview = null;
   operationNotice = "";
   paintLandmassPreview();
 }
 
-function startGeometryOperation(operation: GeometryOperationKind) {
+async function startGeometryOperation(operation: GeometryOperationKind) {
   if (!commandStack) return;
+  const document = commandStack.document;
+  const selectedIds = [...selectedFeatureIds];
+  const generation = geometryJobGeneration + 1;
+  geometryJob?.abort();
+  const controller = new AbortController();
+  geometryJob = controller;
+  geometryJobGeneration = generation;
+  geometryPreview = null;
   operationNotice = "";
+  operationProgress = { completed: 0, total: 1, label: operationLabel(operation) };
+  editor?.setGeometryPreview(null);
   const params =
     operation === "buffer"
       ? { bufferDistance: Number(bufferDistance) }
       : operation === "simplify"
         ? { simplifyTolerance: Number(simplifyTolerance) }
         : {};
-  const built = buildPreview(commandStack.document, operation, selectedFeatureIds, params);
+  const { buildPreviewAsync } = await import("../editor/geometry-preview.ts");
+  if (generation !== geometryJobGeneration) return;
+  const built = await buildPreviewAsync(document, operation, selectedIds, params, {
+    signal: controller.signal,
+    onProgress(progress) {
+      if (generation === geometryJobGeneration) operationProgress = progress;
+    },
+  });
+  if (generation !== geometryJobGeneration || controller.signal.aborted) return;
+  geometryJob = null;
+  operationProgress = null;
   if (built.error) {
-    operationNotice = built.error.detail;
+    if (built.error.code !== "geometry.cancelled") operationNotice = built.error.detail;
+    paintLandmassPreview();
     return;
   }
   if (!built.preview) return;
@@ -2457,7 +2486,7 @@ function onKey(event: KeyboardEvent) {
     void setFullscreen(false);
     return;
   }
-  if (event.key === "Escape" && geometryPreview) {
+  if (event.key === "Escape" && (geometryPreview || operationProgress || geometryJob)) {
     event.preventDefault();
     cancelGeometryPreview();
     return;
@@ -3457,7 +3486,7 @@ onMount(() => {
               </details>
             {/if}
 
-            {#if selectedOpFeatures.length > 0}
+            {#if selectedOpFeatures.length > 0 || geometryPreview || operationProgress}
               <details class="map-section-group" open>
                 <summary>
                   <ChevronRight size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -3468,6 +3497,7 @@ onMount(() => {
                   <MapGeometryOps
                     features={selectedOpFeatures}
                     preview={geometryPreview}
+                    progress={operationProgress}
                     bind:bufferDistance
                     bind:simplifyTolerance
                     notice={operationNotice}

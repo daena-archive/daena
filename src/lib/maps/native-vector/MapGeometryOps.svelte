@@ -1,11 +1,16 @@
 <script lang="ts">
 import { Scissors } from "@lucide/svelte";
-import { canRunOperation, type GeometryOperationKind } from "../editor/geometry-operations";
+import {
+  canRunOperation,
+  type GeometryOpProgress,
+  type GeometryOperationKind,
+} from "../editor/geometry-operation-kinds";
 import type { VectorFeature } from "./types";
 
 let {
   features,
   preview,
+  progress = null,
   bufferDistance = $bindable(),
   simplifyTolerance = $bindable(),
   notice,
@@ -15,6 +20,7 @@ let {
 }: {
   features: VectorFeature[];
   preview: { label: string } | null;
+  progress?: GeometryOpProgress | null;
   bufferDistance: string;
   simplifyTolerance: string;
   notice: string;
@@ -22,10 +28,17 @@ let {
   oncommit: () => void;
   oncancel: () => void;
 } = $props();
+
+const percent = $derived(progress && progress.total > 0 ? Math.round((100 * progress.completed) / progress.total) : 0);
 </script>
 
 <div class="geometry-ops" aria-label="Geometry operations">
-  {#if preview}
+  {#if progress && !preview}
+    <p class="section-note" role="status">{progress.label}… {percent}%</p>
+    <div class="quick-add-row">
+      <button type="button" class="quiet-button small" onclick={() => oncancel()}>Cancel</button>
+    </div>
+  {:else if preview}
     <p class="section-note">Preview: {preview.label}. Commit or cancel to finish.</p>
     <div class="quick-add-row">
       <button type="button" class="primary-button small" onclick={() => oncommit()}>Apply</button>

@@ -10,7 +10,34 @@ import { VECTOR_MAX_FEATURE_POSITIONS } from "../../../../packages/plugin-sdk/sr
 import { coordinateSpaceFromDescriptor } from "./coordinate-space.ts";
 import { closeLineStringAsPolygon, geometryPositionCount } from "../native-vector/geometry.ts";
 import { featureLayerId, layerAcceptsEdits, type VectorFeature } from "../native-vector/types.ts";
+import {
+  cancelledGeometryResult,
+  canRunOperation,
+  isLineGeometry,
+  isPolygonGeometry,
+  isReversibleLine,
+  operationLabel,
+  type GeometryOperationKind,
+  type GeometryOpJobOptions,
+  type GeometryOpParams,
+  type GeometryOpProgress,
+  type GeometryOpResult,
+} from "./geometry-operation-kinds.ts";
 import { findLayer, type MapDocument } from "./model.ts";
+
+export {
+  canRunOperation,
+  cancelledGeometryResult,
+  isLineGeometry,
+  isPolygonGeometry,
+  isReversibleLine,
+  operationLabel,
+  type GeometryOperationKind,
+  type GeometryOpJobOptions,
+  type GeometryOpParams,
+  type GeometryOpProgress,
+  type GeometryOpResult,
+};
 
 type Position = number[];
 type GeoJsonProperties = Record<string, unknown> | null;
@@ -23,17 +50,6 @@ type Feature<G> = { type: "Feature"; geometry: G; properties: GeoJsonProperties 
 const MICRO_SCALE = 1_000_000;
 const MERGE_TOLERANCE = 1 / MICRO_SCALE;
 const INTERSECT_EPS = 1e-9;
-
-export type GeometryOperationKind =
-  "union" | "difference" | "intersection" | "split" | "buffer" | "simplify" | "reverse" | "merge-lines";
-
-export type GeometryOpParams = {
-  bufferDistance?: number;
-  simplifyTolerance?: number;
-};
-
-export type GeometryOpResult =
-  { ok: true; features: VectorFeature[]; removedIds: string[] } | { ok: false; code: string; detail: string };
 
 type RingHit = {
   edgeIndex: number;
@@ -166,18 +182,6 @@ function validateSelection(
     return { ok: false, code: "geometry.layer.locked", detail: "The target layer is hidden or locked." };
   }
   return { ok: true, features };
-}
-
-function isPolygonGeometry(geometry: VectorFeature["geometry"]): boolean {
-  return geometry.type === "Polygon" || geometry.type === "MultiPolygon";
-}
-
-function isLineGeometry(geometry: VectorFeature["geometry"]): boolean {
-  return geometry.type === "LineString";
-}
-
-function isReversibleLine(geometry: VectorFeature["geometry"]): boolean {
-  return geometry.type === "LineString" || geometry.type === "MultiLineString";
 }
 
 function unionAll(features: Feature<Polygon | MultiPolygon>[]): Feature<Polygon | MultiPolygon> | null {
@@ -684,52 +688,125 @@ function runMergeLines(features: VectorFeature[]): GeometryOpResult {
   };
 }
 
-export function operationLabel(kind: GeometryOperationKind): string {
-  switch (kind) {
-    case "union":
-      return "Union";
-    case "difference":
-      return "Difference";
-    case "intersection":
-      return "Intersection";
-    case "split":
-      return "Split";
-    case "buffer":
-      return "Buffer";
-    case "simplify":
-      return "Simplify";
-    case "reverse":
-      return "Reverse line";
-    case "merge-lines":
-      return "Merge lines";
-  }
+async function yieldForCancel(signal?: AbortSignal): Promise<GeometryOpResult | null> {
+  if (signal?.aborted) return cancelledGeometryResult();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  if (signal?.aborted) return cancelledGeometryResult();
+  return null;
 }
 
-export function canRunOperation(operation: GeometryOperationKind, features: readonly VectorFeature[]): boolean {
-  if (features.length === 0) return false;
-  switch (operation) {
-    case "union":
-    case "difference":
-    case "intersection":
-      return features.length >= 2 && features.every((feature) => isPolygonGeometry(feature.geometry));
-    case "split": {
-      if (features.length !== 2) return false;
-      const [target, cutter] = features;
-      if (target.geometry.type === "Polygon" && isLineGeometry(cutter.geometry)) return true;
-      return isLineGeometry(target.geometry) && (isLineGeometry(cutter.geometry) || isPolygonGeometry(cutter.geometry));
+function combinePolygons(
+  kind: "union" | "difference" | "intersection",
+  left: Feature<Polygon | MultiPolygon>,
+  right: Feature<Polygon | MultiPolygon>,
+): Feature<Polygon | MultiPolygon> | null {
+  const collection = featureCollection([left, right]);
+  if (kind === "union") return union(collection) as Feature<Polygon | MultiPolygon> | null;
+  if (kind === "difference") return difference(collection) as Feature<Polygon | MultiPolygon> | null;
+  return intersect(collection) as Feature<Polygon | MultiPolygon> | null;
+}
+
+function finishPolygonOp(
+  kind: "union" | "difference" | "intersection",
+  source: VectorFeature,
+  merged: Feature<Polygon | MultiPolygon> | null,
+  removedIds: string[],
+): GeometryOpResult {
+  if (!merged) {
+    if (kind === "union") return { ok: false, code: "geometry.union.failed", detail: "Union produced no geometry." };
+    if (kind === "difference") {
+      return { ok: false, code: "geometry.difference.empty", detail: "Difference removed all geometry." };
     }
-    case "buffer":
-      return (
-        features.length === 1 &&
-        (features[0].geometry.type === "Point" ||
-          features[0].geometry.type === "LineString" ||
-          isPolygonGeometry(features[0].geometry))
-      );
-    case "simplify":
-      return features.length === 1 && (isLineGeometry(features[0].geometry) || features[0].geometry.type === "Polygon");
-    case "reverse":
-      return features.length === 1 && isReversibleLine(features[0].geometry);
-    case "merge-lines":
-      return features.length >= 2 && features.every((feature) => isLineGeometry(feature.geometry));
+    return { ok: false, code: "geometry.intersection.empty", detail: "Intersection is empty." };
   }
+  const geometry = turfPolygonToDaena(merged);
+  if (!geometry) {
+    return {
+      ok: false,
+      code: `geometry.${kind}.invalid`,
+      detail: `${operationLabel(kind)} result could not be represented.`,
+    };
+  }
+  const invalid = validateResult(geometry);
+  if (invalid) return invalid;
+  const id = kind === "intersection" ? crypto.randomUUID() : source.id;
+  return { ok: true, features: [resultFeature(source, geometry, id)], removedIds };
+}
+
+async function runBooleanAsync(
+  kind: "union" | "difference" | "intersection",
+  features: VectorFeature[],
+  options: GeometryOpJobOptions,
+): Promise<GeometryOpResult> {
+  const turfFeatures = features
+    .map((feature) => featureToTurf(feature))
+    .filter((feature): feature is Feature<Polygon | MultiPolygon> => Boolean(feature));
+  if (turfFeatures.length !== features.length || turfFeatures.length < 2) {
+    return { ok: false, code: `geometry.${kind}.type`, detail: `${operationLabel(kind)} requires polygon features.` };
+  }
+  const total = turfFeatures.length - 1;
+  let acc: Feature<Polygon | MultiPolygon> | null = turfFeatures[0];
+  for (let index = 1; index < turfFeatures.length; index += 1) {
+    options.onProgress?.({ completed: index - 1, total, label: operationLabel(kind) });
+    const cancelled = await yieldForCancel(options.signal);
+    if (cancelled) return cancelled;
+    if (!acc) break;
+    acc = combinePolygons(kind, acc, turfFeatures[index]);
+  }
+  if (options.signal?.aborted) return cancelledGeometryResult();
+  options.onProgress?.({ completed: total, total, label: operationLabel(kind) });
+  const removedIds =
+    kind === "difference" ? [features[0].id] : kind === "intersection" ? [] : features.map((feature) => feature.id);
+  return finishPolygonOp(kind, features[0], acc, removedIds);
+}
+
+export async function runGeometryOperationAsync(
+  document: MapDocument,
+  operation: GeometryOperationKind,
+  selectedIds: readonly string[],
+  params: GeometryOpParams = {},
+  options: GeometryOpJobOptions = {},
+): Promise<GeometryOpResult> {
+  const cancelled = await yieldForCancel(options.signal);
+  if (cancelled) return cancelled;
+  if (operation === "union" || operation === "difference" || operation === "intersection") {
+    const selection = validateSelection(document, selectedIds);
+    if (!selection.ok) return selection;
+    if (operation === "union") {
+      if (selection.features.length < 2) {
+        return { ok: false, code: "geometry.union.count", detail: "Union requires at least two polygon features." };
+      }
+      if (!selection.features.every((feature) => isPolygonGeometry(feature.geometry))) {
+        return { ok: false, code: "geometry.union.type", detail: "Union requires polygon features." };
+      }
+    } else if (operation === "difference") {
+      if (selection.features.length < 2) {
+        return {
+          ok: false,
+          code: "geometry.difference.count",
+          detail: "Difference requires a base polygon and a cutter.",
+        };
+      }
+      if (!selection.features.every((feature) => isPolygonGeometry(feature.geometry))) {
+        return { ok: false, code: "geometry.difference.type", detail: "Difference requires polygon features." };
+      }
+    } else if (selection.features.length < 2) {
+      return {
+        ok: false,
+        code: "geometry.intersection.count",
+        detail: "Intersection requires at least two polygon features.",
+      };
+    } else if (!selection.features.every((feature) => isPolygonGeometry(feature.geometry))) {
+      return { ok: false, code: "geometry.intersection.type", detail: "Intersection requires polygon features." };
+    }
+    return runBooleanAsync(operation, selection.features, options);
+  }
+  options.onProgress?.({ completed: 0, total: 1, label: operationLabel(operation) });
+  const cancelledBefore = await yieldForCancel(options.signal);
+  if (cancelledBefore) return cancelledBefore;
+  const result = runGeometryOperation(document, operation, selectedIds, params);
+  if (!options.signal?.aborted) {
+    options.onProgress?.({ completed: 1, total: 1, label: operationLabel(operation) });
+  }
+  return options.signal?.aborted ? cancelledGeometryResult() : result;
 }

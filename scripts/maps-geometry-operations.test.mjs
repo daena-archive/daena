@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { applyGeometryOperationCommand, setSnapSettingsCommand } from "../src/lib/maps/editor/commands.ts";
 import { createMapDocument, documentHash } from "../src/lib/maps/editor/model.ts";
-import { canRunOperation, runGeometryOperation } from "../src/lib/maps/editor/geometry-operations.ts";
-import { buildPreview, commitSelectionIds } from "../src/lib/maps/editor/geometry-preview.ts";
+import {
+  canRunOperation,
+  runGeometryOperation,
+  runGeometryOperationAsync,
+} from "../src/lib/maps/editor/geometry-operations.ts";
+import { buildPreview, buildPreviewAsync, commitSelectionIds } from "../src/lib/maps/editor/geometry-preview.ts";
 
 const layerId = "11111111-1111-4111-8111-111111111111";
 const squareA = {
@@ -347,5 +351,89 @@ if (imageBuffer.ok) {
   const width = Math.max(...xs) - Math.min(...xs);
   assert.ok(width > 3 && width < 5, `expected ~4px buffer width, got ${width}`);
 }
+
+const squareC = {
+  type: "Feature",
+  id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+  properties: {
+    daena: { layerId, semanticType: "region", name: "C", style: null, label: null, custom: {} },
+  },
+  geometry: {
+    type: "Polygon",
+    coordinates: [
+      [
+        [8, 8],
+        [18, 8],
+        [18, 18],
+        [8, 18],
+        [8, 8],
+      ],
+    ],
+  },
+};
+const tripleDoc = createMapDocument({
+  ...document,
+  collection: { type: "FeatureCollection", features: [squareA, squareB, squareC] },
+});
+
+const midAbort = new AbortController();
+const cancelledMid = await runGeometryOperationAsync(
+  tripleDoc,
+  "union",
+  [squareA.id, squareB.id, squareC.id],
+  {},
+  {
+    signal: midAbort.signal,
+    onProgress() {
+      midAbort.abort();
+    },
+  },
+);
+assert.equal(cancelledMid.ok, false);
+if (!cancelledMid.ok) assert.equal(cancelledMid.code, "geometry.cancelled");
+
+const aborted = new AbortController();
+aborted.abort();
+const cancelled = await runGeometryOperationAsync(
+  document,
+  "union",
+  [squareA.id, squareB.id],
+  {},
+  { signal: aborted.signal },
+);
+assert.equal(cancelled.ok, false);
+if (!cancelled.ok) assert.equal(cancelled.code, "geometry.cancelled");
+assert.equal(document.collection.features.length, 3);
+
+const progressEvents = [];
+const asyncUnion = await runGeometryOperationAsync(
+  tripleDoc,
+  "union",
+  [squareA.id, squareB.id, squareC.id],
+  {},
+  { onProgress: (progress) => progressEvents.push({ ...progress }) },
+);
+assert.equal(asyncUnion.ok, true);
+assert.ok(progressEvents.length >= 2);
+assert.equal(progressEvents[0].completed, 0);
+assert.equal(progressEvents[progressEvents.length - 1].completed, progressEvents[progressEvents.length - 1].total);
+if (asyncUnion.ok) {
+  assert.equal(asyncUnion.features[0].id, squareA.id);
+  assert.deepEqual(asyncUnion.removedIds, [squareA.id, squareB.id, squareC.id]);
+}
+
+const cancelledPreview = await buildPreviewAsync(
+  document,
+  "union",
+  [squareA.id, squareB.id],
+  {},
+  { signal: aborted.signal },
+);
+assert.equal(cancelledPreview.preview, null);
+assert.equal(cancelledPreview.error?.code, "geometry.cancelled");
+
+const livePreview = await buildPreviewAsync(document, "union", [squareA.id, squareB.id]);
+assert.ok(livePreview.preview);
+assert.equal(livePreview.preview.label, "Union");
 
 console.log("geometry operations, preview, and snap commands passed");

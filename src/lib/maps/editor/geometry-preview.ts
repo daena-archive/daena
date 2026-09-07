@@ -1,21 +1,17 @@
+import { runGeometryOperation, runGeometryOperationAsync } from "./geometry-operations.ts";
 import {
-  runGeometryOperation,
+  cancelledGeometryResult,
+  commitSelectionIds,
   operationLabel,
   type GeometryOperationKind,
+  type GeometryOpJobOptions,
   type GeometryOpParams,
   type GeometryOpResult,
-} from "./geometry-operations.ts";
+  type GeometryPreview,
+} from "./geometry-operation-kinds.ts";
 import type { MapDocument } from "./model.ts";
-import type { VectorFeature } from "../native-vector/types.ts";
 
-export type GeometryPreview = {
-  operation: GeometryOperationKind;
-  inputFeatureIds: string[];
-  previewFeatures: VectorFeature[];
-  removedFeatureIds: string[];
-  params: GeometryOpParams;
-  label: string;
-};
+export { commitSelectionIds, type GeometryPreview };
 
 export function buildPreview(
   document: MapDocument,
@@ -38,6 +34,25 @@ export function buildPreview(
   };
 }
 
-export function commitSelectionIds(preview: GeometryPreview): string[] {
-  return preview.previewFeatures.map((feature) => feature.id);
+export async function buildPreviewAsync(
+  document: MapDocument,
+  operation: GeometryOperationKind,
+  selectedIds: readonly string[],
+  params: GeometryOpParams = {},
+  options: GeometryOpJobOptions = {},
+): Promise<{ preview: GeometryPreview | null; error: (GeometryOpResult & { ok: false }) | null }> {
+  const result = await runGeometryOperationAsync(document, operation, selectedIds, params, options);
+  if (!result.ok) return { preview: null, error: result };
+  if (options.signal?.aborted) return { preview: null, error: cancelledGeometryResult() };
+  return {
+    preview: {
+      operation,
+      inputFeatureIds: [...selectedIds],
+      previewFeatures: result.features,
+      removedFeatureIds: result.removedIds,
+      params,
+      label: operationLabel(operation),
+    },
+    error: null,
+  };
 }

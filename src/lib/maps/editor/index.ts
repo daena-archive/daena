@@ -86,14 +86,17 @@ export {
   pointDistance,
 } from "./measurement";
 export {
-  runGeometryOperation,
   canRunOperation,
+  cancelledGeometryResult,
+  commitSelectionIds,
   operationLabel,
   type GeometryOperationKind,
+  type GeometryOpJobOptions,
   type GeometryOpParams,
+  type GeometryOpProgress,
   type GeometryOpResult,
-} from "./geometry-operations";
-export { buildPreview, commitSelectionIds, type GeometryPreview } from "./geometry-preview";
+  type GeometryPreview,
+} from "./geometry-operation-kinds";
 export {
   createSpatialIndex,
   extentOfGeometry,

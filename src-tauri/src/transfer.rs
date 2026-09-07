@@ -1082,7 +1082,7 @@ pub(super) fn plugin_protocol_response(
                 if current_project.as_deref() != Some(session.project_id.as_str()) {
                     return Err("plugin session is not bound to the open project".into());
                 }
-                let record_owner_entity_types = request
+                let record_owner_declaration = request
                     .method
                     .starts_with("record.")
                     .then(|| {
@@ -1090,7 +1090,7 @@ pub(super) fn plugin_protocol_response(
                             .payload
                             .get("collection")
                             .and_then(serde_json::Value::as_str)?;
-                        plugins.lock().ok()?.record_owner_entity_types(
+                        plugins.lock().ok()?.record_owner_declaration(
                             &session.project_id,
                             &session.plugin_id,
                             collection,
@@ -1195,6 +1195,18 @@ pub(super) fn plugin_protocol_response(
                         .core
                         .lock()
                         .map_err(|_| "core lock poisoned".to_string())?;
+                    let record_owner_entity_types = match record_owner_declaration.as_ref() {
+                        Some((collection, package)) => Some(
+                            record_owner_constraint_from_declaration(
+                                core.project(AuthorityContext::plugin())
+                                    .map_err(|error| error.to_string())?,
+                                package,
+                                collection,
+                            )
+                            .map_err(|error| error.to_string())?,
+                        ),
+                        None => None,
+                    };
                     dispatch_module_rpc(
                         &mut core,
                         Some(&plugin_id),

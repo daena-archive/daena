@@ -992,17 +992,37 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
         errors.push("record collections must be objects");
         continue;
       }
-      checkKeys(record, "record collection", ["id", "ownerEntityTypes", "schema"], errors);
+      checkKeys(
+        record,
+        "record collection",
+        ["id", "ownerEntityTypes", "ownerScope", "uniquePerOwner", "schema"],
+        errors,
+      );
       if (typeof record.id !== "string" || !isPluginIdentifier(record.id))
         errors.push("record collection id is invalid");
       else if (recordIds.has(record.id)) errors.push(`duplicate record collection: ${record.id}`);
       else recordIds.add(record.id);
-      if (
+      const ownerScope = record.ownerScope ?? "package";
+      if (ownerScope !== "package" && ownerScope !== "effective-schema")
+        errors.push(`record collection ${String(record.id)} has invalid ownerScope`);
+      else if (ownerScope === "effective-schema") {
+        if (
+          record.ownerEntityTypes !== undefined &&
+          (!Array.isArray(record.ownerEntityTypes) || record.ownerEntityTypes.length !== 0)
+        )
+          errors.push(
+            `record collection ${String(record.id)} with ownerScope effective-schema must omit owner entity types`,
+          );
+      } else if (
         !Array.isArray(record.ownerEntityTypes) ||
         record.ownerEntityTypes.length === 0 ||
         record.ownerEntityTypes.some((type) => typeof type !== "string" || !entityTypes.has(type))
       )
         errors.push(`record collection ${String(record.id)} has invalid owner entity types`);
+      if (record.uniquePerOwner !== undefined && typeof record.uniquePerOwner !== "boolean")
+        errors.push(`record collection ${String(record.id)} has invalid uniquePerOwner`);
+      else if (record.uniquePerOwner === true && ownerScope !== "effective-schema")
+        errors.push(`record collection ${String(record.id)} uniquePerOwner requires ownerScope effective-schema`);
       validateCommandSchema(record.schema, `record collection ${String(record.id)} schema`, errors);
     }
   }

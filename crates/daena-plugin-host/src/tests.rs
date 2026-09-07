@@ -540,6 +540,8 @@ fn module_record_authorization_is_collection_and_schema_bound() {
     plugin.records.push(daena_plugin_api::RecordCollection {
         id: "lexemes".into(),
         owner_entity_types: vec!["daena.lore:person".into()],
+        owner_scope: daena_plugin_api::RecordOwnerScope::Package,
+        unique_per_owner: false,
         schema: daena_plugin_api::CommandSchema {
             schema_type: daena_plugin_api::CommandValueType::Object,
             properties: [

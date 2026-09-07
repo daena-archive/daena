@@ -6,7 +6,16 @@ fn canonical_bundled_manifests_validate() {
     let timeline = include_str!("../../../packages/modules/timeline/manifest.json");
     let maps = include_str!("../../../packages/modules/maps/manifest.json");
     let houses = include_str!("../../../packages/modules/houses/manifest.json");
-    assert_eq!(parse_manifest(lore).unwrap().id, "daena.lore");
+    let lore_manifest = parse_manifest(lore).unwrap();
+    assert_eq!(lore_manifest.id, "daena.lore");
+    let profile = lore_manifest
+        .records
+        .iter()
+        .find(|collection| collection.id == "profile")
+        .expect("lore profile collection");
+    assert_eq!(profile.owner_scope, RecordOwnerScope::EffectiveSchema);
+    assert!(profile.owner_entity_types.is_empty());
+    assert!(profile.unique_per_owner);
     assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
     assert_eq!(parse_manifest(houses).unwrap().id, "daena.houses");
     let maps = parse_manifest(maps).unwrap();
@@ -34,6 +43,37 @@ fn host_surface_renderer_requires_a_valid_versioned_id() {
         major: 0,
     };
     assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
+fn effective_schema_record_collections_reject_package_owner_lists() {
+    let json = include_str!("../../../packages/modules/timeline/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.records[0].owner_scope = RecordOwnerScope::EffectiveSchema;
+    assert!(validate_manifest(&manifest).is_err());
+    manifest.records[0].owner_entity_types.clear();
+    assert!(validate_manifest(&manifest).is_ok());
+}
+
+#[test]
+fn unique_per_owner_requires_effective_schema_scope() {
+    let json = include_str!("../../../packages/modules/timeline/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.records[0].unique_per_owner = true;
+    assert!(validate_manifest(&manifest).is_err());
+    manifest.records[0].owner_scope = RecordOwnerScope::EffectiveSchema;
+    manifest.records[0].owner_entity_types.clear();
+    assert!(validate_manifest(&manifest).is_ok());
+}
+
+#[test]
+fn effective_schema_record_collections_may_omit_owner_entity_types() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json").replace(
+        "\"ownerScope\": \"effective-schema\",\n      \"ownerEntityTypes\": [],",
+        "\"ownerScope\": \"effective-schema\",",
+    );
+    let manifest = parse_manifest(&json).unwrap();
+    assert!(manifest.records[0].owner_entity_types.is_empty());
 }
 
 #[test]

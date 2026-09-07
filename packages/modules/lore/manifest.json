@@ -22,6 +22,8 @@
     "asset.register",
     "search.query",
     "schema.overlay",
+    "record.read:self",
+    "record.write:self",
     "ai.text.generate-structured",
     "service.call:daena.maps/navigation"
   ],
@@ -356,6 +358,24 @@
       "entityType": "concept",
       "description": "An idea, phenomenon, tradition, or other subject worth remembering.",
       "fields": { "summary": "", "aliases": "", "createdAt": "" }
+    }
+  ],
+  "records": [
+    {
+      "id": "profile",
+      "ownerScope": "effective-schema",
+      "ownerEntityTypes": [],
+      "uniquePerOwner": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": { "type": "number" },
+          "presetOrigin": { "type": "string" },
+          "components": { "type": "array" }
+        },
+        "required": ["schemaVersion", "components"],
+        "additionalProperties": false
+      }
     }
   ],
   "views": [],

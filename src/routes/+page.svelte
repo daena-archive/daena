@@ -164,6 +164,8 @@ import CollectionPane from "$lib/shell/CollectionPane.svelte";
 import ContentPane from "$lib/shell/ContentPane.svelte";
 import InspectorPane from "$lib/shell/InspectorPane.svelte";
 import InspectorSection from "$lib/shell/InspectorSection.svelte";
+import ProfileEditor from "$lib/lore/ProfileEditor.svelte";
+import { canEditLoreProfile as entityTypeCanHaveProfile } from "$lib/lore/profile";
 import PaneResizeHandle from "$lib/shell/PaneResizeHandle.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
 import StatusCenter, { type StatusCenterItem, type StatusCenterTone } from "$lib/shell/StatusCenter.svelte";
@@ -960,6 +962,13 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
 function enabledEntityTypes() {
   return new Set(
     modules.filter((module) => module.enabled).flatMap((module) => module.schemas.flatMap(schemaEntityTypeIds)),
+  );
+}
+function canEditLoreProfile(entityType: string | null | undefined) {
+  const lore = modules.find((module) => module.id === "daena.lore" && module.enabled);
+  return entityTypeCanHaveProfile(
+    entityType,
+    lore?.schemas.flatMap((schema) => schema.entityTypes.map((type) => type.id)) ?? [],
   );
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null, moduleId = activeModuleId()) {
@@ -8706,6 +8715,11 @@ onMount(() => {
                       }} />
                   </section>
                 {/if}
+              </InspectorSection>
+            {/if}
+            {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
+              <InspectorSection title="Profile" open={false}>
+                <ProfileEditor projectId={projectInfo.root} entityId={selected.id} entityName={selected.name} />
               </InspectorSection>
             {/if}
             <InspectorSection

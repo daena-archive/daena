@@ -220,27 +220,104 @@ pub(super) fn validate_broker_payload(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub(super) enum RecordOwnerConstraint {
+    Package(Vec<String>),
+    EffectiveSchema {
+        live_types: Vec<String>,
+        unique_per_owner: bool,
+    },
+}
+
+impl RecordOwnerConstraint {
+    fn unique_per_owner(&self) -> bool {
+        match self {
+            Self::Package(_) => false,
+            Self::EffectiveSchema {
+                unique_per_owner, ..
+            } => *unique_per_owner,
+        }
+    }
+}
+
+pub(super) fn record_owner_constraint_from_declaration(
+    project: &ProjectStore,
+    package: &PluginManifest,
+    collection: &daena_plugin_api::RecordCollection,
+) -> Result<RecordOwnerConstraint, CoreError> {
+    match collection.owner_scope {
+        daena_plugin_api::RecordOwnerScope::Package => Ok(RecordOwnerConstraint::Package(
+            collection.owner_entity_types.clone(),
+        )),
+        daena_plugin_api::RecordOwnerScope::EffectiveSchema => {
+            Ok(RecordOwnerConstraint::EffectiveSchema {
+                live_types: live_record_owner_types(project, package)?,
+                unique_per_owner: collection.unique_per_owner,
+            })
+        }
+    }
+}
+
+fn live_record_owner_types(
+    project: &ProjectStore,
+    package: &PluginManifest,
+) -> Result<Vec<String>, CoreError> {
+    let types_of = |manifest: &PluginManifest| {
+        manifest
+            .schemas
+            .iter()
+            .flat_map(|schema| {
+                schema
+                    .entity_types
+                    .iter()
+                    .map(|entity_type| entity_type.id.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    if !supports_schema_overlay(package) {
+        return Ok(types_of(package));
+    }
+    let overlay_value = project
+        .module_schema_overlay(&package.id)?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let overlay = parse_module_overlay(&overlay_value).map_err(CoreError::Validation)?;
+    let merged = merge_module_manifest(package, &overlay).map_err(CoreError::Validation)?;
+    Ok(types_of(&merged))
+}
+
 pub(super) fn validate_record_owner_entity_type(
     project: &ProjectStore,
     owner_entity_id: &str,
-    allowed: Option<&[String]>,
+    method: &str,
+    constraint: Option<&RecordOwnerConstraint>,
 ) -> Result<(), CoreError> {
-    let allowed = allowed.ok_or_else(|| CoreError::Unauthorized {
+    let constraint = constraint.ok_or_else(|| CoreError::Unauthorized {
         operation: "access undeclared module record collection",
     })?;
     let owner = project
-        .list_entities()?
-        .into_iter()
-        .find(|entity| entity.id == owner_entity_id)
+        .get_entity(owner_entity_id)?
         .ok_or_else(|| CoreError::NotFound("module record owner entity not found".into()))?;
-    if !owner
-        .entity_type
-        .as_ref()
-        .is_some_and(|entity_type| allowed.contains(entity_type))
-    {
-        return Err(CoreError::Unauthorized {
-            operation: "use disallowed module record owner entity type",
-        });
+    let type_allowed = |allowed: &[String]| {
+        owner
+            .entity_type
+            .as_ref()
+            .is_some_and(|entity_type| allowed.contains(entity_type))
+    };
+    match constraint {
+        RecordOwnerConstraint::Package(types) => {
+            if !type_allowed(types) {
+                return Err(CoreError::Unauthorized {
+                    operation: "use disallowed module record owner entity type",
+                });
+            }
+        }
+        RecordOwnerConstraint::EffectiveSchema { live_types, .. } => {
+            if method == "record.create" && !type_allowed(live_types) {
+                return Err(CoreError::Unauthorized {
+                    operation: "use disallowed module record owner entity type",
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -273,7 +350,7 @@ pub(super) fn dispatch_module_rpc(
     core: &mut CoreService,
     plugin_id: Option<&str>,
     shared_field_keys: Option<std::collections::BTreeSet<String>>,
-    record_owner_entity_types: Option<Vec<String>>,
+    record_owner_entity_types: Option<RecordOwnerConstraint>,
     method: &str,
     payload: serde_json::Value,
     request_id: Option<&str>,
@@ -532,7 +609,8 @@ pub(super) fn dispatch_module_rpc(
             validate_record_owner_entity_type(
                 project,
                 &payload_string(&payload, "ownerEntityId")?,
-                record_owner_entity_types.as_deref(),
+                method,
+                record_owner_entity_types.as_ref(),
             )?;
             let limit = usize::try_from(
                 payload
@@ -576,10 +654,11 @@ pub(super) fn dispatch_module_rpc(
             validate_record_owner_entity_type(
                 project,
                 &payload_string(&payload, "ownerEntityId")?,
-                record_owner_entity_types.as_deref(),
+                method,
+                record_owner_entity_types.as_ref(),
             )?;
             serde_json::to_value(
-                project.create_module_record(
+                project.create_module_record_with(
                     module_id,
                     &payload_string(&payload, "collection")?,
                     &payload_string(&payload, "ownerEntityId")?,
@@ -588,6 +667,9 @@ pub(super) fn dispatch_module_rpc(
                         .cloned()
                         .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
                     request_id,
+                    record_owner_entity_types
+                        .as_ref()
+                        .is_some_and(RecordOwnerConstraint::unique_per_owner),
                 )?,
             )
             .map_err(|error| CoreError::Validation(error.to_string()))
@@ -599,7 +681,8 @@ pub(super) fn dispatch_module_rpc(
             validate_record_owner_entity_type(
                 project,
                 &payload_string(&payload, "ownerEntityId")?,
-                record_owner_entity_types.as_deref(),
+                method,
+                record_owner_entity_types.as_ref(),
             )?;
             serde_json::to_value(
                 project.update_module_record(
@@ -628,7 +711,8 @@ pub(super) fn dispatch_module_rpc(
             validate_record_owner_entity_type(
                 project,
                 &payload_string(&payload, "ownerEntityId")?,
-                record_owner_entity_types.as_deref(),
+                method,
+                record_owner_entity_types.as_ref(),
             )?;
             project.delete_module_record(
                 module_id,
@@ -1045,7 +1129,7 @@ pub(super) async fn trusted_module_rpc(
             },
         );
     }
-    let record_owner_entity_types = if method.starts_with("record.") {
+    let record_owner_declaration = if method.starts_with("record.") {
         let record_plugin_id = plugin_id
             .as_deref()
             .ok_or_else(|| "module record requests require plugin identity".to_string())?;
@@ -1058,7 +1142,7 @@ pub(super) async fn trusted_module_rpc(
             .map_err(|_| "plugin host lock poisoned".to_string())?;
         host.authorize_bundled(record_plugin_id, &project_id, &method, payload.clone())
             .map_err(|error| error.to_string())?;
-        host.record_owner_entity_types(&project_id, record_plugin_id, collection)
+        host.record_owner_declaration(&project_id, record_plugin_id, collection)
     } else {
         None
     };
@@ -1071,6 +1155,14 @@ pub(super) async fn trusted_module_rpc(
         None
     };
     let result = with_core(state, move |core| {
+        let record_owner_entity_types = match record_owner_declaration.as_ref() {
+            Some((collection, package)) => Some(record_owner_constraint_from_declaration(
+                core.project(AuthorityContext::plugin())?,
+                package,
+                collection,
+            )?),
+            None => None,
+        };
         dispatch_module_rpc(
             core,
             plugin_id.as_deref(),

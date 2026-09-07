@@ -30,7 +30,8 @@ and not an RPG engine.
 
 2. **Owners.** Any live entity whose **qualified** type (`daena.lore:person`,
    overlay `daena.lore:…`) is in Lore’s **effective** schema. Disabled overlay
-   types accept no new profiles; existing records are retained. Do not add
+   types accept no new profiles; existing records are retained (owner type is
+   checked on `record.create` only). Do not add
    Kingdom, Ship, Creature, or similar builtins. Record-owner validation must
    use the merged schema, not only the packaged type list.
 
@@ -69,8 +70,10 @@ and not an RPG engine.
 ## Consequences
 
 - Lore must declare `record.read:self` / `record.write:self` and a `profile`
-  collection. Semantic validation and one-per-owner checks stay in Lore
-  TypeScript; broker schema checks remain coarse.
+  collection with `uniquePerOwner`. Semantic validation stays in Lore
+  TypeScript; broker schema checks remain coarse. One-per-owner is enforced on
+  `record.create` inside the core write transaction when that flag is set, not
+  by a SQLite unique key.
 - Record-owner contracts need an explicit extension so overlay types in Lore
   namespaces can own a Profile. That change begins in the Rust plugin API and
   must compare qualified runtime type ids.

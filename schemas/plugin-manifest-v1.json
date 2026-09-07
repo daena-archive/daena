@@ -971,21 +971,36 @@
           "type": "string"
         },
         "ownerEntityTypes": {
+          "default": [],
           "items": {
             "type": "string"
           },
           "type": "array"
         },
+        "ownerScope": {
+          "$ref": "#/$defs/RecordOwnerScope",
+          "default": "package"
+        },
         "schema": {
           "$ref": "#/$defs/CommandSchema"
+        },
+        "uniquePerOwner": {
+          "default": false,
+          "type": "boolean"
         }
       },
       "required": [
         "id",
-        "ownerEntityTypes",
         "schema"
       ],
       "type": "object"
+    },
+    "RecordOwnerScope": {
+      "enum": [
+        "package",
+        "effective-schema"
+      ],
+      "type": "string"
     },
     "RelationshipConstraints": {
       "additionalProperties": false,

@@ -26,6 +26,12 @@ import ImageGenerationDialog, { type ImageContextChoice } from "$lib/ai/ImageGen
 import type { PromptTemplate } from "$lib/ai/promptTemplates";
 import { formatCalendarDate, parseCalendarDate } from "$lib/date";
 import { fieldDisplay, formatAttributeValue, formatSystemTimestamp, humanizeType, isEmptyValue } from "./wiki-format";
+import { buildModuleContext } from "$lib/modules/context";
+import type { ModuleManifest as PluginModuleManifest } from "../../../packages/module-api/src/index";
+import loreManifestJson from "../../../packages/modules/lore/manifest.json";
+import ProfileCard from "./ProfileCard.svelte";
+import { loadProfile, PROFILE_CHANGED_EVENT } from "./profileStore";
+import type { ProfileDocument } from "./profile";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
 import WikiSidebar from "./WikiSidebar.svelte";
@@ -79,6 +85,8 @@ let fields = $state<Record<string, unknown>>({});
 let relationships = $state<any[]>([]);
 let assets = $state<Asset[]>([]);
 let profileMediaUrl = $state("");
+let profile = $state<ProfileDocument | null>(null);
+let profileError = $state("");
 let mapLocations = $state<any[]>([]);
 let loading = $state(true);
 let tocSearch = $state("");
@@ -484,12 +492,36 @@ async function loadEntity(id: string) {
     relationships = storedRelationships as any[];
     assets = storedAssets;
     mapLocations = storedMapLocations;
+    profile = null;
+    profileError = "";
+    try {
+      const loaded = await loadProfile(
+        buildModuleContext(loreManifestJson as unknown as PluginModuleManifest, projectId),
+        id,
+      );
+      if (request !== entityLoadRequest || currentId !== id) return;
+      profileError = loaded?.error ?? "";
+      profile = loaded?.invalid ? null : (loaded?.value ?? null);
+    } catch {
+      if (request === entityLoadRequest && currentId === id) {
+        profile = null;
+        profileError = "";
+      }
+    }
   } finally {
     if (request === entityLoadRequest) loading = false;
   }
 }
 
-onMount(() => void loadAll());
+onMount(() => {
+  void loadAll();
+  const onProfileChanged = (event: Event) => {
+    const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
+    if (entityId && entityId === currentId) void loadAll();
+  };
+  window.addEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
+  return () => window.removeEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
+});
 
 function pushHistory(id: string) {
   if (historyIndex >= 0 && history[historyIndex] === id) return;
@@ -530,6 +562,8 @@ function goToMain() {
   relationships = [];
   assets = [];
   mapLocations = [];
+  profile = null;
+  profileError = "";
 }
 
 function handleEdit() {
@@ -738,7 +772,7 @@ function handleEdit() {
               {#if profileMediaUrl}<img
                   class="profile-media"
                   src={profileMediaUrl}
-                  alt={`${entity.name} profile`} />{:else if profileFallback}<div class="profile-file">
+                  alt={`${entity.name} portrait`} />{:else if profileFallback}<div class="profile-file">
                   <Diamond size={18} strokeWidth={1.7} /><span
                     ><strong>{profileFallback.filename}</strong><small>{profileFallback.mime_type}</small></span>
                 </div>{/if}
@@ -772,7 +806,10 @@ function handleEdit() {
                   </dl>
                 </div>
               {/each}
-              {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0}<p class="card-empty">
+              {#if profileError}<p class="card-empty">{profileError}</p>{/if}
+              {#if profile}<ProfileCard {profile} />{/if}
+              {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0 && !profile && !profileError}<p
+                  class="card-empty">
                   No structured details yet.
                 </p>{/if}
             </section>

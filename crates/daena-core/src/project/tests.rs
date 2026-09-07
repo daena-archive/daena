@@ -2832,6 +2832,112 @@ fn lore_schema_overlay_survives_directory_reopen_and_checkpoint() {
 }
 
 #[test]
+fn lore_profile_record_survives_directory_reopen_and_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-lore-profile-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let owner = store
+        .create_entity(CreateEntity {
+            name: "Guild".into(),
+            entity_type: Some("daena.lore:faction".into()),
+        })
+        .unwrap();
+    let artifact = store
+        .create_entity(CreateEntity {
+            name: "Crown".into(),
+            entity_type: Some("daena.lore:artifact".into()),
+        })
+        .unwrap();
+    let overlay = serde_json::json!({
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
+        "customEntityTypes": [{
+            "id": "daena.lore:species",
+            "name": "Species",
+            "icon": { "kind": "catalog", "id": "animal" },
+            "iconColor": { "kind": "preset", "id": "moss" }
+        }]
+    });
+    store
+        .set_module_schema_overlay("daena.lore".into(), Some(overlay))
+        .unwrap();
+    let species = store
+        .create_entity(CreateEntity {
+            name: "Drake".into(),
+            entity_type: Some("daena.lore:species".into()),
+        })
+        .unwrap();
+    let value = serde_json::json!({
+        "schemaVersion": 1,
+        "presetOrigin": "custom",
+        "components": [{
+            "id": "str",
+            "kind": "attribute",
+            "name": "Strength",
+            "value": { "type": "number", "value": 14 }
+        }]
+    });
+    store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &owner.id,
+            value.clone(),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    assert!(store
+        .create_module_record_with(
+            "daena.lore",
+            "profile",
+            &owner.id,
+            value.clone(),
+            Some(&Uuid::new_v4().to_string()),
+            true,
+        )
+        .is_err());
+    store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &artifact.id,
+            value.clone(),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &species.id,
+            value.clone(),
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+    store.flush_checkpoint("lore-profile-test").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    let faction_records = rebuilt
+        .list_module_records("daena.lore", "profile", &owner.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(faction_records.len(), 1);
+    assert_eq!(faction_records[0].value, value);
+    let artifact_records = rebuilt
+        .list_module_records("daena.lore", "profile", &artifact.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(artifact_records.len(), 1);
+    assert_eq!(artifact_records[0].value, value);
+    let species_records = rebuilt
+        .list_module_records("daena.lore", "profile", &species.id, None, 50, 0)
+        .unwrap();
+    assert_eq!(species_records.len(), 1);
+    assert_eq!(species_records[0].value, value);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn schema_overlay_preview_counts_and_revision_cas_are_idempotent() {
     let root = std::env::temp_dir().join(format!("daena-overlay-preview-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

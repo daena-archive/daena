@@ -157,13 +157,13 @@ pub(super) async fn plugin_rpc(
     } else {
         let project_id = session.project_id;
         let request_id_for_dispatch = sanitize_mutation_request_id(&request_id).map(str::to_owned);
-        let record_owner_entity_types = method
+        let record_owner_declaration = method
             .starts_with("record.")
             .then(|| {
                 let collection = payload
                     .get("collection")
                     .and_then(serde_json::Value::as_str)?;
-                state.lock().ok()?.record_owner_entity_types(
+                state.lock().ok()?.record_owner_declaration(
                     &project_id,
                     &session.plugin_id,
                     collection,
@@ -180,6 +180,14 @@ pub(super) async fn plugin_rpc(
                     operation: "access another project",
                 });
             }
+            let record_owner_entity_types = match record_owner_declaration.as_ref() {
+                Some((collection, package)) => Some(record_owner_constraint_from_declaration(
+                    core.project(AuthorityContext::plugin())?,
+                    package,
+                    collection,
+                )?),
+                None => None,
+            };
             dispatch_module_rpc(
                 core,
                 Some(&session.plugin_id),

@@ -2703,19 +2703,22 @@ impl PluginHost {
             .map_err(|error| HostError(format!("{}: {}", error.code, error.message)))
     }
 
-    pub fn record_owner_entity_types(
+    pub fn record_owner_declaration(
         &self,
         project_id: &str,
         plugin_id: &str,
         collection: &str,
-    ) -> Option<Vec<String>> {
-        self.runtime_entry(project_id, plugin_id)
-            .or_else(|| self.catalog.get(plugin_id).cloned())?
+    ) -> Option<(daena_plugin_api::RecordCollection, PluginManifest)> {
+        let entry = self
+            .runtime_entry(project_id, plugin_id)
+            .or_else(|| self.catalog.get(plugin_id).cloned())?;
+        let collection = entry
             .manifest
             .records
-            .into_iter()
-            .find(|candidate| candidate.id == collection)
-            .map(|candidate| candidate.owner_entity_types)
+            .iter()
+            .find(|candidate| candidate.id == collection)?
+            .clone();
+        Some((collection, entry.manifest))
     }
 
     pub fn register_ai_request(

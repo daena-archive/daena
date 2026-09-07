@@ -119,6 +119,25 @@ impl ProjectStore {
         value: serde_json::Value,
         request_id: Option<&str>,
     ) -> Result<ModuleRecord, CoreError> {
+        self.create_module_record_with(
+            module_id,
+            collection,
+            owner_entity_id,
+            value,
+            request_id,
+            false,
+        )
+    }
+
+    pub fn create_module_record_with(
+        &self,
+        module_id: &str,
+        collection: &str,
+        owner_entity_id: &str,
+        value: serde_json::Value,
+        request_id: Option<&str>,
+        unique_per_owner: bool,
+    ) -> Result<ModuleRecord, CoreError> {
         validate_module_record_input(module_id, collection, owner_entity_id, &value)?;
         let fingerprint = digest_bytes(
             &serde_json::to_vec(&(module_id, collection, owner_entity_id, &value))
@@ -152,6 +171,18 @@ impl ProjectStore {
             &[format!("plugins/{module_id}.json")],
             &fingerprint,
         )?;
+        if unique_per_owner {
+            let existing: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM module_records WHERE module_id=?1 AND collection=?2 AND owner_entity_id=?3",
+                params![module_id, collection, owner_entity_id],
+                |row| row.get(0),
+            )?;
+            if existing > 0 {
+                return Err(CoreError::Validation(
+                    "This entity already has a Profile".into(),
+                ));
+            }
+        }
         transaction.execute(
             "INSERT INTO module_records(module_id,collection,id,owner_entity_id,value,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?6)",
             params![module_id, collection, id, owner_entity_id, encoded, now],

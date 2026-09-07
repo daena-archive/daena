@@ -562,13 +562,26 @@ pub struct EntityTemplate {
     pub document: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordOwnerScope {
+    #[default]
+    Package,
+    EffectiveSchema,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RecordCollection {
     pub id: String,
-    #[serde(rename = "ownerEntityTypes")]
+    #[serde(rename = "ownerEntityTypes", default)]
     pub owner_entity_types: Vec<String>,
+    #[serde(rename = "ownerScope", default)]
+    pub owner_scope: RecordOwnerScope,
+    #[serde(rename = "uniquePerOwner", default)]
+    pub unique_per_owner: bool,
     pub schema: CommandSchema,
 }
 
@@ -1573,16 +1586,34 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 collection.id
             )));
         }
-        if collection.owner_entity_types.is_empty()
-            || collection
-                .owner_entity_types
-                .iter()
-                .any(|entity_type| !entity_types.contains(entity_type))
-        {
-            return Err(ContractError(format!(
-                "record collection {} declares unknown owner entity types",
-                collection.id
-            )));
+        match collection.owner_scope {
+            RecordOwnerScope::Package => {
+                if collection.unique_per_owner {
+                    return Err(ContractError(format!(
+                        "record collection {} uniquePerOwner requires ownerScope effective-schema",
+                        collection.id
+                    )));
+                }
+                if collection.owner_entity_types.is_empty()
+                    || collection
+                        .owner_entity_types
+                        .iter()
+                        .any(|entity_type| !entity_types.contains(entity_type))
+                {
+                    return Err(ContractError(format!(
+                        "record collection {} declares unknown owner entity types",
+                        collection.id
+                    )));
+                }
+            }
+            RecordOwnerScope::EffectiveSchema => {
+                if !collection.owner_entity_types.is_empty() {
+                    return Err(ContractError(format!(
+                        "record collection {} with ownerScope effective-schema must omit owner entity types",
+                        collection.id
+                    )));
+                }
+            }
         }
         validate_command_value(
             &collection.schema,

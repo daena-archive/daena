@@ -1844,7 +1844,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
         &mut core,
         Some("daena.language"),
         None,
-        Some(vec!["language".into()]),
+        Some(RecordOwnerConstraint::Package(vec!["language".into()])),
         "record.create",
         serde_json::json!({
             "collection": "lexemes",
@@ -1869,7 +1869,7 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
         &mut core,
         Some("daena.language"),
         None,
-        Some(vec!["language".into()]),
+        Some(RecordOwnerConstraint::Package(vec!["language".into()])),
         "record.create",
         serde_json::json!({
             "collection": "lexemes",
@@ -1880,6 +1880,218 @@ fn broker_dispatch_enforces_module_record_owner_entity_types() {
     )
     .unwrap();
     assert_eq!(created["value"]["lemma"], "sol");
+}
+
+#[test]
+fn broker_dispatch_allows_effective_schema_record_owners() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let person = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Person", "type": "daena.lore:person"}),
+        None,
+    )
+    .unwrap();
+    let faction = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Guild", "type": "daena.lore:faction"}),
+        None,
+    )
+    .unwrap();
+    let species = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "Drake", "type": "daena.lore:species"}),
+        None,
+    )
+    .unwrap();
+    let live = RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec![
+            "daena.lore:person".into(),
+            "daena.lore:faction".into(),
+            "daena.lore:species".into(),
+        ],
+        unique_per_owner: true,
+    };
+    let profile = serde_json::json!({"schemaVersion": 1, "components": []});
+    let created = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(live.clone()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": person["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(created["value"]["schemaVersion"], 1);
+    dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(live.clone()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": faction["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let species_profile = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(live),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": species["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let disabled = RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec!["daena.lore:person".into(), "daena.lore:faction".into()],
+        unique_per_owner: true,
+    };
+    let denied = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(disabled.clone()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": species["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(denied, Err(CoreError::Unauthorized { .. })));
+    let updated = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(disabled),
+        "record.update",
+        serde_json::json!({
+            "collection": "profile",
+            "id": species_profile["id"],
+            "ownerEntityId": species["id"],
+            "value": {"schemaVersion": 1, "components": [{"id": "c1"}]},
+            "expectedRevision": species_profile["revision"]
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(updated["value"]["components"][0]["id"], "c1");
+    let duplicate = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(RecordOwnerConstraint::EffectiveSchema {
+            live_types: vec!["daena.lore:person".into()],
+            unique_per_owner: true,
+        }),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": person["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(duplicate, Err(CoreError::Validation(_))));
+    let map = dispatch_module_rpc(
+        &mut core,
+        None,
+        None,
+        None,
+        "entity.create",
+        serde_json::json!({"name": "World", "type": "daena.maps:world-map"}),
+        None,
+    )
+    .unwrap();
+    let maps_denied = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(RecordOwnerConstraint::EffectiveSchema {
+            live_types: vec!["daena.lore:person".into(), "daena.lore:faction".into()],
+            unique_per_owner: true,
+        }),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "ownerEntityId": map["id"],
+            "value": profile
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(maps_denied, Err(CoreError::Unauthorized { .. })));
+}
+
+#[test]
+fn effective_schema_record_owners_use_merged_overlay_types() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let package =
+        daena_plugin_api::parse_manifest(include_str!("../../packages/modules/lore/manifest.json"))
+            .unwrap();
+    let overlay = serde_json::json!({
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
+        "customEntityTypes": [{
+            "id": "daena.lore:species",
+            "name": "Species",
+            "icon": { "kind": "catalog", "id": "animal" },
+            "iconColor": { "kind": "preset", "id": "moss" }
+        }]
+    });
+    core.project_mut(AuthorityContext::trusted_shell())
+        .unwrap()
+        .set_module_schema_overlay("daena.lore".into(), Some(overlay))
+        .unwrap();
+    let collection = package
+        .records
+        .iter()
+        .find(|collection| collection.id == "profile")
+        .expect("lore profile collection");
+    let constraint = record_owner_constraint_from_declaration(
+        core.project(AuthorityContext::trusted_shell()).unwrap(),
+        &package,
+        collection,
+    )
+    .unwrap();
+    match constraint {
+        RecordOwnerConstraint::EffectiveSchema {
+            live_types,
+            unique_per_owner,
+        } => {
+            assert!(unique_per_owner);
+            assert!(live_types.iter().any(|id| id == "daena.lore:person"));
+            assert!(live_types.iter().any(|id| id == "daena.lore:species"));
+            assert!(!live_types.iter().any(|id| id == "daena.maps:world-map"));
+        }
+        RecordOwnerConstraint::Package(_) => panic!("profile owners use effective schema"),
+    }
 }
 
 #[test]

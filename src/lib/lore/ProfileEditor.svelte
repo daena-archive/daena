@@ -6,6 +6,8 @@ import loreManifestJson from "../../../packages/modules/lore/manifest.json";
 import {
   PROFILE_COMPONENT_KINDS,
   PROFILE_VALUE_TYPES,
+  allocationRemaining,
+  allocationSpent,
   componentHasValue,
   emptyProfile,
   emptyValue,
@@ -14,8 +16,10 @@ import {
   type ProfileComponent,
   type ProfileComponentKind,
   type ProfileDocument,
+  type ProfilePresetOrigin,
   type ProfileValueType,
-} from "./profile";
+} from "./profile.ts";
+import { PROFILE_PRESETS, profileFromPreset, profilePresetLabel } from "./profilePresets.ts";
 import { createProfile, deleteProfile, loadProfile, saveProfile, type StoredProfile } from "./profileStore";
 
 let {
@@ -35,8 +39,10 @@ let draft = $state<ProfileDocument>(emptyProfile());
 let loading = $state(true);
 let error = $state("");
 let addingKind = $state<ProfileComponentKind>("attribute");
+let selectedPreset = $state<ProfilePresetOrigin>("custom");
 let writeChain = Promise.resolve();
 let persistGeneration = 0;
+const remaining = $derived(allocationRemaining(draft));
 
 $effect(() => {
   const id = entityId;
@@ -125,7 +131,7 @@ function parseOptionalNumber(raw: string): number | null {
 async function addProfile() {
   error = "";
   try {
-    stored = await createProfile(context, entityId, emptyProfile());
+    stored = await createProfile(context, entityId, profileFromPreset(selectedPreset));
     draft = structuredClone(stored.value);
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
@@ -184,7 +190,13 @@ async function moveComponent(index: number, delta: number) {
 async function patchComponent(id: string, patch: Partial<ProfileComponent>) {
   await persistDraft({
     ...draft,
-    components: draft.components.map((component) => (component.id === id ? { ...component, ...patch } : component)),
+    components: draft.components.map((component) => {
+      if (component.id !== id) return component;
+      const next = { ...component, ...patch };
+      if ("min" in patch && patch.min === undefined) delete next.min;
+      if ("max" in patch && patch.max === undefined) delete next.max;
+      return next;
+    }),
   });
 }
 
@@ -198,14 +210,58 @@ function kindLabel(kind: ProfileComponentKind) {
 {:else if !stored}
   {#if error}<p class="inspector-group-empty" role="status">{error}</p>{/if}
   <p class="inspector-group-empty">Optional structured attributes, skills, and traits.</p>
-  <button class="quiet-button" type="button" onclick={() => void addProfile()}>Add Profile</button>
+  <div class="add-row">
+    <select bind:value={selectedPreset} aria-label="Profile preset">
+      {#each PROFILE_PRESETS as preset}
+        <option value={preset.id}>{preset.name}</option>
+      {/each}
+    </select>
+    <button class="quiet-button" type="button" onclick={() => void addProfile()}>Add Profile</button>
+  </div>
 {:else}
   {#if error}<p class="inspector-group-empty" role="status">{error}</p>{/if}
   <div class="profile-toolbar">
+    <span class="preset-label">{profilePresetLabel(draft.presetOrigin)}</span>
     <button class="quiet-button" type="button" onclick={() => void removeProfile()}>Remove Profile</button>
   </div>
+  {#if draft.allocation}
+    <div class="component-head">
+      <label>
+        <span>Point pool</span>
+        <input
+          type="number"
+          min="0"
+          value={draft.allocation.pool}
+          onchange={(event) => {
+            const next = parseOptionalNumber(event.currentTarget.value);
+            if (Number.isNaN(next) || next === null) return;
+            void persistDraft({ ...draft, allocation: { pool: next } });
+          }} />
+      </label>
+      <p class="inspector-group-empty" class:over-budget={remaining !== null && remaining < 0}>
+        Spent {allocationSpent(draft)}
+        {#if remaining !== null}· Remaining {remaining}{/if}
+      </p>
+    </div>
+    <button
+      class="quiet-button"
+      type="button"
+      onclick={() => {
+        void persistDraft({
+          schemaVersion: draft.schemaVersion,
+          ...(draft.presetOrigin ? { presetOrigin: draft.presetOrigin } : {}),
+          components: draft.components,
+        });
+      }}>Remove point pool</button>
+  {:else}
+    <button
+      class="quiet-button"
+      type="button"
+      onclick={() => void persistDraft({ ...draft, allocation: { pool: allocationSpent(draft) } })}
+      >Add point pool</button>
+  {/if}
   {#if draft.components.length === 0}
-    <p class="inspector-group-empty">No components yet. Add one to start this Custom profile.</p>
+    <p class="inspector-group-empty">No components yet. Add one to start this profile.</p>
   {/if}
   {#each draft.components as component, index (component.id)}
     <article class="component">
@@ -245,6 +301,8 @@ function kindLabel(kind: ProfileComponentKind) {
             <span>Value</span>
             <input
               type="number"
+              min={component.min}
+              max={component.max}
               value={component.value.value ?? ""}
               onchange={(event) => {
                 const next = parseOptionalNumber(event.currentTarget.value);
@@ -314,6 +372,32 @@ function kindLabel(kind: ProfileComponentKind) {
           </label>
         {/if}
       </div>
+      {#if component.value.type === "number"}
+        <div class="component-head">
+          <label>
+            <span>Min</span>
+            <input
+              type="number"
+              value={component.min ?? ""}
+              onchange={(event) => {
+                const next = parseOptionalNumber(event.currentTarget.value);
+                if (Number.isNaN(next)) return;
+                void patchComponent(component.id, { min: next ?? undefined });
+              }} />
+          </label>
+          <label>
+            <span>Max</span>
+            <input
+              type="number"
+              value={component.max ?? ""}
+              onchange={(event) => {
+                const next = parseOptionalNumber(event.currentTarget.value);
+                if (Number.isNaN(next)) return;
+                void patchComponent(component.id, { max: next ?? undefined });
+              }} />
+          </label>
+        </div>
+      {/if}
       {#if component.value.type === "resource"}
         <div class="component-head">
           <label>
@@ -388,6 +472,16 @@ function kindLabel(kind: ProfileComponentKind) {
 .profile-toolbar,
 .add-row {
   margin: 8px 0;
+}
+.profile-toolbar {
+  justify-content: space-between;
+}
+.preset-label {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+.over-budget {
+  color: var(--danger, #b42318);
 }
 .component {
   display: grid;

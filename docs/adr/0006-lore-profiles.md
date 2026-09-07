@@ -78,8 +78,9 @@ and not an RPG engine.
   namespaces can own a Profile. That change begins in the Rust plugin API and
   must compare qualified runtime type ids.
 - P1 is current-state Custom profiles on any Lore type, including overlay
-  types, with trusted-shell wiki and editor surfaces. Presets, formulas, and
-  Timeline fold are later phases. Search indexes, if added, are disposable
-  projections over stable component ids.
+  types, with trusted-shell wiki and editor surfaces. P2 copies D&D, Fantasy,
+  Sci-Fi, or Custom into the instance and may store an optional point pool.
+  Formulas and Timeline fold are later phases. Search indexes, if added, are
+  disposable projections over stable component ids.
 - Product intent remains [`LORE_PROFILES.md`](../LORE_PROFILES.md). Delivery
   order remains [`LORE_PROFILES_PLAN.md`](../LORE_PROFILES_PLAN.md).

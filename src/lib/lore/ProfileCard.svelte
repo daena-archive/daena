@@ -1,21 +1,24 @@
 <script lang="ts">
-import { formatProfileValue, type ProfileDocument } from "./profile";
+import { formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
+import { profilePresetLabel } from "./profilePresets.ts";
 
 let { profile }: { profile: ProfileDocument } = $props();
 
 const rows = $derived(
-  profile.components
-    .map((component) => ({
-      id: component.id,
-      name: component.name,
-      value: formatProfileValue(component),
-    }))
-    .filter((row) => row.name.trim()),
+  profile.components.filter(profileCardShows).map((component) => ({
+    id: component.id,
+    name: component.name,
+    value: formatProfileValue(component),
+  })),
+);
+const origin = $derived(
+  profile.presetOrigin && profile.presetOrigin !== "custom" ? profilePresetLabel(profile.presetOrigin) : "",
 );
 </script>
 
 <section class="profile-card" aria-label="Profile">
   <h3>Profile</h3>
+  {#if origin}<p class="preset">{origin}</p>{/if}
   {#if rows.length === 0}
     <p class="card-empty">No profile values yet.</p>
   {:else}
@@ -43,6 +46,11 @@ const rows = $derived(
   font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+.preset {
+  margin: -4px 0 8px;
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 .profile-card dl {
   display: grid;

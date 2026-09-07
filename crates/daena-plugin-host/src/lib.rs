@@ -1650,8 +1650,9 @@ impl PluginHost {
     }
 
     /// First-party bundled modules default to enabled without a consent dialog.
-    /// When a project has no recorded grants yet, grant the full declared set
-    /// so sandboxed RPC (for example Maps `entity.list`) is not deny-all.
+    /// Keep grants aligned with the current packaged manifest so newly declared
+    /// capabilities (for example Lore `record.read:self`) are not stuck on an
+    /// older persisted subset.
     pub fn ensure_first_party_bundled_grants(
         &mut self,
         project_id: &str,
@@ -1666,14 +1667,19 @@ impl PluginHost {
         if entry.manifest.publisher != "daena-archive" {
             return Ok(());
         }
-        if entry.manifest.capabilities.is_empty() || !self.grants.is_empty(project_id, plugin_id) {
+        if entry.manifest.capabilities.is_empty() {
             return Ok(());
         }
-        self.grant_capabilities(
-            project_id,
-            plugin_id,
-            entry.manifest.capabilities.iter().cloned().collect(),
-        )
+        let declared = entry
+            .manifest
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if self.grants.get(project_id, plugin_id) == declared {
+            return Ok(());
+        }
+        self.grant_capabilities(project_id, plugin_id, declared)
     }
 
     /// Bind an open project to its machine-local grants file, migrating any
@@ -2691,6 +2697,7 @@ impl PluginHost {
         if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
             return Err(HostError("plugin is not active".into()));
         }
+        self.ensure_first_party_bundled_grants(project_id, plugin_id)?;
         let session = self.ensure_bundled_session(plugin_id, project_id)?;
         let request = RpcRequest {
             rpc_version: RPC_VERSION,

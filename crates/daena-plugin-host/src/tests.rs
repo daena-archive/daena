@@ -361,6 +361,40 @@ fn first_party_bundled_bootstrap_grants_declared_capabilities() {
 }
 
 #[test]
+fn first_party_bundled_grants_pick_up_new_manifest_capabilities() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_root = directory.path().join("project");
+    fs::create_dir_all(project_root.join(".daena/local")).unwrap();
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))
+        .unwrap();
+    host.bind_project_grants(&project_root, "project").unwrap();
+    let mut stale = host
+        .catalog
+        .get("daena.lore")
+        .unwrap()
+        .manifest
+        .capabilities
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    stale.remove("record.read:self");
+    stale.remove("record.write:self");
+    host.grants
+        .insert_loaded("project", "daena.lore", stale.clone());
+    assert!(!host
+        .grants
+        .get("project", "daena.lore")
+        .contains("record.read:self"));
+
+    host.ensure_first_party_bundled_grants("project", "daena.lore")
+        .unwrap();
+    let grants = host.grants.get("project", "daena.lore");
+    assert!(grants.contains("record.read:self"));
+    assert!(grants.contains("record.write:self"));
+}
+
+#[test]
 fn legacy_global_grants_migrate_into_project_local_file() {
     let directory = tempfile::tempdir().unwrap();
     let project_root = directory.path().join("world");

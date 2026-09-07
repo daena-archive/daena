@@ -371,6 +371,7 @@
         "properties": {
           "schemaVersion": { "type": "number" },
           "presetOrigin": { "type": "string" },
+          "allocation": { "type": "object" },
           "components": { "type": "array" }
         },
         "required": ["schemaVersion", "components"],

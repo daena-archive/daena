@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import {
+  allocationRemaining,
+  allocationSpent,
   componentHasValue,
   emptyProfile,
   formatProfileValue,
   canEditLoreProfile,
   parseProfile,
+  profileCardShows,
   profileValidationErrors,
 } from "../src/lib/lore/profile.ts";
+import { PROFILE_PRESETS, profileFromPreset } from "../src/lib/lore/profilePresets.ts";
 
 const liveLoreTypes = ["daena.lore:person", "daena.lore:faction", "daena.lore:species"];
 assert.equal(canEditLoreProfile("daena.lore:person", liveLoreTypes), true);
@@ -63,6 +67,42 @@ assert.equal(
     value: { type: "resource", current: null, max: null, unit: null },
   }),
   "",
+);
+assert.equal(
+  formatProfileValue({
+    id: "unit-only-hp",
+    kind: "resource",
+    name: "Hit Points",
+    value: { type: "resource", current: null, max: null, unit: "hp" },
+  }),
+  "",
+);
+assert.equal(
+  componentHasValue({
+    id: "unit-only-hp",
+    kind: "resource",
+    name: "Hit Points",
+    value: { type: "resource", current: null, max: null, unit: "hp" },
+  }),
+  false,
+);
+assert.equal(
+  profileCardShows({
+    id: "brave",
+    kind: "trait",
+    name: "Brave",
+    value: { type: "text", value: null },
+  }),
+  true,
+);
+assert.equal(
+  profileCardShows({
+    id: "class",
+    kind: "tag",
+    name: "Class",
+    value: { type: "text", value: null },
+  }),
+  false,
 );
 assert.deepEqual(
   parseProfile({
@@ -179,5 +219,37 @@ assert.equal(
 );
 assert.equal(parseProfile({ schemaVersion: 1, components: [] }).presetOrigin, undefined);
 assert.equal(parseProfile({ schemaVersion: 1, presetOrigin: "custom", components: [] }).presetOrigin, "custom");
+assert.equal(emptyProfile().presetOrigin, "custom");
+assert.deepEqual(profileValidationErrors({ schemaVersion: 1, presetOrigin: "dnd", components: [] }), []);
+assert.ok(profileValidationErrors({ schemaVersion: 1, presetOrigin: "modern", components: [] }).length);
+assert.ok(profileValidationErrors({ schemaVersion: 1, allocation: { pool: -1 }, components: [] }).length);
+
+for (const preset of PROFILE_PRESETS) {
+  const copied = profileFromPreset(preset.id);
+  const ids = copied.components.map((component) => component.id);
+  assert.equal(new Set(ids).size, ids.length, preset.id);
+  assert.deepEqual(profileValidationErrors(copied), []);
+  assert.equal(copied.presetOrigin, preset.id);
+}
+
+const mutated = profileFromPreset("dnd");
+mutated.components[0].name = "Renamed";
+if (mutated.components[0].value.type === "number") mutated.components[0].value.value = 18;
+const fresh = profileFromPreset("dnd");
+assert.equal(fresh.components[0].name, "Strength");
+assert.equal(fresh.components[0].value.type === "number" ? fresh.components[0].value.value : null, 10);
+assert.equal(parseProfile(fresh).presetOrigin, "dnd");
+
+const fantasy = profileFromPreset("fantasy");
+assert.equal(fantasy.allocation?.pool, 40);
+assert.equal(allocationSpent(fantasy), 40);
+assert.equal(allocationRemaining(fantasy), 0);
+assert.equal(profileFromPreset("custom").components.length, 0);
+assert.equal(profileFromPreset("scifi").allocation, undefined);
+assert.ok(profileFromPreset("dnd").components.some((component) => component.kind === "proficiency"));
+assert.equal(
+  profileCardShows(profileFromPreset("dnd").components.find((component) => component.name === "Hit Points")),
+  false,
+);
 
 console.log("lore profiles passed");

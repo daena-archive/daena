@@ -7,8 +7,8 @@ use std::collections::BinaryHeap;
 use daena_physical::Grid;
 
 use crate::detail::{
-    lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, sample_sdf_ppm,
-    COASTAL_ENVELOPE_PPM,
+    lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, nest_lattice_coord,
+    sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
 };
 use crate::AtlasError;
 
@@ -533,7 +533,12 @@ fn fluvial_and_deposition_delta(
             }
             let damp = 1_000_000 - mountain_ppm[index] / 2;
             let runoff = runoff_ppm[index].clamp(0, 1_250_000);
-            let prf = lattice_sample(erosion_key, i, j, scale);
+            let prf = lattice_sample(
+                erosion_key,
+                nest_lattice_coord(i, width),
+                nest_lattice_coord(j, height),
+                scale,
+            );
             let prf_damp = 1_000_000 - ((prf >> 11) % 25_000) as i32;
             let accum = accumulation[index].max(1);
             let flux = ((i64::from(drop.min(max_step_mm))

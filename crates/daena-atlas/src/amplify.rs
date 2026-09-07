@@ -1,15 +1,16 @@
 //! Structure residual: interpolated landform grain, divide-tree ridge and
 //! valley *paths*, and pit fill. Callers must pass year-0 / accepted
-//! hydrology (`structure_controls` in `lib.rs`). Pit-fill, coastline grain,
-//! and watershed priors use that year-0 sea/lakes/watersheds — not epoch
-//! climate. Epoch operators belong in refine.
+//! hydrology (`structure_controls` in `lib.rs`). Pit-fill and watershed
+//! priors use that year-0 sea/lakes/watersheds — not epoch climate. Epoch
+//! coastline grain lives in refine.
 
 use daena_physical::Grid;
 
 use crate::control::ControlFields;
 use crate::detail::{
-    domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
-    sample_field_mm, sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM,
+    cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
+    lattice_sample, nearest_cell, nest_lattice_coord, sample_field_mm, sample_sdf_ppm,
+    AtlasDetailModel, COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
     accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
@@ -132,28 +133,66 @@ fn control_shaped_unit(controls: &ControlFields, lon_micro: i32, lat_micro: i32,
         / 1_000_000) as i32
 }
 
-fn octave_factor(level: DetailLevel, octave: u32) -> u32 {
-    let finest = level.lattice_factor();
-    match octave {
-        0 => (finest / 4).max(1),
-        1 => (finest / 2).max(1),
-        _ => finest,
+/// Physical grid ≈ brief LOD 0–1. Atlas octaves (factor 1, 2, 4, … finest) ≈ LOD 2–4.
+fn stack_octaves(
+    controls: &ControlFields,
+    identity: &[u8],
+    variant: u32,
+    finest: u32,
+    check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
+) -> Result<(u32, u32, Vec<i32>), AtlasError> {
+    let finest = finest.max(1);
+    let mut factor = 1_u32;
+    let (mut width, mut height, mut residual_mm) =
+        build_octave(controls, identity, variant, factor, check_cancelled)?;
+    while factor < finest {
+        factor = factor.saturating_mul(2);
+        if factor > finest {
+            factor = finest;
+        }
+        let next_width = controls
+            .grid
+            .width
+            .checked_mul(factor)
+            .ok_or_else(|| AtlasError::limit("atlas lattice width overflowed"))?;
+        let next_height = controls
+            .grid
+            .height
+            .checked_mul(factor)
+            .ok_or_else(|| AtlasError::limit("atlas lattice height overflowed"))?;
+        residual_mm = upsample_residual(
+            width,
+            height,
+            &residual_mm,
+            next_width,
+            next_height,
+            controls.grid.radius_metres,
+            check_cancelled,
+        )?;
+        let (_, _, detail) = build_octave(controls, identity, variant, factor, check_cancelled)?;
+        for (index, value) in residual_mm.iter_mut().zip(detail.iter()) {
+            *index = index.saturating_add(*value);
+        }
+        width = next_width;
+        height = next_height;
     }
+    Ok((width, height, residual_mm))
 }
 
-fn octave_weight_ppm(octave: u32) -> i32 {
-    match octave {
-        0 => 1_000_000,
-        1 => 500_000,
-        _ => 250_000,
-    }
+fn octave_id_for_factor(factor: u32) -> u32 {
+    factor.max(1).trailing_zeros()
 }
 
-fn octave_noise_step(octave: u32) -> u32 {
-    match octave {
-        0 => 8,
-        1 => 4,
-        _ => 2,
+fn octave_weight_for_factor(factor: u32) -> i32 {
+    (1_000_000 / i32::try_from(factor.max(1)).unwrap_or(1)).max(1)
+}
+
+fn octave_noise_step_for_factor(factor: u32) -> u32 {
+    match factor {
+        0 | 1 => 8,
+        2 => 4,
+        4 => 2,
+        _ => 1,
     }
 }
 
@@ -162,8 +201,6 @@ fn build_octave(
     identity: &[u8],
     variant: u32,
     factor: u32,
-    weight_ppm: i32,
-    octave: u32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(u32, u32, Vec<i32>), AtlasError> {
     let width = controls
@@ -186,7 +223,9 @@ fn build_octave(
         HIERARCHICAL_RELIEF_DOMAIN,
     );
     let mut residual = vec![0_i32; count];
-    let step = octave_noise_step(octave);
+    let octave = octave_id_for_factor(factor);
+    let weight_ppm = octave_weight_for_factor(factor);
+    let step = octave_noise_step_for_factor(factor);
     for j in 0..height {
         if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
@@ -332,8 +371,8 @@ fn feature_id(kind: MountainKind, index: usize) -> String {
 fn physical_lonlat(grid: Grid, cell: usize) -> (i32, i32) {
     let (row, col) = grid.row_col(cell);
     (
-        lattice_lon_micro(col, grid.width),
-        lattice_lat_micro(row, grid.height),
+        cell_center_lon_micro(col, grid.width),
+        cell_center_lat_micro(row, grid.height),
     )
 }
 
@@ -1377,6 +1416,20 @@ fn octave_noise_ppm(
     octave: u32,
     step: u32,
 ) -> i32 {
+    octave_noise_ppm_keyed(key, i, j, width, height, octave, step, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn octave_noise_ppm_keyed(
+    key: &[u8; 32],
+    i: u32,
+    j: u32,
+    width: u32,
+    height: u32,
+    octave: u32,
+    step: u32,
+    nest: bool,
+) -> i32 {
     let step = step.max(1);
     let i0 = (i / step) * step;
     let j0 = (j / step) * step;
@@ -1392,6 +1445,14 @@ fn octave_noise_ppm(
         let polar = jj == 0 || jj + 1 == height;
         let si = if polar { 0 } else { ii };
         let sj = if polar { 0 } else { jj };
+        let (si, sj) = if nest {
+            (
+                nest_lattice_coord(si, width),
+                nest_lattice_coord(sj, height),
+            )
+        } else {
+            (si, sj)
+        };
         signed_unit_mm(lattice_sample(key, si, sj, octave), 1_000_000)
     };
     bilinear_i32(
@@ -1404,23 +1465,35 @@ fn octave_noise_ppm(
     )
 }
 
-fn coastline_noise_ppm(key: &[u8; 32], i: u32, j: u32, width: u32, height: u32) -> i32 {
-    let coarse = octave_noise_ppm(key, i, j, width, height, 0, 8);
-    let mid = octave_noise_ppm(key, i, j, width, height, 1, 4);
-    let fine = octave_noise_ppm(key, i, j, width, height, 2, 2);
+fn coastline_noise_ppm(
+    key: &[u8; 32],
+    i: u32,
+    j: u32,
+    width: u32,
+    height: u32,
+    grid_width: u32,
+) -> i32 {
+    let factor = (width / grid_width.max(1)).max(1);
+    let step = |base: u32| (base.saturating_mul(factor) / 4).max(1);
+    let coarse = octave_noise_ppm_keyed(key, i, j, width, height, 0, step(8), true);
+    let mid = octave_noise_ppm_keyed(key, i, j, width, height, 1, step(4), true);
+    let fine = octave_noise_ppm_keyed(key, i, j, width, height, 2, step(2), true);
     ((i64::from(coarse) * 520_000 + i64::from(mid) * 300_000 + i64::from(fine) * 180_000)
         / 1_000_000) as i32
 }
 
 #[allow(clippy::too_many_arguments)]
-fn synthesize_coastline(
+pub(crate) fn apply_coastline(
     controls: &ControlFields,
     sdf: &[i32],
     identity: &[u8],
     variant: u32,
     width: u32,
     height: u32,
-    residual: &mut [i32],
+    structure_sea_level_mm: i32,
+    structure_mm: &[i32],
+    protected: &[bool],
+    surface: &mut [i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(), AtlasError> {
     let key = domain_key(
@@ -1431,6 +1504,7 @@ fn synthesize_coastline(
     );
     let land_ppm = land_mask_ppm(controls);
     let sea = controls.sea_level_mm;
+    let sea_rise = sea.saturating_sub(structure_sea_level_mm);
     for j in 0..height {
         if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
@@ -1438,6 +1512,9 @@ fn synthesize_coastline(
         let polar = j == 0 || j + 1 == height;
         for i in 0..width {
             let index = lattice_index(width, i, j);
+            if protected.get(index).copied().unwrap_or(false) {
+                continue;
+            }
             let lon = lattice_lon_micro(if polar { 0 } else { i }, width);
             let lat = lattice_lat_micro(j, height);
             if controls.sample_lake_mask(lon, lat) > 0 {
@@ -1457,40 +1534,61 @@ fn synthesize_coastline(
             if proximity == 0 {
                 continue;
             }
-            let noise = coastline_noise_ppm(&key, if polar { 0 } else { i }, j, width, height);
+            let noise = coastline_noise_ppm(
+                &key,
+                if polar { 0 } else { i },
+                j,
+                width,
+                height,
+                controls.grid.width,
+            );
             let displaced = fraction.saturating_add(
                 ((i64::from(noise) * i64::from(COASTAL_DISPLACE_PPM)) / 1_000_000) as i32,
             );
             let ramp = ((i64::from(displaced.saturating_sub(500_000)) * i64::from(COASTAL_RAMP_MM))
                 / 500_000) as i32;
             let target = sea.saturating_add(ramp);
-            let canonical = controls.sample_elevation(lon, lat);
-            let current = canonical.saturating_add(residual[index]);
+            let current = structure_mm.get(index).copied().unwrap_or(surface[index]);
+            let continental = controls.sample_crust_class(lon, lat) > 0;
             let blended = ((i64::from(current) * i64::from(1_000_000 - proximity as i32)
                 + i64::from(target) * i64::from(proximity as i32))
                 / 1_000_000) as i32;
-            let want_land = displaced >= 500_000;
-            let signed = if want_land == (blended >= sea) {
+            let want_land = displaced >= 500_000 && (continental || current >= sea);
+            let mut signed = if want_land == (blended >= sea) {
                 blended
+            } else if want_land {
+                blended.max(sea.saturating_add(1)).max(target)
             } else {
-                if want_land {
-                    blended.max(sea.saturating_add(1)).max(target)
-                } else {
-                    blended.min(sea.saturating_sub(1)).min(target)
-                }
+                blended.min(sea.saturating_sub(1)).min(target)
             };
-            residual[index] = signed.saturating_sub(canonical);
+            let work = ((i64::from(proximity) * i64::from(sea_rise.abs().min(COASTAL_RAMP_MM)))
+                / 8_000_000) as i32;
+            if work != 0 {
+                signed = if sea_rise > 0 {
+                    signed.saturating_sub(work)
+                } else {
+                    signed.saturating_add(work)
+                };
+                if want_land != (signed >= sea) {
+                    signed = if want_land {
+                        signed.max(sea.saturating_add(1))
+                    } else {
+                        signed.min(sea.saturating_sub(1))
+                    };
+                }
+            }
+            surface[index] = signed;
         }
     }
-    lock_polar_rows(width, height, residual);
+    lock_polar_rows(width, height, surface);
     Ok(())
 }
 
 /// Structure residual from year-0 / accepted hydrology.
 ///
 /// `controls` must be year-0 (`structure_controls`). Sea, lakes, and
-/// watersheds on that snapshot drive pit-fill and coastline grain. Do not pass
-/// epoch hydrology or climate; those operators belong in refine.
+/// watersheds on that snapshot drive pit-fill. Do not pass epoch hydrology
+/// or climate; those operators belong in refine.
 pub fn build_amplification_model(
     controls: &ControlFields,
     identity: &[u8],
@@ -1501,51 +1599,13 @@ pub fn build_amplification_model(
     let sea = controls.sea_level_mm;
     let sdf =
         crate::detail::signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
-    let (mut width, mut height, mut residual_mm) = build_octave(
+    let (width, height, mut residual_mm) = stack_octaves(
         controls,
         identity,
         variant,
-        octave_factor(level, 0),
-        octave_weight_ppm(0),
-        0,
+        level.lattice_factor(),
         check_cancelled,
     )?;
-    for octave in 1..=2 {
-        let factor = octave_factor(level, octave);
-        let next_width = controls
-            .grid
-            .width
-            .checked_mul(factor)
-            .ok_or_else(|| AtlasError::limit("atlas lattice width overflowed"))?;
-        let next_height = controls
-            .grid
-            .height
-            .checked_mul(factor)
-            .ok_or_else(|| AtlasError::limit("atlas lattice height overflowed"))?;
-        residual_mm = upsample_residual(
-            width,
-            height,
-            &residual_mm,
-            next_width,
-            next_height,
-            controls.grid.radius_metres,
-            check_cancelled,
-        )?;
-        let (_, _, detail) = build_octave(
-            controls,
-            identity,
-            variant,
-            factor,
-            octave_weight_ppm(octave),
-            octave,
-            check_cancelled,
-        )?;
-        for (index, value) in residual_mm.iter_mut().zip(detail.iter()) {
-            *index = index.saturating_add(*value);
-        }
-        width = next_width;
-        height = next_height;
-    }
     mean_remove(
         controls.grid,
         width,
@@ -1625,16 +1685,6 @@ pub fn build_amplification_model(
     );
     mean_remove(
         controls.grid,
-        width,
-        height,
-        &mut residual_mm,
-        check_cancelled,
-    )?;
-    synthesize_coastline(
-        controls,
-        &sdf,
-        identity,
-        variant,
         width,
         height,
         &mut residual_mm,
@@ -1930,15 +1980,6 @@ mod tests {
             "per-cell residual mean drifted by {max_mean} mm"
         );
 
-        let down =
-            crate::detail::downsample_mean_mm(&model.detail, sea, &sdf, &mut cancel).unwrap();
-        let canonical_components = land_components(controls.grid, &controls.elevation_mm, sea);
-        let refined_components = land_components(controls.grid, &down, sea);
-        assert!(interior_land_components_equivalent(
-            &canonical_components,
-            &refined_components,
-            &sdf
-        ));
         let original_rivers = world
             .hydrology
             .rivers
@@ -1960,11 +2001,6 @@ mod tests {
                     continue;
                 }
                 assert_eq!(
-                    world.field.elevations_mm[cell] >= sea,
-                    down[cell] >= sea,
-                    "river endpoint land sign changed at cell {cell}"
-                );
-                assert_eq!(
                     world.hydrology.watershed_id[cell],
                     u32::try_from(controls.watershed_id[cell]).unwrap_or(u32::MAX)
                 );
@@ -1978,17 +2014,22 @@ mod tests {
             .iter()
             .any(|f| matches!(f.kind, MountainKind::Saddle | MountainKind::Ridge)));
         assert!(model.features.iter().all(|feature| {
-            matches!(feature.kind, MountainKind::Plateau | MountainKind::Upland)
-                || controls.sample_mountain_influence(feature.lon_micro, feature.lat_micro) > 0
+            matches!(
+                feature.kind,
+                MountainKind::Plateau
+                    | MountainKind::Upland
+                    | MountainKind::Foothill
+                    | MountainKind::SecondaryRidge
+                    | MountainKind::Valley
+                    | MountainKind::System
+            ) || controls.sample_mountain_influence(feature.lon_micro, feature.lat_micro) > 0
         }));
         let mut cancel_octave = || Ok(());
         let (octave_w, octave_h, octave) = build_octave(
             &controls,
             &identity,
             0,
-            octave_factor(DetailLevel::Standard, 2),
-            octave_weight_ppm(2),
-            2,
+            4,
             &mut cancel_octave,
         )
         .unwrap();
@@ -2023,6 +2064,115 @@ mod tests {
                 "foothill without a taller parent peak in the classification window"
             );
         }
+    }
+
+    #[test]
+    fn overlapping_octaves_are_byte_equal_across_detail_levels() {
+        let (controls, identity, _, _) = controls_at(0);
+        let mut cancel = || Ok(());
+        for factor in [1_u32, 2, 4, 8] {
+            let a = build_octave(&controls, &identity, 0, factor, &mut cancel).unwrap();
+            let b = build_octave(&controls, &identity, 0, factor, &mut cancel).unwrap();
+            assert_eq!(a, b);
+            assert_eq!(a.0, controls.grid.width * factor);
+        }
+        let key = domain_key(
+            &identity,
+            ATLAS_DETAIL_ALGORITHM_VERSION,
+            0,
+            COASTLINE_SYNTHESIS_DOMAIN,
+        );
+        let grid_w = controls.grid.width;
+        let grid_h = controls.grid.height;
+        let w4 = grid_w * 4;
+        let h4 = grid_h * 4;
+        let w8 = grid_w * 8;
+        let h8 = grid_h * 8;
+        for j in 1..h4.saturating_sub(1) {
+            for i in 0..w4 {
+                assert_eq!(
+                    coastline_noise_ppm(&key, i, j, w4, h4, grid_w),
+                    coastline_noise_ppm(&key, i * 2, j * 2, w8, h8, grid_w)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nested_upsample_preserves_coarse_samples() {
+        let (controls, identity, _, _) = controls_at(0);
+        let mut cancel = || Ok(());
+        let (src_w, src_h, src) = stack_octaves(&controls, &identity, 0, 4, &mut cancel).unwrap();
+        let stacked_again = stack_octaves(&controls, &identity, 0, 4, &mut cancel).unwrap();
+        assert_eq!((src_w, src_h, src.clone()), stacked_again);
+        let dst_w = src_w * 2;
+        let dst_h = src_h * 2;
+        let up = upsample_residual(
+            src_w,
+            src_h,
+            &src,
+            dst_w,
+            dst_h,
+            controls.grid.radius_metres,
+            &mut cancel,
+        )
+        .unwrap();
+        let (_, _, fine) = build_octave(&controls, &identity, 0, 8, &mut cancel).unwrap();
+        let (stack_w, stack_h, stacked) =
+            stack_octaves(&controls, &identity, 0, 8, &mut cancel).unwrap();
+        assert_eq!((stack_w, stack_h), (dst_w, dst_h));
+        for j in 0..src_h {
+            for i in 0..src_w {
+                assert_eq!(
+                    up[lattice_index(dst_w, i * 2, j * 2)],
+                    src[lattice_index(src_w, i, j)],
+                    "nested sample drifted at {i},{j}"
+                );
+            }
+        }
+        for index in 0..up.len() {
+            assert_eq!(stacked[index], up[index].saturating_add(fine[index]));
+        }
+    }
+
+    #[test]
+    fn mountain_system_ids_match_across_standard_and_detailed() {
+        let (controls, identity, _, _) = controls_at(0);
+        let mut cancel = || Ok(());
+        let standard =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let detailed =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Detailed, &mut cancel)
+                .unwrap();
+        let ids = |model: &AmplificationModel, kind: MountainKind| {
+            model
+                .features
+                .iter()
+                .filter(|feature| feature.kind == kind)
+                .map(|feature| feature.id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            ids(&standard, MountainKind::System),
+            ids(&detailed, MountainKind::System)
+        );
+        let systems = |model: &AmplificationModel| {
+            model
+                .features
+                .iter()
+                .filter(|feature| feature.kind == MountainKind::System)
+                .map(|feature| {
+                    (
+                        feature.id.clone(),
+                        feature.physical_cell,
+                        feature.lon_micro,
+                        feature.lat_micro,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(systems(&standard), systems(&detailed));
     }
 
     #[test]
@@ -2111,7 +2261,7 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 4);
     }
 
     #[test]

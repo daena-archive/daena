@@ -92,19 +92,33 @@ pub fn sample_field_mm(grid: Grid, field: &[i32], lon_micro: i32, lat_micro: i32
     )
 }
 
+pub(crate) fn nest_lattice_coord(i: u32, dim: u32) -> u32 {
+    ((u64::from(i) << 16) / u64::from(dim.max(1))) as u32
+}
+
 pub(crate) fn lattice_lon_micro(i: u32, lattice_width: u32) -> i32 {
-    wrap_lon_micro(
-        i64::from(LON_MICRO_MIN)
-            + (LON_MICRO_SPAN * (i64::from(i).saturating_mul(2) + 1))
-                / (i64::from(lattice_width) * 2),
-    )
+    let width = i64::from(lattice_width.max(1));
+    wrap_lon_micro(i64::from(LON_MICRO_MIN) + LON_MICRO_SPAN * i64::from(i) / width)
 }
 
 pub(crate) fn lattice_lat_micro(j: u32, lattice_height: u32) -> i32 {
+    let height = i64::from(lattice_height.max(1));
+    clamp_lat_micro(i64::from(LAT_MICRO_MIN) + LAT_MICRO_SPAN * i64::from(j) / height)
+}
+
+pub(crate) fn cell_center_lon_micro(i: u32, width: u32) -> i32 {
+    wrap_lon_micro(
+        i64::from(LON_MICRO_MIN)
+            + (LON_MICRO_SPAN * (i64::from(i).saturating_mul(2) + 1))
+                / (i64::from(width.max(1)) * 2),
+    )
+}
+
+pub(crate) fn cell_center_lat_micro(j: u32, height: u32) -> i32 {
     clamp_lat_micro(
         i64::from(LAT_MICRO_MIN)
             + (LAT_MICRO_SPAN * (i64::from(j).saturating_mul(2) + 1))
-                / (i64::from(lattice_height) * 2),
+                / (i64::from(height.max(1)) * 2),
     )
 }
 
@@ -337,6 +351,40 @@ mod tests {
                 crate::amplify::MOUNTAIN_OROMETRY_DOMAIN
             )
         );
+    }
+
+    #[test]
+    fn nested_lattices_share_world_coordinates() {
+        let width_4 = 64 * 4;
+        let width_8 = 64 * 8;
+        let width_16 = 64 * 16;
+        let height_4 = 32 * 4;
+        let height_8 = 32 * 8;
+        let height_16 = 32 * 16;
+        for i in 0..width_4 {
+            assert_eq!(
+                lattice_lon_micro(i, width_4),
+                lattice_lon_micro(i * 2, width_8)
+            );
+            assert_eq!(
+                lattice_lon_micro(i, width_4),
+                lattice_lon_micro(i * 4, width_16)
+            );
+            assert_eq!(
+                nest_lattice_coord(i, width_4),
+                nest_lattice_coord(i * 2, width_8)
+            );
+        }
+        for j in 0..height_4 {
+            assert_eq!(
+                lattice_lat_micro(j, height_4),
+                lattice_lat_micro(j * 2, height_8)
+            );
+            assert_eq!(
+                lattice_lat_micro(j, height_4),
+                lattice_lat_micro(j * 4, height_16)
+            );
+        }
     }
 
     #[test]

@@ -1,15 +1,17 @@
 //! Derived drainage: bounded pit fill, watershed-constrained continuous
-//! flow, atlas-only tributaries, and climate-state erosion on the structure lattice.
+//! flow, atlas-only tributaries, climate-state erosion, and epoch coastline
+//! on the structure lattice.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use daena_physical::hydrology::{BasinStatus, HydrologyField};
 
-use crate::amplify::{AmplificationModel, MountainKind};
+use crate::amplify::{apply_coastline, AmplificationModel, MountainKind};
 use crate::control::ControlFields;
 use crate::detail::{
-    domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, sample_sdf_ppm,
+    domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
+    nest_lattice_coord, sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
     apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
@@ -62,6 +64,7 @@ impl RefinedValley {
 pub enum DepositionKind {
     Fan,
     Floodplain,
+    Delta,
 }
 
 impl DepositionKind {
@@ -70,6 +73,7 @@ impl DepositionKind {
         match self {
             Self::Fan => "fan",
             Self::Floodplain => "floodplain",
+            Self::Delta => "delta",
         }
     }
 }
@@ -584,8 +588,8 @@ fn extract_tributaries(
         }
         let jitter = (lattice_sample(
             drainage_key,
-            (index as u32) % width,
-            (index as u32) / width,
+            nest_lattice_coord((index as u32) % width, width),
+            nest_lattice_coord((index as u32) / width, height),
             0,
         ) >> 11) as u32
             % 3;
@@ -672,7 +676,15 @@ fn extract_tributaries(
             };
             let runoff = runoff_mm.get(gauge).copied().unwrap_or(0);
             let discharge = channel_discharge(accumulation[gauge], runoff);
+            let lattice_path = path.clone();
             displace_meander(&mut path, width, height, drainage_key, discharge);
+            for (point, origin) in path.iter_mut().zip(lattice_path.iter()) {
+                let cell = nearest_cell(hydrology.grid, point[0], point[1]);
+                let displaced = hydrology.watershed_id.get(cell).copied().unwrap_or(OCEAN);
+                if displaced != watershed {
+                    *point = *origin;
+                }
+            }
             let width_mm = channel_width_mm(accumulation[gauge], runoff);
             features.push(RefinedTributary {
                 id: String::new(),
@@ -715,6 +727,7 @@ fn extract_valleys(
     river_cells: &BTreeSet<usize>,
     protected: &[bool],
     sea_level_mm: i32,
+    sdf: &[i32],
     level: DetailLevel,
     drainage_key: &[u8; 32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
@@ -727,23 +740,31 @@ fn extract_valleys(
             if index.is_multiple_of(CANCELLATION_STRIDE) {
                 check_cancelled()?;
             }
-            let jitter = (lattice_sample(drainage_key, i, j, 1) >> 11) as u32 % 3;
+            let lon = lattice_lon_micro(i, width);
+            let lat = lattice_lat_micro(j, height);
+            let sdf_ppm = sample_sdf_ppm(hydrology.grid, sdf, lon, lat);
+            let drowned =
+                filled_mm[index] < sea_level_mm && sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM;
+            let jitter = (lattice_sample(
+                drainage_key,
+                nest_lattice_coord(i, width),
+                nest_lattice_coord(j, height),
+                1,
+            ) >> 11) as u32
+                % 3;
             if protected[index]
-                || filled_mm[index] < sea_level_mm
+                || (filled_mm[index] < sea_level_mm && !drowned)
                 || accumulation[index] < threshold.saturating_sub(jitter)
-                || features.len() >= MAX_VALLEYS
             {
                 continue;
             }
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
             let watershed = hydrology
                 .watershed_id
                 .get(canonical)
                 .copied()
                 .unwrap_or(OCEAN);
-            if watershed == OCEAN || river_cells.contains(&canonical) {
+            if river_cells.contains(&canonical) || (watershed == OCEAN && !drowned) {
                 continue;
             }
             let down = primary[index];
@@ -789,8 +810,14 @@ fn extract_deposition(
     protected: &[bool],
     runoff_mm: &[i32],
     sea_level_mm: i32,
+    sdf: &[i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<Vec<DepositionFeature>, AtlasError> {
+    let mouths = hydrology
+        .rivers
+        .iter()
+        .map(|river| river.mouth_cell)
+        .collect::<BTreeSet<_>>();
     let mut features = Vec::new();
     for j in 1..height.saturating_sub(1) {
         if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
@@ -798,10 +825,7 @@ fn extract_deposition(
         }
         for i in 0..width {
             let index = lattice_index(width, i, j);
-            if protected[index]
-                || worked_mm[index] < sea_level_mm
-                || features.len() >= MAX_DEPOSITION_FEATURES
-            {
+            if protected[index] {
                 continue;
             }
             let dest = primary[index];
@@ -815,21 +839,27 @@ fn extract_deposition(
                 accumulation[index],
                 runoff_mm.get(index).copied().unwrap_or(0),
             );
-            if !deposited && discharge < 24 {
-                continue;
-            }
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
+            let sdf_ppm = sample_sdf_ppm(hydrology.grid, sdf, lon, lat);
+            let is_mouth = mouths.contains(&canonical)
+                && sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM
+                && discharge >= 12;
+            if !is_mouth && (worked_mm[index] < sea_level_mm || (!deposited && discharge < 24)) {
+                continue;
+            }
             let watershed = hydrology
                 .watershed_id
                 .get(canonical)
                 .copied()
                 .unwrap_or(OCEAN);
-            if watershed == OCEAN {
+            if watershed == OCEAN && !is_mouth {
                 continue;
             }
-            let kind = if slope_ppm < i64::from(FAN_SLOPE_PPM) && discharge >= 12 && deposited {
+            let kind = if is_mouth {
+                DepositionKind::Delta
+            } else if slope_ppm < i64::from(FAN_SLOPE_PPM) && discharge >= 12 && deposited {
                 DepositionKind::Fan
             } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && discharge >= 24 {
                 DepositionKind::Floodplain
@@ -854,6 +884,62 @@ fn extract_deposition(
     features.sort_by(|a, b| a.id.cmp(&b.id));
     features.truncate(MAX_DEPOSITION_FEATURES);
     Ok(features)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_mouth_deltas(
+    width: u32,
+    height: u32,
+    hydrology: &HydrologyField,
+    accumulation: &[u32],
+    runoff_mm: &[i32],
+    sea_level_mm: i32,
+    structure_sea_level_mm: i32,
+    sdf: &[i32],
+    protected: &[bool],
+    worked_mm: &mut [i32],
+) {
+    let mouths = hydrology
+        .rivers
+        .iter()
+        .map(|river| river.mouth_cell)
+        .collect::<BTreeSet<_>>();
+    if mouths.is_empty() {
+        return;
+    }
+    let sea_shift = sea_level_mm.abs_diff(structure_sea_level_mm);
+    for j in 1..height.saturating_sub(1) {
+        for i in 0..width {
+            let index = lattice_index(width, i, j);
+            if protected.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let lon = lattice_lon_micro(i, width);
+            let lat = lattice_lat_micro(j, height);
+            let cell = nearest_cell(hydrology.grid, lon, lat);
+            if !mouths.contains(&cell) {
+                continue;
+            }
+            let sdf_ppm = sample_sdf_ppm(hydrology.grid, sdf, lon, lat);
+            if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
+                continue;
+            }
+            let discharge = channel_discharge(
+                accumulation.get(index).copied().unwrap_or(0),
+                runoff_mm.get(index).copied().unwrap_or(0),
+            );
+            if discharge < 12 {
+                continue;
+            }
+            let grow = (discharge / 48)
+                .saturating_add(sea_shift / 64)
+                .min(MAX_EROSION_STEP_MM as u32);
+            if grow == 0 {
+                continue;
+            }
+            worked_mm[index] = worked_mm[index].saturating_add(grow as i32);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -950,6 +1036,7 @@ pub fn build_refined_hydrology(
     hydrology: &HydrologyField,
     sdf: &[i32],
     identity: &[u8],
+    structure_sea_level_mm: i32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<RefinedHydrology, AtlasError> {
     check_cancelled()?;
@@ -994,10 +1081,24 @@ pub fn build_refined_hydrology(
                     <= 0;
         }
     }
+    let mut coastal_mm = source_mm.clone();
+    apply_coastline(
+        controls,
+        sdf,
+        identity,
+        model.detail.variant,
+        width,
+        height,
+        structure_sea_level_mm,
+        &source_mm,
+        &protected,
+        &mut coastal_mm,
+        check_cancelled,
+    )?;
     let (filled_mm, filled_pit_count) = priority_fill(
         width,
         height,
-        &source_mm,
+        &coastal_mm,
         &protected,
         controls.sea_level_mm,
         check_cancelled,
@@ -1058,11 +1159,12 @@ pub fn build_refined_hydrology(
         &river_cells,
         &protected,
         controls.sea_level_mm,
+        sdf,
         model.detail.level,
         &drainage_key,
         check_cancelled,
     )?;
-    let worked_mm = erode(
+    let mut worked_mm = erode(
         model,
         controls,
         sdf,
@@ -1075,6 +1177,18 @@ pub fn build_refined_hydrology(
         &erosion_key,
         check_cancelled,
     )?;
+    apply_mouth_deltas(
+        width,
+        height,
+        hydrology,
+        &accumulation,
+        &runoff_mm,
+        controls.sea_level_mm,
+        structure_sea_level_mm,
+        sdf,
+        &protected,
+        &mut worked_mm,
+    );
     let deposition = extract_deposition(
         width,
         height,
@@ -1086,6 +1200,7 @@ pub fn build_refined_hydrology(
         &protected,
         &runoff_mm,
         controls.sea_level_mm,
+        sdf,
         check_cancelled,
     )?;
     Ok(RefinedHydrology {
@@ -1271,12 +1386,14 @@ pub fn flow_stays_in_watershed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amplify::build_amplification_model;
+    use crate::amplify::{
+        build_amplification_model, interior_land_components_equivalent, land_components,
+    };
     use crate::cache::{decode_residual, encode_residual};
     use crate::control::ControlFields;
     use crate::detail::{
-        domain_key, sample_field_mm, sample_sdf_ppm, signed_coastal_distance_ppm,
-        COASTAL_ENVELOPE_PPM,
+        domain_key, downsample_mean_mm, sample_field_mm, sample_sdf_ppm,
+        signed_coastal_distance_ppm, COASTAL_ENVELOPE_PPM,
     };
     use crate::drainage::DerivedDrainage;
     use crate::golden_world;
@@ -1412,9 +1529,16 @@ mod tests {
         let (model, controls, hydrology, sdf, identity) = fixture();
         let mut cancel = || Ok(());
         let started = Instant::now();
-        let refined =
-            build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
-                .unwrap();
+        let refined = build_refined_hydrology(
+            &model,
+            &controls,
+            &hydrology,
+            &sdf,
+            &identity,
+            controls.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap();
         assert!(
             started.elapsed().as_secs() < 5,
             "standard refinement exceeded the 5s budget"
@@ -1471,6 +1595,26 @@ mod tests {
         }
         assert!(!refined.tributaries.is_empty());
         assert!(!refined.valleys.is_empty());
+        let mut baked = model.detail.clone();
+        baked.bake_absolute_elevation(&refined.worked_mm);
+        let down = downsample_mean_mm(&baked, controls.sea_level_mm, &sdf, &mut cancel).unwrap();
+        assert!(interior_land_components_equivalent(
+            &land_components(controls.grid, &controls.elevation_mm, controls.sea_level_mm),
+            &land_components(controls.grid, &down, controls.sea_level_mm),
+            &sdf
+        ));
+        for river in &world.hydrology.rivers {
+            for cell in [river.mouth_cell, river.source_cell] {
+                if sdf[cell].unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                    continue;
+                }
+                assert_eq!(
+                    world.field.elevations_mm[cell] >= controls.sea_level_mm,
+                    down[cell] >= controls.sea_level_mm,
+                    "river endpoint land sign changed at cell {cell}"
+                );
+            }
+        }
         for feature in &refined.deposition {
             assert!(feature.id.starts_with(&format!(
                 "atlas:deposition:v{}:",
@@ -1570,9 +1714,16 @@ mod tests {
                 }
             }
         }
-        let rebuilt =
-            build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
-                .unwrap();
+        let rebuilt = build_refined_hydrology(
+            &model,
+            &controls,
+            &hydrology,
+            &sdf,
+            &identity,
+            controls.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap();
         assert_eq!(refined.worked_mm, rebuilt.worked_mm);
         assert_eq!(refined.tributaries, rebuilt.tributaries);
         assert_eq!(refined.valleys, rebuilt.valleys);
@@ -1617,7 +1768,7 @@ mod tests {
             max_mean = max_mean.max((*sum / i64::from(*count)).abs());
         }
         assert!(
-            max_mean <= i64::from(MAX_EROSION_STEP_MM) * i64::from(EROSION_SCALES.len() as u32),
+            max_mean <= i64::from(MAX_EROSION_STEP_MM) * i64::from(EROSION_SCALES.len() as u32 + 1),
             "macro elevation drifted by {max_mean} mm after erosion"
         );
         let identities = refined.encode_identities();
@@ -1674,9 +1825,16 @@ mod tests {
     fn refinement_honors_cancellation_before_allocating_lattices() {
         let (model, controls, hydrology, sdf, identity) = fixture();
         let mut cancel = || Err(AtlasError::cancelled());
-        let err =
-            build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
-                .unwrap_err();
+        let err = build_refined_hydrology(
+            &model,
+            &controls,
+            &hydrology,
+            &sdf,
+            &identity,
+            controls.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap_err();
         assert_eq!(err, AtlasError::cancelled());
     }
 
@@ -1693,9 +1851,16 @@ mod tests {
                 Ok(())
             }
         };
-        let err =
-            build_refined_hydrology(&model, &controls, &hydrology, &sdf, &identity, &mut cancel)
-                .unwrap_err();
+        let err = build_refined_hydrology(
+            &model,
+            &controls,
+            &hydrology,
+            &sdf,
+            &identity,
+            controls.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap_err();
         assert_eq!(err, AtlasError::cancelled());
         assert!(
             checks.get() > 3,
@@ -1756,6 +1921,7 @@ mod tests {
                 &historical.hydrology,
                 &sdf,
                 &identity,
+                structure.sea_level_mm,
                 &mut cancel,
             )
             .unwrap();
@@ -1901,6 +2067,7 @@ mod tests {
                 &historical.hydrology,
                 &sdf,
                 &identity,
+                structure.sea_level_mm,
                 &mut cancel,
             )
             .unwrap();
@@ -2031,8 +2198,168 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "phase E: epoch sea must move one shoreline (>= 16 envelope land-sign flips); continent identity unchanged"]
     fn epoch_sea_moves_one_shoreline() {
-        unimplemented!("phase E coastline-flip coverage");
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let forcing =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let structure = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &world.climate,
+            &world.hydrology,
+        )
+        .unwrap();
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&structure, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let mut run = |offset: i64| {
+            let historical = derive_historical_world_with_planet(
+                &world.field,
+                world.report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                forcing,
+                offset,
+                world.climate.planetary,
+                &mut PhysicalNoop,
+            )
+            .unwrap();
+            let sdf = signed_coastal_distance_ppm(
+                world.field.grid,
+                &world.field.elevations_mm,
+                historical.metrics.sea_level_mm,
+            );
+            let controls = ControlFields::from_accepted(
+                &world.field,
+                &world.tectonics,
+                &historical.climate,
+                &historical.hydrology,
+            )
+            .unwrap();
+            let refined = build_refined_hydrology(
+                &model,
+                &controls,
+                &historical.hydrology,
+                &sdf,
+                &identity,
+                structure.sea_level_mm,
+                &mut cancel,
+            )
+            .unwrap();
+            (historical.metrics.sea_level_mm, sdf, refined)
+        };
+        let (present_sea, present_sdf, present) = run(0);
+        let (cold_sea, cold_sdf, cold) = run(-8_000);
+        let (warm_sea, warm_sdf, warm) = run(8_000);
+        assert_ne!(cold_sea, present_sea);
+        assert_ne!(warm_sea, present_sea);
+        let flips = |a: &RefinedHydrology,
+                     sea_a: i32,
+                     sdf_a: &[i32],
+                     b: &RefinedHydrology,
+                     sea_b: i32,
+                     sdf_b: &[i32]| {
+            let width = a.lattice_width;
+            let mut n = 0_u32;
+            for j in 0..a.lattice_height {
+                for i in 0..width {
+                    let lon = lattice_lon_micro(i, width);
+                    let lat = lattice_lat_micro(j, a.lattice_height);
+                    let sa = sample_sdf_ppm(world.field.grid, sdf_a, lon, lat);
+                    let sb = sample_sdf_ppm(world.field.grid, sdf_b, lon, lat);
+                    if sa.unsigned_abs() > COASTAL_ENVELOPE_PPM
+                        && sb.unsigned_abs() > COASTAL_ENVELOPE_PPM
+                    {
+                        continue;
+                    }
+                    let index = lattice_index(width, i, j);
+                    if (a.filled_mm[index] >= sea_a) != (b.filled_mm[index] >= sea_b) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let cold_flips = flips(
+            &present,
+            present_sea,
+            &present_sdf,
+            &cold,
+            cold_sea,
+            &cold_sdf,
+        );
+        let warm_flips = flips(
+            &present,
+            present_sea,
+            &present_sdf,
+            &warm,
+            warm_sea,
+            &warm_sdf,
+        );
+        assert!(
+            cold_flips >= 1 && warm_flips >= 1 && cold_flips.max(warm_flips) >= 16,
+            "shoreline did not move both ways: cold_flips={cold_flips} warm_flips={warm_flips}"
+        );
+        let continent_holds = |refined: &RefinedHydrology, sea: i32, sdf: &[i32]| {
+            let width = refined.lattice_width;
+            for j in 0..refined.lattice_height {
+                for i in 0..width {
+                    let lon = lattice_lon_micro(i, width);
+                    let lat = lattice_lat_micro(j, refined.lattice_height);
+                    let sdf_ppm = sample_sdf_ppm(world.field.grid, sdf, lon, lat);
+                    if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+                        continue;
+                    }
+                    let canonical = model.detail.canonical_at(lon, lat);
+                    let worked = refined.worked_mm[lattice_index(width, i, j)];
+                    assert_eq!(
+                        canonical >= sea,
+                        worked >= sea,
+                        "continent sign flipped outside envelope"
+                    );
+                }
+            }
+        };
+        continent_holds(&present, present_sea, &present_sdf);
+        continent_holds(&cold, cold_sea, &cold_sdf);
+        continent_holds(&warm, warm_sea, &warm_sdf);
+        let warm_valley = warm
+            .valleys
+            .iter()
+            .map(|valley| valley.lattice_index)
+            .collect::<BTreeSet<_>>();
+        let drowned = present
+            .valleys
+            .iter()
+            .filter(|valley| {
+                let sdf_ppm = sample_sdf_ppm(
+                    world.field.grid,
+                    &warm_sdf,
+                    valley.lon_micro,
+                    valley.lat_micro,
+                );
+                warm.filled_mm[valley.lattice_index] < warm_sea
+                    && sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM
+            })
+            .collect::<Vec<_>>();
+        if warm_sea > present_sea {
+            assert!(!drowned.is_empty(), "rising sea drowned no valley spines");
+            assert!(
+                drowned
+                    .iter()
+                    .any(|valley| warm_valley.contains(&valley.lattice_index)),
+                "drowned valley spine IDs dropped"
+            );
+        }
+        assert!(
+            present
+                .deposition
+                .iter()
+                .chain(&cold.deposition)
+                .chain(&warm.deposition)
+                .any(|feature| feature.kind == DepositionKind::Delta),
+            "mouth deltas missing"
+        );
     }
 }

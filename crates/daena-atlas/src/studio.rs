@@ -1542,8 +1542,8 @@ mod tests {
                 continue;
             }
             let (row, col) = grid.row_col(cell);
-            let lon = crate::detail::lattice_lon_micro(col, grid.width);
-            let lat = crate::detail::lattice_lat_micro(row, grid.height);
+            let lon = crate::detail::cell_center_lon_micro(col, grid.width);
+            let lat = crate::detail::cell_center_lat_micro(row, grid.height);
             let sdf_ppm = crate::detail::sample_sdf_ppm(grid, &scene.sdf, lon, lat);
             if scene.model.refined_at(lon, lat, sea, sdf_ppm) < sea {
                 continue;

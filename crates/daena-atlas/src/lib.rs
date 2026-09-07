@@ -24,7 +24,7 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 4;
 pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
@@ -679,6 +679,7 @@ pub fn prepare_from_source(
     let drainage_key = cache::cache_key(&[
         b"atlas-cache-drainage-v1",
         identity,
+        &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
         &request.variant.to_le_bytes(),
         request.level.as_str().as_bytes(),
@@ -707,6 +708,7 @@ pub fn prepare_from_source(
                             &historical.hydrology,
                             &sdf,
                             identity,
+                            structure.sea_level_mm,
                             &mut cancelled,
                         )?;
                         let drainage = drainage_from_refined(&refined);
@@ -732,6 +734,7 @@ pub fn prepare_from_source(
                     &historical.hydrology,
                     &sdf,
                     identity,
+                    structure.sea_level_mm,
                     &mut cancelled,
                 )?;
                 let drainage = drainage_from_refined(&refined);
@@ -755,6 +758,7 @@ pub fn prepare_from_source(
             &historical.hydrology,
             &sdf,
             identity,
+            structure.sea_level_mm,
             &mut cancelled,
         )?;
         (drainage_from_refined(&refined), refined.worked_mm)

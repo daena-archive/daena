@@ -7,6 +7,7 @@ import { confirmDialog } from "$lib/dialogs.svelte";
 import { buildModuleContext } from "$lib/modules/context";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
+import timelineManifestJson from "../../../packages/modules/timeline/manifest.json";
 import {
   allocationRemaining,
   allocationSpent,
@@ -27,7 +28,24 @@ import {
   profileFromPreset,
   profilePresetLabel,
 } from "./profilePresets.ts";
-import { createProfile, deleteProfile, loadProfile, saveProfile, type StoredProfile } from "./profileStore";
+import { compareCalendarDates, formatCalendarDate, GREGORIAN_CALENDAR_ID, parseCalendarDate } from "$lib/date";
+import * as calendarCache from "$lib/chronology/calendarCache";
+import DateEditor from "$lib/date/DateEditor.svelte";
+import {
+  createProfile,
+  deleteProfile,
+  deleteProfileChange,
+  loadProfile,
+  loadProfileChanges,
+  PROFILE_CHANGED_EVENT,
+  PROFILE_TIMELINE_EVENT,
+  resolveEventDates,
+  unlinkEventProfileChange,
+  saveProfile,
+  saveProfileValues,
+  type StoredProfile,
+} from "./profileStore";
+import { effectiveChangeDate, foldProfile, type StoredProfileChange } from "./profileHistory";
 
 const PRESET_BLURBS: Record<ProfilePresetOrigin, string> = {
   custom: "Blank sheet. Field schema comes later.",
@@ -77,9 +95,15 @@ let {
 } = $props();
 
 const context = $derived(buildModuleContext(loreManifestJson as unknown as ModuleManifest, projectId));
+const timeline = $derived(buildModuleContext(timelineManifestJson as unknown as ModuleManifest, projectId));
 
 let stored = $state<StoredProfile | null>(null);
+let changes = $state<StoredProfileChange[]>([]);
+let eventDates = $state<Map<string, unknown>>(new Map());
 let draft = $state<ProfileDocument>(emptyProfile());
+let historyDate = $state<unknown>(null);
+let historyReason = $state("");
+let historyCalendarId = $state(GREGORIAN_CALENDAR_ID);
 let loading = $state(true);
 let creating = $state(false);
 let removing = $state(false);
@@ -90,6 +114,23 @@ let writeChain = Promise.resolve();
 let persistGeneration = 0;
 let dialogEl = $state<HTMLElement | null>(null);
 let sheetEl = $state<HTMLElement | null>(null);
+const historyRows = $derived(
+  [...changes]
+    .map((change) => ({
+      change,
+      date: effectiveChangeDate(change.value, eventDates),
+    }))
+    .sort((left, right) => {
+      if (!left.date && !right.date) return left.change.createdAt.localeCompare(right.change.createdAt);
+      if (!left.date) return 1;
+      if (!right.date) return -1;
+      return (
+        compareCalendarDates(left.date, right.date) ||
+        left.change.createdAt.localeCompare(right.change.createdAt) ||
+        left.change.id.localeCompare(right.change.id)
+      );
+    }),
+);
 const remaining = $derived(allocationRemaining(draft));
 const evaluated = $derived(evaluateProfile(draft));
 const spent = $derived(allocationSpent(draft));
@@ -169,12 +210,14 @@ $effect(() => {
   error = "";
   activeTab = "scores";
   const moduleContext = untrack(() => buildModuleContext(loreManifestJson as unknown as ModuleManifest, project));
-  void loadProfile(moduleContext, id)
+  void loadEditorState(moduleContext, id)
     .then((next) => {
       if (cancelled) return;
-      stored = next;
-      draft = next ? structuredClone(next.value) : emptyProfile();
-      error = next?.error ?? "";
+      stored = next.profile;
+      changes = next.changes;
+      eventDates = next.eventDates;
+      draft = next.draft;
+      error = next.profile?.error ?? "";
     })
     .catch((cause) => {
       if (cancelled) return;
@@ -194,6 +237,75 @@ $effect(() => {
   if (!open) return;
   dialogEl?.focus();
 });
+
+$effect(() => {
+  const id = entityId;
+  const dialogOpen = open;
+  const applyLoaded = (
+    next: Awaited<ReturnType<typeof loadEditorState>>,
+    asOf: ReturnType<typeof parseCalendarDate> | undefined = parseCalendarDate(untrack(() => historyDate)) ?? undefined,
+  ) => {
+    stored = next.profile;
+    changes = next.changes;
+    eventDates = next.eventDates;
+    if (next.profile && !next.profile.invalid) {
+      draft = foldProfile(next.profile.value, next.changes, asOf, next.eventDates);
+    } else {
+      draft = next.draft;
+    }
+    error = next.profile?.error ?? error;
+  };
+  const onChanged = (event: Event) => {
+    const changedId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
+    if (changedId !== id) return;
+    const moduleContext = untrack(() => buildModuleContext(loreManifestJson as unknown as ModuleManifest, projectId));
+    void loadEditorState(moduleContext, id).then((next) => applyLoaded(next));
+  };
+  const onTimeline = (event: Event) => {
+    const changedId = (event as CustomEvent<{ eventId?: string }>).detail?.eventId;
+    if (!changedId) return;
+    const current = untrack(() => changes);
+    if (!current.some((change) => change.value.eventId === changedId) && !dialogOpen) return;
+    void resolveEventDates(current.map((change) => change.value.eventId ?? "")).then((dates) => {
+      eventDates = dates;
+      const currentStored = untrack(() => stored);
+      if (currentStored && !currentStored.invalid) {
+        draft = foldProfile(
+          currentStored.value,
+          current,
+          parseCalendarDate(untrack(() => historyDate)) ?? undefined,
+          dates,
+        );
+      }
+    });
+  };
+  window.addEventListener(PROFILE_CHANGED_EVENT, onChanged);
+  window.addEventListener(PROFILE_TIMELINE_EVENT, onTimeline);
+  return () => {
+    window.removeEventListener(PROFILE_CHANGED_EVENT, onChanged);
+    window.removeEventListener(PROFILE_TIMELINE_EVENT, onTimeline);
+  };
+});
+
+async function loadEditorState(moduleContext: ReturnType<typeof buildModuleContext>, id: string) {
+  const profile = await loadProfile(moduleContext, id);
+  if (!profile || profile.invalid) {
+    return {
+      profile,
+      changes: [] as StoredProfileChange[],
+      eventDates: new Map<string, unknown>(),
+      draft: emptyProfile(),
+    };
+  }
+  const nextChanges = await loadProfileChanges(moduleContext, id);
+  const dates = await resolveEventDates(nextChanges.map((change) => change.value.eventId ?? ""));
+  return {
+    profile,
+    changes: nextChanges,
+    eventDates: dates,
+    draft: foldProfile(profile.value, nextChanges, undefined, dates),
+  };
+}
 
 let lastEntityId = $state<string | null>(null);
 $effect(() => {
@@ -252,7 +364,38 @@ async function persistDraft(next: ProfileDocument) {
     error = errors[0];
     return;
   }
-  await persist(next);
+  const at = parseCalendarDate(historyDate);
+  if (!at && !changes.some((change) => !change.invalid)) {
+    await persist(next);
+    return;
+  }
+  const ownerId = entityId;
+  const generation = persistGeneration;
+  writeChain = writeChain.then(async () => {
+    const current = stored;
+    if (!current || generation !== persistGeneration) return;
+    try {
+      const saved = await saveProfileValues(
+        context,
+        ownerId,
+        current,
+        next,
+        changes,
+        eventDates,
+        at ? { date: at, reason: historyReason } : undefined,
+      );
+      if (generation !== persistGeneration) return;
+      stored = saved.profile;
+      changes = saved.changes;
+      eventDates = await resolveEventDates(saved.changes.map((change) => change.value.eventId ?? ""));
+      draft = foldProfile(saved.profile.value, saved.changes, at ?? undefined, eventDates);
+      error = "";
+    } catch (cause) {
+      if (generation !== persistGeneration) return;
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  });
+  await writeChain;
 }
 
 function parseOptionalNumber(raw: string): number | null {
@@ -271,6 +414,8 @@ async function addProfile() {
   creating = true;
   try {
     stored = await createProfile(context, entityId, profileFromPreset(selectedPreset));
+    changes = [];
+    eventDates = new Map();
     draft = structuredClone(stored.value);
     activeTab = "scores";
     await tick();
@@ -299,6 +444,8 @@ async function removeProfile() {
   try {
     await deleteProfile(context, entityId, stored);
     stored = null;
+    changes = [];
+    eventDates = new Map();
     draft = emptyProfile();
     close();
   } catch (cause) {
@@ -387,6 +534,52 @@ async function toggleFlag(component: ProfileComponent) {
   await patchComponent(component.id, {
     value: { type: "boolean", value: component.value.value === true ? null : true },
   });
+}
+
+function setHistoryDate(next: unknown) {
+  historyDate = next;
+  const parsed = parseCalendarDate(next);
+  historyCalendarId = parsed?.calendar ?? GREGORIAN_CALENDAR_ID;
+  const current = stored;
+  if (!current || current.invalid) return;
+  const usable = changes.filter((change) => !change.invalid);
+  draft = foldProfile(current.value, usable, parsed ?? undefined, eventDates);
+  const existing = parsed
+    ? usable.find((change) => !change.value.eventId && compareCalendarDates(change.value.date, parsed) === 0)
+    : undefined;
+  historyReason = existing?.value.reason ?? "";
+}
+
+async function removeHistoryRow(change: StoredProfileChange) {
+  if (
+    !(await confirmDialog({
+      title: "Remove this change?",
+      message: change.invalid
+        ? "Remove this invalid Profile change?"
+        : "Remove this dated Profile change? Later values stay as they are.",
+      confirmLabel: "Remove change",
+      danger: true,
+    }))
+  )
+    return;
+  try {
+    await deleteProfileChange(context, entityId, change);
+    const eventId = change.value.eventId;
+    if (eventId) await unlinkEventProfileChange(timeline, entityId, eventId);
+    changes = changes.filter((candidate) => candidate.id !== change.id);
+    const current = stored;
+    if (current && !current.invalid) {
+      draft = foldProfile(
+        current.value,
+        changes.filter((candidate) => !candidate.invalid),
+        parseCalendarDate(historyDate) ?? undefined,
+        eventDates,
+      );
+    }
+    error = "";
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+  }
 }
 </script>
 
@@ -740,6 +933,66 @@ async function toggleFlag(component: ProfileComponent) {
               </section>
             {/each}
           {/if}
+          <section class="history">
+            <h3>History</h3>
+            <p class="lead">
+              {parseCalendarDate(historyDate)
+                ? "Edits apply at this date. Clear the date to edit the current sheet."
+                : "Pick a date to edit historical values, or add changes from a Timeline event."}
+            </p>
+            {#if changes.length}
+              <ol>
+                {#each historyRows as row (row.change.id)}
+                  <li>
+                    <span
+                      >{row.change.invalid
+                        ? row.change.error
+                        : row.date
+                          ? formatCalendarDate(row.date)
+                          : "Missing event"}</span>
+                    {#if row.change.value.eventId}<span>Event</span>{/if}
+                    {#if row.change.value.reason}<span>{row.change.value.reason}</span>{/if}
+                    {#if !row.change.invalid}
+                      <span
+                        >{row.change.value.patches.length} value{row.change.value.patches.length === 1
+                          ? ""
+                          : "s"}</span>
+                    {/if}
+                    <button class="quiet" type="button" onclick={() => void removeHistoryRow(row.change)}
+                      >Remove</button>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+            <div class="history-add">
+              <DateEditor
+                label="Edit at date"
+                value={historyDate}
+                calendars={calendarCache.snapshot().entities}
+                calendar={calendarCache.getDefinition(historyCalendarId)}
+                selectedCalendarId={historyCalendarId}
+                onChange={setHistoryDate}
+                onClear={() => setHistoryDate(null)}
+                onSelectCalendar={(id) => {
+                  historyCalendarId = id;
+                  const parsed = parseCalendarDate(historyDate);
+                  if (parsed) setHistoryDate({ ...parsed, calendar: id });
+                }} />
+              {#if parseCalendarDate(historyDate)}
+                <label class="stat">
+                  <span>Reason</span>
+                  <input
+                    type="text"
+                    placeholder="Optional"
+                    value={historyReason}
+                    onchange={(event) => {
+                      historyReason = event.currentTarget.value;
+                      void persistDraft(draft);
+                    }} />
+                </label>
+              {/if}
+            </div>
+          </section>
         </div>
         <footer class="dialog-footer">
           <button class="danger-button" type="button" disabled={removing} onclick={() => void removeProfile()}
@@ -1260,6 +1513,46 @@ async function toggleFlag(component: ProfileComponent) {
 .preset-card:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.history {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.history h3 {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.history ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.history .quiet {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font: 700 10px var(--font-body);
+}
+.history-add {
+  display: grid;
+  gap: 8px;
 }
 @media (max-width: 760px) {
   .ability-grid.six,

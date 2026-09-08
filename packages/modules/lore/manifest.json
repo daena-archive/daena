@@ -377,6 +377,23 @@
         "required": ["schemaVersion", "components"],
         "additionalProperties": false
       }
+    },
+    {
+      "id": "profile-change",
+      "ownerScope": "effective-schema",
+      "ownerEntityTypes": [],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": { "type": "number" },
+          "date": { "type": "object" },
+          "eventId": { "type": "string" },
+          "reason": { "type": "string" },
+          "patches": { "type": "array" }
+        },
+        "required": ["schemaVersion", "date", "patches"],
+        "additionalProperties": false
+      }
     }
   ],
   "views": [],

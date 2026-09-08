@@ -2,7 +2,7 @@
 import { evaluateProfile, formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
 import { profilePresetLabel } from "./profilePresets.ts";
 
-let { profile }: { profile: ProfileDocument } = $props();
+let { profile, asOfLabel = "" }: { profile: ProfileDocument; asOfLabel?: string } = $props();
 
 const evaluated = $derived(evaluateProfile(profile));
 const rows = $derived(
@@ -21,6 +21,7 @@ const origin = $derived(
 
 <section class="profile-card" aria-label="Profile">
   <h3>Profile</h3>
+  {#if asOfLabel}<p class="preset">{asOfLabel}</p>{/if}
   {#if origin}<p class="preset">{origin}</p>{/if}
   {#if rows.length === 0}
     <p class="card-empty">No profile values yet.</p>

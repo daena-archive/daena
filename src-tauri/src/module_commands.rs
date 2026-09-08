@@ -106,7 +106,8 @@ pub(crate) fn effective_module_manifests(
         .list()
         .map(|entry| entry.manifest.id.clone())
         .collect::<Vec<_>>();
-    let mut manifests = Vec::with_capacity(plugin_ids.len());
+    let mut unpacked = Vec::with_capacity(plugin_ids.len());
+    let mut enabled = Vec::with_capacity(plugin_ids.len());
     for id in plugin_ids {
         let entry = project_id
             .as_deref()
@@ -122,9 +123,11 @@ pub(crate) fn effective_module_manifests(
             manifest =
                 merge_module_manifest(&entry.manifest, &overlay).map_err(CoreError::Validation)?;
         }
-        manifests.push((manifest, project.is_module_enabled(&id)?));
+        unpacked.push(manifest);
+        enabled.push(project.is_module_enabled(&id)?);
     }
-    Ok(manifests)
+    expand_profile_change_targets(&mut unpacked);
+    Ok(unpacked.into_iter().zip(enabled).collect())
 }
 
 #[tauri::command]

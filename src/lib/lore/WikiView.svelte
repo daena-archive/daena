@@ -24,13 +24,15 @@ import {
 } from "$lib/project/client";
 import ImageGenerationDialog, { type ImageContextChoice } from "$lib/ai/ImageGenerationDialog.svelte";
 import type { PromptTemplate } from "$lib/ai/promptTemplates";
-import { formatCalendarDate, parseCalendarDate } from "$lib/date";
+import { formatCalendarDate, GREGORIAN_CALENDAR_ID, parseCalendarDate } from "$lib/date";
+import InspectorDateField from "$lib/date/InspectorDateField.svelte";
 import { fieldDisplay, formatAttributeValue, formatSystemTimestamp, humanizeType, isEmptyValue } from "./wiki-format";
 import { buildModuleContext } from "$lib/modules/context";
 import type { ModuleManifest as PluginModuleManifest } from "../../../packages/module-api/src/index";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
 import ProfileCard from "./ProfileCard.svelte";
-import { loadProfile, PROFILE_CHANGED_EVENT } from "./profileStore";
+import { loadFoldedProfile, PROFILE_CHANGED_EVENT, PROFILE_TIMELINE_EVENT } from "./profileStore";
+import * as calendarCache from "$lib/chronology/calendarCache";
 import type { ProfileDocument } from "./profile";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
 import WikiExportMenu from "./WikiExportMenu.svelte";
@@ -87,6 +89,8 @@ let assets = $state<Asset[]>([]);
 let profileMediaUrl = $state("");
 let profile = $state<ProfileDocument | null>(null);
 let profileError = $state("");
+let profileAsOf = $state<unknown>(null);
+let profileAsOfOpen = $state(false);
 let mapLocations = $state<any[]>([]);
 let loading = $state(true);
 let tocSearch = $state("");
@@ -494,22 +498,27 @@ async function loadEntity(id: string) {
     mapLocations = storedMapLocations;
     profile = null;
     profileError = "";
-    try {
-      const loaded = await loadProfile(
-        buildModuleContext(loreManifestJson as unknown as PluginModuleManifest, projectId),
-        id,
-      );
-      if (request !== entityLoadRequest || currentId !== id) return;
-      profileError = loaded?.error ?? "";
-      profile = loaded?.invalid ? null : (loaded?.value ?? null);
-    } catch {
-      if (request === entityLoadRequest && currentId === id) {
-        profile = null;
-        profileError = "";
-      }
-    }
+    await reloadFoldedProfile(id, request);
   } finally {
     if (request === entityLoadRequest) loading = false;
+  }
+}
+
+async function reloadFoldedProfile(id: string, request = entityLoadRequest) {
+  try {
+    const loaded = await loadFoldedProfile(
+      buildModuleContext(loreManifestJson as unknown as PluginModuleManifest, projectId),
+      id,
+      parseCalendarDate(profileAsOf) ? profileAsOf : undefined,
+    );
+    if (request !== entityLoadRequest || currentId !== id) return;
+    profileError = loaded.profile?.error ?? "";
+    profile = loaded.folded;
+  } catch {
+    if (request === entityLoadRequest && currentId === id) {
+      profile = null;
+      profileError = "";
+    }
   }
 }
 
@@ -517,10 +526,17 @@ onMount(() => {
   void loadAll();
   const onProfileChanged = (event: Event) => {
     const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
-    if (entityId && entityId === currentId) void loadAll();
+    if (entityId && entityId === currentId) void reloadFoldedProfile(entityId);
+  };
+  const onTimeline = () => {
+    if (currentId) void reloadFoldedProfile(currentId);
   };
   window.addEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
-  return () => window.removeEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
+  window.addEventListener(PROFILE_TIMELINE_EVENT, onTimeline);
+  return () => {
+    window.removeEventListener(PROFILE_CHANGED_EVENT, onProfileChanged);
+    window.removeEventListener(PROFILE_TIMELINE_EVENT, onTimeline);
+  };
 });
 
 function pushHistory(id: string) {
@@ -530,8 +546,14 @@ function pushHistory(id: string) {
   historyIndex = history.length - 1;
 }
 
+function resetProfileAsOf() {
+  profileAsOf = null;
+  profileAsOfOpen = false;
+}
+
 function openEntity(id: string) {
   if (id === currentId) return;
+  resetProfileAsOf();
   pushHistory(id);
   currentId = id;
   onSelectEntity(id);
@@ -541,6 +563,7 @@ function openEntity(id: string) {
 function goBack() {
   if (historyIndex <= 0) return;
   historyIndex -= 1;
+  resetProfileAsOf();
   currentId = history[historyIndex];
   onSelectEntity(currentId);
 }
@@ -548,6 +571,7 @@ function goBack() {
 function goForward() {
   if (historyIndex < 0 || historyIndex >= history.length - 1) return;
   historyIndex += 1;
+  resetProfileAsOf();
   currentId = history[historyIndex];
   onSelectEntity(currentId);
 }
@@ -807,7 +831,41 @@ function handleEdit() {
                 </div>
               {/each}
               {#if profileError}<p class="card-empty">{profileError}</p>{/if}
-              {#if profile}<ProfileCard {profile} />{/if}
+              {#if profile}
+                <div class="profile-asof">
+                  <InspectorDateField
+                    label="View at date"
+                    fieldKey="profile-as-of"
+                    value={profileAsOf}
+                    editorOpen={profileAsOfOpen}
+                    calendars={calendarCache.snapshot().entities}
+                    calendar={calendarCache.getDefinition(
+                      parseCalendarDate(profileAsOf)?.calendar ?? GREGORIAN_CALENDAR_ID,
+                    )}
+                    selectedCalendarId={parseCalendarDate(profileAsOf)?.calendar ?? GREGORIAN_CALENDAR_ID}
+                    onChange={(next: unknown) => {
+                      profileAsOf = next;
+                      if (currentId) void reloadFoldedProfile(currentId);
+                    }}
+                    onClear={() => {
+                      profileAsOf = null;
+                      profileAsOfOpen = false;
+                      if (currentId) void reloadFoldedProfile(currentId);
+                    }}
+                    onSelectCalendar={(id) => {
+                      const parsed = parseCalendarDate(profileAsOf);
+                      if (!parsed) return;
+                      profileAsOf = { ...parsed, calendar: id };
+                      if (currentId) void reloadFoldedProfile(currentId);
+                    }}
+                    onOpen={() => {
+                      profileAsOfOpen = true;
+                    }} />
+                </div>
+                <ProfileCard
+                  {profile}
+                  asOfLabel={parseCalendarDate(profileAsOf) ? formatCalendarDate(profileAsOf) : ""} />
+              {/if}
               {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0 && !profile && !profileError}<p
                   class="card-empty">
                   No structured details yet.
@@ -1225,6 +1283,12 @@ function handleEdit() {
   top: 0;
   display: grid;
   gap: 13px;
+}
+.profile-asof {
+  margin-top: 8px;
+}
+.profile-asof :global(.property-field) {
+  margin-top: 0;
 }
 .info-card,
 .rail-card {

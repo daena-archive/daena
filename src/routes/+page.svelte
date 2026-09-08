@@ -165,7 +165,9 @@ import ContentPane from "$lib/shell/ContentPane.svelte";
 import InspectorPane from "$lib/shell/InspectorPane.svelte";
 import InspectorSection from "$lib/shell/InspectorSection.svelte";
 import ProfileEditor from "$lib/lore/ProfileEditor.svelte";
+import ProfileEventChanges from "$lib/lore/ProfileEventChanges.svelte";
 import { canEditLoreProfile as entityTypeCanHaveProfile } from "$lib/lore/profile";
+import { notifyProfileTimelineChanged } from "$lib/lore/profileStore";
 import PaneResizeHandle from "$lib/shell/PaneResizeHandle.svelte";
 import StatusSummary from "$lib/shell/StatusSummary.svelte";
 import StatusCenter, { type StatusCenterItem, type StatusCenterTone } from "$lib/shell/StatusCenter.svelte";
@@ -969,12 +971,15 @@ function enabledEntityTypes() {
     modules.filter((module) => module.enabled).flatMap((module) => module.schemas.flatMap(schemaEntityTypeIds)),
   );
 }
-function canEditLoreProfile(entityType: string | null | undefined) {
+function loreProfileOwnerTypes() {
   const lore = modules.find((module) => module.id === "daena.lore" && module.enabled);
-  return entityTypeCanHaveProfile(
-    entityType,
-    lore?.schemas.flatMap((schema) => schema.entityTypes.map((type) => type.id)) ?? [],
-  );
+  return lore?.schemas.flatMap((schema) => schema.entityTypes.map((type) => type.id)) ?? [];
+}
+function canEditLoreProfile(entityType: string | null | undefined) {
+  return entityTypeCanHaveProfile(entityType, loreProfileOwnerTypes());
+}
+function isTimelineEventEntity(entityType: string | null | undefined) {
+  return entityType === "daena.timeline:event" || entityType === "daena.timeline:encounter";
 }
 function fieldAppliesToEntity(field: FieldDefinition, entityType?: string | null, moduleId = activeModuleId()) {
   return fieldAppliesToEnabledTypes(
@@ -5201,6 +5206,9 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       if (selected.entity_type === "daena.timeline:era") {
         eraContextCache.invalidate(entityId);
       }
+      if (definitionsForSave.some((definition) => definition.key === "startsAt")) {
+        notifyProfileTimelineChanged(entityId);
+      }
       const loadToken = selectedLoadToken;
       const linkedEraIds = relationships
         .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
@@ -5373,6 +5381,7 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   }
   // Toast is the success signal for archive; do not leave a lingering Saved chrome.
   entityMutation.reset();
+  if (isTimelineEventEntity(target.entity_type)) notifyProfileTimelineChanged(target.id);
   const wasSelected = selected?.id === target.id;
   if (wasSelected) clearSelection();
   await refreshAfterEntityMutation({ entityId: target.id, removed: true });
@@ -5468,7 +5477,9 @@ function propertyDefinitions() {
   );
 }
 function otherRelationshipDefinitions() {
-  return relationshipDefinitions().filter((candidate) => !isEraRelationshipField(candidate));
+  return relationshipDefinitions().filter(
+    (candidate) => !isEraRelationshipField(candidate) && candidate.key !== "profileChanges",
+  );
 }
 function groupedInspectorRelationships() {
   return groupedRelationshipFields(
@@ -8729,6 +8740,16 @@ onMount(() => {
                   entityId={selected.id}
                   entityName={selected.name}
                   bind:open={profileEditorOpen} />
+              </InspectorSection>
+            {/if}
+            {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
+              <InspectorSection title="Profile Changes" open={false}>
+                <ProfileEventChanges
+                  projectId={projectInfo.root}
+                  eventId={selected.id}
+                  eventDate={fields.startsAt}
+                  ownerTypes={loreProfileOwnerTypes()}
+                  search={searchEntitiesPaged()} />
               </InspectorSection>
             {/if}
             <InspectorSection

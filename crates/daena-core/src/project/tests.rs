@@ -2938,6 +2938,94 @@ fn lore_profile_record_survives_directory_reopen_and_checkpoint() {
 }
 
 #[test]
+fn lore_profile_change_record_survives_directory_reopen_and_checkpoint() {
+    let root = std::env::temp_dir().join(format!("daena-lore-profile-change-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let person = store
+        .create_entity(CreateEntity {
+            name: "Scout".into(),
+            entity_type: Some("daena.lore:person".into()),
+        })
+        .unwrap();
+    let artifact = store
+        .create_entity(CreateEntity {
+            name: "Crown".into(),
+            entity_type: Some("daena.lore:artifact".into()),
+        })
+        .unwrap();
+    let overlay = serde_json::json!({
+        "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
+        "customEntityTypes": [{
+            "id": "daena.lore:species",
+            "name": "Species",
+            "icon": { "kind": "catalog", "id": "animal" },
+            "iconColor": { "kind": "preset", "id": "moss" }
+        }]
+    });
+    store
+        .set_module_schema_overlay("daena.lore".into(), Some(overlay))
+        .unwrap();
+    let species = store
+        .create_entity(CreateEntity {
+            name: "Drake".into(),
+            entity_type: Some("daena.lore:species".into()),
+        })
+        .unwrap();
+    let change = serde_json::json!({
+        "schemaVersion": 1,
+        "date": { "calendar": "gregorian", "year": 247, "era": "CE", "precision": "year" },
+        "eventId": "evt-1",
+        "patches": [{
+            "componentId": "str",
+            "value": { "type": "number", "value": 14 }
+        }]
+    });
+    for owner in [&person.id, &artifact.id, &species.id] {
+        store
+            .create_module_record(
+                "daena.lore",
+                "profile-change",
+                owner,
+                change.clone(),
+                Some(&Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+    }
+    let oversized = serde_json::json!({
+        "schemaVersion": 1,
+        "date": { "calendar": "gregorian", "year": 1, "era": "CE", "precision": "year" },
+        "patches": [{
+            "componentId": "str",
+            "value": { "type": "text", "value": "x".repeat(70_000) }
+        }]
+    });
+    assert!(store
+        .create_module_record(
+            "daena.lore",
+            "profile-change",
+            &person.id,
+            oversized,
+            Some(&Uuid::new_v4().to_string()),
+        )
+        .is_err());
+    store.flush_checkpoint("lore-profile-change-test").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    for owner in [&person.id, &artifact.id, &species.id] {
+        let records = rebuilt
+            .list_module_records("daena.lore", "profile-change", owner, None, 50, 0)
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].value, change);
+    }
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn schema_overlay_preview_counts_and_revision_cas_are_idempotent() {
     let root = std::env::temp_dir().join(format!("daena-overlay-preview-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

@@ -2047,6 +2047,72 @@ fn broker_dispatch_allows_effective_schema_record_owners() {
         Some(&uuid::Uuid::new_v4().to_string()),
     );
     assert!(matches!(maps_denied, Err(CoreError::Unauthorized { .. })));
+    let change = serde_json::json!({
+        "schemaVersion": 1,
+        "date": { "calendar": "gregorian", "year": 1, "era": "CE", "precision": "year" },
+        "patches": [{ "componentId": "str", "value": { "type": "number", "value": 11 } }]
+    });
+    let live_changes = RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec![
+            "daena.lore:person".into(),
+            "daena.lore:faction".into(),
+            "daena.lore:species".into(),
+        ],
+        unique_per_owner: false,
+    };
+    let species_change = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(live_changes),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-change",
+            "ownerEntityId": species["id"],
+            "value": change
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let disabled_changes = RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec!["daena.lore:person".into(), "daena.lore:faction".into()],
+        unique_per_owner: false,
+    };
+    let change_denied = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(disabled_changes.clone()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-change",
+            "ownerEntityId": species["id"],
+            "value": change
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(change_denied, Err(CoreError::Unauthorized { .. })));
+    let change_updated = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(disabled_changes),
+        "record.update",
+        serde_json::json!({
+            "collection": "profile-change",
+            "id": species_change["id"],
+            "ownerEntityId": species["id"],
+            "value": {
+                "schemaVersion": 1,
+                "date": { "calendar": "gregorian", "year": 2, "era": "CE", "precision": "year" },
+                "patches": [{ "componentId": "str", "value": { "type": "number", "value": 12 } }]
+            },
+            "expectedRevision": species_change["revision"]
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(change_updated["value"]["date"]["year"], 2);
 }
 
 #[test]

@@ -19,7 +19,8 @@ use daena_core::{
     WikiPageExportFormat,
 };
 use daena_plugin_api::{
-    merge_module_manifest, parse_module_overlay, supports_schema_overlay, CommandAction,
+    expand_profile_change_targets, merge_module_manifest, parse_module_overlay,
+    supports_schema_overlay, CommandAction,
     MetadataFieldDefinition, MigrationOperation, ModuleSchemaEditorState, ModuleSchemaOverlay,
     ModuleSchemaOverlayMutationResult, PluginManifest, RpcRequest, RpcResponse,
     SchemaOverlayPreviewResult, ViewComponent, SCHEMA_OVERLAY_VERSION,

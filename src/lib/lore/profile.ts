@@ -128,6 +128,12 @@ function optionalStringList(value: unknown, label: string, errors: string[]): st
   return trimmed;
 }
 
+export function parseProfileValue(raw: unknown, componentLabel = "Value"): ProfileValue | null {
+  const errors: string[] = [];
+  const value = parseValue(raw, componentLabel, errors);
+  return errors.length || !value ? null : value;
+}
+
 function parseValue(raw: unknown, componentLabel: string, errors: string[]): ProfileValue | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     errors.push(`${componentLabel} is missing a value`);

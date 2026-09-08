@@ -16,7 +16,19 @@ fn canonical_bundled_manifests_validate() {
     assert_eq!(profile.owner_scope, RecordOwnerScope::EffectiveSchema);
     assert!(profile.owner_entity_types.is_empty());
     assert!(profile.unique_per_owner);
-    assert_eq!(parse_manifest(timeline).unwrap().id, "daena.timeline");
+    let profile_change = lore_manifest
+        .records
+        .iter()
+        .find(|collection| collection.id == "profile-change")
+        .expect("lore profile-change collection");
+    assert_eq!(profile_change.owner_scope, RecordOwnerScope::EffectiveSchema);
+    assert!(!profile_change.unique_per_owner);
+    let timeline_manifest = parse_manifest(timeline).unwrap();
+    assert_eq!(timeline_manifest.id, "daena.timeline");
+    assert!(timeline_manifest.schemas[0]
+        .fields
+        .iter()
+        .any(|field| field.key == "profileChanges"));
     assert_eq!(parse_manifest(houses).unwrap().id, "daena.houses");
     let maps = parse_manifest(maps).unwrap();
     assert_eq!(

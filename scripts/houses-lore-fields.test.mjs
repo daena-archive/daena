@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   contributedRelationshipFields,
+  loreProfileOwnerTypes,
+  withProfileChangeTargets,
   counterpartId,
   counterpartIds,
   coveredRelationshipIds,
@@ -22,6 +24,7 @@ import {
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const lore = JSON.parse(readFileSync(join(root, "packages/modules/lore/manifest.json"), "utf8"));
 const family = JSON.parse(readFileSync(join(root, "packages/modules/houses/manifest.json"), "utf8"));
+const timeline = JSON.parse(readFileSync(join(root, "packages/modules/timeline/manifest.json"), "utf8"));
 
 const person = "daena.lore:person";
 const enabledTypes = new Set([person, "daena.lore:place", "daena.lore:faction", "house", "daena.houses:house"]);
@@ -227,5 +230,31 @@ const wikiSource = readFileSync(join(root, "src/lib/lore/WikiView.svelte"), "utf
 assert.match(wikiSource, /groupedWikiRelationships/);
 assert.match(wikiSource, /info-rel-group/);
 assert.match(wikiSource, /wikiAttrChips\(target\.attributes\)/);
+
+const loreWithSpecies = {
+  ...lore,
+  enabled: true,
+  schemas: lore.schemas.map((schema) => ({
+    ...schema,
+    entityTypes: [...schema.entityTypes, { id: "daena.lore:species", name: "Species" }],
+  })),
+};
+const timelineEnabled = { ...timeline, enabled: true };
+assert.equal(loreProfileOwnerTypes([loreWithSpecies]).includes("daena.lore:species"), true);
+const eventFields = contributedRelationshipFields(
+  timelineEnabled,
+  "event",
+  [timelineEnabled, loreWithSpecies],
+  new Set(["event", "daena.lore:person", "daena.lore:species"]),
+);
+const profileChanges = eventFields.find((field) => field.key === "profileChanges");
+assert.equal(profileChanges?.targetEntityTypes.includes("daena.lore:species"), true);
+assert.equal(
+  withProfileChangeTargets(
+    [{ key: "profileChanges", type: "relationship", targetEntityTypes: ["daena.lore:person"] }],
+    ["daena.lore:person", "daena.lore:species"],
+  )[0].targetEntityTypes.includes("daena.lore:species"),
+  true,
+);
 
 console.log("houses lore field contribution checks passed");

@@ -116,6 +116,21 @@
             },
             { "key": "outcome", "label": "Outcome", "type": "enum", "options": ["survived", "perished", "absent"] }
           ]
+        },
+        {
+          "key": "profileChanges",
+          "label": "Profile changes",
+          "type": "relationship",
+          "relationshipType": "changes_profile",
+          "targetEntityTypes": [
+            "daena.lore:person",
+            "daena.lore:place",
+            "daena.lore:faction",
+            "daena.lore:artifact",
+            "daena.lore:culture",
+            "daena.lore:concept"
+          ],
+          "entityTypes": ["event", "encounter"]
         }
       ]
     }
@@ -126,14 +141,14 @@
       "name": "Timeline event",
       "entityType": "event",
       "description": "A moment, turning point, or span of history.",
-      "fields": { "startsAt": "", "endsAt": "", "era": [] }
+      "fields": { "startsAt": "", "endsAt": "", "era": [], "profileChanges": [] }
     },
     {
       "id": "encounter",
       "name": "Encounter",
       "entityType": "encounter",
       "description": "A meeting or interaction between people at a place and time.",
-      "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [], "era": [] }
+      "fields": { "startsAt": "", "endsAt": "", "location": [], "participants": [], "era": [], "profileChanges": [] }
     },
     {
       "id": "era",

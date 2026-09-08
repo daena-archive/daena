@@ -172,6 +172,21 @@ export function fieldsApplyingToEntity<T extends RelationshipFieldLike>(
   return fields;
 }
 
+export function loreProfileOwnerTypes(manifests: readonly ManifestLike[]): string[] {
+  const lore = manifests.find((manifest) => manifest.id === "daena.lore" && manifest.enabled !== false);
+  return lore?.schemas?.flatMap((schema) => schema.entityTypes?.map((entityType) => entityType.id) ?? []) ?? [];
+}
+
+export function withProfileChangeTargets<T extends RelationshipFieldLike>(
+  fields: T[],
+  ownerTypes: readonly string[],
+): T[] {
+  if (!ownerTypes.length) return fields;
+  return fields.map((field) =>
+    field.key === "profileChanges" ? { ...field, targetEntityTypes: [...ownerTypes] } : field,
+  );
+}
+
 export function contributedRelationshipFields<T extends RelationshipFieldLike>(
   activeManifest: ManifestLike | null | undefined,
   entityType: string | null | undefined,
@@ -192,7 +207,7 @@ export function contributedRelationshipFields<T extends RelationshipFieldLike>(
       contributed.push(field);
     }
   }
-  return [...own, ...contributed];
+  return withProfileChangeTargets([...own, ...contributed], loreProfileOwnerTypes(enabledManifests));
 }
 
 export function manifestOwningRelationshipType(

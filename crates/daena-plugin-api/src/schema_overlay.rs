@@ -1203,6 +1203,36 @@ pub fn merge_module_manifest(
     Ok(merged)
 }
 
+/// Point Timeline `profileChanges` at live Lore types, including overlay customs.
+pub fn expand_profile_change_targets(manifests: &mut [PluginManifest]) {
+    let lore_types: Vec<String> = manifests
+        .iter()
+        .find(|manifest| manifest.id == "daena.lore")
+        .map(|manifest| {
+            manifest
+                .schemas
+                .iter()
+                .flat_map(|schema| schema.entity_types.iter().map(|entity_type| entity_type.id.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if lore_types.is_empty() {
+        return;
+    }
+    for manifest in manifests {
+        if manifest.id != "daena.timeline" {
+            continue;
+        }
+        for schema in &mut manifest.schemas {
+            for field in &mut schema.fields {
+                if field.key == "profileChanges" {
+                    field.target_entity_types = Some(lore_types.clone());
+                }
+            }
+        }
+    }
+}
+
 fn unique_len(values: &[String]) -> usize {
     values.iter().collect::<BTreeSet<_>>().len()
 }
@@ -2031,5 +2061,39 @@ mod tests {
         assert!(validate_module_overlay(&package, &overlay)
             .unwrap_err()
             .contains("references disabled field"));
+    }
+
+    #[test]
+    fn profile_change_targets_include_overlay_lore_types() {
+        let lore = merge_module_manifest(
+            &lore_manifest(),
+            &ModuleSchemaOverlay {
+                version: SCHEMA_OVERLAY_VERSION,
+                custom_entity_types: vec![EntityTypeDefinition {
+                    id: "daena.lore:species".into(),
+                    name: "Species".into(),
+                    icon: crate::IconRef::UserSvg {
+                        svg: r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg>"#.into(),
+                    },
+                    icon_color: EntityTypeColor::Preset { id: "moss".into() },
+                }],
+                ..ModuleSchemaOverlay::default()
+            },
+        )
+        .expect("merge");
+        let mut manifests = vec![lore, timeline_manifest()];
+        expand_profile_change_targets(&mut manifests);
+        let targets = manifests
+            .iter()
+            .find(|manifest| manifest.id == "daena.timeline")
+            .unwrap()
+            .schemas
+            .iter()
+            .flat_map(|schema| schema.fields.iter())
+            .find(|field| field.key == "profileChanges")
+            .and_then(|field| field.target_entity_types.clone())
+            .unwrap();
+        assert!(targets.iter().any(|id| id == "daena.lore:person"));
+        assert!(targets.iter().any(|id| id == "daena.lore:species"));
     }
 }

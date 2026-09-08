@@ -14,6 +14,21 @@ import {
 } from "../src/lib/lore/profile.ts";
 import { parseFormula } from "../src/lib/lore/profileFormula.ts";
 import {
+  applyPatches,
+  changesForEvent,
+  dateAfter,
+  foldProfile,
+  latestUnlinkedChange,
+  parseProfileChange,
+  patchedProfileErrors,
+  matchingProfileChangeRels,
+  PROFILE_CHANGE_MAX_BYTES,
+  PROFILE_CHANGE_RELATIONSHIP,
+  profileChangeValidationErrors,
+  unlinkedChangeAt,
+  valuePatches,
+} from "../src/lib/lore/profileHistory.ts";
+import {
   PROFILE_PRESETS,
   applyDndAncestry,
   matchingDndAncestry,
@@ -543,5 +558,181 @@ if (!("error" in literals)) {
     6,
   );
 }
+
+const baseline = parseProfile({
+  schemaVersion: 1,
+  components: [
+    {
+      id: "str",
+      kind: "attribute",
+      name: "Strength",
+      value: { type: "number", value: 10 },
+    },
+    {
+      id: "mod",
+      kind: "derived",
+      name: "Modifier",
+      formula: "floor(({str} - 10) / 2)",
+      value: { type: "number", value: null },
+    },
+  ],
+});
+assert.deepEqual(profileChangeValidationErrors({ schemaVersion: 1, date: { year: 247 }, patches: [] }), [
+  "Profile change needs at least one patch",
+]);
+const early = parseProfileChange({
+  schemaVersion: 1,
+  date: { calendar: "gregorian", year: 240, era: "CE", precision: "year" },
+  patches: [{ componentId: "str", value: { type: "number", value: 12 } }],
+});
+const linked = parseProfileChange({
+  schemaVersion: 1,
+  date: { calendar: "gregorian", year: 1, era: "CE", precision: "year" },
+  eventId: "battle",
+  patches: [{ componentId: "str", value: { type: "number", value: 16 } }],
+});
+const storedChanges = [
+  { id: "c1", revision: "1", createdAt: "1", value: early },
+  { id: "c2", revision: "1", createdAt: "2", value: linked },
+];
+const liveDates = new Map([["battle", { calendar: "gregorian", year: 247, era: "CE", precision: "year" }]]);
+assert.equal(foldProfile(baseline, storedChanges, { year: 239 }, liveDates).components[0].value.value, 10);
+assert.equal(foldProfile(baseline, storedChanges, { year: 240 }, liveDates).components[0].value.value, 12);
+assert.equal(foldProfile(baseline, storedChanges, { year: 247 }, liveDates).components[0].value.value, 16);
+assert.equal(evaluateProfile(foldProfile(baseline, storedChanges, { year: 247 }, liveDates)).get("mod"), 3);
+assert.equal(foldProfile(baseline, storedChanges, { year: 247 }, new Map()).components[0].value.value, 12);
+assert.equal(
+  foldProfile(baseline, storedChanges, { year: 247 }, new Map([["battle", null]])).components[0].value.value,
+  12,
+);
+const moved = new Map([["battle", { calendar: "gregorian", year: 230, era: "CE", precision: "year" }]]);
+assert.equal(foldProfile(baseline, storedChanges, { year: 235 }, moved).components[0].value.value, 16);
+assert.equal(foldProfile(baseline, storedChanges, { year: 240 }, moved).components[0].value.value, 12);
+const otherBattle = parseProfileChange({
+  schemaVersion: 1,
+  date: { calendar: "gregorian", year: 1, era: "CE", precision: "year" },
+  eventId: "duel",
+  patches: [{ componentId: "str", value: { type: "number", value: 18 } }],
+});
+const twoEvents = [...storedChanges, { id: "c3", revision: "1", createdAt: "3", value: otherBattle }];
+const bothDates = new Map([
+  ["battle", { calendar: "gregorian", year: 247, era: "CE", precision: "year" }],
+  ["duel", { calendar: "gregorian", year: 250, era: "CE", precision: "year" }],
+]);
+assert.equal(foldProfile(baseline, twoEvents, { year: 247 }, bothDates).components[0].value.value, 16);
+assert.equal(foldProfile(baseline, twoEvents, { year: 250 }, bothDates).components[0].value.value, 18);
+assert.equal(
+  foldProfile(baseline, twoEvents, { year: 247 }, new Map([["duel", bothDates.get("duel")]])).components[0].value.value,
+  12,
+);
+const current = foldProfile(baseline, storedChanges, undefined, liveDates);
+assert.deepEqual(valuePatches(baseline, current), [{ componentId: "str", value: { type: "number", value: 16 } }]);
+assert.equal(applyPatches(baseline, []).components[0].value.value, 10);
+assert.deepEqual(dateAfter({ calendar: "gregorian", year: 247, era: "CE", precision: "year" }), {
+  calendar: "gregorian",
+  year: 248,
+  era: "CE",
+  precision: "year",
+});
+assert.equal(dateAfter({ calendar: "gregorian", year: 247, month: 3, day: 15, era: "CE", precision: "day" }).month, 3);
+assert.equal(dateAfter({ calendar: "gregorian", year: 247, month: 3, day: 15, era: "CE", precision: "day" }).day, 15);
+assert.equal(dateAfter({ calendar: "gregorian", year: 247, month: 3, day: 15, era: "CE", precision: "day" }).year, 248);
+assert.deepEqual(dateAfter({ calendar: "gregorian", year: 5, era: "BCE", precision: "year" }).year, 4);
+assert.equal(dateAfter({ calendar: "gregorian", year: 1, era: "BCE", precision: "year" }).era, "CE");
+assert.equal(changesForEvent(twoEvents, "battle").length, 1);
+assert.equal(unlinkedChangeAt(storedChanges, early.date)?.id, "c1");
+assert.equal(latestUnlinkedChange([{ id: "c1", revision: "1", createdAt: "1", value: early }], liveDates)?.id, "c1");
+assert.equal(latestUnlinkedChange(storedChanges, liveDates)?.id, undefined);
+assert.equal(latestUnlinkedChange(twoEvents, bothDates)?.id, undefined);
+assert.deepEqual(patchedProfileErrors(baseline, [{ componentId: "str", value: { type: "number", value: 99 } }]), []);
+const bounded = parseProfile({
+  schemaVersion: 1,
+  components: [
+    {
+      id: "str",
+      kind: "attribute",
+      name: "Strength",
+      min: 0,
+      max: 20,
+      value: { type: "number", value: 10 },
+    },
+  ],
+});
+assert.equal(
+  patchedProfileErrors(bounded, [{ componentId: "str", value: { type: "number", value: 99 } }]).some((error) =>
+    error.includes("above max"),
+  ),
+  true,
+);
+assert.equal(
+  foldProfile(
+    baseline,
+    [
+      {
+        id: "bad",
+        revision: "1",
+        createdAt: "0",
+        value: {
+          schemaVersion: 1,
+          date: { calendar: "gregorian", year: 1, era: "CE", precision: "year" },
+          patches: [],
+        },
+        invalid: true,
+        error: "bad",
+      },
+      ...storedChanges,
+    ],
+    { year: 240 },
+    liveDates,
+  ).components[0].value.value,
+  12,
+);
+assert.equal(
+  changesForEvent(
+    [
+      ...storedChanges,
+      {
+        id: "c2b",
+        revision: "1",
+        createdAt: "2b",
+        value: parseProfileChange({
+          schemaVersion: 1,
+          date: { calendar: "gregorian", year: 1, era: "CE", precision: "year" },
+          eventId: "battle",
+          patches: [{ componentId: "str", value: { type: "number", value: 17 } }],
+        }),
+      },
+    ],
+    "battle",
+  ).length,
+  2,
+);
+assert.equal(
+  matchingProfileChangeRels(
+    [
+      { type: PROFILE_CHANGE_RELATIONSHIP, sourceId: "battle", targetId: "person" },
+      { type: PROFILE_CHANGE_RELATIONSHIP, sourceId: "duel", targetId: "person" },
+    ],
+    "battle",
+    "person",
+  ).length,
+  1,
+);
+assert.equal(
+  matchingProfileChangeRels(
+    [{ type: PROFILE_CHANGE_RELATIONSHIP, sourceId: "battle", targetId: "person" }],
+    "battle",
+    "person",
+  )[0].sourceId,
+  "battle",
+);
+assert.equal(
+  profileChangeValidationErrors({
+    schemaVersion: 1,
+    date: { calendar: "gregorian", year: 1, era: "CE", precision: "year" },
+    patches: [{ componentId: "str", value: { type: "text", value: "x".repeat(PROFILE_CHANGE_MAX_BYTES) } }],
+  }).some((error) => error.includes("64 KiB")),
+  true,
+);
 
 console.log("lore profiles passed");

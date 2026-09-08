@@ -20,10 +20,10 @@ use daena_core::{
 };
 use daena_plugin_api::{
     expand_profile_change_targets, merge_module_manifest, parse_module_overlay,
-    supports_schema_overlay, CommandAction,
-    MetadataFieldDefinition, MigrationOperation, ModuleSchemaEditorState, ModuleSchemaOverlay,
-    ModuleSchemaOverlayMutationResult, PluginManifest, RpcRequest, RpcResponse,
-    SchemaOverlayPreviewResult, ViewComponent, SCHEMA_OVERLAY_VERSION,
+    supports_schema_overlay, CommandAction, MetadataFieldDefinition, MigrationOperation,
+    ModuleSchemaEditorState, ModuleSchemaOverlay, ModuleSchemaOverlayMutationResult,
+    PluginManifest, RpcRequest, RpcResponse, SchemaOverlayPreviewResult, ViewComponent,
+    SCHEMA_OVERLAY_VERSION,
 };
 use daena_plugin_host::{
     plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,

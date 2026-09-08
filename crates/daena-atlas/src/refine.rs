@@ -11,24 +11,39 @@ use crate::amplify::{apply_coastline, AmplificationModel, MountainKind};
 use crate::constraint::AtlasConstraint;
 use crate::control::ControlFields;
 use crate::detail::{
-    domain_key, lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell,
-    nest_lattice_coord, sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
+    cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
+    lattice_sample, nearest_cell, nest_lattice_coord, sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
     apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
     lock_polar_rows, neighbor_at, vegetation_resistance_ppm, ScaleErosion, DIRS, EROSION_SCALES,
     FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM, MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
 };
+
 use crate::request::DetailLevel;
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
-pub const MAX_TRIBUTARIES: usize = 128;
+pub const MAX_TRIBUTARIES: usize = 256;
 pub const MAX_VALLEYS: usize = 64;
 pub const MAX_DEPOSITION_FEATURES: usize = 64;
 pub const MAX_FILL_MM: i32 = 4_800;
 const CANCELLATION_STRIDE: usize = 4_096;
-const MAX_TRACE_STEPS: usize = 64;
+const MAX_TRACE_STEPS: usize = 8_192;
+
+fn lattice_center(i: u32, j: u32, width: u32, height: u32) -> [i32; 2] {
+    [
+        cell_center_lon_micro(i, width),
+        cell_center_lat_micro(j, height),
+    ]
+}
+
+fn max_trace_steps(width: u32, height: u32) -> usize {
+    (width as usize)
+        .saturating_add(height as usize)
+        .saturating_mul(2)
+        .max(64)
+}
 const REFINE_WORKING_BUFFERS: usize = 4;
 const REFINE_BUDGET_BYTES: usize = 96 * 1024 * 1024;
 
@@ -620,16 +635,14 @@ fn extract_tributaries(
             if !channel[index] || features.len() >= MAX_TRIBUTARIES {
                 continue;
             }
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
+            let [lon, lat] = lattice_center(i, j, width, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
-            if river_cells.contains(&canonical)
-                || hydrology
-                    .watershed_id
-                    .get(canonical)
-                    .copied()
-                    .unwrap_or(OCEAN)
-                    == OCEAN
+            if hydrology
+                .watershed_id
+                .get(canonical)
+                .copied()
+                .unwrap_or(OCEAN)
+                == OCEAN
             {
                 continue;
             }
@@ -651,29 +664,38 @@ fn extract_tributaries(
             let mut current = index;
             let mut join = index;
             let mut seen = BTreeSet::from([current]);
-            let mut parent_river_id = NO_PARENT_RIVER;
-            for _ in 0..MAX_TRACE_STEPS {
+            let mut parent_river_id = if river_cells.contains(&canonical) {
+                river_at[canonical]
+            } else {
+                NO_PARENT_RIVER
+            };
+            for _ in 0..max_trace_steps(width, height).min(MAX_TRACE_STEPS) {
                 let dest = primary[current];
                 if dest == NO_FLOW || dest as usize >= count || !seen.insert(dest as usize) {
                     break;
                 }
                 current = dest as usize;
-                join = current;
+                if filled_mm[current] < sea_level_mm {
+                    break;
+                }
                 let cj = (current as u32) / width;
                 let ci = (current as u32) % width;
-                let clon = lattice_lon_micro(ci, width);
-                let clat = lattice_lat_micro(cj, height);
-                path.push([clon, clat]);
+                let [clon, clat] = lattice_center(ci, cj, width, height);
                 let join_canonical = nearest_cell(hydrology.grid, clon, clat);
                 if hydrology.watershed_id.get(join_canonical).copied() != Some(watershed) {
-                    path.pop();
                     break;
                 }
-                if river_cells.contains(&join_canonical) {
+                join = current;
+                path.push([clon, clat]);
+                if parent_river_id == NO_PARENT_RIVER && river_cells.contains(&join_canonical) {
                     parent_river_id = river_at[join_canonical];
-                    break;
                 }
-                if filled_mm[current] < sea_level_mm {
+                if hydrology
+                    .lake_cells
+                    .get(join_canonical)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     break;
                 }
             }
@@ -712,19 +734,23 @@ fn extract_tributaries(
     }
     features.sort_by_key(|feature| feature.source_index);
     features.truncate(MAX_TRIBUTARIES);
+    number_tributaries(&mut features);
+    Ok(features)
+}
+
+fn number_tributaries(features: &mut [RefinedTributary]) {
     features.sort_by(|a, b| {
         a.parent_river_id
             .cmp(&b.parent_river_id)
             .then(a.source_index.cmp(&b.source_index))
     });
     let mut next_ordinal = BTreeMap::new();
-    for feature in &mut features {
+    for feature in features {
         let ordinal = next_ordinal.entry(feature.parent_river_id).or_insert(0_u32);
         feature.ordinal = *ordinal;
         feature.id = RefinedTributary::id_for(feature.parent_river_id, feature.ordinal);
         *ordinal = ordinal.saturating_add(1);
     }
-    Ok(features)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1612,7 +1638,14 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 2);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 4);
+        assert!(
+            refined
+                .tributaries
+                .iter()
+                .any(|tributary| tributary.path.len() >= 6),
+            "lattice river spines should follow flow instead of cell hops"
+        );
         for (index, protected) in refined.protected.iter().enumerate() {
             if *protected {
                 assert_eq!(refined.filled_mm[index], refined.source_mm[index]);

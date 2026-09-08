@@ -16,7 +16,7 @@ use crate::erosion::{
     accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
     priority_fill_pits, HIERARCHICAL_FILL_MM,
 };
-use crate::projection::bilinear_i32;
+use crate::projection::{bilinear_i32, lat_to_row_ppm, lon_to_column_ppm};
 use crate::request::DetailLevel;
 use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION};
 
@@ -105,14 +105,9 @@ fn signed_unit_mm(sample: u64, amplitude_mm: i32) -> i32 {
     ((unit * i64::from(amplitude_mm)) / 1_000_000) as i32
 }
 
-fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i32) -> i32 {
-    let elevation = controls.sample_elevation(lon_micro, lat_micro);
-    let crust = controls
-        .sample_crust_influence(lon_micro, lat_micro)
-        .clamp(0, 1_000_000);
-    let mountain = controls
-        .sample_mountain_influence(lon_micro, lat_micro)
-        .clamp(0, 1_000_000);
+pub(crate) fn landform_amplitude_from(elevation: i32, crust: i32, mountain: i32) -> i32 {
+    let crust = crust.clamp(0, 1_000_000);
+    let mountain = mountain.clamp(0, 1_000_000);
     let magnitude = elevation.unsigned_abs().min(8_000_000);
     let scaled = (u64::from(magnitude) * 64_000 / 8_000_000) as i32;
     let mut amplitude = scaled.clamp(18_000, 64_000);
@@ -124,10 +119,8 @@ fn landform_amplitude_mm(controls: &ControlFields, lon_micro: i32, lat_micro: i3
     amplitude.clamp(12_000, 140_000)
 }
 
-fn control_shaped_unit(controls: &ControlFields, lon_micro: i32, lat_micro: i32, unit: i32) -> i32 {
-    let mountain = controls
-        .sample_mountain_influence(lon_micro, lat_micro)
-        .clamp(0, 1_000_000);
+pub(crate) fn shape_unit(mountain: i32, unit: i32) -> i32 {
+    let mountain = mountain.clamp(0, 1_000_000);
     let ridged = if unit < 0 { -unit / 2 } else { unit };
     ((i64::from(unit) * i64::from(1_000_000 - mountain) + i64::from(ridged) * i64::from(mountain))
         / 1_000_000) as i32
@@ -234,21 +227,130 @@ pub(crate) fn stack_octaves_from(
     Ok((width, height, residual_mm))
 }
 
-fn octave_id_for_factor(factor: u32) -> u32 {
+pub(crate) fn octave_id_for_factor(factor: u32) -> u32 {
     factor.max(1).trailing_zeros()
 }
 
-fn octave_weight_for_factor(factor: u32) -> i32 {
+pub(crate) fn octave_weight_for_factor(factor: u32) -> i32 {
     (1_000_000 / i32::try_from(factor.max(1)).unwrap_or(1)).max(1)
 }
 
-fn octave_noise_step_for_factor(factor: u32) -> u32 {
+pub(crate) fn octave_noise_step_for_factor(factor: u32) -> u32 {
     match factor {
         0 | 1 => 8,
         2 => 4,
         4 => 2,
         _ => 1,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn octave_cell_mm(
+    grid: Grid,
+    elevation_mm: &[i32],
+    crust_influence_ppm: &[i32],
+    mountain_influence_ppm: &[i32],
+    key: &[u8; 32],
+    factor: u32,
+    i: u32,
+    j: u32,
+    width: u32,
+    height: u32,
+) -> i32 {
+    let polar = j == 0 || j + 1 == height;
+    let sample_i = if polar { 0 } else { i };
+    let sample_j = if polar { 0 } else { j };
+    let lon = lattice_lon_micro(if polar { 0 } else { i }, width);
+    let lat = lattice_lat_micro(j, height);
+    let noise = octave_noise_ppm(
+        key,
+        sample_i,
+        sample_j,
+        width,
+        height,
+        octave_id_for_factor(factor),
+        octave_noise_step_for_factor(factor),
+    );
+    let amplitude = landform_amplitude_from(
+        sample_field_mm(grid, elevation_mm, lon, lat),
+        sample_field_mm(grid, crust_influence_ppm, lon, lat),
+        sample_field_mm(grid, mountain_influence_ppm, lon, lat),
+    );
+    let unit = ((i64::from(noise) * i64::from(amplitude)) / 1_000_000) as i32;
+    let shaped = shape_unit(
+        sample_field_mm(grid, mountain_influence_ppm, lon, lat),
+        unit,
+    );
+    ((i64::from(shaped) * i64::from(octave_weight_for_factor(factor))) / 1_000_000) as i32
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn octave_sample_mm(
+    grid: Grid,
+    elevation_mm: &[i32],
+    crust_influence_ppm: &[i32],
+    mountain_influence_ppm: &[i32],
+    key: &[u8; 32],
+    factor: u32,
+    lon_micro: i32,
+    lat_micro: i32,
+) -> i32 {
+    let width = grid.width.saturating_mul(factor.max(1)).max(1);
+    let height = grid.height.saturating_mul(factor.max(1)).max(1);
+    let (c0, c1, fx) = lon_to_column_ppm(lon_micro, width);
+    let (r0, r1, fy) = lat_to_row_ppm(lat_micro, height);
+    bilinear_i32(
+        octave_cell_mm(
+            grid,
+            elevation_mm,
+            crust_influence_ppm,
+            mountain_influence_ppm,
+            key,
+            factor,
+            c0,
+            r0,
+            width,
+            height,
+        ),
+        octave_cell_mm(
+            grid,
+            elevation_mm,
+            crust_influence_ppm,
+            mountain_influence_ppm,
+            key,
+            factor,
+            c1,
+            r0,
+            width,
+            height,
+        ),
+        octave_cell_mm(
+            grid,
+            elevation_mm,
+            crust_influence_ppm,
+            mountain_influence_ppm,
+            key,
+            factor,
+            c0,
+            r1,
+            width,
+            height,
+        ),
+        octave_cell_mm(
+            grid,
+            elevation_mm,
+            crust_influence_ppm,
+            mountain_influence_ppm,
+            key,
+            factor,
+            c1,
+            r1,
+            width,
+            height,
+        ),
+        fx,
+        fy,
+    )
 }
 
 fn build_octave(
@@ -278,25 +380,23 @@ fn build_octave(
         HIERARCHICAL_RELIEF_DOMAIN,
     );
     let mut residual = vec![0_i32; count];
-    let octave = octave_id_for_factor(factor);
-    let weight_ppm = octave_weight_for_factor(factor);
-    let step = octave_noise_step_for_factor(factor);
     for j in 0..height {
         if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
-        let polar = j == 0 || j + 1 == height;
-        let sample_j = if polar { 0 } else { j };
         for i in 0..width {
-            let sample_i = if polar { 0 } else { i };
-            let lon = lattice_lon_micro(if polar { 0 } else { i }, width);
-            let lat = lattice_lat_micro(j, height);
-            let noise = octave_noise_ppm(&key, sample_i, sample_j, width, height, octave, step);
-            let amplitude = landform_amplitude_mm(controls, lon, lat);
-            let unit = ((i64::from(noise) * i64::from(amplitude)) / 1_000_000) as i32;
-            let shaped = control_shaped_unit(controls, lon, lat, unit);
-            residual[lattice_index(width, i, j)] =
-                ((i64::from(shaped) * i64::from(weight_ppm)) / 1_000_000) as i32;
+            residual[lattice_index(width, i, j)] = octave_cell_mm(
+                controls.grid,
+                &controls.elevation_mm,
+                &controls.crust_influence_ppm,
+                &controls.mountain_influence_ppm,
+                &key,
+                factor,
+                i,
+                j,
+                width,
+                height,
+            );
         }
     }
     Ok((width, height, residual))

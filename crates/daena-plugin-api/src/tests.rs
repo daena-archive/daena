@@ -21,7 +21,10 @@ fn canonical_bundled_manifests_validate() {
         .iter()
         .find(|collection| collection.id == "profile-change")
         .expect("lore profile-change collection");
-    assert_eq!(profile_change.owner_scope, RecordOwnerScope::EffectiveSchema);
+    assert_eq!(
+        profile_change.owner_scope,
+        RecordOwnerScope::EffectiveSchema
+    );
     assert!(!profile_change.unique_per_owner);
     let timeline_manifest = parse_manifest(timeline).unwrap();
     assert_eq!(timeline_manifest.id, "daena.timeline");

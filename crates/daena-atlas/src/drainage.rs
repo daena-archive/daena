@@ -3,7 +3,7 @@
 use crate::{AtlasError, ATLAS_DERIVED_DRAINAGE_VERSION};
 
 pub const MAX_DERIVED_TRIBUTARIES: usize = 512;
-const MAX_TRACE_STEPS: usize = 64;
+const MAX_TRACE_STEPS: usize = 8_192;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedTributary {

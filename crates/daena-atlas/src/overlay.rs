@@ -452,14 +452,17 @@ pub fn composite_overlays(
     let width = view.width;
     let height = view.height;
     if request.layer_enabled("rivers") {
-        for path in &hydrology.river_coordinates {
-            for window in path.windows(2) {
-                draw_geodesic_segment(buffer, view, window[0], window[1], style.river, 850_000);
-            }
-        }
         for tributary in tributaries {
+            let alpha = 520_000u32.saturating_add(tributary.width_mm.min(12_000) * 28);
             for window in tributary.path.windows(2) {
-                draw_geodesic_segment(buffer, view, window[0], window[1], style.river, 550_000);
+                draw_geodesic_segment(
+                    buffer,
+                    view,
+                    window[0],
+                    window[1],
+                    style.river,
+                    alpha.min(900_000),
+                );
             }
         }
     }

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::chunk::DetailChunk;
 use crate::overlay::AuthoredFeature;
 use crate::projection::{
     mercator_x_to_lon_micro, mercator_y_to_lat_micro, wrap_lon_micro, AtlasExtent, AtlasProjection,
@@ -748,6 +749,7 @@ impl StudioShadeField {
 fn studio_shade_field(
     scene: &AtlasPreparedScene,
     options: RasterOptions,
+    extra: Option<&DetailChunk>,
     z: u32,
     tile_x: u32,
     tile_y: u32,
@@ -800,6 +802,7 @@ fn studio_shade_field(
                 options,
                 lon,
                 lat,
+                extra,
             ));
         }
     }
@@ -833,9 +836,15 @@ fn render_studio_raster(
     let coordinates = coordinate_tables(
         z, tile_x, tile_y, start_x, start_y, width, height, output_px,
     )?;
+    let west = coordinates.lon.first().copied().unwrap_or(0);
+    let east = coordinates.lon.last().copied().unwrap_or(west);
+    let north = coordinates.lat.first().copied().unwrap_or(0);
+    let south = coordinates.lat.last().copied().unwrap_or(north);
+    let extra = DetailChunk::cover(scene, z, west, east, south.min(north), north.max(south))?;
+    let extra_ref = extra.as_ref();
     let options = RasterOptions::for_studio(style, request);
     let shade = studio_shade_field(
-        scene, options, z, tile_x, tile_y, start_x, start_y, width, height, output_px,
+        scene, options, extra_ref, z, tile_x, tile_y, start_x, start_y, width, height, output_px,
     )?;
     let mut buffer = vec![0_u8; pixels];
     for py in 0..height {
@@ -857,6 +866,7 @@ fn render_studio_raster(
                 lon,
                 lat,
                 shade.sample(px, py),
+                extra_ref,
             );
             let offset = (py as usize * width as usize + px as usize) * 4;
             buffer[offset..offset + 4].copy_from_slice(&rgba);
@@ -1786,5 +1796,71 @@ mod tests {
             break;
         }
         assert!(found, "golden fixture had no land sample for biome paint");
+    }
+
+    #[test]
+    fn high_zoom_tiles_add_nested_octaves_and_seam() {
+        let (scene, scene_request) = prepared();
+        let sea = scene.hydrology.sea_level_mm;
+        let (lon, lat) = scene
+            .model
+            .elevations_mm
+            .iter()
+            .enumerate()
+            .find_map(|(index, elevation)| {
+                (*elevation >= sea).then(|| {
+                    let (row, col) = scene.model.grid.row_col(index);
+                    (
+                        crate::detail::cell_center_lon_micro(col, scene.model.grid.width),
+                        crate::detail::cell_center_lat_micro(row, scene.model.grid.height),
+                    )
+                })
+            })
+            .expect("golden world has land");
+        let chunk = DetailChunk::cover(
+            &scene,
+            5,
+            lon.saturating_sub(4_000_000),
+            lon.saturating_add(4_000_000),
+            lat.saturating_sub(4_000_000),
+            lat.saturating_add(4_000_000),
+        )
+        .unwrap()
+        .expect("high zoom should build a nested octave chunk");
+        assert_ne!(chunk.extra_at(lon, lat), 0);
+        let left = render_studio_tile(
+            &scene,
+            &scene_request,
+            &AtlasStudioTileRequestV1::new(5, 8, 8),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let right = render_studio_tile(
+            &scene,
+            &scene_request,
+            &AtlasStudioTileRequestV1::new(5, 9, 8),
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let joined = render_xyz_region(
+            &scene,
+            &scene_request,
+            5,
+            8,
+            8,
+            2,
+            1,
+            256,
+            false,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut concat = Vec::with_capacity(joined.len());
+        for row in 0..256usize {
+            let start = row * 256 * 4;
+            concat.extend_from_slice(&left.rgba[start..start + 256 * 4]);
+            concat.extend_from_slice(&right.rgba[start..start + 256 * 4]);
+        }
+        assert_eq!(concat, joined);
     }
 }

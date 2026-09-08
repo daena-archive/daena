@@ -343,7 +343,7 @@ pub fn freeze_fill(summer_centi_c: i32, winter_centi_c: i32, base: [u8; 3]) -> [
     let cold = summer_centi_c.min(winter_centi_c);
     let warm = summer_centi_c.max(winter_centi_c);
     if warm < 0 {
-        [210, 230, 245]
+        mix_rgb(base, [210, 230, 245], 720_000)
     } else if cold < 0 {
         mix_rgb(base, [170, 210, 230], 550_000)
     } else {

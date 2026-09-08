@@ -6,6 +6,7 @@
 
 pub mod amplify;
 pub mod cache;
+pub mod chunk;
 pub mod constraint;
 pub mod control;
 pub mod detail;
@@ -26,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
 pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 4;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
@@ -257,6 +258,8 @@ pub struct AtlasPreparedScene {
     pub orometry: Vec<amplify::MountainFeature>,
     pub structure_residual_mm: Vec<i32>,
     pub runoff_mm: Vec<i32>,
+    pub crust_influence_ppm: Vec<i32>,
+    pub mountain_influence_ppm: Vec<i32>,
 }
 
 impl AtlasPreparedScene {
@@ -958,6 +961,8 @@ pub fn prepare_from_source_with_structure(
             orometry,
             structure_residual_mm,
             runoff_mm: controls.runoff_mm,
+            crust_influence_ppm: controls.crust_influence_ppm,
+            mountain_influence_ppm: controls.mountain_influence_ppm,
         },
         unbaked,
     ))

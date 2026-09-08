@@ -92,6 +92,27 @@ pub fn sample_field_mm(grid: Grid, field: &[i32], lon_micro: i32, lat_micro: i32
     )
 }
 
+#[must_use]
+pub fn sample_mask_ppm(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> i32 {
+    let (col, next_col, fx) = lon_to_column_ppm(lon_micro, grid.width);
+    let (row, next_row, fy) = lat_to_row_ppm(lat_micro, grid.height);
+    let bit = |row: u32, col: u32| {
+        if mask.get(grid.index(row, col)).copied().unwrap_or(false) {
+            1_000_000
+        } else {
+            0
+        }
+    };
+    bilinear_i32(
+        bit(row, col),
+        bit(row, next_col),
+        bit(next_row, col),
+        bit(next_row, next_col),
+        fx,
+        fy,
+    )
+}
+
 pub(crate) fn nest_lattice_coord(i: u32, dim: u32) -> u32 {
     ((u64::from(i) << 16) / u64::from(dim.max(1))) as u32
 }
@@ -146,8 +167,22 @@ impl AtlasDetailModel {
         sea_level_mm: i32,
         sdf_ppm: i32,
     ) -> i32 {
+        self.refined_at_with_extra(lon_micro, lat_micro, sea_level_mm, sdf_ppm, 0)
+    }
+
+    #[must_use]
+    pub fn refined_at_with_extra(
+        &self,
+        lon_micro: i32,
+        lat_micro: i32,
+        sea_level_mm: i32,
+        sdf_ppm: i32,
+        extra_mm: i32,
+    ) -> i32 {
         let canonical = self.canonical_at(lon_micro, lat_micro);
-        let mut refined = canonical.saturating_add(self.residual_at(lon_micro, lat_micro));
+        let mut refined = canonical
+            .saturating_add(self.residual_at(lon_micro, lat_micro))
+            .saturating_add(extra_mm);
         if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
             let canon_land = canonical >= sea_level_mm;
             let refined_land = refined >= sea_level_mm;

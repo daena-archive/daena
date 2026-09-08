@@ -1,7 +1,7 @@
 use daena_physical::hydrology::HydrologyField;
 use daena_physical::Grid;
 
-use crate::detail::{sample_field_mm, sample_sdf_ppm, AtlasDetailModel};
+use crate::detail::{sample_field_mm, sample_mask_ppm, sample_sdf_ppm, AtlasDetailModel};
 use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
@@ -183,8 +183,10 @@ pub fn tile_rects(width: u32, height: u32) -> Vec<TileRect> {
     tiles
 }
 
-fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
-    crate::detail::nearest_cell(grid, lon_micro, lat_micro)
+const STYLE_OVERLAY_MIX_PPM: u32 = 720_000;
+
+fn mask_at(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> bool {
+    sample_mask_ppm(grid, mask, lon_micro, lat_micro) >= 500_000
 }
 
 fn shade_ppm(
@@ -195,14 +197,31 @@ fn shade_ppm(
     sdf: &[i32],
     center: i32,
     approximate: bool,
+    extra: Option<&crate::chunk::DetailChunk>,
 ) -> u32 {
-    let cell_lon = (360_000_000i64 / i64::from(model.lattice_width.max(1))) as i32;
-    let cell_lat = (180_000_000i64 / i64::from(model.lattice_height.max(1))) as i32;
-    let delta_lon = (cell_lon / 4).max(20_000);
-    let delta_lat = (cell_lat / 4).max(20_000);
+    let lattice_width = extra
+        .map(|chunk| chunk.lattice_width)
+        .unwrap_or(model.lattice_width);
+    let lattice_height = extra
+        .map(|chunk| chunk.lattice_height)
+        .unwrap_or(model.lattice_height);
+    let cell_lon = (360_000_000i64 / i64::from(lattice_width.max(1))) as i32;
+    let cell_lat = (180_000_000i64 / i64::from(lattice_height.max(1))) as i32;
+    let delta_lon = if extra.is_some() {
+        (cell_lon / 4).max(1)
+    } else {
+        (cell_lon / 4).max(20_000)
+    };
+    let delta_lat = if extra.is_some() {
+        (cell_lat / 4).max(1)
+    } else {
+        (cell_lat / 4).max(20_000)
+    };
+    let nz = 220_000_i64;
     let sample = |lon, lat| {
         let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
-        i64::from(model.refined_at(lon, lat, sea, sdf_ppm))
+        let extra_mm = extra.map(|chunk| chunk.extra_at(lon, lat)).unwrap_or(0);
+        i64::from(model.refined_at_with_extra(lon, lat, sea, sdf_ppm, extra_mm))
     };
     let (nx, ny) = if approximate {
         let east = sample(wrap_lon_micro(i64::from(lon) + i64::from(delta_lon)), lat);
@@ -230,7 +249,6 @@ fn shade_ppm(
         );
         (west - east, south - north)
     };
-    let nz = 220_000_i64;
     let mag = nx
         .unsigned_abs()
         .saturating_add(ny.unsigned_abs())
@@ -314,10 +332,12 @@ pub(crate) fn studio_shade_ppm(
     options: RasterOptions,
     lon: i32,
     lat: i32,
+    extra: Option<&crate::chunk::DetailChunk>,
 ) -> u32 {
     let sea = hydrology.sea_level_mm;
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
-    let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
+    let extra_mm = extra.map(|chunk| chunk.extra_at(lon, lat)).unwrap_or(0);
+    let elevation = model.refined_at_with_extra(lon, lat, sea, sdf_ppm, extra_mm);
     let shade = shade_ppm(
         model,
         lon,
@@ -326,8 +346,10 @@ pub(crate) fn studio_shade_ppm(
         sdf,
         elevation,
         options.approximate_shading,
+        extra,
     );
     if options.theme == RasterTheme::Relief
+        || options.theme == RasterTheme::Biome
         || options.theme == RasterTheme::Storms
         || options.theme == RasterTheme::StormTracks
         || options.theme == RasterTheme::Freeze
@@ -379,7 +401,6 @@ pub(crate) fn pixel_rgba_with_options(
     let sea = hydrology.sea_level_mm;
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
     let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
-    let cell = nearest_cell(model.grid, lon, lat);
     let shade = shade_ppm(
         model,
         lon,
@@ -388,8 +409,10 @@ pub(crate) fn pixel_rgba_with_options(
         sdf,
         elevation,
         options.approximate_shading,
+        None,
     );
     let shade = if options.theme == RasterTheme::Relief
+        || options.theme == RasterTheme::Biome
         || options.theme == RasterTheme::Storms
         || options.theme == RasterTheme::StormTracks
         || options.theme == RasterTheme::Freeze
@@ -399,7 +422,7 @@ pub(crate) fn pixel_rgba_with_options(
         shade.max(780_000)
     };
     paint_pixel(
-        model.grid, hydrology, style, options, water, paint, sea, elevation, cell, lon, lat, shade,
+        model.grid, hydrology, style, options, water, paint, sea, elevation, lon, lat, shade,
     )
 }
 
@@ -415,13 +438,14 @@ pub(crate) fn pixel_rgba_with_shade(
     lon: i32,
     lat: i32,
     shade: u32,
+    extra: Option<&crate::chunk::DetailChunk>,
 ) -> [u8; 4] {
     let sea = hydrology.sea_level_mm;
     let sdf_ppm = sample_sdf_ppm(model.grid, sdf, lon, lat);
-    let elevation = model.refined_at(lon, lat, sea, sdf_ppm);
-    let cell = nearest_cell(model.grid, lon, lat);
+    let extra_mm = extra.map(|chunk| chunk.extra_at(lon, lat)).unwrap_or(0);
+    let elevation = model.refined_at_with_extra(lon, lat, sea, sdf_ppm, extra_mm);
     paint_pixel(
-        model.grid, hydrology, style, options, water, paint, sea, elevation, cell, lon, lat, shade,
+        model.grid, hydrology, style, options, water, paint, sea, elevation, lon, lat, shade,
     )
 }
 
@@ -435,15 +459,14 @@ fn paint_pixel(
     paint: PaintFields<'_>,
     sea: i32,
     elevation: i32,
-    cell: usize,
     lon: i32,
     lat: i32,
     shade: u32,
 ) -> [u8; 4] {
-    if options.ice && hydrology.ice_cells.get(cell).copied().unwrap_or(false) {
+    if options.ice && mask_at(grid, &hydrology.ice_cells, lon, lat) {
         return apply_shade(style.ice, shade.max(700_000));
     }
-    let inland = water.inland.get(cell).copied().unwrap_or(false);
+    let inland = mask_at(grid, &water.inland, lon, lat);
     if options.lakes && inland {
         return apply_shade(style.lake, shade);
     }
@@ -465,87 +488,94 @@ fn paint_pixel(
         ];
     }
     let painted = if land { elevation.max(sea) } else { elevation };
+    let base = hypsometric(style, painted, sea);
     let mut rgb = if land && options.theme == RasterTheme::Biome {
-        let mut climate = paint.climate_class.get(cell).copied().unwrap_or(99);
-        if !options.ice && climate == crate::control::CLIMATE_CLASS_ICE {
-            climate = crate::control::CLIMATE_CLASS_TUNDRA;
+        let mut class = daena_physical::climate::classify_biome_cell(
+            true,
+            painted,
+            sea,
+            sample_field_mm(grid, paint.temperature_centi_c, lon, lat),
+            sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+            sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+            sample_field_mm(grid, paint.precipitation_mm, lon, lat).max(0) as u32,
+            sample_field_mm(grid, paint.humidity_ppm, lon, lat).max(0) as u32,
+            sample_field_mm(grid, paint.aridity_ppm, lon, lat).max(0) as u32,
+        ) as i32;
+        if !options.ice && class == crate::control::CLIMATE_CLASS_ICE {
+            class = crate::control::CLIMATE_CLASS_TUNDRA;
         }
-        biome_fill(style, climate)
+        mix_rgb(base, biome_fill(style, class), STYLE_OVERLAY_MIX_PPM)
     } else if land && options.theme == RasterTheme::Temperature {
-        temperature_fill(
-            style,
-            paint.temperature_centi_c.get(cell).copied().unwrap_or(0),
+        mix_rgb(
+            base,
+            temperature_fill(
+                style,
+                sample_field_mm(grid, paint.temperature_centi_c, lon, lat),
+            ),
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::TemperatureNhSummer {
-        temperature_fill(
-            style,
-            paint
-                .temperature_nh_summer_centi_c
-                .get(cell)
-                .copied()
-                .unwrap_or(0),
+        mix_rgb(
+            base,
+            temperature_fill(
+                style,
+                sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+            ),
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::TemperatureNhWinter {
-        temperature_fill(
-            style,
-            paint
-                .temperature_nh_winter_centi_c
-                .get(cell)
-                .copied()
-                .unwrap_or(0),
+        mix_rgb(
+            base,
+            temperature_fill(
+                style,
+                sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+            ),
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Freeze {
         freeze_fill(
-            paint
-                .temperature_nh_summer_centi_c
-                .get(cell)
-                .copied()
-                .unwrap_or(0),
-            paint
-                .temperature_nh_winter_centi_c
-                .get(cell)
-                .copied()
-                .unwrap_or(0),
-            hypsometric(style, painted, sea),
+            sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+            sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+            base,
         )
     } else if land && options.theme == RasterTheme::Precipitation {
         mix_rgb(
-            hypsometric(style, painted, sea),
+            base,
             precipitation_fill(
                 style,
                 sample_field_mm(grid, paint.precipitation_mm, lon, lat),
             ),
-            720_000,
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::PrecipitationNhSummer {
         mix_rgb(
-            hypsometric(style, painted, sea),
+            base,
             precipitation_fill(
                 style,
                 sample_field_mm(grid, paint.precipitation_nh_summer_mm, lon, lat),
             ),
-            720_000,
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::PrecipitationNhWinter {
         mix_rgb(
-            hypsometric(style, painted, sea),
+            base,
             precipitation_fill(
                 style,
                 sample_field_mm(grid, paint.precipitation_nh_winter_mm, lon, lat),
             ),
-            720_000,
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Humidity {
         mix_rgb(
-            hypsometric(style, painted, sea),
+            base,
             humidity_fill(style, sample_field_mm(grid, paint.humidity_ppm, lon, lat)),
-            720_000,
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Aridity {
         mix_rgb(
-            hypsometric(style, painted, sea),
+            base,
             aridity_fill(style, sample_field_mm(grid, paint.aridity_ppm, lon, lat)),
-            720_000,
+            STYLE_OVERLAY_MIX_PPM,
         )
     } else if options.theme == RasterTheme::Storms || options.theme == RasterTheme::StormTracks {
         let suitability = if options.theme == RasterTheme::Storms {
@@ -559,14 +589,13 @@ fn paint_pixel(
             0
         };
         let mix = storm_mix_ppm(suitability, track);
-        let base = hypsometric(style, painted, sea);
         if mix == 0 {
             base
         } else {
             mix_rgb(base, storm_fill(style, suitability, track), mix)
         }
     } else {
-        hypsometric(style, painted, sea)
+        base
     };
     if options.coastlines {
         let band = elevation.saturating_sub(sea).unsigned_abs();
@@ -707,6 +736,25 @@ mod tests {
         assert!(!water.ocean[20]);
         assert!(!water.inland[20]);
         assert!(!water.inland[21]);
+    }
+
+    #[test]
+    fn mask_at_keeps_solid_interiors() {
+        let grid = grid(8, 8);
+        let mut ice = vec![false; 64];
+        for row in 3..6 {
+            for col in 3..6 {
+                ice[(row * 8 + col) as usize] = true;
+            }
+        }
+        let lon = crate::detail::cell_center_lon_micro(4, 8);
+        let lat = crate::detail::cell_center_lat_micro(4, 8);
+        assert!(mask_at(grid, &ice, lon, lat));
+        let outside_lon = crate::detail::cell_center_lon_micro(0, 8);
+        let outside_lat = crate::detail::cell_center_lat_micro(0, 8);
+        assert!(!mask_at(grid, &ice, outside_lon, outside_lat));
+        assert_eq!(sample_mask_ppm(grid, &ice, lon, lat), 1_000_000);
+        assert_eq!(sample_mask_ppm(grid, &ice, outside_lon, outside_lat), 0);
     }
 
     #[test]

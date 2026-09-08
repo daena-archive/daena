@@ -1212,7 +1212,12 @@ pub fn expand_profile_change_targets(manifests: &mut [PluginManifest]) {
             manifest
                 .schemas
                 .iter()
-                .flat_map(|schema| schema.entity_types.iter().map(|entity_type| entity_type.id.clone()))
+                .flat_map(|schema| {
+                    schema
+                        .entity_types
+                        .iter()
+                        .map(|entity_type| entity_type.id.clone())
+                })
                 .collect()
         })
         .unwrap_or_default();

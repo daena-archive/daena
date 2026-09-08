@@ -15,7 +15,9 @@ const componentPaths = [
   "src/lib/shell/AppSidebar.svelte",
   "src/lib/shell/GlobalToolbar.svelte",
   "src/lib/shell/InspectorPane.svelte",
+  "src/lib/shell/InspectorOverview.svelte",
   "src/lib/shell/InspectorSection.svelte",
+  "src/lib/shell/EntityFieldsDialog.svelte",
   "src/lib/shell/PaneResizeHandle.svelte",
   "src/lib/shell/ProjectSwitcher.svelte",
   "src/lib/shell/QuickOpen.svelte",
@@ -104,7 +106,9 @@ assert.match(
 assert.match(shell, /groupedInspectorRelationships/);
 assert.match(shell, /sortByPopulated: false/);
 assert.match(shell, /sticky/);
-assert.match(shell, /open=\{assets\.length > 0\}/);
+assert.match(shell, /InspectorOverview/);
+assert.match(shell, /EntityFieldsDialog/);
+assert.match(shell, /openFieldsDialog/);
 assert.match(inspector, /sticky\?: boolean/);
 
 console.log(`shell UI boundary checks passed (${componentPaths.length + 1} Svelte files compiled)`);

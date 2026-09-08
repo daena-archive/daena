@@ -109,11 +109,21 @@ is absent.
 
 ## Inspector
 
-The inspector is one pane. It does not use tabs. Details appears only when the
-entry has author-facing properties, chronology, or a calendar editor; when shown
-it stays open. Relationships stay open so module group headers remain visible.
-Assets open only when the entry has files. Backlinks and Maps locations stay
-closed until opened.
+The inspector pane keeps general info and Details (properties, chronology, and
+the calendar editor when present). The pane itself does not use tabs.
+
+**Edit fields** opens a modal for the remaining sections. Count chips open the
+matching tab. Fill with AI reviews suggestions in the pane. Saves stay live;
+closing the modal does not discard edits. Changing the selected entry retargets
+the modal and keeps the current tab when that tab still applies.
+
+| Tab            | Contents                                              | Shown when                          |
+| -------------- | ----------------------------------------------------- | ----------------------------------- |
+| Relationships  | Module-grouped relationship fields                    | Always                              |
+| Profile        | Profile editor and, for events, Profile Changes       | Lore-capable types or timeline events |
+| Assets         | Attachments                                           | Always                              |
+| Maps           | Entity map pins                                       | Maps is enabled                     |
+| Backlinks      | Incoming links not covered by relationship fields     | Always                              |
 
 Relationship fields are grouped by the module that defines them (Lore, Houses,
 Maps, Timeline, Language), not by the current workspace. Groups with no links
@@ -122,7 +132,8 @@ not jump. Expanding a group keeps it open while editing. Era links stay in
 Details → Chronology.
 
 Map-to-map fields apply only to map types. Entity map pins stay in the Maps
-section.
+tab. Nested editors (asset, relationship metadata, Profile) stack on the fields
+modal; Escape closes the innermost dialog first.
 
 Wiki infobox links use the same module grouping. Each linked page shows
 relationship attributes when the edge has metadata (for example parent type

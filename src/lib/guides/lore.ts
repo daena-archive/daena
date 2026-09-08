@@ -33,7 +33,7 @@ const libraryToWiki: GuideStep = {
 const inspectorStep: GuideStep = {
   id: "inspector",
   title: "Inspector",
-  body: "Fields, relationships, and assets for the open entry live here.",
+  body: "Details stay here. Edit fields opens relationships, assets, and the rest.",
   target: '[data-guide="workspace-inspector"]',
   primaryLabel: "Show Wiki",
   action: "wiki",

@@ -46,7 +46,7 @@ let {
       kind="empty"
       compact
       title="Nothing selected"
-      message="Select an entry to see its details, relationships, assets, and backlinks." />
+      message="Select an entry to see its details and edit more fields." />
   {:else if children}
     {@render children()}
   {/if}
@@ -55,8 +55,8 @@ let {
 <style>
 .inspector-panel {
   min-width: 0;
-  min-height: 650px;
-  overflow: visible;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
@@ -73,29 +73,15 @@ let {
 }
 @media (max-width: 1180px) {
   .inspector-panel {
-    display: grid;
     min-height: auto;
     grid-column: 1 / -1;
-    grid-template-columns: repeat(3, 1fr);
-  }
-  .inspector-panel :global(.inspector-heading) {
-    grid-column: 1 / -1;
-  }
-  .inspector-panel :global(.inspector-section) {
-    border-right: 1px solid var(--line);
-    border-bottom: 0;
   }
 }
 @media (max-width: 760px) {
   .inspector-panel {
-    display: block;
     width: 100%;
     min-height: auto;
     border-radius: 11px;
-  }
-  .inspector-panel :global(.inspector-section) {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
   }
 }
 </style>

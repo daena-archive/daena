@@ -164,6 +164,9 @@ import CollectionPane from "$lib/shell/CollectionPane.svelte";
 import ContentPane from "$lib/shell/ContentPane.svelte";
 import InspectorPane from "$lib/shell/InspectorPane.svelte";
 import InspectorSection from "$lib/shell/InspectorSection.svelte";
+import InspectorOverview from "$lib/shell/InspectorOverview.svelte";
+import EntityFieldsDialog from "$lib/shell/EntityFieldsDialog.svelte";
+import { type EntityFieldsTab, type EntityFieldsTabId } from "$lib/shell/entityFields";
 import ProfileEditor from "$lib/lore/ProfileEditor.svelte";
 import ProfileEventChanges from "$lib/lore/ProfileEventChanges.svelte";
 import { canEditLoreProfile as entityTypeCanHaveProfile } from "$lib/lore/profile";
@@ -371,6 +374,8 @@ let assetBusyId = $state<string | null>(null);
 let assetDialog = $state<Asset | null>(null);
 let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
 let profileEditorOpen = $state(false);
+let fieldsDialogOpen = $state(false);
+let fieldsDialogTab = $state<EntityFieldsTabId>("relationships");
 let entityMutationSnapshot = $state<MutationSnapshot>({ phase: "idle", message: "", detail: "" });
 const entityMutation = createMutationController({
   get: () => entityMutationSnapshot,
@@ -783,7 +788,8 @@ $effect(() => {
     assetDialog !== null ||
     showExternalImport ||
     entityEditDialog !== null ||
-    profileEditorOpen;
+    profileEditorOpen ||
+    fieldsDialogOpen;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -824,6 +830,9 @@ $effect(() => {
     } else if (assetDialog) {
       event.preventDefault();
       assetDialog = null;
+    } else if (fieldsDialogOpen) {
+      event.preventDefault();
+      fieldsDialogOpen = false;
     }
   };
   window.addEventListener("keydown", onKey, true);
@@ -5501,6 +5510,37 @@ function hasCalendarEditorSection() {
 function hasDetailsSection() {
   return propertyDefinitions().length > 0 || hasChronologySection() || hasCalendarEditorSection();
 }
+function relationshipLinkCount() {
+  return otherRelationshipDefinitions().reduce(
+    (total, definition) => total + selectedRelationshipIds(definition).length,
+    0,
+  );
+}
+function entityFieldsTabs(): EntityFieldsTab[] {
+  const tabs: EntityFieldsTab[] = [{ id: "relationships", label: "Relationships", count: relationshipLinkCount() }];
+  if (selected && (canEditLoreProfile(selected.entity_type) || isTimelineEventEntity(selected.entity_type))) {
+    tabs.push({ id: "profile", label: "Profile" });
+  }
+  tabs.push({ id: "assets", label: "Assets", count: assets.length });
+  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: mapLocations.length });
+  tabs.push({ id: "backlinks", label: "Backlinks", count: backlinkRelationships().length });
+  return tabs;
+}
+function openFieldsDialog(tab?: EntityFieldsTabId) {
+  const tabs = entityFieldsTabs();
+  const next = tab && tabs.some((candidate) => candidate.id === tab) ? tab : (tabs[0]?.id ?? "relationships");
+  fieldsDialogTab = next;
+  fieldsDialogOpen = true;
+}
+$effect(() => {
+  if (!selected) {
+    if (fieldsDialogOpen) fieldsDialogOpen = false;
+    return;
+  }
+  if (!fieldsDialogOpen) return;
+  const tabs = entityFieldsTabs();
+  if (!tabs.some((tab) => tab.id === fieldsDialogTab) && tabs[0]) fieldsDialogTab = tabs[0].id;
+});
 const inspectorChronologyWarnings = $derived(
   chronologyWarnings(
     chronologyDateDefinitions().map((definition) => ({ label: definition.label, value: fields[definition.key] })),
@@ -8542,21 +8582,18 @@ onMount(() => {
         {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && selected}
           {@const inspectedEntity = selected}
           {#snippet inspectorBody()}
-            <div class="inspector-heading">
-              <div>
-                <span class="panel-kicker">INSPECTOR</span><strong
-                  >{entityTypeLabel(inspectedEntity.entity_type)}</strong>
-              </div>
-              <div class="inspector-heading-actions">
-                {#if projectInfo?.aiEnabled && emptyInspectorDefinitions().length}<button
-                    class="inspector-ai-action"
-                    type="button"
-                    onclick={() => void fillAiFields()}
-                    disabled={aiFieldFillBusy}
-                    ><span aria-hidden="true">✦</span>{aiFieldFillBusy ? "Finding…" : "Fill with AI"}</button
-                  >{/if}
-              </div>
-            </div>
+            <InspectorOverview
+              typeLabel={entityTypeLabel(inspectedEntity.entity_type)}
+              entityName={inspectedEntity.name}
+              chips={entityFieldsTabs()}
+              aiEnabled={Boolean(projectInfo?.aiEnabled && emptyInspectorDefinitions().length)}
+              aiBusy={aiFieldFillBusy}
+              onFillAi={() => void fillAiFields()}
+              onOpenTab={openFieldsDialog}
+              notice={fieldsNotice}
+              details={inspectorDetails} />
+          {/snippet}
+          {#snippet fieldsNotice()}
             {#if aiFieldFillOpen}<section class="inspector-ai-fill">
                 <div class="inspector-ai-fill-heading">
                   <strong>{aiFieldFillBusy ? "Finding field suggestions…" : "Review field suggestions"}</strong><button
@@ -8598,6 +8635,8 @@ onMount(() => {
                     ><button class="quiet-button" type="button" onclick={closeAiFieldFill}>Close</button>
                   </div>{/if}
               </section>{/if}
+          {/snippet}
+          {#snippet inspectorDetails()}
             {#if hasDetailsSection()}
               <InspectorSection
                 title="Details"
@@ -8733,31 +8772,9 @@ onMount(() => {
                 {/if}
               </InspectorSection>
             {/if}
-            {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
-              <InspectorSection title="Profile" open={false} sticky>
-                <ProfileEditor
-                  projectId={projectInfo.root}
-                  entityId={selected.id}
-                  entityName={selected.name}
-                  bind:open={profileEditorOpen} />
-              </InspectorSection>
-            {/if}
-            {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
-              <InspectorSection title="Profile Changes" open={false}>
-                <ProfileEventChanges
-                  projectId={projectInfo.root}
-                  eventId={selected.id}
-                  eventDate={fields.startsAt}
-                  ownerTypes={loreProfileOwnerTypes()}
-                  search={searchEntitiesPaged()} />
-              </InspectorSection>
-            {/if}
-            <InspectorSection
-              title="Relationships"
-              count={otherRelationshipDefinitions().reduce(
-                (total, definition) => total + selectedRelationshipIds(definition).length,
-                0,
-              )}>
+          {/snippet}
+          {#snippet fieldsRelationships()}
+            <div class="fields-tab">
               {#if otherRelationshipDefinitions().length === 0}<p class="inspector-group-empty">
                   No relationship fields are available for this entry.
                 </p>{:else}{#snippet inspectorRelationshipField(definition: FieldDefinition)}<section
@@ -8818,14 +8835,38 @@ onMount(() => {
                   </section>{/snippet}
                 {#each groupedInspectorRelationships() as group (`${inspectedEntity?.id ?? ""}:${group.moduleId}`)}
                   {@const groupCount = relationshipGroupLinkCount(group.fields)}
-                  <InspectorSection title={group.moduleName} count={groupCount} open={groupCount > 0} nested sticky>
+                  <InspectorSection title={group.moduleName} count={groupCount} open={groupCount > 0} sticky>
                     {#each group.fields as definition (definition.key)}{@render inspectorRelationshipField(
                         definition,
                       )}{/each}
                   </InspectorSection>
                 {/each}{/if}
-            </InspectorSection>
-            <InspectorSection title="Assets" count={assets.length} open={assets.length > 0}>
+            </div>
+          {/snippet}
+          {#snippet fieldsProfile()}
+            <div class="fields-tab">
+              {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
+                <ProfileEditor
+                  projectId={projectInfo.root}
+                  entityId={selected.id}
+                  entityName={selected.name}
+                  bind:open={profileEditorOpen} />
+              {/if}
+              {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
+                <section class="inspector-section inspector-section-plain">
+                  <h3>Profile Changes</h3>
+                  <ProfileEventChanges
+                    projectId={projectInfo.root}
+                    eventId={selected.id}
+                    eventDate={fields.startsAt}
+                    ownerTypes={loreProfileOwnerTypes()}
+                    search={searchEntitiesPaged()} />
+                </section>
+              {/if}
+            </div>
+          {/snippet}
+          {#snippet fieldsAssets()}
+            <div class="fields-tab">
               <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
                   <h3>Attached files</h3>
@@ -8852,8 +8893,10 @@ onMount(() => {
                     <span class="asset-row-edit-hint" aria-hidden="true">Edit →</span>
                   </button>{/each}
               </section>
-            </InspectorSection>
-            <InspectorSection title="Backlinks" count={backlinkRelationships().length} open={false}>
+            </div>
+          {/snippet}
+          {#snippet fieldsBacklinks()}
+            <div class="fields-tab">
               {#if backlinkRelationships().length === 0}<p class="inspector-group-empty">
                   Nothing links to this entry yet.
                 </p>{:else}<div class="relationship-detail-list backlink-list" aria-label="Backlinks">
@@ -8870,46 +8913,48 @@ onMount(() => {
                       </button>
                     </div>{/each}
                 </div>{/if}
-            </InspectorSection>
-            {#if mapsEnabled()}<InspectorSection title="Maps" count={mapLocations.length} open={false}
-                ><section
-                  class="inspector-section inspector-section-plain map-contribution"
-                  aria-label="Maps contribution">
-                  <div class="section-title">
-                    <h3>Maps</h3>
-                    <span>{mapLocations.length}</span>
-                  </div>
-                  {#if mapLocations.length === 0}<small>No map links yet.</small
-                    >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
-                        <div>
-                          <strong>{location.label || location.role}</strong><small
-                            >{location.role} · {location.mapEntityId.slice(
-                              0,
-                              8,
-                            )}{#if location.resolution === "unresolved"}
-                              · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
-                        </div>
-                        <div>
-                          {#if location.resolution === "unresolved"}<span
-                              class="map-unresolved-note"
-                              title="The map feature this link pointed to was removed or renumbered."
-                              >Feature missing</span
-                            >{:else}<button
-                              class="quiet-button"
-                              type="button"
-                              onclick={() => void openMapLocation(location)}>Show on map</button
-                            >{/if}<button
+            </div>
+          {/snippet}
+          {#snippet fieldsMaps()}
+            <div class="fields-tab">
+              <section
+                class="inspector-section inspector-section-plain map-contribution"
+                aria-label="Maps contribution">
+                <div class="section-title">
+                  <h3>Maps</h3>
+                  <span>{mapLocations.length}</span>
+                </div>
+                {#if mapLocations.length === 0}<small>No map links yet.</small
+                  >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
+                      <div>
+                        <strong>{location.label || location.role}</strong><small
+                          >{location.role} · {location.mapEntityId.slice(
+                            0,
+                            8,
+                          )}{#if location.resolution === "unresolved"}
+                            · <span class="map-unresolved-badge">Unresolved</span>{/if}</small>
+                      </div>
+                      <div>
+                        {#if location.resolution === "unresolved"}<span
+                            class="map-unresolved-note"
+                            title="The map feature this link pointed to was removed or renumbered."
+                            >Feature missing</span
+                          >{:else}<button
                             class="quiet-button"
                             type="button"
-                            onclick={() => void editMapLocation(location)}>Edit</button
-                          ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
-                            >Rebind</button
-                          ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
-                            >Unlink</button>
-                        </div>
-                      </div>{/each}{/if}
-                </section></InspectorSection
-              >{/if}
+                            onclick={() => void openMapLocation(location)}>Show on map</button
+                          >{/if}<button
+                          class="quiet-button"
+                          type="button"
+                          onclick={() => void editMapLocation(location)}>Edit</button
+                        ><button class="quiet-button" type="button" onclick={() => void rebindMapLocation(location)}
+                          >Rebind</button
+                        ><button class="quiet-button" type="button" onclick={() => void unlinkMapLocation(location)}
+                          >Unlink</button>
+                      </div>
+                    </div>{/each}{/if}
+              </section>
+            </div>
           {/snippet}
           <InspectorPane
             loading={selectedLoading}
@@ -8917,6 +8962,18 @@ onMount(() => {
             bind:element={inspectorPaneElement}
             children={inspectorBody}
             onRetry={() => void reloadSelectedFromDisk()} />
+          {#if fieldsDialogOpen}
+            <EntityFieldsDialog
+              title={inspectedEntity.name}
+              tabs={entityFieldsTabs()}
+              bind:activeTab={fieldsDialogTab}
+              relationships={fieldsRelationships}
+              profile={fieldsProfile}
+              assets={fieldsAssets}
+              maps={fieldsMaps}
+              backlinks={fieldsBacklinks}
+              onClose={() => (fieldsDialogOpen = false)} />
+          {/if}
         {:else if workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
           <InspectorPane bind:element={inspectorPaneElement} empty />
         {/if}
@@ -9502,12 +9559,6 @@ onMount(() => {
   border-color: var(--accent-soft);
   background: var(--surface-muted);
 }
-.inspector-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 17px 12px;
-}
 .project-diagnostics {
   display: grid;
   gap: 5px;
@@ -9822,32 +9873,6 @@ onMount(() => {
   color: var(--on-accent);
   font-size: 23px;
 }
-.inspector-heading-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 5px;
-}
-.inspector-ai-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  border: 1px solid var(--theme-warning-border, #d9b98f);
-  border-radius: 5px;
-  background: var(--warning-bg);
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.inspector-ai-action:disabled {
-  opacity: 0.65;
-  cursor: wait;
-}
-.inspector-ai-action span {
-  font-size: 10px;
-}
 .inspector-ai-fill {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
@@ -10003,15 +10028,6 @@ onMount(() => {
   font-size: 12px;
   line-height: 1.45;
 }
-.inspector-heading {
-  border-bottom: 1px solid var(--line);
-}
-.inspector-heading strong {
-  display: block;
-  margin-top: 7px;
-  font: 500 20px var(--font-display);
-}
-
 .inspector-section {
   padding: 18px 16px;
   border-bottom: 1px solid var(--line);
@@ -10019,6 +10035,12 @@ onMount(() => {
 .inspector-section.inspector-section-plain {
   padding: 9px 0 0;
   border-bottom: 0;
+}
+.fields-tab {
+  padding: 8px 18px 16px;
+}
+.fields-tab :global(.inspector-group) {
+  margin: 0 -18px;
 }
 .inspector-section.inspector-section-plain + .inspector-section.inspector-section-plain {
   margin-top: 15px;
@@ -11007,8 +11029,7 @@ onMount(() => {
 .primary-button:active {
   transform: translateY(1px);
 }
-.editor-header > div:first-child,
-.inspector-heading > div {
+.editor-header > div:first-child {
   min-width: 0;
 }
 .editor-header h2 {

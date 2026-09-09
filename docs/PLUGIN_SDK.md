@@ -429,7 +429,9 @@ const events = await client.pollEvents("com.example.weather/forecast-updated", 1
 
 Services are versioned request/response contracts. Only one provider for a
 service major is active in a project. Calls have deadlines and return a typed
-provider-unavailable error when the provider is missing.
+provider-unavailable error when the provider is missing. Date Lens
+([`examples/plugins/timeline-consumer`](../examples/plugins/timeline-consumer))
+is an optional consumer of Timeline's `daena.timeline.resolve-date@1` service.
 
 WASM providers use the synchronous `wb.service.sync.v1` ABI. A provider exports
 `memory`, `alloc(i32) -> i32`, and `handle_json(i32, i32) -> i64`; the host writes

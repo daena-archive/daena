@@ -69,11 +69,13 @@ The host and UI exchange structured messages over one brokered channel. The
 host validates the sender webview, session, method, payload schema, payload
 size, and capability before forwarding a request.
 
-Background plugin logic runs as WebAssembly using WASI with no preopened
-directories, inherited environment, network sockets, clocks, randomness, or
-process APIs unless a specific host function grants the operation. Each
-instance has memory, execution-time, and fuel limits. A plugin that repeatedly
-exceeds limits is stopped and marked failed.
+Background plugin logic runs as WebAssembly with **no WASI imports and no
+host functions** in v1. The module may export only the documented service ABI
+(`alloc`, `handle_json`, `memory`). Ambient filesystem, environment, network,
+clocks, randomness, and process APIs are unavailable because they are not
+linked, not because a grant is later applied. Each instance has memory,
+execution-time, and fuel limits. A plugin that repeatedly exceeds limits is
+stopped and quarantined. Grantable WASI is deferred.
 
 UI plugins may ship framework-generated static assets, but the SDK contract is
 framework-neutral. Svelte is recommended, not required.
@@ -704,6 +706,7 @@ The following features are deferred, with their default behavior decided now:
   are parsed colors on the closed catalog only.
 - **Stacked or per-project theme packs:** deferred; one install-scoped pack.
 - **Auto-apply a pack on install:** deferred and disallowed.
+- **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
 
 No unresolved architectural choice above is required to begin implementation.
 Any future change to identity, isolation, authority, package integrity, data

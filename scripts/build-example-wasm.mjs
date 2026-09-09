@@ -9,14 +9,18 @@ new WebAssembly.Module(minimalModule);
 const output = resolve("examples/plugins/wasm-service/dist/service.wasm");
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, minimalModule);
-const sdkOutput = resolve("examples/plugins/ui/dist/ui");
-mkdirSync(sdkOutput, { recursive: true });
-copyFileSync(resolve("packages/plugin-sdk/dist/index.js"), resolve(sdkOutput, "plugin-sdk.js"));
-copyFileSync(resolve("packages/plugin-sdk/dist/generated.js"), resolve(sdkOutput, "generated.js"));
-copyFileSync(resolve("packages/plugin-sdk/dist/maps.js"), resolve(sdkOutput, "maps.js"));
-copyFileSync(resolve("packages/plugin-sdk/dist/theme.js"), resolve(sdkOutput, "theme.js"));
-copyFileSync(resolve("packages/plugin-sdk/dist/index.js.map"), resolve(sdkOutput, "index.js.map"));
-copyFileSync(resolve("packages/plugin-sdk/dist/generated.js.map"), resolve(sdkOutput, "generated.js.map"));
-copyFileSync(resolve("packages/plugin-sdk/dist/maps.js.map"), resolve(sdkOutput, "maps.js.map"));
-copyFileSync(resolve("packages/plugin-sdk/dist/theme.js.map"), resolve(sdkOutput, "theme.js.map"));
+for (const sdkOutput of [
+  resolve("examples/plugins/ui/dist/ui"),
+  resolve("examples/plugins/timeline-consumer/dist/ui"),
+]) {
+  mkdirSync(sdkOutput, { recursive: true });
+  copyFileSync(resolve("packages/plugin-sdk/dist/index.js"), resolve(sdkOutput, "plugin-sdk.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/generated.js"), resolve(sdkOutput, "generated.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/maps.js"), resolve(sdkOutput, "maps.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/theme.js"), resolve(sdkOutput, "theme.js"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/index.js.map"), resolve(sdkOutput, "index.js.map"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/generated.js.map"), resolve(sdkOutput, "generated.js.map"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/maps.js.map"), resolve(sdkOutput, "maps.js.map"));
+  copyFileSync(resolve("packages/plugin-sdk/dist/theme.js.map"), resolve(sdkOutput, "theme.js.map"));
+}
 console.log(`wrote ${output}`);

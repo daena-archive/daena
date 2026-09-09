@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self';"
+    />
+    <title>Date Lens</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-plugin="com.example.timeline-consumer">
+    <main>
+      <p class="eyebrow">EXAMPLE CONSUMER</p>
+      <h1>Date Lens</h1>
+      <p id="status">Connecting to the host…</p>
+      <form id="form">
+        <label>
+          Date
+          <input id="date" name="date" value="0042-03-15" autocomplete="off" />
+        </label>
+        <button type="submit">Resolve through Timeline</button>
+      </form>
+      <pre id="result" hidden></pre>
+    </main>
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>

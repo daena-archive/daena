@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.timeline-consumer",
+  "name": "Date Lens",
+  "version": "1.0.0",
+  "publisher": "com.example",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": ["entity.read", "service.call:daena.timeline.resolve-date@1"],
+  "dependencies": {
+    "daena.timeline": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": false
+    }
+  },
+  "namespaces": [],
+  "schemas": [],
+  "templates": [],
+  "views": [{ "id": "date-lens", "title": "Date Lens" }],
+  "commands": [],
+  "services": {
+    "provides": [],
+    "consumes": [{ "name": "daena.timeline.resolve-date", "major": 1 }]
+  },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": []
+}

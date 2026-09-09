@@ -1,0 +1,63 @@
+:root {
+  color: var(--ink, #302c26);
+  background: var(--canvas, #f4efe6);
+  font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  max-width: 28rem;
+  padding: 24px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--ink-muted, #7a7166);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+form,
+label {
+  display: grid;
+  gap: 8px;
+}
+
+input,
+button,
+pre {
+  font: inherit;
+}
+
+input,
+pre {
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong, #d9cdbd);
+  border-radius: 8px;
+  background: var(--surface, #fffaf3);
+}
+
+button {
+  width: max-content;
+  padding: 8px 12px;
+  border: 1px solid var(--accent, #c4a574);
+  border-radius: 8px;
+  background: var(--surface, #fffaf3);
+  cursor: pointer;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+}

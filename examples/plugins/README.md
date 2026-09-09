@@ -2,8 +2,9 @@
 
 See the [definitive Daena Archive plugin guide](../../docs/PLUGIN_SDK.md) for
 the complete authoring and packaging workflow. These examples correspond to
-the guide's host-rendered declarative, sandboxed UI, and executable Wasm
-sections. Parchment (`theme/`) is a pack-only declarative plugin with empty
+the guide's host-rendered declarative, sandboxed UI, executable Wasm, and
+plugin-to-plugin service sections. Date Lens (`timeline-consumer/`) is an
+optional consumer of Timeline's `daena.timeline.resolve-date@1` service. Parchment (`theme/`) is a pack-only declarative plugin with empty
 entrypoints. The declarative Field Notes example opens a real host-component
 surface from the host sidebar after the plugin is enabled. Ink Tools is a
 richer standalone sandboxed UI example: it demonstrates structured layout,

@@ -135,7 +135,13 @@ import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.s
 import { formatWithCalendar, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
-import { capabilityLabel, installedAtLabel, runtimeTimestampLabel, shortDigest } from "$lib/plugins/labels";
+import {
+  capabilityDescription,
+  capabilityLabel,
+  installedAtLabel,
+  runtimeTimestampLabel,
+  shortDigest,
+} from "$lib/plugins/labels";
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
@@ -741,8 +747,9 @@ let confirmAction = $state<{
   title: string;
   message: string;
   confirmLabel: string;
-  run: () => Promise<void>;
+  run: (granted: string[]) => Promise<void>;
   capabilities?: string[];
+  selectedCapabilities?: string[];
 } | null>(null);
 let confirmBusy = $state(false);
 let deleteTarget = $state<PluginAdminEntry | null>(null);
@@ -5970,10 +5977,10 @@ async function toggleModule(id: ModuleId) {
   if (!installed.enabled) {
     askConfirm(
       "Grant plugin capabilities",
-      `Enable ${installed.name} with these requested capabilities?`,
+      `Choose which of ${installed.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
       "Enable plugin",
-      async () => {
-        await project.enableModule(id, installed.capabilities);
+      async (granted) => {
+        await project.enableModule(id, granted);
         modules = await project.listModuleManifests();
         await refreshSelectedMapLocations();
         await reconcileWorkspaceSection();
@@ -6358,10 +6365,25 @@ function askConfirm(
   title: string,
   message: string,
   confirmLabel: string,
-  run: () => Promise<void>,
+  run: (granted: string[]) => Promise<void>,
   capabilities?: string[],
+  selectedCapabilities?: string[],
 ) {
-  confirmAction = { title, message, confirmLabel, run, capabilities };
+  confirmAction = {
+    title,
+    message,
+    confirmLabel,
+    run,
+    capabilities,
+    selectedCapabilities: capabilities ? [...(selectedCapabilities ?? capabilities)] : undefined,
+  };
+}
+function toggleConfirmCapability(capability: string) {
+  if (!confirmAction?.selectedCapabilities) return;
+  const selected = new Set(confirmAction.selectedCapabilities);
+  if (selected.has(capability)) selected.delete(capability);
+  else selected.add(capability);
+  confirmAction = { ...confirmAction, selectedCapabilities: [...selected] };
 }
 function selectedUninstallableVersion(plugin: PluginAdminEntry) {
   if (!plugin.distribution.canUninstall) return null;
@@ -6372,7 +6394,7 @@ async function runConfirm() {
   if (!action) return;
   confirmBusy = true;
   try {
-    await action.run();
+    await action.run(action.selectedCapabilities ?? []);
     confirmAction = null;
   } catch (cause) {
     error = friendlyError(cause);
@@ -6409,7 +6431,6 @@ async function confirmUninstall(plugin: PluginAdminEntry, version: string) {
 async function retryPlugin(plugin: PluginAdminEntry) {
   try {
     await project.retryPlugin(plugin.id);
-    if (!plugin.enabled) await project.enableModule(plugin.id, plugin.capabilities);
     modules = await project.listModuleManifests();
     await reconcileWorkspaceSection();
     await refreshAdmin();
@@ -6442,12 +6463,12 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
   if (!plugin.enabled) {
     askConfirm(
       "Grant plugin capabilities",
-      `Enable ${plugin.name} with these requested capabilities?`,
+      `Choose which of ${plugin.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
       "Enable plugin",
-      async () => {
+      async (granted) => {
         pluginActionId = plugin.id;
         try {
-          await project.enableModule(plugin.id, plugin.capabilities);
+          await project.enableModule(plugin.id, granted);
           modules = await project.listModuleManifests();
           await refreshSelectedMapLocations();
           await reconcileWorkspaceSection();
@@ -6480,12 +6501,12 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
 async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
   askConfirm(
     "Review plugin capabilities",
-    `Update ${plugin.name} with these requested capabilities?`,
+    `Choose which of ${plugin.name}'s requested capabilities to grant. This dialog is owned by Daena; the plugin cannot change its wording.`,
     "Update capabilities",
-    async () => {
+    async (granted) => {
       pluginActionId = plugin.id;
       try {
-        await project.enableModule(plugin.id, plugin.capabilities);
+        await project.enableModule(plugin.id, granted);
         await refreshAdmin();
         modules = await project.listModuleManifests();
       } finally {
@@ -6493,6 +6514,7 @@ async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
       }
     },
     plugin.capabilities,
+    plugin.grantedCapabilities,
   );
 }
 function clearSelection() {
@@ -7199,9 +7221,18 @@ onMount(() => {
           <p class="dialog-body-copy">{confirmAction.message}</p>
           {#if confirmAction.capabilities}
             {#if confirmAction.capabilities.length > 0}
-              <div class="capability-list" role="list" aria-label="Requested capabilities">
+              <div class="capability-list" role="group" aria-label="Requested capabilities">
                 {#each confirmAction.capabilities as capability}
-                  <div class="capability-item" role="listitem">{capabilityLabel(capability)}</div>
+                  <label class="capability-item">
+                    <input
+                      type="checkbox"
+                      checked={confirmAction.selectedCapabilities?.includes(capability)}
+                      onchange={() => toggleConfirmCapability(capability)} />
+                    <span>
+                      <strong>{capabilityLabel(capability)}</strong>
+                      <small>{capabilityDescription(capability)}</small>
+                    </span>
+                  </label>
                 {/each}
               </div>
             {:else}
@@ -7480,9 +7511,9 @@ onMount(() => {
                   {/if}
                   <details class="plugin-details">
                     <summary>Capabilities, namespaces, services &amp; migrations</summary>
-                    <p class="plugin-muted">
-                      {plugin.kind} · Host API {plugin.hostApi} · Data format {plugin.dataVersion}
-                    </p>
+                    <p class="plugin-muted">Kind: {plugin.kind}</p>
+                    <p class="plugin-muted">Compatibility: Host API {plugin.hostApi}</p>
+                    <p class="plugin-muted">Data format {plugin.dataVersion}</p>
                     <div class="plugin-details-grid">
                       <section class="plugin-detail-section">
                         <h4>Capabilities</h4>
@@ -11006,10 +11037,19 @@ onMount(() => {
   color: var(--ink-soft);
 }
 .capability-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: start;
   padding: 6px 8px;
   border-bottom: 1px solid rgba(217, 205, 189, 0.65);
   font-size: 11px;
   line-height: 1.4;
+}
+.capability-item small {
+  display: block;
+  color: var(--ink-muted);
+  font-weight: 400;
 }
 .capability-item:last-child {
   border-bottom: 0;

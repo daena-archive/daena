@@ -1,5 +1,29 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+
+const runtimeImport = /packages\/modules\/(?:index\.ts|[^"'/]+\/src\/index(?:\.ts)?)/;
+const allowedRuntimeImports = new Set(["src/lib/modules/projections.ts"]);
+
+function listSourceFiles(directory) {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const next = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...listSourceFiles(next));
+    else if (/\.(?:ts|svelte|js)$/.test(entry.name)) files.push(next);
+  }
+  return files;
+}
+
+const leakedRuntimeImports = listSourceFiles("src").filter((file) => {
+  if (allowedRuntimeImports.has(file)) return false;
+  return runtimeImport.test(fs.readFileSync(file, "utf8"));
+});
+assert.deepEqual(
+  leakedRuntimeImports,
+  [],
+  `host must not import bundled plugin runtime entrypoints (remaining allowlist: ${[...allowedRuntimeImports].join(", ")}): ${leakedRuntimeImports.join(", ")}`,
+);
 
 const route = fs.readFileSync("src/routes/+page.svelte", "utf8");
 const frame = fs.readFileSync("src/lib/plugins/SandboxView.svelte", "utf8");

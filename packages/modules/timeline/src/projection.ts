@@ -1,5 +1,5 @@
 import type { FieldRecord, ModuleManifest } from "../../../module-api/src/index";
-import { parseCalendarDate, signedGregorianYear, type CalendarDate } from "../../../../src/lib/date.ts";
+import { parseCalendarDate, signedGregorianYear, type CalendarDate } from "./calendar-date.ts";
 
 export type TimelineLayer = "dates" | "lifelines";
 export type TimelineFieldRole = "point" | "start" | "end";

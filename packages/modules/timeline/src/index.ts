@@ -7,10 +7,10 @@ import {
   type DaenaModule,
   type ModuleManifest,
 } from "../../../module-api/src/index";
-import { parseCalendarDate } from "../../../../src/lib/date";
+import { parseCalendarDate } from "./calendar-date";
 import { type CalendarDefinition } from "./calendar";
 import { buildFieldContributions, discoverTimelineFieldSpecs, timelineDateAnchor } from "./projection";
-import { belongsToEraScope, resolveChronologyCalendarDefinition } from "../../../../src/lib/modules/chronology";
+import { belongsToEraScope, resolveChronologyCalendarDefinition } from "./era-scope";
 import manifestJson from "../manifest.json";
 import {
   type CalendarOption,

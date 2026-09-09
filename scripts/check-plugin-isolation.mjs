@@ -19,6 +19,11 @@ const leakedRuntimeImports = listSourceFiles("src").filter((file) => {
   if (allowedRuntimeImports.has(file)) return false;
   return runtimeImport.test(fs.readFileSync(file, "utf8"));
 });
+const hostImport = /from ["'](?:\.\.\/)+src\/lib|from ["']\$lib\//;
+const leakedHostImports = listSourceFiles("packages/modules/timeline/src").filter((file) =>
+  hostImport.test(fs.readFileSync(file, "utf8")),
+);
+assert.deepEqual(leakedHostImports, [], `timeline plugin must not import host $lib: ${leakedHostImports.join(", ")}`);
 assert.deepEqual(
   leakedRuntimeImports,
   [],

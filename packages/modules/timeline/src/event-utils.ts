@@ -1,5 +1,5 @@
 import { type EntitySummary, type ModuleContext } from "../../../module-api/src/index";
-import { parseCalendarDate, type CalendarDate } from "../../../../src/lib/date";
+import { parseCalendarDate, type CalendarDate } from "./calendar-date";
 import {
   CALENDAR_DEFINITION_COLLECTION,
   calendarDateToParts,

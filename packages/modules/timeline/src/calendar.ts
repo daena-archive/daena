@@ -4,7 +4,7 @@ import {
   serializeCalendarDate,
   signedGregorianYear,
   type CalendarDate,
-} from "../../../../src/lib/date.ts";
+} from "./calendar-date.ts";
 
 export const DEFAULT_CALENDAR_ID = "gregorian";
 export const CALENDAR_DEFINITION_COLLECTION = "calendar-definition";

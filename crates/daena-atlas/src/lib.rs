@@ -26,7 +26,7 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 5;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6;
 pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 4;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
@@ -486,6 +486,67 @@ fn drainage_from_refined(refined: &refine::RefinedHydrology) -> drainage::Derive
     }
 }
 
+fn structure_worked_mm(model: &amplify::AmplificationModel) -> Vec<i32> {
+    let width = model.detail.lattice_width;
+    let height = model.detail.lattice_height;
+    let count = (width as usize).saturating_mul(height as usize);
+    let mut worked = vec![0_i32; count];
+    for j in 0..height {
+        for i in 0..width {
+            let index = j as usize * width as usize + i as usize;
+            let lon = detail::lattice_lon_micro(i, width);
+            let lat = detail::lattice_lat_micro(j, height);
+            worked[index] = model
+                .detail
+                .canonical_at(lon, lat)
+                .saturating_add(model.detail.residual_mm.get(index).copied().unwrap_or(0));
+        }
+    }
+    worked
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_constrained_refine(
+    amplification: &amplify::AmplificationModel,
+    controls: &control::ControlFields,
+    hydrology: &daena_physical::hydrology::HydrologyField,
+    sdf: &[i32],
+    identity: &[u8],
+    structure_sea_level_mm: i32,
+    constraints: &[constraint::AtlasConstraint],
+    progress: &mut dyn AtlasProgress,
+) -> Result<refine::RefinedHydrology, AtlasError> {
+    let mut cancelled = || progress.check_cancelled();
+    refine::build_refined_hydrology_constrained(
+        amplification,
+        controls,
+        hydrology,
+        sdf,
+        identity,
+        structure_sea_level_mm,
+        constraints,
+        &mut cancelled,
+    )
+}
+
+fn refine_or_fallback(
+    result: Result<refine::RefinedHydrology, AtlasError>,
+    structure: &amplify::AmplificationModel,
+) -> Result<(drainage::DerivedDrainage, Vec<i32>, bool), AtlasError> {
+    match result {
+        Ok(refined) => Ok((drainage_from_refined(&refined), refined.worked_mm, true)),
+        Err(error) if error.code == CODE_RENDER_CANCELLED => Err(error),
+        Err(_) => Ok((
+            drainage::DerivedDrainage {
+                version: ATLAS_DERIVED_DRAINAGE_VERSION,
+                tributaries: Vec::new(),
+            },
+            structure_worked_mm(structure),
+            false,
+        )),
+    }
+}
+
 fn structure_controls(
     field: &daena_physical::PhysicalField,
     world: &daena_physical::tectonics::TectonicWorld,
@@ -831,7 +892,7 @@ pub fn prepare_from_source_with_structure(
         &constraint_fp,
     ]);
     let mut drainage_cache = cache::CacheLookup::Off;
-    let (mut drainage, worked_mm) = if let Some(cache) = cache {
+    let (mut drainage, worked_mm, cache_refine) = if let Some(cache) = cache {
         match cache.get(cache::KIND_DRAINAGE, &drainage_key) {
             cache::CacheLookupResult::Hit(payload) => {
                 match drainage::DerivedDrainage::decode_product(&payload) {
@@ -840,59 +901,60 @@ pub fn prepare_from_source_with_structure(
                             && height == amplification.detail.lattice_height =>
                     {
                         drainage_cache = cache::CacheLookup::Hit;
-                        (drainage, worked_mm)
+                        (drainage, worked_mm, false)
                     }
                     _ => {
                         drainage_cache = cache::CacheLookup::Miss;
-                        let mut cancelled = || progress.check_cancelled();
-                        let refined = refine::build_refined_hydrology_constrained(
+                        refine_or_fallback(
+                            build_constrained_refine(
+                                &amplification,
+                                &controls,
+                                &historical.hydrology,
+                                &sdf,
+                                identity,
+                                structure.sea_level_mm,
+                                &request.constraints,
+                                progress,
+                            ),
                             &amplification,
-                            &controls,
-                            &historical.hydrology,
-                            &sdf,
-                            identity,
-                            structure.sea_level_mm,
-                            &request.constraints,
-                            &mut cancelled,
-                        )?;
-                        let drainage = drainage_from_refined(&refined);
-                        (drainage, refined.worked_mm)
+                        )?
                     }
                 }
             }
             cache::CacheLookupResult::Miss => {
                 drainage_cache = cache::CacheLookup::Miss;
-                let mut cancelled = || progress.check_cancelled();
-                let refined = refine::build_refined_hydrology_constrained(
+                refine_or_fallback(
+                    build_constrained_refine(
+                        &amplification,
+                        &controls,
+                        &historical.hydrology,
+                        &sdf,
+                        identity,
+                        structure.sea_level_mm,
+                        &request.constraints,
+                        progress,
+                    ),
                     &amplification,
-                    &controls,
-                    &historical.hydrology,
-                    &sdf,
-                    identity,
-                    structure.sea_level_mm,
-                    &request.constraints,
-                    &mut cancelled,
-                )?;
-                let drainage = drainage_from_refined(&refined);
-                (drainage, refined.worked_mm)
+                )?
             }
         }
     } else {
-        let mut cancelled = || progress.check_cancelled();
-        let refined = refine::build_refined_hydrology_constrained(
+        refine_or_fallback(
+            build_constrained_refine(
+                &amplification,
+                &controls,
+                &historical.hydrology,
+                &sdf,
+                identity,
+                structure.sea_level_mm,
+                &request.constraints,
+                progress,
+            ),
             &amplification,
-            &controls,
-            &historical.hydrology,
-            &sdf,
-            identity,
-            structure.sea_level_mm,
-            &request.constraints,
-            &mut cancelled,
-        )?;
-        (drainage_from_refined(&refined), refined.worked_mm)
+        )?
     };
     constraint::apply_lock_to_drainage(&request.constraints, &mut drainage.tributaries);
-    if drainage_cache == cache::CacheLookup::Miss {
+    if drainage_cache == cache::CacheLookup::Miss && cache_refine {
         if let Some(cache) = cache {
             let _ = cache.put(
                 cache::KIND_DRAINAGE,
@@ -1996,6 +2058,37 @@ mod tests {
         )
         .unwrap();
         assert_ne!(base.rgba, debug.rgba);
+    }
+
+    #[test]
+    fn refine_error_falls_back_to_structure_and_skips_cache() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let request = AtlasRenderRequest::spike_png(64, 32).unwrap();
+        let (scene, structure) = prepare_from_source_with_structure(
+            &world.source,
+            &identity,
+            &request,
+            None,
+            None,
+            None,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let worked = structure_worked_mm(&structure);
+        assert_eq!(worked.len(), structure.detail.residual_mm.len());
+        let (drainage, fallback, cacheable) =
+            refine_or_fallback(Err(AtlasError::limit("refine failed")), &structure).unwrap();
+        assert!(!cacheable);
+        assert!(drainage.tributaries.is_empty());
+        assert_eq!(fallback, worked);
+        assert_eq!(
+            refine_or_fallback(Err(AtlasError::cancelled()), &structure)
+                .unwrap_err()
+                .code,
+            CODE_RENDER_CANCELLED
+        );
+        assert!(!scene.hydrology.rivers.is_empty());
     }
 
     struct CancelOnPhase {

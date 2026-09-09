@@ -709,10 +709,14 @@ pub fn regenerate_atlas_cache_scoped(
         }
         let cache = daena_atlas::cache::AtlasDiskCache::open(&cache_dir)
             .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
-        let kinds = vec![
-            daena_atlas::cache::KIND_DRAINAGE,
-            daena_atlas::cache::KIND_ARTIFACT,
-        ];
+        let kinds = if matches!(scope, AtlasCacheRegenScope::Feature) {
+            vec![daena_atlas::cache::KIND_DRAINAGE]
+        } else {
+            vec![
+                daena_atlas::cache::KIND_DRAINAGE,
+                daena_atlas::cache::KIND_ARTIFACT,
+            ]
+        };
         let deleted = cache
             .delete_kinds(&kinds)
             .map_err(|error| CoreError::Validation(format!("{}: {}", error.code, error.message)))?;
@@ -1233,6 +1237,69 @@ mod tests {
             std::path::Path::new("/tmp/example-project/.daena/cache/atlas")
         );
         assert!(ATLAS_CACHE_RELATIVE.starts_with(".daena/cache/"));
+    }
+
+    #[test]
+    fn feature_regen_drops_drainage_and_keeps_residual_and_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "daena-atlas-feature-regen-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProjectStore::open_directory(&root).unwrap();
+        let cache_dir = atlas_cache_dir(&root);
+        let cache = daena_atlas::cache::AtlasDiskCache::open(&cache_dir)
+            .unwrap()
+            .with_limits(10_000, 1_000, 8);
+        let residual = daena_atlas::cache::cache_key(&[b"residual"]);
+        let drainage = daena_atlas::cache::cache_key(&[b"drainage"]);
+        let artifact = daena_atlas::cache::cache_key(&[b"artifact"]);
+        cache
+            .put(daena_atlas::cache::KIND_RESIDUAL, &residual, &[1; 32])
+            .unwrap();
+        cache
+            .put(daena_atlas::cache::KIND_DRAINAGE, &drainage, &[2; 32])
+            .unwrap();
+        cache
+            .put(daena_atlas::cache::KIND_ARTIFACT, &artifact, &[3; 32])
+            .unwrap();
+        let feature = regenerate_atlas_cache_scoped(&store, AtlasCacheRegenScope::Feature).unwrap();
+        assert_eq!(feature.deleted_entries, 1);
+        match cache.get(daena_atlas::cache::KIND_RESIDUAL, &residual) {
+            daena_atlas::cache::CacheLookupResult::Hit(_) => {}
+            daena_atlas::cache::CacheLookupResult::Miss => {
+                panic!("residual must survive feature regen")
+            }
+        }
+        match cache.get(daena_atlas::cache::KIND_ARTIFACT, &artifact) {
+            daena_atlas::cache::CacheLookupResult::Hit(_) => {}
+            daena_atlas::cache::CacheLookupResult::Miss => {
+                panic!("artifact must survive feature regen")
+            }
+        }
+        match cache.get(daena_atlas::cache::KIND_DRAINAGE, &drainage) {
+            daena_atlas::cache::CacheLookupResult::Miss => {}
+            daena_atlas::cache::CacheLookupResult::Hit(_) => {
+                panic!("drainage must drop on feature regen")
+            }
+        }
+        cache
+            .put(daena_atlas::cache::KIND_DRAINAGE, &drainage, &[2; 32])
+            .unwrap();
+        let epoch = regenerate_atlas_cache_scoped(&store, AtlasCacheRegenScope::Epoch).unwrap();
+        assert_eq!(epoch.deleted_entries, 2);
+        match cache.get(daena_atlas::cache::KIND_RESIDUAL, &residual) {
+            daena_atlas::cache::CacheLookupResult::Hit(_) => {}
+            daena_atlas::cache::CacheLookupResult::Miss => {
+                panic!("residual must survive epoch regen")
+            }
+        }
+        match cache.get(daena_atlas::cache::KIND_ARTIFACT, &artifact) {
+            daena_atlas::cache::CacheLookupResult::Miss => {}
+            daena_atlas::cache::CacheLookupResult::Hit(_) => {
+                panic!("artifact must drop on epoch regen")
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

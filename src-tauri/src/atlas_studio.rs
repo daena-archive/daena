@@ -228,7 +228,11 @@ impl AtlasStudioManager {
         deleted
     }
 
-    fn invalidate_prepared(&mut self, drop_structures: bool) {
+    fn forget_sessions(&mut self, drop_structures: bool) {
+        for session in self.sessions.values() {
+            session.cancel.cancel();
+        }
+        self.sessions.clear();
         self.prepared_scenes.clear();
         if drop_structures {
             self.structures.clear();
@@ -1006,7 +1010,13 @@ pub async fn project_atlas_studio_regenerate_cache(
         .lock()
         .map_err(|_| "atlas studio state is unavailable".to_string())?;
     studio.clear_visible_tiles();
-    studio.invalidate_prepared(matches!(scope, AtlasCacheRegenScope::World));
+    match scope {
+        AtlasCacheRegenScope::Visible => {}
+        AtlasCacheRegenScope::World => studio.forget_sessions(true),
+        AtlasCacheRegenScope::Epoch | AtlasCacheRegenScope::Feature => {
+            studio.forget_sessions(false)
+        }
+    }
     Ok(result)
 }
 

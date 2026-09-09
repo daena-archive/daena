@@ -102,7 +102,7 @@ import {
   workspaceModuleId,
 } from "$lib/modules/workspace";
 import {
-  MAP_HOST_SURFACE,
+  LANGUAGE_HOST_SURFACE,
   schemaEntityTypeIds,
   viewRenderer,
   workspaceDescription,
@@ -988,7 +988,12 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
         ? plugin.views.find(
             (candidate) => viewRenderer(plugin, candidate) === "maps" && candidate.renderer?.type === "host-surface",
           )
-        : undefined;
+        : target === "language"
+          ? plugin.views.find(
+              (candidate) =>
+                candidate.renderer?.type === "host-surface" && candidate.renderer.id === LANGUAGE_HOST_SURFACE,
+            )
+          : undefined;
     return [
       {
         kind: "workspace",

@@ -22,7 +22,9 @@ The current implementation uses Rust-owned broker authority for plugin
 identity, capabilities, sessions, revisions, request IDs, and project data.
 Isolated plugin webviews communicate through the versioned RPC contract over
 same-origin `/__rpc`; they have no Tauri IPC. Frontend checks remain advisory;
-the Rust broker is the enforcement boundary.
+the Rust broker is the enforcement boundary. Remaining bundled-UI isolation
+is recorded under **Remaining work** below; it does not change the isolation
+rule.
 
 For the future AI broker surface, see [`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
 AI grants do not imply project-data grants, provider access, or network access.
@@ -71,11 +73,12 @@ size, and capability before forwarding a request.
 
 Background plugin logic runs as WebAssembly with **no WASI imports and no
 host functions** in v1. The module may export only the documented service ABI
-(`alloc`, `handle_json`, `memory`). Ambient filesystem, environment, network,
-clocks, randomness, and process APIs are unavailable because they are not
-linked, not because a grant is later applied. Each instance has memory,
-execution-time, and fuel limits. A plugin that repeatedly exceeds limits is
-stopped and quarantined. Grantable WASI is deferred.
+`daena.service.sync.v1` (`alloc`, `handle_json`, `memory`). Ambient filesystem,
+environment, network, clocks, randomness, and process APIs are unavailable
+because they are not linked, not because a grant is later applied. Each
+instance has memory, execution-time, and fuel limits. A plugin that repeatedly
+exceeds limits is stopped and quarantined. Grantable WASI is deferred. The
+legacy name `wb.service.sync.v1` is rejected.
 
 UI plugins may ship framework-generated static assets, but the SDK contract is
 framework-neutral. Svelte is recommended, not required.
@@ -232,7 +235,9 @@ Rules:
   protocol. For `daena.maps/editor@1`, the plugin SDK exports
   `registerMapsHostSurfaceProvider`; the host invokes that browser-side bridge
   for save, pick, overlay, date, and focus actions and routes them to the
-  active plugin's webview, not to a bundled-plugin ID. A plugin still cannot
+  active plugin's webview, not to a bundled-plugin ID. Language declares
+  `host.surface:daena.language/workspace@1` the same way: host chrome (guides,
+  rich text, dialogs), not a sandboxed plugin UI. A plugin still cannot
   register arbitrary native commands or create an unregistered host surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
@@ -241,9 +246,10 @@ Rules:
 
 ### 6. Package format, installation, and trust
 
-Plugin packages use the `.wbplugin` extension and are deterministic ZIP
+Plugin packages use the `.daenaplugin` extension and are deterministic ZIP
 archives containing the manifest, static UI assets, optional WASM, schemas,
-migrations, licenses, and signature metadata.
+migrations, licenses, and signature metadata. The `.wbplugin` extension is
+not accepted.
 
 The installer performs these steps before any code executes:
 
@@ -514,7 +520,7 @@ packages/
   plugin-sdk/                 # Generated types and framework-neutral client
   plugin-test-host/           # Fake broker and conformance helpers
   plugin-cli/                 # daena-plugin authoring CLI
-  module-api/                 # Bundled-module helpers (remaining private-API work: gaps doc)
+  module-api/                 # ModuleContext adapter for remaining main-webview bundled UIs
   modules/                    # Bundled plugins: lore, timeline, maps, writing, houses, language
 schemas/
   plugin-manifest-v1.json
@@ -598,6 +604,13 @@ private API as a platform design defect.
 are enabled and disabled by `PluginHost`, and pass existing cross-module,
 export/import, migration, and disablement scenarios.
 
+Current: no `@tauri-apps` / `$lib/project` inside `packages/modules/*`. Lore
+graph uses the public SDK in an isolated webview. Timeline date/era helpers
+live in the timeline package (host `$lib/date` and chronology re-export them).
+Language is a host-surface. Timeline chronology and Language still mount in
+the main webview (see Remaining work). `trusted_module_rpc` is bundled-only
+and always runs `authorize_bundled`.
+
 This is the minimum point at which the platform is on solid architectural
 ground. Do not ship third-party installation before this gate.
 
@@ -623,9 +636,14 @@ main webview.
 the host DOM, Tauri APIs, local files, environment, processes, or undeclared
 network origins, while normal SDK calls succeed.
 
+Current: the isolated path exists (`SandboxView` → `plugin_webview.rs`, CSP in
+`webview_policy`, assets on `plugin://`). Lore graph uses it. Timeline and
+Language still run in the trusted webview. Packaged Tauri webview isolation
+tests on every desktop platform are not done. See Remaining work.
+
 ### Phase 6: Installer, upgrades, and recovery
 
-Implement `.wbplugin` verification, atomic installation, publisher signatures,
+Implement `.daenaplugin` verification, atomic installation, publisher signatures,
 capability consent, retained versions, upgrade planning, migration selection,
 rollback, uninstall-code, and explicit delete-data flows.
 
@@ -644,6 +662,11 @@ those tools.
 **Exit gate:** A plugin can be authored outside the monorepo, validated, tested,
 packaged, installed, enabled, upgraded, rolled back, and uninstalled using only
 public documentation and tools.
+
+Current: `@daena-archive/plugin-{sdk,cli,test-host}` are on npm. `PLUGIN_SDK.md`
+documents `npm install`. The CLI ships `plugin-manifest-v1.json` in the tarball.
+Search and asset RPCs are rate-limited in `PluginHost::authorize`. Malformed
+`.daenaplugin` archives fail closed. A cargo-fuzz corpus is still open.
 
 ### Phase 8: Registry readiness, not registry dependency
 
@@ -707,10 +730,58 @@ The following features are deferred, with their default behavior decided now:
 - **Stacked or per-project theme packs:** deferred; one install-scoped pack.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
+- **Bundled Timeline / Language / remaining UIs in isolated webviews:**
+  deferred. The isolation rule is unchanged. Lore graph is already isolated.
+  Maps editor and Language workspace are host-surfaces in the main webview.
+  Houses is declarative host chrome. Writing, wiki, and profile editors remain
+  trusted shell. Resume Timeline chronology isolation next, then Language.
+  Calendar date and era-scope helpers already live in the timeline package so
+  they are not private host imports when Timeline moves.
 
 No unresolved architectural choice above is required to begin implementation.
 Any future change to identity, isolation, authority, package integrity, data
 ownership, or interaction semantics requires a new ADR and compatibility plan.
+
+## Remaining work
+
+This is the implementation remainder against the phases above, not a second
+architecture. Delete nothing here that still disagrees with Decisions.
+
+### Bundled sandboxed UIs still run in the trusted webview (Phase 3 / 5)
+
+The plan: bundled and third-party plugin UIs run in isolated webviews; no
+plugin JavaScript in the main application webview. Host-surfaces are the
+exception: the host owns the implementation.
+
+What exists:
+
+- Isolated path: `src/lib/plugins/SandboxView.svelte` →
+  `src-tauri/src/plugin_webview.rs`, CSP in
+  `crates/daena-plugin-host/src/runtime.rs` `webview_policy`, assets on
+  `plugin://`.
+- Lore graph mounts through `SandboxView` → `plugin://daena.lore` (Cytoscape
+  in the plugin webview, public SDK). Timeline chronology and Language still
+  mount in the main webview via `src/lib/modules/projections.ts`.
+- Isolated HTML under `src-tauri/plugin-assets/{timeline,writing}/` is still a
+  stub projection, not vis-timeline / Writing UIs. There is no
+  `plugin-assets/language/`.
+- Maps editor is `host.surface:daena.maps/editor@1`. Language workspace is
+  `host.surface:daena.language/workspace@1`. Both match the host-surface rule.
+- Houses / Writing / Wiki / profile editors under `src/lib/` use the trusted
+  shell. Houses is declarative; that is consistent.
+- `scripts/check-plugin-isolation.mjs` fails if any host file other than
+  `src/lib/modules/projections.ts` imports a bundled plugin runtime
+  entrypoint (`packages/modules/*/src/index`). Timeline and Language remain
+  on that allowlist. Isolation proof is still static, not packaged Tauri
+  webview tests on every desktop platform.
+- Main-webview modules use `trusted_module_rpc` (caller plugin id, then
+  `authorize_bundled`: bundled-only, grants, schema, rate limits). Isolated
+  webviews use session-bound `plugin_rpc`. `packages/module-api` re-exports
+  plugin-sdk types and keeps `ModuleContext` until those UIs leave the main
+  webview.
+
+Incremental order: Lore graph (done), Timeline chronology, Language
+host-surface chrome last.
 
 ## Contract reconciliation and generation record
 
@@ -841,7 +912,7 @@ rule:
   non-standard `uint32` format registered) at startup and prepends
   `schema:<instancePath>` errors to the TS validator's output in both validate
   paths, so shape-only rejections are caught too.
-- The Phase 0–5 exit gates (all representations agree on the frozen contract,
-  generated types reviewed and tests green, full suites green, drift guard
-  fails on an intentional Rust change without regen, docs match code) are all
-  **met**.
+- The Phase 0–5 *contract* exit gates (all representations agree on the frozen
+  contract, generated types reviewed and tests green, full suites green, drift
+  guard fails on an intentional Rust change without regen, docs match code)
+  are all **met**. Bundled UI isolation in Phase 5 is not; see Remaining work.

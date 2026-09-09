@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 pub mod package;
 pub mod runtime;
@@ -93,7 +93,7 @@ pub struct PluginCatalog {
 }
 
 impl PluginCatalog {
-    /// Install from a verified development directory. Packaged `.wbplugin`
+    /// Install from a verified development directory. Packaged `.daenaplugin`
     /// archives use `PluginHost::install_package`.
     pub fn install_development_dir(
         &mut self,
@@ -1462,6 +1462,77 @@ impl LifecycleRegistry {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitConfig {
+    pub search_max: u32,
+    pub search_window: Duration,
+    pub asset_max: u32,
+    pub asset_window: Duration,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            search_max: 20,
+            search_window: Duration::from_secs(1),
+            asset_max: 30,
+            asset_window: Duration::from_secs(1),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MethodRateLimiter {
+    windows: BTreeMap<(String, String, String), VecDeque<Instant>>,
+}
+
+impl MethodRateLimiter {
+    fn allow(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        class: &str,
+        max: u32,
+        window: Duration,
+    ) -> bool {
+        let now = Instant::now();
+        let stamps = self
+            .windows
+            .entry((
+                project_id.to_string(),
+                plugin_id.to_string(),
+                class.to_string(),
+            ))
+            .or_default();
+        while stamps
+            .front()
+            .is_some_and(|stamp| now.duration_since(*stamp) >= window)
+        {
+            stamps.pop_front();
+        }
+        if stamps.len() as u32 >= max {
+            return false;
+        }
+        stamps.push_back(now);
+        true
+    }
+}
+
+fn expensive_rpc_limit(
+    method: &str,
+    config: RateLimitConfig,
+) -> Option<(&'static str, u32, Duration)> {
+    match method {
+        "search.query" => Some(("search", config.search_max, config.search_window)),
+        "asset.register"
+        | "asset.update"
+        | "asset.delete"
+        | "asset.read.begin"
+        | "asset.replace.begin" => Some(("asset", config.asset_max, config.asset_window)),
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 pub struct PluginHost {
     pub catalog: PluginCatalog,
@@ -1485,6 +1556,8 @@ pub struct PluginHost {
     /// Open-project grant file paths keyed by project id (directory root).
     project_grant_paths: BTreeMap<String, PathBuf>,
     ai_requests: BTreeMap<String, (String, String, String, String, Option<serde_json::Value>)>,
+    rate_limits: Arc<Mutex<MethodRateLimiter>>,
+    pub(crate) rate_limit_config: RateLimitConfig,
 }
 
 impl Default for PluginHost {
@@ -1512,6 +1585,8 @@ impl PluginHost {
             legacy_grants: GrantStore::default(),
             project_grant_paths: BTreeMap::new(),
             ai_requests: BTreeMap::new(),
+            rate_limits: Arc::new(Mutex::new(MethodRateLimiter::default())),
+            rate_limit_config: RateLimitConfig::default(),
         }
     }
 
@@ -1824,7 +1899,7 @@ impl PluginHost {
         Ok(self.catalog.get(&id).expect("catalog entry retained"))
     }
 
-    /// Verify and atomically install a `.wbplugin`, then register its verified
+    /// Verify and atomically install a `.daenaplugin`, then register its verified
     /// manifest for the existing Phase 5 runtime authority.
     pub fn install_package(
         &mut self,
@@ -2693,6 +2768,14 @@ impl PluginHost {
         method: &str,
         payload: serde_json::Value,
     ) -> Result<(), HostError> {
+        let entry = self
+            .runtime_entry(project_id, plugin_id)
+            .ok_or_else(|| HostError("bundled plugin is not registered".into()))?;
+        if !entry.package_root.as_os_str().is_empty() {
+            return Err(HostError(
+                "trusted module RPC is only available to bundled plugins".into(),
+            ));
+        }
         if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
             return Err(HostError("plugin is not active".into()));
         }
@@ -2854,7 +2937,32 @@ impl PluginHost {
                 false,
             ));
         }
+        self.enforce_rate_limit(&session.project_id, &session.plugin_id, &request.method)?;
         Ok(())
+    }
+
+    fn enforce_rate_limit(
+        &self,
+        project_id: &str,
+        plugin_id: &str,
+        method: &str,
+    ) -> Result<(), RpcError> {
+        let Some((class, max, window)) = expensive_rpc_limit(method, self.rate_limit_config) else {
+            return Ok(());
+        };
+        let mut limiter = self
+            .rate_limits
+            .lock()
+            .map_err(|_| rpc_error("host.unavailable", "plugin host lock poisoned", true))?;
+        if limiter.allow(project_id, plugin_id, class, max, window) {
+            Ok(())
+        } else {
+            Err(rpc_error(
+                "rate.limited",
+                format!("{method} exceeded the configured rate limit"),
+                true,
+            ))
+        }
     }
 }
 

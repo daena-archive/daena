@@ -13,7 +13,7 @@ const temporary = mkdtempSync(join(tmpdir(), "daena-plugin-declarative-"));
 try {
   const fixture = join(temporary, "field-notes");
   cpSync(join(workspace, "examples/plugins/declarative"), fixture, { recursive: true });
-  const archive = join(temporary, "field-notes.wbplugin");
+  const archive = join(temporary, "field-notes.daenaplugin");
   execFileSync("node", [join(workspace, "scripts/plugin-cli.mjs"), "package", fixture, "--output", archive], {
     stdio: "pipe",
   });

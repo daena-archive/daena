@@ -2279,9 +2279,99 @@ fn activation_fails_for_optional_but_missing_dependency_types() {
         .activate_bundled("project", "com.example.consumer")
         .unwrap_err();
     assert!(
-        error.0.contains("not active") || error.0.contains("not declared"),
+        error.0.contains("only available to bundled plugins"),
         "{}",
         error.0
+    );
+}
+
+#[test]
+fn authorize_bundled_enforces_grants_for_entity_query() {
+    let mut host = host();
+    host.activate_bundled("project", "com.example.one").unwrap();
+    host.authorize_bundled(
+        "com.example.one",
+        "project",
+        "entity.query",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    host.grants
+        .set("project", "com.example.one", &[], BTreeSet::new())
+        .unwrap();
+    let error = host
+        .authorize_bundled(
+            "com.example.one",
+            "project",
+            "entity.query",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(error.0.contains("capability.denied"), "{}", error.0);
+}
+
+#[test]
+fn authorize_bundled_rejects_installed_packages() {
+    let mut host = PluginHost::new();
+    let entry = CatalogEntry {
+        manifest: manifest("com.example.one", "one"),
+        package_root: PathBuf::from("installed"),
+        digest: "a".repeat(64),
+        embedded_wasm: None,
+    };
+    host.catalog.insert_for_test(entry).unwrap();
+    let error = host
+        .authorize_bundled(
+            "com.example.one",
+            "project",
+            "entity.query",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(error.0.contains("bundled"), "{}", error.0);
+}
+
+#[test]
+fn search_query_is_rate_limited() {
+    let mut host = PluginHost::new();
+    let mut plugin = manifest("com.example.one", "one");
+    plugin.capabilities.push("search.query".into());
+    let entry = CatalogEntry {
+        manifest: plugin.clone(),
+        package_root: PathBuf::new(),
+        digest: "a".repeat(64),
+        embedded_wasm: None,
+    };
+    host.catalog.insert_for_test(entry.clone()).unwrap();
+    host.namespaces.register_manifest(&entry.manifest).unwrap();
+    host.grants
+        .set(
+            "project",
+            "com.example.one",
+            &plugin.capabilities,
+            plugin.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    host.rate_limit_config = RateLimitConfig {
+        search_max: 2,
+        search_window: Duration::from_secs(60),
+        ..RateLimitConfig::default()
+    };
+    let session = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    let request = RpcRequest {
+        rpc_version: RPC_VERSION,
+        session_id: session.id,
+        request_id: "search".into(),
+        method: "search.query".into(),
+        payload: serde_json::json!({"query": "x"}),
+    };
+    assert!(host.rpc("plugin://one", &request).error.is_none());
+    assert!(host.rpc("plugin://one", &request).error.is_none());
+    assert_eq!(
+        host.rpc("plugin://one", &request).error.unwrap().code,
+        "rate.limited"
     );
 }
 

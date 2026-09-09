@@ -16,7 +16,7 @@ The normative contract is in [`schemas/plugin-manifest-v1.json`](../schemas/plug
 
 ## 1. Platform model
 
-A plugin is an app-owned `.wbplugin` ZIP package. The package contains one
+A plugin is an app-owned `.daenaplugin` ZIP package. The package contains one
 canonical `manifest.json` and the files referenced by its entrypoints. Plugin
 identity, project binding, capability grants, storage ownership, and runtime
 authority belong to the host—not to plugin JavaScript or WASM.
@@ -41,8 +41,15 @@ Inside this repository, use the checked-in CLI wrapper:
 node scripts/plugin-cli.mjs --help
 ```
 
-To author a plugin outside this repository, pack the public packages from a
-Daena Archive checkout (they are not yet published to npm):
+To author a plugin outside this repository, install the published packages:
+
+```sh
+npm install @daena-archive/plugin-sdk
+npm install --save-dev @daena-archive/plugin-cli @daena-archive/plugin-test-host
+npx daena-plugin --help
+```
+
+To pack unpublished local tarballs from a Daena Archive checkout:
 
 ```sh
 npm run build:plugin-sdk
@@ -51,19 +58,7 @@ npm pack -w @daena-archive/plugin-cli
 npm pack -w @daena-archive/plugin-test-host
 ```
 
-In the plugin project, install the tarballs (exact filenames include the
-version):
-
-```sh
-npm install ./daena-archive-plugin-sdk-0.1.0.tgz
-npm install --save-dev ./daena-archive-plugin-cli-0.1.0.tgz
-npm install --save-dev ./daena-archive-plugin-test-host-0.1.0.tgz
-npx daena-plugin --help
-```
-
-After the packages are published to npm, the same tools install as
-`@daena-archive/plugin-sdk`, `@daena-archive/plugin-cli`, and
-`@daena-archive/plugin-test-host`.
+Install the resulting `.tgz` files in the plugin project.
 
 The repository's build and verification commands are:
 
@@ -442,7 +437,7 @@ provider-unavailable error when the provider is missing. Date Lens
 ([`examples/plugins/timeline-consumer`](../examples/plugins/timeline-consumer))
 is an optional consumer of Timeline's `daena.timeline.resolve-date@1` service.
 
-WASM providers use the synchronous `wb.service.sync.v1` ABI. A provider exports
+WASM providers use the synchronous `daena.service.sync.v1` ABI. A provider exports
 `memory`, `alloc(i32) -> i32`, and `handle_json(i32, i32) -> i64`; the host writes
 UTF-8 JSON into allocated memory and decodes the returned `(len << 32) | ptr`
 value as UTF-8 JSON. Requests and responses are bounded by the broker payload
@@ -527,8 +522,8 @@ Package an existing plugin directory:
 node scripts/plugin-cli.mjs validate path/to/my-plugin
 node scripts/plugin-cli.mjs migration validate path/to/my-plugin
 node scripts/plugin-cli.mjs package path/to/my-plugin \
-  --output ./my-plugin.wbplugin
-node scripts/plugin-cli.mjs validate ./my-plugin.wbplugin
+  --output ./my-plugin.daenaplugin
+node scripts/plugin-cli.mjs validate ./my-plugin.daenaplugin
 ```
 
 The package CLI performs author-time checks. The Rust host independently
@@ -539,7 +534,7 @@ plugin code executes.
 To install it in Daena Archive:
 
 1. Open the **Plugins** panel.
-2. Select **Install package…** and choose the `.wbplugin` file.
+2. Select **Install package…** and choose the `.daenaplugin` file.
 3. Review the publisher, digest, requested capabilities, and unsigned-package
    warning if applicable.
 4. Confirm installation, then use the plugin's **Enable** action for the
@@ -551,7 +546,7 @@ stored data versions, health, and failure state are project-scoped.
 
 ## 12. Upgrade, rollback, and removal
 
-Install the newer `.wbplugin` version with the same immutable plugin ID. In
+Install the newer `.daenaplugin` version with the same immutable plugin ID. In
 the Plugins panel:
 
 - **Update** previews capability changes and migration requirements before
@@ -587,7 +582,7 @@ Before publishing a plugin, verify:
 - migrations are contiguous and tested against backup/rollback behavior;
 - `validate`, migration validation, package creation, and archive validation
   all pass; and
-- the packaged `.wbplugin` is tested through the application's Plugins panel.
+- the packaged `.daenaplugin` is tested through the application's Plugins panel.
 
 ## 14. Canonical references
 

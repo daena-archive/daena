@@ -50,7 +50,7 @@ fn passive_plugin_svg_profile_accepts_geometry_and_rejects_active_content() {
 #[test]
 fn package_install_requires_declared_svg_icons_to_exist_and_be_passive() {
     let dir = tempdir().unwrap();
-    let missing_path = dir.path().join("missing-icon.wbplugin");
+    let missing_path = dir.path().join("missing-icon.daenaplugin");
     archive(
         &missing_path,
         &manifest_with_svg_icon("1.0.0"),
@@ -65,7 +65,7 @@ fn package_install_requires_declared_svg_icons_to_exist_and_be_passive() {
     .unwrap_err();
     assert!(missing_error.0.contains("manifest SVG icon is missing"));
 
-    let active_path = dir.path().join("active-icon.wbplugin");
+    let active_path = dir.path().join("active-icon.daenaplugin");
     archive(
         &active_path,
         &manifest_with_svg_icon("1.0.1"),
@@ -88,9 +88,60 @@ fn package_install_requires_declared_svg_icons_to_exist_and_be_passive() {
 }
 
 #[test]
+fn malformed_archives_fail_closed_without_panic() {
+    let dir = tempdir().unwrap();
+    let valid = dir.path().join("ok.daenaplugin");
+    archive(&valid, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    let bytes = std::fs::read(&valid).unwrap();
+    for (index, chunk) in bytes.chunks(16).enumerate() {
+        let mut mutated = bytes.clone();
+        let offset = index * 16;
+        mutated[offset] ^= 0xff;
+        if chunk.len() > 1 {
+            mutated[offset + chunk.len() - 1] ^= 0xaa;
+        }
+        let path = dir.path().join(format!("mut-{index}.daenaplugin"));
+        std::fs::write(&path, &mutated).unwrap();
+        let _ = verify_and_extract(
+            &path,
+            &dir.path().join(format!("out-{index}")),
+            ArchiveLimits::default(),
+            VerificationPolicy::with_unsigned_consent(),
+        );
+    }
+    for len in [0_usize, 1, 4, bytes.len() / 2] {
+        let path = dir.path().join(format!("trunc-{len}.daenaplugin"));
+        std::fs::write(&path, &bytes[..len]).unwrap();
+        assert!(verify_and_extract(
+            &path,
+            &dir.path().join(format!("trunc-out-{len}")),
+            ArchiveLimits::default(),
+            VerificationPolicy::with_unsigned_consent(),
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn rejects_wbplugin_extension() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("legacy.wbplugin");
+    archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    let error = verify_and_extract(
+        &path,
+        dir.path(),
+        ArchiveLimits::default(),
+        VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap_err();
+    assert!(error.0.contains(".daenaplugin"));
+    assert!(error.0.contains(".wbplugin is not accepted"));
+}
+
+#[test]
 fn rejects_traversal_and_missing_entrypoint() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("bad.wbplugin");
+    let path = dir.path().join("bad.daenaplugin");
     archive(&path, &manifest("1.0.0"), &[("../evil", b"x")]);
     assert!(verify_and_extract(
         &path,
@@ -104,7 +155,7 @@ fn rejects_traversal_and_missing_entrypoint() {
 #[test]
 fn unsigned_packages_require_explicit_consent() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("unsigned.wbplugin");
+    let path = dir.path().join("unsigned.daenaplugin");
     archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
     let error = verify_and_extract(
         &path,
@@ -126,7 +177,7 @@ fn unsigned_packages_require_explicit_consent() {
 #[test]
 fn archive_entry_limit_is_checked_before_extraction() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("too-many.wbplugin");
+    let path = dir.path().join("too-many.daenaplugin");
     archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
     let limits = ArchiveLimits {
         max_file_count: 1,
@@ -175,7 +226,7 @@ fn installs_atomically_and_retains_versions() {
     let dir = tempdir().unwrap();
     let mut catalog = PackageCatalog::default();
     for version in ["1.0.0", "1.1.0"] {
-        let path = dir.path().join(format!("{version}.wbplugin"));
+        let path = dir.path().join(format!("{version}.daenaplugin"));
         archive(&path, &manifest(version), &[("dist/index.html", b"ok")]);
         catalog
             .install(
@@ -199,7 +250,7 @@ fn installs_atomically_and_retains_versions() {
 #[test]
 fn rediscovery_rehashes_installed_packages_after_restart() {
     let dir = tempdir().unwrap();
-    let archive_path = dir.path().join("1.0.0.wbplugin");
+    let archive_path = dir.path().join("1.0.0.daenaplugin");
     archive(
         &archive_path,
         &manifest("1.0.0"),

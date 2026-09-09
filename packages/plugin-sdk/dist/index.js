@@ -139,9 +139,7 @@ export function createBrowserPluginRpcTransport(options = {}) {
             throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
         }
         sessionId = value.sessionId;
-        if (typeof document !== "undefined" &&
-            isRecord(value.appearance) &&
-            isRecord(value.appearance.tokens)) {
+        if (typeof document !== "undefined" && isRecord(value.appearance) && isRecord(value.appearance.tokens)) {
             applyPluginAppearance(value.appearance, document.documentElement);
         }
         return value;

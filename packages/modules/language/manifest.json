@@ -16,7 +16,8 @@
     "field.read:self",
     "field.write:self",
     "record.read:self",
-    "record.write:self"
+    "record.write:self",
+    "host.surface:daena.language/workspace@1"
   ],
   "dependencies": {},
   "namespaces": ["language"],
@@ -197,7 +198,14 @@
       }
     }
   ],
-  "views": [],
+  "views": [
+    {
+      "id": "language-workspace",
+      "title": "Language",
+      "renderer": { "type": "host-surface", "id": "daena.language/workspace", "major": 1 },
+      "components": []
+    }
+  ],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },

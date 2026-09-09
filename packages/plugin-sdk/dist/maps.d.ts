@@ -249,6 +249,7 @@ export type MapLayerDefinition = {
     selector: Readonly<Record<string, never>>;
     style: MapStyleV2;
     kind: "vector";
+    overlayFamily?: "political" | "cultural" | "religious" | "linguistic" | "economic" | "military" | "custom" | null;
 };
 export interface MapLayersField {
     schemaVersion: 1;

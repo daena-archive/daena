@@ -18,16 +18,22 @@ try {
   const initialized = JSON.parse(readFileSync(join(init, "manifest.json"), "utf8"));
   assert.equal(initialized.id, "com.example.cli-fixture");
   execFileSync("node", [cli, "validate", fixture], { stdio: "pipe" });
-  const archive = join(temporary, "fixture.wbplugin");
+  const archive = join(temporary, "fixture.daenaplugin");
   execFileSync("node", [cli, "package", fixture, "--output", archive], { stdio: "pipe" });
   const validation = execFileSync("node", [cli, "validate", archive], { encoding: "utf8" });
   assert.equal(JSON.parse(validation).ok, true);
+  const legacyArchive = join(temporary, "legacy.wbplugin");
+  writeFileSync(legacyArchive, readFileSync(archive));
+  assert.throws(
+    () => execFileSync("node", [cli, "validate", legacyArchive], { stdio: "pipe" }),
+    /\.wbplugin is not accepted/,
+  );
   const migrations = execFileSync("node", [cli, "migration", "validate", fixture], { encoding: "utf8" });
   assert.equal(JSON.parse(migrations).dataVersion, 1);
   for (const example of ["declarative", "ui", "wasm-service", "theme", "timeline-consumer"]) {
     execFileSync("node", [cli, "validate", join(workspace, "examples/plugins", example)], { stdio: "pipe" });
   }
-  const unsafeArchive = join(temporary, "unsafe.wbplugin");
+  const unsafeArchive = join(temporary, "unsafe.daenaplugin");
   writeFileSync(
     unsafeArchive,
     createZipArchive([

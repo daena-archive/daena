@@ -21,7 +21,7 @@ pub const PLUGIN_PROTOCOL: &str = "plugin";
 /// `alloc(i32) -> i32`, `handle_json(i32, i32) -> i64`, and `memory`; the input
 /// and output are UTF-8 JSON. The returned i64 packs `(len << 32) | ptr`.
 /// Background event loops are intentionally unsupported in this phase.
-pub const WASM_SERVICE_ABI: &str = "wb.service.sync.v1";
+pub const WASM_SERVICE_ABI: &str = "daena.service.sync.v1";
 pub const WASM_SERVICE_MAX_BYTES: usize = MAX_RPC_BYTES;
 pub const BUNDLED_TIMELINE_SERVICE_WASM: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/timeline-service.wasm"));

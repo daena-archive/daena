@@ -38,6 +38,12 @@ fn manifest(kind: PluginKind) -> PluginManifest {
 }
 
 #[test]
+fn wasm_service_abi_is_daena_not_worldbilder() {
+    assert_eq!(WASM_SERVICE_ABI, "daena.service.sync.v1");
+    assert_ne!(WASM_SERVICE_ABI, "wb.service.sync.v1");
+}
+
+#[test]
 fn policy_uses_an_app_controlled_origin_and_denies_ambient_network() {
     let policy = webview_policy(&manifest(PluginKind::Sandboxed)).unwrap();
     assert_eq!(policy.protocol, "plugin");

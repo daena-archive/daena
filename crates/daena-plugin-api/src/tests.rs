@@ -451,6 +451,26 @@ fn host_surface_only_declarative_plugins_may_omit_entrypoints() {
 }
 
 #[test]
+fn language_manifest_declares_the_workspace_host_surface() {
+    let manifest = parse_manifest(include_str!(
+        "../../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    validate_manifest(&manifest).expect("language manifest must validate");
+    assert!(manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "host.surface:daena.language/workspace@1"));
+    assert!(manifest.views.iter().any(|view| {
+        view.id == "language-workspace"
+            && matches!(
+                &view.renderer,
+                ViewRenderer::HostSurface { id, major } if id == "daena.language/workspace" && *major == 1
+            )
+    }));
+}
+
+#[test]
 fn houses_manifest_is_a_valid_declarative_workspace_plugin() {
     let manifest = parse_manifest(include_str!(
         "../../../packages/modules/houses/manifest.json"

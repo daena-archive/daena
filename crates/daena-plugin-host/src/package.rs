@@ -1,4 +1,4 @@
-//! Verification and lifecycle planning for `.wbplugin` packages.
+//! Verification and lifecycle planning for `.daenaplugin` packages.
 //!
 //! This module is deliberately independent from the webview and WASM runtime.
 //! Nothing is made executable until the archive has been fully checked and
@@ -293,9 +293,9 @@ fn verify_and_extract(
     limits: ArchiveLimits,
     policy: VerificationPolicy,
 ) -> Result<PluginPackage, PackageError> {
-    if archive_path.extension().and_then(|v| v.to_str()) != Some("wbplugin") {
+    if archive_path.extension().and_then(|v| v.to_str()) != Some("daenaplugin") {
         return Err(PackageError(
-            "package must use the .wbplugin extension".into(),
+            "package must use the .daenaplugin extension; .wbplugin is not accepted".into(),
         ));
     }
     let compressed = fs::metadata(archive_path).map_err(io_error)?.len();

@@ -25,6 +25,15 @@ function manifestSchemaPath() {
 }
 
 const schemaPath = manifestSchemaPath();
+const PLUGIN_ARCHIVE_EXT = ".daenaplugin";
+
+function isPluginArchive(input) {
+  if (input.endsWith(".wbplugin")) {
+    throw new Error(".wbplugin is not accepted; use .daenaplugin");
+  }
+  return input.endsWith(PLUGIN_ARCHIVE_EXT);
+}
+
 const ajv = new Ajv2020({ allErrors: true });
 ajv.addFormat("uint32", (value) => Number.isInteger(value) && value >= 0 && value <= 0xffffffff);
 const validateShape = ajv.compile(JSON.parse(readFileSync(schemaPath, "utf8")));
@@ -143,7 +152,7 @@ function parseFlag(args, flag, fallback) {
 
 function packageDirectory(input, output) {
   const { directory, manifest } = validateDirectory(input);
-  const target = resolve(output ?? `${manifest.id.replaceAll(".", "-")}-${manifest.version}.wbplugin`);
+  const target = resolve(output ?? `${manifest.id.replaceAll(".", "-")}-${manifest.version}${PLUGIN_ARCHIVE_EXT}`);
   if (target.startsWith(`${directory}/`)) throw new Error("output archive must not be inside the package directory");
   mkdirSync(dirname(target), { recursive: true });
   const temporary = `${target}.tmp-${process.pid}`;
@@ -206,8 +215,8 @@ try {
     process.exitCode = 1;
   } else if (command === "validate") {
     const input = args[0];
-    if (!input) throw new Error("validate requires a directory or .wbplugin archive");
-    const result = input.endsWith(".wbplugin") ? validateArchive(input) : validateDirectory(input);
+    if (!input) throw new Error("validate requires a directory or .daenaplugin archive");
+    const result = isPluginArchive(input) ? validateArchive(input) : validateDirectory(input);
     console.log(
       JSON.stringify(
         { ok: true, id: result.manifest.id, version: result.manifest.version, files: result.files?.length },

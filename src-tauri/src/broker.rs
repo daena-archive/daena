@@ -1074,8 +1074,8 @@ pub(super) fn dispatch_module_rpc(
     }
 }
 
-/// Main-window workspace editing is a trusted shell operation. It deliberately
-/// has no plugin or project identity parameters; third-party webviews use the
+/// Main-window workspace editing is a trusted shell operation. Plugin identity
+/// is required and authorized through the host; third-party webviews use the
 /// session-bound `plugin_rpc` surface above.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -1085,7 +1085,7 @@ pub(super) async fn trusted_module_rpc(
     plugins: tauri::State<'_, SharedPluginHost>,
     settings: tauri::State<'_, SharedSettings>,
     ai_runtime: tauri::State<'_, ai::SharedAiRuntime>,
-    plugin_id: Option<String>,
+    plugin_id: String,
     method: String,
     payload: serde_json::Value,
     request_id: Option<String>,
@@ -1094,19 +1094,17 @@ pub(super) async fn trusted_module_rpc(
         .map(|info| info.root)
         .ok_or_else(|| "project is not open".to_string())?;
     let event_method = method.clone();
+    let granted_capabilities = {
+        let mut host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        host.authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
+            .map_err(|error| error.to_string())?;
+        host.ensure_bundled_session(&plugin_id, &project_id)
+            .map_err(|error| error.to_string())?
+            .grants
+    };
     if method.starts_with("ai.request.") {
-        let plugin_id =
-            plugin_id.ok_or_else(|| "bundled AI requests require plugin identity".to_string())?;
-        let granted_capabilities = {
-            let mut host = plugins
-                .lock()
-                .map_err(|_| "plugin host lock poisoned".to_string())?;
-            host.authorize_bundled(&plugin_id, &project_id, &method, payload.clone())
-                .map_err(|error| error.to_string())?;
-            host.ensure_bundled_session(&plugin_id, &project_id)
-                .map_err(|error| error.to_string())?
-                .grants
-        };
         return dispatch_host_rpc(
             plugins.inner(),
             &plugin_id,
@@ -1131,30 +1129,24 @@ pub(super) async fn trusted_module_rpc(
         );
     }
     let record_owner_declaration = if method.starts_with("record.") {
-        let record_plugin_id = plugin_id
-            .as_deref()
-            .ok_or_else(|| "module record requests require plugin identity".to_string())?;
         let collection = payload
             .get("collection")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "record collection is required".to_string())?;
-        let mut host = plugins
-            .lock()
-            .map_err(|_| "plugin host lock poisoned".to_string())?;
-        host.authorize_bundled(record_plugin_id, &project_id, &method, payload.clone())
-            .map_err(|error| error.to_string())?;
-        host.record_owner_declaration(&project_id, record_plugin_id, collection)
-    } else {
-        None
-    };
-    let shared_field_keys = if let Some(module_id) = plugin_id.as_deref() {
         let host = plugins
             .lock()
             .map_err(|_| "plugin host lock poisoned".to_string())?;
-        shared_field_keys_for_request(&host, module_id, &method, &payload)?
+        host.record_owner_declaration(&project_id, &plugin_id, collection)
     } else {
         None
     };
+    let shared_field_keys = {
+        let host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        shared_field_keys_for_request(&host, &plugin_id, &method, &payload)?
+    };
+    let rpc_plugin_id = plugin_id.clone();
     let result = with_core(state, move |core| {
         let record_owner_entity_types = match record_owner_declaration.as_ref() {
             Some((collection, package)) => Some(record_owner_constraint_from_declaration(
@@ -1166,7 +1158,7 @@ pub(super) async fn trusted_module_rpc(
         };
         dispatch_module_rpc(
             core,
-            plugin_id.as_deref(),
+            Some(rpc_plugin_id.as_str()),
             shared_field_keys,
             record_owner_entity_types,
             &method,

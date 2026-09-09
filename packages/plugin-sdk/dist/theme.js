@@ -1,4 +1,4 @@
-import { BUILTIN_THEME_TOKENS, THEME_TOKEN_IDS, } from "./generated.js";
+import { BUILTIN_THEME_TOKENS, THEME_TOKEN_IDS } from "./generated.js";
 const TOKEN_IDS = new Set(THEME_TOKEN_IDS);
 const TEXT_CONTRAST_PAIRS = [
     ["ink", "surface"],

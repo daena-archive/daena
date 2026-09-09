@@ -1,8 +1,9 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload, EntityPageRecord, EntityQueryPayload } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginAppearance, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload, EntityPageRecord, EntityQueryPayload } from "./generated.js";
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
-export { mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
+export { applyPluginAppearance, hostHasFeature, mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
+export declare const APPEARANCE_FEATURE = "appearance@1";
 export interface PluginRpcTransport {
     call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
 }
@@ -37,6 +38,7 @@ export interface PluginRpcClient {
     getAppVersion(): Promise<{
         version: string;
     }>;
+    getAppearance(): Promise<PluginAppearance>;
     beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
     updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
     deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;

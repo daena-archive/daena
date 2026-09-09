@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.parchment",
+  "name": "Parchment",
+  "version": "1.0.0",
+  "publisher": "com.example",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "declarative",
+  "entrypoints": {},
+  "capabilities": [],
+  "dependencies": {},
+  "namespaces": [],
+  "schemas": [],
+  "templates": [],
+  "views": [],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [],
+  "themes": [
+    {
+      "id": "parchment",
+      "name": "Parchment",
+      "tokens": {
+        "light": { "accent": "#b4773f", "canvas": "#f7f6f2" },
+        "dark": { "accent": "#c58a4a", "canvas": "#0e1714" }
+      }
+    }
+  ]
+}

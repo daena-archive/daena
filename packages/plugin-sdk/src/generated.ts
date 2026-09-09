@@ -54,7 +54,11 @@ export type PluginRpcError = RpcError;
 export interface RpcSuccess { rpcVersion: 1; requestId: string; ok: true; result: unknown }
 export interface RpcFailure { rpcVersion: 1; requestId: string; ok: false; error: RpcError }
 export type RpcResponse = RpcSuccess | RpcFailure;
-export interface PluginBootstrap { grantedCapabilities: string[]; hostApi: string; optionalFeatures: string[]; pluginId: string; projectId: string; rpcVersion: number; sessionId: string; version: string }
+export type AppearancePreference = "light" | "dark" | "system";
+export type AppearanceResolved = "light" | "dark";
+export interface AppearancePackRef { pluginId: string; themeId: string }
+export interface PluginAppearance { pack?: AppearancePackRef | null; preference: AppearancePreference; resolved: AppearanceResolved; tokens: Record<string, string> }
+export interface PluginBootstrap { appearance: PluginAppearance; grantedCapabilities: string[]; hostApi: string; optionalFeatures: string[]; pluginId: string; projectId: string; rpcVersion: number; sessionId: string; version: string }
 export interface EntityRecord { createdAt: string; deleted: boolean; entityType?: string | null; id: string; name: string; revision: string; updatedAt: string }
 export interface EntityTypeCountRecord { count: number; entityType?: string | null }
 export interface EntityPageRecord { hasMore: boolean; items: EntityRecord[]; limit: number; offset: number; total: number; typeCounts: EntityTypeCountRecord[] }
@@ -75,6 +79,7 @@ export interface AiRetrievalPolicyPayload { allowedSourceKinds: string[]; includ
 export interface AiRequestIdPayload { requestId: string }
 export interface AiRequestStartPayload { deadlineMs?: number | null; immediateContext: unknown; operation: string; outputContract?: unknown; retrievalPolicy?: AiRetrievalPolicyPayload | null; taskId: string; userInstruction: string }
 export type AppVersionPayload = Record<string, unknown>;
+export type AppearanceGetPayload = Record<string, unknown>;
 export interface AssetDeletePayload { assetId: string; expectedRevision: string; namespace: string }
 export interface AssetListPayload { entityId: string; namespace?: string | null }
 export interface AssetReadBeginPayload { assetId: string; namespace: string }
@@ -135,6 +140,7 @@ export interface BrokerMethodPayloads {
   "ai.request.result": AiRequestIdPayload;
   "ai.request.start": AiRequestStartPayload;
   "app.version": AppVersionPayload;
+  "appearance.get": AppearanceGetPayload;
   "asset.delete": AssetDeletePayload;
   "asset.list": AssetListPayload;
   "asset.read.begin": AssetReadBeginPayload;

@@ -716,6 +716,12 @@ export const project = {
     }),
   settingsGet: () => invoke<AppSettings>("settings_get"),
   settingsUpdate: (update: AppSettingsUpdate) => invoke<AppSettings>("settings_update", { update }),
+  pluginAppearanceSync: (appearance: {
+    preference: "light" | "dark" | "system";
+    resolved: "light" | "dark";
+    pack: { pluginId: string; themeId: string } | null;
+    tokens: Record<string, string>;
+  }) => invoke<void>("plugin_appearance_sync", { appearance }),
   aiProviderStatus: (projectId: string) => invoke<AiProviderStatus>("ai_provider_status", { projectId }),
   aiProviderModels: (projectId: string) => invoke<string[]>("ai_provider_models", { projectId }),
   aiProviderConnect: (projectId: string) =>

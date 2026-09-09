@@ -7,6 +7,7 @@ import type {
   MigrationOperation,
   PluginManifest,
   PluginRpcError,
+  PluginAppearance,
   PluginBootstrap,
   Service,
   MutationOptions,
@@ -18,18 +19,21 @@ import type {
   EntityQueryPayload,
 } from "./generated.js";
 import { CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS } from "./generated.js";
-import { validateThemePack } from "./theme.js";
+import { applyPluginAppearance, validateThemePack } from "./theme.js";
 
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
 export {
+  applyPluginAppearance,
+  hostHasFeature,
   mergeThemeTokens,
   parseThemeColor,
   resolveThemeTokens,
   validateThemeContrast,
   validateThemePack,
 } from "./theme.js";
+export const APPEARANCE_FEATURE = "appearance@1";
 
 export interface PluginRpcTransport {
   call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
@@ -65,6 +69,7 @@ export interface PluginRpcClient {
   pollEvents<T = unknown>(name: string, version: number): Promise<T[]>;
   callService<T = unknown>(name: string, major: number, payload: unknown, deadlineMs?: number): Promise<T>;
   getAppVersion(): Promise<{ version: string }>;
+  getAppearance(): Promise<PluginAppearance>;
   beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
   updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
   deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
@@ -164,6 +169,18 @@ function utf8Length(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+let appearancePushBound = false;
+
+function bindAppearancePush(): void {
+  if (appearancePushBound || typeof window === "undefined") return;
+  appearancePushBound = true;
+  window.addEventListener("daena:appearance", (event) => {
+    const detail = (event as unknown as { detail?: unknown }).detail;
+    if (!isRecord(detail) || !isRecord(detail.tokens) || typeof document === "undefined") return;
+    applyPluginAppearance(detail as unknown as PluginAppearance, document.documentElement);
+  });
+}
+
 function responseError(value: unknown, fallback: string): PluginRpcError {
   if (isRecord(value) && isRpcError(value.error)) return value.error;
   if (isRecord(value) && typeof value.error === "string") return rpcFailure("transport.host", value.error);
@@ -236,6 +253,9 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
       throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
     }
     sessionId = value.sessionId;
+    if (typeof document !== "undefined" && isRecord(value.appearance) && isRecord(value.appearance.tokens)) {
+      applyPluginAppearance(value.appearance as unknown as PluginAppearance, document.documentElement);
+    }
     return value as unknown as PluginBootstrap;
   }
 
@@ -266,6 +286,8 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
     return value.result;
   }
 
+  bindAppearancePush();
+
   return { call };
 }
 
@@ -283,7 +305,7 @@ function normalizeEntity(value: unknown): EntityRecord {
   ) {
     throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
   }
-  const entityType = value.entityType ?? value.entity_type;
+  const entityType = value.entityType !== undefined ? value.entityType : value.entity_type;
   const createdAt = value.createdAt ?? value.created_at;
   const updatedAt = value.updatedAt ?? value.updated_at;
   if (
@@ -450,6 +472,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     callService: <T>(name: string, major: number, payload: unknown, deadlineMs = 5000) =>
       callTransport<T>(transport, "service.call", { name, major, payload, deadlineMs }),
     getAppVersion: () => callTransport<{ version: string }>(transport, "app.version", {}),
+    getAppearance: () => callTransport<PluginAppearance>(transport, "appearance.get", {}),
     beginAssetRead: (assetId, namespace) =>
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
     updateAssetMetadata: (input, options) =>

@@ -114,6 +114,41 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "AppearanceGetPayload": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "AppearancePackRef": {
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "type": "string"
+        },
+        "themeId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pluginId",
+        "themeId"
+      ],
+      "type": "object"
+    },
+    "AppearancePreference": {
+      "enum": [
+        "light",
+        "dark",
+        "system"
+      ],
+      "type": "string"
+    },
+    "AppearanceResolved": {
+      "enum": [
+        "light",
+        "dark"
+      ],
+      "type": "string"
+    },
     "AssetDeletePayload": {
       "additionalProperties": false,
       "properties": {
@@ -1183,10 +1218,46 @@
       ],
       "type": "object"
     },
+    "PluginAppearance": {
+      "additionalProperties": false,
+      "properties": {
+        "pack": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppearancePackRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preference": {
+          "$ref": "#/$defs/AppearancePreference"
+        },
+        "resolved": {
+          "$ref": "#/$defs/AppearanceResolved"
+        },
+        "tokens": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "preference",
+        "resolved",
+        "tokens"
+      ],
+      "type": "object"
+    },
     "PluginBootstrap": {
       "additionalProperties": false,
       "description": "Bootstrap envelope delivered to a plugin at activation.",
       "properties": {
+        "appearance": {
+          "$ref": "#/$defs/PluginAppearance"
+        },
         "grantedCapabilities": {
           "items": {
             "type": "string"
@@ -1221,6 +1292,7 @@
         }
       },
       "required": [
+        "appearance",
         "grantedCapabilities",
         "hostApi",
         "optionalFeatures",
@@ -2604,6 +2676,22 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "appearance.get"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AppearanceGetPayload"
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -2668,7 +2756,8 @@
             "ai.request.cancel",
             "ai.request.result",
             "ai.request.citations",
-            "app.version"
+            "app.version",
+            "appearance.get"
           ]
         },
         "payload": {},
@@ -2796,6 +2885,10 @@
     },
     "app.version": {
       "payload": "AppVersionPayload",
+      "requestId": "envelope"
+    },
+    "appearance.get": {
+      "payload": "AppearanceGetPayload",
       "requestId": "envelope"
     },
     "asset.delete": {

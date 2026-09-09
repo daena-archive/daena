@@ -293,6 +293,10 @@ rpcLines.push(
 );
 rpcLines.push(`export type RpcResponse = RpcSuccess | RpcFailure;`);
 
+rpcLines.push(defToDeclaration("AppearancePreference", rpcDefs.AppearancePreference));
+rpcLines.push(defToDeclaration("AppearanceResolved", rpcDefs.AppearanceResolved));
+rpcLines.push(defToDeclaration("AppearancePackRef", rpcDefs.AppearancePackRef));
+rpcLines.push(defToDeclaration("PluginAppearance", rpcDefs.PluginAppearance));
 rpcLines.push(defToDeclaration("PluginBootstrap", rpcDefs.PluginBootstrap));
 rpcLines.push(defToDeclaration("EntityRecord", rpcDefs.EntityRecord));
 rpcLines.push(defToDeclaration("EntityTypeCountRecord", rpcDefs.EntityTypeCountRecord));

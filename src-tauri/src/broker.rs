@@ -188,6 +188,7 @@ pub(super) fn validate_broker_payload(
         "ai.request.poll" | "ai.request.cancel" | "ai.request.result" | "ai.request.citations" => {
             (&["requestId"], &[])
         }
+        "app.version" | "appearance.get" => (&[], &[]),
         _ => {
             return Err(CoreError::Validation(format!(
                 "unknown plugin RPC method: {method}"

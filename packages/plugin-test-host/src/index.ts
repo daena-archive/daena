@@ -1,5 +1,7 @@
 import {
+  APPEARANCE_FEATURE,
   assertValidPluginManifest,
+  BUILTIN_THEME_TOKENS,
   createPluginRpcClient,
   type EntityRecord,
   type PluginManifest,
@@ -130,6 +132,8 @@ export class FakePluginHost implements PluginRpcTransport {
         switch (method) {
           case "plugin.bootstrap":
             return this.bootstrap();
+          case "appearance.get":
+            return this.bootstrap().appearance;
           case "entity.list":
             this.require("entity.read");
             return this.list(payload);
@@ -223,7 +227,13 @@ export class FakePluginHost implements PluginRpcTransport {
       version: this.manifest.version,
       hostApi: this.manifest.hostApi,
       grantedCapabilities: [...this.grants].sort(),
-      optionalFeatures: [],
+      optionalFeatures: [APPEARANCE_FEATURE],
+      appearance: {
+        preference: "system" as const,
+        resolved: "light" as const,
+        pack: null,
+        tokens: { ...BUILTIN_THEME_TOKENS.light },
+      },
     };
   }
 

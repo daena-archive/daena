@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
 import { BUILTIN_THEME_TOKENS, THEME_TOKEN_IDS } from "../packages/plugin-sdk/src/generated.ts";
+import { applyPluginAppearance, hostHasFeature } from "../packages/plugin-sdk/dist/theme.js";
 import {
   applyThemePreference,
   cacheThemePackTokens,
@@ -44,6 +45,9 @@ function themeRoot() {
       colorScheme: "",
       setProperty(name, value) {
         properties.set(name, value);
+      },
+      removeProperty(name) {
+        properties.delete(name);
       },
     },
   };
@@ -100,6 +104,45 @@ applyThemePreference("light", overlayRoot, false, { accent: "#aa7744" });
 assert.equal(overlayRoot.properties.get("--accent"), "#aa7744");
 applyThemePreference("light", overlayRoot, false, { ink: "#fffefa", surface: "#fffefa" });
 assert.equal(overlayRoot.properties.get("--ink"), BUILTIN_THEME_TOKENS.light.ink);
+
+const pluginRoot = themeRoot();
+applyPluginAppearance({ preference: "dark", resolved: "dark", tokens: BUILTIN_THEME_TOKENS.dark }, pluginRoot);
+assert.equal(pluginRoot.dataset.theme, "dark");
+assert.equal(pluginRoot.properties.get("--canvas"), BUILTIN_THEME_TOKENS.dark.canvas);
+const staleRoot = themeRoot();
+staleRoot.style.setProperty("--ink", "#ffffff");
+applyPluginAppearance(
+  { preference: "light", resolved: "light", tokens: { ...BUILTIN_THEME_TOKENS.light, ink: "#12345" } },
+  staleRoot,
+);
+assert.equal(staleRoot.properties.has("--ink"), false);
+applyPluginAppearance({ preference: "light", resolved: "light", tokens: BUILTIN_THEME_TOKENS.light }, staleRoot);
+assert.equal(staleRoot.properties.get("--ink"), BUILTIN_THEME_TOKENS.light.ink);
+assert.equal(hostHasFeature(["appearance@1"], "appearance@1"), true);
+assert.equal(hostHasFeature([], "appearance@1"), false);
+const applySource = await readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+assert.match(applySource, /__THEME_TOKEN_IDS__/);
+assert.match(applySource, /plugin_appearance_apply_js/);
+const applyJs = applySource
+  .match(/const PLUGIN_APPEARANCE_APPLY_JS: &str = r##"([\s\S]*?)"##;/)[1]
+  .replace("__THEME_TOKEN_IDS__", JSON.stringify(THEME_TOKEN_IDS));
+const evalRoot = themeRoot();
+vm.runInNewContext(`${applyJs}(appearance);`, {
+  appearance: {
+    preference: "dark",
+    resolved: "dark",
+    tokens: { ...BUILTIN_THEME_TOKENS.dark, "not-a-token": "#ffffff", ink: "#12345" },
+  },
+  document: { documentElement: evalRoot },
+  window: { dispatchEvent() {} },
+  CustomEvent: class {
+    constructor() {}
+  },
+});
+assert.equal(evalRoot.dataset.theme, "dark");
+assert.equal(evalRoot.properties.get("--canvas"), BUILTIN_THEME_TOKENS.dark.canvas);
+assert.equal(evalRoot.properties.has("--not-a-token"), false);
+assert.equal(evalRoot.properties.has("--ink"), false);
 
 const startupSource = await readFile(new URL("../static/theme-init.js", import.meta.url), "utf8");
 const startupRoot = themeRoot();

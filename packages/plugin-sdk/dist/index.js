@@ -1,8 +1,9 @@
 import { CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS } from "./generated.js";
-import { validateThemePack } from "./theme.js";
+import { applyPluginAppearance, validateThemePack } from "./theme.js";
 export * from "./generated.js";
 export * from "./maps.js";
-export { mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
+export { applyPluginAppearance, hostHasFeature, mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
+export const APPEARANCE_FEATURE = "appearance@1";
 export class PluginRpcException extends Error {
     code;
     retryable;
@@ -53,6 +54,18 @@ function runtimeValue(name) {
 }
 function utf8Length(value) {
     return new TextEncoder().encode(value).byteLength;
+}
+let appearancePushBound = false;
+function bindAppearancePush() {
+    if (appearancePushBound || typeof window === "undefined")
+        return;
+    appearancePushBound = true;
+    window.addEventListener("daena:appearance", (event) => {
+        const detail = event.detail;
+        if (!isRecord(detail) || !isRecord(detail.tokens) || typeof document === "undefined")
+            return;
+        applyPluginAppearance(detail, document.documentElement);
+    });
 }
 function responseError(value, fallback) {
     if (isRecord(value) && isRpcError(value.error))
@@ -126,6 +139,11 @@ export function createBrowserPluginRpcTransport(options = {}) {
             throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
         }
         sessionId = value.sessionId;
+        if (typeof document !== "undefined" &&
+            isRecord(value.appearance) &&
+            isRecord(value.appearance.tokens)) {
+            applyPluginAppearance(value.appearance, document.documentElement);
+        }
         return value;
     }
     async function ensureSession() {
@@ -157,6 +175,7 @@ export function createBrowserPluginRpcTransport(options = {}) {
             throw rpcFailure("transport.protocol", "plugin RPC success has no result");
         return value.result;
     }
+    bindAppearancePush();
     return { call };
 }
 function isRecord(value) {
@@ -170,7 +189,7 @@ function normalizeEntity(value) {
         typeof value.revision !== "string") {
         throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
     }
-    const entityType = value.entityType ?? value.entity_type;
+    const entityType = value.entityType !== undefined ? value.entityType : value.entity_type;
     const createdAt = value.createdAt ?? value.created_at;
     const updatedAt = value.updatedAt ?? value.updated_at;
     if ((entityType !== null && typeof entityType !== "string") ||
@@ -297,6 +316,7 @@ export function createPluginRpcClient(transport) {
         pollEvents: (name, version) => callTransport(transport, "event.poll", { type: qualified(name, version) }),
         callService: (name, major, payload, deadlineMs = 5000) => callTransport(transport, "service.call", { name, major, payload, deadlineMs }),
         getAppVersion: () => callTransport(transport, "app.version", {}),
+        getAppearance: () => callTransport(transport, "appearance.get", {}),
         beginAssetRead: (assetId, namespace) => callTransport(transport, "asset.read.begin", { assetId, namespace }),
         updateAssetMetadata: (input, options) => callTransport(transport, "asset.update", input, options?.requestId),
         deleteAsset: (input, options) => callTransport(transport, "asset.delete", input, options?.requestId),

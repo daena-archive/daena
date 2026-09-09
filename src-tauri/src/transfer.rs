@@ -1042,7 +1042,10 @@ pub(super) fn plugin_protocol_response(
                             version: entry.manifest.version.clone(),
                             host_api: entry.manifest.host_api.clone(),
                             granted_capabilities: session.grants.iter().cloned().collect(),
-                            optional_features: Vec::new(),
+                            optional_features: vec![
+                                daena_plugin_api::APPEARANCE_FEATURE.to_string()
+                            ],
+                            appearance: current_plugin_appearance(),
                             package_digest: entry.digest,
                             manifest: entry.manifest,
                         })
@@ -1079,7 +1082,9 @@ pub(super) fn plugin_protocol_response(
                 validate_broker_payload(&request.method, &request.payload)
                     .map_err(|error| error.to_string())?;
                 let current_project = current_info(core)?.map(|info| info.root);
-                if current_project.as_deref() != Some(session.project_id.as_str()) {
+                if !matches!(request.method.as_str(), "app.version" | "appearance.get")
+                    && current_project.as_deref() != Some(session.project_id.as_str())
+                {
                     return Err("plugin session is not bound to the open project".into());
                 }
                 let record_owner_declaration = request
@@ -1099,7 +1104,12 @@ pub(super) fn plugin_protocol_response(
                     .flatten();
                 let publish_payload =
                     (request.method == "event.publish").then(|| request.payload.clone());
-                let value = if matches!(
+                let value = if request.method == "app.version" {
+                    serde_json::json!({ "version": crate::version::current() })
+                } else if request.method == "appearance.get" {
+                    serde_json::to_value(current_plugin_appearance())
+                        .map_err(|error| error.to_string())?
+                } else if matches!(
                     request.method.as_str(),
                     "asset.read.begin"
                         | "asset.replace.begin"

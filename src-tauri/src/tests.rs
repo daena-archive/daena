@@ -2393,7 +2393,8 @@ fn plugin_bootstrap_uses_camel_case_wire_fields() {
         version: "0.1.0".into(),
         host_api: ">=1.0.0 <2.0.0".into(),
         granted_capabilities: Vec::new(),
-        optional_features: Vec::new(),
+        optional_features: vec![daena_plugin_api::APPEARANCE_FEATURE.to_string()],
+        appearance: daena_plugin_api::builtin_plugin_appearance(),
         package_digest: "digest".into(),
         manifest: serde_json::from_str(include_str!("../../packages/modules/lore/manifest.json"))
             .unwrap(),
@@ -2401,6 +2402,17 @@ fn plugin_bootstrap_uses_camel_case_wire_fields() {
     .unwrap();
     assert_eq!(value["sessionId"], "session");
     assert!(value.get("session_id").is_none());
+    assert_eq!(value["appearance"]["preference"], "system");
+    assert_eq!(value["appearance"]["pack"], serde_json::Value::Null);
+    assert!(value["appearance"]["tokens"].is_object());
+}
+
+#[test]
+fn plugin_appearance_apply_js_uses_catalog_ids() {
+    let script = plugin_appearance_apply_js();
+    assert!(script.contains("\"ink\""));
+    assert!(script.contains("\"rail-bg\""));
+    assert!(!script.contains("__THEME_TOKEN_IDS__"));
 }
 
 #[test]

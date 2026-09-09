@@ -24,7 +24,7 @@ try {
   assert.equal(JSON.parse(validation).ok, true);
   const migrations = execFileSync("node", [cli, "migration", "validate", fixture], { encoding: "utf8" });
   assert.equal(JSON.parse(migrations).dataVersion, 1);
-  for (const example of ["declarative", "ui", "wasm-service"]) {
+  for (const example of ["declarative", "ui", "wasm-service", "theme"]) {
     execFileSync("node", [cli, "validate", join(workspace, "examples/plugins", example)], { stdio: "pipe" });
   }
   const unsafeArchive = join(temporary, "unsafe.wbplugin");

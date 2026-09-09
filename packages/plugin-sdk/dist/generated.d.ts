@@ -369,7 +369,20 @@ export interface RpcFailure {
     error: RpcError;
 }
 export type RpcResponse = RpcSuccess | RpcFailure;
+export type AppearancePreference = "light" | "dark" | "system";
+export type AppearanceResolved = "light" | "dark";
+export interface AppearancePackRef {
+    pluginId: string;
+    themeId: string;
+}
+export interface PluginAppearance {
+    pack?: AppearancePackRef | null;
+    preference: AppearancePreference;
+    resolved: AppearanceResolved;
+    tokens: Record<string, string>;
+}
 export interface PluginBootstrap {
+    appearance: PluginAppearance;
     grantedCapabilities: string[];
     hostApi: string;
     optionalFeatures: string[];
@@ -487,6 +500,7 @@ export interface AiRequestStartPayload {
     userInstruction: string;
 }
 export type AppVersionPayload = Record<string, unknown>;
+export type AppearanceGetPayload = Record<string, unknown>;
 export interface AssetDeletePayload {
     assetId: string;
     expectedRevision: string;
@@ -768,6 +782,7 @@ export interface BrokerMethodPayloads {
     "ai.request.result": AiRequestIdPayload;
     "ai.request.start": AiRequestStartPayload;
     "app.version": AppVersionPayload;
+    "appearance.get": AppearanceGetPayload;
     "asset.delete": AssetDeletePayload;
     "asset.list": AssetListPayload;
     "asset.read.begin": AssetReadBeginPayload;

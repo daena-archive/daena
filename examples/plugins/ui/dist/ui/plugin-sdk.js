@@ -1,5 +1,9 @@
+import { CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS } from "./generated.js";
+import { applyPluginAppearance, validateThemePack } from "./theme.js";
 export * from "./generated.js";
 export * from "./maps.js";
+export { applyPluginAppearance, hostHasFeature, mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
+export const APPEARANCE_FEATURE = "appearance@1";
 export class PluginRpcException extends Error {
     code;
     retryable;
@@ -50,6 +54,18 @@ function runtimeValue(name) {
 }
 function utf8Length(value) {
     return new TextEncoder().encode(value).byteLength;
+}
+let appearancePushBound = false;
+function bindAppearancePush() {
+    if (appearancePushBound || typeof window === "undefined")
+        return;
+    appearancePushBound = true;
+    window.addEventListener("daena:appearance", (event) => {
+        const detail = event.detail;
+        if (!isRecord(detail) || !isRecord(detail.tokens) || typeof document === "undefined")
+            return;
+        applyPluginAppearance(detail, document.documentElement);
+    });
 }
 function responseError(value, fallback) {
     if (isRecord(value) && isRpcError(value.error))
@@ -123,6 +139,11 @@ export function createBrowserPluginRpcTransport(options = {}) {
             throw rpcFailure("transport.protocol", "plugin bootstrap response is invalid");
         }
         sessionId = value.sessionId;
+        if (typeof document !== "undefined" &&
+            isRecord(value.appearance) &&
+            isRecord(value.appearance.tokens)) {
+            applyPluginAppearance(value.appearance, document.documentElement);
+        }
         return value;
     }
     async function ensureSession() {
@@ -154,6 +175,7 @@ export function createBrowserPluginRpcTransport(options = {}) {
             throw rpcFailure("transport.protocol", "plugin RPC success has no result");
         return value.result;
     }
+    bindAppearancePush();
     return { call };
 }
 function isRecord(value) {
@@ -167,7 +189,7 @@ function normalizeEntity(value) {
         typeof value.revision !== "string") {
         throw rpcFailure("transport.protocol", "broker returned an invalid entity record");
     }
-    const entityType = value.entityType ?? value.entity_type;
+    const entityType = value.entityType !== undefined ? value.entityType : value.entity_type;
     const createdAt = value.createdAt ?? value.created_at;
     const updatedAt = value.updatedAt ?? value.updated_at;
     if ((entityType !== null && typeof entityType !== "string") ||
@@ -185,11 +207,94 @@ function normalizeEntity(value) {
         revision: value.revision,
     };
 }
+function normalizeEntityPage(value) {
+    if (!isRecord(value) ||
+        !Array.isArray(value.items) ||
+        !Array.isArray(value.typeCounts) ||
+        typeof value.total !== "number" ||
+        typeof value.offset !== "number" ||
+        typeof value.limit !== "number" ||
+        typeof value.hasMore !== "boolean") {
+        throw rpcFailure("transport.protocol", "broker returned an invalid entity page");
+    }
+    const typeCounts = value.typeCounts.map((entry) => {
+        if (!isRecord(entry) || typeof entry.count !== "number")
+            throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+        const entityType = entry.entityType;
+        if (entityType !== null && entityType !== undefined && typeof entityType !== "string")
+            throw rpcFailure("transport.protocol", "broker returned an invalid entity type count");
+        return { entityType: entityType, count: entry.count };
+    });
+    return {
+        items: value.items.map(normalizeEntity),
+        total: value.total,
+        offset: value.offset,
+        limit: value.limit,
+        hasMore: value.hasMore,
+        typeCounts,
+    };
+}
+function referencedEntityTypeAllowed(type, pluginId, localTypes, dependencies) {
+    if (localTypes.has(type))
+        return true;
+    const colon = type.indexOf(":");
+    if (colon <= 0)
+        return false;
+    const prefix = type.slice(0, colon);
+    const local = type.slice(colon + 1);
+    if (prefix === pluginId)
+        return localTypes.has(local) || localTypes.has(type);
+    if (!isPluginIdentifier(prefix) || !/^[a-z][a-z0-9_-]*$/.test(local))
+        return false;
+    return isRecord(dependencies) && isRecord(dependencies[prefix]);
+}
 function checkKeys(value, label, allowed, errors) {
     const known = new Set(allowed);
     for (const key of Object.keys(value))
         if (!known.has(key))
             errors.push(`unknown ${label} key: ${key}`);
+}
+const catalogIconIds = new Set(CATALOG_ICON_IDS);
+const typeColorPresetIds = new Set(TYPE_COLOR_PRESET_IDS);
+function validateEntityTypeColor(value, label, errors) {
+    if (!isRecord(value)) {
+        errors.push(`${label} must be an object`);
+        return;
+    }
+    if (value.kind === "preset") {
+        checkKeys(value, label, ["kind", "id"], errors);
+        if (typeof value.id !== "string" || !typeColorPresetIds.has(value.id))
+            errors.push(`${label} uses an unknown color preset`);
+        return;
+    }
+    if (value.kind === "custom") {
+        checkKeys(value, label, ["kind", "light", "dark"], errors);
+        if (typeof value.light !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(value.light))
+            errors.push(`${label} light must be a #RRGGBB hex value`);
+        if (typeof value.dark !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(value.dark))
+            errors.push(`${label} dark must be a #RRGGBB hex value`);
+        return;
+    }
+    errors.push(`${label} has an unknown kind`);
+}
+function validateIconRef(value, label, errors) {
+    if (!isRecord(value)) {
+        errors.push(`${label} must be an object`);
+        return;
+    }
+    if (value.kind === "catalog") {
+        checkKeys(value, label, ["kind", "id"], errors);
+        if (typeof value.id !== "string" || !catalogIconIds.has(value.id))
+            errors.push(`${label} uses an unknown catalog icon`);
+        return;
+    }
+    if (value.kind === "plugin-svg") {
+        checkKeys(value, label, ["kind", "path"], errors);
+        if (typeof value.path !== "string" || !isPackagePath(value.path) || !value.path.toLowerCase().endsWith(".svg"))
+            errors.push(`${label} must reference a package-relative SVG file`);
+        return;
+    }
+    errors.push(`${label} has an unknown kind`);
 }
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export function createPluginRpcClient(transport) {
@@ -197,6 +302,12 @@ export function createPluginRpcClient(transport) {
         call: (method, payload, requestId) => callTransport(transport, method, payload, requestId),
         bootstrap: () => callTransport(transport, "plugin.bootstrap", {}),
         listEntities: async (entityType) => (await callTransport(transport, "entity.list", entityType ? { entityType } : {})).map(normalizeEntity),
+        queryEntities: async (query = {}) => normalizeEntityPage(await callTransport(transport, "entity.query", query)),
+        getEntity: async (id) => {
+            const entity = await callTransport(transport, "entity.get", { id });
+            return entity == null ? null : normalizeEntity(entity);
+        },
+        getEntities: async (ids) => (await callTransport(transport, "entity.getMany", { ids })).map(normalizeEntity),
         createEntity: async (name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.create", { name, type: entityType ?? null }, options?.requestId)),
         updateEntity: async (id, name, entityType, options) => normalizeEntity(await callTransport(transport, "entity.update", { id, name: name ?? null, type: entityType ?? null, expectedRevision: options?.expectedRevision }, options?.requestId)),
         deleteEntity: (id, options) => callTransport(transport, "entity.delete", { id, expectedRevision: options?.expectedRevision }, options?.requestId),
@@ -204,7 +315,11 @@ export function createPluginRpcClient(transport) {
         subscribeEvent: (name, version) => callTransport(transport, "event.subscribe", { type: qualified(name, version) }),
         pollEvents: (name, version) => callTransport(transport, "event.poll", { type: qualified(name, version) }),
         callService: (name, major, payload, deadlineMs = 5000) => callTransport(transport, "service.call", { name, major, payload, deadlineMs }),
+        getAppVersion: () => callTransport(transport, "app.version", {}),
+        getAppearance: () => callTransport(transport, "appearance.get", {}),
         beginAssetRead: (assetId, namespace) => callTransport(transport, "asset.read.begin", { assetId, namespace }),
+        updateAssetMetadata: (input, options) => callTransport(transport, "asset.update", input, options?.requestId),
+        deleteAsset: (input, options) => callTransport(transport, "asset.delete", input, options?.requestId),
         beginAssetReplace: (input, options) => callTransport(transport, "asset.replace.begin", input, options?.requestId),
         commitAssetReplace: (handle, contentHash, options) => callTransport(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
         cancelAssetTransfer: (handle) => callTransport(transport, "asset.transfer.cancel", { handle }),
@@ -240,9 +355,12 @@ const knownCapabilities = new Set([
     "field.read:self",
     "field.read:shared",
     "field.write:self",
+    "record.read:self",
+    "record.write:self",
     "relationship.read",
     "relationship.write",
     "asset.read:self",
+    "asset.read:shared",
     "asset.write:self",
     "asset.register",
     "search.query",
@@ -332,6 +450,7 @@ export function validatePluginManifest(manifest) {
         "schemas",
         "templates",
         "records",
+        "themes",
         "views",
         "commands",
         "services",
@@ -343,7 +462,7 @@ export function validatePluginManifest(manifest) {
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && !(key in value))
+        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -364,14 +483,16 @@ export function validatePluginManifest(manifest) {
     if (value.kind !== "declarative" && value.kind !== "sandboxed")
         errors.push("kind is invalid");
     const entrypoints = value.entrypoints;
+    let hasUiEntrypoint = false;
+    let hasWasmEntrypoint = false;
     if (!entrypoints || typeof entrypoints !== "object" || Array.isArray(entrypoints))
         errors.push("entrypoints must be an object");
     else {
         for (const key of Object.keys(entrypoints))
             if (key !== "ui" && key !== "wasm")
                 errors.push(`unknown entrypoint key: ${key}`);
-        if (!("ui" in entrypoints) && !("wasm" in entrypoints))
-            errors.push("an entrypoint is required");
+        hasUiEntrypoint = "ui" in entrypoints && typeof entrypoints.ui === "string";
+        hasWasmEntrypoint = "wasm" in entrypoints && typeof entrypoints.wasm === "string";
         if ("ui" in entrypoints && entrypoints.ui !== undefined && typeof entrypoints.ui !== "string")
             errors.push("entrypoint ui must be a package path");
         if ("wasm" in entrypoints && entrypoints.wasm !== undefined && typeof entrypoints.wasm !== "string")
@@ -383,6 +504,7 @@ export function validatePluginManifest(manifest) {
     const schemas = value.schemas;
     const templates = value.templates;
     const records = value.records;
+    const themes = value.themes;
     const views = value.views;
     const commands = value.commands;
     const services = value.services;
@@ -400,6 +522,8 @@ export function validatePluginManifest(manifest) {
         errors.push("templates must be an array");
     if (records !== undefined && !Array.isArray(records))
         errors.push("records must be an array");
+    if (themes !== undefined && !Array.isArray(themes))
+        errors.push("themes must be an array");
     if (!Array.isArray(views))
         errors.push("views must be an array");
     if (!Array.isArray(commands))
@@ -419,7 +543,20 @@ export function validatePluginManifest(manifest) {
             checkKeys(schema, "schema", ["namespace", "entityTypes", "fields"], errors);
             if (!Array.isArray(schema.entityTypes) || !Array.isArray(schema.fields))
                 errors.push("schema entityTypes and fields must be arrays");
-            else
+            else {
+                for (const entityType of schema.entityTypes) {
+                    if (!isRecord(entityType)) {
+                        errors.push("schema entityTypes must contain objects");
+                        continue;
+                    }
+                    checkKeys(entityType, "entity type", ["id", "name", "icon", "iconColor"], errors);
+                    if (typeof entityType.id !== "string" || !entityType.id.trim())
+                        errors.push("entity type id is required");
+                    if (typeof entityType.name !== "string" || !entityType.name.trim())
+                        errors.push(`entity type ${String(entityType.id)} name is required`);
+                    validateIconRef(entityType.icon, `entity type ${String(entityType.id)} icon`, errors);
+                    validateEntityTypeColor(entityType.iconColor, `entity type ${String(entityType.id)} iconColor`, errors);
+                }
                 for (const field of schema.fields) {
                     if (!isRecord(field)) {
                         errors.push("schema fields must contain objects");
@@ -435,10 +572,96 @@ export function validatePluginManifest(manifest) {
                         "relationshipType",
                         "targetEntityTypes",
                         "shared",
+                        "metadataFields",
+                        "timeline",
+                        "cardinality",
+                        "multiple",
+                        "oneOf",
+                        "relationshipConstraints",
+                        "relationshipDirection",
                     ], errors);
                     if (field.shared !== undefined && typeof field.shared !== "boolean")
                         errors.push(`field ${String(field.key)} shared must be boolean`);
+                    if (field.timeline !== undefined) {
+                        if (!isRecord(field.timeline)) {
+                            errors.push(`field ${String(field.key)} timeline must be an object`);
+                        }
+                        else {
+                            checkKeys(field.timeline, "timeline contribution", ["role", "group", "label", "layer"], errors);
+                            if (field.type !== "date")
+                                errors.push(`field ${String(field.key)} timeline contribution requires a date field`);
+                            if (field.shared !== true)
+                                errors.push(`field ${String(field.key)} timeline contribution must be shared`);
+                            if (!["point", "start", "end"].includes(String(field.timeline.role)))
+                                errors.push(`field ${String(field.key)} timeline contribution role is invalid`);
+                            if ((field.timeline.role === "start" || field.timeline.role === "end") &&
+                                (typeof field.timeline.group !== "string" || !field.timeline.group.trim()))
+                                errors.push(`field ${String(field.key)} timeline start/end contribution requires a group`);
+                            if (field.timeline.label !== undefined &&
+                                (typeof field.timeline.label !== "string" || !field.timeline.label.trim()))
+                                errors.push(`field ${String(field.key)} timeline contribution label is invalid`);
+                            if (field.timeline.layer !== undefined && !["dates", "lifelines"].includes(String(field.timeline.layer)))
+                                errors.push(`field ${String(field.key)} timeline contribution layer is invalid`);
+                        }
+                    }
+                    if (field.relationshipDirection !== undefined) {
+                        if (field.type !== "relationship") {
+                            errors.push(`non-relationship field ${String(field.key)} cannot declare relationshipDirection`);
+                        }
+                        else if (!["outgoing", "incoming", "undirected"].includes(String(field.relationshipDirection))) {
+                            errors.push(`field ${String(field.key)} relationshipDirection is invalid`);
+                        }
+                    }
+                    if (field.relationshipConstraints !== undefined) {
+                        if (field.type !== "relationship") {
+                            errors.push(`non-relationship field ${String(field.key)} cannot declare relationshipConstraints`);
+                        }
+                        else if (!isRecord(field.relationshipConstraints)) {
+                            errors.push(`field ${String(field.key)} relationshipConstraints must be an object`);
+                        }
+                        else {
+                            checkKeys(field.relationshipConstraints, "relationship constraints", ["allowSelf", "acyclic", "unique"], errors);
+                            if (typeof field.relationshipConstraints.allowSelf !== "boolean")
+                                errors.push(`field ${String(field.key)} relationshipConstraints.allowSelf must be boolean`);
+                            if (typeof field.relationshipConstraints.acyclic !== "boolean")
+                                errors.push(`field ${String(field.key)} relationshipConstraints.acyclic must be boolean`);
+                            if (!["none", "directed", "undirected"].includes(String(field.relationshipConstraints.unique)))
+                                errors.push(`field ${String(field.key)} relationshipConstraints.unique is invalid`);
+                        }
+                    }
+                    if (field.metadataFields !== undefined) {
+                        if (field.type !== "relationship") {
+                            errors.push(`non-relationship field ${String(field.key)} cannot declare metadataFields`);
+                        }
+                        else if (!Array.isArray(field.metadataFields)) {
+                            errors.push(`relationship field ${String(field.key)} metadataFields must be an array`);
+                        }
+                        else {
+                            const metadataKeys = new Set();
+                            for (const metadataField of field.metadataFields) {
+                                if (!isRecord(metadataField)) {
+                                    errors.push(`relationship field ${String(field.key)} metadataFields must contain objects`);
+                                    continue;
+                                }
+                                checkKeys(metadataField, "metadata field", ["key", "label", "type", "required", "options"], errors);
+                                if (typeof metadataField.key !== "string" || !metadataField.key.trim())
+                                    errors.push(`relationship field ${String(field.key)} has an invalid metadata key`);
+                                else if (metadataKeys.has(metadataField.key))
+                                    errors.push(`relationship field ${String(field.key)} has duplicate metadata key: ${metadataField.key}`);
+                                else
+                                    metadataKeys.add(metadataField.key);
+                                if (typeof metadataField.label !== "string" || !metadataField.label.trim())
+                                    errors.push(`relationship metadata field ${String(metadataField.key)} requires a label`);
+                                if (!["text", "number", "boolean", "date", "enum"].includes(String(metadataField.type)))
+                                    errors.push(`relationship metadata field ${String(metadataField.key)} has an unsupported type`);
+                                if (metadataField.type === "enum" &&
+                                    (!Array.isArray(metadataField.options) || metadataField.options.length === 0))
+                                    errors.push(`relationship metadata enum field ${String(metadataField.key)} requires options`);
+                            }
+                        }
+                    }
                 }
+            }
         }
     if (Array.isArray(templates))
         for (const template of templates) {
@@ -449,6 +672,8 @@ export function validatePluginManifest(manifest) {
             checkKeys(template, "template", ["id", "name", "entityType", "description", "icon", "fields", "requiredFields", "document"], errors);
             if (!isRecord(template.fields))
                 errors.push("template fields must be an object");
+            if (template.icon !== undefined && template.icon !== null)
+                validateIconRef(template.icon, `template ${String(template.id)} icon`, errors);
         }
     for (const [label, list] of [
         ["views", views],
@@ -472,7 +697,9 @@ export function validatePluginManifest(manifest) {
                         if (item.renderer.type === "host-surface") {
                             if (typeof item.renderer.id !== "string" || !isHostSurfaceId(item.renderer.id))
                                 errors.push(`view ${String(item.id)} host surface id is invalid`);
-                            if (typeof item.renderer.major !== "number" || !Number.isInteger(item.renderer.major) || item.renderer.major < 1)
+                            if (typeof item.renderer.major !== "number" ||
+                                !Number.isInteger(item.renderer.major) ||
+                                item.renderer.major < 1)
                                 errors.push(`view ${String(item.id)} host surface major is invalid`);
                         }
                         else if (item.renderer.type !== "declarative" && item.renderer.type !== "sandboxed") {
@@ -612,7 +839,10 @@ export function validatePluginManifest(manifest) {
     for (const schema of schemas)
         if (!owned.has(schema.namespace))
             errors.push(`unowned schema namespace: ${schema.namespace}`);
-    const entityTypes = new Set(schemas.flatMap((schema) => schema.entityTypes));
+    const entityTypeDefinitions = schemas.flatMap((schema) => schema.entityTypes);
+    const entityTypes = new Set(entityTypeDefinitions.map((entityType) => entityType.id));
+    if (entityTypes.size !== entityTypeDefinitions.length)
+        errors.push("duplicate entity type");
     if (Array.isArray(records)) {
         const recordIds = new Set();
         for (const record of records) {
@@ -620,18 +850,60 @@ export function validatePluginManifest(manifest) {
                 errors.push("record collections must be objects");
                 continue;
             }
-            checkKeys(record, "record collection", ["id", "ownerEntityTypes", "schema"], errors);
+            checkKeys(record, "record collection", ["id", "ownerEntityTypes", "ownerScope", "uniquePerOwner", "schema"], errors);
             if (typeof record.id !== "string" || !isPluginIdentifier(record.id))
                 errors.push("record collection id is invalid");
             else if (recordIds.has(record.id))
                 errors.push(`duplicate record collection: ${record.id}`);
             else
                 recordIds.add(record.id);
-            if (!Array.isArray(record.ownerEntityTypes) ||
+            const ownerScope = record.ownerScope ?? "package";
+            if (ownerScope !== "package" && ownerScope !== "effective-schema")
+                errors.push(`record collection ${String(record.id)} has invalid ownerScope`);
+            else if (ownerScope === "effective-schema") {
+                if (record.ownerEntityTypes !== undefined &&
+                    (!Array.isArray(record.ownerEntityTypes) || record.ownerEntityTypes.length !== 0))
+                    errors.push(`record collection ${String(record.id)} with ownerScope effective-schema must omit owner entity types`);
+            }
+            else if (!Array.isArray(record.ownerEntityTypes) ||
                 record.ownerEntityTypes.length === 0 ||
                 record.ownerEntityTypes.some((type) => typeof type !== "string" || !entityTypes.has(type)))
                 errors.push(`record collection ${String(record.id)} has invalid owner entity types`);
+            if (record.uniquePerOwner !== undefined && typeof record.uniquePerOwner !== "boolean")
+                errors.push(`record collection ${String(record.id)} has invalid uniquePerOwner`);
+            else if (record.uniquePerOwner === true && ownerScope !== "effective-schema")
+                errors.push(`record collection ${String(record.id)} uniquePerOwner requires ownerScope effective-schema`);
             validateCommandSchema(record.schema, `record collection ${String(record.id)} schema`, errors);
+        }
+    }
+    if (Array.isArray(themes)) {
+        const themeIds = new Set();
+        for (const pack of themes) {
+            if (!isRecord(pack)) {
+                errors.push("themes must contain objects");
+                continue;
+            }
+            checkKeys(pack, "theme", ["id", "name", "tokens"], errors);
+            if (typeof pack.id !== "string" || !isPluginIdentifier(pack.id))
+                errors.push(`invalid or duplicate theme: ${String(pack.id)}`);
+            else if (themeIds.has(pack.id))
+                errors.push(`invalid or duplicate theme: ${pack.id}`);
+            else
+                themeIds.add(pack.id);
+            if (!isRecord(pack.tokens)) {
+                errors.push(`theme ${String(pack.id)} tokens must be an object`);
+                continue;
+            }
+            checkKeys(pack.tokens, "theme tokens", ["light", "dark"], errors);
+            if (!("light" in pack.tokens) || !("dark" in pack.tokens)) {
+                errors.push(`theme ${String(pack.id)} requires light and dark token maps`);
+                continue;
+            }
+            errors.push(...validateThemePack({
+                id: String(pack.id),
+                name: typeof pack.name === "string" ? pack.name : "",
+                tokens: { light: pack.tokens.light, dark: pack.tokens.dark },
+            }));
         }
     }
     const fields = new Map();
@@ -640,8 +912,11 @@ export function validatePluginManifest(manifest) {
             if (fields.has(field.key))
                 errors.push(`duplicate field key: ${field.key}`);
             fields.set(field.key, field);
-            if (field.entityTypes?.some((type) => !entityTypes.has(type)))
+            if (field.entityTypes?.some((type) => !referencedEntityTypeAllowed(type, value.id, entityTypes, dependencies)))
                 errors.push(`field ${field.key} uses an unknown entity type`);
+            if (field.type === "relationship" &&
+                field.targetEntityTypes?.some((type) => !referencedEntityTypeAllowed(type, value.id, entityTypes, dependencies)))
+                errors.push(`relationship field ${field.key} uses an unknown target entity type`);
             if (field.entityTypes &&
                 (field.entityTypes.length === 0 || new Set(field.entityTypes).size !== field.entityTypes.length))
                 errors.push(`field ${field.key} has empty or duplicate entity types`);
@@ -673,7 +948,6 @@ export function validatePluginManifest(manifest) {
                     let valid = false;
                     switch (field.type) {
                         case "text":
-                        case "entity-ref":
                             valid = typeof preset === "string";
                             break;
                         case "relationship":
@@ -786,6 +1060,16 @@ export function validatePluginManifest(manifest) {
         }
     }
     errors.push(...validateMigrationChain(migrations, namespaceList));
+    if (!hasUiEntrypoint && !hasWasmEntrypoint) {
+        const viewsList = Array.isArray(views) ? views : [];
+        const allHostSurface = viewsList.every((view) => isRecord(view) && isRecord(view.renderer) && view.renderer.type === "host-surface");
+        if (value.kind !== "declarative")
+            errors.push("empty entrypoints require a declarative plugin");
+        else if (isRecord(services) && Array.isArray(services.provides) && services.provides.length > 0)
+            errors.push("empty entrypoints cannot declare a provided service");
+        else if (!allHostSurface)
+            errors.push("empty entrypoints require every view to use a host-surface renderer");
+    }
     return [...new Set(errors)];
 }
 export function assertValidPluginManifest(manifest) {

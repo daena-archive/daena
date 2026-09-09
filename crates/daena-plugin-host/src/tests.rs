@@ -898,6 +898,12 @@ fn undeclared_and_foreign_namespace_operations_are_rejected() {
         host.rpc("plugin://one", &trusted).error.unwrap().code,
         "method.unknown"
     );
+    let appearance = RpcRequest {
+        method: "appearance.get".into(),
+        payload: serde_json::json!({}),
+        ..denied.clone()
+    };
+    assert!(host.authorize_rpc("plugin://one", &appearance).is_ok());
     let foreign = RpcRequest {
         method: "field.read".into(),
         payload: serde_json::json!({"namespace":"other"}),

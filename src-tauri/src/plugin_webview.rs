@@ -43,7 +43,7 @@ pub(super) fn open_plugin_webview(
         ),
     )
     .use_https_scheme(true)
-    .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
+    .initialization_script(plugin_webview_init_script())
     .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
     .title(entry.manifest.name.clone())
     .inner_size(980.0, 720.0)
@@ -292,7 +292,7 @@ pub(super) async fn plugin_mount_webview(
         .ok_or_else(|| "main window is not available".to_string())?;
     let builder = tauri::WebviewBuilder::new(label.clone(), url)
         .use_https_scheme(true)
-        .initialization_script(PLUGIN_WEBVIEW_ISOLATION_SCRIPT)
+        .initialization_script(plugin_webview_init_script())
         .on_navigation(move |url| plugin_navigation_allowed(url, &navigation_policy))
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {

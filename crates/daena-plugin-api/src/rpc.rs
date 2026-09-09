@@ -54,6 +54,42 @@ pub struct PluginBootstrap {
     pub granted_capabilities: Vec<String>,
     #[serde(rename = "optionalFeatures")]
     pub optional_features: Vec<String>,
+    pub appearance: PluginAppearance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum AppearancePreference {
+    Light,
+    Dark,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum AppearanceResolved {
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AppearancePackRef {
+    pub plugin_id: String,
+    pub theme_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginAppearance {
+    pub preference: AppearancePreference,
+    pub resolved: AppearanceResolved,
+    pub pack: Option<AppearancePackRef>,
+    pub tokens: std::collections::BTreeMap<String, String>,
 }
 
 /// Entity record as returned to callers.
@@ -809,6 +845,11 @@ pub struct AiRequestIdPayload {
 #[serde(deny_unknown_fields)]
 pub struct AppVersionPayload {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AppearanceGetPayload {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,11 +973,15 @@ mod tests {
             version: "0.1.0".into(),
             host_api: ">=1.0.0 <2.0.0".into(),
             granted_capabilities: vec!["asset.read:self".into()],
-            optional_features: vec![],
+            optional_features: vec!["appearance@1".into()],
+            appearance: crate::builtin_plugin_appearance(),
         };
         let json = serde_json::to_value(&bootstrap).unwrap();
         assert_eq!(json["pluginId"], "daena.maps");
         assert_eq!(json["grantedCapabilities"][0], "asset.read:self");
+        assert_eq!(json["optionalFeatures"][0], "appearance@1");
+        assert_eq!(json["appearance"]["preference"], "system");
+        assert!(json["appearance"]["tokens"].is_object());
         assert_eq!(
             serde_json::from_value::<PluginBootstrap>(json).unwrap(),
             bootstrap

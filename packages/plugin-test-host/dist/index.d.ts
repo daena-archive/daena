@@ -26,6 +26,7 @@ export declare class FakePluginHost implements PluginRpcTransport {
     }>;
     private readonly grants;
     private readonly entities;
+    private readonly relationships;
     private readonly committedRequests;
     private readonly queues;
     private readonly subscriptions;
@@ -35,6 +36,7 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private readonly aiCapabilities;
     private readonly physicalTransfers;
     private nextEntity;
+    private nextRelationship;
     private nextRevision;
     private revoked;
     private declarativeActive;
@@ -62,6 +64,17 @@ export declare class FakePluginHost implements PluginRpcTransport {
     private requireDynamic;
     private list;
     private query;
+    private get;
+    private getMany;
+    private entityTypeAllowed;
+    private relationshipConstraints;
+    private listRelationships;
+    private queryRelationships;
+    private createRelationship;
+    private updateRelationship;
+    private deleteRelationship;
+    private canonicalizeEndpoints;
+    private assertRelationshipConstraints;
     private create;
     private update;
     private remove;

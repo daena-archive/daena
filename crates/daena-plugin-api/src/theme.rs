@@ -1,5 +1,6 @@
 //! Host appearance token catalog and builtin light/dark maps.
 
+use crate::rpc::{AppearancePreference, AppearanceResolved, PluginAppearance};
 use crate::ContractError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -239,7 +240,49 @@ pub fn resolve_theme_tokens(
     Ok(merged)
 }
 
+pub const APPEARANCE_FEATURE: &str = "appearance@1";
 const THEME_PACK_NAME_MAX_CHARS: usize = 128;
+
+pub fn builtin_plugin_appearance() -> PluginAppearance {
+    PluginAppearance {
+        preference: AppearancePreference::System,
+        resolved: AppearanceResolved::Light,
+        pack: None,
+        tokens: builtin_theme_tokens(ThemeMode::Light),
+    }
+}
+
+pub fn sanitize_plugin_appearance(
+    appearance: PluginAppearance,
+) -> Result<PluginAppearance, ContractError> {
+    let pack = match appearance.pack {
+        None => None,
+        Some(pack) => {
+            if !crate::is_identifier(&pack.plugin_id) || !crate::is_identifier(&pack.theme_id) {
+                return Err(ContractError("invalid appearance pack ref".into()));
+            }
+            Some(pack)
+        }
+    };
+    let mut tokens = BTreeMap::new();
+    for (key, value) in &appearance.tokens {
+        if !is_theme_token_id(key) {
+            return Err(ContractError(format!("unknown theme token: {key}")));
+        }
+        tokens.insert(key.clone(), parse_theme_color(value)?);
+    }
+    for id in THEME_TOKEN_IDS {
+        if !tokens.contains_key(*id) {
+            return Err(ContractError(format!("missing theme token: {id}")));
+        }
+    }
+    validate_theme_contrast(&tokens)?;
+    Ok(PluginAppearance {
+        pack,
+        tokens,
+        ..appearance
+    })
+}
 
 pub fn validate_theme_pack(pack: &ThemePack) -> Result<(), ContractError> {
     if pack.name.trim().is_empty() {
@@ -323,6 +366,46 @@ fn linear_channel(value: u8) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_plugin_appearance_accepts_builtin_and_rejects_unknown_keys() {
+        let clean = sanitize_plugin_appearance(builtin_plugin_appearance()).unwrap();
+        assert_eq!(clean.tokens.len(), THEME_TOKEN_IDS.len());
+        let mut dirty = builtin_plugin_appearance();
+        dirty.tokens.insert("not-a-token".into(), "#ffffff".into());
+        assert!(sanitize_plugin_appearance(dirty).is_err());
+        let mut incomplete = builtin_plugin_appearance();
+        incomplete.tokens.remove("ink");
+        assert!(sanitize_plugin_appearance(incomplete).is_err());
+        let mut low_contrast = builtin_plugin_appearance();
+        low_contrast.tokens.insert("ink".into(), "#ffffff".into());
+        low_contrast
+            .tokens
+            .insert("surface".into(), "#ffffff".into());
+        low_contrast
+            .tokens
+            .insert("canvas".into(), "#ffffff".into());
+        assert!(sanitize_plugin_appearance(low_contrast).is_err());
+        let mut invalid_pack = builtin_plugin_appearance();
+        invalid_pack.pack = Some(crate::rpc::AppearancePackRef {
+            plugin_id: "".into(),
+            theme_id: "parchment".into(),
+        });
+        assert!(sanitize_plugin_appearance(invalid_pack).is_err());
+        let mut valid_pack = builtin_plugin_appearance();
+        valid_pack.pack = Some(crate::rpc::AppearancePackRef {
+            plugin_id: "com.example.parchment".into(),
+            theme_id: "parchment".into(),
+        });
+        assert_eq!(
+            sanitize_plugin_appearance(valid_pack)
+                .unwrap()
+                .pack
+                .unwrap()
+                .theme_id,
+            "parchment"
+        );
+    }
 
     #[test]
     fn builtin_maps_cover_the_catalog() {

@@ -52,17 +52,17 @@ const revisionHost = new FakePluginHost({
   grants: ["entity.read", "entity.write", "entity.delete"],
 });
 const revisionClient = revisionHost.client();
-const created = await revisionClient.createEntity("Revisioned note", "note", { requestId: "revisioned-create" });
-const replayed = await revisionClient.createEntity("This must not duplicate", "note", {
+const created = await revisionClient.createEntity("Revisioned note", undefined, { requestId: "revisioned-create" });
+const replayed = await revisionClient.createEntity("This must not duplicate", undefined, {
   requestId: "revisioned-create",
 });
 assert.equal(replayed.id, created.id);
-const updated = await revisionClient.updateEntity(created.id, "Updated note", "note", {
+const updated = await revisionClient.updateEntity(created.id, "Updated note", undefined, {
   expectedRevision: created.revision,
 });
 assert.notEqual(updated.revision, created.revision);
 await assert.rejects(
-  revisionClient.updateEntity(created.id, "Stale note", "note", {
+  revisionClient.updateEntity(created.id, "Stale note", undefined, {
     expectedRevision: created.revision,
   }),
   (error) => error?.code === "revision-conflict",

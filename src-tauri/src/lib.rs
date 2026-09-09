@@ -81,11 +81,13 @@ type SharedAtlasJobs = Arc<Mutex<crate::atlas_jobs::AtlasJobManager>>;
 type SharedAtlasStudio = Arc<Mutex<crate::atlas_studio::AtlasStudioManager>>;
 type SharedExternalImports = Arc<Mutex<crate::external_import_jobs::ExternalImportJobManager>>;
 type SharedSettings = Arc<Mutex<SettingsStore>>;
+type SharedAppearance = Arc<Mutex<daena_plugin_api::PluginAppearance>>;
 const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 const ATLAS_PROGRESS_EVENT: &str = "atlas-progress";
 const ATLAS_STUDIO_PROGRESS_EVENT: &str = "atlas-studio-progress";
 static ATLAS_STUDIO: OnceLock<SharedAtlasStudio> = OnceLock::new();
 static EXTERNAL_IMPORTS: OnceLock<SharedExternalImports> = OnceLock::new();
+static PLUGIN_APPEARANCE: OnceLock<SharedAppearance> = OnceLock::new();
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -163,6 +165,92 @@ const PLUGIN_WEBVIEW_ISOLATION_SCRIPT: &str = r#"(function () {
     Object.defineProperty(window, key, { value: undefined, configurable: false, writable: false });
   } catch (_) {}
 })();"#;
+const PLUGIN_APPEARANCE_APPLY_JS: &str = r##"(function (appearance) {
+  if (!appearance || typeof appearance !== "object" || !appearance.tokens || typeof appearance.tokens !== "object") return;
+  var root = document.documentElement;
+  if (appearance.resolved === "light" || appearance.resolved === "dark") {
+    root.dataset.theme = appearance.resolved;
+    root.style.colorScheme = appearance.resolved;
+  }
+  if (appearance.preference === "light" || appearance.preference === "dark" || appearance.preference === "system") {
+    root.dataset.themePreference = appearance.preference;
+  }
+  var tokens = appearance.tokens;
+  var ids = __THEME_TOKEN_IDS__;
+  var hex = /^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
+  for (var i = 0; i < ids.length; i++) {
+    var key = ids[i];
+    var value = tokens[key];
+    if (typeof value === "string" && hex.test(value)) root.style.setProperty("--" + key, value);
+    else root.style.removeProperty("--" + key);
+  }
+  try { window.dispatchEvent(new CustomEvent("daena:appearance", { detail: appearance })); } catch (_) {}
+})"##;
+
+fn plugin_appearance_apply_js() -> String {
+    PLUGIN_APPEARANCE_APPLY_JS.replace(
+        "__THEME_TOKEN_IDS__",
+        &serde_json::to_string(daena_plugin_api::THEME_TOKEN_IDS).unwrap_or_else(|_| "[]".into()),
+    )
+}
+
+fn plugin_appearance_for_theme(
+    theme: settings::ThemePreference,
+) -> daena_plugin_api::PluginAppearance {
+    let (preference, resolved, mode) = match theme {
+        settings::ThemePreference::Light => (
+            daena_plugin_api::AppearancePreference::Light,
+            daena_plugin_api::AppearanceResolved::Light,
+            daena_plugin_api::ThemeMode::Light,
+        ),
+        settings::ThemePreference::Dark => (
+            daena_plugin_api::AppearancePreference::Dark,
+            daena_plugin_api::AppearanceResolved::Dark,
+            daena_plugin_api::ThemeMode::Dark,
+        ),
+        settings::ThemePreference::System => (
+            daena_plugin_api::AppearancePreference::System,
+            daena_plugin_api::AppearanceResolved::Light,
+            daena_plugin_api::ThemeMode::Light,
+        ),
+    };
+    daena_plugin_api::PluginAppearance {
+        preference,
+        resolved,
+        pack: None,
+        tokens: daena_plugin_api::builtin_theme_tokens(mode),
+    }
+}
+
+fn current_plugin_appearance() -> daena_plugin_api::PluginAppearance {
+    PLUGIN_APPEARANCE
+        .get()
+        .and_then(|state| state.lock().ok().map(|guard| guard.clone()))
+        .unwrap_or_else(daena_plugin_api::builtin_plugin_appearance)
+}
+
+fn plugin_webview_init_script() -> String {
+    let json = serde_json::to_string(&current_plugin_appearance()).unwrap_or_else(|_| "{}".into());
+    format!(
+        "{PLUGIN_WEBVIEW_ISOLATION_SCRIPT}\n{}({json});",
+        plugin_appearance_apply_js()
+    )
+}
+
+fn push_appearance_to_plugin_webviews(
+    app: &tauri::AppHandle,
+    appearance: &daena_plugin_api::PluginAppearance,
+) {
+    let Ok(json) = serde_json::to_string(appearance) else {
+        return;
+    };
+    let script = format!("{}({json});", plugin_appearance_apply_js());
+    for (label, webview) in app.webviews() {
+        if label.starts_with("plugin:") {
+            let _ = webview.eval(&script);
+        }
+    }
+}
 
 /// Set during `setup` so the custom protocol handler (which does not receive
 /// an `AppHandle`) can forward plugin state events to the shell.
@@ -337,6 +425,24 @@ fn settings_update(
         .update(update)
 }
 
+#[tauri::command]
+fn plugin_appearance_sync(
+    app: tauri::AppHandle,
+    appearance_state: tauri::State<'_, SharedAppearance>,
+    appearance: daena_plugin_api::PluginAppearance,
+) -> Result<(), String> {
+    let appearance = daena_plugin_api::sanitize_plugin_appearance(appearance)
+        .map_err(|error| error.to_string())?;
+    {
+        let mut stored = appearance_state
+            .lock()
+            .map_err(|_| "appearance lock poisoned".to_string())?;
+        *stored = appearance.clone();
+    }
+    push_appearance_to_plugin_webviews(&app, &appearance);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let core = new_shared_core();
@@ -365,6 +471,8 @@ pub fn run() {
     let protocol_studio = atlas_studio.clone();
     let protocol_studio_core = core.clone();
     let protocol_ai_runtime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let appearance = Arc::new(Mutex::new(daena_plugin_api::builtin_plugin_appearance()));
+    let _ = PLUGIN_APPEARANCE.set(appearance.clone());
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     let ai_runtime = protocol_ai_runtime.clone();
@@ -386,7 +494,15 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
-            app.manage(Arc::new(Mutex::new(SettingsStore::new(&app_data))) as SharedSettings);
+            let settings_store = SettingsStore::new(&app_data);
+            if let Ok(settings) = settings_store.load() {
+                if let Some(state) = PLUGIN_APPEARANCE.get() {
+                    if let Ok(mut stored) = state.lock() {
+                        *stored = plugin_appearance_for_theme(settings.general.appearance.theme);
+                    }
+                }
+            }
+            app.manage(Arc::new(Mutex::new(settings_store)) as SharedSettings);
             let install_root = app_data.join("plugins");
             let state_path = app_data.join("plugin-state.json");
             let rejected = startup_plugins
@@ -467,12 +583,14 @@ pub fn run() {
         .manage(watcher)
         .manage(ai_runtime)
         .manage(image_jobs)
+        .manage(appearance)
         .invoke_handler(tauri::generate_handler![
             greet,
             app_version,
             app_update::app_check_update,
             settings_get,
             settings_update,
+            plugin_appearance_sync,
             ai::ai_provider_status,
             ai::ai_provider_models,
             ai::ai_provider_connect,

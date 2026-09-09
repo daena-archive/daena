@@ -12,6 +12,7 @@ pub(super) struct PluginBootstrap {
     pub(super) host_api: String,
     pub(super) granted_capabilities: Vec<String>,
     pub(super) optional_features: Vec<String>,
+    pub(super) appearance: daena_plugin_api::PluginAppearance,
     pub(super) package_digest: String,
     pub(super) manifest: PluginManifest,
 }
@@ -51,7 +52,8 @@ pub(super) fn plugin_bootstrap(
         version: entry.manifest.version.clone(),
         host_api: entry.manifest.host_api.clone(),
         granted_capabilities: session.grants.iter().cloned().collect(),
-        optional_features: Vec::new(),
+        optional_features: vec![daena_plugin_api::APPEARANCE_FEATURE.to_string()],
+        appearance: current_plugin_appearance(),
         package_digest: entry.digest,
         manifest: entry.manifest,
     })
@@ -118,6 +120,8 @@ pub(super) async fn plugin_rpc(
     let event_project_id = session.project_id.clone();
     let result = if method == "app.version" {
         Ok(serde_json::json!({ "version": crate::version::current() }))
+    } else if method == "appearance.get" {
+        serde_json::to_value(current_plugin_appearance()).map_err(|error| error.to_string())
     } else if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
     } else if matches!(

@@ -1,4 +1,4 @@
-import { BUILTIN_THEME_TOKENS, THEME_TOKEN_IDS, type ThemeTokenId } from "./generated.js";
+import { BUILTIN_THEME_TOKENS, THEME_TOKEN_IDS, type PluginAppearance, type ThemeTokenId } from "./generated.js";
 
 const TOKEN_IDS = new Set<string>(THEME_TOKEN_IDS);
 const TEXT_CONTRAST_PAIRS: Array<[ThemeTokenId, ThemeTokenId]> = [
@@ -125,4 +125,34 @@ function rgbChannels(color: string): [number, number, number] {
 function linearChannel(value: number): number {
   const srgb = value / 255;
   return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+}
+
+const TOKEN_HEX = /^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
+
+export type PluginAppearanceRoot = {
+  dataset: { theme?: string; themePreference?: string };
+  style: {
+    colorScheme: string;
+    setProperty(property: string, value: string): void;
+    removeProperty(property: string): void;
+  };
+};
+
+export function applyPluginAppearance(appearance: PluginAppearance, root: PluginAppearanceRoot): void {
+  if (appearance.resolved === "light" || appearance.resolved === "dark") {
+    root.dataset.theme = appearance.resolved;
+    root.style.colorScheme = appearance.resolved;
+  }
+  if (appearance.preference === "light" || appearance.preference === "dark" || appearance.preference === "system") {
+    root.dataset.themePreference = appearance.preference;
+  }
+  for (const id of THEME_TOKEN_IDS) {
+    const value = appearance.tokens[id];
+    if (typeof value === "string" && TOKEN_HEX.test(value)) root.style.setProperty(`--${id}`, value);
+    else root.style.removeProperty(`--${id}`);
+  }
+}
+
+export function hostHasFeature(features: readonly string[] | undefined, feature: string): boolean {
+  return Boolean(features?.includes(feature));
 }

@@ -277,6 +277,7 @@ import {
   overlayForThemePack,
   readCachedThemePackTokens,
   readCachedThemePreference,
+  resolveAppliedTokens,
   resolveTheme,
   resolvedPackTokenCache,
   type InstalledThemePack,
@@ -3814,15 +3815,27 @@ function applyCurrentAppearance(
   systemPrefersDark = matchMedia("(prefers-color-scheme: dark)").matches,
   catalogReady = true,
 ) {
-  applyThemePreference(
-    themePreference,
-    document.documentElement,
-    systemPrefersDark,
-    currentThemeOverlay(systemPrefersDark),
-  );
+  const overlay = currentThemeOverlay(systemPrefersDark);
+  const resolved = applyThemePreference(themePreference, document.documentElement, systemPrefersDark, overlay);
   const cached = resolvedPackTokenCache(themePacks, themePack);
   if (cached) cacheThemePackTokens(cached);
   else if (!themePack || catalogReady) cacheThemePackTokens(null);
+  const payload = {
+    preference: themePreference,
+    resolved,
+    pack: catalogReady ? themePack : null,
+    tokens: resolveAppliedTokens(resolved, overlay),
+  };
+  void project.pluginAppearanceSync(payload).catch(() => {
+    void project
+      .pluginAppearanceSync({
+        preference: themePreference,
+        resolved,
+        pack: null,
+        tokens: resolveAppliedTokens(resolved, null),
+      })
+      .catch(() => {});
+  });
 }
 
 function resolvedSwatchTokens() {
@@ -5990,12 +6003,7 @@ async function loadThemePacks() {
     applyCurrentAppearance();
   } catch {
     themePacks = [];
-    applyThemePreference(
-      themePreference,
-      document.documentElement,
-      matchMedia("(prefers-color-scheme: dark)").matches,
-      currentThemeOverlay(),
-    );
+    applyCurrentAppearance();
   }
 }
 async function refreshAdmin() {

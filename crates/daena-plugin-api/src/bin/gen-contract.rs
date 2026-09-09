@@ -1,4 +1,4 @@
-//! `gen-contract` — regenerate the four public contract schemas from the
+//! `gen-contract` — regenerate the five public contract schemas from the
 //! canonical Rust types in this crate (built with `--features gen`).
 //!
 //! Emits, into `schemas/` at the repository root:
@@ -6,6 +6,7 @@
 //!   - `plugin-rpc-v1.json`          (request/response envelopes + method payload `$defs`)
 //!   - `plugin-error-v1.json`        (from `RpcError`)
 //!   - `capability-registry-v1.json` (from `CAPABILITY_REGISTRY`)
+//!   - `theme-tokens-v1.json`        (from `THEME_TOKEN_IDS` and builtin maps)
 //!
 //! schemars 0.8 emits draft-07-flavoured output using `definitions`; we use
 //! draft-07 settings with a 2020-12 meta-schema and a `#/$defs/` definitions
@@ -32,8 +33,9 @@ use daena_plugin_api::rpc::{
     RelationshipUpdatePayload, SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
-    PluginManifest, RpcError, CAPABILITY_REGISTRY, CATALOG_ICON_IDS,
-    DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG, TYPE_COLOR_PRESET_IDS,
+    builtin_theme_tokens, PluginManifest, RpcError, ThemeMode, CAPABILITY_REGISTRY,
+    CATALOG_ICON_IDS, DENIED_BY_DEFAULT_CAPABILITIES, RPC_METHOD_CATALOG, THEME_TOKEN_IDS,
+    TYPE_COLOR_PRESET_IDS,
 };
 use schemars::gen::{SchemaGenerator, SchemaSettings};
 use serde_json::{json, Map, Value};
@@ -45,6 +47,7 @@ const RPC_ID: &str = "https://github.com/daena-archive/daena/schemas/plugin-rpc-
 const ERROR_ID: &str = "https://github.com/daena-archive/daena/schemas/plugin-error-v1.json";
 const CAPABILITY_ID: &str =
     "https://github.com/daena-archive/daena/schemas/capability-registry-v1.json";
+const THEME_ID: &str = "https://github.com/daena-archive/daena/schemas/theme-tokens-v1.json";
 
 fn settings() -> SchemaSettings {
     SchemaSettings::draft07().with(|s| {
@@ -878,6 +881,27 @@ fn capability_registry_schema() -> Value {
     })
 }
 
+fn theme_tokens_schema() -> Value {
+    let light: Map<String, Value> = builtin_theme_tokens(ThemeMode::Light)
+        .into_iter()
+        .map(|(key, value)| (key, json!(value)))
+        .collect();
+    let dark: Map<String, Value> = builtin_theme_tokens(ThemeMode::Dark)
+        .into_iter()
+        .map(|(key, value)| (key, json!(value)))
+        .collect();
+    json!({
+        "$schema": META,
+        "$id": THEME_ID,
+        "version": 1,
+        "tokenIds": THEME_TOKEN_IDS,
+        "builtin": {
+            "light": light,
+            "dark": dark
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // entrypoint
 // ---------------------------------------------------------------------------
@@ -902,6 +926,7 @@ fn main() {
     let rpc = rpc_schema();
     let error = error_schema();
     let capability = capability_registry_schema();
+    let theme = theme_tokens_schema();
 
     // Structural sanity checks mirroring scripts/validate-plugin-contract.mjs.
     let methods = rpc["x-methods"].as_object().expect("x-methods").len();
@@ -933,6 +958,12 @@ fn main() {
     assert!(error["$id"] == json!(ERROR_ID));
     assert!(capability["$id"] == json!(CAPABILITY_ID));
     assert!(capability["version"] == json!(1));
+    assert!(theme["$id"] == json!(THEME_ID));
+    assert!(theme["version"] == json!(1));
+    assert_eq!(
+        theme["tokenIds"].as_array().map(|ids| ids.len()),
+        Some(THEME_TOKEN_IDS.len())
+    );
     assert!(
         capability["deniedByDefault"]
             .as_array()
@@ -945,6 +976,7 @@ fn main() {
     write_json("plugin-rpc-v1.json", &rpc);
     write_json("plugin-error-v1.json", &error);
     write_json("capability-registry-v1.json", &capability);
+    write_json("theme-tokens-v1.json", &theme);
     println!("contract schemas regenerated");
 }
 
@@ -1002,6 +1034,7 @@ mod tests {
             ("plugin-rpc-v1.json", rpc_schema()),
             ("plugin-error-v1.json", error_schema()),
             ("capability-registry-v1.json", capability_registry_schema()),
+            ("theme-tokens-v1.json", theme_tokens_schema()),
         ];
         for (name, value) in schemas {
             let generated = serde_json::to_vec_pretty(&value).expect("pretty JSON");

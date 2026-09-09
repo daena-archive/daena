@@ -7,6 +7,7 @@ const manifestSchema = await readJson("schemas/plugin-manifest-v1.json");
 const rpcSchema = await readJson("schemas/plugin-rpc-v1.json");
 const errorSchema = await readJson("schemas/plugin-error-v1.json");
 const capabilityRegistry = await readJson("schemas/capability-registry-v1.json");
+const themeTokens = await readJson("schemas/theme-tokens-v1.json");
 
 if (manifestSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-manifest-v1.json")
   throw new Error("manifest schema id mismatch");
@@ -16,6 +17,16 @@ if (errorSchema.$id !== "https://github.com/daena-archive/daena/schemas/plugin-e
   throw new Error("error schema id mismatch");
 if (capabilityRegistry.version !== 1 || capabilityRegistry.deniedByDefault.length === 0)
   throw new Error("capability registry is incomplete");
+if (themeTokens.$id !== "https://github.com/daena-archive/daena/schemas/theme-tokens-v1.json")
+  throw new Error("theme token schema id mismatch");
+if (!Array.isArray(themeTokens.tokenIds) || themeTokens.tokenIds.length === 0)
+  throw new Error("theme token catalog is incomplete");
+for (const mode of ["light", "dark"]) {
+  const missing = themeTokens.tokenIds.filter((id) => typeof themeTokens.builtin?.[mode]?.[id] !== "string");
+  if (missing.length > 0) throw new Error(`theme token ${mode} map missing ${missing.join(", ")}`);
+  const extra = Object.keys(themeTokens.builtin?.[mode] ?? {}).filter((id) => !themeTokens.tokenIds.includes(id));
+  if (extra.length > 0) throw new Error(`theme token ${mode} map has unknown keys ${extra.join(", ")}`);
+}
 const rpcMethods = Object.entries(rpcSchema["x-methods"] ?? {});
 const requestSchema = rpcSchema.$defs?.request;
 if (rpcMethods.length < 20 || !requestSchema?.properties?.method?.enum || !Array.isArray(requestSchema.allOf)) {

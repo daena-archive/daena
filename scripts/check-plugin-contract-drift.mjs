@@ -12,6 +12,7 @@ const schemaNames = [
   "plugin-rpc-v1.json",
   "plugin-error-v1.json",
   "capability-registry-v1.json",
+  "theme-tokens-v1.json",
 ];
 const distGenerated = ["generated.js", "generated.d.ts", "generated.js.map", "generated.d.ts.map"];
 
@@ -56,9 +57,11 @@ try {
   );
 
   const tsOut = join(temp, "generated.ts");
+  const themeInitOut = join(temp, "theme-init.js");
   run(["node", "scripts/gen-plugin-contract.mjs"], {
     DAENA_SCHEMA_DIR: schemaOut,
     DAENA_GENERATED_TS: tsOut,
+    DAENA_THEME_INIT: themeInitOut,
   });
 
   for (const name of schemaNames) {
@@ -73,6 +76,12 @@ try {
   const committedTs = readFileSync(resolve(root, "packages/plugin-sdk/src/generated.ts"));
   if (!freshTs.equals(committedTs)) {
     throw new Error("packages/plugin-sdk/src/generated.ts is stale — run `npm run gen:plugin-contract`");
+  }
+
+  const freshThemeInit = readFileSync(themeInitOut);
+  const committedThemeInit = readFileSync(resolve(root, "static/theme-init.js"));
+  if (!freshThemeInit.equals(committedThemeInit)) {
+    throw new Error("static/theme-init.js is stale — run `npm run gen:plugin-contract`");
   }
 
   const distOut = join(temp, "sdk-dist");

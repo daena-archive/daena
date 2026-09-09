@@ -1,5 +1,5 @@
 /** Must match `daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION`. */
-export const ATLAS_DETAIL_ALGORITHM_VERSION = 5;
+export const ATLAS_DETAIL_ALGORITHM_VERSION = 6;
 
 /** Must match `daena_atlas::request::ATLAS_DEFAULT_VISIBLE_LAYER_IDS`. */
 export const ATLAS_DEFAULT_VISIBLE_LAYER_IDS = ["ocean", "relief", "ice", "lakes", "graticule"] as const;

@@ -48,11 +48,20 @@ pub enum UpdateChannelPreference {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemePackRef {
+    pub plugin_id: String,
+    pub theme_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppearanceSettings {
     #[serde(default)]
     pub theme: ThemePreference,
     #[serde(default)]
     pub update_channel: UpdateChannelPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_pack: Option<ThemePackRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -198,6 +207,16 @@ pub struct GeneralSettingsUpdate {
 pub struct AppearanceSettingsUpdate {
     pub theme: Option<ThemePreference>,
     pub update_channel: Option<UpdateChannelPreference>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub theme_pack: Option<Option<ThemePackRef>>,
+}
+
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -302,6 +321,11 @@ impl SettingsStore {
                 if let Some(update_channel) = appearance.update_channel {
                     settings.general.appearance.update_channel = update_channel;
                 }
+                if let Some(theme_pack) = appearance.theme_pack {
+                    settings.general.appearance.theme_pack = theme_pack.filter(|pack| {
+                        !pack.plugin_id.trim().is_empty() && !pack.theme_id.trim().is_empty()
+                    });
+                }
             }
         }
         if let Some(ai) = update.ai {
@@ -405,6 +429,12 @@ fn normalize(mut settings: AppSettings) -> AppSettings {
         .trim()
         .trim_end_matches('/')
         .to_string();
+    settings.general.appearance.theme_pack = settings
+        .general
+        .appearance
+        .theme_pack
+        .take()
+        .filter(|pack| !pack.plugin_id.trim().is_empty() && !pack.theme_id.trim().is_empty());
     settings.ai.image_provider.model = settings.ai.image_provider.model.trim().to_string();
     settings.ai.project_bindings = settings
         .ai
@@ -528,7 +558,8 @@ mod tests {
                     recent_projects: None,
                     appearance: Some(AppearanceSettingsUpdate {
                         theme: Some(ThemePreference::Dark),
-                        ..Default::default()
+                        update_channel: None,
+                        theme_pack: None,
                     }),
                 }),
                 ai: None,
@@ -537,6 +568,89 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded.general.recent_projects.len(), 1);
         assert_eq!(loaded.general.appearance.theme, ThemePreference::Dark);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn update_persists_and_clears_theme_pack() {
+        let directory =
+            std::env::temp_dir().join(format!("daena-theme-pack-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: None,
+                    appearance: Some(AppearanceSettingsUpdate {
+                        theme: None,
+                        update_channel: None,
+                        theme_pack: Some(Some(ThemePackRef {
+                            plugin_id: "com.example.skins".into(),
+                            theme_id: "parchment".into(),
+                        })),
+                    }),
+                }),
+                ai: None,
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.general.appearance.theme_pack,
+            Some(ThemePackRef {
+                plugin_id: "com.example.skins".into(),
+                theme_id: "parchment".into(),
+            })
+        );
+        store
+            .update(AppSettingsUpdate {
+                general: Some(GeneralSettingsUpdate {
+                    recent_projects: None,
+                    appearance: Some(AppearanceSettingsUpdate {
+                        theme: None,
+                        update_channel: None,
+                        theme_pack: Some(None),
+                    }),
+                }),
+                ai: None,
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap().general.appearance.theme_pack, None);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn json_null_clears_theme_pack_and_omission_leaves_it() {
+        let clear: AppearanceSettingsUpdate =
+            serde_json::from_str(r#"{"themePack":null}"#).unwrap();
+        assert_eq!(clear.theme_pack, Some(None));
+        let omit: AppearanceSettingsUpdate = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(omit.theme_pack, None);
+        let set: AppearanceSettingsUpdate = serde_json::from_str(
+            r#"{"themePack":{"pluginId":"com.example.skins","themeId":"parchment"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set.theme_pack,
+            Some(Some(ThemePackRef {
+                plugin_id: "com.example.skins".into(),
+                theme_id: "parchment".into(),
+            }))
+        );
+        let directory =
+            std::env::temp_dir().join(format!("daena-theme-pack-json-{}", uuid::Uuid::new_v4()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let store = SettingsStore::new(&directory);
+        store
+            .update(serde_json::from_str(r#"{"general":{"appearance":{"themePack":{"pluginId":"com.example.skins","themeId":"parchment"}}}}"#).unwrap())
+            .unwrap();
+        store
+            .update(
+                serde_json::from_str(r#"{"general":{"appearance":{"themePack":null}}}"#).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(store.load().unwrap().general.appearance.theme_pack, None);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -554,6 +668,7 @@ mod tests {
                     appearance: Some(AppearanceSettingsUpdate {
                         theme: None,
                         update_channel: Some(UpdateChannelPreference::Alpha),
+                        theme_pack: None,
                     }),
                 }),
                 ai: None,

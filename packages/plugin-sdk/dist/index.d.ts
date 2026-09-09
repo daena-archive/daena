@@ -2,6 +2,7 @@ import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, Migrati
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
+export { mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
 export interface PluginRpcTransport {
     call(method: string, payload: unknown, requestId?: string): Promise<unknown>;
 }

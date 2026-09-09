@@ -814,6 +814,8 @@ pub struct PluginManifest {
     pub templates: Vec<EntityTemplate>,
     #[serde(default)]
     pub records: Vec<RecordCollection>,
+    #[serde(default)]
+    pub themes: Vec<ThemePack>,
     pub views: Vec<View>,
     pub commands: Vec<Command>,
     pub services: Services,
@@ -1940,6 +1942,16 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 )));
             }
         }
+    }
+    let mut theme_ids = BTreeSet::new();
+    for pack in &manifest.themes {
+        if !is_identifier(&pack.id) || !theme_ids.insert(&pack.id) {
+            return Err(ContractError(format!(
+                "invalid or duplicate theme: {}",
+                pack.id
+            )));
+        }
+        validate_theme_pack(pack)?;
     }
     Ok(())
 }

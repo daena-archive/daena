@@ -269,11 +269,21 @@ import { htmlToMarkdown } from "$lib/markdown";
 import { normalizeDocument } from "$lib/markdown/normalize";
 import {
   applyThemePreference,
+  cacheThemePackTokens,
   cacheThemePreference,
+  collectInstalledThemePacks,
+  normalizeThemePackRef,
   normalizeThemePreference,
+  overlayForThemePack,
+  readCachedThemePackTokens,
   readCachedThemePreference,
+  resolveTheme,
+  resolvedPackTokenCache,
+  type InstalledThemePack,
+  type ThemePackRef,
   type ThemePreference,
 } from "$lib/theme";
+import { BUILTIN_THEME_TOKENS } from "../../packages/plugin-sdk/src/generated.ts";
 import {
   GREGORIAN_CALENDAR_ID,
   isCompleteCalendarDate,
@@ -335,10 +345,20 @@ type NavigationItem = WorkspaceNavigationItem | PluginNavigationItem;
 const recentProjectsKey = "daena.recent-projects";
 let settingsMigrated = false;
 const initialThemePreference = readCachedThemePreference();
+const initialCachedPackTokens = readCachedThemePackTokens();
+const initialSystemPrefersDark =
+  typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)").matches : false;
 let themePreference = $state<ThemePreference>(initialThemePreference);
+let themePack = $state<ThemePackRef | null>(null);
+let themePacks = $state<InstalledThemePack[]>([]);
 const initialUpdateChannelPreference = readUpdateChannelPreference();
 let updateChannelPreference = $state<UpdateChannelPreference>(initialUpdateChannelPreference);
-applyThemePreference(initialThemePreference);
+applyThemePreference(
+  initialThemePreference,
+  document.documentElement,
+  initialSystemPrefersDark,
+  initialCachedPackTokens?.[resolveTheme(initialThemePreference, initialSystemPrefersDark)] ?? null,
+);
 
 let ready = $state(false);
 let error = $state("");
@@ -3785,11 +3805,57 @@ function rememberProject(info: ProjectInfo) {
 function removeRecentProject(root: string) {
   void persistRecentProjects(recentProjects.filter((entry) => entry.root !== root));
 }
+function currentThemeOverlay(systemPrefersDark = matchMedia("(prefers-color-scheme: dark)").matches) {
+  const resolved = resolveTheme(themePreference, systemPrefersDark);
+  return overlayForThemePack(themePacks, themePack, resolved);
+}
+
+function applyCurrentAppearance(
+  systemPrefersDark = matchMedia("(prefers-color-scheme: dark)").matches,
+  catalogReady = true,
+) {
+  applyThemePreference(
+    themePreference,
+    document.documentElement,
+    systemPrefersDark,
+    currentThemeOverlay(systemPrefersDark),
+  );
+  const cached = resolvedPackTokenCache(themePacks, themePack);
+  if (cached) cacheThemePackTokens(cached);
+  else if (!themePack || catalogReady) cacheThemePackTokens(null);
+}
+
+function resolvedSwatchTokens() {
+  return BUILTIN_THEME_TOKENS[resolveTheme(themePreference, matchMedia("(prefers-color-scheme: dark)").matches)];
+}
+
+function themePackChoices() {
+  const fallback = resolvedSwatchTokens();
+  const resolved = resolveTheme(themePreference, matchMedia("(prefers-color-scheme: dark)").matches);
+  return themePacks.map((pack) => {
+    const tokens = pack.tokens[resolved] ?? {};
+    return {
+      pluginId: pack.pluginId,
+      themeId: pack.themeId,
+      name: pack.name,
+      pluginName: pack.pluginName,
+      accent: tokens.accent ?? fallback.accent,
+      surface: tokens.surface ?? fallback.surface,
+      canvas: tokens.canvas ?? fallback.canvas,
+    };
+  });
+}
+
 function updateThemePreference(preference: ThemePreference) {
   themePreference = preference;
   cacheThemePreference(preference);
-  applyThemePreference(preference);
+  applyCurrentAppearance();
   void project.settingsUpdate({ general: { appearance: { theme: preference } } }).catch(() => {});
+}
+function updateThemePack(next: ThemePackRef | null) {
+  themePack = next;
+  applyCurrentAppearance();
+  void project.settingsUpdate({ general: { appearance: { themePack: next } } }).catch(() => {});
 }
 function updateUpdateChannelPreference(preference: UpdateChannelPreference) {
   updateChannelPreference = preference;
@@ -3801,8 +3867,9 @@ async function loadRecentProjects() {
     const settings = await project.settingsGet();
     recentProjects = settings.general.recentProjects.slice(0, 6);
     themePreference = normalizeThemePreference(settings.general.appearance.theme);
+    themePack = normalizeThemePackRef(settings.general.appearance.themePack);
     cacheThemePreference(themePreference);
-    applyThemePreference(themePreference);
+    await loadThemePacks();
     updateChannelPreference = normalizeUpdateChannelPreference(settings.general.appearance.updateChannel);
     cacheUpdateChannelPreference(updateChannelPreference);
     aiSettings = {
@@ -5916,11 +5983,28 @@ async function toggleModule(id: ModuleId) {
     error = friendlyError(cause);
   }
 }
+async function loadThemePacks() {
+  try {
+    const view = await project.adminView();
+    themePacks = collectInstalledThemePacks(view.plugins);
+    applyCurrentAppearance();
+  } catch {
+    themePacks = [];
+    applyThemePreference(
+      themePreference,
+      document.documentElement,
+      matchMedia("(prefers-color-scheme: dark)").matches,
+      currentThemeOverlay(),
+    );
+  }
+}
 async function refreshAdmin() {
   adminBusy = true;
   try {
     const view = await project.adminView();
     adminPlugins = view.plugins;
+    themePacks = collectInstalledThemePacks(view.plugins);
+    applyCurrentAppearance();
   } catch (cause) {
     error = friendlyError(cause);
   } finally {
@@ -6596,8 +6680,7 @@ onMount(() => {
   void closeNativePluginWebviews();
   const themeMedia = matchMedia("(prefers-color-scheme: dark)");
   const handleSystemThemeChange = () => {
-    if (themePreference === "system")
-      applyThemePreference(themePreference, document.documentElement, themeMedia.matches);
+    if (themePreference === "system") applyCurrentAppearance(themeMedia.matches);
   };
   themeMedia.addEventListener("change", handleSystemThemeChange);
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -7184,6 +7267,14 @@ onMount(() => {
         {recentProjects}
         {themePreference}
         onThemeChange={updateThemePreference}
+        {themePack}
+        themePacks={themePackChoices()}
+        defaultSwatch={{
+          accent: resolvedSwatchTokens().accent,
+          surface: resolvedSwatchTokens().surface,
+          canvas: resolvedSwatchTokens().canvas,
+        }}
+        onThemePackChange={updateThemePack}
         {updateChannelPreference}
         onUpdateChannelChange={updateUpdateChannelPreference}
         onRemoveRecent={removeRecentProject}

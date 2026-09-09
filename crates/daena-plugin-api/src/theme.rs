@@ -1,12 +1,30 @@
 //! Host appearance token catalog and builtin light/dark maps.
 
 use crate::ContractError;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
     Light,
     Dark,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ThemePack {
+    pub id: String,
+    pub name: String,
+    pub tokens: ThemePackTokens,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ThemePackTokens {
+    pub light: BTreeMap<String, String>,
+    pub dark: BTreeMap<String, String>,
 }
 
 pub const THEME_TOKEN_IDS: &[&str] = &[
@@ -221,6 +239,20 @@ pub fn resolve_theme_tokens(
     Ok(merged)
 }
 
+const THEME_PACK_NAME_MAX_CHARS: usize = 128;
+
+pub fn validate_theme_pack(pack: &ThemePack) -> Result<(), ContractError> {
+    if pack.name.trim().is_empty() {
+        return Err(ContractError(format!("theme {} name is required", pack.id)));
+    }
+    if pack.name.chars().count() > THEME_PACK_NAME_MAX_CHARS {
+        return Err(ContractError(format!("theme {} name is too long", pack.id)));
+    }
+    resolve_theme_tokens(ThemeMode::Light, &pack.tokens.light)?;
+    resolve_theme_tokens(ThemeMode::Dark, &pack.tokens.dark)?;
+    Ok(())
+}
+
 pub fn validate_theme_contrast(tokens: &BTreeMap<String, String>) -> Result<(), ContractError> {
     check_contrast_pairs(tokens, TEXT_CONTRAST_PAIRS, MIN_TEXT_CONTRAST)?;
     check_contrast_pairs(tokens, CHROME_CONTRAST_PAIRS, MIN_CHROME_CONTRAST)?;
@@ -359,5 +391,28 @@ mod tests {
         assert!(resolve_theme_tokens(ThemeMode::Light, &overlay).is_err());
         overlay.insert("ink".into(), "#25251fff".into());
         assert!(resolve_theme_tokens(ThemeMode::Light, &overlay).is_ok());
+    }
+
+    #[test]
+    fn theme_pack_requires_readable_modes() {
+        let pack = ThemePack {
+            id: "parchment".into(),
+            name: "Parchment".into(),
+            tokens: ThemePackTokens {
+                light: BTreeMap::from([("accent".into(), "#b4773f".into())]),
+                dark: BTreeMap::from([("accent".into(), "#c58a4a".into())]),
+            },
+        };
+        assert!(validate_theme_pack(&pack).is_ok());
+        let mut bad = pack.clone();
+        bad.name = " ".into();
+        assert!(validate_theme_pack(&bad).is_err());
+        bad = pack.clone();
+        bad.name = "P".repeat(129);
+        assert!(validate_theme_pack(&bad).is_err());
+        bad = pack;
+        bad.tokens.light.insert("ink".into(), "#fffefa".into());
+        bad.tokens.light.insert("surface".into(), "#fffefa".into());
+        assert!(validate_theme_pack(&bad).is_err());
     }
 }

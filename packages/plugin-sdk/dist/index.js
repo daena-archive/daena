@@ -1,6 +1,8 @@
 import { CATALOG_ICON_IDS, TYPE_COLOR_PRESET_IDS } from "./generated.js";
+import { validateThemePack } from "./theme.js";
 export * from "./generated.js";
 export * from "./maps.js";
+export { mergeThemeTokens, parseThemeColor, resolveThemeTokens, validateThemeContrast, validateThemePack, } from "./theme.js";
 export class PluginRpcException extends Error {
     code;
     retryable;
@@ -428,6 +430,7 @@ export function validatePluginManifest(manifest) {
         "schemas",
         "templates",
         "records",
+        "themes",
         "views",
         "commands",
         "services",
@@ -439,7 +442,7 @@ export function validatePluginManifest(manifest) {
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && !(key in value))
+        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -481,6 +484,7 @@ export function validatePluginManifest(manifest) {
     const schemas = value.schemas;
     const templates = value.templates;
     const records = value.records;
+    const themes = value.themes;
     const views = value.views;
     const commands = value.commands;
     const services = value.services;
@@ -498,6 +502,8 @@ export function validatePluginManifest(manifest) {
         errors.push("templates must be an array");
     if (records !== undefined && !Array.isArray(records))
         errors.push("records must be an array");
+    if (themes !== undefined && !Array.isArray(themes))
+        errors.push("themes must be an array");
     if (!Array.isArray(views))
         errors.push("views must be an array");
     if (!Array.isArray(commands))
@@ -848,6 +854,36 @@ export function validatePluginManifest(manifest) {
             else if (record.uniquePerOwner === true && ownerScope !== "effective-schema")
                 errors.push(`record collection ${String(record.id)} uniquePerOwner requires ownerScope effective-schema`);
             validateCommandSchema(record.schema, `record collection ${String(record.id)} schema`, errors);
+        }
+    }
+    if (Array.isArray(themes)) {
+        const themeIds = new Set();
+        for (const pack of themes) {
+            if (!isRecord(pack)) {
+                errors.push("themes must contain objects");
+                continue;
+            }
+            checkKeys(pack, "theme", ["id", "name", "tokens"], errors);
+            if (typeof pack.id !== "string" || !isPluginIdentifier(pack.id))
+                errors.push(`invalid or duplicate theme: ${String(pack.id)}`);
+            else if (themeIds.has(pack.id))
+                errors.push(`invalid or duplicate theme: ${pack.id}`);
+            else
+                themeIds.add(pack.id);
+            if (!isRecord(pack.tokens)) {
+                errors.push(`theme ${String(pack.id)} tokens must be an object`);
+                continue;
+            }
+            checkKeys(pack.tokens, "theme tokens", ["light", "dark"], errors);
+            if (!("light" in pack.tokens) || !("dark" in pack.tokens)) {
+                errors.push(`theme ${String(pack.id)} requires light and dark token maps`);
+                continue;
+            }
+            errors.push(...validateThemePack({
+                id: String(pack.id),
+                name: typeof pack.name === "string" ? pack.name : "",
+                tokens: { light: pack.tokens.light, dark: pack.tokens.dark },
+            }));
         }
     }
     const fields = new Map();

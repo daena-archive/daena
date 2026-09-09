@@ -149,6 +149,106 @@ const fixtures = [
       return m;
     },
   },
+  {
+    rule: "theme-valid",
+    expected: "accepted",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "Parchment",
+          tokens: { light: { accent: "#b4773f" }, dark: { accent: "#c58a4a" } },
+        },
+      ];
+      return m;
+    },
+  },
+  {
+    rule: "theme-unknown-token",
+    expected: "rejected",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "Parchment",
+          tokens: { light: { nope: "#ffffff" }, dark: { accent: "#c58a4a" } },
+        },
+      ];
+      return m;
+    },
+  },
+  {
+    rule: "theme-bad-color",
+    expected: "rejected",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "Parchment",
+          tokens: { light: { accent: "red" }, dark: { accent: "#c58a4a" } },
+        },
+      ];
+      return m;
+    },
+  },
+  {
+    rule: "theme-duplicate-id",
+    expected: "rejected",
+    mutate: (m) => {
+      const pack = {
+        id: "parchment",
+        name: "Parchment",
+        tokens: { light: { accent: "#b4773f" }, dark: { accent: "#c58a4a" } },
+      };
+      m.themes = [pack, { ...pack }];
+      return m;
+    },
+  },
+  {
+    rule: "theme-missing-mode",
+    expected: "rejected",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "Parchment",
+          tokens: { light: { accent: "#b4773f" } },
+        },
+      ];
+      return m;
+    },
+  },
+  {
+    rule: "theme-name-too-long",
+    expected: "rejected",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "P".repeat(129),
+          tokens: { light: { accent: "#b4773f" }, dark: { accent: "#c58a4a" } },
+        },
+      ];
+      return m;
+    },
+  },
+  {
+    rule: "theme-contrast",
+    expected: "rejected",
+    mutate: (m) => {
+      m.themes = [
+        {
+          id: "parchment",
+          name: "Parchment",
+          tokens: {
+            light: { ink: "#fffefa", surface: "#fffefa" },
+            dark: { accent: "#c58a4a" },
+          },
+        },
+      ];
+      return m;
+    },
+  },
 ];
 
 mkdirSync(outDir, { recursive: true });

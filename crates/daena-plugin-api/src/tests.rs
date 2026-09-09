@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 #[test]
 fn canonical_bundled_manifests_validate() {
@@ -89,6 +90,23 @@ fn effective_schema_record_collections_may_omit_owner_entity_types() {
     );
     let manifest = parse_manifest(&json).unwrap();
     assert!(manifest.records[0].owner_entity_types.is_empty());
+}
+
+#[test]
+fn theme_packs_are_validated() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.themes.push(ThemePack {
+        id: "parchment".into(),
+        name: "Parchment".into(),
+        tokens: ThemePackTokens {
+            light: BTreeMap::from([("accent".into(), "#b4773f".into())]),
+            dark: BTreeMap::from([("accent".into(), "#c58a4a".into())]),
+        },
+    });
+    assert!(validate_manifest(&manifest).is_ok());
+    manifest.themes.push(manifest.themes[0].clone());
+    assert!(validate_manifest(&manifest).is_err());
 }
 
 #[test]

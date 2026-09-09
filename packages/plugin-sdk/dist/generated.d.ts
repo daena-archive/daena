@@ -310,6 +310,15 @@ export interface Events {
     publishes: Event[];
     subscribes: Event[];
 }
+export interface ThemePackTokens {
+    dark: Record<string, string>;
+    light: Record<string, string>;
+}
+export interface ThemePack {
+    id: string;
+    name: string;
+    tokens: ThemePackTokens;
+}
 export interface PluginManifest {
     capabilities: string[];
     commands: Command[];
@@ -329,6 +338,7 @@ export interface PluginManifest {
     services: Services;
     stability?: PluginStability;
     templates: EntityTemplate[];
+    themes?: ThemePack[];
     version: string;
     views: View[];
 }

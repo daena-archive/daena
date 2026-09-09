@@ -3,12 +3,27 @@
   const LIGHT = {"ink":"#25251f","ink-soft":"#77766d","ink-faint":"#aaa79d","ink-muted":"#62594e","line":"#e4e1d8","line-soft":"#e9e1d4","line-strong":"#d9cdbd","surface":"#fffefa","surface-muted":"#f4f2ec","surface-warm":"#f4eee3","surface-subtle":"#f7f3ec","surface-quiet":"#fffcf7","canvas":"#f7f6f2","accent":"#b4773f","accent-dark":"#365342","accent-soft":"#c99965","accent-bg":"#f2e4d2","on-accent":"#fffefa","on-bright-accent":"#fffefa","brass-ink":"#2f2619","danger":"#a14f42","danger-bg":"#fdf2ef","danger-line":"#e7c4bc","success":"#557d63","success-bg":"#eef5ef","success-line":"#c8d8cb","warning":"#8a5f24","warning-bg":"#fff8ed","warning-line":"#ead7bc","info":"#4e6f7c","info-bg":"#e8f1f3","info-line":"#bfd3d9","rail-bg":"#283a30","rail-surface":"#3b5243","rail-surface-strong":"#486052","rail-popover":"#2f4a38","rail-text":"#eef0e9","rail-text-soft":"#b9c8bc","rail-text-muted":"#aab9ad","rail-text-faint":"#91a397","rail-accent":"#d5ab6c","rail-accent-hover":"#e1bc82","rail-online":"#88c18e","rail-offline":"#777f78","rail-border":"#486052"};
   const DARK = {"ink":"#f2eee4","ink-soft":"#d8d1c3","ink-faint":"#a49e92","ink-muted":"#b8b1a5","line":"#31443a","line-soft":"#26372f","line-strong":"#435a4e","surface":"#131f1b","surface-muted":"#182720","surface-warm":"#182720","surface-subtle":"#15231d","surface-quiet":"#101b17","canvas":"#0e1714","accent":"#c58a4a","accent-dark":"#557d63","accent-soft":"#d7a25c","accent-bg":"#3c3525","on-accent":"#fffefa","on-bright-accent":"#25251f","brass-ink":"#2f2619","danger":"#e09a8d","danger-bg":"#321f1c","danger-line":"#70443d","success":"#8aad69","success-bg":"#1b2d20","success-line":"#3f5d44","warning":"#e4c786","warning-bg":"#3c3525","warning-line":"#6c5830","info":"#91a4ae","info-bg":"#1d2930","info-line":"#3f5662","rail-bg":"#283a30","rail-surface":"#3b5243","rail-surface-strong":"#486052","rail-popover":"#2f4a38","rail-text":"#eef0e9","rail-text-soft":"#b9c8bc","rail-text-muted":"#aab9ad","rail-text-faint":"#91a397","rail-accent":"#d5ab6c","rail-accent-hover":"#e1bc82","rail-online":"#88c18e","rail-offline":"#777f78","rail-border":"#486052"};
   const IDS = ["ink","ink-soft","ink-faint","ink-muted","line","line-soft","line-strong","surface","surface-muted","surface-warm","surface-subtle","surface-quiet","canvas","accent","accent-dark","accent-soft","accent-bg","on-accent","on-bright-accent","brass-ink","danger","danger-bg","danger-line","success","success-bg","success-line","warning","warning-bg","warning-line","info","info-bg","info-line","rail-bg","rail-surface","rail-surface-strong","rail-popover","rail-text","rail-text-soft","rail-text-muted","rail-text-faint","rail-accent","rail-accent-hover","rail-online","rail-offline","rail-border"];
-  const apply = (preference, resolved) => {
+  const isColor = (value) => typeof value === "string" && /^#[0-9A-Fa-f]{3}([0-9A-Fa-f]{3}([0-9A-Fa-f]{2})?)?$/.test(value);
+  const mapsFromCache = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("daena-theme-pack") ?? "");
+      if (!parsed || typeof parsed !== "object") return null;
+      for (const mode of ["light", "dark"]) {
+        const map = parsed[mode];
+        if (!map || typeof map !== "object") return null;
+        for (const id of IDS) if (!isColor(map[id])) return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+  const apply = (preference, resolved, maps) => {
     const root = document.documentElement;
     root.dataset.theme = resolved;
     root.dataset.themePreference = preference;
     root.style.colorScheme = resolved;
-    const tokens = resolved === "dark" ? DARK : LIGHT;
+    const tokens = resolved === "dark" ? maps.dark : maps.light;
     for (const id of IDS) root.style.setProperty("--" + id, tokens[id]);
   };
   try {
@@ -20,8 +35,8 @@
           ? "dark"
           : "light"
         : preference;
-    apply(preference, resolved);
+    apply(preference, resolved, mapsFromCache() ?? { light: LIGHT, dark: DARK });
   } catch {
-    apply("system", "light");
+    apply("system", "light", { light: LIGHT, dark: DARK });
   }
 })();

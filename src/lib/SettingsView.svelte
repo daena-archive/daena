@@ -3,6 +3,18 @@ import { X, Settings2, FolderOpen, ChevronLeft, Sun, Moon, Monitor, Download } f
 import { checkAppUpdate, formatUpdateMessage, openDownloadPage, type UpdateChannelPreference } from "$lib/appUpdate";
 import type { ThemePreference } from "$lib/theme";
 
+type ThemePackRef = { pluginId: string; themeId: string };
+
+type ThemePackChoice = {
+  pluginId: string;
+  themeId: string;
+  name: string;
+  pluginName: string;
+  accent: string;
+  surface: string;
+  canvas: string;
+};
+
 type SettingsSection = "general";
 type RecentProject = { name: string; root: string };
 
@@ -12,6 +24,10 @@ let {
   recentProjects,
   themePreference,
   onThemeChange,
+  themePack = null,
+  themePacks = [],
+  defaultSwatch,
+  onThemePackChange,
   updateChannelPreference,
   onUpdateChannelChange,
   onRemoveRecent,
@@ -23,6 +39,10 @@ let {
   recentProjects: RecentProject[];
   themePreference: ThemePreference;
   onThemeChange: (preference: ThemePreference) => void;
+  themePack?: ThemePackRef | null;
+  themePacks?: ThemePackChoice[];
+  defaultSwatch: { accent: string; surface: string; canvas: string };
+  onThemePackChange?: (pack: ThemePackRef | null) => void;
   updateChannelPreference: UpdateChannelPreference;
   onUpdateChannelChange: (preference: UpdateChannelPreference) => void;
   onRemoveRecent: (root: string) => void;
@@ -32,6 +52,14 @@ let {
 
 let updateBusy = $state(false);
 let updateMessage = $state("");
+
+function packIsSelected(pluginId: string, themeId: string) {
+  return themePack?.pluginId === pluginId && themePack?.themeId === themeId;
+}
+
+function selectedPackExists() {
+  return Boolean(themePack && themePacks.some((pack) => packIsSelected(pack.pluginId, pack.themeId)));
+}
 
 async function checkForUpdate() {
   if (updateBusy) return;
@@ -143,6 +171,44 @@ async function handleClose() {
               <Monitor size={16} strokeWidth={1.8} aria-hidden="true" />
               <span><strong>System</strong><small>Match this computer</small></span>
             </button>
+          </div>
+          <div class="theme-pack-options" role="group" aria-label="Theme pack">
+            <button
+              type="button"
+              class:active={!themePack}
+              aria-pressed={!themePack}
+              onclick={() => onThemePackChange?.(null)}>
+              <span class="pack-swatches" aria-hidden="true">
+                <i style="background: {defaultSwatch.accent}"></i>
+                <i style="background: {defaultSwatch.surface}"></i>
+                <i style="background: {defaultSwatch.canvas}"></i>
+              </span>
+              <span><strong>Default</strong><small>Warm paper / Forest night</small></span>
+            </button>
+            {#if themePack && !selectedPackExists()}
+              <button type="button" class="active" aria-pressed="true" disabled>
+                <span class="pack-swatches" aria-hidden="true">
+                  <i style="background: {defaultSwatch.accent}"></i>
+                  <i style="background: {defaultSwatch.surface}"></i>
+                  <i style="background: {defaultSwatch.canvas}"></i>
+                </span>
+                <span><strong>{themePack.themeId}</strong><small>Unavailable — using Default</small></span>
+              </button>
+            {/if}
+            {#each themePacks as pack (pack.pluginId + "/" + pack.themeId)}
+              <button
+                type="button"
+                class:active={packIsSelected(pack.pluginId, pack.themeId)}
+                aria-pressed={packIsSelected(pack.pluginId, pack.themeId)}
+                onclick={() => onThemePackChange?.({ pluginId: pack.pluginId, themeId: pack.themeId })}>
+                <span class="pack-swatches" aria-hidden="true">
+                  <i style="background: {pack.accent}"></i>
+                  <i style="background: {pack.surface}"></i>
+                  <i style="background: {pack.canvas}"></i>
+                </span>
+                <span><strong>{pack.name}</strong><small>{pack.pluginName}</small></span>
+              </button>
+            {/each}
           </div>
         </div>
 
@@ -509,6 +575,74 @@ async function handleClose() {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+.theme-pack-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 10px;
+}
+.theme-pack-options button {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+.theme-pack-options button:hover {
+  border-color: var(--accent-soft);
+  background: var(--surface-warm);
+  color: var(--ink);
+}
+.theme-pack-options button.active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.theme-pack-options button:disabled {
+  cursor: default;
+  opacity: 0.92;
+}
+.theme-pack-options button:disabled:hover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--ink);
+}
+.theme-pack-options button span,
+.theme-pack-options button strong,
+.theme-pack-options button small {
+  display: block;
+}
+.theme-pack-options button strong {
+  color: inherit;
+  font-size: 12px;
+}
+.theme-pack-options button small {
+  margin-top: 2px;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+.pack-swatches {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.pack-swatches i {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
 }
 .update-channel-options {
   grid-template-columns: repeat(4, minmax(0, 1fr));

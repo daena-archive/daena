@@ -60,6 +60,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
         }],
         templates: vec![],
         records: vec![],
+        themes: vec![],
         views: vec![daena_plugin_api::View {
             id: "overview".into(),
             title: "Overview".into(),

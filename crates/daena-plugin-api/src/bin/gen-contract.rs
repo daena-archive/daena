@@ -153,6 +153,7 @@ fn manifest_schema() -> Value {
             "namespaces": {"type": "array", "items": ref_to("namespace"), "uniqueItems": true},
             "schemas": {"type": "array", "items": ref_to("SchemaContribution")},
             "templates": {"type": "array", "items": ref_to("EntityTemplate")},
+            "themes": {"type": "array", "items": ref_to("ThemePack")},
             "views": {"type": "array", "items": ref_to("View")},
             "commands": {"type": "array", "items": ref_to("Command")},
             "services": ref_to("Services"),
@@ -175,6 +176,25 @@ fn manifest_schema() -> Value {
         .expect("Entrypoints properties");
     ep_props.insert("ui".to_owned(), ref_to("packagePath"));
     ep_props.insert("wasm".to_owned(), ref_to("packagePath"));
+
+    set_prop(&mut root, "ThemePack", "id", ref_to("identifier"));
+    rule_on_prop(&mut root, "ThemePack", "name", "minLength", 1);
+    rule_on_prop(&mut root, "ThemePack", "name", "maxLength", 128);
+    let theme_token_map = json!({
+        "type": "object",
+        "propertyNames": { "enum": THEME_TOKEN_IDS },
+        "additionalProperties": {
+            "type": "string",
+            "pattern": "^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+        }
+    });
+    set_prop(
+        &mut root,
+        "ThemePackTokens",
+        "light",
+        theme_token_map.clone(),
+    );
+    set_prop(&mut root, "ThemePackTokens", "dark", theme_token_map);
 
     // Dependency.version is the hostApi-style constraint string.
     rule_on_prop(&mut root, "Dependency", "version", "minLength", 1);

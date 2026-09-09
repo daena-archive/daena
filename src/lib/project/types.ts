@@ -962,9 +962,14 @@ export interface GeneralSettings {
 }
 export type ThemePreference = "light" | "dark" | "system";
 export type UpdateChannelPreference = "auto" | "stable" | "beta" | "alpha";
+export interface ThemePackRef {
+  pluginId: string;
+  themeId: string;
+}
 export interface AppearanceSettings {
   theme: ThemePreference;
   updateChannel?: UpdateChannelPreference;
+  themePack?: ThemePackRef | null;
 }
 export interface AppSettings {
   formatVersion: number;

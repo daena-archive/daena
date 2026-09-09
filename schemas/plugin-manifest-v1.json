@@ -924,6 +924,13 @@
           },
           "type": "array"
         },
+        "themes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ThemePack"
+          },
+          "type": "array"
+        },
         "version": {
           "type": "string"
         },
@@ -1098,6 +1105,150 @@
       "required": [
         "consumes",
         "provides"
+      ],
+      "type": "object"
+    },
+    "ThemePack": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tokens": {
+          "$ref": "#/$defs/ThemePackTokens"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "tokens"
+      ],
+      "type": "object"
+    },
+    "ThemePackTokens": {
+      "additionalProperties": false,
+      "properties": {
+        "dark": {
+          "additionalProperties": {
+            "pattern": "^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "ink",
+              "ink-soft",
+              "ink-faint",
+              "ink-muted",
+              "line",
+              "line-soft",
+              "line-strong",
+              "surface",
+              "surface-muted",
+              "surface-warm",
+              "surface-subtle",
+              "surface-quiet",
+              "canvas",
+              "accent",
+              "accent-dark",
+              "accent-soft",
+              "accent-bg",
+              "on-accent",
+              "on-bright-accent",
+              "brass-ink",
+              "danger",
+              "danger-bg",
+              "danger-line",
+              "success",
+              "success-bg",
+              "success-line",
+              "warning",
+              "warning-bg",
+              "warning-line",
+              "info",
+              "info-bg",
+              "info-line",
+              "rail-bg",
+              "rail-surface",
+              "rail-surface-strong",
+              "rail-popover",
+              "rail-text",
+              "rail-text-soft",
+              "rail-text-muted",
+              "rail-text-faint",
+              "rail-accent",
+              "rail-accent-hover",
+              "rail-online",
+              "rail-offline",
+              "rail-border"
+            ]
+          },
+          "type": "object"
+        },
+        "light": {
+          "additionalProperties": {
+            "pattern": "^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$",
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "ink",
+              "ink-soft",
+              "ink-faint",
+              "ink-muted",
+              "line",
+              "line-soft",
+              "line-strong",
+              "surface",
+              "surface-muted",
+              "surface-warm",
+              "surface-subtle",
+              "surface-quiet",
+              "canvas",
+              "accent",
+              "accent-dark",
+              "accent-soft",
+              "accent-bg",
+              "on-accent",
+              "on-bright-accent",
+              "brass-ink",
+              "danger",
+              "danger-bg",
+              "danger-line",
+              "success",
+              "success-bg",
+              "success-line",
+              "warning",
+              "warning-bg",
+              "warning-line",
+              "info",
+              "info-bg",
+              "info-line",
+              "rail-bg",
+              "rail-surface",
+              "rail-surface-strong",
+              "rail-popover",
+              "rail-text",
+              "rail-text-soft",
+              "rail-text-muted",
+              "rail-text-faint",
+              "rail-accent",
+              "rail-accent-hover",
+              "rail-online",
+              "rail-offline",
+              "rail-border"
+            ]
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "dark",
+        "light"
       ],
       "type": "object"
     },
@@ -1529,6 +1680,12 @@
     "templates": {
       "items": {
         "$ref": "#/$defs/EntityTemplate"
+      },
+      "type": "array"
+    },
+    "themes": {
+      "items": {
+        "$ref": "#/$defs/ThemePack"
       },
       "type": "array"
     },

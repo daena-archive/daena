@@ -251,11 +251,13 @@ export.
 ### Runtime isolation and authority
 
 Third-party UI runs in an isolated, application-controlled webview origin with
-no host DOM or ambient Tauri access. Background logic runs in bounded WASM/WASI
-when supported. Both communicate through a versioned broker envelope such as:
+no host DOM or ambient Tauri access. Background logic runs in bounded WASM
+when supported. Plugin webviews have an empty Tauri permission set and
+communicate through same-origin `POST /__rpc` using the versioned broker
+envelope:
 
 ```text
-plugin_rpc(session_id, request_id, method, payload)
+{ rpcVersion, sessionId, requestId, method, payload }
 ```
 
 Rust binds each session to the installed plugin identity and package digest,

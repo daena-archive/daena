@@ -20,9 +20,9 @@ dependency resolution from Rust-owned state.
 
 The current implementation uses Rust-owned broker authority for plugin
 identity, capabilities, sessions, revisions, request IDs, and project data.
-Bundled and third-party plugin UIs run in isolated webviews and communicate
-through the versioned RPC contract. Frontend checks remain advisory; the Rust
-broker is the enforcement boundary.
+Isolated plugin webviews communicate through the versioned RPC contract over
+same-origin `/__rpc`; they have no Tauri IPC. Frontend checks remain advisory;
+the Rust broker is the enforcement boundary.
 
 For the future AI broker surface, see [`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
 AI grants do not imply project-data grants, provider access, or network access.
@@ -84,14 +84,21 @@ Rust is the only authority boundary. TypeScript capability helpers exist for
 developer feedback but are not enforcement.
 
 The trusted shell continues to use privileged commands that are available only
-to the main webview. Plugin webviews receive only bootstrap and broker access.
-The plugin API is exposed through a narrow operation such as:
+to the main webview. Plugin webviews receive no Tauri permissions
+(`src-tauri/capabilities/plugin.json` is an empty allow-list for `plugin:*`
+windows). They talk to the host over same-origin HTTP `POST /__rpc` on the
+application-controlled `plugin://` origin. The SDK client in
+`packages/plugin-sdk` is the only supported caller.
+
+Authorization lives in `PluginHost::authorize_rpc`. Method dispatch lives in
+the Tauri adapter (`src-tauri/src/broker.rs`) and calls `daena-core` with a
+plugin authority context. The wire envelope is still:
 
 ```text
-plugin_rpc(session_id, request_id, method, payload)
+{ rpcVersion, sessionId, requestId, method, payload }
 ```
 
-The host creates `session_id`; plugin code cannot choose its identity. A
+The host creates `sessionId`; plugin code cannot choose its identity. A
 session is bound to:
 
 - installed plugin ID and package digest;
@@ -136,6 +143,11 @@ The initial capability vocabulary is:
 | `asset.write:self`                   | Update metadata or replace bytes for caller-owned assets.                              |
 | `asset.register`                      | Register a plugin-supplied asset into a caller-owned namespace.                       |
 | `search.query`                       | Query the core search service.                                                         |
+| `schema.overlay`                     | Contribute a project-owned schema overlay for the caller's namespaces.                 |
+| `record.read:self`                   | Read plugin-owned record collections in caller namespaces.                             |
+| `record.write:self`                  | Create, update, and delete plugin-owned records in caller namespaces.                  |
+| `ai.text.generate`                   | Request brokered unstructured text inference. Does not imply data or network grants.   |
+| `ai.text.generate-structured`        | Request brokered structured text inference. Does not imply data or network grants.     |
 | `event.publish:<type>`               | Publish a declared event type.                                                         |
 | `event.subscribe:<type>`             | Subscribe to a declared event type.                                                    |
 | `host.surface:<name>@<major>`         | Use a versioned host-rendered surface declared by the plugin view.                      |
@@ -174,6 +186,8 @@ The initial manifest contains:
   "name": "Genealogy",
   "version": "1.2.0",
   "publisher": "com.example",
+  "enabledByDefault": false,
+  "stability": "stable",
   "hostApi": ">=1.0.0 <2.0.0",
   "kind": "sandboxed",
   "entrypoints": {
@@ -185,12 +199,13 @@ The initial manifest contains:
   "namespaces": [],
   "schemas": [],
   "templates": [],
+  "records": [],
+  "themes": [],
   "views": [],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": [],
-  "themes": []
+  "migrations": []
 }
 ```
 
@@ -202,10 +217,12 @@ Rules:
 - Namespace, service, event, view, command, migration, and theme-pack
   identifiers are unique within the package; globally addressable identifiers
   are prefixed by the plugin ID.
-- Unknown manifest keys are rejected for manifest version 1. Minor host API
-  releases may add optional defaulted fields (`records`, `themes`); they do
-  not require a new manifest version or a versioned extension block. Removing
-  or renaming a field is major.
+- Unknown manifest keys are rejected for manifest version 1. Optional
+  defaulted fields already in v1 include `records`, `themes`,
+  `enabledByDefault`, and `stability`. Entity types may declare catalog
+  `icon` and `iconColor`. Minor host API releases may add further optional
+  defaulted fields; they do not require a new manifest version or a versioned
+  extension block. Removing or renaming a field is major.
 - A view may declare `renderer` as `declarative`, `sandboxed`, or a versioned
   `host-surface` such as `{ "type": "host-surface", "id": "daena.maps/editor", "major": 1 }`.
   Host surfaces require the matching `host.surface:<id>@<major>` capability;
@@ -480,45 +497,56 @@ Theme packs are host-painted JSON overlays. See
 
 ## Required code structure
 
-Refactor the backend into explicit boundaries:
+The platform boundaries are:
 
 ```text
 crates/
   daena-core/          # Project model and application services
   daena-plugin-api/    # Manifest, RPC, capability, event/service types
-  daena-plugin-host/   # Catalog, resolver, sessions, broker, runtimes
-src-tauri/                    # Trusted Tauri adapter and application assembly
+  daena-plugin-host/   # Catalog, grants, sessions, authorize, runtimes
+  daena-ai/            # AI subsystem; not a plugin runtime
+  daena-atlas/         # Maps atlas; not a plugin runtime
+  daena-physical/      # Physical world; not a plugin runtime
+src-tauri/                    # Trusted Tauri adapter, RPC dispatch, assembly
 packages/
   plugin-sdk/                 # Generated types and framework-neutral client
   plugin-test-host/           # Fake broker and conformance helpers
-  modules/                    # Bundled plugins using only the public SDK
+  plugin-cli/                 # daena-plugin authoring CLI
+  module-api/                 # Bundled-module helpers (remaining private-API work: gaps doc)
+  modules/                    # Bundled plugins: lore, timeline, maps, writing, houses, language
 schemas/
   plugin-manifest-v1.json
   plugin-rpc-v1.json
+  plugin-error-v1.json
+  capability-registry-v1.json
+  theme-tokens-v1.json
+  maps-domain-v1.json
 ```
 
 `daena-core` must not depend on Tauri or plugin runtime implementations.
-It exposes typed services for entities, documents, fields, relationships,
-assets, search, migrations, and project lifecycle. The Tauri shell adapter and
-plugin broker both call these services with different authority contexts.
+It may depend on `daena-plugin-api` and domain crates (`daena-physical`,
+`daena-atlas`). It exposes typed services for entities, documents, fields,
+relationships, assets, search, migrations, and project lifecycle. The Tauri
+shell adapter and plugin broker both call these services with different
+authority contexts.
 
 `daena-plugin-host` contains:
 
 - `PluginCatalog` for installed packages and retained versions;
-- `ManifestValidator` and package verifier;
+- `validate_manifest` (in `daena-plugin-api`) and the ZIP package verifier
+  (`package.rs`);
 - `DependencyResolver`;
 - `GrantStore`;
-- `PluginManager` lifecycle coordinator;
+- `PluginHost` plus `LifecycleRegistry` as the lifecycle coordinator;
 - `SessionRegistry` with revocation and activation generations;
-- `Broker` with method-level authorization and schema validation;
+- `PluginHost::authorize_rpc` for method-level authorization (dispatch is in
+  `src-tauri/src/broker.rs`);
 - `EventBus` and `ServiceRegistry`;
-- UI-webview and WASM runtime adapters; and
+- UI-webview policy and WASM runtime adapters (`runtime.rs`); and
 - bounded audit/diagnostic records.
 
-The existing `ModuleContext` becomes an SDK client backed by broker RPC. It no
-longer imports the trusted `project` Tauri client. The existing frontend
-`ModuleRegistry` becomes host UI state fed by the Rust plugin manager rather
-than the source of truth.
+Bundled modules must not import the trusted `project` Tauri client. Frontend
+module lists are host UI state fed by `PluginHost`, not a source of truth.
 
 ## Delivery plan
 
@@ -548,9 +576,10 @@ service; `daena-core` has no Tauri dependency.
 ### Phase 2: Add catalog, identity, and authorization
 
 Implement the plugin catalog, manifest validator, package digests, grants,
-sessions, namespace ownership, and the Rust broker. Add a Tauri capability that
-allows only plugin bootstrap and RPC from plugin webviews. Keep installer input
-limited to a development directory during this phase.
+sessions, namespace ownership, and Rust authorization. Plugin webviews get an
+empty Tauri capability (`plugin-runtime`) and reach the broker only through
+same-origin `/__rpc`. Development-directory install is the Phase 2 input;
+ZIP packages arrive in Phase 6.
 
 **Exit gate:** An adversarial test plugin cannot read/write another namespace,
 call undeclared operations, forge identity, call trusted Tauri commands, or use
@@ -558,12 +587,13 @@ a revoked session.
 
 ### Phase 3: Convert bundled modules
 
-Generate canonical manifests for Lore and Timeline, remove their hardcoded Rust
-manifests and enable branches, and run both through broker-backed SDK contexts.
-Treat any required private API as a platform design defect.
+Generate canonical manifests for the bundled plugins (Lore, Timeline, Maps,
+Writing, Houses, Language), remove hardcoded Rust manifests and enable
+branches, and run them through broker-backed SDK contexts. Treat any required
+private API as a platform design defect.
 
-**Exit gate:** Lore and Timeline contain no imports of the trusted Tauri client,
-are enabled and disabled by `PluginManager`, and pass existing cross-module,
+**Exit gate:** Bundled plugins contain no imports of the trusted Tauri client,
+are enabled and disabled by `PluginHost`, and pass existing cross-module,
 export/import, migration, and disablement scenarios.
 
 This is the minimum point at which the platform is on solid architectural
@@ -582,9 +612,10 @@ deterministic tested behavior.
 
 ### Phase 5: Sandboxed runtimes
 
-Add isolated plugin webviews, restrictive CSPs, validated message bridging, and
-the WASM runtime with resource limits. Remove any development path that loads
-third-party code into the main webview.
+Add isolated plugin webviews, restrictive CSPs, validated `/__rpc` bridging,
+and the WASM runtime with resource limits (deny-all imports, fuel, memory,
+timeout). Remove any development path that loads third-party code into the
+main webview.
 
 **Exit gate:** Browser/runtime tests demonstrate that plugin code cannot access
 the host DOM, Tauri APIs, local files, environment, processes, or undeclared
@@ -602,10 +633,11 @@ restores the previous active code and a usable project state.
 
 ### Phase 7: Public SDK and author tooling
 
-Publish compiled SDK artifacts and declarations. Add a packaging/validation CLI,
-fake host, conformance suite, example declarative plugin, example sandboxed UI
-plugin, example WASM service plugin, compatibility documentation, and migration
-authoring tools.
+Publish compiled SDK artifacts and declarations. The in-repo
+`plugin-sdk`, `plugin-cli`, `plugin-test-host`, `examples/plugins`, and
+`PLUGIN_SDK.md` already exist; this phase closes the public-author gate:
+packages published outside the monorepo, and a plugin authored with only
+those tools.
 
 **Exit gate:** A plugin can be authored outside the monorepo, validated, tested,
 packaged, installed, enabled, upgraded, rolled back, and uninstalled using only
@@ -653,8 +685,11 @@ The following features are deferred, with their default behavior decided now:
 
 - **Marketplace:** deferred; local verified packages work without it.
 - **Cloud execution or sync:** deferred; plugins are local and project-scoped.
-- **Arbitrary internet access:** deferred; denied. Later access is HTTPS,
-  origin-scoped, brokered, rate-limited, and separately granted.
+- **Arbitrary internet access:** deferred; denied. Later access is the
+  `network:<origin>` capability: HTTPS, origin-scoped, brokered, rate-limited,
+  and separately granted.
+- **Clipboard:** deferred; denied by default. Later access is `clipboard.read`
+  / `clipboard.write` with host policy.
 - **Native extension ABI:** deferred; unsupported packages are rejected.
 - **Multiple providers for one service:** deferred; exactly one active provider
   per service major version.
@@ -673,25 +708,6 @@ The following features are deferred, with their default behavior decided now:
 No unresolved architectural choice above is required to begin implementation.
 Any future change to identity, isolation, authority, package integrity, data
 ownership, or interaction semantics requires a new ADR and compatibility plan.
-
-## Immediate next work
-
-Begin with Phase 0 only. Produce, review, and approve these artifacts before
-refactoring implementation code:
-
-1. `schemas/plugin-manifest-v1.json`;
-2. `schemas/plugin-rpc-v1.json` and the common error envelope;
-3. the capability registry with request/resource mappings;
-4. Rust contract types in the proposed `daena-plugin-api` crate;
-5. generated JSON Schemas and TypeScript SDK types (generated from the Rust
-   contract types by `npm run gen:plugin-contract`, not hand-written);
-6. canonical Lore and Timeline manifests; and
-7. the accepted plugin-platform boundary in
-   [ADR 0001](adr/0001-plugin-platform-boundary.md).
-
-Implementation should then follow the phase gates in order. In particular,
-installer UI or marketplace work must not jump ahead of backend identity,
-authorization, bundled-plugin conversion, and runtime isolation.
 
 ## Contract reconciliation and generation record
 

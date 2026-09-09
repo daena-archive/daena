@@ -1,8 +1,7 @@
-//! Host-owned Phase 2 plugin authority.
+//! Host-owned plugin catalog, grants, sessions, authorization, and runtimes.
 //!
-//! This crate deliberately contains no Tauri or runtime implementation.  It
-//! owns the facts needed to attribute and authorize a plugin request before a
-//! future core service is called.
+//! This crate has no Tauri dependency. Authorization lives here;
+//! method dispatch to `daena-core` lives in the Tauri adapter.
 
 use daena_plugin_api::{
     command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
@@ -94,8 +93,8 @@ pub struct PluginCatalog {
 }
 
 impl PluginCatalog {
-    /// Development-directory installation is intentionally the only package
-    /// input in Phase 2. ZIP extraction and signatures belong to Phase 6.
+    /// Install from a verified development directory. Packaged `.wbplugin`
+    /// archives use `PluginHost::install_package`.
     pub fn install_development_dir(
         &mut self,
         root: impl AsRef<Path>,

@@ -331,9 +331,9 @@ AiCaller
 ```
 
 This descriptor is internal and cannot be supplied by plugin payloads. For a
-plugin request it is derived after the checks currently performed by
-`plugin_rpc` (`src-tauri/src/lib.rs:2026-2149`). The retrieval layer receives a
-resolved access policy, not merely `AuthorityContext::plugin()`.
+plugin request it is derived after `PluginHost::authorize_rpc` on the
+same-origin `/__rpc` path. The retrieval layer receives a resolved access
+policy, not merely `AuthorityContext::plugin()`.
 
 Project close, plugin disable/revocation, provider removal, user cancellation,
 and deadline expiry cancel in-flight work and discard late events.

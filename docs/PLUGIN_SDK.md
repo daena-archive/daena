@@ -135,7 +135,8 @@ rejected.
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": []
+  "migrations": [],
+  "themes": []
 }
 ```
 
@@ -149,8 +150,10 @@ Important rules:
 - `kind` is `declarative` or `sandboxed`.
 - Every namespace has exactly one owning plugin. Schema and migration
   namespaces must be listed in `namespaces`.
-- IDs for templates, views, commands, services, events, and migrations must
-  be unique within the package.
+- IDs for templates, views, commands, services, events, migrations, and
+  theme packs must be unique within the package.
+- `themes` is optional and defaults to empty. It is a minor host API field on
+  manifest v1, not a new kind or manifest version.
 - A package digest covers the manifest and every packaged file. Enabled state
   and grants are host/project state, not manifest state.
 
@@ -262,6 +265,51 @@ management surface for installation, consent, upgrades, rollback, and
 disablement. Built-in Lore, Timeline, and Writing navigation is also host-owned,
 so it is not duplicated by empty module manifests.
 
+### Theme packs
+
+A theme pack is JSON in the manifest. The host validates, merges, and paints
+it. Plugins do not ship CSS, fonts, or images for host chrome, and they do not
+execute code to compute a theme. A pack-only plugin may be `kind: "declarative"`
+with empty entrypoints and empty capabilities.
+
+```json
+{
+  "themes": [
+    {
+      "id": "parchment",
+      "name": "Parchment",
+      "tokens": {
+        "light": { "accent": "#b4773f", "canvas": "#f7f6f2" },
+        "dark": { "accent": "#c58a4a", "canvas": "#0e1714" }
+      }
+    }
+  ]
+}
+```
+
+Rules:
+
+- `id` is unique within the package; the globally addressable id is
+  `pluginId/themeId`.
+- `name` is 1–128 characters and is host-rendered.
+- `tokens.light` and `tokens.dark` are both required when `themes` is
+  non-empty. Each map may omit keys. The host fills missing keys from the
+  builtin map for that mode, then contrast-checks the merge.
+- Token names are the closed catalog `THEME_TOKEN_IDS` (CSS variable names
+  without the `--` prefix). Unknown keys are rejected.
+- Values are parsed colors only: `#rgb`, `#rrggbb`, `#rrggbbaa`. No raw CSS,
+  `url()`, fonts, or shadows-as-css.
+- Merged contrast floors: `ink` / `surface` and `ink` / `canvas` at 4.5;
+  `rail-text` / `rail-bg` at 3.0. Non-opaque eight-digit hex fails contrast.
+
+Installation catalogs packs; it does not auto-apply. The user picks a pack in
+Settings. Packs follow **installation**, not project enablement, so they work
+with no project open. If the selected pack is missing or fails validation, the
+host keeps builtin tokens applied until the user picks Default or a live pack.
+
+See [ADR 0007](adr/0007-plugin-theme-packs.md). The example pack-only plugin is
+[`examples/plugins/theme`](../examples/plugins/theme).
+
 ## 6. Capabilities and broker access
 
 Capabilities are deny-by-default. A manifest requests them; the user/project
@@ -287,7 +335,8 @@ the broker permits the operation.
 
 There is no generic `filesystem`, `shell`, `process`, `dialog`, `tauri`, or
 unrestricted `network` capability. Plugins never receive arbitrary local
-paths.
+paths. Appearance is ambient chrome, not a capability; do not request a grant
+to read the resolved theme.
 
 Set `shared: true` on an owned schema field to export it read-only to other
 plugins. A reader still needs `field.read:shared`; the owning plugin retains
@@ -340,12 +389,22 @@ payloads, and turns broker failures into `PluginRpcException`. Tests may inject
 replace the transport with a caller-selected identity or a Tauri command.
 
 The bootstrap response contains the host-assigned plugin ID, session, project,
-version, API range, grants, and optional features. Do not invent identity or
+version, API range, grants, optional features, and appearance (preference,
+resolved mode, pack ref, complete merged tokens). Do not invent identity or
 call Tauri commands directly.
 
+When `optionalFeatures` includes `appearance@1`, a sandboxed UI may read
+`bootstrap.appearance` or call `client.getAppearance()`. The SDK applies
+bootstrap tokens to the plugin document and listens for host appearance
+pushes. Probe with `hostHasFeature(features, APPEARANCE_FEATURE)`; do not
+infer support from application version. This is not `event.subscribe` and does
+not require a grant. Wasm and service sessions have no document: poll
+`appearance.get`. Plugin webviews may use the same token names in their own
+CSS; they still cannot reach the host DOM.
+
 The client exposes typed convenience methods for entity list/create/update/
-delete, event publish/subscribe/poll, and service calls. Use `client.call`
-only for a method explicitly documented by the RPC contract.
+delete, appearance, event publish/subscribe/poll, and service calls. Use
+`client.call` only for a method explicitly documented by the RPC contract.
 
 Wasm entrypoints must be compiled binary Wasm and export the host-required
 `run` function. They must not import WASI, environment, filesystem, network,
@@ -510,6 +569,8 @@ Before publishing a plugin, verify:
   cases;
 - every namespace, schema, template, relationship, service, event, and
   migration is owned and declared;
+- every theme pack uses catalog token ids, parsed colors, unique ids, and
+  merged contrast that `daena-plugin validate` accepts;
 - UI code uses only the broker transport and never imports Tauri APIs;
 - Wasm is binary, exports `run`, and has no ambient imports;
 - migrations are contiguous and tested against backup/rollback behavior;
@@ -530,12 +591,16 @@ machine-readable or architectural contract it summarizes:
 - [`crates/daena-plugin-api/src/catalog.rs`](../crates/daena-plugin-api/src/catalog.rs)
   — the RPC method catalog: methods, payload shapes, revision and capability
   requirements.
+- [`crates/daena-plugin-api/src/theme.rs`](../crates/daena-plugin-api/src/theme.rs)
+  — token catalog, builtin maps, merge, contrast, and pack validation.
 - [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json)
 - [`schemas/plugin-rpc-v1.json`](../schemas/plugin-rpc-v1.json)
 - [`schemas/plugin-error-v1.json`](../schemas/plugin-error-v1.json)
 - [`schemas/capability-registry-v1.json`](../schemas/capability-registry-v1.json)
+- [`schemas/theme-tokens-v1.json`](../schemas/theme-tokens-v1.json)
   — the JSON Schemas are generated from the Rust types by
   `npm run gen:plugin-contract`; do not hand-edit them.
+- [`adr/0007-plugin-theme-packs.md`](adr/0007-plugin-theme-packs.md)
 - [`packages/plugin-sdk/src/generated.ts`](../packages/plugin-sdk/src/generated.ts)
   — the TypeScript contract types, generated from the schemas.
 - [`packages/plugin-sdk/src/index.ts`](../packages/plugin-sdk/src/index.ts) —

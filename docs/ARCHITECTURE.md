@@ -223,7 +223,9 @@ not part of the plugin broker.
 Bundled modules and runtime plugins use the same manifest, SDK, lifecycle, and
 broker-backed public contract. A manifest declares identity, version, kind,
 capabilities, schemas, templates, views, commands, dependencies, namespaces,
-and migrations. The Rust plugin API is the source for generated JSON Schemas,
+migrations, and optional theme packs. Theme packs are host-painted token maps
+([ADR 0007](./adr/0007-plugin-theme-packs.md)); plugin CSS never enters the
+host document. The Rust plugin API is the source for generated JSON Schemas,
 TypeScript declarations, and contract fixtures.
 
 ### Schema overlays and Fields & Types

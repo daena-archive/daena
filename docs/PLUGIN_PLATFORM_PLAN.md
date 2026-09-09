@@ -39,9 +39,9 @@ The target platform has one non-negotiable rule:
 
 Daena Archive will support three extension classes:
 
-1. **Declarative plugins** contribute schemas, templates, commands, menus, and
-   projections expressed as data. They contain no executable plugin code and
-   are the preferred extension type.
+1. **Declarative plugins** contribute schemas, templates, commands, menus,
+   projections, and theme packs expressed as data. They contain no executable
+   plugin code and are the preferred extension type.
 2. **Sandboxed plugins** contain a UI bundle and, optionally, a background WASM
    component. Their only access to Daena Archive is a versioned, brokered API.
 3. **Trusted native extensions** may be considered later for functionality that
@@ -189,7 +189,8 @@ The initial manifest contains:
   "commands": [],
   "services": { "provides": [], "consumes": [] },
   "events": { "publishes": [], "subscribes": [] },
-  "migrations": []
+  "migrations": [],
+  "themes": []
 }
 ```
 
@@ -198,12 +199,13 @@ Rules:
 - IDs are lowercase reverse-domain identifiers and are immutable.
 - Semantic Versioning is used for plugin and host API versions.
 - Entrypoints are package-relative paths and cannot escape the package root.
-- Namespace, service, event, view, command, and migration identifiers are
-  unique within the package; globally addressable identifiers are prefixed by
-  the plugin ID.
-- Unknown manifest keys are rejected for manifest version 1. Future optional
-  features arrive through a new manifest version or explicitly versioned
-  extension blocks.
+- Namespace, service, event, view, command, migration, and theme-pack
+  identifiers are unique within the package; globally addressable identifiers
+  are prefixed by the plugin ID.
+- Unknown manifest keys are rejected for manifest version 1. Minor host API
+  releases may add optional defaulted fields (`records`, `themes`); they do
+  not require a new manifest version or a versioned extension block. Removing
+  or renaming a field is major.
 - A view may declare `renderer` as `declarative`, `sandboxed`, or a versioned
   `host-surface` such as `{ "type": "host-surface", "id": "daena.maps/editor", "major": 1 }`.
   Host surfaces require the matching `host.surface:<id>@<major>` capability;
@@ -403,7 +405,8 @@ The public host API follows Semantic Versioning:
 
 The manifest declares a supported host API range. Installation rejects an empty
 intersection with the current host. A plugin may probe optional features using
-SDK feature discovery; it must not infer support from application version.
+SDK feature discovery (`appearance@1` for resolved appearance); it must not
+infer support from application version.
 
 RPC methods and data structures are explicitly versioned. Unknown methods and
 fields fail closed unless that schema marks them extensible. Deprecated APIs
@@ -452,7 +455,28 @@ The application provides a plugin administration surface showing:
 
 Capability changes on upgrade require renewed consent. Non-sensitive additive
 changes such as new views do not. A plugin cannot draw or phrase the host-owned
-permission dialog.
+permission dialog. Theme-pack selection lives in Settings Appearance; a plugin
+cannot draw or auto-apply that choice.
+
+### 13. Theme packs
+
+Theme packs are host-painted JSON overlays. See
+[ADR 0007](adr/0007-plugin-theme-packs.md).
+
+- A pack is presentation, not project data. It needs no namespace, capability
+  grant, or project enablement. Availability follows **installation**.
+- Mode stays `appearance.theme`. The active pack is `appearance.themePack`.
+  Builtin Warm paper / Forest night is host chrome, not a plugin.
+- Exactly one pack is active. Token maps may be sparse; the host fills from
+  the builtin map for the resolved mode and contrast-checks the merge.
+- Rust owns `THEME_TOKEN_IDS` and the builtin maps. Values are parsed colors
+  (`#rgb`, `#rrggbb`, `#rrggbbaa`) only. Adding a token is minor; removing or
+  renaming one is major.
+- Sandboxed sessions read appearance without a grant: bootstrap `appearance`,
+  RPC `appearance.get` (`Static([])`), and a host-owned push into `plugin:`
+  webviews. Wasm sessions poll `appearance.get`. This is not `event.subscribe`.
+- Failures fail closed: the package does not install, or builtin tokens stay
+  applied. Plugin CSS never enters the host document.
 
 ## Required code structure
 
@@ -641,6 +665,10 @@ The following features are deferred, with their default behavior decided now:
   explicit non-interactive grants.
 - **Mobile/web plugin runtime:** deferred; the manifest may later declare target
   compatibility, but version 1 targets the desktop host only.
+- **Theme fonts, images, radii, spacing, or motion tokens:** deferred; v1 packs
+  are parsed colors on the closed catalog only.
+- **Stacked or per-project theme packs:** deferred; one install-scoped pack.
+- **Auto-apply a pack on install:** deferred and disallowed.
 
 No unresolved architectural choice above is required to begin implementation.
 Any future change to identity, isolation, authority, package integrity, data
@@ -681,9 +709,10 @@ from one source:
 | Representation | Location | Role |
 | -------------- | -------- | ---- |
 | Rust contract types + `validate_manifest` | `crates/daena-plugin-api/src/lib.rs` | Single source of truth |
+| Theme catalog, merge, contrast | `crates/daena-plugin-api/src/theme.rs` | Token ids, builtin maps, pack validation |
 | RPC payload/envelope types | `crates/daena-plugin-api/src/rpc.rs` | Pins exact wire names |
 | RPC method catalog | `crates/daena-plugin-api/src/catalog.rs` | Methods, payload, revision, capability |
-| JSON schemas | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json` | Generated build artifacts |
+| JSON schemas | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json`, `schemas/theme-tokens-v1.json` | Generated build artifacts |
 | TypeScript contract types | `packages/plugin-sdk/src/generated.ts` | Generated build artifact |
 | TS rule validator | `packages/plugin-sdk/src/index.ts` (`validatePluginManifest`) | Mirror of Rust rules, conformance-tested |
 
@@ -710,6 +739,7 @@ maps.recovery.list  maps.recovery.restore
 maps.locations.list  maps.reconcile.links
 event.publish  event.subscribe  event.poll
 service.call
+appearance.get
 ```
 
 ### Resolved contract decisions
@@ -738,6 +768,11 @@ service.call
   (`source_id`, `expectedRevision`, `mapEntityId`, `fileName`). The Rust payload
   structs in `rpc.rs` pin these exact wire names through serde renames, so
   `generated.ts` matches what the host actually sends.
+- **`themes` is an optional defaulted manifest v1 field.** Same pattern as
+  `records`. Pack-only plugins may be `kind: "declarative"` with empty
+  entrypoints. Token catalog and builtin maps are generated into
+  `schemas/theme-tokens-v1.json` and `THEME_TOKEN_IDS` /
+  `BUILTIN_THEME_TOKENS` in `generated.ts`.
 
 ### Validation parity
 
@@ -764,9 +799,9 @@ rule:
 
 - `npm run gen:plugin-contract` runs the `gen-contract` bin
   (`crates/daena-plugin-api/src/bin/gen-contract.rs`, `--features gen`) to
-  emit the four schemas, then converts them to
-  `packages/plugin-sdk/src/generated.ts`. The SDK `dist` is rebuilt with
-  `npm run build:plugin-sdk`.
+  emit the schemas (manifest, RPC, error, capability registry, theme tokens),
+  then converts them to `packages/plugin-sdk/src/generated.ts`. The SDK `dist`
+  is rebuilt with `npm run build:plugin-sdk`.
 - `npm run check:plugin-contract` (in `npm run check`) regenerates everything
   into a temp directory and byte-diffs the committed schemas, `generated.ts`,
   and `dist/generated.*` against the fresh output. Any contract change that is

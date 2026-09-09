@@ -58,6 +58,8 @@ privileged plugins.
   cycle protection.
 - The public SDK remains framework-neutral; Svelte is an implementation choice
   for Daena's own UI.
+- Host chrome contributed by plugins is host-painted declarative data; see
+  [ADR 0007](./0007-plugin-theme-packs.md).
 
 ## Decision history
 

@@ -41,20 +41,29 @@ Inside this repository, use the checked-in CLI wrapper:
 node scripts/plugin-cli.mjs --help
 ```
 
-After the packages are published, install the CLI and SDK in an external
-plugin project:
+To author a plugin outside this repository, pack the public packages from a
+Daena Archive checkout (they are not yet published to npm):
 
 ```sh
-npm install --save-dev @daena-archive/plugin-cli
-npm install @daena-archive/plugin-sdk
-npm install --save-dev @daena-archive/plugin-test-host
+npm run build:plugin-sdk
+npm pack -w @daena-archive/plugin-sdk
+npm pack -w @daena-archive/plugin-cli
+npm pack -w @daena-archive/plugin-test-host
 ```
 
-Then invoke the CLI as:
+In the plugin project, install the tarballs (exact filenames include the
+version):
 
 ```sh
+npm install ./daena-archive-plugin-sdk-0.1.0.tgz
+npm install --save-dev ./daena-archive-plugin-cli-0.1.0.tgz
+npm install --save-dev ./daena-archive-plugin-test-host-0.1.0.tgz
 npx daena-plugin --help
 ```
+
+After the packages are published to npm, the same tools install as
+`@daena-archive/plugin-sdk`, `@daena-archive/plugin-cli`, and
+`@daena-archive/plugin-test-host`.
 
 The repository's build and verification commands are:
 

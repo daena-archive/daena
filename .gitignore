@@ -13,3 +13,4 @@ vite.config.ts.timestamp-*
 target/
 crates/**/target/
 schemas/fixtures/manifest/
+packages/plugin-cli/schema/

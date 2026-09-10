@@ -1514,16 +1514,16 @@ derive_winds               (internal P_base + thermal/elevation anomaly; closed-
         ↓
 derive_currents            (wind, rotation, SST gradient, gyres)
         ↓
-derive_moisture_fields     (saturation-limited C, orographic V·∇h cooling of q_sat, leftover convergence; land E from RH/wind)
+derive_moisture_fields     (saturation-limited C, orographic V·∇h cooling of q_sat, leftover convergence; land E from W)
         ↓
-runoff_fields              (diagnostic land runoff)
+runoff_fields              (diagnostic land runoff; hydrology input)
         ↓
 classify_biomes
         ↓
 derive_storms              (threshold climatology)
 ```
 
-Stages 1–4 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, and the leftover orographic rain fraction. Pressure stays internal scratch. Surface water does not re-evaporate. Ocean currents do not move heat.
+Stages 1–5 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, the leftover orographic rain fraction, and `LAND_MOISTURE_RECYCLE`. Pressure stays internal scratch. Ocean currents do not move heat.
 
 ## Current baseline — already shipped
 
@@ -1538,10 +1538,10 @@ Treat the following as the starting surface, not as work to reimplement.
 | Ocean moderation        | Distance-to-ocean `maritime_factor`                                                                                                                  | Proxy for heat capacity. Not `C_o ≫ C_land`.                                                   |
 | Circulation             | `derive_winds` / `circulation_flow`: Hadley / Ferrel / Polar from thermal equator; `omega_ratio`; seeded meanders; land roughness; mountain blocking | Coherent prevailing winds without pressure.                                                    |
 | Moisture transport      | `transport_moisture`: iterative upwind until `Δ ≤ 1 mm`                                                                                              | The only iterated field.                                                                       |
-| Evaporation             | `ocean_evaporation_mm` (SST + current speed); land recycle `0.40` if `T > 0`                                                                         | Ocean source exists. Not RH- or wind-limited bulk evaporation.                                 |
+| Evaporation             | `ocean_evaporation_mm` (SST + current speed); land E from RH/wind/`T` limited by internal `W`                                                        | Dry land does not emit ocean-like moisture.                                                    |
 | Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / q_sat` (0–1e6)                                                                                      | Product RH. Rain is condensed excess vapor plus leftover convergence.                          |
 | Orography / rain shadow | `q_sat = saturation(T − K_U U_oro)`, `U_oro = max(0, V · ∇h)`; `orographic_precipitation_ppm` is artistic `K_U`                                      | `T_effective` is saturation-only. Lapse still cools product T.                                 |
-| Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic. No surface-water state.                                                            |
+| Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic hydrology input. Climate `W` is internal `max(0, W + R − E − runoff)`.              |
 | Seasons                 | NH summer / winter T, wind, precipitation                                                                                                            | Two snapshots, not an orbital loop.                                                            |
 | Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy, Sverdrup, western boundary                                                              | 2D surface gyres. Currents raise evaporation only.                                             |
 | Biomes                  | `classify_biome_cell` from T, precipitation, humidity, aridity, elevation                                                                            | Already downstream of climate.                                                                 |
@@ -1568,7 +1568,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stages 5–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 is open. Stages 6–8 are closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1679,7 +1679,7 @@ reuse orographic_precipitation_ppm as artistic K_U
 
 ## Stage 5 — Water feedback
 
-Closed. Rain (including orographic) is the water source.
+Rain (including orographic) is the water source.
 
 Do not create a second hydrology. Rivers, lakes, and drainage stay `hydrology.rs`. Climate `W` is an evaporative store that replaces `LAND_MOISTURE_RECYCLE`.
 
@@ -1694,9 +1694,11 @@ runoff_fields remains the hydrology input
 
 Keep `W` internal unless inspect needs it. `runoff_mm_per_year` stays land-only.
 
-**Not this stage:** orbital-year loop, ocean-temperature tracer.
+`W` is an annual bucket, not a hydrology river. Land E is `E_potential · W / (W + E_potential)` (half-saturation is `E_potential`; not a planetary slider). The Jacobi updates `W` from the same relaxed `R` and `E` it stores. After `q` converges at 1 mm, precipitation is smoothed, then `W` is closed once from that smoothed `R` and `E` so the bucket’s runoff term uses the same rain `runoff_fields` publishes. Frozen land (`T ≤ 0`) and ocean keep `W = 0`. Inner residual stays `q`. Annual / solstice passes each start `W = 0`; carrying `W` is Stage 6. Wide interiors can drop to 0 rain; that is accepted here and is not retuned via a land-ocean recycle. Inland rivers then see that rain through hydrology’s climate runoff input.
 
-**Done when:** `climate_is_deterministic_and_runoff_is_land_only`; wet cells keep evaporative supply after rain; dry interiors do not emit ocean-like moisture; `W >= 0`; hydrology still consumes climate runoff.
+**Not this stage:** orbital-year loop, ocean-temperature tracer, carried seasonal `W`.
+
+**Done when:** `climate_is_deterministic_and_runoff_is_land_only`; wet cells keep evaporative supply after rain; dry interiors do not emit ocean-like moisture; `W >= 0`; frozen land stores no `W`; hydrology still consumes climate runoff.
 
 ## Stage 6 — Seasonal loop
 

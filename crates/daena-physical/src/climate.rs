@@ -23,6 +23,10 @@
 //! vertical shear. Drought, heat-wave, and extreme-rainfall potentials are
 //! statistics of the Stage 6 seasonal fields, not new prognostic state.
 
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
     ProgressPhase, ProgressSink, SeedDomain,
@@ -1718,8 +1722,6 @@ fn product_moisture(
         precipitation_winter,
         humidity_ppm,
         aridity_ppm,
-        condensation_mm: annual.condensation_mm,
-        evaporation_mm: annual.evaporation_mm,
         iterations,
     })
 }
@@ -1792,8 +1794,6 @@ fn couple_moisture_and_latent(
     let mut winter_surface = climate.temperature_centi_c.clone();
     let mut transport_iterations = 0u32;
     let basin = ocean_mask(field);
-    let mut current_east = climate.current_east_milli.clone();
-    let mut current_north = climate.current_north_milli.clone();
     for year in 0..settings.seasonal_year_max {
         progress.check_cancelled()?;
         for nh_summer in seasons {
@@ -1824,7 +1824,7 @@ fn couple_moisture_and_latent(
             );
             let divergence = wind_divergence_ppm(field.grid, &east, &north);
             let band = wind_band_field(field.grid, itcz, hadley, ferrel);
-            (current_east, current_north) =
+            let (current_east, current_north) =
                 derive_currents(field, settings.planetary, &surface, &east, &north);
             if settings.ocean_heat_active() {
                 let mut ocean_heat = OceanHeat {
@@ -2453,7 +2453,6 @@ struct DerivedWinds {
     band: Vec<u32>,
     band_summer: Vec<u32>,
     band_winter: Vec<u32>,
-    itcz_latitude: f64,
 }
 
 fn derive_winds(
@@ -2514,7 +2513,6 @@ fn derive_winds(
         band,
         band_summer,
         band_winter,
-        itcz_latitude: itcz,
     }
 }
 
@@ -2739,8 +2737,6 @@ struct MoistureBundle {
     precipitation_winter: Vec<u32>,
     humidity_ppm: Vec<u32>,
     aridity_ppm: Vec<u32>,
-    condensation_mm: Vec<f64>,
-    evaporation_mm: Vec<f64>,
     iterations: u32,
 }
 
@@ -3870,6 +3866,7 @@ fn land_distance_cells(field: &PhysicalField) -> Vec<u16> {
     distance
 }
 
+#[cfg(test)]
 fn classify_storm_cell(
     ocean: bool,
     sst_centi_c: i32,

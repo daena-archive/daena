@@ -387,6 +387,7 @@ pub fn derive_historical_world_from_static(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn derive_historical_world_with_cache(
     field: &PhysicalField,
     static_physics: Option<&StaticDerivedPhysics>,

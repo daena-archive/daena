@@ -246,6 +246,7 @@ struct Path {
     cells: Vec<usize>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dijkstra(
     hydrology: &HydrologyField,
     climate: Option<&ClimateField>,
@@ -858,7 +859,7 @@ mod tests {
         let result = suggest_routes(&hydrology, None, &query_cells(grid, (3, 1), (3, 15))).unwrap();
         let shortest = strategy(&result, ROUTE_STRATEGY_SHORTEST);
         assert!(shortest.cell_count <= 4);
-        assert!(shortest.coordinates.len() >= 1);
+        assert!(!shortest.coordinates.is_empty());
     }
 
     #[test]

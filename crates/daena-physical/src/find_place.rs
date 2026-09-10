@@ -298,6 +298,7 @@ pub struct FindPlaceResult {
     pub candidates: Vec<FindPlaceCandidate>,
 }
 
+#[allow(clippy::needless_range_loop)]
 pub fn find_place(
     climate: &ClimateField,
     hydrology: &HydrologyField,
@@ -391,6 +392,7 @@ pub fn find_place(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cell_matches(
     grid: Grid,
     climate: &ClimateField,
@@ -501,6 +503,7 @@ fn cell_matches(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn summarize_candidate(
     grid: Grid,
     climate: &ClimateField,
@@ -797,13 +800,8 @@ fn fit_i32(value: i32, min: Option<i32>, max: Option<i32>) -> u32 {
                 1_000_000
             }
         }
-        (None, Some(hi)) => {
-            if value > hi {
-                250_000
-            } else {
-                1_000_000
-            }
-        }
+        (None, Some(hi)) if value > hi => 250_000,
+        (None, Some(_)) => 1_000_000,
         _ => 1_000_000,
     }
 }

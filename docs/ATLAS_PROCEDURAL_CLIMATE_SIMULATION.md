@@ -965,6 +965,8 @@ Explicit three-dimensional ocean circulation is unnecessary.
 
 A simple horizontal diffusion/advection system is sufficient.
 
+Live Stage 7 does not add `Q_oceanTransport` inside `relax_temperature`. Folding the tracer into the 768-iteration energy residual overwrites latent heat. The live term is a mixed-layer tracer along `derive_currents`, then a diagnostic imprint onto product T.
+
 ---
 
 # 26. Ocean Currents
@@ -1001,6 +1003,8 @@ Q_{ocean}
 The exact ocean dynamics are not essential.
 
 What matters is that large bodies of water redistribute heat.
+
+Live Stage 7 realizes `Q_ocean` as flux-form advection of internal `T_ocean` (land faces no-flux). That divergence is not inserted as an energy residual; product T copies the mixed layer onto ocean cells and blends one land cell inland.
 
 ---
 
@@ -1475,6 +1479,9 @@ condensation rate
 orographic uplift coefficient
 latent heat coefficient
 ocean thermal capacity
+ocean heat coupling
+ocean mixed-layer diffusivity
+ocean heat advection
 ```
 
 ## Artistic tuning
@@ -1488,6 +1495,7 @@ rain-shadow strength
 storm frequency
 wind strength
 ocean moderation
+coastal ocean-heat blend
 seasonal intensity
 ```
 
@@ -1512,7 +1520,7 @@ temperature_field          (energy-balance T, ice albedo, diffusion, flux-form h
         ↓
 derive_winds               (internal P_base + thermal/elevation anomaly; closed-form geostrophic–drag V)
         ↓
-derive_currents            (wind, rotation, SST gradient, gyres)
+derive_currents            (wind, rotation, SST gradient, gyres; internal T_ocean advected along them)
         ↓
 derive_moisture_fields     (saturation-limited C, orographic V·∇h cooling of q_sat, leftover convergence; land E from W)
         ↓
@@ -1523,7 +1531,7 @@ classify_biomes
 derive_storms              (threshold climatology)
 ```
 
-Stages 1–5 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, the leftover orographic rain fraction, and `LAND_MOISTURE_RECYCLE`. Pressure stays internal scratch. Ocean currents do not move heat.
+Stages 1–5 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, the leftover orographic rain fraction, and `LAND_MOISTURE_RECYCLE`. Pressure stays internal scratch. Stage 7 advects an internal ocean-temperature tracer along `derive_currents` and imprints it onto product T.
 
 ## Current baseline — already shipped
 
@@ -1543,7 +1551,7 @@ Treat the following as the starting surface, not as work to reimplement.
 | Orography / rain shadow | `q_sat = saturation(T − K_U U_oro)`, `U_oro = max(0, V · ∇h)`; `orographic_precipitation_ppm` is artistic `K_U`                                      | `T_effective` is saturation-only. Lapse still cools product T.                                 |
 | Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic hydrology input. Climate `W` is internal `max(0, W + R − E − runoff)`.              |
 | Seasons                 | Two-solstice year loop; product NH summer / winter T, wind, precipitation                                                                            | Annual T remains spin-up + latent; solstice T is that annual plus loop anomaly.                |
-| Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy, Sverdrup, western boundary                                                              | 2D surface gyres. Currents raise evaporation only.                                             |
+| Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy on air T, Sverdrup, western boundary                                                      | 2D surface gyres. Internal mixed-layer T is advected along currents and imprinted onto product T. |
 | Biomes                  | `classify_biome_cell` from T, precipitation, humidity, aridity, elevation                                                                            | Already downstream of climate.                                                                 |
 | Storms                  | `derive_storms`: SST, humidity, Coriolis, solstice shear, fetch, tracks                                                                              | Already a derived event field.                                                                 |
 
@@ -1568,7 +1576,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 shipped. Stage 6 is open. Stages 7–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 shipped. Stage 6 shipped. Stage 7 shipped. Stage 8 is closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1727,23 +1735,24 @@ Two solstice samples (`δ = ±ε`). `λ` is those solstices. Perihelion longitud
 
 ## Stage 7 — Ocean heat transport
 
-Closed until Stage 6 is done so seasonal ocean lag is meaningful.
-
 Do not rebuild gyres. Use `derive_currents` as-is.
 
 **In this stage**
 
 ```text
 ocean-temperature tracer advected / diffused along existing currents
-that flux enters the Stage 1 energy step
-geostrophy may read ocean T instead of air T
+land faces of that tracer are no-flux
+mixed layer imprinted onto product T after latent coupling
+geostrophy still reads air T
 ```
 
 Keep ocean T internal unless inspect needs it. Currents stay zero on land and in inland sinks.
 
+An internal mixed-layer tracer `T_ocean` is initialized from the energy T on `ocean_mask` basins, carried from annual T/V into the year loop, and advected/diffused along existing gyres (land faces are no-flux), nudged toward air T by `K = ocean_heat_coupling_milli_wm2_per_c` (default 12 W m⁻² K⁻¹). Diffusivity and advection scales are `ocean_heat_diffusivity_ppm` and `ocean_heat_advection_ppm`. After latent coupling, product T imprints that mixed layer onto ocean cells and a one-cell coastal blend (`ocean_coast_blend_ppm`, artistic), so a western-boundary coast warms because heat was carried, not because `maritime_factor` was blended. The imprint is a diagnostic overwrite, not a conservative flux into the energy residual. `K = 0` skips the tracer and the imprint. Seasons carry `T_ocean` with one mixed-layer step; they do not re-relax T against SST. Year-to-year Δ includes basin `|ΔT_ocean|` with the same 2 °C bound as air. `derive_currents` stays as-is (geostrophy still reads air T). Putting the tracer inside the 768-iteration energy relax overwrites latent heat, so the flux enters the product by imprint rather than by re-solving Stage 1. `with_winds_and_moisture_for_field` does not re-run the tracer or recouple T.
+
 **Not this stage:** storm retune, new current solver.
 
-**Done when:** `western_boundary_current_is_stronger_than_the_basin_interior`; `ocean_currents_are_zero_on_land`; `enclosed_seas_get_wind_driven_currents`; a western-boundary coast is warmer than the opposite coast at similar latitude because heat was carried, not because `maritime_factor` was blended.
+**Done when:** `western_boundary_current_is_stronger_than_the_basin_interior`; `ocean_currents_are_zero_on_land`; `enclosed_seas_get_wind_driven_currents`; `western_boundary_coast_is_warmer_than_the_opposite_coast` (east coast of a north–south continent warmer than the west coast at the same latitude; the contrast shrinks when `K = 0`; equal `maritime_factor_ppm` on both coasts).
 
 ## Stage 8 — Storms and extremes
 
@@ -1774,6 +1783,7 @@ Do not run daily weather across history. Materialized storms stay authored sampl
 | Two water authorities               | Climate `W` ≠ hydrology lakes/rivers                                                                           |
 | Schema                              | `empty_climate` / both `synthetic_climate` helpers / `encode_climate` stay in lockstep if `ClimateField` grows |
 | Restamp                             | `with_winds_and_moisture_for_field` restamps V/q from the caller T via `derive_winds` + `product_moisture`. It must not re-run the year loop or recouple T. Epoch offsets apply after derivation. |
+| Ocean tracer in energy relax        | Do not fold `T_ocean` into the 768-iteration Stage 1 relax; that overwrites latent heat. Advect the tracer, then imprint onto product T. |
 
 ---
 

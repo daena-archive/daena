@@ -8,8 +8,8 @@
 //! so `C_ocean ≫ C_land` lags the ocean; `maritime_factor` stays a distance diagnostic;
 //! a pressure-driven wind field with Coriolis and drag; seeded
 //! wind meanders stay a capped product perturbation and do not source T; a wind-driven
-//! surface-ocean current
-//! field; moisture transport driven by those winds with sea-surface and current
+//! surface-ocean current field whose mixed-layer tracer is imprinted onto product T;
+//! moisture transport driven by those winds with sea-surface and current
 //! evaporation; saturation-limited condensation rain with orographic `V·∇h`
 //! cooling of `q_sat` and leftover convergence; land evaporation from an internal
 //! surface-water store `W`; humidity as remaining moisture over local
@@ -30,7 +30,7 @@ use crate::planetary::{
     EARTH_RETAINED_HEAT_CENTI_C, EARTH_ROTATION_PERIOD_SECONDS, SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 8;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 9;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -103,6 +103,7 @@ const CLIMATE_MIN_YEARS: u32 = 2;
 const YEAR_T_TOLERANCE_C: f64 = 2.0;
 const SEASON_SAMPLE_COUNT: f64 = 2.0;
 const SEASONAL_INSOLATION_ANOMALY: f64 = 0.35;
+
 const LATENT_HEAT_J_PER_KG: f64 = 2.5e6;
 const CLIMATE_SECONDS_PER_YEAR: f64 = 31_557_600.0;
 const SATURATION_MOISTURE_PER_HPA: f64 = 90.0;
@@ -149,6 +150,10 @@ pub struct ClimateSettings {
     pub drag_ocean_micro: u32,
     pub drag_land_micro: u32,
     pub heat_advection_kj_m2_k: u32,
+    pub ocean_heat_coupling_milli_wm2_per_c: u32,
+    pub ocean_heat_diffusivity_ppm: u32,
+    pub ocean_heat_advection_ppm: u32,
+    pub ocean_coast_blend_ppm: u32,
     pub temperature_wind_coupling_passes: u32,
     pub condensation_ppm: u32,
     pub latent_heat_coupling_ppm: u32,
@@ -190,6 +195,10 @@ impl ClimateSettings {
             drag_ocean_micro: 18,
             drag_land_micro: 45,
             heat_advection_kj_m2_k: 100,
+            ocean_heat_coupling_milli_wm2_per_c: 12_000,
+            ocean_heat_diffusivity_ppm: 80_000,
+            ocean_heat_advection_ppm: 80_000,
+            ocean_coast_blend_ppm: 380_000,
             temperature_wind_coupling_passes: 2,
             condensation_ppm: 400_000,
             latent_heat_coupling_ppm: 80_000,
@@ -236,6 +245,10 @@ impl ClimateSettings {
             || self.insolation_polar_floor_ppm > 500_000
             || !(1..=4_096).contains(&self.energy_balance_max_iterations)
             || !(1..=5_000).contains(&self.energy_balance_tolerance_milli_c)
+            || self.ocean_heat_coupling_milli_wm2_per_c > 200_000
+            || self.ocean_heat_diffusivity_ppm > 1_000_000
+            || self.ocean_heat_advection_ppm > 1_000_000
+            || self.ocean_coast_blend_ppm > 1_000_000
         {
             return Err(PhysicalError::InvalidSettings(
                 "climate energy-balance coefficients are outside the bounded range".into(),
@@ -311,6 +324,26 @@ impl ClimateSettings {
 
     fn heat_advection_j_m2_k(self) -> f64 {
         f64::from(self.heat_advection_kj_m2_k) * 1_000.0
+    }
+
+    fn ocean_heat_coupling_wm2_per_c(self) -> f64 {
+        f64::from(self.ocean_heat_coupling_milli_wm2_per_c) / 1_000.0
+    }
+
+    fn ocean_heat_active(self) -> bool {
+        self.ocean_heat_coupling_milli_wm2_per_c > 0
+    }
+
+    fn ocean_heat_diffusivity_w_per_c(self) -> f64 {
+        self.heat_diffusivity_w_per_c() * f64::from(self.ocean_heat_diffusivity_ppm) / 1_000_000.0
+    }
+
+    fn ocean_heat_advection_j_m2_k(self) -> f64 {
+        self.heat_capacity_j_m2_k(true) * f64::from(self.ocean_heat_advection_ppm) / 1_000_000.0
+    }
+
+    fn ocean_coast_ocean_blend(self) -> f64 {
+        f64::from(self.ocean_coast_blend_ppm) / 1_000_000.0
     }
 }
 
@@ -567,7 +600,8 @@ impl ClimateField {
             retry_index,
         );
         assign_winds(&mut next, winds);
-        stamp_currents(&mut next, field);
+        let restamp_temperatures = next.temperature_centi_c.clone();
+        stamp_currents(&mut next, field, &restamp_temperatures);
         let moisture = product_moisture(field, settings, &next, seed, retry_index, 0, progress)?;
         let (runoff, runoff_volume, mut metrics) = runoff_fields(
             field,
@@ -1051,6 +1085,176 @@ fn flux_form_heat_advection(
     (advection * neighbors, advection * diag)
 }
 
+fn flux_form_ocean_advection(
+    temperature: &[f64],
+    current_east: &[i32],
+    current_north: &[i32],
+    west: usize,
+    east: usize,
+    south: usize,
+    north: usize,
+    cell: usize,
+    dx: f64,
+    dy: f64,
+    advection: f64,
+    mask: &[bool],
+) -> (f64, f64) {
+    let mut neighbors = 0.0;
+    let mut diag = 0.0;
+    if mask[west] {
+        let u_west = face_wind_ms(current_east[west], current_east[cell]);
+        if u_west > 0.0 {
+            neighbors += u_west / dx * temperature[west];
+        } else {
+            diag += -u_west / dx;
+        }
+    }
+    if mask[east] {
+        let u_east = face_wind_ms(current_east[cell], current_east[east]);
+        if u_east > 0.0 {
+            diag += u_east / dx;
+        } else {
+            neighbors += -u_east / dx * temperature[east];
+        }
+    }
+    if mask[south] {
+        let v_south = face_wind_ms(current_north[south], current_north[cell]);
+        if v_south > 0.0 {
+            neighbors += v_south / dy * temperature[south];
+        } else {
+            diag += -v_south / dy;
+        }
+    }
+    if mask[north] {
+        let v_north = face_wind_ms(current_north[cell], current_north[north]);
+        if v_north > 0.0 {
+            diag += v_north / dy;
+        } else {
+            neighbors += -v_north / dy * temperature[north];
+        }
+    }
+    (advection * neighbors, advection * diag)
+}
+
+struct OceanHeat<'a> {
+    temperature: &'a mut [f64],
+    mask: &'a [bool],
+    current_east: &'a [i32],
+    current_north: &'a [i32],
+}
+
+fn step_ocean_temperature(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    ocean: &mut OceanHeat<'_>,
+    air_celsius: &[f64],
+    dt_seconds: f64,
+) -> Result<(), PhysicalError> {
+    let sample_count = field.grid.sample_count();
+    let coupling = settings.ocean_heat_coupling_wm2_per_c();
+    let capacity = settings.heat_capacity_j_m2_k(true);
+    let dt_over_c = dt_seconds / capacity;
+    let diffusivity = settings.ocean_heat_diffusivity_w_per_c();
+    let mut next = ocean.temperature.to_vec();
+    for cell in 0..sample_count {
+        if !ocean.mask[cell] {
+            next[cell] = air_celsius[cell];
+            continue;
+        }
+        let (row, col) = field.grid.row_col(cell);
+        let west = field.grid.index(row, wrapped_col(field.grid, col, -1));
+        let east = field.grid.index(row, wrapped_col(field.grid, col, 1));
+        let south = field.grid.index(clamped_row(field.grid, row, -1), col);
+        let north = field.grid.index(clamped_row(field.grid, row, 1), col);
+        let dx_w = neighbor_metres(field.grid, row, col, 0, -1);
+        let dx_e = neighbor_metres(field.grid, row, col, 0, 1);
+        let dy_s = neighbor_metres(field.grid, row, col, -1, 0);
+        let dy_n = neighbor_metres(field.grid, row, col, 1, 0);
+        let x_span = (dx_w + dx_e) * 0.5;
+        let y_span = (dy_s + dy_n) * 0.5;
+        let faces = [
+            (west, dx_w, x_span),
+            (east, dx_e, x_span),
+            (south, dy_s, y_span),
+            (north, dy_n, y_span),
+        ];
+        let mut neighbor_part = 0.0;
+        let mut diag = 0.0;
+        for (neighbor, distance, span) in faces {
+            if ocean.mask[neighbor] {
+                neighbor_part += ocean.temperature[neighbor] / distance / span;
+                diag += 1.0 / distance / span;
+            }
+        }
+        let mut numerator = ocean.temperature[cell]
+            + dt_over_c * (coupling * air_celsius[cell] + diffusivity * neighbor_part);
+        let mut denominator = 1.0 + dt_over_c * (coupling + diffusivity * diag);
+        let (adv_neighbors, adv_diag) = flux_form_ocean_advection(
+            ocean.temperature,
+            ocean.current_east,
+            ocean.current_north,
+            west,
+            east,
+            south,
+            north,
+            cell,
+            x_span,
+            y_span,
+            settings.ocean_heat_advection_j_m2_k(),
+            ocean.mask,
+        );
+        numerator += dt_over_c * adv_neighbors;
+        denominator += dt_over_c * adv_diag;
+        let updated = numerator / denominator;
+        if !updated.is_finite() {
+            return Err(PhysicalError::coded(
+                PhysicalErrorCode::NumericNonFinite,
+                "climate ocean-temperature tracer is not finite",
+            ));
+        }
+        let bounded = f64::from(MAX_CLIMATE_TEMPERATURE_CENTI_C) / 100.0;
+        next[cell] = updated.clamp(-bounded, bounded);
+    }
+    ocean.temperature.copy_from_slice(&next);
+    Ok(())
+}
+
+fn imprint_ocean_heat(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    basin: &[bool],
+    ocean_celsius: &[f64],
+    air_celsius: &mut [f64],
+) {
+    let previous = air_celsius.to_vec();
+    let ocean_blend = settings.ocean_coast_ocean_blend();
+    let air_blend = 1.0 - ocean_blend;
+    for cell in 0..field.grid.sample_count() {
+        if basin[cell] {
+            air_celsius[cell] = ocean_celsius[cell];
+            continue;
+        }
+        let (row, col) = field.grid.row_col(cell);
+        let neighbors = [
+            field.grid.index(row, wrapped_col(field.grid, col, -1)),
+            field.grid.index(row, wrapped_col(field.grid, col, 1)),
+            field.grid.index(clamped_row(field.grid, row, -1), col),
+            field.grid.index(clamped_row(field.grid, row, 1), col),
+        ];
+        let mut sum = 0.0;
+        let mut count = 0.0;
+        for neighbor in neighbors {
+            if basin[neighbor] {
+                sum += ocean_celsius[neighbor];
+                count += 1.0;
+            }
+        }
+        if count > 0.0 {
+            air_celsius[cell] = previous[cell] * air_blend + (sum / count) * ocean_blend;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum IceAlbedo<'a> {
     Live,
@@ -1154,7 +1358,7 @@ fn relax_temperature(
             let neighbor_part = (temperature[west] / dx_w + temperature[east] / dx_e) / x_span
                 + (temperature[south] / dy_s + temperature[north] / dy_n) / y_span;
             let diag = (1.0 / dx_w + 1.0 / dx_e) / x_span + (1.0 / dy_s + 1.0 / dy_n) / y_span;
-            let ocean = is_ocean(field, cell);
+            let is_ocean_cell = is_ocean(field, cell);
             let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
             let surface_centi_c = (temperature[cell] - lapse_c) * 100.0;
             let insolation_weight = insolation_weights
@@ -1163,10 +1367,14 @@ fn relax_temperature(
             let q_solar = toa
                 * insolation_weight
                 * absorbed_fraction(
-                    class_albedo(ocean, cell_is_icy(ice, cell, surface_centi_c), settings),
+                    class_albedo(
+                        is_ocean_cell,
+                        cell_is_icy(ice, cell, surface_centi_c),
+                        settings,
+                    ),
                     settings,
                 );
-            let dt_over_c = dt_seconds / settings.heat_capacity_j_m2_k(ocean);
+            let dt_over_c = dt_seconds / settings.heat_capacity_j_m2_k(is_ocean_cell);
             let k_diag = diffusivity * diag;
             let q_latent = latent_wm2.map(|values| values[cell]).unwrap_or(0.0);
             let mut numerator = temperature[cell]
@@ -1231,7 +1439,7 @@ fn temperature_field(
     seed: u32,
     retry_index: u32,
     progress: &mut dyn ProgressSink,
-) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, Vec<u32>), PhysicalError> {
+) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, Vec<u32>, Vec<f64>), PhysicalError> {
     let base = solar_base_centi_c(settings)?;
     let mut initial_celsius = Vec::with_capacity(field.grid.sample_count());
     for (cell, cell_geometry) in geometry.iter().copied().enumerate() {
@@ -1258,6 +1466,8 @@ fn temperature_field(
     let hadley = hadley_edge_radians(omega);
     let ferrel = ferrel_edge_radians(hadley);
     let wind_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
+    let basin = ocean_mask(field);
+    let mut ocean_celsius = relaxed.clone();
     for _ in 0..settings.temperature_wind_coupling_passes {
         progress.check_cancelled()?;
         let ice_mask = ice_mask_from_temperature(field, settings, &relaxed);
@@ -1269,6 +1479,8 @@ fn temperature_field(
         let (east, north) = wind_components(
             field, &sea_centi, settings, itcz, hadley, ferrel, wind_seed, false,
         );
+        let (current_east, current_north) =
+            derive_currents(field, settings.planetary, &sea_centi, &east, &north);
         relaxed = relax_annual_temperature(
             field,
             settings,
@@ -1279,6 +1491,21 @@ fn temperature_field(
             None,
             progress,
         )?;
+        if settings.ocean_heat_active() {
+            let mut ocean_heat = OceanHeat {
+                temperature: &mut ocean_celsius,
+                mask: &basin,
+                current_east: &current_east,
+                current_north: &current_north,
+            };
+            step_ocean_temperature(
+                field,
+                settings,
+                &mut ocean_heat,
+                &relaxed,
+                ENERGY_BALANCE_DT_SECONDS,
+            )?;
+        }
     }
     let temperatures = apply_diagnostic_lapse(field, settings, &relaxed)?;
     Ok((
@@ -1286,6 +1513,7 @@ fn temperature_field(
         temperatures.clone(),
         temperatures,
         maritime_factor_ppm(geometry),
+        ocean_celsius,
     ))
 }
 
@@ -1331,8 +1559,10 @@ fn stamp_solstice_temperatures(
     Ok((summers, winters))
 }
 
-fn seasonal_year_converged(years_run: u32, last_delta_c: f64) -> bool {
-    years_run >= CLIMATE_MIN_YEARS && last_delta_c <= YEAR_T_TOLERANCE_C
+fn seasonal_year_converged(years_run: u32, last_delta_c: f64, ocean_delta_c: f64) -> bool {
+    years_run >= CLIMATE_MIN_YEARS
+        && last_delta_c <= YEAR_T_TOLERANCE_C
+        && ocean_delta_c <= YEAR_T_TOLERANCE_C
 }
 
 fn mean_abs_centi_delta_c(left: &[i32], right: &[i32]) -> f64 {
@@ -1342,6 +1572,22 @@ fn mean_abs_centi_delta_c(left: &[i32], right: &[i32]) -> f64 {
         .sum::<f64>()
         / left.len() as f64
         / 100.0
+}
+
+fn mean_abs_ocean_delta_c(mask: &[bool], left: &[f64], right: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0.0;
+    for (cell, ocean) in mask.iter().copied().enumerate() {
+        if ocean {
+            sum += (left[cell] - right[cell]).abs();
+            count += 1.0;
+        }
+    }
+    if count == 0.0 {
+        0.0
+    } else {
+        sum / count
+    }
 }
 
 fn product_moisture(
@@ -1466,6 +1712,7 @@ fn couple_moisture_and_latent(
     settings: ClimateSettings,
     geometry: &[CellClimateGeometry],
     climate: &mut ClimateField,
+    ocean_celsius: &mut [f64],
     seed: u32,
     retry_index: u32,
     progress: &mut dyn ProgressSink,
@@ -1487,12 +1734,21 @@ fn couple_moisture_and_latent(
     let seasons = [true, false];
     let annual_ice = ice_mask_from_temperature(field, settings, &relaxed);
     let mut last_delta = f64::INFINITY;
+    let mut last_ocean_delta = if settings.ocean_heat_active() {
+        f64::INFINITY
+    } else {
+        0.0
+    };
     let mut year_converged = false;
     let mut previous_summer: Option<Vec<i32>> = None;
     let mut previous_winter: Option<Vec<i32>> = None;
+    let mut previous_ocean: Option<Vec<f64>> = None;
     let mut summer_surface = climate.temperature_centi_c.clone();
     let mut winter_surface = climate.temperature_centi_c.clone();
     let mut transport_iterations = 0u32;
+    let basin = ocean_mask(field);
+    let mut current_east = climate.current_east_milli.clone();
+    let mut current_north = climate.current_north_milli.clone();
     for year in 0..settings.seasonal_year_max {
         progress.check_cancelled()?;
         for nh_summer in seasons {
@@ -1523,8 +1779,17 @@ fn couple_moisture_and_latent(
             );
             let divergence = wind_divergence_ppm(field.grid, &east, &north);
             let band = wind_band_field(field.grid, itcz, hadley, ferrel);
-            let (current_east, current_north) =
+            (current_east, current_north) =
                 derive_currents(field, settings.planetary, &surface, &east, &north);
+            if settings.ocean_heat_active() {
+                let mut ocean_heat = OceanHeat {
+                    temperature: ocean_celsius,
+                    mask: &basin,
+                    current_east: &current_east,
+                    current_north: &current_north,
+                };
+                step_ocean_temperature(field, settings, &mut ocean_heat, &relaxed, dt)?;
+            }
             let transport = transport_moisture_state(
                 field,
                 settings,
@@ -1570,9 +1835,20 @@ fn couple_moisture_and_latent(
             }
             _ => f64::INFINITY,
         };
+        last_ocean_delta = if settings.ocean_heat_active() {
+            match &previous_ocean {
+                Some(previous) => mean_abs_ocean_delta_c(&basin, previous, ocean_celsius),
+                None => f64::INFINITY,
+            }
+        } else {
+            0.0
+        };
         previous_summer = Some(summer_surface.clone());
         previous_winter = Some(winter_surface.clone());
-        if seasonal_year_converged(year + 1, last_delta) {
+        if settings.ocean_heat_active() {
+            previous_ocean = Some(ocean_celsius.to_vec());
+        }
+        if seasonal_year_converged(year + 1, last_delta, last_ocean_delta) {
             year_converged = true;
             break;
         }
@@ -1581,7 +1857,7 @@ fn couple_moisture_and_latent(
         return Err(PhysicalError::coded(
             PhysicalErrorCode::NumericNonConvergent,
             format!(
-                "climate seasonal year loop did not converge within {} years (mean |ΔT|={last_delta:.4} C)",
+                "climate seasonal year loop did not converge within {} years (mean |ΔT|={last_delta:.4} C, mean |ΔT_ocean|={last_ocean_delta:.4} C)",
                 settings.seasonal_year_max
             ),
         ));
@@ -1624,7 +1900,8 @@ fn couple_moisture_and_latent(
             retry_index,
         );
         assign_winds(climate, winds);
-        stamp_currents(climate, field);
+        let surface_centi = climate.temperature_centi_c.clone();
+        stamp_currents(climate, field, &surface_centi);
         let transport = transport_moisture_state(
             field,
             settings,
@@ -1691,6 +1968,10 @@ fn couple_moisture_and_latent(
             ),
         ));
     }
+    if settings.ocean_heat_active() {
+        imprint_ocean_heat(field, settings, &basin, ocean_celsius, &mut relaxed);
+        climate.temperature_centi_c = apply_diagnostic_lapse(field, settings, &relaxed)?;
+    }
     let (summers, winters) = stamp_solstice_temperatures(
         &climate.temperature_centi_c,
         &summer_anomaly,
@@ -1709,7 +1990,8 @@ fn couple_moisture_and_latent(
         retry_index,
     );
     assign_winds(climate, winds);
-    stamp_currents(climate, field);
+    let surface_centi = climate.temperature_centi_c.clone();
+    stamp_currents(climate, field, &surface_centi);
     product_moisture(
         field,
         settings,
@@ -2191,11 +2473,11 @@ fn derive_winds(
     }
 }
 
-fn stamp_currents(climate: &mut ClimateField, field: &PhysicalField) {
+fn stamp_currents(climate: &mut ClimateField, field: &PhysicalField, temperatures: &[i32]) {
     let (east, north) = derive_currents(
         field,
         climate.planetary,
-        &climate.temperature_centi_c,
+        temperatures,
         &climate.wind_east_milli,
         &climate.wind_north_milli,
     );
@@ -3807,7 +4089,7 @@ pub fn derive_current_climate(
     progress.report(ProgressPhase::CalculatingClimate, 0, 4)?;
     let geometry = build_geometry(field, settings, progress)?;
     progress.report(ProgressPhase::CalculatingClimate, 1, 4)?;
-    let (temperatures, summers, winters, maritime_factors) =
+    let (temperatures, summers, winters, maritime_factors, mut ocean_celsius) =
         temperature_field(field, settings, &geometry, seed, retry_index, progress)?;
     let winds = derive_winds(
         field,
@@ -3897,6 +4179,7 @@ pub fn derive_current_climate(
         settings,
         &geometry,
         &mut climate,
+        &mut ocean_celsius,
         seed,
         retry_index,
         progress,
@@ -4409,10 +4692,19 @@ mod tests {
 
     #[test]
     fn year_loop_rejects_delta_above_tolerance_after_min_years() {
-        assert!(!seasonal_year_converged(1, 0.0));
-        assert!(!seasonal_year_converged(2, YEAR_T_TOLERANCE_C + 0.01));
-        assert!(seasonal_year_converged(2, YEAR_T_TOLERANCE_C));
-        assert!(seasonal_year_converged(12, 0.25));
+        assert!(!seasonal_year_converged(1, 0.0, 0.0));
+        assert!(!seasonal_year_converged(2, YEAR_T_TOLERANCE_C + 0.01, 0.0));
+        assert!(!seasonal_year_converged(
+            2,
+            YEAR_T_TOLERANCE_C,
+            YEAR_T_TOLERANCE_C + 0.01
+        ));
+        assert!(seasonal_year_converged(
+            2,
+            YEAR_T_TOLERANCE_C,
+            YEAR_T_TOLERANCE_C
+        ));
+        assert!(seasonal_year_converged(12, 0.25, 0.1));
     }
 
     #[test]
@@ -6174,6 +6466,72 @@ mod tests {
         assert!(
             eq_east < 0,
             "equator should have a westward current: {eq_east}"
+        );
+    }
+
+    #[test]
+    fn western_boundary_coast_is_warmer_than_the_opposite_coast() {
+        let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        for row in 0..grid.height {
+            for col in 6..12 {
+                elevations[grid.index(row, col)] = 2_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut west_coast = 0i64;
+        let mut east_coast = 0i64;
+        let mut west_ocean = 0i64;
+        let mut east_ocean = 0i64;
+        for row in 8..13 {
+            let west = grid.index(row, 6);
+            let east = grid.index(row, 11);
+            assert_eq!(
+                climate.maritime_factor_ppm[west],
+                climate.maritime_factor_ppm[east]
+            );
+            west_coast += i64::from(climate.temperature_centi_c[west]);
+            east_coast += i64::from(climate.temperature_centi_c[east]);
+            west_ocean += i64::from(climate.temperature_centi_c[grid.index(row, 5)]);
+            east_ocean += i64::from(climate.temperature_centi_c[grid.index(row, 12)]);
+        }
+        assert!(
+            east_coast > west_coast,
+            "western-boundary coast {east_coast} should exceed opposite coast {west_coast}"
+        );
+        assert!(
+            east_ocean > west_ocean,
+            "western-boundary ocean {east_ocean} should exceed opposite ocean {west_ocean}"
+        );
+        let mut decoupled = ClimateSettings::default_for(grid);
+        decoupled.ocean_heat_coupling_milli_wm2_per_c = 0;
+        let off = derive_current_climate(
+            &physical,
+            decoupled,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut off_west = 0i64;
+        let mut off_east = 0i64;
+        for row in 8..13 {
+            off_west += i64::from(off.temperature_centi_c[grid.index(row, 6)]);
+            off_east += i64::from(off.temperature_centi_c[grid.index(row, 11)]);
+        }
+        let coupled_contrast = east_coast - west_coast;
+        let off_contrast = off_east - off_west;
+        assert!(
+            coupled_contrast > off_contrast,
+            "current heat should warm the western-boundary coast: coupled {coupled_contrast} vs off {off_contrast}"
         );
     }
 

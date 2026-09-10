@@ -17,9 +17,11 @@
 //! evaporative demand; precipitation that feeds runoff volumes
 //! using exact spherical cell areas; land biome classes from those climate
 //! conditions; and tropical-cyclone-like storm suitability, track corridors,
-//! and intensity potential. Storm genesis consumes D1–D4 (temperature, moisture,
-//! winds, and surface currents) plus land proximity. Wind shear is the seasonal
-//! (solstice) wind-vector difference, not vertical shear.
+//! and intensity potential. Storm genesis consumes temperature, moisture,
+//! convergence, thermal pressure gradient, Coriolis, land proximity, and
+//! currents. Wind shear is the seasonal (solstice) wind-vector difference, not
+//! vertical shear. Drought, heat-wave, and extreme-rainfall potentials are
+//! statistics of the Stage 6 seasonal fields, not new prognostic state.
 
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
@@ -30,7 +32,7 @@ use crate::planetary::{
     EARTH_RETAINED_HEAT_CENTI_C, EARTH_ROTATION_PERIOD_SECONDS, SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 9;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 10;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -62,7 +64,12 @@ const STORM_FULL_SST_CENTI_C: i32 = 1_800;
 const STORM_MIN_HUMIDITY_PPM: u32 = 176_000;
 const STORM_FULL_HUMIDITY_PPM: u32 = 818_000;
 const STORM_SHEAR_START_MILLI: u32 = 2_500;
-const STORM_SHEAR_KILL_MILLI: u32 = 20_000;
+const STORM_SHEAR_KILL_MILLI: u32 = 12_000;
+const STORM_PGRAD_START_CENTI: u32 = 200;
+const STORM_PGRAD_KILL_CENTI: u32 = 900;
+const STORM_DIVERGENCE_START_PPM: u32 = 40_000;
+const STORM_DIVERGENCE_KILL_PPM: u32 = 350_000;
+const STORM_CONVERGENCE_FULL_PPM: u32 = 300_000;
 const STORM_TRACK_START_PPM: u32 = 40_000;
 const STORM_TRACK_STEPS: usize = 14;
 const STORM_SEED_BLOCK: u32 = 6;
@@ -154,6 +161,11 @@ pub struct ClimateSettings {
     pub ocean_heat_diffusivity_ppm: u32,
     pub ocean_heat_advection_ppm: u32,
     pub ocean_coast_blend_ppm: u32,
+    pub storm_pressure_gradient_start_centi: u32,
+    pub storm_pressure_gradient_kill_centi: u32,
+    pub storm_divergence_start_ppm: u32,
+    pub storm_divergence_kill_ppm: u32,
+    pub storm_convergence_full_ppm: u32,
     pub temperature_wind_coupling_passes: u32,
     pub condensation_ppm: u32,
     pub latent_heat_coupling_ppm: u32,
@@ -199,6 +211,11 @@ impl ClimateSettings {
             ocean_heat_diffusivity_ppm: 80_000,
             ocean_heat_advection_ppm: 80_000,
             ocean_coast_blend_ppm: 380_000,
+            storm_pressure_gradient_start_centi: STORM_PGRAD_START_CENTI,
+            storm_pressure_gradient_kill_centi: STORM_PGRAD_KILL_CENTI,
+            storm_divergence_start_ppm: STORM_DIVERGENCE_START_PPM,
+            storm_divergence_kill_ppm: STORM_DIVERGENCE_KILL_PPM,
+            storm_convergence_full_ppm: STORM_CONVERGENCE_FULL_PPM,
             temperature_wind_coupling_passes: 2,
             condensation_ppm: 400_000,
             latent_heat_coupling_ppm: 80_000,
@@ -268,6 +285,17 @@ impl ClimateSettings {
         {
             return Err(PhysicalError::InvalidSettings(
                 "climate wind and advection coefficients are outside the bounded range".into(),
+            ));
+        }
+        if self.storm_pressure_gradient_start_centi > self.storm_pressure_gradient_kill_centi
+            || self.storm_pressure_gradient_kill_centi > 10_000
+            || self.storm_divergence_start_ppm > self.storm_divergence_kill_ppm
+            || self.storm_divergence_kill_ppm > 1_000_000
+            || self.storm_convergence_full_ppm == 0
+            || self.storm_convergence_full_ppm > 1_000_000
+        {
+            return Err(PhysicalError::InvalidSettings(
+                "climate storm coupling coefficients are outside the bounded range".into(),
             ));
         }
         if !(1..=24).contains(&self.seasonal_year_max) {
@@ -378,6 +406,9 @@ pub struct ClimateMetrics {
     pub mean_storm_intensity_ppm: u32,
     pub mean_land_storm_track_ppm: u32,
     pub expected_storms_per_year_milli: u32,
+    pub mean_land_drought_potential_ppm: u32,
+    pub mean_heat_wave_potential_ppm: u32,
+    pub mean_extreme_rainfall_potential_ppm: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,7 +690,7 @@ impl ClimateField {
         apply_biome_metrics(field, &next.biome_class, &mut metrics);
         let storms = derive_storms(
             field,
-            next.planetary,
+            settings,
             &next.temperature_centi_c,
             &next.temperature_nh_summer_centi_c,
             &next.temperature_nh_winter_centi_c,
@@ -670,6 +701,9 @@ impl ClimateField {
             &next.wind_north_nh_summer_milli,
             &next.wind_east_nh_winter_milli,
             &next.wind_north_nh_winter_milli,
+            &next.wind_divergence_ppm,
+            &next.wind_divergence_nh_summer_ppm,
+            &next.wind_divergence_nh_winter_ppm,
             &next.current_east_milli,
             &next.current_north_milli,
         );
@@ -681,6 +715,17 @@ impl ClimateField {
             &next.storm_suitability_ppm,
             &next.storm_track_ppm,
             &next.storm_intensity_ppm,
+            &mut metrics,
+        );
+        apply_extreme_metrics(
+            field,
+            &next.temperature_centi_c,
+            &next.temperature_nh_summer_centi_c,
+            &next.temperature_nh_winter_centi_c,
+            &next.precipitation_mm_per_year,
+            &next.precipitation_nh_summer_mm,
+            &next.precipitation_nh_winter_mm,
+            &next.aridity_ppm,
             &mut metrics,
         );
         next.metrics = metrics;
@@ -3188,6 +3233,9 @@ fn runoff_fields(
             mean_storm_intensity_ppm: 0,
             mean_land_storm_track_ppm: 0,
             expected_storms_per_year_milli: 0,
+            mean_land_drought_potential_ppm: 0,
+            mean_heat_wave_potential_ppm: 0,
+            mean_extreme_rainfall_potential_ppm: 0,
         },
     ))
 }
@@ -3688,6 +3736,107 @@ fn storm_proximity_factor(land_distance_cells: u16) -> f64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StormCoupling {
+    pressure_gradient_start_centi: u32,
+    pressure_gradient_kill_centi: u32,
+    divergence_start_ppm: u32,
+    divergence_kill_ppm: u32,
+    convergence_full_ppm: u32,
+}
+
+impl StormCoupling {
+    fn from_settings(settings: ClimateSettings) -> Self {
+        Self {
+            pressure_gradient_start_centi: settings.storm_pressure_gradient_start_centi,
+            pressure_gradient_kill_centi: settings.storm_pressure_gradient_kill_centi,
+            divergence_start_ppm: settings.storm_divergence_start_ppm,
+            divergence_kill_ppm: settings.storm_divergence_kill_ppm,
+            convergence_full_ppm: settings.storm_convergence_full_ppm,
+        }
+    }
+}
+
+impl Default for StormCoupling {
+    fn default() -> Self {
+        Self {
+            pressure_gradient_start_centi: STORM_PGRAD_START_CENTI,
+            pressure_gradient_kill_centi: STORM_PGRAD_KILL_CENTI,
+            divergence_start_ppm: STORM_DIVERGENCE_START_PPM,
+            divergence_kill_ppm: STORM_DIVERGENCE_KILL_PPM,
+            convergence_full_ppm: STORM_CONVERGENCE_FULL_PPM,
+        }
+    }
+}
+
+fn storm_convergence_factor(divergence_ppm: i32, coupling: StormCoupling) -> f64 {
+    let conv = unit_factor(
+        i64::from(divergence_ppm).saturating_neg(),
+        0,
+        i64::from(coupling.convergence_full_ppm),
+    );
+    let div = unit_factor(
+        i64::from(divergence_ppm),
+        i64::from(coupling.divergence_start_ppm),
+        i64::from(coupling.divergence_kill_ppm),
+    );
+    ((1.0 + 0.25 * conv) * (1.0 - 0.70 * div)).clamp(0.0, 1.25)
+}
+
+fn storm_pressure_gradient_factor(gradient_centi: u32, coupling: StormCoupling) -> f64 {
+    1.0 - unit_factor(
+        i64::from(gradient_centi),
+        i64::from(coupling.pressure_gradient_start_centi),
+        i64::from(coupling.pressure_gradient_kill_centi),
+    )
+}
+
+fn storm_thermal_pressure_gradient_centi(
+    grid: Grid,
+    temperatures: &[i32],
+    ocean: &[bool],
+    cell: usize,
+) -> u32 {
+    if !ocean[cell] {
+        return 0;
+    }
+    let (row, col) = grid.row_col(cell);
+    let t = temperatures[cell];
+    let mut acc = 0.0;
+    let mut n = 0.0;
+    for (drow, dcol) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+        let neighbor = grid.index(clamped_row(grid, row, drow), wrapped_col(grid, col, dcol));
+        if neighbor == cell || !ocean[neighbor] {
+            continue;
+        }
+        let dt = f64::from((t - temperatures[neighbor]).unsigned_abs());
+        acc += dt * spacing_scale(neighbor_metres(grid, row, col, drow, dcol));
+        n += 1.0;
+    }
+    if n <= 0.0 {
+        0
+    } else {
+        (acc / n).round() as u32
+    }
+}
+
+fn storm_seasonal_pressure_gradient_centi(
+    grid: Grid,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    ocean: &[bool],
+    cell: usize,
+) -> u32 {
+    storm_thermal_pressure_gradient_centi(grid, annual, ocean, cell)
+        .max(storm_thermal_pressure_gradient_centi(
+            grid, summers, ocean, cell,
+        ))
+        .max(storm_thermal_pressure_gradient_centi(
+            grid, winters, ocean, cell,
+        ))
+}
+
 fn storm_current_factor(east_milli: i32, north_milli: i32) -> f64 {
     let speed = ((i64::from(east_milli) * i64::from(east_milli)
         + i64::from(north_milli) * i64::from(north_milli)) as f64)
@@ -3733,6 +3882,46 @@ fn classify_storm_cell(
     proximity: f64,
     current: f64,
     fetch: f64,
+    divergence_ppm: i32,
+    pressure_gradient_centi: u32,
+    sst_min: i32,
+    sst_full: i32,
+) -> (u32, u32) {
+    classify_storm_scaled(
+        ocean,
+        sst_centi_c,
+        humidity_ppm,
+        latitude,
+        itcz,
+        hadley,
+        shear_milli,
+        coriolis,
+        proximity,
+        current,
+        fetch,
+        divergence_ppm,
+        pressure_gradient_centi,
+        StormCoupling::default(),
+        sst_min,
+        sst_full,
+    )
+}
+
+fn classify_storm_scaled(
+    ocean: bool,
+    sst_centi_c: i32,
+    humidity_ppm: u32,
+    latitude: f64,
+    itcz: f64,
+    hadley: f64,
+    shear_milli: u32,
+    coriolis: f64,
+    proximity: f64,
+    current: f64,
+    fetch: f64,
+    divergence_ppm: i32,
+    pressure_gradient_centi: u32,
+    coupling: StormCoupling,
     sst_min: i32,
     sst_full: i32,
 ) -> (u32, u32) {
@@ -3759,6 +3948,8 @@ fn classify_storm_cell(
         * humidity
         * latitude_factor
         * (1.0 - shear)
+        * storm_convergence_factor(divergence_ppm, coupling)
+        * storm_pressure_gradient_factor(pressure_gradient_centi, coupling)
         * proximity
         * current
         * fetch
@@ -3788,7 +3979,7 @@ pub fn explain_storm(
         "marginal tropical-cyclone conditions"
     };
     format!(
-        "Storm suitability {}% ({zone}). Sea {:.1} °C, humidity {}% of saturation, |lat| {:.1}°, seasonal wind shear {} (solstice vector difference, not vertical), track corridor {}%, intensity potential {}%. Climatology, not a forecast.",
+        "Storm suitability {}% ({zone}). Sea {:.1} °C, humidity {}% of saturation, |lat| {:.1}°, seasonal wind shear {} (solstice vector difference, not vertical), convergence and ocean thermal fronts also scale genesis, track corridor {}%, intensity potential {}%. Climatology, not a forecast.",
         suitability_ppm / 10_000,
         f64::from(sst_centi_c) / 100.0,
         humidity_ppm / 10_000,
@@ -3909,9 +4100,123 @@ fn deposit(values: &mut [u32], cell: usize, amount: u32) {
     values[cell] = values[cell].saturating_add(amount).min(1_000_000);
 }
 
+fn classify_extreme_cell(
+    land: bool,
+    annual_centi_c: i32,
+    summer_centi_c: i32,
+    winter_centi_c: i32,
+    precipitation_mm: u32,
+    precipitation_summer_mm: u32,
+    precipitation_winter_mm: u32,
+    aridity_ppm: u32,
+) -> (u32, u32, u32) {
+    let warm = summer_centi_c.max(winter_centi_c).max(annual_centi_c);
+    let cold = summer_centi_c.min(winter_centi_c);
+    let drought = if !land || warm < 0 {
+        0
+    } else {
+        let arid = unit_factor(
+            i64::from(aridity_ppm),
+            i64::from(GRASSLAND_ARIDITY_PPM),
+            i64::from(DESERT_ARIDITY_PPM),
+        );
+        let dry = 1.0
+            - unit_factor(
+                i64::from(precipitation_mm),
+                80,
+                i64::from(FOREST_PRECIPITATION_MM),
+            );
+        let driest_season = precipitation_summer_mm.min(precipitation_winter_mm);
+        let seasonal_dry = 1.0 - unit_factor(i64::from(driest_season), 20, 200);
+        ((0.50 * arid + 0.35 * dry + 0.15 * seasonal_dry) * 1_000_000.0).round() as u32
+    };
+    let heat_wave = if warm < 0 {
+        0
+    } else {
+        let heat = unit_factor(i64::from(warm), 2_200, 3_800);
+        let seasonal = unit_factor(
+            i64::from(summer_centi_c.abs_diff(winter_centi_c)),
+            400,
+            2_500,
+        );
+        let land_weight = if land { 1.0 } else { 0.25 };
+        ((0.70 * heat + 0.30 * seasonal) * land_weight * 1_000_000.0).round() as u32
+    };
+    let peak_rain = precipitation_mm
+        .max(precipitation_summer_mm)
+        .max(precipitation_winter_mm);
+    let season_span = precipitation_summer_mm.abs_diff(precipitation_winter_mm);
+    let extreme_rain = if cold < 0 && peak_rain < 80 {
+        0
+    } else {
+        let peak = unit_factor(i64::from(peak_rain), 600, 2_500);
+        let monsoon = unit_factor(i64::from(season_span), 80, 800);
+        ((peak * (0.70 + 0.30 * monsoon)) * 1_000_000.0).round() as u32
+    };
+    (
+        drought.min(1_000_000),
+        heat_wave.min(1_000_000),
+        extreme_rain.min(1_000_000),
+    )
+}
+
+fn apply_extreme_metrics(
+    field: &PhysicalField,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    precipitation: &[u32],
+    precipitation_summer: &[u32],
+    precipitation_winter: &[u32],
+    aridity_ppm: &[u32],
+    metrics: &mut ClimateMetrics,
+) {
+    let mut land_area = 0.0;
+    let mut all_area = 0.0;
+    let mut drought_sum = 0.0;
+    let mut heat_sum = 0.0;
+    let mut rain_sum = 0.0;
+    for cell in 0..field.grid.sample_count() {
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        let land = !is_ocean(field, cell);
+        let (drought, heat, rain) = classify_extreme_cell(
+            land,
+            annual[cell],
+            summers[cell],
+            winters[cell],
+            precipitation[cell],
+            precipitation_summer[cell],
+            precipitation_winter[cell],
+            aridity_ppm[cell],
+        );
+        all_area += area;
+        heat_sum += f64::from(heat) * area;
+        rain_sum += f64::from(rain) * area;
+        if land {
+            land_area += area;
+            drought_sum += f64::from(drought) * area;
+        }
+    }
+    metrics.mean_land_drought_potential_ppm = if land_area <= 0.0 {
+        0
+    } else {
+        (drought_sum / land_area).round() as u32
+    };
+    metrics.mean_heat_wave_potential_ppm = if all_area <= 0.0 {
+        0
+    } else {
+        (heat_sum / all_area).round() as u32
+    };
+    metrics.mean_extreme_rainfall_potential_ppm = if all_area <= 0.0 {
+        0
+    } else {
+        (rain_sum / all_area).round() as u32
+    };
+}
+
 fn derive_storms(
     field: &PhysicalField,
-    planetary: PlanetaryConfiguration,
+    settings: ClimateSettings,
     annual: &[i32],
     summers: &[i32],
     winters: &[i32],
@@ -3922,10 +4227,15 @@ fn derive_storms(
     wind_north_summer: &[i32],
     wind_east_winter: &[i32],
     wind_north_winter: &[i32],
+    wind_divergence: &[i32],
+    wind_divergence_summer: &[i32],
+    wind_divergence_winter: &[i32],
     current_east: &[i32],
     current_north: &[i32],
 ) -> StormFields {
     let count = field.grid.sample_count();
+    let planetary = settings.planetary;
+    let coupling = StormCoupling::from_settings(settings);
     let coriolis = storm_coriolis_factor(planetary);
     let hadley = hadley_edge_radians(omega_ratio(planetary));
     let (sst_min, sst_full) = storm_sst_bounds(planetary);
@@ -3948,7 +4258,10 @@ fn derive_storms(
             wind_east_winter[cell],
             wind_north_winter[cell],
         );
-        let (suitability, intensity) = classify_storm_cell(
+        let divergence = wind_divergence[cell]
+            .min(wind_divergence_summer[cell])
+            .min(wind_divergence_winter[cell]);
+        let (suitability, intensity) = classify_storm_scaled(
             ocean[cell],
             sst,
             humidity_ppm[cell],
@@ -3960,6 +4273,11 @@ fn derive_storms(
             storm_proximity_factor(proximity[cell]),
             storm_current_factor(current_east[cell], current_north[cell]),
             storm_fetch_factor(east_fetch[cell], west_fetch[cell]),
+            divergence,
+            storm_seasonal_pressure_gradient_centi(
+                field.grid, annual, summers, winters, &ocean, cell,
+            ),
+            coupling,
             sst_min,
             sst_full,
         );
@@ -4172,6 +4490,9 @@ pub fn derive_current_climate(
             mean_storm_intensity_ppm: 0,
             mean_land_storm_track_ppm: 0,
             expected_storms_per_year_milli: 0,
+            mean_land_drought_potential_ppm: 0,
+            mean_heat_wave_potential_ppm: 0,
+            mean_extreme_rainfall_potential_ppm: 0,
         },
     };
     let moisture = couple_moisture_and_latent(
@@ -4241,7 +4562,7 @@ pub fn derive_current_climate(
     apply_biome_metrics(field, &climate.biome_class, &mut metrics);
     let storms = derive_storms(
         field,
-        climate.planetary,
+        settings,
         &climate.temperature_centi_c,
         &climate.temperature_nh_summer_centi_c,
         &climate.temperature_nh_winter_centi_c,
@@ -4252,6 +4573,9 @@ pub fn derive_current_climate(
         &climate.wind_north_nh_summer_milli,
         &climate.wind_east_nh_winter_milli,
         &climate.wind_north_nh_winter_milli,
+        &climate.wind_divergence_ppm,
+        &climate.wind_divergence_nh_summer_ppm,
+        &climate.wind_divergence_nh_winter_ppm,
         &climate.current_east_milli,
         &climate.current_north_milli,
     );
@@ -4263,6 +4587,17 @@ pub fn derive_current_climate(
         &climate.storm_suitability_ppm,
         &climate.storm_track_ppm,
         &climate.storm_intensity_ppm,
+        &mut metrics,
+    );
+    apply_extreme_metrics(
+        field,
+        &climate.temperature_centi_c,
+        &climate.temperature_nh_summer_centi_c,
+        &climate.temperature_nh_winter_centi_c,
+        &climate.precipitation_mm_per_year,
+        &climate.precipitation_nh_summer_mm,
+        &climate.precipitation_nh_winter_mm,
+        &climate.aridity_ppm,
         &mut metrics,
     );
     climate.metrics = metrics;
@@ -6830,30 +7165,44 @@ mod tests {
     fn storm_genesis_needs_warm_moist_rotating_ocean() {
         let hadley = 30.0_f64.to_radians();
         let (suitability, _) = classify_storm_cell(
-            false, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 1_200, 1_800,
+            false, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(suitability, 0);
         let (equator, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.0, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.0, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(equator, 0);
         let (cold, _) = classify_storm_cell(
-            true, -200, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 1_200, 1_800,
+            true, -200, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(cold, 0);
         let (core, intensity) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert!(core > 500_000, "core {core}");
         assert!(intensity > 0);
         let (sheared, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 20_000, 1.0, 1.0, 1.0, 1.0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 12_000, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(sheared, 0);
         let (coastal, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 0.35, 1.0, 1.0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 0.35, 1.0, 1.0, 0, 0, 1_200, 1_800,
         );
         assert!(coastal < core);
+        let (diverging, _) = classify_storm_cell(
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 350_000, 0, 1_200,
+            1_800,
+        );
+        let (converging, _) = classify_storm_cell(
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, -300_000, 0, 1_200,
+            1_800,
+        );
+        assert!(diverging < core, "diverging {diverging} core {core}");
+        assert!(converging > core, "converging {converging} core {core}");
+        let (front, _) = classify_storm_cell(
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 900, 1_200, 1_800,
+        );
+        assert_eq!(front, 0);
         let shifted = storm_latitude_factor(18.0_f64.to_radians(), 10.0_f64.to_radians(), hadley);
         assert!(shifted < storm_latitude_factor(18.0_f64.to_radians(), 0.0, hadley));
         assert_eq!(
@@ -6897,6 +7246,16 @@ mod tests {
             climate.storm_track_ppm.iter().any(|value| *value > 0),
             "tracks never left zero"
         );
+        assert!(
+            climate
+                .storm_track_ppm
+                .iter()
+                .enumerate()
+                .any(|(cell, value)| {
+                    *value > 0 && physical.elevations_mm[cell] > physical.sea_level_mm
+                }),
+            "tracks never reached land"
+        );
         assert!(climate.metrics.mean_ocean_storm_suitability_ppm > 0);
     }
 
@@ -6918,12 +7277,22 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        let row = 6;
+        let row = 9;
         let west_of_land = climate.storm_suitability_ppm[grid.index(row, 9)];
         let east_of_land = climate.storm_suitability_ppm[grid.index(row, 19)];
         assert!(
             east_of_land > west_of_land,
-            "east {east_of_land} west {west_of_land}"
+            "east {east_of_land} west {west_of_land} (row 9 south flank; row 6 north edge is outside coupled genesis)"
+        );
+        assert!(
+            climate
+                .storm_track_ppm
+                .iter()
+                .enumerate()
+                .any(|(cell, value)| {
+                    *value > 0 && physical.elevations_mm[cell] > physical.sea_level_mm
+                }),
+            "tracks never reached the continent"
         );
         let mut west_land = elevations.clone();
         for row in 6..10 {
@@ -6981,5 +7350,70 @@ mod tests {
             cold.metrics.mean_ocean_storm_suitability_ppm,
             present.metrics.mean_ocean_storm_suitability_ppm
         );
+        assert!(
+            cold.metrics.mean_heat_wave_potential_ppm
+                < present.metrics.mean_heat_wave_potential_ppm,
+            "cold heat {} present heat {}",
+            cold.metrics.mean_heat_wave_potential_ppm,
+            present.metrics.mean_heat_wave_potential_ppm
+        );
+    }
+
+    #[test]
+    fn storm_and_extreme_metrics_remain_bounded() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![800; grid.sample_count()];
+        for col in 0..grid.width {
+            elevations[grid.index(3, col)] = -2_000;
+            elevations[grid.index(4, col)] = -2_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        for value in climate
+            .storm_suitability_ppm
+            .iter()
+            .chain(climate.storm_track_ppm.iter())
+            .chain(climate.storm_intensity_ppm.iter())
+        {
+            assert!(*value <= 1_000_000);
+        }
+        assert!(climate.metrics.mean_ocean_storm_suitability_ppm <= 1_000_000);
+        assert!(climate.metrics.storm_prone_ocean_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_storm_intensity_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_storm_track_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_drought_potential_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_heat_wave_potential_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_extreme_rainfall_potential_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_drought_potential_ppm > 0);
+    }
+
+    #[test]
+    fn extreme_potentials_are_statistics_of_seasonal_climate() {
+        let (arid, _, _) = classify_extreme_cell(true, 2_400, 3_200, 1_600, 80, 40, 20, 850_000);
+        let (wet, _, _) =
+            classify_extreme_cell(true, 2_400, 3_200, 1_600, 1_800, 2_000, 1_400, 80_000);
+        assert!(arid > wet, "arid {arid} wet {wet}");
+        let (_, land_heat, _) =
+            classify_extreme_cell(true, 2_800, 3_600, 1_400, 400, 500, 200, 300_000);
+        let (_, ocean_heat, _) =
+            classify_extreme_cell(false, 2_800, 3_000, 2_600, 400, 500, 200, 300_000);
+        assert!(
+            land_heat > ocean_heat,
+            "land {land_heat} ocean {ocean_heat}"
+        );
+        let (_, _, monsoon) =
+            classify_extreme_cell(true, 2_400, 2_800, 2_000, 900, 2_400, 200, 200_000);
+        let (_, _, even) = classify_extreme_cell(true, 2_400, 2_800, 2_000, 400, 420, 380, 200_000);
+        assert!(monsoon > even, "monsoon {monsoon} even {even}");
+        let (ocean_drought, _, _) =
+            classify_extreme_cell(false, 2_800, 3_000, 2_600, 80, 40, 20, 900_000);
+        assert_eq!(ocean_drought, 0);
     }
 }

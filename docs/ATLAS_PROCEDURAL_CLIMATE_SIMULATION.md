@@ -1482,6 +1482,9 @@ ocean thermal capacity
 ocean heat coupling
 ocean mixed-layer diffusivity
 ocean heat advection
+storm thermal-front scale
+storm divergence kill
+storm convergence scale
 ```
 
 ## Artistic tuning
@@ -1528,7 +1531,9 @@ runoff_fields              (diagnostic land runoff; hydrology input)
         ↓
 classify_biomes
         ↓
-derive_storms              (threshold climatology)
+derive_storms              (T, q, convergence, thermal |∇P|, Coriolis, solstice shear)
+        ↓
+extreme metrics            (drought / heat-wave / extreme rain from seasonal T/P)
 ```
 
 Stages 1–5 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, the leftover orographic rain fraction, and `LAND_MOISTURE_RECYCLE`. Pressure stays internal scratch. Stage 7 advects an internal ocean-temperature tracer along `derive_currents` and imprints it onto product T.
@@ -1553,7 +1558,7 @@ Treat the following as the starting surface, not as work to reimplement.
 | Seasons                 | Two-solstice year loop; product NH summer / winter T, wind, precipitation                                                                            | Annual T remains spin-up + latent; solstice T is that annual plus loop anomaly.                |
 | Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy on air T, Sverdrup, western boundary                                                      | 2D surface gyres. Internal mixed-layer T is advected along currents and imprinted onto product T. |
 | Biomes                  | `classify_biome_cell` from T, precipitation, humidity, aridity, elevation                                                                            | Already downstream of climate.                                                                 |
-| Storms                  | `derive_storms`: SST, humidity, Coriolis, solstice shear, fetch, tracks                                                                              | Already a derived event field.                                                                 |
+| Storms                  | `derive_storms`: SST, humidity, convergence, thermal `|∇P|`, Coriolis, solstice shear, fetch, tracks; drought / heat-wave / extreme-rain metrics from seasonal T/P | Climatology, not weather. Materialized storms stay `events.rs`. |
 
 Seeded wind meanders and band moisture multipliers may remain as unresolved perturbation. They must not become the source of temperature, rainfall, or biomes.
 
@@ -1576,7 +1581,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 shipped. Stage 6 shipped. Stage 7 shipped. Stage 8 is closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 shipped. Stage 6 shipped. Stage 7 shipped. Stage 8 shipped.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1756,7 +1761,7 @@ An internal mixed-layer tracer `T_ocean` is initialized from the energy T on `oc
 
 ## Stage 8 — Storms and extremes
 
-Closed until Stage 7 is done. Baseline `derive_storms` already exists; this stage finishes climatology against the coupled fields.
+Baseline `derive_storms` already existed; this stage finishes climatology against the coupled fields.
 
 **In this stage**
 
@@ -1767,6 +1772,10 @@ derive drought / heat-wave / extreme-rainfall potential from Stage 6 statistics
 ```
 
 Do not run daily weather across history. Materialized storms stay authored samples in `events.rs`.
+
+`classify_storm_cell` multiplies SST, humidity, latitude/Coriolis, `(1 − shear)`, convergence, thermal `|∇P|`, proximity, current, and fetch. SST is `max(annual, summer, winter)`. Convergence is the most-convergent of those three `wind_divergence_ppm` snapshots. Thermal `|∇P|` is the **max** ocean-neighbor `|ΔT|` across the same three snapshots (a seasonal front can kill genesis), scaled by cell spacing — a proxy for Stage 2 `P_thermal = −K_P ΔT`, not a stored P field. Land–sea jumps are ignored so coasts are not zeroed by the shoreline contrast. An isolated ocean cell with no ocean neighbor has `|∇P| = 0` (no front to measure; fetch already damps 1-cell ponds). Convergence factor is `(1 + 0.25 conv) × (1 − 0.70 div)` clamped to `[0, 1.25]`: strong low-level convergence may raise suitability 25% before the 1e6 cap; divergence damps. Physical knobs on `ClimateSettings`: `storm_pressure_gradient_start_centi` / `kill_centi` (default 2 °C / 9 °C), `storm_divergence_start_ppm` / `kill_ppm` (40k / 350k), `storm_convergence_full_ppm` (300k). Shear stays the solstice wind-vector difference. `STORM_SHEAR_START_MILLI` stays **2 500** (unchanged from Stage 2). `STORM_SHEAR_KILL_MILLI = 12_000` (`1.2 × MAX_WIND_MILLI`): that ΔV is reachable when solstice winds reverse at a large fraction of the clamp, so high-shear midlatitudes actually zero genesis. The Stage 2 value `20_000` was the vector-difference ceiling (`2 × MAX_WIND_MILLI`) and never fired.
+
+Drought / heat-wave / extreme-rainfall potentials are functions of annual and solstice T, P, and aridity (`classify_extreme_cell`). Drought ramps aridity from grassland (`GRASSLAND_ARIDITY_PPM` 200k) to desert (`DESERT_ARIDITY_PPM` 800k), dryness from 80 mm to forest precip (`FOREST_PRECIPITATION_MM` 500), and driest-solstice rain 20–200 mm. Heat-wave ramps peak T 22–38 °C plus solstice amplitude 4–25 °C, with ocean weight 0.25 because `C_ocean ≫ C_land` lags. Extreme rain ramps peak P 600–2500 mm (above forest) times monsoon contrast 80–800 mm. They are published as `ClimateMetrics` means, not `ClimateField` columns and not prognostic state. `with_winds_and_moisture_for_field` restamps storms and those metrics. `storm_corridors_follow_continental_heat_and_ocean_fetch` samples row 9 (south flank of the 32×16 continent): after coupled genesis, row 6 (north edge) is outside the surviving band on the east side, so east-fetch vs west-lee is checked where genesis still exists. `CLIMATE_DERIVATION_VERSION` is 10.
 
 **Not this stage:** anything from Stages 1–7.
 

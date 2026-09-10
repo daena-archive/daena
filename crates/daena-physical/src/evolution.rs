@@ -1833,6 +1833,9 @@ mod tests {
                 mean_storm_intensity_ppm: 0,
                 mean_land_storm_track_ppm: 0,
                 expected_storms_per_year_milli: 0,
+                mean_land_drought_potential_ppm: 0,
+                mean_heat_wave_potential_ppm: 0,
+                mean_extreme_rainfall_potential_ppm: 0,
             },
         }
     }

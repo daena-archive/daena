@@ -508,6 +508,9 @@ fn encode_climate(out: &mut Vec<u8>, climate: &ClimateField) -> Result<(), Physi
     write_u32(out, climate.metrics.mean_storm_intensity_ppm);
     write_u32(out, climate.metrics.mean_land_storm_track_ppm);
     write_u32(out, climate.metrics.expected_storms_per_year_milli);
+    write_u32(out, climate.metrics.mean_land_drought_potential_ppm);
+    write_u32(out, climate.metrics.mean_heat_wave_potential_ppm);
+    write_u32(out, climate.metrics.mean_extreme_rainfall_potential_ppm);
     Ok(())
 }
 
@@ -576,6 +579,9 @@ fn decode_climate(reader: &mut Reader<'_>) -> Result<ClimateField, PhysicalError
             mean_storm_intensity_ppm: reader.u32()?,
             mean_land_storm_track_ppm: reader.u32()?,
             expected_storms_per_year_milli: reader.u32()?,
+            mean_land_drought_potential_ppm: reader.u32()?,
+            mean_heat_wave_potential_ppm: reader.u32()?,
+            mean_extreme_rainfall_potential_ppm: reader.u32()?,
         },
     })
 }

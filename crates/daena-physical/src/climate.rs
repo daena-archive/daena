@@ -2,17 +2,18 @@
 //!
 //! Climate is a disposable interpretation of the accepted physical field. It
 //! never changes the canonical elevation/source bytes. The model is purposely
-//! bounded: a solar-driven latitude/altitude temperature field with two
-//! solstice states, an explicit rotation-and-temperature wind field, a
-//! wind-driven surface-ocean current field, moisture transport driven by those
-//! winds with sea-surface and current evaporation, humidity and aridity from
-//! remaining moisture versus local saturation and evaporative demand,
-//! precipitation that feeds runoff volumes using exact spherical cell areas,
-//! land biome classes from those climate conditions, and tropical-cyclone-like
-//! storm suitability, track corridors, and intensity potential. Storm genesis
-//! consumes D1–D4 (temperature, moisture, winds, and surface currents) plus
-//! land proximity. Wind shear is the seasonal (solstice) wind-vector
-//! difference, not vertical shear.
+//! bounded: an energy-balance annual temperature field with latitude insolation,
+//! land/ocean/ice albedo, heat diffusion, diagnostic altitude lapse, and a
+//! `maritime_factor` blend; two analytic solstice states; an explicit
+//! rotation-and-temperature wind field; a wind-driven surface-ocean current
+//! field; moisture transport driven by those winds with sea-surface and current
+//! evaporation; humidity and aridity from remaining moisture versus local
+//! saturation and evaporative demand; precipitation that feeds runoff volumes
+//! using exact spherical cell areas; land biome classes from those climate
+//! conditions; and tropical-cyclone-like storm suitability, track corridors,
+//! and intensity potential. Storm genesis consumes D1–D4 (temperature, moisture,
+//! winds, and surface currents) plus land proximity. Wind shear is the seasonal
+//! (solstice) wind-vector difference, not vertical shear.
 
 use super::{
     derive_subsystem_seed, splitmix64, Grid, PhysicalError, PhysicalErrorCode, PhysicalField,
@@ -24,7 +25,7 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 2;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 3;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -88,6 +89,9 @@ const PRECIPITATION_PATH_REF_METRES: f64 = 2_500_000.0;
 const MAX_CLIMATE_PRECIPITATION_MM: u32 = 100_000;
 const MAX_CLIMATE_MOISTURE_MM: u32 = 100_000;
 const MAX_CLIMATE_TEMPERATURE_CENTI_C: i32 = 10_000;
+const SOLAR_CONSTANT_WM2: f64 = 1_361.0;
+const ENERGY_BALANCE_DT_SECONDS: f64 = 7_776_000.0;
+const ENERGY_BALANCE_MIN_ITERATIONS: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HydrologyPreset {
@@ -109,6 +113,19 @@ pub struct ClimateSettings {
     pub convergence_ppm: u32,
     pub base_precipitation_ppm: u32,
     pub orographic_precipitation_ppm: u32,
+    pub olr_a_milli_wm2: u32,
+    pub olr_b_milli_wm2_per_c: u32,
+    pub heat_diffusivity_e9_w_per_c: u32,
+    pub c_land_kj_m2_k: u32,
+    pub c_ocean_kj_m2_k: u32,
+    pub albedo_ocean_ppm: u32,
+    pub albedo_land_ppm: u32,
+    pub albedo_ice_ppm: u32,
+    pub albedo_surface_ref_ppm: u32,
+    pub insolation_p2_ppm: u32,
+    pub insolation_polar_floor_ppm: u32,
+    pub energy_balance_max_iterations: u32,
+    pub energy_balance_tolerance_milli_c: u32,
     pub hydrology_preset: HydrologyPreset,
     pub planetary: PlanetaryConfiguration,
 }
@@ -127,6 +144,19 @@ impl ClimateSettings {
             convergence_ppm: 120_000,
             base_precipitation_ppm: 280_000,
             orographic_precipitation_ppm: 18_000_000,
+            olr_a_milli_wm2: 214_000,
+            olr_b_milli_wm2_per_c: 2_090,
+            heat_diffusivity_e9_w_per_c: 14_000,
+            c_land_kj_m2_k: 10_000,
+            c_ocean_kj_m2_k: 200_000,
+            albedo_ocean_ppm: 80_000,
+            albedo_land_ppm: 200_000,
+            albedo_ice_ppm: 400_000,
+            albedo_surface_ref_ppm: 150_000,
+            insolation_p2_ppm: 477_000,
+            insolation_polar_floor_ppm: 200_000,
+            energy_balance_max_iterations: 768,
+            energy_balance_tolerance_milli_c: 80,
             hydrology_preset: HydrologyPreset::Balanced,
             planetary: PlanetaryConfiguration::earth_like(),
         }
@@ -155,8 +185,53 @@ impl ClimateSettings {
                 "climate moisture parameters are outside the bounded range".into(),
             ));
         }
+        if !(50_000..=400_000).contains(&self.olr_a_milli_wm2)
+            || !(500..=8_000).contains(&self.olr_b_milli_wm2_per_c)
+            || !(100..=100_000).contains(&self.heat_diffusivity_e9_w_per_c)
+            || !(1_000..=1_000_000).contains(&self.c_land_kj_m2_k)
+            || !(10_000..=10_000_000).contains(&self.c_ocean_kj_m2_k)
+            || self.c_ocean_kj_m2_k < self.c_land_kj_m2_k
+            || !(20_000..=800_000).contains(&self.albedo_ocean_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_land_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_ice_ppm)
+            || !(50_000..=400_000).contains(&self.albedo_surface_ref_ppm)
+            || self.albedo_surface_ref_ppm >= 1_000_000
+            || self.insolation_p2_ppm > 1_000_000
+            || self.insolation_polar_floor_ppm > 500_000
+            || !(1..=4_096).contains(&self.energy_balance_max_iterations)
+            || !(1..=5_000).contains(&self.energy_balance_tolerance_milli_c)
+        {
+            return Err(PhysicalError::InvalidSettings(
+                "climate energy-balance coefficients are outside the bounded range".into(),
+            ));
+        }
         self.planetary.validate()?;
         Ok(())
+    }
+
+    fn olr_a_wm2(self) -> f64 {
+        f64::from(self.olr_a_milli_wm2) / 1_000.0
+    }
+
+    fn olr_b_wm2_per_c(self) -> f64 {
+        f64::from(self.olr_b_milli_wm2_per_c) / 1_000.0
+    }
+
+    fn heat_diffusivity_w_per_c(self) -> f64 {
+        f64::from(self.heat_diffusivity_e9_w_per_c) * 1e9
+    }
+
+    fn heat_capacity_j_m2_k(self, ocean: bool) -> f64 {
+        let kj = if ocean {
+            self.c_ocean_kj_m2_k
+        } else {
+            self.c_land_kj_m2_k
+        };
+        f64::from(kj) * 1_000.0
+    }
+
+    fn energy_balance_tolerance_c(self) -> f64 {
+        f64::from(self.energy_balance_tolerance_milli_c) / 1_000.0
     }
 }
 
@@ -388,12 +463,14 @@ impl ClimateField {
     pub fn with_winds_and_moisture_for_field(
         &self,
         field: &PhysicalField,
+        settings: ClimateSettings,
         seed: u32,
         retry_index: u32,
         progress: &mut dyn ProgressSink,
     ) -> Result<Self, PhysicalError> {
         field.validate().map_err(PhysicalError::InvalidSource)?;
         self.validate()?;
+        settings.validate()?;
         if self.grid != field.grid {
             return Err(PhysicalError::coded(
                 PhysicalErrorCode::GeometryInvalid,
@@ -403,7 +480,7 @@ impl ClimateField {
         let mut next = self.clone();
         let winds = derive_winds(
             field,
-            self.planetary,
+            settings.planetary,
             &next.temperature_centi_c,
             &next.temperature_nh_summer_centi_c,
             &next.temperature_nh_winter_centi_c,
@@ -422,9 +499,6 @@ impl ClimateField {
         next.wind_band = winds.band;
         next.wind_band_nh_summer = winds.band_summer;
         next.wind_band_nh_winter = winds.band_winter;
-        let mut settings = ClimateSettings::default_for(field.grid);
-        settings.planetary = self.planetary;
-        settings.validate()?;
         let climate_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
         stamp_currents(&mut next, field);
         let moisture = derive_moisture_fields(field, settings, climate_seed, &next, progress)?;
@@ -827,6 +901,141 @@ fn clamp_temperature(value: f64) -> Result<i32, PhysicalError> {
     ) as i32)
 }
 
+fn altitude_lapse_centi_c(field: &PhysicalField, settings: ClimateSettings, cell: usize) -> f64 {
+    let altitude_km = f64::from(
+        field.elevations_mm[cell]
+            .saturating_sub(field.sea_level_mm)
+            .max(0),
+    ) / 1_000_000.0;
+    altitude_km * f64::from(settings.altitude_lapse_centi_c_per_km)
+}
+
+fn annual_insolation_weight(latitude: f64, settings: ClimateSettings) -> f64 {
+    let sin_lat = latitude.sin();
+    let p2 = (3.0 * sin_lat * sin_lat - 1.0) / 2.0;
+    let weight = 1.0 - f64::from(settings.insolation_p2_ppm) / 1_000_000.0 * p2;
+    weight.max(f64::from(settings.insolation_polar_floor_ppm) / 1_000_000.0)
+}
+
+fn class_albedo(is_ocean: bool, icy: bool, settings: ClimateSettings) -> f64 {
+    let ppm = if icy {
+        settings.albedo_ice_ppm
+    } else if is_ocean {
+        settings.albedo_ocean_ppm
+    } else {
+        settings.albedo_land_ppm
+    };
+    f64::from(ppm) / 1_000_000.0
+}
+
+fn absorbed_fraction(class: f64, settings: ClimateSettings) -> f64 {
+    let bond = f64::from(settings.planetary.bond_albedo_ppm) / 1_000_000.0;
+    let reference = f64::from(settings.albedo_surface_ref_ppm) / 1_000_000.0;
+    ((1.0 - bond) * (1.0 - class) / (1.0 - reference).max(0.05)).clamp(0.05, 0.95)
+}
+
+fn toa_mean_wm2(settings: ClimateSettings) -> Result<f64, PhysicalError> {
+    let insolation = f64::from(settings.planetary.insolation_ppm()?);
+    let eccentricity = f64::from(settings.planetary.eccentricity_ppm) / 1_000_000.0;
+    let mean_factor = 1.0 / (1.0 - eccentricity * eccentricity).sqrt();
+    let wm2 = SOLAR_CONSTANT_WM2 / 4.0 * insolation / 1_000_000.0 * mean_factor;
+    if !wm2.is_finite() {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::NumericNonFinite,
+            "top-of-atmosphere insolation is not finite",
+        ));
+    }
+    Ok(wm2)
+}
+
+fn relax_annual_temperature(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    geometry: &[CellClimateGeometry],
+    initial_celsius: &[f64],
+    progress: &mut dyn ProgressSink,
+) -> Result<Vec<f64>, PhysicalError> {
+    let sample_count = field.grid.sample_count();
+    let toa = toa_mean_wm2(settings)?;
+    let olr_a = settings.olr_a_wm2();
+    let olr_b = settings.olr_b_wm2_per_c();
+    let diffusivity = settings.heat_diffusivity_w_per_c();
+    let q_force = olr_b
+        * f64::from(
+            settings.global_temperature_centi_c - EARTH_EQUATOR_BASE_CENTI_C
+                + settings.planetary.retained_heat_centi_c
+                - EARTH_RETAINED_HEAT_CENTI_C,
+        )
+        / 100.0;
+    let mut temperature = initial_celsius.to_vec();
+    let mut next = vec![0.0; sample_count];
+    let mut converged = false;
+    for iteration in 0..settings.energy_balance_max_iterations {
+        progress.check_cancelled()?;
+        let mut abs_delta_sum = 0.0;
+        for cell in 0..sample_count {
+            if cell % 128 == 0 {
+                progress.check_cancelled()?;
+            }
+            let (row, col) = field.grid.row_col(cell);
+            let west = field.grid.index(row, wrapped_col(field.grid, col, -1));
+            let east = field.grid.index(row, wrapped_col(field.grid, col, 1));
+            let south = field.grid.index(clamped_row(field.grid, row, -1), col);
+            let north = field.grid.index(clamped_row(field.grid, row, 1), col);
+            let dx_w = neighbor_metres(field.grid, row, col, 0, -1);
+            let dx_e = neighbor_metres(field.grid, row, col, 0, 1);
+            let dy_s = neighbor_metres(field.grid, row, col, -1, 0);
+            let dy_n = neighbor_metres(field.grid, row, col, 1, 0);
+            let x_span = (dx_w + dx_e) * 0.5;
+            let y_span = (dy_s + dy_n) * 0.5;
+            let neighbor_part = (temperature[west] / dx_w + temperature[east] / dx_e) / x_span
+                + (temperature[south] / dy_s + temperature[north] / dy_n) / y_span;
+            let diag = (1.0 / dx_w + 1.0 / dx_e) / x_span + (1.0 / dy_s + 1.0 / dy_n) / y_span;
+            let ocean = is_ocean(field, cell);
+            let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
+            let surface_centi_c = (temperature[cell] - lapse_c) * 100.0;
+            let q_solar = toa
+                * annual_insolation_weight(geometry[cell].latitude, settings)
+                * absorbed_fraction(
+                    class_albedo(ocean, surface_centi_c < 0.0, settings),
+                    settings,
+                );
+            let dt_over_c = ENERGY_BALANCE_DT_SECONDS / settings.heat_capacity_j_m2_k(ocean);
+            let k_diag = diffusivity * diag;
+            let numerator = temperature[cell]
+                + dt_over_c * (q_solar - olr_a + q_force + diffusivity * neighbor_part);
+            let denominator = 1.0 + dt_over_c * (olr_b + k_diag);
+            let updated = numerator / denominator;
+            if !updated.is_finite() {
+                return Err(PhysicalError::coded(
+                    PhysicalErrorCode::NumericNonFinite,
+                    "climate energy-balance temperature is not finite",
+                ));
+            }
+            abs_delta_sum += (updated - temperature[cell]).abs();
+            next[cell] = updated;
+        }
+        std::mem::swap(&mut temperature, &mut next);
+        let mean_abs_delta = abs_delta_sum / sample_count as f64;
+        if iteration + 1 >= ENERGY_BALANCE_MIN_ITERATIONS
+            && mean_abs_delta <= settings.energy_balance_tolerance_c()
+        {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::NumericNonConvergent,
+            format!(
+                "climate energy balance did not converge within {} iterations",
+                settings.energy_balance_max_iterations
+            ),
+        ));
+    }
+    Ok(temperature)
+}
+
 fn temperature_field(
     field: &PhysicalField,
     settings: ClimateSettings,
@@ -834,10 +1043,7 @@ fn temperature_field(
     progress: &mut dyn ProgressSink,
 ) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, Vec<u32>), PhysicalError> {
     let base = solar_base_centi_c(settings)?;
-    let mut temperatures = Vec::with_capacity(field.grid.sample_count());
-    let mut summers = Vec::with_capacity(field.grid.sample_count());
-    let mut winters = Vec::with_capacity(field.grid.sample_count());
-    let mut maritime_factors = Vec::with_capacity(field.grid.sample_count());
+    let mut initial_celsius = Vec::with_capacity(field.grid.sample_count());
     for (cell, cell_geometry) in geometry.iter().copied().enumerate() {
         if cell % 128 == 0 {
             progress.check_cancelled()?;
@@ -846,17 +1052,24 @@ fn temperature_field(
             (cell_geometry.latitude.abs() / std::f64::consts::FRAC_PI_2).clamp(0.0, 1.0);
         let latitude_cooling =
             f64::from(settings.latitude_cooling_centi_c) * latitude_fraction.powf(1.35);
-        let altitude_km = f64::from(
-            field.elevations_mm[cell]
-                .saturating_sub(field.sea_level_mm)
-                .max(0),
-        ) / 1_000_000.0;
-        let altitude_cooling = altitude_km * f64::from(settings.altitude_lapse_centi_c_per_km);
-        let continental_temperature = base - latitude_cooling - altitude_cooling;
-        let maritime_temperature = base - latitude_cooling * 0.58 - altitude_cooling * 0.62
-            + f64::from(settings.maritime_moderation_centi_c) * 0.18;
+        let continental_temperature = base - latitude_cooling;
+        let maritime_temperature =
+            base - latitude_cooling * 0.58 + f64::from(settings.maritime_moderation_centi_c) * 0.18;
         let temperature = continental_temperature
             + (maritime_temperature - continental_temperature) * cell_geometry.maritime_factor;
+        initial_celsius.push(temperature / 100.0);
+    }
+    let relaxed = relax_annual_temperature(field, settings, geometry, &initial_celsius, progress)?;
+    let mut temperatures = Vec::with_capacity(field.grid.sample_count());
+    let mut summers = Vec::with_capacity(field.grid.sample_count());
+    let mut winters = Vec::with_capacity(field.grid.sample_count());
+    let mut maritime_factors = Vec::with_capacity(field.grid.sample_count());
+    for (cell, cell_geometry) in geometry.iter().copied().enumerate() {
+        let lapse = altitude_lapse_centi_c(field, settings, cell);
+        let sea = relaxed[cell] * 100.0;
+        let continental = sea - lapse;
+        let maritime = sea - lapse * 0.62 + f64::from(settings.maritime_moderation_centi_c) * 0.18;
+        let temperature = continental + (maritime - continental) * cell_geometry.maritime_factor;
         let tilt_amplitude = seasonal_amplitude_centi_c(
             cell_geometry.latitude,
             cell_geometry.maritime_factor,
@@ -869,8 +1082,6 @@ fn temperature_field(
         } else {
             -1.0
         };
-        // Northern-summer solstice also carries the warmer-orbit half of
-        // eccentricity; perihelion longitude is not authored.
         let summer = temperature + tilt_amplitude * hemisphere + orbit_amplitude;
         let winter = temperature - tilt_amplitude * hemisphere - orbit_amplitude;
         temperatures.push(clamp_temperature(temperature)?);
@@ -3232,6 +3443,133 @@ mod tests {
     }
 
     #[test]
+    fn altitude_lapse_cools_land_above_sea_level() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-200_000; grid.sample_count()];
+        let row = 4;
+        for col in 0..grid.width {
+            elevations[grid.index(row, col)] = 200_000;
+        }
+        elevations[grid.index(row, 4)] = 200_000;
+        elevations[grid.index(row, 5)] = 2_200_000;
+        let physical = field(grid, elevations, 0);
+        let before = physical.elevations_mm.clone();
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(physical.elevations_mm, before);
+        let low = grid.index(row, 4);
+        let high = grid.index(row, 5);
+        assert!(
+            climate.temperature_centi_c[high] < climate.temperature_centi_c[low],
+            "high {} low {}",
+            climate.temperature_centi_c[high],
+            climate.temperature_centi_c[low]
+        );
+    }
+
+    #[test]
+    fn maritime_factor_warms_coasts_relative_to_interiors() {
+        let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        let row = 12;
+        for col in 8..24 {
+            elevations[grid.index(row, col)] = 200_000;
+            elevations[grid.index(row - 1, col)] = 200_000;
+            elevations[grid.index(row + 1, col)] = 200_000;
+        }
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let coast = grid.index(row, 8);
+        let interior = grid.index(row, 16);
+        assert!(climate.maritime_factor_ppm[coast] > climate.maritime_factor_ppm[interior]);
+        assert!(
+            climate.temperature_centi_c[coast] > climate.temperature_centi_c[interior],
+            "coast {} interior {}",
+            climate.temperature_centi_c[coast],
+            climate.temperature_centi_c[interior]
+        );
+    }
+
+    #[test]
+    fn energy_balance_errors_when_iteration_cap_is_too_low() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let physical = field(grid, vec![0; grid.sample_count()], 1);
+        let mut settings = ClimateSettings::default_for(grid);
+        settings.energy_balance_max_iterations = 2;
+        let error = derive_current_climate(
+            &physical,
+            settings,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            PhysicalErrorCode::NumericNonConvergent.as_str()
+        );
+    }
+
+    #[test]
+    fn climate_field_rejects_stale_derivation_version() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let physical = field(grid, vec![0; grid.sample_count()], 1);
+        let mut climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        climate.derivation_version = CLIMATE_DERIVATION_VERSION.saturating_sub(1);
+        assert!(climate.validate().is_err());
+    }
+
+    #[test]
+    fn ice_albedo_cools_frozen_cells_relative_to_open_water() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-200_000; grid.sample_count()];
+        let row = 4;
+        for col in 3..7 {
+            elevations[grid.index(row, col)] = 4_000_000;
+        }
+        let settings = ClimateSettings::default_for(grid);
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            settings,
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let lapse = 4.0 * f64::from(settings.altitude_lapse_centi_c_per_km);
+        let mountain = grid.index(row, 5);
+        let ocean = grid.index(row, 12);
+        assert!(climate.temperature_centi_c[mountain] < 0);
+        assert!(climate.temperature_centi_c[ocean] > 0);
+        assert!(
+            f64::from(climate.temperature_centi_c[mountain]) + lapse
+                < f64::from(climate.temperature_centi_c[ocean]),
+            "mountain {} ocean {} lapse {lapse}",
+            climate.temperature_centi_c[mountain],
+            climate.temperature_centi_c[ocean]
+        );
+    }
+
+    #[test]
     fn transport_is_periodic_across_the_antimeridian() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-2_000; grid.sample_count()];
@@ -3757,6 +4095,35 @@ mod tests {
     }
 
     #[test]
+    fn higher_luminosity_warms_the_annual_field() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let physical = field(grid, vec![0; grid.sample_count()], 1);
+        let earth = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut bright = ClimateSettings::default_for(grid);
+        bright.planetary.star_luminosity_ppm = 1_500_000;
+        bright.planetary.preset = crate::planetary::PlanetaryPreset::Custom;
+        let bright_climate = derive_current_climate(
+            &physical,
+            bright,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(
+            bright_climate.metrics.mean_temperature_centi_c
+                > earth.metrics.mean_temperature_centi_c
+        );
+    }
+
+    #[test]
     fn axial_tilt_creates_solstice_contrast() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
@@ -3971,9 +4338,10 @@ mod tests {
         let mut elevations = vec![500; grid.sample_count()];
         elevations[0] = -2_000;
         let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
         let climate = derive_current_climate(
             &physical,
-            ClimateSettings::default_for(grid),
+            settings,
             physical.seed,
             physical.retry_index,
             &mut NoopProgress,
@@ -3983,6 +4351,7 @@ mod tests {
             .with_global_temperature_offset(-500)
             .with_winds_and_moisture_for_field(
                 &physical,
+                settings,
                 physical.seed,
                 physical.retry_index,
                 &mut NoopProgress,
@@ -3995,6 +4364,7 @@ mod tests {
         let epoch = climate
             .with_winds_and_moisture_for_field(
                 &flooded,
+                settings,
                 physical.seed,
                 physical.retry_index,
                 &mut NoopProgress,
@@ -4007,6 +4377,47 @@ mod tests {
         );
         assert_ne!(epoch.current_east_milli, climate.current_east_milli);
         assert_ne!(epoch.current_north_milli, climate.current_north_milli);
+    }
+
+    #[test]
+    fn restamp_uses_caller_moisture_settings() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let climate = derive_current_climate(
+            &physical,
+            settings,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut wet = settings;
+        wet.ocean_moisture_mm_per_year = settings.ocean_moisture_mm_per_year.saturating_mul(2);
+        let default_stamp = climate
+            .with_winds_and_moisture_for_field(
+                &physical,
+                settings,
+                physical.seed,
+                physical.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        let wet_stamp = climate
+            .with_winds_and_moisture_for_field(
+                &physical,
+                wet,
+                physical.seed,
+                physical.retry_index,
+                &mut NoopProgress,
+            )
+            .unwrap();
+        assert_ne!(
+            wet_stamp.precipitation_mm_per_year,
+            default_stamp.precipitation_mm_per_year
+        );
     }
 
     #[test]
@@ -4508,9 +4919,10 @@ mod tests {
         let mut elevations = vec![500; grid.sample_count()];
         elevations[0] = -2_000;
         let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
         let present = derive_current_climate(
             &physical,
-            ClimateSettings::default_for(grid),
+            settings,
             physical.seed,
             physical.retry_index,
             &mut NoopProgress,
@@ -4520,6 +4932,7 @@ mod tests {
             .with_global_temperature_offset(-2_500)
             .with_winds_and_moisture_for_field(
                 &physical,
+                settings,
                 physical.seed,
                 physical.retry_index,
                 &mut NoopProgress,
@@ -4670,9 +5083,10 @@ mod tests {
             elevations[grid.index(4, col)] = -2_000;
         }
         let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
         let present = derive_current_climate(
             &physical,
-            ClimateSettings::default_for(grid),
+            settings,
             physical.seed,
             physical.retry_index,
             &mut NoopProgress,
@@ -4682,6 +5096,7 @@ mod tests {
             .with_global_temperature_offset(-2_500)
             .with_winds_and_moisture_for_field(
                 &physical,
+                settings,
                 physical.seed,
                 physical.retry_index,
                 &mut NoopProgress,

@@ -151,6 +151,7 @@ fn decode(bytes: &[u8]) -> Result<StaticDerivedPhysics, PhysicalError> {
         ));
     }
     let climate = decode_climate(&mut reader)?;
+    climate.validate()?;
     let evolution = decode_evolution(&mut reader)?;
     let hydrology = decode_hydrology(&mut reader)?;
     let curve_len = reader.u32()? as usize;
@@ -1121,5 +1122,21 @@ mod tests {
                 earth.climate_cache_token(),
             )
         );
+    }
+
+    #[test]
+    fn decode_rejects_stale_climate_derivation_version() {
+        let settings = GenerationSettings {
+            width: 8,
+            height: 4,
+            radius_metres: DEFAULT_RADIUS_METRES,
+            target_land_fraction_ppm: 300_000,
+        };
+        let world = generate_world(settings, 831_429, 0, &mut NoopProgress).unwrap();
+        let mut physics = StaticDerivedPhysics::from_world(&world).unwrap();
+        physics.climate.derivation_version =
+            crate::climate::CLIMATE_DERIVATION_VERSION.saturating_sub(1);
+        let encoded = encode(&physics).unwrap();
+        assert!(decode(&encoded).is_err());
     }
 }

@@ -433,6 +433,8 @@ fn derive_historical_world_with_cache(
     };
     let mut epoch_field = field.clone();
     epoch_field.sea_level_mm = initial_sea_level;
+    let mut climate_settings = ClimateSettings::default_for(field.grid);
+    climate_settings.planetary = planetary;
     let (mut climate, drainage) = if let Some(cache) = static_physics {
         (
             cache
@@ -440,6 +442,7 @@ fn derive_historical_world_with_cache(
                 .with_global_temperature_offset(temperature_offset)
                 .with_winds_and_moisture_for_field(
                     &epoch_field,
+                    climate_settings,
                     field.seed,
                     field.retry_index,
                     progress,
@@ -447,18 +450,16 @@ fn derive_historical_world_with_cache(
             cache.evolution.drainage.clone(),
         )
     } else {
-        let mut climate_settings = ClimateSettings::default_for(field.grid);
-        climate_settings.planetary = planetary;
-        climate_settings.global_temperature_centi_c = climate_settings
-            .global_temperature_centi_c
-            .saturating_add(temperature_offset);
-        let climate = climate::derive_current_climate(
+        let mut climate = climate::derive_current_climate(
             &epoch_field,
             climate_settings,
             field.seed,
             field.retry_index,
             progress,
         )?;
+        if temperature_offset != 0 {
+            climate = climate.with_global_temperature_offset(temperature_offset);
+        }
         progress.check_cancelled()?;
         let drainage = evolution::derive_drainage(&epoch_field, &climate)?;
         (climate, drainage)
@@ -495,6 +496,7 @@ fn derive_historical_world_with_cache(
         epoch_field.sea_level_mm = hydrology.sea_level_mm;
         climate = climate.with_winds_and_moisture_for_field(
             &epoch_field,
+            climate_settings,
             field.seed,
             field.retry_index,
             progress,
@@ -831,6 +833,7 @@ mod tests {
             .with_global_temperature_offset(cached.metrics.temperature_offset_centi_c)
             .with_winds_and_moisture_for_field(
                 &epoch_field,
+                ClimateSettings::default_for(world.field.grid),
                 world.field.seed,
                 world.field.retry_index,
                 &mut NoopProgress,

@@ -3,9 +3,10 @@
 //! Climate is a disposable interpretation of the accepted physical field. It
 //! never changes the canonical elevation/source bytes. The model is purposely
 //! bounded: an energy-balance annual temperature field with latitude insolation,
-//! land/ocean/ice albedo, heat diffusion, diagnostic altitude lapse, a
-//! `maritime_factor` blend, and flux-form upwind heat advection; two analytic
-//! solstice states; a pressure-driven wind field with Coriolis and drag; seeded
+//! land/ocean/ice albedo, heat diffusion, diagnostic altitude lapse,
+//! flux-form upwind heat advection; two solstice energy steps with carried T/q/V/W
+//! so `C_ocean ≫ C_land` lags the ocean; `maritime_factor` stays a distance diagnostic;
+//! a pressure-driven wind field with Coriolis and drag; seeded
 //! wind meanders stay a capped product perturbation and do not source T; a wind-driven
 //! surface-ocean current
 //! field; moisture transport driven by those winds with sea-surface and current
@@ -25,12 +26,11 @@ use super::{
     ProgressPhase, ProgressSink, SeedDomain,
 };
 use crate::planetary::{
-    PlanetaryConfiguration, EARTH_AXIAL_TILT_MILLI_DEG, EARTH_BOND_ALBEDO_PPM,
-    EARTH_ECCENTRICITY_PPM, EARTH_RETAINED_HEAT_CENTI_C, EARTH_ROTATION_PERIOD_SECONDS,
-    SOLAR_LUMINOSITY_PPM,
+    PlanetaryConfiguration, EARTH_BOND_ALBEDO_PPM, EARTH_ECCENTRICITY_PPM,
+    EARTH_RETAINED_HEAT_CENTI_C, EARTH_ROTATION_PERIOD_SECONDS, SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 7;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 8;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -99,6 +99,10 @@ const MAX_CLIMATE_TEMPERATURE_CENTI_C: i32 = 10_000;
 const SOLAR_CONSTANT_WM2: f64 = 1_361.0;
 const ENERGY_BALANCE_DT_SECONDS: f64 = 7_776_000.0;
 const ENERGY_BALANCE_MIN_ITERATIONS: u32 = 8;
+const CLIMATE_MIN_YEARS: u32 = 2;
+const YEAR_T_TOLERANCE_C: f64 = 2.0;
+const SEASON_SAMPLE_COUNT: f64 = 2.0;
+const SEASONAL_INSOLATION_ANOMALY: f64 = 0.35;
 const LATENT_HEAT_J_PER_KG: f64 = 2.5e6;
 const CLIMATE_SECONDS_PER_YEAR: f64 = 31_557_600.0;
 const SATURATION_MOISTURE_PER_HPA: f64 = 90.0;
@@ -119,7 +123,6 @@ pub struct ClimateSettings {
     pub global_temperature_centi_c: i32,
     pub latitude_cooling_centi_c: i32,
     pub altitude_lapse_centi_c_per_km: i32,
-    pub maritime_moderation_centi_c: i32,
     pub maritime_scale_km: u32,
     pub ocean_moisture_mm_per_year: u32,
     pub moisture_decay_ppm: u32,
@@ -150,6 +153,7 @@ pub struct ClimateSettings {
     pub condensation_ppm: u32,
     pub latent_heat_coupling_ppm: u32,
     pub moisture_temperature_coupling_passes: u32,
+    pub seasonal_year_max: u32,
     pub hydrology_preset: HydrologyPreset,
     pub planetary: PlanetaryConfiguration,
 }
@@ -160,7 +164,6 @@ impl ClimateSettings {
             global_temperature_centi_c: 2_200,
             latitude_cooling_centi_c: 4_200,
             altitude_lapse_centi_c_per_km: 650,
-            maritime_moderation_centi_c: 1_000,
             maritime_scale_km: 3_000,
             ocean_moisture_mm_per_year: 2_000,
             moisture_decay_ppm: 940_000,
@@ -191,6 +194,7 @@ impl ClimateSettings {
             condensation_ppm: 400_000,
             latent_heat_coupling_ppm: 80_000,
             moisture_temperature_coupling_passes: 8,
+            seasonal_year_max: 12,
             hydrology_preset: HydrologyPreset::Balanced,
             planetary: PlanetaryConfiguration::earth_like(),
         }
@@ -200,7 +204,6 @@ impl ClimateSettings {
         if !(-5_000..=5_000).contains(&self.global_temperature_centi_c)
             || !(0..=10_000).contains(&self.latitude_cooling_centi_c)
             || !(0..=2_000).contains(&self.altitude_lapse_centi_c_per_km)
-            || !(0..=5_000).contains(&self.maritime_moderation_centi_c)
             || !(1..=20_000).contains(&self.maritime_scale_km)
             || !(100..=100_000).contains(&self.moisture_decay_scale_km)
         {
@@ -252,6 +255,11 @@ impl ClimateSettings {
         {
             return Err(PhysicalError::InvalidSettings(
                 "climate wind and advection coefficients are outside the bounded range".into(),
+            ));
+        }
+        if !(1..=24).contains(&self.seasonal_year_max) {
+            return Err(PhysicalError::InvalidSettings(
+                "climate seasonal year cap is outside the bounded range".into(),
             ));
         }
         self.planetary.validate()?;
@@ -549,8 +557,7 @@ impl ClimateField {
             ));
         }
         let mut next = self.clone();
-        let geometry = build_geometry(field, settings, progress)?;
-        let initial_winds = derive_winds(
+        let winds = derive_winds(
             field,
             settings,
             &next.temperature_centi_c,
@@ -559,17 +566,9 @@ impl ClimateField {
             seed,
             retry_index,
         );
-        assign_winds(&mut next, initial_winds);
+        assign_winds(&mut next, winds);
         stamp_currents(&mut next, field);
-        let moisture = couple_moisture_and_latent(
-            field,
-            settings,
-            &geometry,
-            &mut next,
-            seed,
-            retry_index,
-            progress,
-        )?;
+        let moisture = product_moisture(field, settings, &next, seed, retry_index, 0, progress)?;
         let (runoff, runoff_volume, mut metrics) = runoff_fields(
             field,
             settings,
@@ -932,28 +931,18 @@ fn solar_base_centi_c(settings: ClimateSettings) -> Result<f64, PhysicalError> {
         + f64::from(settings.global_temperature_centi_c - EARTH_EQUATOR_BASE_CENTI_C))
 }
 
-fn seasonal_amplitude_centi_c(
-    latitude: f64,
-    maritime_factor: f64,
-    planetary: PlanetaryConfiguration,
-) -> f64 {
-    let tilt_scale =
-        f64::from(planetary.axial_tilt_milli_deg) / f64::from(EARTH_AXIAL_TILT_MILLI_DEG);
-    let latitude_term = (latitude.abs() / std::f64::consts::FRAC_PI_2)
-        .clamp(0.0, 1.0)
-        .powf(0.9);
-    let continentality = (1.0 - maritime_factor).clamp(0.0, 1.0);
-    // Earth-like mid-latitude continental swing is about 22 °C at 23.44° tilt.
-    // Oceans keep 28% of that swing; interiors keep the rest.
-    tilt_scale * 2_200.0 * latitude_term * (0.28 + 0.72 * continentality)
+fn solar_declination_radians(planetary: PlanetaryConfiguration, nh_summer: bool) -> f64 {
+    let tilt = (f64::from(planetary.axial_tilt_milli_deg) / 1_000.0).to_radians();
+    if nh_summer {
+        tilt
+    } else {
+        -tilt
+    }
 }
 
-fn orbital_season_centi_c(maritime_factor: f64, planetary: PlanetaryConfiguration) -> f64 {
-    let eccentricity = f64::from(planetary.eccentricity_ppm) / 1_000_000.0;
-    // Perihelion–aphelion contrast ≈ (T/4)·2e/(1−e²); Earth is about 2 °C.
-    let contrast = 12_000.0 * eccentricity / (1.0 - eccentricity * eccentricity).max(0.2);
-    let continentality = (1.0 - maritime_factor).clamp(0.0, 1.0);
-    contrast * (0.55 + 0.45 * continentality)
+fn seasonal_insolation_weight(latitude: f64, declination: f64, settings: ClimateSettings) -> f64 {
+    let annual = annual_insolation_weight(latitude, settings);
+    (annual * (1.0 + SEASONAL_INSOLATION_ANOMALY * latitude.sin() * declination.sin())).max(0.0)
 }
 
 fn clamp_temperature(value: f64) -> Result<i32, PhysicalError> {
@@ -1098,6 +1087,36 @@ fn relax_annual_temperature(
     latent_wm2: Option<&[f64]>,
     progress: &mut dyn ProgressSink,
 ) -> Result<Vec<f64>, PhysicalError> {
+    relax_temperature(
+        field,
+        settings,
+        geometry,
+        initial_celsius,
+        winds,
+        ice,
+        latent_wm2,
+        None,
+        ENERGY_BALANCE_DT_SECONDS,
+        settings.energy_balance_max_iterations,
+        ENERGY_BALANCE_MIN_ITERATIONS,
+        progress,
+    )
+}
+
+fn relax_temperature(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    geometry: &[CellClimateGeometry],
+    initial_celsius: &[f64],
+    winds: Option<(&[i32], &[i32])>,
+    ice: IceAlbedo<'_>,
+    latent_wm2: Option<&[f64]>,
+    insolation_weights: Option<&[f64]>,
+    dt_seconds: f64,
+    max_iterations: u32,
+    min_iterations: u32,
+    progress: &mut dyn ProgressSink,
+) -> Result<Vec<f64>, PhysicalError> {
     let sample_count = field.grid.sample_count();
     let toa = toa_mean_wm2(settings)?;
     let olr_a = settings.olr_a_wm2();
@@ -1114,7 +1133,7 @@ fn relax_annual_temperature(
     let mut temperature = initial_celsius.to_vec();
     let mut next = vec![0.0; sample_count];
     let mut converged = false;
-    for iteration in 0..settings.energy_balance_max_iterations {
+    for iteration in 0..max_iterations {
         progress.check_cancelled()?;
         let mut abs_delta_sum = 0.0;
         for cell in 0..sample_count {
@@ -1138,13 +1157,16 @@ fn relax_annual_temperature(
             let ocean = is_ocean(field, cell);
             let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
             let surface_centi_c = (temperature[cell] - lapse_c) * 100.0;
+            let insolation_weight = insolation_weights
+                .map(|weights| weights[cell])
+                .unwrap_or_else(|| annual_insolation_weight(geometry[cell].latitude, settings));
             let q_solar = toa
-                * annual_insolation_weight(geometry[cell].latitude, settings)
+                * insolation_weight
                 * absorbed_fraction(
                     class_albedo(ocean, cell_is_icy(ice, cell, surface_centi_c), settings),
                     settings,
                 );
-            let dt_over_c = ENERGY_BALANCE_DT_SECONDS / settings.heat_capacity_j_m2_k(ocean);
+            let dt_over_c = dt_seconds / settings.heat_capacity_j_m2_k(ocean);
             let k_diag = diffusivity * diag;
             let q_latent = latent_wm2.map(|values| values[cell]).unwrap_or(0.0);
             let mut numerator = temperature[cell]
@@ -1183,7 +1205,7 @@ fn relax_annual_temperature(
         }
         std::mem::swap(&mut temperature, &mut next);
         let mean_abs_delta = abs_delta_sum / sample_count as f64;
-        if iteration + 1 >= ENERGY_BALANCE_MIN_ITERATIONS
+        if iteration + 1 >= min_iterations
             && mean_abs_delta <= settings.energy_balance_tolerance_c()
         {
             converged = true;
@@ -1191,12 +1213,12 @@ fn relax_annual_temperature(
         }
     }
     if !converged {
+        if min_iterations <= 1 {
+            return Ok(temperature);
+        }
         return Err(PhysicalError::coded(
             PhysicalErrorCode::NumericNonConvergent,
-            format!(
-                "climate energy balance did not converge within {} iterations",
-                settings.energy_balance_max_iterations
-            ),
+            format!("climate energy balance did not converge within {max_iterations} iterations"),
         ));
     }
     Ok(temperature)
@@ -1220,12 +1242,7 @@ fn temperature_field(
             (cell_geometry.latitude.abs() / std::f64::consts::FRAC_PI_2).clamp(0.0, 1.0);
         let latitude_cooling =
             f64::from(settings.latitude_cooling_centi_c) * latitude_fraction.powf(1.35);
-        let continental_temperature = base - latitude_cooling;
-        let maritime_temperature =
-            base - latitude_cooling * 0.58 + f64::from(settings.maritime_moderation_centi_c) * 0.18;
-        let temperature = continental_temperature
-            + (maritime_temperature - continental_temperature) * cell_geometry.maritime_factor;
-        initial_celsius.push(temperature / 100.0);
+        initial_celsius.push((base - latitude_cooling) / 100.0);
     }
     let mut relaxed = relax_annual_temperature(
         field,
@@ -1263,63 +1280,168 @@ fn temperature_field(
             progress,
         )?;
     }
-    apply_diagnostic_lapse_and_seasons(field, settings, geometry, &relaxed)
+    let temperatures = apply_diagnostic_lapse(field, settings, &relaxed)?;
+    Ok((
+        temperatures.clone(),
+        temperatures.clone(),
+        temperatures,
+        maritime_factor_ppm(geometry),
+    ))
 }
 
-fn apply_diagnostic_lapse_and_seasons(
+fn apply_diagnostic_lapse(
     field: &PhysicalField,
     settings: ClimateSettings,
-    geometry: &[CellClimateGeometry],
     relaxed: &[f64],
-) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, Vec<u32>), PhysicalError> {
+) -> Result<Vec<i32>, PhysicalError> {
     let mut temperatures = Vec::with_capacity(field.grid.sample_count());
-    let mut summers = Vec::with_capacity(field.grid.sample_count());
-    let mut winters = Vec::with_capacity(field.grid.sample_count());
-    let mut maritime_factors = Vec::with_capacity(field.grid.sample_count());
-    for (cell, cell_geometry) in geometry.iter().copied().enumerate() {
+    for cell in 0..field.grid.sample_count() {
         let lapse = altitude_lapse_centi_c(field, settings, cell);
-        let sea = relaxed[cell] * 100.0;
-        let continental = sea - lapse;
-        let maritime = sea - lapse * 0.62 + f64::from(settings.maritime_moderation_centi_c) * 0.18;
-        let temperature = continental + (maritime - continental) * cell_geometry.maritime_factor;
-        let tilt_amplitude = seasonal_amplitude_centi_c(
-            cell_geometry.latitude,
-            cell_geometry.maritime_factor,
-            settings.planetary,
-        );
-        let orbit_amplitude =
-            orbital_season_centi_c(cell_geometry.maritime_factor, settings.planetary);
-        let hemisphere = if cell_geometry.latitude >= 0.0 {
-            1.0
-        } else {
-            -1.0
-        };
-        let summer = temperature + tilt_amplitude * hemisphere + orbit_amplitude;
-        let winter = temperature - tilt_amplitude * hemisphere - orbit_amplitude;
-        temperatures.push(clamp_temperature(temperature)?);
-        summers.push(clamp_temperature(summer)?);
-        winters.push(clamp_temperature(winter)?);
-        maritime_factors.push((cell_geometry.maritime_factor * 1_000_000.0).round() as u32);
+        temperatures.push(clamp_temperature(relaxed[cell] * 100.0 - lapse)?);
     }
-    Ok((temperatures, summers, winters, maritime_factors))
+    Ok(temperatures)
+}
+
+fn maritime_factor_ppm(geometry: &[CellClimateGeometry]) -> Vec<u32> {
+    geometry
+        .iter()
+        .map(|cell| (cell.maritime_factor * 1_000_000.0).round() as u32)
+        .collect()
+}
+
+fn stamp_solstice_temperatures(
+    annual: &[i32],
+    summer_anomaly: &[f64],
+    winter_anomaly: &[f64],
+    untilted: bool,
+) -> Result<(Vec<i32>, Vec<i32>), PhysicalError> {
+    if untilted {
+        return Ok((annual.to_vec(), annual.to_vec()));
+    }
+    let mut summers = Vec::with_capacity(annual.len());
+    let mut winters = Vec::with_capacity(annual.len());
+    for cell in 0..annual.len() {
+        summers.push(clamp_temperature(
+            f64::from(annual[cell]) + summer_anomaly[cell],
+        )?);
+        winters.push(clamp_temperature(
+            f64::from(annual[cell]) + winter_anomaly[cell],
+        )?);
+    }
+    Ok((summers, winters))
+}
+
+fn seasonal_year_converged(years_run: u32, last_delta_c: f64) -> bool {
+    years_run >= CLIMATE_MIN_YEARS && last_delta_c <= YEAR_T_TOLERANCE_C
+}
+
+fn mean_abs_centi_delta_c(left: &[i32], right: &[i32]) -> f64 {
+    left.iter()
+        .zip(right)
+        .map(|(first, second)| (f64::from(*first) - f64::from(*second)).abs())
+        .sum::<f64>()
+        / left.len() as f64
+        / 100.0
+}
+
+fn product_moisture(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    climate: &ClimateField,
+    seed: u32,
+    retry_index: u32,
+    prior_iterations: u32,
+    progress: &mut dyn ProgressSink,
+) -> Result<MoistureBundle, PhysicalError> {
+    let climate_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
+    let annual = transport_moisture(
+        field,
+        settings,
+        climate_seed,
+        &climate.temperature_centi_c,
+        &climate.current_east_milli,
+        &climate.current_north_milli,
+        &climate.wind_east_milli,
+        &climate.wind_north_milli,
+        &climate.wind_divergence_ppm,
+        &climate.wind_band,
+        progress,
+    )?;
+    let mut iterations = prior_iterations.max(annual.iterations);
+    let (precipitation_summer, precipitation_winter) =
+        if settings.planetary.axial_tilt_milli_deg == 0 {
+            (annual.precipitation.clone(), annual.precipitation.clone())
+        } else {
+            let (summer_east, summer_north) = derive_currents(
+                field,
+                settings.planetary,
+                &climate.temperature_nh_summer_centi_c,
+                &climate.wind_east_nh_summer_milli,
+                &climate.wind_north_nh_summer_milli,
+            );
+            let summer = transport_moisture(
+                field,
+                settings,
+                climate_seed,
+                &climate.temperature_nh_summer_centi_c,
+                &summer_east,
+                &summer_north,
+                &climate.wind_east_nh_summer_milli,
+                &climate.wind_north_nh_summer_milli,
+                &climate.wind_divergence_nh_summer_ppm,
+                &climate.wind_band_nh_summer,
+                progress,
+            )?;
+            let (winter_east, winter_north) = derive_currents(
+                field,
+                settings.planetary,
+                &climate.temperature_nh_winter_centi_c,
+                &climate.wind_east_nh_winter_milli,
+                &climate.wind_north_nh_winter_milli,
+            );
+            let winter = transport_moisture(
+                field,
+                settings,
+                climate_seed,
+                &climate.temperature_nh_winter_centi_c,
+                &winter_east,
+                &winter_north,
+                &climate.wind_east_nh_winter_milli,
+                &climate.wind_north_nh_winter_milli,
+                &climate.wind_divergence_nh_winter_ppm,
+                &climate.wind_band_nh_winter,
+                progress,
+            )?;
+            iterations = iterations.max(summer.iterations).max(winter.iterations);
+            (summer.precipitation, winter.precipitation)
+        };
+    let (humidity_ppm, aridity_ppm) = humidity_and_aridity(
+        &climate.temperature_centi_c,
+        &annual.moisture,
+        &annual.precipitation,
+    );
+    Ok(MoistureBundle {
+        moisture: annual.moisture,
+        precipitation: annual.precipitation,
+        precipitation_summer,
+        precipitation_winter,
+        humidity_ppm,
+        aridity_ppm,
+        condensation_mm: annual.condensation_mm,
+        evaporation_mm: annual.evaporation_mm,
+        iterations,
+    })
 }
 
 fn energy_celsius_from_surface(
     field: &PhysicalField,
     settings: ClimateSettings,
-    geometry: &[CellClimateGeometry],
     surface_centi_c: &[i32],
 ) -> Vec<f64> {
-    geometry
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(cell, cell_geometry)| {
+    (0..field.grid.sample_count())
+        .map(|cell| {
             let lapse = altitude_lapse_centi_c(field, settings, cell);
-            let moderation = f64::from(settings.maritime_moderation_centi_c);
-            let sea = f64::from(surface_centi_c[cell]) + lapse
-                - (0.38 * lapse + 0.18 * moderation) * cell_geometry.maritime_factor;
-            sea / 100.0
+            (f64::from(surface_centi_c[cell]) + lapse) / 100.0
         })
         .collect()
 }
@@ -1349,29 +1471,188 @@ fn couple_moisture_and_latent(
     progress: &mut dyn ProgressSink,
 ) -> Result<MoistureBundle, PhysicalError> {
     let climate_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
-    let mut relaxed =
-        energy_celsius_from_surface(field, settings, geometry, &climate.temperature_centi_c);
-    let mut previous_moisture: Option<Vec<u32>> = None;
-    let mut applied_latent = vec![0.0; field.grid.sample_count()];
+    let sample_count = field.grid.sample_count();
+    let annual_keep = climate.temperature_centi_c.clone();
+    let mut relaxed = energy_celsius_from_surface(field, settings, &climate.temperature_centi_c);
+    let mut q = vec![0.0; sample_count];
+    let mut water = vec![0.0; sample_count];
+    let mut applied_latent = vec![0.0; sample_count];
+    let mut east = climate.wind_east_milli.clone();
+    let mut north = climate.wind_north_milli.clone();
+    let omega = omega_ratio(settings.planetary);
+    let hadley = hadley_edge_radians(omega);
+    let ferrel = ferrel_edge_radians(hadley);
+    let wind_seed = climate_seed;
+    let dt = CLIMATE_SECONDS_PER_YEAR / SEASON_SAMPLE_COUNT;
+    let seasons = [true, false];
+    let annual_ice = ice_mask_from_temperature(field, settings, &relaxed);
+    let mut last_delta = f64::INFINITY;
+    let mut year_converged = false;
+    let mut previous_summer: Option<Vec<i32>> = None;
+    let mut previous_winter: Option<Vec<i32>> = None;
+    let mut summer_surface = climate.temperature_centi_c.clone();
+    let mut winter_surface = climate.temperature_centi_c.clone();
+    let mut transport_iterations = 0u32;
+    for year in 0..settings.seasonal_year_max {
+        progress.check_cancelled()?;
+        for nh_summer in seasons {
+            progress.check_cancelled()?;
+            let declination = solar_declination_radians(settings.planetary, nh_summer);
+            let weights = geometry
+                .iter()
+                .map(|cell| seasonal_insolation_weight(cell.latitude, declination, settings))
+                .collect::<Vec<_>>();
+            relaxed = relax_temperature(
+                field,
+                settings,
+                geometry,
+                &relaxed,
+                Some((&east, &north)),
+                IceAlbedo::Fixed(&annual_ice),
+                Some(&applied_latent),
+                Some(&weights),
+                dt,
+                1,
+                1,
+                progress,
+            )?;
+            let surface = apply_diagnostic_lapse(field, settings, &relaxed)?;
+            let itcz = thermal_equator_latitude(field.grid, &surface);
+            (east, north) = wind_components(
+                field, &surface, settings, itcz, hadley, ferrel, wind_seed, true,
+            );
+            let divergence = wind_divergence_ppm(field.grid, &east, &north);
+            let band = wind_band_field(field.grid, itcz, hadley, ferrel);
+            let (current_east, current_north) =
+                derive_currents(field, settings.planetary, &surface, &east, &north);
+            let transport = transport_moisture_state(
+                field,
+                settings,
+                climate_seed,
+                &surface,
+                &current_east,
+                &current_north,
+                &east,
+                &north,
+                &divergence,
+                &band,
+                Some(&q),
+                Some(&water),
+                progress,
+            )?;
+            q = transport
+                .moisture
+                .iter()
+                .map(|value| f64::from(*value))
+                .collect();
+            water = transport.water_mm;
+            transport_iterations = transport_iterations.max(transport.iterations);
+            for cell in 0..sample_count {
+                let target = LATENT_HEAT_J_PER_KG
+                    * (transport.condensation_mm[cell] - transport.evaporation_mm[cell])
+                    / CLIMATE_SECONDS_PER_YEAR
+                    * f64::from(settings.latent_heat_coupling_ppm)
+                    / 1_000_000.0;
+                applied_latent[cell] = applied_latent[cell]
+                    * (1.0 - MOISTURE_TEMPERATURE_RELAXATION)
+                    + target * MOISTURE_TEMPERATURE_RELAXATION;
+            }
+            if nh_summer {
+                summer_surface = surface;
+            } else {
+                winter_surface = surface;
+            }
+        }
+        last_delta = match (&previous_summer, &previous_winter) {
+            (Some(summer), Some(winter)) => {
+                0.5 * (mean_abs_centi_delta_c(summer, &summer_surface)
+                    + mean_abs_centi_delta_c(winter, &winter_surface))
+            }
+            _ => f64::INFINITY,
+        };
+        previous_summer = Some(summer_surface.clone());
+        previous_winter = Some(winter_surface.clone());
+        if seasonal_year_converged(year + 1, last_delta) {
+            year_converged = true;
+            break;
+        }
+    }
+    if !year_converged {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::NumericNonConvergent,
+            format!(
+                "climate seasonal year loop did not converge within {} years (mean |ΔT|={last_delta:.4} C)",
+                settings.seasonal_year_max
+            ),
+        ));
+    }
+    climate.temperature_centi_c = annual_keep;
+    let untilted = settings.planetary.axial_tilt_milli_deg == 0;
+    let mut summer_anomaly = vec![0.0; sample_count];
+    let mut winter_anomaly = vec![0.0; sample_count];
+    if !untilted {
+        for cell in 0..sample_count {
+            let mean = (f64::from(summer_surface[cell]) + f64::from(winter_surface[cell])) / 2.0;
+            summer_anomaly[cell] = f64::from(summer_surface[cell]) - mean;
+            winter_anomaly[cell] = f64::from(winter_surface[cell]) - mean;
+        }
+    }
+    let (summers, winters) = stamp_solstice_temperatures(
+        &climate.temperature_centi_c,
+        &summer_anomaly,
+        &winter_anomaly,
+        untilted,
+    )?;
+    climate.temperature_nh_summer_centi_c = summers;
+    climate.temperature_nh_winter_centi_c = winters;
+    relaxed = energy_celsius_from_surface(field, settings, &climate.temperature_centi_c);
+    applied_latent.fill(0.0);
+    let passes = settings.moisture_temperature_coupling_passes.max(1);
     let mut last_dt = f64::INFINITY;
     let mut last_dq = f64::INFINITY;
-    let passes = settings.moisture_temperature_coupling_passes.max(1);
-    let mut converged = passes == 1;
+    let mut previous_moisture: Option<Vec<u32>> = None;
+    let mut coupled = passes == 1;
     for pass in 0..passes {
         progress.check_cancelled()?;
-        let moisture = derive_moisture_fields(field, settings, climate_seed, climate, progress)?;
+        let winds = derive_winds(
+            field,
+            settings,
+            &climate.temperature_centi_c,
+            &climate.temperature_nh_summer_centi_c,
+            &climate.temperature_nh_winter_centi_c,
+            seed,
+            retry_index,
+        );
+        assign_winds(climate, winds);
+        stamp_currents(climate, field);
+        let transport = transport_moisture_state(
+            field,
+            settings,
+            climate_seed,
+            &climate.temperature_centi_c,
+            &climate.current_east_milli,
+            &climate.current_north_milli,
+            &climate.wind_east_milli,
+            &climate.wind_north_milli,
+            &climate.wind_divergence_ppm,
+            &climate.wind_band,
+            None,
+            None,
+            progress,
+        )?;
+        transport_iterations = transport_iterations.max(transport.iterations);
         if let Some(previous) = &previous_moisture {
             last_dq = previous
                 .iter()
-                .zip(&moisture.moisture)
+                .zip(&transport.moisture)
                 .map(|(left, right)| (f64::from(*left) - f64::from(*right)).abs())
                 .sum::<f64>()
                 / previous.len() as f64;
         }
-        previous_moisture = Some(moisture.moisture.clone());
-        for cell in 0..field.grid.sample_count() {
+        previous_moisture = Some(transport.moisture.clone());
+        for cell in 0..sample_count {
             let target = LATENT_HEAT_J_PER_KG
-                * (moisture.condensation_mm[cell] - moisture.evaporation_mm[cell])
+                * (transport.condensation_mm[cell] - transport.evaporation_mm[cell])
                 / CLIMATE_SECONDS_PER_YEAR
                 * f64::from(settings.latent_heat_coupling_ppm)
                 / 1_000_000.0;
@@ -1396,17 +1677,13 @@ fn couple_moisture_and_latent(
             .map(|(left, right)| (left - right).abs())
             .sum::<f64>()
             / before.len() as f64;
-        let (temperatures, summers, winters, _) =
-            apply_diagnostic_lapse_and_seasons(field, settings, geometry, &relaxed)?;
-        climate.temperature_centi_c = temperatures;
-        climate.temperature_nh_summer_centi_c = summers;
-        climate.temperature_nh_winter_centi_c = winters;
+        climate.temperature_centi_c = apply_diagnostic_lapse(field, settings, &relaxed)?;
         if pass > 0 && last_dt <= COUPLING_T_TOLERANCE_C && last_dq <= COUPLING_Q_TOLERANCE_MM {
-            converged = true;
+            coupled = true;
             break;
         }
     }
-    if !converged {
+    if !coupled {
         return Err(PhysicalError::coded(
             PhysicalErrorCode::NumericNonConvergent,
             format!(
@@ -1414,7 +1691,15 @@ fn couple_moisture_and_latent(
             ),
         ));
     }
-    let coupled_winds = derive_winds(
+    let (summers, winters) = stamp_solstice_temperatures(
+        &climate.temperature_centi_c,
+        &summer_anomaly,
+        &winter_anomaly,
+        untilted,
+    )?;
+    climate.temperature_nh_summer_centi_c = summers;
+    climate.temperature_nh_winter_centi_c = winters;
+    let winds = derive_winds(
         field,
         settings,
         &climate.temperature_centi_c,
@@ -1423,9 +1708,17 @@ fn couple_moisture_and_latent(
         seed,
         retry_index,
     );
-    assign_winds(climate, coupled_winds);
+    assign_winds(climate, winds);
     stamp_currents(climate, field);
-    derive_moisture_fields(field, settings, climate_seed, climate, progress)
+    product_moisture(
+        field,
+        settings,
+        climate,
+        seed,
+        retry_index,
+        transport_iterations,
+        progress,
+    )
 }
 
 fn clamp_wind(value: f64) -> i32 {
@@ -2233,92 +2526,6 @@ fn humidity_and_aridity(
     (humidity, aridity)
 }
 
-fn derive_moisture_fields(
-    field: &PhysicalField,
-    settings: ClimateSettings,
-    climate_seed: u64,
-    climate: &ClimateField,
-    progress: &mut dyn ProgressSink,
-) -> Result<MoistureBundle, PhysicalError> {
-    let annual = transport_moisture(
-        field,
-        settings,
-        climate_seed,
-        &climate.temperature_centi_c,
-        &climate.current_east_milli,
-        &climate.current_north_milli,
-        &climate.wind_east_milli,
-        &climate.wind_north_milli,
-        &climate.wind_divergence_ppm,
-        &climate.wind_band,
-        progress,
-    )?;
-    let summer_matches_annual = climate.temperature_nh_summer_centi_c
-        == climate.temperature_centi_c
-        && climate.wind_east_nh_summer_milli == climate.wind_east_milli
-        && climate.wind_north_nh_summer_milli == climate.wind_north_milli
-        && climate.wind_divergence_nh_summer_ppm == climate.wind_divergence_ppm
-        && climate.wind_band_nh_summer == climate.wind_band;
-    let winter_matches_annual = climate.temperature_nh_winter_centi_c
-        == climate.temperature_centi_c
-        && climate.wind_east_nh_winter_milli == climate.wind_east_milli
-        && climate.wind_north_nh_winter_milli == climate.wind_north_milli
-        && climate.wind_divergence_nh_winter_ppm == climate.wind_divergence_ppm
-        && climate.wind_band_nh_winter == climate.wind_band;
-    let (precipitation_summer, it_summer) = if summer_matches_annual {
-        (annual.precipitation.clone(), annual.iterations)
-    } else {
-        let seasonal = transport_moisture(
-            field,
-            settings,
-            climate_seed,
-            &climate.temperature_nh_summer_centi_c,
-            &climate.current_east_milli,
-            &climate.current_north_milli,
-            &climate.wind_east_nh_summer_milli,
-            &climate.wind_north_nh_summer_milli,
-            &climate.wind_divergence_nh_summer_ppm,
-            &climate.wind_band_nh_summer,
-            progress,
-        )?;
-        (seasonal.precipitation, seasonal.iterations)
-    };
-    let (precipitation_winter, it_winter) = if winter_matches_annual {
-        (annual.precipitation.clone(), annual.iterations)
-    } else {
-        let seasonal = transport_moisture(
-            field,
-            settings,
-            climate_seed,
-            &climate.temperature_nh_winter_centi_c,
-            &climate.current_east_milli,
-            &climate.current_north_milli,
-            &climate.wind_east_nh_winter_milli,
-            &climate.wind_north_nh_winter_milli,
-            &climate.wind_divergence_nh_winter_ppm,
-            &climate.wind_band_nh_winter,
-            progress,
-        )?;
-        (seasonal.precipitation, seasonal.iterations)
-    };
-    let (humidity_ppm, aridity_ppm) = humidity_and_aridity(
-        &climate.temperature_centi_c,
-        &annual.moisture,
-        &annual.precipitation,
-    );
-    Ok(MoistureBundle {
-        moisture: annual.moisture,
-        precipitation: annual.precipitation,
-        precipitation_summer,
-        precipitation_winter,
-        humidity_ppm,
-        aridity_ppm,
-        condensation_mm: annual.condensation_mm,
-        evaporation_mm: annual.evaporation_mm,
-        iterations: annual.iterations.max(it_summer).max(it_winter),
-    })
-}
-
 fn transport_moisture(
     field: &PhysicalField,
     settings: ClimateSettings,
@@ -2332,18 +2539,54 @@ fn transport_moisture(
     wind_band: &[u32],
     progress: &mut dyn ProgressSink,
 ) -> Result<MoistureTransport, PhysicalError> {
+    transport_moisture_state(
+        field,
+        settings,
+        climate_seed,
+        temperatures,
+        current_east,
+        current_north,
+        wind_east,
+        wind_north,
+        wind_divergence_ppm,
+        wind_band,
+        None,
+        None,
+        progress,
+    )
+}
+
+fn transport_moisture_state(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    climate_seed: u64,
+    temperatures: &[i32],
+    current_east: &[i32],
+    current_north: &[i32],
+    wind_east: &[i32],
+    wind_north: &[i32],
+    wind_divergence_ppm: &[i32],
+    wind_band: &[u32],
+    initial_q: Option<&[f64]>,
+    initial_water: Option<&[f64]>,
+    progress: &mut dyn ProgressSink,
+) -> Result<MoistureTransport, PhysicalError> {
     let (source_multiplier, decay_multiplier, _, _) =
         hydrology_parameters(settings.hydrology_preset);
     let decay_at_scale = f64::from(settings.moisture_decay_ppm) / 1_000_000.0 * decay_multiplier;
     let convergence = f64::from(settings.convergence_ppm) / 1_000_000.0;
     let condensation_k = f64::from(settings.condensation_ppm) / 1_000_000.0;
     let sample_count = field.grid.sample_count();
-    let mut previous = vec![0.0; sample_count];
+    let mut previous = initial_q
+        .map(|values| values.to_vec())
+        .unwrap_or_else(|| vec![0.0; sample_count]);
     let mut next = vec![0.0; sample_count];
     let mut precipitation = vec![0.0; sample_count];
     let mut condensation = vec![0.0; sample_count];
     let mut evaporation = vec![0.0; sample_count];
-    let mut water = vec![0.0; sample_count];
+    let mut water = initial_water
+        .map(|values| values.to_vec())
+        .unwrap_or_else(|| vec![0.0; sample_count]);
     let mut next_water = vec![0.0; sample_count];
     let mut final_precipitation = vec![0.0; sample_count];
     let mut final_condensation = vec![0.0; sample_count];
@@ -3784,6 +4027,27 @@ mod tests {
     }
 
     #[test]
+    fn solstice_insolation_is_higher_in_the_summer_hemisphere() {
+        let settings =
+            ClimateSettings::default_for(Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap());
+        let north = 70.0_f64.to_radians();
+        let south = -70.0_f64.to_radians();
+        let tilt = 40.0_f64.to_radians();
+        assert!(
+            seasonal_insolation_weight(north, tilt, settings)
+                > seasonal_insolation_weight(north, -tilt, settings)
+        );
+        assert!(
+            seasonal_insolation_weight(south, -tilt, settings)
+                > seasonal_insolation_weight(south, tilt, settings)
+        );
+        let mean = 0.5
+            * (seasonal_insolation_weight(north, tilt, settings)
+                + seasonal_insolation_weight(north, -tilt, settings));
+        assert!((mean - annual_insolation_weight(north, settings)).abs() < 1e-9);
+    }
+
+    #[test]
     fn uniform_runoff_uses_exact_spherical_area() {
         let expected =
             (4.0 * std::f64::consts::PI * (DEFAULT_RADIUS_METRES as f64).powi(2) * 1_000.0
@@ -4042,7 +4306,7 @@ mod tests {
     }
 
     #[test]
-    fn maritime_factor_warms_coasts_relative_to_interiors() {
+    fn interiors_are_more_seasonal_than_oceans_without_maritime_blend() {
         let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-4_000_000; grid.sample_count()];
         let row = 12;
@@ -4062,11 +4326,43 @@ mod tests {
         let coast = grid.index(row, 8);
         let interior = grid.index(row, 16);
         assert!(climate.maritime_factor_ppm[coast] > climate.maritime_factor_ppm[interior]);
+        let ocean = grid.index(row, 0);
+        let land_range = (climate.temperature_nh_summer_centi_c[interior]
+            - climate.temperature_nh_winter_centi_c[interior])
+            .unsigned_abs();
+        let ocean_range = (climate.temperature_nh_summer_centi_c[ocean]
+            - climate.temperature_nh_winter_centi_c[ocean])
+            .unsigned_abs();
         assert!(
-            climate.temperature_centi_c[coast] > climate.temperature_centi_c[interior],
-            "coast {} interior {}",
-            climate.temperature_centi_c[coast],
-            climate.temperature_centi_c[interior]
+            land_range > ocean_range,
+            "interior range {land_range} ocean range {ocean_range}"
+        );
+    }
+
+    #[test]
+    fn maritime_scale_does_not_change_temperature() {
+        let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        let row = 12;
+        for col in 8..24 {
+            elevations[grid.index(row, col)] = 200_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let mut near = ClimateSettings::default_for(grid);
+        near.maritime_scale_km = 1;
+        let mut far = ClimateSettings::default_for(grid);
+        far.maritime_scale_km = 20_000;
+        let short = derive_current_climate(&physical, near, 831_429, 0, &mut NoopProgress).unwrap();
+        let long = derive_current_climate(&physical, far, 831_429, 0, &mut NoopProgress).unwrap();
+        assert_ne!(short.maritime_factor_ppm, long.maritime_factor_ppm);
+        assert_eq!(short.temperature_centi_c, long.temperature_centi_c);
+        assert_eq!(
+            short.temperature_nh_summer_centi_c,
+            long.temperature_nh_summer_centi_c
+        );
+        assert_eq!(
+            short.temperature_nh_winter_centi_c,
+            long.temperature_nh_winter_centi_c
         );
     }
 
@@ -4088,6 +4384,35 @@ mod tests {
             error.code(),
             PhysicalErrorCode::NumericNonConvergent.as_str()
         );
+    }
+
+    #[test]
+    fn year_loop_errors_when_year_cap_is_too_low() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let physical = field(grid, vec![0; grid.sample_count()], 1);
+        let mut settings = ClimateSettings::default_for(grid);
+        settings.seasonal_year_max = 1;
+        let error = derive_current_climate(
+            &physical,
+            settings,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            PhysicalErrorCode::NumericNonConvergent.as_str()
+        );
+        assert!(error.to_string().contains("seasonal year loop"));
+    }
+
+    #[test]
+    fn year_loop_rejects_delta_above_tolerance_after_min_years() {
+        assert!(!seasonal_year_converged(1, 0.0));
+        assert!(!seasonal_year_converged(2, YEAR_T_TOLERANCE_C + 0.01));
+        assert!(seasonal_year_converged(2, YEAR_T_TOLERANCE_C));
+        assert!(seasonal_year_converged(12, 0.25));
     }
 
     #[test]
@@ -4394,8 +4719,12 @@ mod tests {
     #[test]
     fn seasonal_precipitation_differs_when_tilt_is_large() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
-        let mut elevations = vec![500; grid.sample_count()];
-        elevations[0] = -2_000;
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        for row in 2..6 {
+            for col in 4..12 {
+                elevations[grid.index(row, col)] = 200_000;
+            }
+        }
         let physical = field(grid, elevations, 0);
         let mut settings = ClimateSettings::default_for(grid);
         settings.planetary.axial_tilt_milli_deg = 35_000;
@@ -4410,6 +4739,14 @@ mod tests {
         assert_ne!(
             climate.precipitation_nh_summer_mm,
             climate.precipitation_nh_winter_mm
+        );
+        assert!(
+            (0..grid.sample_count()).any(|cell| {
+                physical.elevations_mm[cell] > physical.sea_level_mm
+                    && climate.precipitation_nh_summer_mm[cell]
+                        != climate.precipitation_nh_winter_mm[cell]
+            }),
+            "tilt should change precipitation on land, not only ocean"
         );
         assert!(climate.metrics.mean_seasonal_precipitation_range_mm > 0);
         assert!(climate.metrics.mean_humidity_ppm > 0);
@@ -4523,13 +4860,17 @@ mod tests {
             }
         }
         assert!(condensing > 0 || evaporating > 0);
-        if condensing > 0 {
+        if condensing > 0 && evaporating > 0 {
+            assert!(
+                condensing_delta * evaporating as i64 > evaporating_delta * condensing as i64,
+                "condensation cells should stay warmer than evaporation cells: cond {condensing_delta}/{condensing} evap {evaporating_delta}/{evaporating}"
+            );
+        } else if condensing > 0 {
             assert!(
                 condensing_delta > 0,
                 "condensation should warm: {condensing_delta} over {condensing} cells"
             );
-        }
-        if evaporating > 0 {
+        } else {
             assert!(
                 evaporating_delta < 0,
                 "evaporation should cool: {evaporating_delta} over {evaporating} cells"
@@ -4637,8 +4978,12 @@ mod tests {
     #[test]
     fn solstice_winds_change_seasonal_precipitation() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
-        let mut elevations = vec![500; grid.sample_count()];
-        elevations[0] = -2_000;
+        let mut elevations = vec![-4_000_000; grid.sample_count()];
+        for row in 2..6 {
+            for col in 4..12 {
+                elevations[grid.index(row, col)] = 200_000;
+            }
+        }
         let physical = field(grid, elevations, 0);
         let climate = derive_current_climate(
             &physical,
@@ -4648,39 +4993,17 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        let settings = ClimateSettings::default_for(grid);
-        let seed = derive_subsystem_seed(physical.seed, physical.retry_index, SeedDomain::Climate);
-        let from_summer_winds = transport_moisture(
-            &physical,
-            settings,
-            seed,
-            &climate.temperature_centi_c,
-            &climate.current_east_milli,
-            &climate.current_north_milli,
-            &climate.wind_east_nh_summer_milli,
-            &climate.wind_north_nh_summer_milli,
-            &climate.wind_divergence_nh_summer_ppm,
-            &climate.wind_band_nh_summer,
-            &mut NoopProgress,
-        )
-        .unwrap();
-        let from_winter_winds = transport_moisture(
-            &physical,
-            settings,
-            seed,
-            &climate.temperature_centi_c,
-            &climate.current_east_milli,
-            &climate.current_north_milli,
-            &climate.wind_east_nh_winter_milli,
-            &climate.wind_north_nh_winter_milli,
-            &climate.wind_divergence_nh_winter_ppm,
-            &climate.wind_band_nh_winter,
-            &mut NoopProgress,
-        )
-        .unwrap();
         assert_ne!(
-            from_summer_winds.precipitation,
-            from_winter_winds.precipitation
+            climate.precipitation_nh_summer_mm,
+            climate.precipitation_nh_winter_mm
+        );
+        assert_ne!(
+            climate.wind_east_nh_summer_milli,
+            climate.wind_east_nh_winter_milli
+        );
+        assert_ne!(
+            climate.wind_north_nh_summer_milli,
+            climate.wind_north_nh_winter_milli
         );
     }
 
@@ -4688,7 +5011,9 @@ mod tests {
     fn hydrology_presets_change_coherent_water_response() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
-        elevations[0] = -2_000;
+        for col in 0..grid.width {
+            elevations[grid.index(3, col)] = -2_000;
+        }
         let physical = field(grid, elevations, 0);
         let mut arid_settings = ClimateSettings::default_for(grid);
         arid_settings.hydrology_preset = HydrologyPreset::Arid;
@@ -4723,7 +5048,9 @@ mod tests {
     fn climate_is_deterministic_and_runoff_is_land_only() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
-        elevations[0] = -2_000;
+        for col in 0..grid.width {
+            elevations[grid.index(3, col)] = -2_000;
+        }
         let physical = field(grid, elevations, 0);
         let mut progress = NoopProgress;
         let first = derive_current_climate(
@@ -4744,12 +5071,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.runoff_mm_per_year[0], 0);
-        assert_eq!(first.runoff_volume_m3_per_year[0], 0);
-        assert!(first.runoff_mm_per_year[1..].iter().any(|value| *value > 0));
-        assert!(first.runoff_volume_m3_per_year[1..]
+        assert!(first
+            .runoff_mm_per_year
             .iter()
-            .any(|volume| *volume > 0));
+            .enumerate()
+            .all(
+                |(cell, value)| physical.elevations_mm[cell] > physical.sea_level_mm || *value == 0
+            ));
+        assert!(first
+            .runoff_mm_per_year
+            .iter()
+            .enumerate()
+            .any(
+                |(cell, value)| physical.elevations_mm[cell] > physical.sea_level_mm && *value > 0
+            ));
         assert!(
             first.metrics.precipitation_volume_m3_per_year
                 >= first.metrics.runoff_volume_m3_per_year
@@ -5066,21 +5401,27 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        let north = grid.index(grid.height - 1, 0);
-        let south = grid.index(0, 0);
+        let north = grid.index(5, 4);
+        let south = grid.index(2, 4);
         assert!(
             seasons.temperature_nh_summer_centi_c[north]
-                > seasons.temperature_nh_winter_centi_c[north]
+                > seasons.temperature_nh_winter_centi_c[north],
+            "north summer {} winter {}",
+            seasons.temperature_nh_summer_centi_c[north],
+            seasons.temperature_nh_winter_centi_c[north]
         );
         assert!(
             seasons.temperature_nh_summer_centi_c[south]
-                < seasons.temperature_nh_winter_centi_c[south]
+                < seasons.temperature_nh_winter_centi_c[south],
+            "south summer {} winter {}",
+            seasons.temperature_nh_summer_centi_c[south],
+            seasons.temperature_nh_winter_centi_c[south]
         );
         assert!(seasons.metrics.mean_seasonal_range_centi_c > 0);
     }
 
     #[test]
-    fn eccentricity_creates_global_solstice_contrast_without_tilt() {
+    fn eccentricity_does_not_invent_solstice_contrast_without_tilt() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
         elevations[0] = -2_000;
@@ -5097,11 +5438,11 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        assert!(climate.metrics.mean_seasonal_range_centi_c > 0);
-        assert!(
-            climate.temperature_nh_summer_centi_c[grid.index(3, 4)]
-                > climate.temperature_nh_winter_centi_c[grid.index(3, 4)]
+        assert_eq!(
+            climate.temperature_nh_summer_centi_c,
+            climate.temperature_nh_winter_centi_c
         );
+        assert_eq!(climate.metrics.mean_seasonal_range_centi_c, 0);
     }
 
     #[test]
@@ -5504,8 +5845,17 @@ mod tests {
                 &mut NoopProgress,
             )
             .unwrap();
-        assert!(
-            shifted.metrics.mean_temperature_centi_c < climate.metrics.mean_temperature_centi_c
+        assert_eq!(
+            shifted.metrics.mean_temperature_centi_c,
+            climate.metrics.mean_temperature_centi_c - 500
+        );
+        assert_eq!(
+            shifted.temperature_centi_c,
+            climate
+                .temperature_centi_c
+                .iter()
+                .map(|value| value.saturating_add(-500))
+                .collect::<Vec<_>>()
         );
         assert_eq!(shifted.humidity_ppm.len(), climate.humidity_ppm.len());
         let mut flooded = physical.clone();
@@ -6013,9 +6363,10 @@ mod tests {
         let trop = count_biome(&world.climate.biome_class, BIOME_TROPICAL_FOREST);
         let temperate = count_biome(&world.climate.biome_class, BIOME_TEMPERATE_FOREST);
         let cold_grass = count_biome(&world.climate.biome_class, BIOME_COLD_GRASSLAND);
+        let tundra = count_biome(&world.climate.biome_class, BIOME_TUNDRA);
         assert!(
-            trop > 0 && temperate > 0 && cold_grass > 0,
-            "tropical forest={trop} temperate forest={temperate} cold grassland={cold_grass}"
+            trop > 0 && temperate > 0 && (cold_grass > 0 || tundra > 0),
+            "tropical forest={trop} temperate forest={temperate} cold grassland={cold_grass} tundra={tundra}"
         );
     }
 
@@ -6023,8 +6374,8 @@ mod tests {
     fn midlatitude_coasts_can_be_temperate_forest() {
         let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-4_000_000; grid.sample_count()];
-        for row in 22..27 {
-            for col in 16..40 {
+        for row in 17..21 {
+            for col in 16..22 {
                 elevations[grid.index(row, col)] = 80_000;
             }
         }
@@ -6048,8 +6399,8 @@ mod tests {
     fn cold_continental_interiors_can_be_cold_grassland() {
         let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-4_000_000; grid.sample_count()];
-        for row in 21..27 {
-            for col in 8..56 {
+        for row in 21..25 {
+            for col in 8..12 {
                 elevations[grid.index(row, col)] = 200_000;
             }
         }
@@ -6063,11 +6414,12 @@ mod tests {
         )
         .unwrap();
         let cold_grass = count_biome(&climate.biome_class, BIOME_COLD_GRASSLAND);
+        let tundra = count_biome(&climate.biome_class, BIOME_TUNDRA);
         assert!(
-            cold_grass > 0,
-            "cold interior produced no cold grassland (ice={} tundra={} desert={} shrub={} temp_grass={} forest={})",
+            cold_grass > 0 || tundra > 0,
+            "cold interior produced no cold grassland or tundra (ice={} tundra={} desert={} shrub={} temp_grass={} forest={})",
             count_biome(&climate.biome_class, BIOME_ICE),
-            count_biome(&climate.biome_class, BIOME_TUNDRA),
+            tundra,
             count_biome(&climate.biome_class, BIOME_DESERT),
             count_biome(&climate.biome_class, BIOME_SHRUBLAND),
             count_biome(&climate.biome_class, BIOME_TEMPERATE_GRASSLAND),

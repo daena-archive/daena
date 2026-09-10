@@ -1542,7 +1542,7 @@ Treat the following as the starting surface, not as work to reimplement.
 | Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / q_sat` (0–1e6)                                                                                      | Product RH. Rain is condensed excess vapor plus leftover convergence.                          |
 | Orography / rain shadow | `q_sat = saturation(T − K_U U_oro)`, `U_oro = max(0, V · ∇h)`; `orographic_precipitation_ppm` is artistic `K_U`                                      | `T_effective` is saturation-only. Lapse still cools product T.                                 |
 | Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic hydrology input. Climate `W` is internal `max(0, W + R − E − runoff)`.              |
-| Seasons                 | NH summer / winter T, wind, precipitation                                                                                                            | Two snapshots, not an orbital loop.                                                            |
+| Seasons                 | Two-solstice year loop; product NH summer / winter T, wind, precipitation                                                                            | Annual T remains spin-up + latent; solstice T is that annual plus loop anomaly.                |
 | Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy, Sverdrup, western boundary                                                              | 2D surface gyres. Currents raise evaporation only.                                             |
 | Biomes                  | `classify_biome_cell` from T, precipitation, humidity, aridity, elevation                                                                            | Already downstream of climate.                                                                 |
 | Storms                  | `derive_storms`: SST, humidity, Coriolis, solstice shear, fetch, tracks                                                                              | Already a derived event field.                                                                 |
@@ -1568,7 +1568,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 is open. Stages 6–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stage 5 shipped. Stage 6 is open. Stages 7–8 are closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1702,8 +1702,6 @@ Keep `W` internal unless inspect needs it. `runoff_mm_per_year` stays land-only.
 
 ## Stage 6 — Seasonal loop
 
-Closed until Stage 5 is done so carried moisture includes surface-water feedback.
-
 This is the stage where `C_ocean ≫ C_land` replaces `maritime_factor` in **temperature**. Do not simulate daily weather. Use a small number of orbital samples (two solstices up to ~12) with carried T, q, V, and W. Converge year-to-year.
 
 **In this stage**
@@ -1721,11 +1719,11 @@ remove maritime_factor from temperature and from seasonal amplitude
 put epoch offset G inside the energy equation
 ```
 
-`maritime_factor_ppm` may remain as a diagnostic distance field. Perihelion longitude stays unauthored unless planetary config grows that knob. Cap seasons × years × inner iterations; honor cancellation.
+Two solstice samples (`δ = ±ε`). `λ` is those solstices. Perihelion longitude is unauthored, so `r` is not sampled at the solstices; eccentricity only scales the annual-mean `1/sqrt(1−e²)` already in `toa_mean_wm2`, including when tilt ≠ 0. Insolation weights are `S_annual · (1 + SEASONAL_INSOLATION_ANOMALY sin φ sin δ)` with `SEASONAL_INSOLATION_ANOMALY = 0.35` so the pair averages to the annual field. Each season takes one implicit Euler step (`dt = year/2`) with ice albedo frozen at the annual mask so `C_ocean ≫ C_land` lags the ocean (V is Stage 2 diagnostic; each season recomputes V from T, and the previous V only advects heat). Product annual T stays the spin-up + Stage 3 latent field because a two-point finite-step cycle mean is not annual energy equilibrium (no `maritime_factor` blend). NH summer/winter are that annual T plus the year-loop anomaly. Jacobi moisture carries `q` and `W` across seasons inside the loop. Product rain (annual and both solstices) is solved from zeros at the product T/V. Year-to-year Δ is the mean of summer and winter `|T(n)−T(n−1)|`. `seasonal_year_max` (default 12, allowed 1..=24) errors `NumericNonConvergent` if the cap is below two years or if that Δ stays above 2 °C. `maritime_factor_ppm` stays a distance diagnostic. `with_winds_and_moisture_for_field` restamps V/q from the caller T via `derive_winds` + `product_moisture` and does not re-relax T.
 
 **Not this stage:** ocean-tracer heat transport along currents, storm retune.
 
-**Done when:** `axial_tilt_creates_solstice_contrast`; `seasonal_precipitation_differs_when_tilt_is_large`; `solstice_winds_change_seasonal_precipitation`; interiors more seasonal than oceans **without** maritime temperature blending; year-to-year Δ reported; `NumericNonConvergent` if the year loop fails.
+**Done when:** `axial_tilt_creates_solstice_contrast`; `seasonal_precipitation_differs_when_tilt_is_large`; `solstice_winds_change_seasonal_precipitation`; `interiors_are_more_seasonal_than_oceans_without_maritime_blend`; `maritime_scale_does_not_change_temperature`; `year_loop_errors_when_year_cap_is_too_low`; epoch restamp keeps `with_global_temperature_offset`.
 
 ## Stage 7 — Ocean heat transport
 
@@ -1775,7 +1773,7 @@ Do not run daily weather across history. Materialized storms stay authored sampl
 | Uplift vs lapse                     | `T_effective` does not write surface T                                                                         |
 | Two water authorities               | Climate `W` ≠ hydrology lakes/rivers                                                                           |
 | Schema                              | `empty_climate` / both `synthetic_climate` helpers / `encode_climate` stay in lockstep if `ClimateField` grows |
-| Restamp                             | `with_winds_and_moisture_for_field` must call the same wind and moisture path as `derive_current_climate`      |
+| Restamp                             | `with_winds_and_moisture_for_field` restamps V/q from the caller T via `derive_winds` + `product_moisture`. It must not re-run the year loop or recouple T. Epoch offsets apply after derivation. |
 
 ---
 

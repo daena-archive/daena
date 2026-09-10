@@ -359,11 +359,11 @@ The existing climate system already provides a foundation. D2 should precede the
 
 ### Considerations
 
-- Humidity is remaining atmospheric moisture versus local saturation at annual temperature, shown as a percent of saturation — not a weather-station relative-humidity reading.
+- Humidity is remaining atmospheric moisture over local saturation (`q / q_sat`) at annual temperature, stored as ppm 0–1e6 (percent of saturation). It is not a weather-station instrument reading.
 - Aridity is evaporative demand unmet by rainfall (potential evapotranspiration from temperature versus precipitation). Inspect uses humid / sub-humid / semi-arid / arid labels.
 - Annual precipitation still feeds hydrology and runoff. Seasonal rainfall is inspectable from solstice wind fields.
 - Humidity and aridity stay annual. Seasonal moisture passes reuse annual surface currents (D3 is epoch-annual, not monsoon currents).
-- Orographic rain uses both zonal and meridional upslope, weighted by local wind.
+- Rainfall is condensed excess vapor `K_C max(0, q − q_sat)` plus leftover orographic fraction and convergence. Orographic rain uses both zonal and meridional upslope, weighted by local wind.
 - Ocean evaporation scales with sea-surface temperature and surface-current speed. Frozen seas evaporate little.
 - Climate derivations should not modify accepted terrain.
 - Atlas rainfall, humidity, and aridity styles tint land from those fields. Extra Atlas climate layers remain L1.

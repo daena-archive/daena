@@ -494,13 +494,26 @@ fn derive_historical_world_with_cache(
     progress.report(ProgressPhase::CalculatingWater, 1, 1)?;
     if normalized_epoch != 0 && hydrology.sea_level_mm != epoch_field.sea_level_mm {
         epoch_field.sea_level_mm = hydrology.sea_level_mm;
-        climate = climate.with_winds_and_moisture_for_field(
-            &epoch_field,
-            climate_settings,
-            field.seed,
-            field.retry_index,
-            progress,
-        )?;
+        climate = if let Some(cache) = static_physics {
+            cache
+                .climate
+                .with_global_temperature_offset(temperature_offset)
+                .with_winds_and_moisture_for_field(
+                    &epoch_field,
+                    climate_settings,
+                    field.seed,
+                    field.retry_index,
+                    progress,
+                )?
+        } else {
+            climate.with_winds_and_moisture_for_field(
+                &epoch_field,
+                climate_settings,
+                field.seed,
+                field.retry_index,
+                progress,
+            )?
+        };
     }
 
     let land_ice_m3 = hydrology.metrics.land_ice_m3;
@@ -545,6 +558,22 @@ fn derive_historical_world_with_cache(
 mod tests {
     use super::*;
     use crate::{generate_world, GenerationSettings, NoopProgress, DEFAULT_RADIUS_METRES};
+
+    fn mean_abs_i32(left: &[i32], right: &[i32]) -> f64 {
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| (i64::from(*a) - i64::from(*b)).unsigned_abs() as f64)
+            .sum::<f64>()
+            / left.len().max(1) as f64
+    }
+
+    fn mean_abs_u32(left: &[u32], right: &[u32]) -> f64 {
+        left.iter()
+            .zip(right)
+            .map(|(a, b)| (i64::from(*a) - i64::from(*b)).unsigned_abs() as f64)
+            .sum::<f64>()
+            / left.len().max(1) as f64
+    }
 
     fn fixture() -> crate::GeneratedWorld {
         let mut progress = NoopProgress;
@@ -794,7 +823,35 @@ mod tests {
             &mut progress,
         )
         .unwrap();
-        assert_eq!(historical.climate, world.climate);
+        assert_eq!(historical.climate.grid, world.climate.grid);
+        assert_eq!(
+            historical.climate.derivation_version,
+            world.climate.derivation_version
+        );
+        let dt = mean_abs_i32(
+            &historical.climate.temperature_centi_c,
+            &world.climate.temperature_centi_c,
+        );
+        let dq = mean_abs_u32(
+            &historical.climate.moisture_mm_per_year,
+            &world.climate.moisture_mm_per_year,
+        );
+        let dp = mean_abs_u32(
+            &historical.climate.precipitation_mm_per_year,
+            &world.climate.precipitation_mm_per_year,
+        );
+        assert!(
+            dt < 150.0,
+            "epoch-0 restamp T should stay close, mean |ΔT|={dt} centi-C"
+        );
+        assert!(
+            dq < 150.0,
+            "epoch-0 restamp moisture should stay close, mean |Δq|={dq} mm"
+        );
+        assert!(
+            dp < 150.0,
+            "epoch-0 restamp rain should stay close, mean |ΔP|={dp} mm"
+        );
         assert_eq!(historical.drainage, world.evolution.drainage);
         assert_eq!(historical.hydrology, world.hydrology);
         assert_eq!(historical.metrics.temperature_offset_centi_c, 0);
@@ -828,12 +885,14 @@ mod tests {
         );
         let mut epoch_field = world.field.clone();
         epoch_field.sea_level_mm = cached.metrics.sea_level_mm;
+        let mut settings = ClimateSettings::default_for(world.field.grid);
+        settings.planetary = physics.climate.planetary;
         let rebuilt = physics
             .climate
             .with_global_temperature_offset(cached.metrics.temperature_offset_centi_c)
             .with_winds_and_moisture_for_field(
                 &epoch_field,
-                ClimateSettings::default_for(world.field.grid),
+                settings,
                 world.field.seed,
                 world.field.retry_index,
                 &mut NoopProgress,

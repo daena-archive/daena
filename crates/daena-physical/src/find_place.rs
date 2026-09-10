@@ -886,7 +886,7 @@ fn explanations(
         push(
             "humidity",
             format!(
-                "humidity {}%{}",
+                "humidity {}% of saturation{}",
                 means.humidity_ppm / 10_000,
                 range_note_u32(
                     query.humidity_ppm_min.map(|v| v / 10_000),

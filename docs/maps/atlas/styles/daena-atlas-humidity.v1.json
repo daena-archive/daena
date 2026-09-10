@@ -1,7 +1,7 @@
 {
   "id": "daena-atlas-humidity",
   "version": 1,
-  "title": "Humidity atlas",
+  "title": "Humidity (percent of saturation)",
   "fontId": "daena-atlas-bitmap-5x7",
   "paperGrainPpm": 0,
   "oceanDeep": [16, 36, 64],

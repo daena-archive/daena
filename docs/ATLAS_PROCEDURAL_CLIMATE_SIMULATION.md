@@ -1514,7 +1514,7 @@ derive_winds               (internal P_base + thermal/elevation anomaly; closed-
         ↓
 derive_currents            (wind, rotation, SST gradient, gyres)
         ↓
-derive_moisture_fields     (iterative upwind moisture only)
+derive_moisture_fields     (saturation-limited C, leftover orographic fraction, convergence; land E from RH/wind)
         ↓
 runoff_fields              (diagnostic land runoff)
         ↓
@@ -1523,7 +1523,7 @@ classify_biomes
 derive_storms              (threshold climatology)
 ```
 
-Stages 1–2 replaced closed-form T and prescribed zonal winds. Pressure stays internal scratch. Precipitation is still a fraction of incoming moisture, not condensation of excess vapor. Surface water does not re-evaporate. Ocean currents do not move heat.
+Stages 1–3 replaced closed-form T, prescribed zonal winds, and fraction-of-incoming rain. Pressure stays internal scratch. Surface water does not re-evaporate. Ocean currents do not move heat.
 
 ## Current baseline — already shipped
 
@@ -1539,7 +1539,7 @@ Treat the following as the starting surface, not as work to reimplement.
 | Circulation             | `derive_winds` / `circulation_flow`: Hadley / Ferrel / Polar from thermal equator; `omega_ratio`; seeded meanders; land roughness; mountain blocking | Coherent prevailing winds without pressure.                                                    |
 | Moisture transport      | `transport_moisture`: iterative upwind until `Δ ≤ 1 mm`                                                                                              | The only iterated field.                                                                       |
 | Evaporation             | `ocean_evaporation_mm` (SST + current speed); land recycle `0.40` if `T > 0`                                                                         | Ocean source exists. Not RH- or wind-limited bulk evaporation.                                 |
-| Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / (q + q_sat)`                                                                                        | Post-hoc metric. Rain does not use excess vapor.                                               |
+| Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / q_sat` (0–1e6)                                                                                      | Product RH. Rain is condensed excess vapor plus leftover orographic fraction and convergence.  |
 | Orography / rain shadow | Upslope along wind × `orographic_precipitation_ppm`; moisture depletes inland                                                                        | Geographic wet/dry exists. No `T_effective` cooling from `V · ∇h`.                             |
 | Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic. No surface-water state.                                                            |
 | Seasons                 | NH summer / winter T, wind, precipitation                                                                                                            | Two snapshots, not an orbital loop.                                                            |
@@ -1559,7 +1559,7 @@ Seeded wind meanders and band moisture multipliers may remain as unresolved pert
 - Prefer initializing the coupled state from the current analytic fields over discarding them.
 - Do not grow `ClimateField` or `encode_climate` until a stage needs a new inspectable product. Internal scratch fields stay inside derivation.
 - Qualitative tests in `climate.rs` are contracts (equator warmer than poles, rain shadows, land-only runoff). Exact centi-C fixtures are implementation details and may be retuned when T changes.
-- A later stage’s physics is the contract. Do not distort new coefficients or diagnostics to keep a previous stage’s metric green. Update the old test. Stage 2 heat advection may warm a coast enough that post-hoc RH (`humidity_ppm = q / (q + q_sat)`) inverts while `moisture_mm` and precipitation stay wetter at the coast; coastal-vs-interior humidity_ppm waits for Stage 3. Geostrophic `1/f` winds may strengthen (not weaken) wind-driven currents as rotation slows. Solstice-vector storm-shear milli thresholds may retune when wind scale changes.
+- A later stage’s physics is the contract. Do not distort new coefficients or diagnostics to keep a previous stage’s metric green. Update the old test. Stage 3 humidity is `q / q_sat` (0–1e6). Geostrophic `1/f` winds may strengthen (not weaken) wind-driven currents as rotation slows. Solstice-vector storm-shear milli thresholds may retune when wind scale changes.
 - Each stage ships behind one `CLIMATE_DERIVATION_VERSION` bump. Cached climate is disposable; old cache files must fail validation rather than decode mixed semantics.
 
 ## Sequencing rule
@@ -1568,7 +1568,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stages 3–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stages 4–8 are closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1627,7 +1627,7 @@ Pressure and V are unsmoothed. Semi-implicit heat-advection diagonal plus `MAX_W
 
 ## Stage 3 — Saturation-limited moisture
 
-Closed. Moisture must be carried by the pressure-driven wind.
+Moisture must be carried by the pressure-driven wind.
 
 Start from `transport_moisture`, `ocean_evaporation_mm`, `saturation_moisture_mm`. Keep iterative upwind, ocean sources, convergence rain, inland decay, and the orographic **fraction** (Stage 4 replaces that fraction). Keep `LAND_MOISTURE_RECYCLE = 0.40` (Stage 5 replaces that recycle).
 
@@ -1642,9 +1642,13 @@ humidity product = q / q_sat (clamped 0–1e6)
 latent heat: T ← T + L(C − E) / C_cell, then re-relax T/V within the same derivation
 ```
 
-Retire `incoming * base_precipitation_ppm` as rain. Do not keep that fraction alongside excess-vapor removal.
+Retire `incoming * base_precipitation_ppm` as rain. Do not keep that fraction alongside excess-vapor removal. Remove the knob from `ClimateSettings`.
 
 Humidity `q / q_sat` is a product change. Update biome thresholds, Atlas humidity style, Find Place humidity copy, `explain_biome`, and `PHYSICAL_WORLD_ROADMAP` in this stage so consumers match the new 0–1e6 meaning.
+
+Old humidity was `q / (q + q_sat)`. Convert thresholds with `r / (1 − r)`: forest 350k → 550k, storm min 150k → 176k, storm full 450k → 818k. Maritime (arid shrubland) 700k converts to >1e6; retune to 850k so humid arid coasts remain reachable without requiring saturation.
+
+`SATURATION_MOISTURE_PER_HPA = 90` so `q_sat` is comparable to `ocean_moisture_mm_per_year` at typical SST; 180 left `C = K_C max(0, q − q_sat)` unused. `CLIMATE_TRANSPORT_RELAXATION = 0.55` so doubled ocean-source Jacobi still converges inside the iteration cap. `latent_heat_coupling_ppm` scales `L(C − E)` because Budyko OLR already includes mean latent; full unscaled `L(C − E)` wrecks Stage 1 T. Outer moisture–T coupling under-relaxes latent (`MOISTURE_TEMPERATURE_RELAXATION`), holds V fixed during the T loop, then re-relaxes V once. It must converge on mean `|ΔT|` and mean `|Δq|` (`COUPLING_T_TOLERANCE_C`, `COUPLING_Q_TOLERANCE_MM`) or error `NumericNonConvergent` (one pass is diagnostic and skips that outer error). Inner moisture Jacobi still errors at 1 mm max delta at fixed T; the outer `|Δq|` bound is `|q(T_n) − q(T_{n−1})|` while T is still moving. After the last T/V update, run moisture once more so `q` / rain / humidity match final T. Epoch-0 cache still restamps climate; Stage 3 latent restamp is not byte-identical to present T, but mean T/q/rain stay close. If hydrology revises sea level, cached restamp starts again from present T+ΔT so it matches a single restamp at the final shoreline.
 
 **Not this stage:** orographic `V·∇h` cooling, surface-water `W`, seasonal orbital loop.
 
@@ -1652,7 +1656,7 @@ Humidity `q / q_sat` is a product change. Update biome thresholds, Atlas humidit
 
 ## Stage 4 — Orographic cooling
 
-Closed until Stage 3 is done. Cooling `q_sat` only changes rain if rain is excess vapor.
+Closed. Cooling `q_sat` only changes rain if rain is excess vapor.
 
 **In this stage**
 

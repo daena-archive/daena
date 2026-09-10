@@ -9,8 +9,8 @@
 //! wind meanders stay a capped product perturbation and do not source T; a wind-driven
 //! surface-ocean current
 //! field; moisture transport driven by those winds with sea-surface and current
-//! evaporation; saturation-limited condensation rain with leftover orographic
-//! fraction and convergence; humidity as remaining moisture over local
+//! evaporation; saturation-limited condensation rain with orographic `V·∇h`
+//! cooling of `q_sat` and leftover convergence; humidity as remaining moisture over local
 //! saturation (`q / q_sat`); latent heating that re-relaxes T/V; aridity from
 //! evaporative demand; precipitation that feeds runoff volumes
 //! using exact spherical cell areas; land biome classes from those climate
@@ -29,7 +29,7 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 5;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 6;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -102,6 +102,10 @@ const ENERGY_BALANCE_MIN_ITERATIONS: u32 = 8;
 const LATENT_HEAT_J_PER_KG: f64 = 2.5e6;
 const CLIMATE_SECONDS_PER_YEAR: f64 = 31_557_600.0;
 const SATURATION_MOISTURE_PER_HPA: f64 = 90.0;
+const MAGNUS_T_MIN_C: f64 = -80.0;
+const MAGNUS_T_MAX_C: f64 = 60.0;
+const MAX_OROGRAPHIC_COOLING_C: f64 = 25.0;
+const OROGRAPHIC_KU_PPM_PER_C: f64 = 1_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HydrologyPreset {
@@ -1558,6 +1562,37 @@ fn surface_height_m(field: &PhysicalField, cell: usize) -> f64 {
     f64::from((field.elevations_mm[cell] - field.sea_level_mm).max(0)) / 1_000.0
 }
 
+fn orographic_uplift(
+    field: &PhysicalField,
+    cell: usize,
+    zonal_upstream: usize,
+    meridional_upstream: usize,
+    distance: f64,
+    meridional_distance: f64,
+    wind_east: f64,
+    wind_north: f64,
+) -> f64 {
+    let height = surface_height_m(field, cell);
+    let dh_zonal = (height - surface_height_m(field, zonal_upstream)) / distance;
+    let dh_meridional =
+        (height - surface_height_m(field, meridional_upstream)) / meridional_distance;
+    let u = wind_east / f64::from(MAX_WIND_MILLI);
+    let v = wind_north / f64::from(MAX_WIND_MILLI);
+    (u.abs() * dh_zonal + v.abs() * dh_meridional).max(0.0)
+}
+
+fn orographic_saturation_centi_c(
+    temperature_centi_c: i32,
+    u_oro: f64,
+    orographic_precipitation_ppm: u32,
+) -> i32 {
+    let t_drop_c = (u_oro * f64::from(orographic_precipitation_ppm) / OROGRAPHIC_KU_PPM_PER_C)
+        .clamp(0.0, MAX_OROGRAPHIC_COOLING_C);
+    (f64::from(temperature_centi_c) - t_drop_c * 100.0)
+        .clamp(MAGNUS_T_MIN_C * 100.0, MAGNUS_T_MAX_C * 100.0)
+        .round() as i32
+}
+
 fn smooth_scalar_field(grid: Grid, values: &mut [f64]) {
     if values.len() != grid.sample_count() {
         return;
@@ -2066,7 +2101,7 @@ struct MoistureTransport {
 }
 
 fn saturation_moisture_mm(temperature_centi_c: i32) -> f64 {
-    let t = f64::from(temperature_centi_c) / 100.0;
+    let t = (f64::from(temperature_centi_c) / 100.0).clamp(MAGNUS_T_MIN_C, MAGNUS_T_MAX_C);
     let es = 6.112 * (17.67 * t / (t + 243.5)).exp();
     (SATURATION_MOISTURE_PER_HPA * es).clamp(80.0, f64::from(MAX_CLIMATE_MOISTURE_MM))
 }
@@ -2377,17 +2412,21 @@ fn transport_moisture(
                     + advected * (1.0 - mix)
                     + neighbor_mean * spread_weight * mix)
                     .clamp(0.0, f64::from(MAX_CLIMATE_MOISTURE_MM));
-                let zonal_uphill = (surface_height_m(field, cell)
-                    - surface_height_m(field, zonal_upstream))
-                .max(0.0)
-                    / distance;
-                let meridional_uphill = (surface_height_m(field, cell)
-                    - surface_height_m(field, meridional_upstream))
-                .max(0.0)
-                    / meridional_distance;
-                let slope = zonal_frac * zonal_uphill + meridional_frac * meridional_uphill;
-                let orographic =
-                    slope * f64::from(settings.orographic_precipitation_ppm) / 1_000_000.0;
+                let u_oro = orographic_uplift(
+                    field,
+                    cell,
+                    zonal_upstream,
+                    meridional_upstream,
+                    distance,
+                    meridional_distance,
+                    east,
+                    north,
+                );
+                let q_sat = saturation_moisture_mm(orographic_saturation_centi_c(
+                    temperatures[cell],
+                    u_oro,
+                    settings.orographic_precipitation_ppm,
+                ));
                 let convergence_boost = if wind_divergence_ppm[cell] < 0 {
                     convergence
                         * (-f64::from(wind_divergence_ppm[cell]) / 1_000_000.0).clamp(0.0, 1.0)
@@ -2396,11 +2435,9 @@ fn transport_moisture(
                 };
                 let path_m = zonal_frac * distance + meridional_frac * meridional_distance;
                 let path_scale = (path_m / PRECIPITATION_PATH_REF_METRES).clamp(0.05, 2.0);
-                let q_sat = saturation_moisture_mm(temperatures[cell]);
                 let condensed = condensation_k * (incoming - q_sat).max(0.0);
                 let after_condensation = (incoming - condensed).max(0.0);
-                let leftover_fraction =
-                    (orographic + convergence_boost * path_scale).clamp(0.0, 0.65);
+                let leftover_fraction = (convergence_boost * path_scale).clamp(0.0, 0.65);
                 let leftover_rain = after_condensation * leftover_fraction;
                 let precipitated = condensed + leftover_rain;
                 let remaining_q = (after_condensation - leftover_rain).max(0.0);
@@ -4097,6 +4134,58 @@ mod tests {
     }
 
     #[test]
+    fn orographic_cooling_does_not_write_surface_temperature() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![-2_000; grid.sample_count()];
+        let row = 3;
+        for col in 1..15 {
+            elevations[grid.index(row, col)] = 500;
+        }
+        elevations[grid.index(row, 8)] = 2_000_000;
+        let physical = field(grid, elevations, 0);
+        let mut without_uplift = ClimateSettings::default_for(grid);
+        without_uplift.orographic_precipitation_ppm = 0;
+        without_uplift.latent_heat_coupling_ppm = 0;
+        without_uplift.moisture_temperature_coupling_passes = 1;
+        let mut with_uplift = without_uplift;
+        with_uplift.orographic_precipitation_ppm = 18_000_000;
+        let baseline = derive_current_climate(
+            &physical,
+            without_uplift,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let cooled = derive_current_climate(
+            &physical,
+            with_uplift,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert_eq!(baseline.temperature_centi_c, cooled.temperature_centi_c);
+        let ridge = grid.index(row, 8);
+        assert_ne!(
+            baseline.precipitation_mm_per_year[ridge],
+            cooled.precipitation_mm_per_year[ridge]
+        );
+    }
+
+    #[test]
+    fn saturation_moisture_stays_bounded_for_extreme_orographic_cooling() {
+        let floor = saturation_moisture_mm((MAGNUS_T_MIN_C * 100.0) as i32);
+        let exploded = saturation_moisture_mm(-50_000);
+        assert!(floor >= 80.0);
+        assert_eq!(exploded, floor);
+        let t_eff = orographic_saturation_centi_c(2_000, 1.0, 50_000_000);
+        assert!(t_eff >= (MAGNUS_T_MIN_C * 100.0) as i32);
+        assert!(t_eff <= (MAGNUS_T_MAX_C * 100.0) as i32);
+        assert!(t_eff >= 2_000 - (MAX_OROGRAPHIC_COOLING_C * 100.0) as i32);
+    }
+
+    #[test]
     fn coastal_moisture_drives_interior_drying() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-2_000; grid.sample_count()];
@@ -5710,7 +5799,7 @@ mod tests {
     fn cold_continental_interiors_can_be_cold_grassland() {
         let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-4_000_000; grid.sample_count()];
-        for row in 24..30 {
+        for row in 21..27 {
             for col in 8..56 {
                 elevations[grid.index(row, col)] = 200_000;
             }
@@ -5725,7 +5814,16 @@ mod tests {
         )
         .unwrap();
         let cold_grass = count_biome(&climate.biome_class, BIOME_COLD_GRASSLAND);
-        assert!(cold_grass > 0, "cold interior produced no cold grassland");
+        assert!(
+            cold_grass > 0,
+            "cold interior produced no cold grassland (ice={} tundra={} desert={} shrub={} temp_grass={} forest={})",
+            count_biome(&climate.biome_class, BIOME_ICE),
+            count_biome(&climate.biome_class, BIOME_TUNDRA),
+            count_biome(&climate.biome_class, BIOME_DESERT),
+            count_biome(&climate.biome_class, BIOME_SHRUBLAND),
+            count_biome(&climate.biome_class, BIOME_TEMPERATE_GRASSLAND),
+            count_biome(&climate.biome_class, BIOME_TEMPERATE_FOREST),
+        );
     }
 
     #[test]

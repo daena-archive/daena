@@ -363,7 +363,7 @@ The existing climate system already provides a foundation. D2 should precede the
 - Aridity is evaporative demand unmet by rainfall (potential evapotranspiration from temperature versus precipitation). Inspect uses humid / sub-humid / semi-arid / arid labels.
 - Annual precipitation still feeds hydrology and runoff. Seasonal rainfall is inspectable from solstice wind fields.
 - Humidity and aridity stay annual. Seasonal moisture passes reuse annual surface currents (D3 is epoch-annual, not monsoon currents).
-- Rainfall is condensed excess vapor `K_C max(0, q − q_sat)` plus leftover orographic fraction and convergence. Orographic rain uses both zonal and meridional upslope, weighted by local wind.
+- Rainfall is condensed excess vapor `K_C max(0, q − q_sat)` plus leftover convergence. Orographic rain lowers `q_sat` with `T_effective = T − K_U max(0, V · ∇h)`; `K_U` is `orographic_precipitation_ppm`. Product temperature still uses lapse, not `T_effective`.
 - Ocean evaporation scales with sea-surface temperature and surface-current speed. Frozen seas evaporate little.
 - Climate derivations should not modify accepted terrain.
 - Atlas rainfall, humidity, and aridity styles tint land from those fields. Extra Atlas climate layers remain L1.

@@ -1514,7 +1514,7 @@ derive_winds               (internal P_base + thermal/elevation anomaly; closed-
         ↓
 derive_currents            (wind, rotation, SST gradient, gyres)
         ↓
-derive_moisture_fields     (saturation-limited C, leftover orographic fraction, convergence; land E from RH/wind)
+derive_moisture_fields     (saturation-limited C, orographic V·∇h cooling of q_sat, leftover convergence; land E from RH/wind)
         ↓
 runoff_fields              (diagnostic land runoff)
         ↓
@@ -1523,7 +1523,7 @@ classify_biomes
 derive_storms              (threshold climatology)
 ```
 
-Stages 1–3 replaced closed-form T, prescribed zonal winds, and fraction-of-incoming rain. Pressure stays internal scratch. Surface water does not re-evaporate. Ocean currents do not move heat.
+Stages 1–4 replaced closed-form T, prescribed zonal winds, fraction-of-incoming rain, and the leftover orographic rain fraction. Pressure stays internal scratch. Surface water does not re-evaporate. Ocean currents do not move heat.
 
 ## Current baseline — already shipped
 
@@ -1539,8 +1539,8 @@ Treat the following as the starting surface, not as work to reimplement.
 | Circulation             | `derive_winds` / `circulation_flow`: Hadley / Ferrel / Polar from thermal equator; `omega_ratio`; seeded meanders; land roughness; mountain blocking | Coherent prevailing winds without pressure.                                                    |
 | Moisture transport      | `transport_moisture`: iterative upwind until `Δ ≤ 1 mm`                                                                                              | The only iterated field.                                                                       |
 | Evaporation             | `ocean_evaporation_mm` (SST + current speed); land recycle `0.40` if `T > 0`                                                                         | Ocean source exists. Not RH- or wind-limited bulk evaporation.                                 |
-| Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / q_sat` (0–1e6)                                                                                      | Product RH. Rain is condensed excess vapor plus leftover orographic fraction and convergence.  |
-| Orography / rain shadow | Upslope along wind × `orographic_precipitation_ppm`; moisture depletes inland                                                                        | Geographic wet/dry exists. No `T_effective` cooling from `V · ∇h`.                             |
+| Saturation / humidity   | Magnus `saturation_moisture_mm`; humidity = `q / q_sat` (0–1e6)                                                                                      | Product RH. Rain is condensed excess vapor plus leftover convergence.                          |
+| Orography / rain shadow | `q_sat = saturation(T − K_U U_oro)`, `U_oro = max(0, V · ∇h)`; `orographic_precipitation_ppm` is artistic `K_U`                                      | `T_effective` is saturation-only. Lapse still cools product T.                                 |
 | Runoff                  | `runoff_fields` from precipitation and hydrology preset                                                                                              | Diagnostic. No surface-water state.                                                            |
 | Seasons                 | NH summer / winter T, wind, precipitation                                                                                                            | Two snapshots, not an orbital loop.                                                            |
 | Ocean currents          | `derive_currents`: wind coupling, Coriolis turn, geostrophy, Sverdrup, western boundary                                                              | 2D surface gyres. Currents raise evaporation only.                                             |
@@ -1568,7 +1568,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stages 4–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stage 3 shipped. Stage 4 shipped. Stages 5–8 are closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1656,7 +1656,7 @@ Old humidity was `q / (q + q_sat)`. Convert thresholds with `r / (1 − r)`: for
 
 ## Stage 4 — Orographic cooling
 
-Closed. Cooling `q_sat` only changes rain if rain is excess vapor.
+Cooling `q_sat` only changes rain if rain is excess vapor.
 
 **In this stage**
 
@@ -1669,13 +1669,17 @@ reuse orographic_precipitation_ppm as artistic K_U
 
 `T_effective` is only for saturation. Do not write it into `temperature_centi_c` (lapse already cools mountains). Never run fraction and `V·∇h` together.
 
+`orographic_precipitation_ppm` keeps its Stage 3 name and 0…50e6 range as artistic `K_U`, not a leftover rain fraction. `U_oro = max(0, |V|/MAX_WIND_MILLI · ∇h)` using upwind height differences (m/m). `T_drop = min(25 °C, U_oro · ppm / 1000)`. Default 18e6 is 18 °C per 0.001 of normalized uplift: a 2 km ridge on 16×8 is a few °C; steep high-resolution slopes hit the 25 °C cap instead of crossing the Magnus pole at −243.5 °C. `T_effective` and `saturation_moisture_mm` clamp to [−80, 60] °C before Magnus `exp`. Product T may still move via Stage 3 latent `L(C − E)`, not via copying `T_effective`.
+
+`cold_continental_interiors_can_be_cold_grassland` moved the 64×32 slab from rows 24–30 to 21–27. With `K_U = 0` the old band still classifies cold grassland; default `K_U` rains out on the 200 m escarpment, so inland `C` and latent heating fall and summer T at 24–30 drops below the tundra threshold. The contract is that a cold interior can be cold grassland, not that that polar band stays grassland.
+
 **Not this stage:** surface-water budget, seasonal loop.
 
-**Done when:** `ridge_creates_windward_precipitation_and_leeward_shadow`; leeward drier than windward at the same latitude; surface T lapse tests unchanged.
+**Done when:** `ridge_creates_windward_precipitation_and_leeward_shadow`; leeward drier than windward at the same latitude; surface T lapse tests unchanged; `orographic_cooling_does_not_write_surface_temperature`.
 
 ## Stage 5 — Water feedback
 
-Closed until Stage 4 is done so rain (including orographic) is the water source.
+Closed. Rain (including orographic) is the water source.
 
 Do not create a second hydrology. Rivers, lakes, and drainage stay `hydrology.rs`. Climate `W` is an evaporative store that replaces `LAND_MOISTURE_RECYCLE`.
 

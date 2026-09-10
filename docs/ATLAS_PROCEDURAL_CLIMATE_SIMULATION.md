@@ -1501,16 +1501,16 @@ A planet parameter should not secretly compensate for a numerical parameter.
 
 Do not attempt the complete model simultaneously, and do not replace the existing climate product with a greenfield simulator.
 
-The live implementation is already a one-pass diagnostic derivation in `crates/daena-physical/src/climate.rs`, forced by `crates/daena-physical/src/planetary.rs`. Atlas and maps consume `ClimateField`. Later stages must upgrade that pipeline in place: keep the public fields, bump `CLIMATE_DERIVATION_VERSION` when semantics change, and couple processes that today run once and never feed back.
+The live implementation is `crates/daena-physical/src/climate.rs`, forced by `crates/daena-physical/src/planetary.rs`. Atlas and maps consume `ClimateField`. Later stages must upgrade that pipeline in place: keep the public fields, bump `CLIMATE_DERIVATION_VERSION` when semantics change, and couple processes that today run once and never feed back.
 
 The existing entry point is `derive_current_climate`:
 
 ```text
 build_geometry
         ↓
-temperature_field          (analytic T + two solstices)
+temperature_field          (energy-balance T, ice albedo, diffusion, flux-form heat advection, T/V coupling; two solstices)
         ↓
-derive_winds               (prescribed cells + ∇T + blocking)
+derive_winds               (internal P_base + thermal/elevation anomaly; closed-form geostrophic–drag V)
         ↓
 derive_currents            (wind, rotation, SST gradient, gyres)
         ↓
@@ -1523,7 +1523,7 @@ classify_biomes
 derive_storms              (threshold climatology)
 ```
 
-That is not the coupled timestep in §28. Temperature is closed-form. There is no pressure field. Wind is not integrated from `−∇P`. Heat is not advected. Precipitation is a fraction of incoming moisture, not condensation of excess vapor. Surface water does not re-evaporate. Ocean currents do not move heat.
+Stages 1–2 replaced closed-form T and prescribed zonal winds. Pressure stays internal scratch. Precipitation is still a fraction of incoming moisture, not condensation of excess vapor. Surface water does not re-evaporate. Ocean currents do not move heat.
 
 ## Current baseline — already shipped
 
@@ -1559,6 +1559,7 @@ Seeded wind meanders and band moisture multipliers may remain as unresolved pert
 - Prefer initializing the coupled state from the current analytic fields over discarding them.
 - Do not grow `ClimateField` or `encode_climate` until a stage needs a new inspectable product. Internal scratch fields stay inside derivation.
 - Qualitative tests in `climate.rs` are contracts (equator warmer than poles, rain shadows, land-only runoff). Exact centi-C fixtures are implementation details and may be retuned when T changes.
+- A later stage’s physics is the contract. Do not distort new coefficients or diagnostics to keep a previous stage’s metric green. Update the old test. Stage 2 heat advection may warm a coast enough that post-hoc RH (`humidity_ppm = q / (q + q_sat)`) inverts while `moisture_mm` and precipitation stay wetter at the coast; coastal-vs-interior humidity_ppm waits for Stage 3. Geostrophic `1/f` winds may strengthen (not weaken) wind-driven currents as rotation slows. Solstice-vector storm-shear milli thresholds may retune when wind scale changes.
 - Each stage ships behind one `CLIMATE_DERIVATION_VERSION` bump. Cached climate is disposable; old cache files must fail validation rather than decode mixed semantics.
 
 ## Sequencing rule
@@ -1567,7 +1568,7 @@ Implement **one stage at a time**, in order. A stage is not started until the pr
 
 A stage may land as more than one PR, but it has no “later leftover” physics. When the stage is done, every item in its **In this stage** list is implemented, tested, and wired through `derive_current_climate` and `with_winds_and_moisture_for_field`. Work listed under **Not this stage** belongs to a later numbered stage; do not pull it forward and do not leave in-stage work unfinished in order to start the next one.
 
-Start with Stage 1. Stages 2–8 are closed.
+Stage 1 shipped. Stage 2 shipped. Stages 3–8 are closed.
 
 ## Stage 1 — Coupled thermal model
 
@@ -1598,8 +1599,6 @@ Add physical coefficients (not planetary sliders): heat diffusivity, outgoing `A
 
 ## Stage 2 — Pressure-driven wind and heat advection
 
-Closed until Stage 1 is done.
-
 Start from `derive_winds` / `wind_components`. Keep thermal-equator ITCZ, `hadley_edge_radians(omega)`, mountain blocking, land/ocean roughness, and the three snapshot winds. Pressure stays internal scratch unless inspect needs it.
 
 **In this stage**
@@ -1610,21 +1609,25 @@ P = P_base − K_P (T − T_regional) − elevation scale height
 G_P = −∇P
 Coriolis f = 2Ω sin φ
 drag K_D from ocean / land / mountains
-relax V until 0 ≈ −K_P ∇P + K_C C − K_D V
+V from the closed-form balance 0 = −∇P + f k̂×V − K_D V (diagnostic; no V iteration)
 seeded meanders remain a capped perturbation
 Q_transport = diffusion + upwind V·∇T
 couple T and V for a bounded number of passes
 ```
 
-`P_base` may encode planetary-scale easterlies/westerlies; `P_thermal` is the local anomaly. Do not ship this stage with prescribed zonal signs as the actual wind. Do not open a Navier–Stokes solver.
+`P_base` may encode planetary-scale easterlies/westerlies; `P_thermal` is the local anomaly. Do not ship this stage with prescribed zonal signs as the actual wind. Do not open a Navier–Stokes solver. The linear drag–Coriolis balance is algebraically the same as “relax V until residual 0”; there is no V residual metric and no `NumericNonConvergent` on wind.
+
+Coupling Jacobi holds ice albedo `Fixed` from the T field at the start of that pass so live `T < 0` ice cannot snowball inside one energy-balance solve. Albedo therefore lags the spec’s live ice by one outer coupling pass; that lag is intentional.
+
+Pressure and V are unsmoothed. Semi-implicit heat-advection diagonal plus `MAX_WIND_MILLI` are the only high-wavenumber controls.
 
 **Not this stage:** moisture physics, saturation rain, new Hadley-width law, vertical structure, `ClimateField` pressure column.
 
-**Done when:** `earth_like_winds_have_tropical_easterlies_and_midlatitude_westerlies`; `slow_rotation_expands_hadley_easterlies`; `northern_summer_shifts_itcz_north`; `mountains_block_zonal_wind`; Coriolis reverses across the equator and `f → 0` on the equator; wind clamped to `MAX_WIND_MILLI`; heat advection moves warmth downwind relative to Stage 1 diffusion-only T; `with_winds_and_moisture_for_field` restamps the same wind path.
+**Done when:** `earth_like_winds_have_tropical_easterlies_and_midlatitude_westerlies`; `slow_rotation_expands_hadley_easterlies`; `northern_summer_shifts_itcz_north`; `mountains_block_zonal_wind`; Coriolis reverses across the equator and `f → 0` on the equator; wind clamped to `MAX_WIND_MILLI`; default `heat_advection_kj_m2_k` moves warmth downwind relative to Stage 1 diffusion-only T; a flipped thermal pressure anomaly reverses meridional V with `P_base` suppressed; `with_winds_and_moisture_for_field` restamps the same wind path; `climate_moisture_ranges_are_worldlike` on moisture/precipitation, not RH; `slower_rotation_changes_surface_currents` (not a weaken-currents fixture).
 
 ## Stage 3 — Saturation-limited moisture
 
-Closed until Stage 2 is done. Moisture must be carried by the pressure-driven wind.
+Closed. Moisture must be carried by the pressure-driven wind.
 
 Start from `transport_moisture`, `ocean_evaporation_mm`, `saturation_moisture_mm`. Keep iterative upwind, ocean sources, convergence rain, inland decay, and the orographic **fraction** (Stage 4 replaces that fraction). Keep `LAND_MOISTURE_RECYCLE = 0.40` (Stage 5 replaces that recycle).
 
@@ -1742,7 +1745,7 @@ Closed until Stage 7 is done. Baseline `derive_storms` already exists; this stag
 
 ```text
 retune suitability from T, q, convergence, pressure gradient, Coriolis
-keep shear as the solstice wind-vector difference (not vertical shear)
+keep shear as the solstice wind-vector difference (not vertical shear); Stage 2 raised `STORM_SHEAR_KILL_MILLI` 12 000 → 20 000 because geostrophic solstice ΔV exceeds the prescribed-wind kill — this stage must re-justify or replace that threshold
 derive drought / heat-wave / extreme-rainfall potential from Stage 6 statistics
 ```
 

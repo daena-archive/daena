@@ -3,9 +3,11 @@
 //! Climate is a disposable interpretation of the accepted physical field. It
 //! never changes the canonical elevation/source bytes. The model is purposely
 //! bounded: an energy-balance annual temperature field with latitude insolation,
-//! land/ocean/ice albedo, heat diffusion, diagnostic altitude lapse, and a
-//! `maritime_factor` blend; two analytic solstice states; an explicit
-//! rotation-and-temperature wind field; a wind-driven surface-ocean current
+//! land/ocean/ice albedo, heat diffusion, diagnostic altitude lapse, a
+//! `maritime_factor` blend, and flux-form upwind heat advection; two analytic
+//! solstice states; a pressure-driven wind field with Coriolis and drag; seeded
+//! wind meanders stay a capped product perturbation and do not source T; a wind-driven
+//! surface-ocean current
 //! field; moisture transport driven by those winds with sea-surface and current
 //! evaporation; humidity and aridity from remaining moisture versus local
 //! saturation and evaporative demand; precipitation that feeds runoff volumes
@@ -25,7 +27,7 @@ use crate::planetary::{
     SOLAR_LUMINOSITY_PPM,
 };
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 3;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 4;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -57,7 +59,7 @@ const STORM_FULL_SST_CENTI_C: i32 = 1_800;
 const STORM_MIN_HUMIDITY_PPM: u32 = 150_000;
 const STORM_FULL_HUMIDITY_PPM: u32 = 450_000;
 const STORM_SHEAR_START_MILLI: u32 = 2_500;
-const STORM_SHEAR_KILL_MILLI: u32 = 12_000;
+const STORM_SHEAR_KILL_MILLI: u32 = 20_000;
 const STORM_TRACK_START_PPM: u32 = 40_000;
 const STORM_TRACK_STEPS: usize = 14;
 const STORM_SEED_BLOCK: u32 = 6;
@@ -126,6 +128,14 @@ pub struct ClimateSettings {
     pub insolation_polar_floor_ppm: u32,
     pub energy_balance_max_iterations: u32,
     pub energy_balance_tolerance_milli_c: u32,
+    pub pressure_cell_amplitude: u32,
+    pub thermal_pressure_per_c: u32,
+    pub pressure_scale_height_m: u32,
+    pub coriolis_coupling_ppm: u32,
+    pub drag_ocean_micro: u32,
+    pub drag_land_micro: u32,
+    pub heat_advection_kj_m2_k: u32,
+    pub temperature_wind_coupling_passes: u32,
     pub hydrology_preset: HydrologyPreset,
     pub planetary: PlanetaryConfiguration,
 }
@@ -157,6 +167,14 @@ impl ClimateSettings {
             insolation_polar_floor_ppm: 200_000,
             energy_balance_max_iterations: 768,
             energy_balance_tolerance_milli_c: 80,
+            pressure_cell_amplitude: 900,
+            thermal_pressure_per_c: 80,
+            pressure_scale_height_m: 8_000,
+            coriolis_coupling_ppm: 1_000_000,
+            drag_ocean_micro: 18,
+            drag_land_micro: 45,
+            heat_advection_kj_m2_k: 100,
+            temperature_wind_coupling_passes: 2,
             hydrology_preset: HydrologyPreset::Balanced,
             planetary: PlanetaryConfiguration::earth_like(),
         }
@@ -205,6 +223,19 @@ impl ClimateSettings {
                 "climate energy-balance coefficients are outside the bounded range".into(),
             ));
         }
+        if !(100..=50_000).contains(&self.pressure_cell_amplitude)
+            || self.thermal_pressure_per_c > 2_000
+            || !(1_000..=20_000).contains(&self.pressure_scale_height_m)
+            || !(100_000..=2_000_000).contains(&self.coriolis_coupling_ppm)
+            || !(1..=10_000).contains(&self.drag_ocean_micro)
+            || !(1..=10_000).contains(&self.drag_land_micro)
+            || self.heat_advection_kj_m2_k > 1_000_000
+            || self.temperature_wind_coupling_passes > 16
+        {
+            return Err(PhysicalError::InvalidSettings(
+                "climate wind and advection coefficients are outside the bounded range".into(),
+            ));
+        }
         self.planetary.validate()?;
         Ok(())
     }
@@ -232,6 +263,28 @@ impl ClimateSettings {
 
     fn energy_balance_tolerance_c(self) -> f64 {
         f64::from(self.energy_balance_tolerance_milli_c) / 1_000.0
+    }
+
+    fn drag_per_second(self, ocean: bool, elevation_km: f64) -> f64 {
+        let base = if ocean {
+            self.drag_ocean_micro
+        } else {
+            self.drag_land_micro
+        };
+        let mountain = if ocean {
+            0.0
+        } else {
+            f64::from(self.drag_land_micro) * elevation_km * 0.5
+        };
+        (f64::from(base) + mountain) * 1e-6
+    }
+
+    fn coriolis_scale(self) -> f64 {
+        f64::from(self.coriolis_coupling_ppm) / 1_000_000.0
+    }
+
+    fn heat_advection_j_m2_k(self) -> f64 {
+        f64::from(self.heat_advection_kj_m2_k) * 1_000.0
     }
 }
 
@@ -480,7 +533,7 @@ impl ClimateField {
         let mut next = self.clone();
         let winds = derive_winds(
             field,
-            settings.planetary,
+            settings,
             &next.temperature_centi_c,
             &next.temperature_nh_summer_centi_c,
             &next.temperature_nh_winter_centi_c,
@@ -948,11 +1001,85 @@ fn toa_mean_wm2(settings: ClimateSettings) -> Result<f64, PhysicalError> {
     Ok(wm2)
 }
 
+fn face_wind_ms(first: i32, second: i32) -> f64 {
+    0.5 * (f64::from(first) + f64::from(second)) / 1_000.0
+}
+
+fn flux_form_heat_advection(
+    temperature: &[f64],
+    east_wind: &[i32],
+    north_wind: &[i32],
+    west: usize,
+    east: usize,
+    south: usize,
+    north: usize,
+    cell: usize,
+    dx: f64,
+    dy: f64,
+    advection: f64,
+) -> (f64, f64) {
+    let u_west = face_wind_ms(east_wind[west], east_wind[cell]);
+    let u_east = face_wind_ms(east_wind[cell], east_wind[east]);
+    let v_south = face_wind_ms(north_wind[south], north_wind[cell]);
+    let v_north = face_wind_ms(north_wind[cell], north_wind[north]);
+    let mut neighbors = 0.0;
+    let mut diag = 0.0;
+    if u_west > 0.0 {
+        neighbors += u_west / dx * temperature[west];
+    } else {
+        diag += -u_west / dx;
+    }
+    if u_east > 0.0 {
+        diag += u_east / dx;
+    } else {
+        neighbors += -u_east / dx * temperature[east];
+    }
+    if v_south > 0.0 {
+        neighbors += v_south / dy * temperature[south];
+    } else {
+        diag += -v_south / dy;
+    }
+    if v_north > 0.0 {
+        diag += v_north / dy;
+    } else {
+        neighbors += -v_north / dy * temperature[north];
+    }
+    (advection * neighbors, advection * diag)
+}
+
+#[derive(Clone, Copy)]
+enum IceAlbedo<'a> {
+    Live,
+    Fixed(&'a [bool]),
+}
+
+fn cell_is_icy(ice: IceAlbedo<'_>, cell: usize, surface_centi_c: f64) -> bool {
+    match ice {
+        IceAlbedo::Live => surface_centi_c < 0.0,
+        IceAlbedo::Fixed(mask) => mask[cell],
+    }
+}
+
+fn ice_mask_from_temperature(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    temperature_celsius: &[f64],
+) -> Vec<bool> {
+    (0..field.grid.sample_count())
+        .map(|cell| {
+            let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
+            temperature_celsius[cell] - lapse_c < 0.0
+        })
+        .collect()
+}
+
 fn relax_annual_temperature(
     field: &PhysicalField,
     settings: ClimateSettings,
     geometry: &[CellClimateGeometry],
     initial_celsius: &[f64],
+    winds: Option<(&[i32], &[i32])>,
+    ice: IceAlbedo<'_>,
     progress: &mut dyn ProgressSink,
 ) -> Result<Vec<f64>, PhysicalError> {
     let sample_count = field.grid.sample_count();
@@ -960,6 +1087,7 @@ fn relax_annual_temperature(
     let olr_a = settings.olr_a_wm2();
     let olr_b = settings.olr_b_wm2_per_c();
     let diffusivity = settings.heat_diffusivity_w_per_c();
+    let advection = settings.heat_advection_j_m2_k();
     let q_force = olr_b
         * f64::from(
             settings.global_temperature_centi_c - EARTH_EQUATOR_BASE_CENTI_C
@@ -997,14 +1125,33 @@ fn relax_annual_temperature(
             let q_solar = toa
                 * annual_insolation_weight(geometry[cell].latitude, settings)
                 * absorbed_fraction(
-                    class_albedo(ocean, surface_centi_c < 0.0, settings),
+                    class_albedo(ocean, cell_is_icy(ice, cell, surface_centi_c), settings),
                     settings,
                 );
             let dt_over_c = ENERGY_BALANCE_DT_SECONDS / settings.heat_capacity_j_m2_k(ocean);
             let k_diag = diffusivity * diag;
-            let numerator = temperature[cell]
+            let mut numerator = temperature[cell]
                 + dt_over_c * (q_solar - olr_a + q_force + diffusivity * neighbor_part);
-            let denominator = 1.0 + dt_over_c * (olr_b + k_diag);
+            let mut denominator = 1.0 + dt_over_c * (olr_b + k_diag);
+            if let Some((east_wind, north_wind)) = winds {
+                if advection > 0.0 {
+                    let (adv_neighbors, adv_diag) = flux_form_heat_advection(
+                        &temperature,
+                        east_wind,
+                        north_wind,
+                        west,
+                        east,
+                        south,
+                        north,
+                        cell,
+                        x_span,
+                        y_span,
+                        advection,
+                    );
+                    numerator += dt_over_c * adv_neighbors;
+                    denominator += dt_over_c * adv_diag;
+                }
+            }
             let updated = numerator / denominator;
             if !updated.is_finite() {
                 return Err(PhysicalError::coded(
@@ -1012,6 +1159,8 @@ fn relax_annual_temperature(
                     "climate energy-balance temperature is not finite",
                 ));
             }
+            let bounded = f64::from(MAX_CLIMATE_TEMPERATURE_CENTI_C) / 100.0;
+            let updated = updated.clamp(-bounded, bounded);
             abs_delta_sum += (updated - temperature[cell]).abs();
             next[cell] = updated;
         }
@@ -1040,6 +1189,8 @@ fn temperature_field(
     field: &PhysicalField,
     settings: ClimateSettings,
     geometry: &[CellClimateGeometry],
+    seed: u32,
+    retry_index: u32,
     progress: &mut dyn ProgressSink,
 ) -> Result<(Vec<i32>, Vec<i32>, Vec<i32>, Vec<u32>), PhysicalError> {
     let base = solar_base_centi_c(settings)?;
@@ -1059,7 +1210,40 @@ fn temperature_field(
             + (maritime_temperature - continental_temperature) * cell_geometry.maritime_factor;
         initial_celsius.push(temperature / 100.0);
     }
-    let relaxed = relax_annual_temperature(field, settings, geometry, &initial_celsius, progress)?;
+    let mut relaxed = relax_annual_temperature(
+        field,
+        settings,
+        geometry,
+        &initial_celsius,
+        None,
+        IceAlbedo::Live,
+        progress,
+    )?;
+    let omega = omega_ratio(settings.planetary);
+    let hadley = hadley_edge_radians(omega);
+    let ferrel = ferrel_edge_radians(hadley);
+    let wind_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
+    for _ in 0..settings.temperature_wind_coupling_passes {
+        progress.check_cancelled()?;
+        let ice_mask = ice_mask_from_temperature(field, settings, &relaxed);
+        let sea_centi = relaxed
+            .iter()
+            .map(|value| clamp_temperature(value * 100.0))
+            .collect::<Result<Vec<_>, _>>()?;
+        let itcz = thermal_equator_latitude(field.grid, &sea_centi);
+        let (east, north) = wind_components(
+            field, &sea_centi, settings, itcz, hadley, ferrel, wind_seed, false,
+        );
+        relaxed = relax_annual_temperature(
+            field,
+            settings,
+            geometry,
+            &relaxed,
+            Some((&east, &north)),
+            IceAlbedo::Fixed(&ice_mask),
+            progress,
+        )?;
+    }
     let mut temperatures = Vec::with_capacity(field.grid.sample_count());
     let mut summers = Vec::with_capacity(field.grid.sample_count());
     let mut winters = Vec::with_capacity(field.grid.sample_count());
@@ -1300,18 +1484,77 @@ fn ocean_temperature(temperatures: &[i32], ocean: &[bool], cell: usize, fallback
     }
 }
 
+fn coriolis_parameter(latitude: f64, planetary: PlanetaryConfiguration) -> f64 {
+    let omega = std::f64::consts::TAU / f64::from(planetary.rotation_period_seconds.max(1));
+    2.0 * omega * latitude.sin()
+}
+
+fn pressure_base(latitude: f64, itcz: f64, hadley: f64, ferrel: f64, amplitude: f64) -> f64 {
+    let abs_phi = (latitude - itcz).abs();
+    let pole = std::f64::consts::FRAC_PI_2;
+    let width = 0.16;
+    let hadley_w = 1.0 - smoothstep(hadley - width, hadley + width, abs_phi);
+    let polar_w = smoothstep(ferrel - width, ferrel + width, abs_phi);
+    let ferrel_w = (1.0 - hadley_w - polar_w).max(0.0);
+    let hadley_frac = (abs_phi / hadley.max(1e-6)).clamp(0.0, 1.0);
+    let ferrel_frac = ((abs_phi - hadley) / (ferrel - hadley).max(1e-6)).clamp(0.0, 1.0);
+    let polar_frac = ((abs_phi - ferrel) / (pole - ferrel).max(1e-6)).clamp(0.0, 1.0);
+    let hadley_p = -amplitude * (std::f64::consts::PI * hadley_frac).cos();
+    let ferrel_p = amplitude * (std::f64::consts::PI * ferrel_frac).cos();
+    let polar_p = -amplitude * (std::f64::consts::PI * polar_frac).cos();
+    hadley_w * hadley_p + ferrel_w * ferrel_p + polar_w * polar_p
+}
+
+fn pressure_base_dlat(latitude: f64, itcz: f64, hadley: f64, ferrel: f64, amplitude: f64) -> f64 {
+    let dlat = 0.01;
+    (pressure_base(latitude + dlat, itcz, hadley, ferrel, amplitude)
+        - pressure_base(latitude - dlat, itcz, hadley, ferrel, amplitude))
+        / (2.0 * dlat)
+}
+
+fn pressure_anomaly(
+    field: &PhysicalField,
+    temperatures: &[i32],
+    settings: ClimateSettings,
+) -> Vec<f64> {
+    let amplitude = f64::from(settings.pressure_cell_amplitude);
+    let thermal = f64::from(settings.thermal_pressure_per_c);
+    let scale_height = f64::from(settings.pressure_scale_height_m).max(1.0);
+    let mut zonal_mean = vec![0.0_f64; field.grid.height as usize];
+    let mut zonal_count = vec![0.0_f64; field.grid.height as usize];
+    for cell in 0..field.grid.sample_count() {
+        let (row, _) = field.grid.row_col(cell);
+        zonal_mean[row as usize] += f64::from(temperatures[cell]);
+        zonal_count[row as usize] += 1.0;
+    }
+    for row in 0..field.grid.height as usize {
+        zonal_mean[row] /= zonal_count[row].max(1.0);
+    }
+    let mut pressure = vec![0.0; field.grid.sample_count()];
+    for cell in 0..field.grid.sample_count() {
+        let (row, _) = field.grid.row_col(cell);
+        let t_anomaly = (f64::from(temperatures[cell]) - zonal_mean[row as usize]) / 100.0;
+        let elevation_m = surface_height_m(field, cell);
+        let column = (-elevation_m / scale_height).exp();
+        pressure[cell] = -thermal * t_anomaly + amplitude * (column - 1.0);
+    }
+    pressure
+}
+
 fn wind_components(
     field: &PhysicalField,
     temperatures: &[i32],
-    planetary: PlanetaryConfiguration,
+    settings: ClimateSettings,
     itcz: f64,
     hadley: f64,
     ferrel: f64,
     wind_seed: u64,
+    meanders: bool,
 ) -> (Vec<i32>, Vec<i32>) {
-    let omega = omega_ratio(planetary);
-    let zonal_scale = 1_050.0 * omega.clamp(0.15, 2.8).powf(0.45);
-    let meridional_scale = 520.0 / omega.clamp(0.25, 2.5).powf(0.35);
+    let anomaly = pressure_anomaly(field, temperatures, settings);
+    let omega = omega_ratio(settings.planetary);
+    let amplitude = f64::from(settings.pressure_cell_amplitude);
+    let radius = (field.grid.radius_metres as f64).max(1.0);
     let waves = (2.0 + 3.2 * omega.clamp(0.2, 2.4)).clamp(2.0, 8.0);
     let phase = (wind_seed as f64) * (std::f64::consts::TAU / (u64::MAX as f64));
     let wave_amp = 340.0 * omega.clamp(0.3, 2.0).sqrt();
@@ -1320,54 +1563,50 @@ fn wind_components(
     for cell in 0..field.grid.sample_count() {
         let (row, col) = field.grid.row_col(cell);
         let (longitude, latitude) = field.grid.center_radians(row, col);
-        let (zonal_sign, meridional_sign) = circulation_flow(latitude, itcz, hadley, ferrel);
         let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
         let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
         let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
         let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
-        let dx = neighbor_metres(field.grid, row, col, 0, 1);
-        let dy = neighbor_metres(field.grid, row, col, 1, 0);
-        let scale_x = spacing_scale(dx);
-        let scale_y = spacing_scale(dy);
-        let base_u = zonal_sign * zonal_scale;
-        let base_v = meridional_sign * meridional_scale;
-        let envelope = zonal_sign.max(0.0) + (-zonal_sign).max(0.0) * 0.22;
-        let theta = waves * longitude + phase;
-        let theta2 = (waves * 0.5 + 1.0) * longitude + phase * 1.73;
-        let mut du = envelope * wave_amp * (theta.sin() + 0.38 * theta2.cos());
-        let mut dv = envelope * wave_amp * (1.2 * theta.cos() + 0.45 * theta2.sin());
-        du += 0.18 * f64::from(temperatures[east_cell] - temperatures[west_cell]) * scale_x;
-        dv += 0.18 * f64::from(temperatures[north_cell] - temperatures[south_cell]) * scale_y;
-        if is_ocean(field, east_cell) != is_ocean(field, cell) {
-            du += 0.12 * f64::from(temperatures[east_cell] - temperatures[cell]) * scale_x;
-        }
-        if is_ocean(field, west_cell) != is_ocean(field, cell) {
-            du += 0.12 * f64::from(temperatures[cell] - temperatures[west_cell]) * scale_x;
-        }
-        if is_ocean(field, north_cell) != is_ocean(field, cell) {
-            dv += 0.12 * f64::from(temperatures[north_cell] - temperatures[cell]) * scale_y;
-        }
-        if is_ocean(field, south_cell) != is_ocean(field, cell) {
-            dv += 0.12 * f64::from(temperatures[cell] - temperatures[south_cell]) * scale_y;
-        }
+        let dx_w = neighbor_metres(field.grid, row, col, 0, -1);
+        let dx_e = neighbor_metres(field.grid, row, col, 0, 1);
+        let dy_s = neighbor_metres(field.grid, row, col, -1, 0);
+        let dy_n = neighbor_metres(field.grid, row, col, 1, 0);
+        let dp_dx = (anomaly[east_cell] - anomaly[west_cell]) / (dx_e + dx_w);
+        let dp_dy = pressure_base_dlat(latitude, itcz, hadley, ferrel, amplitude) / radius
+            + (anomaly[north_cell] - anomaly[south_cell]) / (dy_n + dy_s);
+        let fx = -dp_dx;
+        let fy = -dp_dy;
         let elevation_km =
             (f64::from(field.elevations_mm[cell] - field.sea_level_mm) / 1_000_000.0).max(0.0);
+        let drag = settings
+            .drag_per_second(is_ocean(field, cell), elevation_km)
+            .max(1e-6);
+        let coriolis = coriolis_parameter(latitude, settings.planetary) * settings.coriolis_scale();
+        let denom = drag * drag + coriolis * coriolis;
+        let u_ms = (drag * fx + coriolis * fy) / denom;
+        let v_ms = (-coriolis * fx + drag * fy) / denom;
+        let mut u = u_ms * 1_000.0;
+        let mut v = v_ms * 1_000.0;
+        if meanders {
+            let zonal_sign = circulation_flow(latitude, itcz, hadley, ferrel).0;
+            let envelope = zonal_sign.max(0.0) + (-zonal_sign).max(0.0) * 0.22;
+            let theta = waves * longitude + phase;
+            let theta2 = (waves * 0.5 + 1.0) * longitude + phase * 1.73;
+            let mut du = envelope * wave_amp * (theta.sin() + 0.38 * theta2.cos());
+            let mut dv = envelope * wave_amp * (1.2 * theta.cos() + 0.45 * theta2.sin());
+            let cap = 0.42 * u.hypot(v).max(450.0);
+            let perturb = du.hypot(dv);
+            if perturb > cap && perturb > 0.0 {
+                du *= cap / perturb;
+                dv *= cap / perturb;
+            }
+            u += du;
+            v += dv;
+        }
         let blocking = 1.0 / (1.0 + elevation_km * 0.6);
         let roughness = if is_ocean(field, cell) { 1.0 } else { 0.86 };
-        dv += -0.000_08
-            * f64::from(field.elevations_mm[east_cell] - field.elevations_mm[west_cell])
-            * blocking
-            * scale_x;
-        let cap = 0.42 * base_u.hypot(base_v).max(zonal_scale * 0.45);
-        let perturb = du.hypot(dv);
-        if perturb > cap && perturb > 0.0 {
-            du *= cap / perturb;
-            dv *= cap / perturb;
-        }
-        let u = (base_u + du) * blocking * roughness;
-        let v = (base_v + dv) * roughness;
-        east.push(clamp_wind(u));
-        north.push(clamp_wind(v));
+        east.push(clamp_wind(u * blocking * roughness));
+        north.push(clamp_wind(v * roughness));
     }
     (east, north)
 }
@@ -1416,38 +1655,42 @@ struct DerivedWinds {
 
 fn derive_winds(
     field: &PhysicalField,
-    planetary: PlanetaryConfiguration,
+    settings: ClimateSettings,
     annual: &[i32],
     summer: &[i32],
     winter: &[i32],
     seed: u32,
     retry_index: u32,
 ) -> DerivedWinds {
-    let omega = omega_ratio(planetary);
+    let omega = omega_ratio(settings.planetary);
     let hadley = hadley_edge_radians(omega);
     let ferrel = ferrel_edge_radians(hadley);
     let itcz = thermal_equator_latitude(field.grid, annual);
     let summer_itcz = thermal_equator_latitude(field.grid, summer);
     let winter_itcz = thermal_equator_latitude(field.grid, winter);
     let wind_seed = derive_subsystem_seed(seed, retry_index, SeedDomain::Climate);
-    let (east, north) = wind_components(field, annual, planetary, itcz, hadley, ferrel, wind_seed);
+    let (east, north) = wind_components(
+        field, annual, settings, itcz, hadley, ferrel, wind_seed, true,
+    );
     let (east_summer, north_summer) = wind_components(
         field,
         summer,
-        planetary,
+        settings,
         summer_itcz,
         hadley,
         ferrel,
         wind_seed,
+        true,
     );
     let (east_winter, north_winter) = wind_components(
         field,
         winter,
-        planetary,
+        settings,
         winter_itcz,
         hadley,
         ferrel,
         wind_seed,
+        true,
     );
     let divergence_ppm = wind_divergence_ppm(field.grid, &east, &north);
     let divergence_summer_ppm = wind_divergence_ppm(field.grid, &east_summer, &north_summer);
@@ -3011,10 +3254,10 @@ pub fn derive_current_climate(
     let geometry = build_geometry(field, settings, progress)?;
     progress.report(ProgressPhase::CalculatingClimate, 1, 4)?;
     let (temperatures, summers, winters, maritime_factors) =
-        temperature_field(field, settings, &geometry, progress)?;
+        temperature_field(field, settings, &geometry, seed, retry_index, progress)?;
     let winds = derive_winds(
         field,
-        settings.planetary,
+        settings,
         &temperatures,
         &summers,
         &winters,
@@ -3287,7 +3530,7 @@ mod tests {
             climate.precipitation_mm_per_year[coastal],
             climate.precipitation_mm_per_year[interior]
         );
-        assert!(climate.humidity_ppm[coastal] > climate.humidity_ppm[interior]);
+        assert!(climate.moisture_mm_per_year[coastal] > climate.moisture_mm_per_year[interior]);
         assert!(climate.wind_east_milli[grid.index(11, 16)] > 0);
         assert!(land
             .iter()
@@ -4333,6 +4576,245 @@ mod tests {
     }
 
     #[test]
+    fn coriolis_reverses_across_the_equator_and_vanishes_on_it() {
+        let planetary = PlanetaryConfiguration::earth_like();
+        assert_eq!(coriolis_parameter(0.0, planetary), 0.0);
+        let north = coriolis_parameter(0.4, planetary);
+        let south = coriolis_parameter(-0.4, planetary);
+        assert!(north > 0.0);
+        assert!(south < 0.0);
+        assert!((north + south).abs() < 1e-12);
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(climate.wind_east_milli[grid.index(4, 4)] < 0);
+        let southern_hadley = (0..grid.sample_count()).filter(|&cell| {
+            let (row, _) = grid.row_col(cell);
+            row < grid.height / 2 && climate.wind_band[cell] == WIND_BAND_HADLEY
+        });
+        assert!(southern_hadley
+            .clone()
+            .any(|cell| climate.wind_east_milli[cell] < 0));
+        assert!(climate
+            .wind_east_milli
+            .iter()
+            .chain(climate.wind_north_milli.iter())
+            .all(|value| (-MAX_WIND_MILLI..=MAX_WIND_MILLI).contains(value)));
+    }
+
+    #[test]
+    fn northern_thermal_low_turns_counterclockwise() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![200_000; grid.sample_count()];
+        for col in 6..10 {
+            elevations[grid.index(5, col)] = -200_000;
+        }
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let east = grid.index(5, 10);
+        let west = grid.index(5, 5);
+        assert!(
+            climate.wind_north_milli[east] > climate.wind_north_milli[west],
+            "east {} west {}",
+            climate.wind_north_milli[east],
+            climate.wind_north_milli[west]
+        );
+    }
+
+    #[test]
+    fn extreme_pressure_amplitude_clamps_wind() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let mut settings = ClimateSettings::default_for(grid);
+        settings.pressure_cell_amplitude = 50_000;
+        settings.drag_ocean_micro = 1;
+        settings.drag_land_micro = 1;
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            settings,
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(climate
+            .wind_east_milli
+            .iter()
+            .chain(climate.wind_north_milli.iter())
+            .all(|value| (-MAX_WIND_MILLI..=MAX_WIND_MILLI).contains(value)));
+        assert_eq!(clamp_wind(1_000_000.0), MAX_WIND_MILLI);
+        assert_eq!(clamp_wind(-1_000_000.0), -MAX_WIND_MILLI);
+    }
+
+    #[test]
+    fn heat_advection_moves_warmth_downwind() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![200_000; grid.sample_count()];
+        for col in 10..14 {
+            elevations[grid.index(5, col)] = -200_000;
+        }
+        let physical = field(grid, elevations, 0);
+        let mut diffusion = ClimateSettings::default_for(grid);
+        diffusion.heat_advection_kj_m2_k = 0;
+        diffusion.temperature_wind_coupling_passes = 0;
+        let stage1 = derive_current_climate(
+            &physical,
+            diffusion,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut advecting = ClimateSettings::default_for(grid);
+        advecting.heat_advection_kj_m2_k = 800;
+        advecting.temperature_wind_coupling_passes = 2;
+        let coupled = derive_current_climate(
+            &physical,
+            advecting,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let sample = grid.index(5, 8);
+        let west = grid.index(5, 9);
+        let east = grid.index(5, 14);
+        let u = coupled.wind_east_milli[sample];
+        let v = coupled.wind_north_milli[sample];
+        assert!(
+            u.unsigned_abs() > v.unsigned_abs(),
+            "zonal wind {} meridional {}",
+            u,
+            v
+        );
+        let (downwind, upwind) = if u < 0 { (west, east) } else { (east, west) };
+        let downwind_delta =
+            coupled.temperature_centi_c[downwind] - stage1.temperature_centi_c[downwind];
+        let upwind_delta = coupled.temperature_centi_c[upwind] - stage1.temperature_centi_c[upwind];
+        assert!(
+            downwind_delta > 0,
+            "downwind did not warm {downwind_delta} wind {u}"
+        );
+        assert!(
+            downwind_delta > upwind_delta,
+            "downwind {downwind_delta} upwind {upwind_delta} wind {u}"
+        );
+        let mut default_advecting = ClimateSettings::default_for(grid);
+        default_advecting.temperature_wind_coupling_passes = 2;
+        let mut default_diffusion = default_advecting;
+        default_diffusion.heat_advection_kj_m2_k = 0;
+        let default_stage1 = derive_current_climate(
+            &physical,
+            default_diffusion,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let default_coupled = derive_current_climate(
+            &physical,
+            default_advecting,
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let default_u = default_coupled.wind_east_milli[sample];
+        let (default_downwind, default_upwind) = if default_u < 0 {
+            (west, east)
+        } else {
+            (east, west)
+        };
+        let default_downwind_delta = default_coupled.temperature_centi_c[default_downwind]
+            - default_stage1.temperature_centi_c[default_downwind];
+        let default_upwind_delta = default_coupled.temperature_centi_c[default_upwind]
+            - default_stage1.temperature_centi_c[default_upwind];
+        assert!(
+            default_downwind_delta > 0,
+            "default advection downwind did not warm {default_downwind_delta} wind {default_u}"
+        );
+        assert!(
+            default_downwind_delta > default_upwind_delta,
+            "default advection downwind {default_downwind_delta} upwind {default_upwind_delta} wind {default_u}"
+        );
+    }
+
+    #[test]
+    fn thermal_pressure_anomaly_flips_meridional_wind_independent_of_the_band() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let elevations = vec![200_000; grid.sample_count()];
+        let physical = field(grid, elevations, 0);
+        let mut settings = ClimateSettings::default_for(grid);
+        settings.pressure_cell_amplitude = 100;
+        let mut hot = vec![1_500; grid.sample_count()];
+        let mut cold = vec![1_500; grid.sample_count()];
+        let patch = grid.index(5, 8);
+        hot[patch] = 2_800;
+        cold[patch] = 200;
+        let omega = omega_ratio(settings.planetary);
+        let hadley = hadley_edge_radians(omega);
+        let ferrel = ferrel_edge_radians(hadley);
+        let (_hot_east, hot_north) =
+            wind_components(&physical, &hot, settings, 0.0, hadley, ferrel, 0, false);
+        let (_cold_east, cold_north) =
+            wind_components(&physical, &cold, settings, 0.0, hadley, ferrel, 0, false);
+        let east = grid.index(5, 9);
+        assert!(
+            hot_north[east] > cold_north[east],
+            "hot {} cold {}",
+            hot_north[east],
+            cold_north[east]
+        );
+        assert_ne!(hot_north[east].signum(), cold_north[east].signum());
+    }
+
+    #[test]
+    fn flat_world_winds_are_locally_smooth_inside_a_band() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut jump = 0.0;
+        let mut speed = 0.0;
+        let mut count = 0.0;
+        for cell in 0..grid.sample_count() {
+            let (row, col) = grid.row_col(cell);
+            let east = grid.index(row, wrapped_col(grid, col, 1));
+            if climate.wind_band[cell] != climate.wind_band[east] {
+                continue;
+            }
+            jump +=
+                f64::from((climate.wind_east_milli[cell] - climate.wind_east_milli[east]).abs());
+            speed += f64::from(climate.wind_east_milli[cell].unsigned_abs());
+            count += 1.0;
+        }
+        assert!(count > 0.0);
+        assert!(jump / count < speed / count);
+    }
+
+    #[test]
     fn uniform_temperature_offset_keeps_winds_until_sea_level_changes() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
@@ -4679,7 +5161,7 @@ mod tests {
     }
 
     #[test]
-    fn slower_rotation_weakens_surface_currents() {
+    fn slower_rotation_changes_surface_currents() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![-2_000; grid.sample_count()];
         for row in 0..grid.height {
@@ -4706,7 +5188,11 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        assert!(slow.metrics.mean_current_speed_milli < earth.metrics.mean_current_speed_milli);
+        assert_ne!(
+            slow.metrics.mean_current_speed_milli,
+            earth.metrics.mean_current_speed_milli
+        );
+        assert!(slow.metrics.mean_current_speed_milli > 0);
     }
 
     #[test]

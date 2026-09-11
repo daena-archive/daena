@@ -1509,6 +1509,111 @@ fn relax_annual_temperature(
     )
 }
 
+struct RelaxTemperatureInput<'a> {
+    field: &'a PhysicalField,
+    settings: ClimateSettings,
+    geometry: &'a [CellClimateGeometry],
+    temperature: &'a [f64],
+    winds: Option<(&'a [i32], &'a [i32])>,
+    ice: IceAlbedo<'a>,
+    latent_wm2: Option<&'a [f64]>,
+    insolation_weights: Option<&'a [f64]>,
+    albedo: Option<&'a [f64]>,
+    cloud: Option<&'a [f64]>,
+    spacing: &'a GridSpacing,
+    toa: f64,
+    olr_a: f64,
+    olr_b: f64,
+    diffusivity: f64,
+    advection: f64,
+    q_force: f64,
+    dt_land: f64,
+    dt_ocean: f64,
+    bounded: f64,
+}
+
+fn relax_temperature_cell(
+    input: &RelaxTemperatureInput<'_>,
+    cell: usize,
+) -> Result<f64, PhysicalError> {
+    let field = input.field;
+    let settings = input.settings;
+    let (row, col) = field.grid.row_col(cell);
+    let west = field.grid.index(row, wrapped_col(field.grid, col, -1));
+    let east = field.grid.index(row, wrapped_col(field.grid, col, 1));
+    let south = field.grid.index(clamped_row(field.grid, row, -1), col);
+    let north = field.grid.index(clamped_row(field.grid, row, 1), col);
+    let (dx_w, dx_e, dy_s, dy_n) = input.spacing.spans(row);
+    let x_span = (dx_w + dx_e) * 0.5;
+    let y_span = (dy_s + dy_n) * 0.5;
+    let neighbor_part = (input.temperature[west] / dx_w + input.temperature[east] / dx_e) / x_span
+        + (input.temperature[south] / dy_s + input.temperature[north] / dy_n) / y_span;
+    let diag = (1.0 / dx_w + 1.0 / dx_e) / x_span + (1.0 / dy_s + 1.0 / dy_n) / y_span;
+    let is_ocean_cell = is_ocean(field, cell);
+    let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
+    let surface_centi_c = (input.temperature[cell] - lapse_c) * 100.0;
+    let insolation_weight = input
+        .insolation_weights
+        .map(|weights| weights[cell])
+        .unwrap_or_else(|| annual_insolation_weight(input.geometry[cell].latitude, settings));
+    let cloud_f = input
+        .cloud
+        .map(|values| values[cell].clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    let surface = input.albedo.map(|values| values[cell]).unwrap_or_else(|| {
+        class_albedo(
+            is_ocean_cell,
+            cell_is_icy(input.ice, cell, surface_centi_c),
+            settings,
+        )
+    });
+    let q_solar = input.toa
+        * insolation_weight
+        * absorbed_fraction(mixed_albedo(surface, cloud_f, settings), settings);
+    let dt_over_c = if is_ocean_cell {
+        input.dt_ocean
+    } else {
+        input.dt_land
+    };
+    let k_diag = input.diffusivity * diag;
+    let q_latent = input.latent_wm2.map(|values| values[cell]).unwrap_or(0.0);
+    let olr_cloud = settings.cloud_olr_factor(cloud_f);
+    let mut numerator = input.temperature[cell]
+        + dt_over_c
+            * (q_solar - input.olr_a * olr_cloud
+                + input.q_force
+                + q_latent
+                + input.diffusivity * neighbor_part);
+    let mut denominator = 1.0 + dt_over_c * (input.olr_b * olr_cloud + k_diag);
+    if let Some((east_wind, north_wind)) = input.winds {
+        if input.advection > 0.0 {
+            let (adv_neighbors, adv_diag) = flux_form_heat_advection(
+                input.temperature,
+                east_wind,
+                north_wind,
+                west,
+                east,
+                south,
+                north,
+                cell,
+                x_span,
+                y_span,
+                input.advection,
+            );
+            numerator += dt_over_c * adv_neighbors;
+            denominator += dt_over_c * adv_diag;
+        }
+    }
+    let updated = numerator / denominator;
+    if !updated.is_finite() {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::NumericNonFinite,
+            "climate energy-balance temperature is not finite",
+        ));
+    }
+    Ok(updated.clamp(-input.bounded, input.bounded))
+}
+
 fn relax_temperature(
     field: &PhysicalField,
     settings: ClimateSettings,
@@ -1543,86 +1648,47 @@ fn relax_temperature(
     let spacing = GridSpacing::new(field.grid);
     let dt_land = dt_seconds / settings.heat_capacity_j_m2_k(false);
     let dt_ocean = dt_seconds / settings.heat_capacity_j_m2_k(true);
+    let bounded = f64::from(MAX_CLIMATE_TEMPERATURE_CENTI_C) / 100.0;
     let mut converged = false;
     for iteration in 0..max_iterations {
         progress.check_cancelled()?;
-        let mut abs_delta_sum = 0.0;
-        for cell in 0..sample_count {
-            if cell % 128 == 0 {
-                progress.check_cancelled()?;
-            }
-            let (row, col) = field.grid.row_col(cell);
-            let west = field.grid.index(row, wrapped_col(field.grid, col, -1));
-            let east = field.grid.index(row, wrapped_col(field.grid, col, 1));
-            let south = field.grid.index(clamped_row(field.grid, row, -1), col);
-            let north = field.grid.index(clamped_row(field.grid, row, 1), col);
-            let (dx_w, dx_e, dy_s, dy_n) = spacing.spans(row);
-            let x_span = (dx_w + dx_e) * 0.5;
-            let y_span = (dy_s + dy_n) * 0.5;
-            let neighbor_part = (temperature[west] / dx_w + temperature[east] / dx_e) / x_span
-                + (temperature[south] / dy_s + temperature[north] / dy_n) / y_span;
-            let diag = (1.0 / dx_w + 1.0 / dx_e) / x_span + (1.0 / dy_s + 1.0 / dy_n) / y_span;
-            let is_ocean_cell = is_ocean(field, cell);
-            let lapse_c = altitude_lapse_centi_c(field, settings, cell) / 100.0;
-            let surface_centi_c = (temperature[cell] - lapse_c) * 100.0;
-            let insolation_weight = insolation_weights
-                .map(|weights| weights[cell])
-                .unwrap_or_else(|| annual_insolation_weight(geometry[cell].latitude, settings));
-            let cloud_f = cloud
-                .map(|values| values[cell].clamp(0.0, 1.0))
-                .unwrap_or(0.0);
-            let surface = albedo.map(|values| values[cell]).unwrap_or_else(|| {
-                class_albedo(
-                    is_ocean_cell,
-                    cell_is_icy(ice, cell, surface_centi_c),
-                    settings,
-                )
-            });
-            let q_solar = toa
-                * insolation_weight
-                * absorbed_fraction(mixed_albedo(surface, cloud_f, settings), settings);
-            let dt_over_c = if is_ocean_cell { dt_ocean } else { dt_land };
-            let k_diag = diffusivity * diag;
-            let q_latent = latent_wm2.map(|values| values[cell]).unwrap_or(0.0);
-            let olr_cloud = settings.cloud_olr_factor(cloud_f);
-            let mut numerator = temperature[cell]
-                + dt_over_c
-                    * (q_solar - olr_a * olr_cloud
-                        + q_force
-                        + q_latent
-                        + diffusivity * neighbor_part);
-            let mut denominator = 1.0 + dt_over_c * (olr_b * olr_cloud + k_diag);
-            if let Some((east_wind, north_wind)) = winds {
-                if advection > 0.0 {
-                    let (adv_neighbors, adv_diag) = flux_form_heat_advection(
-                        &temperature,
-                        east_wind,
-                        north_wind,
-                        west,
-                        east,
-                        south,
-                        north,
-                        cell,
-                        x_span,
-                        y_span,
-                        advection,
-                    );
-                    numerator += dt_over_c * adv_neighbors;
-                    denominator += dt_over_c * adv_diag;
+        let input = RelaxTemperatureInput {
+            field,
+            settings,
+            geometry,
+            temperature: &temperature,
+            winds,
+            ice,
+            latent_wm2,
+            insolation_weights,
+            albedo,
+            cloud,
+            spacing: &spacing,
+            toa,
+            olr_a,
+            olr_b,
+            diffusivity,
+            advection,
+            q_force,
+            dt_land,
+            dt_ocean,
+            bounded,
+        };
+        let width = field.grid.width as usize;
+        next.par_chunks_mut(width)
+            .enumerate()
+            .try_for_each(|(row, slot)| {
+                for (col, cell_slot) in slot.iter_mut().enumerate() {
+                    let cell = field.grid.index(row as u32, col as u32);
+                    *cell_slot = relax_temperature_cell(&input, cell)?;
                 }
-            }
-            let updated = numerator / denominator;
-            if !updated.is_finite() {
-                return Err(PhysicalError::coded(
-                    PhysicalErrorCode::NumericNonFinite,
-                    "climate energy-balance temperature is not finite",
-                ));
-            }
-            let bounded = f64::from(MAX_CLIMATE_TEMPERATURE_CENTI_C) / 100.0;
-            let updated = updated.clamp(-bounded, bounded);
-            abs_delta_sum += (updated - temperature[cell]).abs();
-            next[cell] = updated;
-        }
+                Ok(())
+            })?;
+        let abs_delta_sum = next
+            .iter()
+            .zip(temperature.iter())
+            .map(|(updated, previous)| (updated - previous).abs())
+            .sum::<f64>();
         std::mem::swap(&mut temperature, &mut next);
         let mean_abs_delta = abs_delta_sum / sample_count as f64;
         if iteration + 1 >= min_iterations
@@ -2667,6 +2733,79 @@ fn pressure_anomaly(
     pressure
 }
 
+struct WindComponentInput<'a> {
+    field: &'a PhysicalField,
+    settings: ClimateSettings,
+    anomaly: &'a [f64],
+    spacing: &'a GridSpacing,
+    itcz: f64,
+    hadley: f64,
+    ferrel: f64,
+    amplitude: f64,
+    radius: f64,
+    waves: f64,
+    phase: f64,
+    wave_amp: f64,
+    meanders: bool,
+}
+
+fn wind_component_cell(input: &WindComponentInput<'_>, cell: usize) -> (i32, i32) {
+    let field = input.field;
+    let (row, col) = field.grid.row_col(cell);
+    let (longitude, latitude) = field.grid.center_radians(row, col);
+    let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
+    let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
+    let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
+    let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
+    let (dx_w, dx_e, dy_s, dy_n) = input.spacing.spans(row);
+    let dp_dx = (input.anomaly[east_cell] - input.anomaly[west_cell]) / (dx_e + dx_w);
+    let dp_dy = pressure_base_dlat(
+        latitude,
+        input.itcz,
+        input.hadley,
+        input.ferrel,
+        input.amplitude,
+    ) / input.radius
+        + (input.anomaly[north_cell] - input.anomaly[south_cell]) / (dy_n + dy_s);
+    let fx = -dp_dx;
+    let fy = -dp_dy;
+    let elevation_km =
+        (f64::from(field.elevations_mm[cell] - field.sea_level_mm) / 1_000_000.0).max(0.0);
+    let drag = input
+        .settings
+        .drag_per_second(is_ocean(field, cell), elevation_km)
+        .max(1e-6);
+    let coriolis =
+        coriolis_parameter(latitude, input.settings.planetary) * input.settings.coriolis_scale();
+    let denom = drag * drag + coriolis * coriolis;
+    let u_ms = (drag * fx + coriolis * fy) / denom;
+    let v_ms = (-coriolis * fx + drag * fy) / denom;
+    let mut u = u_ms * 1_000.0;
+    let mut v = v_ms * 1_000.0;
+    if input.meanders {
+        let zonal_sign = circulation_flow(latitude, input.itcz, input.hadley, input.ferrel).0;
+        let envelope = zonal_sign.max(0.0) + (-zonal_sign).max(0.0) * 0.22;
+        let theta = input.waves * longitude + input.phase;
+        let theta2 = (input.waves * 0.5 + 1.0) * longitude + input.phase * 1.73;
+        let mut du = envelope * input.wave_amp * (theta.sin() + 0.38 * theta2.cos());
+        let mut dv = envelope * input.wave_amp * (1.2 * theta.cos() + 0.45 * theta2.sin());
+        let cap = 0.42 * u.hypot(v).max(450.0);
+        let perturb = du.hypot(dv);
+        if perturb > cap && perturb > 0.0 {
+            du *= cap / perturb;
+            dv *= cap / perturb;
+        }
+        u += du;
+        v += dv;
+    }
+    let blocking = 1.0 / (1.0 + elevation_km * 0.6);
+    let roughness = if is_ocean(field, cell) { 1.0 } else { 0.86 };
+    (
+        clamp_wind(u * blocking * roughness),
+        clamp_wind(v * roughness),
+    )
+}
+
 fn wind_components(
     field: &PhysicalField,
     temperatures: &[i32],
@@ -2685,71 +2824,60 @@ fn wind_components(
     let phase = (wind_seed as f64) * (std::f64::consts::TAU / (u64::MAX as f64));
     let wave_amp = 340.0 * omega.clamp(0.3, 2.0).sqrt();
     let spacing = GridSpacing::new(field.grid);
-    let mut east = Vec::with_capacity(field.grid.sample_count());
-    let mut north = Vec::with_capacity(field.grid.sample_count());
-    for cell in 0..field.grid.sample_count() {
-        let (row, col) = field.grid.row_col(cell);
-        let (longitude, latitude) = field.grid.center_radians(row, col);
-        let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
-        let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
-        let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
-        let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
-        let (dx_w, dx_e, dy_s, dy_n) = spacing.spans(row);
-        let dp_dx = (anomaly[east_cell] - anomaly[west_cell]) / (dx_e + dx_w);
-        let dp_dy = pressure_base_dlat(latitude, itcz, hadley, ferrel, amplitude) / radius
-            + (anomaly[north_cell] - anomaly[south_cell]) / (dy_n + dy_s);
-        let fx = -dp_dx;
-        let fy = -dp_dy;
-        let elevation_km =
-            (f64::from(field.elevations_mm[cell] - field.sea_level_mm) / 1_000_000.0).max(0.0);
-        let drag = settings
-            .drag_per_second(is_ocean(field, cell), elevation_km)
-            .max(1e-6);
-        let coriolis = coriolis_parameter(latitude, settings.planetary) * settings.coriolis_scale();
-        let denom = drag * drag + coriolis * coriolis;
-        let u_ms = (drag * fx + coriolis * fy) / denom;
-        let v_ms = (-coriolis * fx + drag * fy) / denom;
-        let mut u = u_ms * 1_000.0;
-        let mut v = v_ms * 1_000.0;
-        if meanders {
-            let zonal_sign = circulation_flow(latitude, itcz, hadley, ferrel).0;
-            let envelope = zonal_sign.max(0.0) + (-zonal_sign).max(0.0) * 0.22;
-            let theta = waves * longitude + phase;
-            let theta2 = (waves * 0.5 + 1.0) * longitude + phase * 1.73;
-            let mut du = envelope * wave_amp * (theta.sin() + 0.38 * theta2.cos());
-            let mut dv = envelope * wave_amp * (1.2 * theta.cos() + 0.45 * theta2.sin());
-            let cap = 0.42 * u.hypot(v).max(450.0);
-            let perturb = du.hypot(dv);
-            if perturb > cap && perturb > 0.0 {
-                du *= cap / perturb;
-                dv *= cap / perturb;
-            }
-            u += du;
-            v += dv;
-        }
-        let blocking = 1.0 / (1.0 + elevation_km * 0.6);
-        let roughness = if is_ocean(field, cell) { 1.0 } else { 0.86 };
-        east.push(clamp_wind(u * blocking * roughness));
-        north.push(clamp_wind(v * roughness));
-    }
+    let input = WindComponentInput {
+        field,
+        settings,
+        anomaly: &anomaly,
+        spacing: &spacing,
+        itcz,
+        hadley,
+        ferrel,
+        amplitude,
+        radius,
+        waves,
+        phase,
+        wave_amp,
+        meanders,
+    };
+    let count = field.grid.sample_count();
+    let mut east = vec![0; count];
+    let mut north = vec![0; count];
+    east.par_iter_mut()
+        .zip(north.par_iter_mut())
+        .enumerate()
+        .for_each(|(cell, (east_slot, north_slot))| {
+            let (east, north) = wind_component_cell(&input, cell);
+            *east_slot = east;
+            *north_slot = north;
+        });
     (east, north)
+}
+
+fn wind_divergence_cell(
+    grid: Grid,
+    spacing: &GridSpacing,
+    east: &[i32],
+    north: &[i32],
+    cell: usize,
+) -> i32 {
+    let (row, col) = grid.row_col(cell);
+    let west = grid.index(row, wrapped_col(grid, col, -1));
+    let east_cell = grid.index(row, wrapped_col(grid, col, 1));
+    let south = grid.index(clamped_row(grid, row, -1), col);
+    let north_cell = grid.index(clamped_row(grid, row, 1), col);
+    let scale_x = spacing.scale_x(row);
+    let scale_y = spacing.scale_y(row);
+    let value = f64::from(east[east_cell] - east[west]) * scale_x
+        + f64::from(north[north_cell] - north[south]) * scale_y;
+    (value * 80.0).round().clamp(-1_000_000.0, 1_000_000.0) as i32
 }
 
 fn wind_divergence_ppm(grid: Grid, east: &[i32], north: &[i32]) -> Vec<i32> {
     let spacing = GridSpacing::new(grid);
-    let mut divergence = Vec::with_capacity(grid.sample_count());
-    for cell in 0..grid.sample_count() {
-        let (row, col) = grid.row_col(cell);
-        let west = grid.index(row, wrapped_col(grid, col, -1));
-        let east_cell = grid.index(row, wrapped_col(grid, col, 1));
-        let south = grid.index(clamped_row(grid, row, -1), col);
-        let north_cell = grid.index(clamped_row(grid, row, 1), col);
-        let scale_x = spacing.scale_x(row);
-        let scale_y = spacing.scale_y(row);
-        let value = f64::from(east[east_cell] - east[west]) * scale_x
-            + f64::from(north[north_cell] - north[south]) * scale_y;
-        divergence.push((value * 80.0).round().clamp(-1_000_000.0, 1_000_000.0) as i32);
-    }
+    let mut divergence = vec![0; grid.sample_count()];
+    divergence.par_iter_mut().enumerate().for_each(|(cell, slot)| {
+        *slot = wind_divergence_cell(grid, &spacing, east, north, cell);
+    });
     divergence
 }
 
@@ -5207,6 +5335,67 @@ mod tests {
         assert_eq!(west[grid.index(2, 0)], 1);
         assert_eq!(east[grid.index(2, 7)], 1);
         assert_eq!(west[grid.index(2, 7)], 0);
+    }
+
+    #[test]
+    fn parallel_winds_match_serial_cells() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![200_000; grid.sample_count()];
+        elevations[0] = -2_000_000;
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let temperatures = (0..grid.sample_count())
+            .map(|cell| 800 + (cell as i32 % 17) * 40)
+            .collect::<Vec<_>>();
+        let omega = omega_ratio(settings.planetary);
+        let hadley = hadley_edge_radians(omega);
+        let ferrel = ferrel_edge_radians(hadley);
+        let itcz = 0.12;
+        let wind_seed = 0x9e37_79b9_7f4a_7c15;
+        let anomaly = pressure_anomaly(&physical, &temperatures, settings);
+        let spacing = GridSpacing::new(grid);
+        let amplitude = f64::from(settings.pressure_cell_amplitude);
+        let radius = (grid.radius_metres as f64).max(1.0);
+        let waves = (2.0 + 3.2 * omega.clamp(0.2, 2.4)).clamp(2.0, 8.0);
+        let phase = (wind_seed as f64) * (std::f64::consts::TAU / (u64::MAX as f64));
+        let wave_amp = 340.0 * omega.clamp(0.3, 2.0).sqrt();
+        for meanders in [false, true] {
+            let (east, north) = wind_components(
+                &physical,
+                &temperatures,
+                settings,
+                itcz,
+                hadley,
+                ferrel,
+                wind_seed,
+                meanders,
+            );
+            let input = WindComponentInput {
+                field: &physical,
+                settings,
+                anomaly: &anomaly,
+                spacing: &spacing,
+                itcz,
+                hadley,
+                ferrel,
+                amplitude,
+                radius,
+                waves,
+                phase,
+                wave_amp,
+                meanders,
+            };
+            for cell in 0..grid.sample_count() {
+                assert_eq!(wind_component_cell(&input, cell), (east[cell], north[cell]));
+            }
+            let parallel = wind_divergence_ppm(grid, &east, &north);
+            for cell in 0..grid.sample_count() {
+                assert_eq!(
+                    parallel[cell],
+                    wind_divergence_cell(grid, &spacing, &east, &north, cell)
+                );
+            }
+        }
     }
 
     fn count_biome(classes: &[u32], class: u32) -> usize {

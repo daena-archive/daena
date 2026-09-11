@@ -982,6 +982,7 @@ dependencies = [
 name = "daena-physical"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "serde",
 ]
 

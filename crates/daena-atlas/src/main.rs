@@ -1,6 +1,6 @@
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::projection::AtlasProjection;
-use daena_atlas::request::{AtlasFormat, AtlasRenderRequest};
+use daena_atlas::request::{AtlasFormat, AtlasRenderRequest, DetailLevel};
 use daena_atlas::studio::{
     render_studio_tile, AtlasStudioSceneRequestV1, AtlasStudioTileRequestV1,
 };
@@ -69,6 +69,9 @@ fn main() -> Result<(), String> {
     }
     if let Some(style) = option("--style") {
         request.style_id = style;
+    }
+    if let Some(level) = option("--level") {
+        request.level = DetailLevel::parse(&level).map_err(|error| error.to_string())?;
     }
     if let Some(format) = option("--format") {
         request.format = AtlasFormat::parse(&format).map_err(|error| error.to_string())?;

@@ -1,6 +1,7 @@
 //! World-space deterministic elevation residual.
 
 use daena_physical::Grid;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::projection::{
@@ -76,6 +77,22 @@ pub fn nearest_cell(grid: Grid, lon_micro: i32, lat_micro: i32) -> usize {
     let (col, _, _) = lon_to_column_ppm(lon_micro, grid.width);
     let (row, _, _) = lat_to_row_ppm(lat_micro, grid.height);
     grid.index(row, col)
+}
+
+#[must_use]
+pub fn lattice_nearest_cells(grid: Grid, width: u32, height: u32) -> Vec<usize> {
+    let width_us = width as usize;
+    let mut cells = vec![0_usize; width_us.saturating_mul(height as usize)];
+    cells.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        let i = (index % width_us) as u32;
+        let j = (index / width_us) as u32;
+        *slot = nearest_cell(
+            grid,
+            lattice_lon_micro(i, width),
+            lattice_lat_micro(j, height),
+        );
+    });
+    cells
 }
 
 #[must_use]
@@ -204,15 +221,24 @@ impl AtlasDetailModel {
         if absolute_mm.len() != count || self.residual_mm.len() != count {
             return;
         }
-        for j in 0..height {
-            for i in 0..width {
-                let index = j as usize * width as usize + i as usize;
-                let lon = lattice_lon_micro(i, width);
-                let lat = lattice_lat_micro(j, height);
-                let canonical = self.canonical_at(lon, lat);
-                self.residual_mm[index] = absolute_mm[index].saturating_sub(canonical);
-            }
-        }
+        let width_us = width as usize;
+        let grid = self.grid;
+        let elevations = self.elevations_mm.as_slice();
+        self.residual_mm
+            .par_iter_mut()
+            .zip(absolute_mm.par_iter())
+            .enumerate()
+            .for_each(|(index, (slot, &absolute))| {
+                let i = (index % width_us) as u32;
+                let j = (index / width_us) as u32;
+                let canonical = sample_field_mm(
+                    grid,
+                    elevations,
+                    lattice_lon_micro(i, width),
+                    lattice_lat_micro(j, height),
+                );
+                *slot = absolute.saturating_sub(canonical);
+            });
     }
 }
 

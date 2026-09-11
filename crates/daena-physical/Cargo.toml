@@ -20,6 +20,10 @@ path = "src/main.rs"
 name = "climate-profile"
 path = "src/bin/climate_profile.rs"
 
+[[bin]]
+name = "epoch-profile"
+path = "src/bin/epoch_profile.rs"
+
 [profile.profiling]
 inherits = "release"
 debug = 2

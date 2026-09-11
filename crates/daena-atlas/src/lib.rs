@@ -547,6 +547,7 @@ fn refine_or_fallback(
     }
 }
 
+#[cfg(test)]
 fn structure_controls(
     field: &daena_physical::PhysicalField,
     world: &daena_physical::tectonics::TectonicWorld,
@@ -805,6 +806,21 @@ pub fn prepare_from_source_with_structure(
     let report = daena_physical::validate_field_report(&field)
         .map_err(|error| AtlasError::new(CODE_SOURCE_INVALID, error.to_string()))?;
     progress.report(AtlasPhase::Validating, 1, 1)?;
+    let expected_width = field
+        .grid
+        .width
+        .saturating_mul(request.level.lattice_factor());
+    let expected_height = field
+        .grid
+        .height
+        .saturating_mul(request.level.lattice_factor());
+    let injected_ok = injected.is_some_and(|model| {
+        model.detail.level == request.level
+            && model.detail.variant == request.variant
+            && model.detail.algorithm_version == ATLAS_DETAIL_ALGORITHM_VERSION
+            && model.detail.lattice_width == expected_width
+            && model.detail.lattice_height == expected_height
+    });
     progress.report(AtlasPhase::DerivingEpoch, 0, 1)?;
     progress.check_cancelled()?;
     let resolved_forcing = forcing.unwrap_or_else(|| {
@@ -813,16 +829,33 @@ pub fn prepare_from_source_with_structure(
             field.retry_index,
         )
     });
-    let historical = daena_physical::history::derive_historical_world_with_planet(
-        &field,
-        report.reference_water_inventory_m3,
-        Some(&world.crust_by_cell),
-        resolved_forcing,
-        request.offset_years,
-        daena_physical::planetary::PlanetaryConfiguration::earth_like(),
-        &mut daena_physical::NoopProgress,
-    )
-    .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, error.to_string()))?;
+    let canonical = daena_physical::history::HistoricalForcingParameters::default_for(
+        field.seed,
+        field.retry_index,
+    );
+    let inventory = report.reference_water_inventory_m3;
+    let planet = daena_physical::planetary::PlanetaryConfiguration::earth_like();
+    let derive_at = |forcing, offset_years| {
+        daena_physical::history::derive_historical_world_with_planet(
+            &field,
+            inventory,
+            Some(&world.crust_by_cell),
+            forcing,
+            offset_years,
+            planet,
+            &mut daena_physical::NoopProgress,
+        )
+        .map_err(|error| AtlasError::new(CODE_RENDER_FAILED, error.to_string()))
+    };
+    let (historical, year0) = if request.offset_years != 0 && !injected_ok {
+        let (epoch, present) = rayon::join(
+            || derive_at(resolved_forcing, request.offset_years),
+            || derive_at(canonical, 0),
+        );
+        (epoch?, Some(present?))
+    } else {
+        (derive_at(resolved_forcing, request.offset_years)?, None)
+    };
     progress.check_cancelled()?;
     progress.report(AtlasPhase::DerivingEpoch, 1, 1)?;
     progress.report(AtlasPhase::RefiningDetail, 0, 1)?;
@@ -837,45 +870,34 @@ pub fn prepare_from_source_with_structure(
         &historical.climate,
         &historical.hydrology,
     )?;
-    let structure_owned = if request.offset_years == 0 {
-        None
-    } else {
-        Some(structure_controls(
-            &field,
-            &world,
-            &historical,
-            resolved_forcing,
-            request.offset_years,
-            report.reference_water_inventory_m3,
-        )?)
-    };
-    let structure = structure_owned.as_ref().unwrap_or(&controls);
-    let expected_width = field
-        .grid
-        .width
-        .saturating_mul(request.level.lattice_factor());
-    let expected_height = field
-        .grid
-        .height
-        .saturating_mul(request.level.lattice_factor());
-    let (mut amplification, residual_cache) = match injected {
-        Some(model)
-            if model.detail.level == request.level
-                && model.detail.variant == request.variant
-                && model.detail.algorithm_version == ATLAS_DETAIL_ALGORITHM_VERSION
-                && model.detail.lattice_width == expected_width
-                && model.detail.lattice_height == expected_height =>
-        {
-            (model.clone(), cache::CacheLookup::Hit)
+    let (mut amplification, residual_cache, structure_sea_level_mm) = match injected {
+        Some(model) if injected_ok => (
+            model.clone(),
+            cache::CacheLookup::Hit,
+            model.structure_sea_level_mm,
+        ),
+        _ => {
+            let structure_owned = match year0.as_ref() {
+                Some(present) => Some(control::ControlFields::from_accepted(
+                    &field,
+                    &world,
+                    &present.climate,
+                    &present.hydrology,
+                )?),
+                None => None,
+            };
+            let structure = structure_owned.as_ref().unwrap_or(&controls);
+            let (model, lookup) = structure_amplification(
+                structure,
+                identity,
+                request.variant,
+                request.level,
+                cache,
+                progress,
+            )?;
+            let sea = structure.sea_level_mm;
+            (model, lookup, sea)
         }
-        _ => structure_amplification(
-            structure,
-            identity,
-            request.variant,
-            request.level,
-            cache,
-            progress,
-        )?,
     };
     let unbaked = amplification.clone();
     let constraint_fp = constraint::fingerprint(&request.constraints);
@@ -912,7 +934,7 @@ pub fn prepare_from_source_with_structure(
                                 &historical.hydrology,
                                 &sdf,
                                 identity,
-                                structure.sea_level_mm,
+                                structure_sea_level_mm,
                                 &request.constraints,
                                 progress,
                             ),
@@ -930,7 +952,7 @@ pub fn prepare_from_source_with_structure(
                         &historical.hydrology,
                         &sdf,
                         identity,
-                        structure.sea_level_mm,
+                        structure_sea_level_mm,
                         &request.constraints,
                         progress,
                     ),
@@ -946,7 +968,7 @@ pub fn prepare_from_source_with_structure(
                 &historical.hydrology,
                 &sdf,
                 identity,
-                structure.sea_level_mm,
+                structure_sea_level_mm,
                 &request.constraints,
                 progress,
             ),
@@ -1771,6 +1793,8 @@ mod tests {
         .unwrap();
         assert_ne!(present.hydrology.sea_level_mm, cold.hydrology.sea_level_mm);
         assert_ne!(present.hydrology.sea_level_mm, warm.hydrology.sea_level_mm);
+        assert_eq!(present.structure_residual_mm, cold.structure_residual_mm);
+        assert_eq!(cold.structure_residual_mm, warm.structure_residual_mm);
         assert_eq!(ids(&present), ids(&cold));
         assert_eq!(ids(&cold), ids(&warm));
         let cached_present = prepare_from_source(

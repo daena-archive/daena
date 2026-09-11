@@ -89,6 +89,7 @@ dependencies = [
  "daena-physical",
  "flate2",
  "png",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",

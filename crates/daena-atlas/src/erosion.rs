@@ -5,10 +5,11 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use daena_physical::Grid;
+use rayon::prelude::*;
 
 use crate::detail::{
-    lattice_lat_micro, lattice_lon_micro, lattice_sample, nearest_cell, nest_lattice_coord,
-    sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
+    lattice_lat_micro, lattice_lon_micro, lattice_sample, nest_lattice_coord, sample_sdf_ppm,
+    COASTAL_ENVELOPE_PPM,
 };
 use crate::AtlasError;
 
@@ -53,42 +54,44 @@ pub fn priority_fill_pits(
 ) -> Result<Vec<i32>, AtlasError> {
     let count = source_mm.len();
     let mut routing = source_mm.to_vec();
-    let mut visited = vec![false; count];
-    let mut queue = BinaryHeap::new();
+    let mut visited = vec![0_u8; count];
+    let mut seeds = Vec::with_capacity(count / 2);
     for index in 0..count {
         if index.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if source_mm[index] < sea_level_mm || protected[index] {
-            visited[index] = true;
-            queue.push((Reverse(source_mm[index]), Reverse(index)));
+            visited[index] = 1;
+            seeds.push(Reverse((source_mm[index], index as u32)));
         }
     }
-    if queue.is_empty() {
+    if seeds.is_empty() {
         return Ok(routing);
     }
-    while let Some((Reverse(level), Reverse(index))) = queue.pop() {
-        let j = (index as u32) / width;
-        let i = (index as u32) % width;
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
+    let mut queue = BinaryHeap::from(seeds);
+    let mut pops = 0_usize;
+    while let Some(Reverse((level, index_u))) = queue.pop() {
+        pops += 1;
+        if pops.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
+        let j = index_u / width;
+        let i = index_u % width;
         for dir in DIRS {
-            let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
+            let Some((_, nj, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                 continue;
             };
-            if visited[neighbor] {
+            if visited[neighbor] != 0 {
                 continue;
             }
-            visited[neighbor] = true;
-            let nj = (neighbor as u32) / width;
+            visited[neighbor] = 1;
             let polar = nj == 0 || nj + 1 == height;
             if !protected[neighbor] && !polar {
                 let raised = routing[neighbor].max(level);
                 let capped = source_mm[neighbor].saturating_add(max_fill_mm);
                 routing[neighbor] = raised.min(capped);
             }
-            queue.push((Reverse(routing[neighbor]), Reverse(neighbor)));
+            queue.push(Reverse((routing[neighbor], neighbor as u32)));
         }
     }
     lock_polar_rows(width, height, &mut routing);
@@ -121,7 +124,14 @@ pub fn neighbor_at(
     if nj < 0 || nj >= height as i32 {
         return None;
     }
-    let ni = (i as i32 + dir.0).rem_euclid(width as i32) as u32;
+    let width_i = width as i32;
+    let mut ni = i as i32 + dir.0;
+    if ni < 0 {
+        ni += width_i;
+    } else if ni >= width_i {
+        ni -= width_i;
+    }
+    let ni = ni as u32;
     let nj = nj as u32;
     Some((ni, nj, lattice_index(width, ni, nj)))
 }
@@ -205,26 +215,16 @@ pub fn walk_flow(primary: &[u32], start: usize, hops: u32, count: usize) -> u32 
 
 pub fn mean_remove_delta(
     grid: Grid,
-    width: u32,
-    height: u32,
+    cells: &[usize],
     delta: &mut [i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(), AtlasError> {
     let mut sums = vec![0_i64; grid.sample_count()];
     let mut counts = vec![0_u32; grid.sample_count()];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let cell = nearest_cell(
-                grid,
-                lattice_lon_micro(i, width),
-                lattice_lat_micro(j, height),
-            );
-            sums[cell] += i64::from(delta[lattice_index(width, i, j)]);
-            counts[cell] += 1;
-        }
+    check_cancelled()?;
+    for (index, &cell) in cells.iter().enumerate() {
+        sums[cell] += i64::from(delta[index]);
+        counts[cell] += 1;
     }
     let means = sums
         .iter()
@@ -237,17 +237,10 @@ pub fn mean_remove_delta(
             }
         })
         .collect::<Vec<_>>();
-    for j in 0..height {
-        for i in 0..width {
-            let cell = nearest_cell(
-                grid,
-                lattice_lon_micro(i, width),
-                lattice_lat_micro(j, height),
-            );
-            delta[lattice_index(width, i, j)] =
-                (i64::from(delta[lattice_index(width, i, j)]) - means[cell]) as i32;
-        }
-    }
+    delta.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        *slot = (i64::from(*slot) - means[cells[index]]) as i32;
+    });
+    check_cancelled()?;
     Ok(())
 }
 
@@ -264,19 +257,23 @@ pub fn assign_simple_flow(
     let mut primary = vec![NO_FLOW; count];
     let mut secondary = vec![NO_FLOW; count];
     let mut weight = vec![0_u32; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    check_cancelled()?;
+    let width_us = width as usize;
+    primary
+        .par_iter_mut()
+        .zip(secondary.par_iter_mut())
+        .zip(weight.par_iter_mut())
+        .enumerate()
+        .for_each(|(index, ((prim, sec), wgt))| {
             if elevation_mm[index] < sea_level_mm {
-                continue;
+                return;
             }
             let watershed = watershed_id[index];
             if watershed < 0 {
-                continue;
+                return;
             }
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
             let mut best_dir = 8_usize;
             let mut best_slope = 0_i64;
             let mut best_neighbor = NO_FLOW;
@@ -303,9 +300,9 @@ pub fn assign_simple_flow(
                 }
             }
             if best_neighbor == NO_FLOW {
-                continue;
+                return;
             }
-            primary[index] = best_neighbor;
+            *prim = best_neighbor;
             let left = (best_dir + 7) % 8;
             let right = (best_dir + 1) % 8;
             let side = [candidates[left], candidates[right]]
@@ -316,14 +313,14 @@ pub fn assign_simple_flow(
             if let Some((neighbor, slope)) = side {
                 let total = best_slope + slope;
                 if total > 0 {
-                    secondary[index] = neighbor;
-                    weight[index] = ((best_slope * 1_000_000) / total) as u32;
-                    continue;
+                    *sec = neighbor;
+                    *wgt = ((best_slope * 1_000_000) / total) as u32;
+                    return;
                 }
             }
-            weight[index] = 1_000_000;
-        }
-    }
+            *wgt = 1_000_000;
+        });
+    check_cancelled()?;
     Ok((primary, secondary, weight))
 }
 
@@ -337,7 +334,7 @@ pub fn accumulate_flow(
 ) -> Result<Vec<u32>, AtlasError> {
     let count = elevation_mm.len();
     let mut order = (0..count).collect::<Vec<_>>();
-    order.sort_by_key(|index| (std::cmp::Reverse(elevation_mm[*index]), *index));
+    order.par_sort_unstable_by_key(|index| (std::cmp::Reverse(elevation_mm[*index]), *index));
     let mut accum = vec![1_u32; count];
     for (rank, index) in order.iter().copied().enumerate() {
         if rank.is_multiple_of(CANCELLATION_STRIDE) {
@@ -371,32 +368,32 @@ fn restore_coastal_sign(
     sdf: &[i32],
     sea_level_mm: i32,
     protected: &[bool],
-    source_or_canonical_land: impl Fn(i32, i32) -> bool,
+    source_or_canonical_land: impl Fn(i32, i32) -> bool + Sync,
     worked: &mut [i32],
 ) {
-    for j in 0..height {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            if protected[index] {
-                continue;
-            }
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            let sdf_ppm = sample_sdf_ppm(grid, sdf, lon, lat);
-            if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
-                continue;
-            }
-            let canon_land = source_or_canonical_land(lon, lat);
-            let worked_land = worked[index] >= sea_level_mm;
-            if canon_land != worked_land {
-                worked[index] = if canon_land {
-                    sea_level_mm.saturating_add(1)
-                } else {
-                    sea_level_mm.saturating_sub(1)
-                };
-            }
+    let width_us = width as usize;
+    worked.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        if protected[index] {
+            return;
         }
-    }
+        let i = (index % width_us) as u32;
+        let j = (index / width_us) as u32;
+        let lon = lattice_lon_micro(i, width);
+        let lat = lattice_lat_micro(j, height);
+        let sdf_ppm = sample_sdf_ppm(grid, sdf, lon, lat);
+        if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+            return;
+        }
+        let canon_land = source_or_canonical_land(lon, lat);
+        let worked_land = *slot >= sea_level_mm;
+        if canon_land != worked_land {
+            *slot = if canon_land {
+                sea_level_mm.saturating_add(1)
+            } else {
+                sea_level_mm.saturating_sub(1)
+            };
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,18 +410,27 @@ fn thermal_delta(
     max_step_mm: i32,
 ) -> Vec<i32> {
     let count = worked.len();
-    let mut delta = vec![0_i32; count];
-    for j in 1..height.saturating_sub(1) {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    let width_us = width as usize;
+    let mut dests = vec![NO_FLOW; count];
+    let mut fluxes = vec![0_i32; count];
+    dests
+        .par_iter_mut()
+        .zip(fluxes.par_iter_mut())
+        .enumerate()
+        .for_each(|(index, (dest_slot, flux_slot))| {
+            let j = (index / width_us) as u32;
+            if j == 0 || j + 1 == height {
+                return;
+            }
             if protected[index] || worked[index] < sea_level_mm {
-                continue;
+                return;
             }
             let ice = i64::from(glacial_ppm[index].clamp(0, 1_000_000));
             let mountain = mountain_ppm[index] > 500_000;
             if mountain && ice == 0 {
-                continue;
+                return;
             }
+            let i = (index % width_us) as u32;
             let mut steepest = 0_i64;
             let mut dest = NO_FLOW;
             for dir in DIRS {
@@ -442,7 +448,7 @@ fn thermal_delta(
                 }
             }
             if dest == NO_FLOW {
-                continue;
+                return;
             }
             let frost = i64::from(freeze_thaw_ppm[index].clamp(0, 1_000_000));
             let arid = i64::from(aridity_ppm[index].clamp(0, 1_000_000));
@@ -461,10 +467,21 @@ fn thermal_delta(
             }
             let flux = flux.clamp(0, i64::from(max_step_mm / 2)) as i32;
             if flux == 0 {
-                continue;
+                return;
             }
-            delta[index] = delta[index].saturating_sub(flux);
-            delta[dest as usize] = delta[dest as usize].saturating_add(flux);
+            *dest_slot = dest;
+            *flux_slot = flux;
+        });
+    let mut delta = vec![0_i32; count];
+    for index in 0..count {
+        let flux = fluxes[index];
+        if flux == 0 {
+            continue;
+        }
+        delta[index] = delta[index].saturating_sub(flux);
+        let dest = dests[index] as usize;
+        if dest < count {
+            delta[dest] = delta[dest].saturating_add(flux);
         }
     }
     delta
@@ -490,78 +507,128 @@ fn fluvial_and_deposition_delta(
     max_step_mm: i32,
 ) -> Vec<i32> {
     let count = worked.len();
-    let mut delta = vec![0_i32; count];
-    for j in 1..height.saturating_sub(1) {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            if protected[index] || worked[index] < sea_level_mm {
-                continue;
-            }
-            let ice = glacial_ppm[index].clamp(0, 1_000_000);
-            if ice > 0 {
-                let ice_dest = walk_flow(primary, index, scale.saturating_mul(2).max(1), count);
-                if ice_dest != NO_FLOW && (ice_dest as usize) < count && ice_dest != index as u32 {
-                    let drop = (worked[index] - worked[ice_dest as usize]).max(0);
-                    let extra =
-                        ((i64::from(drop.min(max_step_mm / 4)) * i64::from(ice)) / 1_000_000)
-                            .clamp(0, i64::from(max_step_mm / 4)) as i32;
-                    if extra > 0 {
-                        delta[index] = delta[index].saturating_sub(extra);
-                        delta[ice_dest as usize] = delta[ice_dest as usize].saturating_add(extra);
+    let width_us = width as usize;
+    let mut ice_dests = vec![NO_FLOW; count];
+    let mut ice_extras = vec![0_i32; count];
+    let mut dests = vec![NO_FLOW; count];
+    let mut shares = vec![0_i32; count];
+    let mut rest_dests = vec![NO_FLOW; count];
+    let mut rests = vec![0_i32; count];
+    ice_dests
+        .par_iter_mut()
+        .zip(ice_extras.par_iter_mut())
+        .zip(dests.par_iter_mut())
+        .zip(shares.par_iter_mut())
+        .zip(rest_dests.par_iter_mut())
+        .zip(rests.par_iter_mut())
+        .enumerate()
+        .for_each(
+            |(
+                index,
+                (((((ice_dest, ice_extra), dest_slot), share_slot), rest_dest), rest_slot),
+            )| {
+                let j = (index / width_us) as u32;
+                if j == 0 || j + 1 == height {
+                    return;
+                }
+                if protected[index] || worked[index] < sea_level_mm {
+                    return;
+                }
+                let ice = glacial_ppm[index].clamp(0, 1_000_000);
+                if ice > 0 {
+                    let ice_to = walk_flow(primary, index, scale.saturating_mul(2).max(1), count);
+                    if ice_to != NO_FLOW && (ice_to as usize) < count && ice_to != index as u32 {
+                        let drop = (worked[index] - worked[ice_to as usize]).max(0);
+                        let extra = ((i64::from(drop.min(max_step_mm / 4)) * i64::from(ice))
+                            / 1_000_000)
+                            .clamp(0, i64::from(max_step_mm / 4))
+                            as i32;
+                        if extra > 0 {
+                            *ice_dest = ice_to;
+                            *ice_extra = extra;
+                        }
                     }
                 }
+                if mountain_ppm[index] > 500_000 {
+                    return;
+                }
+                let hops = if aridity_ppm[index] > 400_000 {
+                    scale.max(2) / 2
+                } else {
+                    scale
+                }
+                .max(1);
+                let dest = walk_flow(primary, index, hops, count);
+                if dest == NO_FLOW || dest as usize >= count || dest == index as u32 {
+                    return;
+                }
+                if mountain_ppm[dest as usize] > 500_000 {
+                    return;
+                }
+                let drop = (worked[index] - worked[dest as usize]).max(0);
+                if drop == 0 {
+                    return;
+                }
+                let i = (index % width_us) as u32;
+                let damp = 1_000_000 - mountain_ppm[index] / 2;
+                let runoff = runoff_ppm[index].clamp(0, 1_250_000);
+                let prf = lattice_sample(
+                    erosion_key,
+                    nest_lattice_coord(i, width),
+                    nest_lattice_coord(j, height),
+                    scale,
+                );
+                let prf_damp = 1_000_000 - ((prf >> 11) % 25_000) as i32;
+                let accum = accumulation[index].max(1);
+                let flux = ((i64::from(drop.min(max_step_mm))
+                    * i64::from(accum.min(64))
+                    * i64::from(damp)
+                    * i64::from(prf_damp)
+                    / (64 * 1_000_000 * 1_000_000))
+                    * i64::from(runoff)
+                    / 1_000_000)
+                    .clamp(0, i64::from(max_step_mm)) as i32;
+                if flux == 0 {
+                    return;
+                }
+                let share = ((i64::from(flux) * i64::from(weight[index])) / 1_000_000) as i32;
+                let rest = flux.saturating_sub(share);
+                *dest_slot = dest;
+                *share_slot = share;
+                *rest_slot = rest;
+                if rest > 0 && secondary[index] != NO_FLOW && (secondary[index] as usize) < count {
+                    *rest_dest = secondary[index];
+                } else {
+                    *rest_dest = dest;
+                }
+            },
+        );
+    let mut delta = vec![0_i32; count];
+    for index in 0..count {
+        let extra = ice_extras[index];
+        if extra != 0 {
+            delta[index] = delta[index].saturating_sub(extra);
+            let dest = ice_dests[index] as usize;
+            if dest < count {
+                delta[dest] = delta[dest].saturating_add(extra);
             }
-            if mountain_ppm[index] > 500_000 {
-                continue;
-            }
-            let hops = if aridity_ppm[index] > 400_000 {
-                scale.max(2) / 2
-            } else {
-                scale
-            }
-            .max(1);
-            let dest = walk_flow(primary, index, hops, count);
-            if dest == NO_FLOW || dest as usize >= count || dest == index as u32 {
-                continue;
-            }
-            if mountain_ppm[dest as usize] > 500_000 {
-                continue;
-            }
-            let drop = (worked[index] - worked[dest as usize]).max(0);
-            if drop == 0 {
-                continue;
-            }
-            let damp = 1_000_000 - mountain_ppm[index] / 2;
-            let runoff = runoff_ppm[index].clamp(0, 1_250_000);
-            let prf = lattice_sample(
-                erosion_key,
-                nest_lattice_coord(i, width),
-                nest_lattice_coord(j, height),
-                scale,
-            );
-            let prf_damp = 1_000_000 - ((prf >> 11) % 25_000) as i32;
-            let accum = accumulation[index].max(1);
-            let flux = ((i64::from(drop.min(max_step_mm))
-                * i64::from(accum.min(64))
-                * i64::from(damp)
-                * i64::from(prf_damp)
-                / (64 * 1_000_000 * 1_000_000))
-                * i64::from(runoff)
-                / 1_000_000)
-                .clamp(0, i64::from(max_step_mm)) as i32;
-            if flux == 0 {
-                continue;
-            }
-            delta[index] = delta[index].saturating_sub(flux);
-            let share = ((i64::from(flux) * i64::from(weight[index])) / 1_000_000) as i32;
-            delta[dest as usize] = delta[dest as usize].saturating_add(share);
-            let rest = flux.saturating_sub(share);
-            if rest > 0 && secondary[index] != NO_FLOW && (secondary[index] as usize) < count {
-                delta[secondary[index] as usize] =
-                    delta[secondary[index] as usize].saturating_add(rest);
-            } else {
-                delta[dest as usize] = delta[dest as usize].saturating_add(rest);
-            }
+        }
+        let share = shares[index];
+        let rest = rests[index];
+        let flux = share.saturating_add(rest);
+        if flux == 0 {
+            continue;
+        }
+        delta[index] = delta[index].saturating_sub(flux);
+        let dest = dests[index] as usize;
+        if dest < count {
+            delta[dest] = delta[dest].saturating_add(share);
+        }
+        let rest_dest = rest_dests[index] as usize;
+        if rest > 0 && rest_dest < count {
+            delta[rest_dest] = delta[rest_dest].saturating_add(rest);
+        } else if rest > 0 && dest < count {
+            delta[dest] = delta[dest].saturating_add(rest);
         }
     }
     delta
@@ -586,9 +653,10 @@ pub struct ScaleErosion<'a> {
     pub erosion_key: &'a [u8; 32],
     pub peaks: &'a [usize],
     pub filled_mm: &'a [i32],
-    pub land_at: &'a dyn Fn(i32, i32) -> bool,
+    pub land_at: &'a (dyn Fn(i32, i32) -> bool + Sync),
     pub scales: &'a [u32],
     pub max_step_mm: i32,
+    pub cells: &'a [usize],
 }
 
 fn enforce_peaks(width: u32, height: u32, peaks: &[usize], filled_mm: &[i32], worked: &mut [i32]) {
@@ -658,7 +726,7 @@ pub fn apply_scale_erosion(
         for index in 0..count {
             delta[index] = delta[index].saturating_add(thermal[index]);
         }
-        mean_remove_delta(params.grid, width, height, &mut delta, check_cancelled)?;
+        mean_remove_delta(params.grid, params.cells, &mut delta, check_cancelled)?;
         for index in 0..count {
             if params.protected[index] {
                 surface[index] = params.filled_mm[index];
@@ -748,6 +816,7 @@ mod tests {
         let sdf = vec![1_000_000_i32; grid.sample_count()];
         let secondary = vec![NO_FLOW; count];
         let key = [7_u8; 32];
+        let cells = crate::detail::lattice_nearest_cells(grid, width, height);
         let erode = |runoff: i32, frost: i32, arid: i32, ice: i32, mountains: &[i32]| {
             let mut surface = filled.clone();
             let runoff_ppm = vec![runoff; count];
@@ -779,6 +848,7 @@ mod tests {
                     land_at: &land_at,
                     scales: &[1],
                     max_step_mm: MAX_EROSION_STEP_MM,
+                    cells: &cells,
                 },
                 &mut surface,
                 &mut cancel,

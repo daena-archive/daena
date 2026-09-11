@@ -5,12 +5,13 @@
 //! coastline grain lives in refine.
 
 use daena_physical::Grid;
+use rayon::prelude::*;
 
 use crate::control::ControlFields;
 use crate::detail::{
     cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
-    lattice_sample, nearest_cell, nest_lattice_coord, sample_field_mm, sample_sdf_ppm,
-    AtlasDetailModel, COASTAL_ENVELOPE_PPM,
+    lattice_nearest_cells, lattice_sample, nearest_cell, nest_lattice_coord, sample_field_mm,
+    sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
     accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
@@ -38,7 +39,6 @@ pub const OROMETRY_LAYER: &str = "orometry";
 const UPLAND_HEIGHT_MM: i32 = 80_000;
 const PLATEAU_RELIEF_MM: i32 = 120_000;
 const MIN_UPLAND_CELLS: usize = 2;
-const CANCELLATION_STRIDE: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -98,6 +98,7 @@ pub struct AmplificationModel {
     pub mountain_system_count: u32,
     pub features: Vec<MountainFeature>,
     pub orometry_key: [u8; 32],
+    pub structure_sea_level_mm: i32,
 }
 
 fn signed_unit_mm(sample: u64, amplitude_mm: i32) -> i32 {
@@ -215,9 +216,12 @@ pub(crate) fn stack_octaves_from(
             check_cancelled,
         )?;
         let (_, _, detail) = build_octave(controls, identity, variant, factor, check_cancelled)?;
-        for (index, value) in residual_mm.iter_mut().zip(detail.iter()) {
-            *index = index.saturating_add(*value);
-        }
+        residual_mm
+            .par_iter_mut()
+            .zip(detail.par_iter())
+            .for_each(|(slot, value)| {
+                *slot = slot.saturating_add(*value);
+            });
         width = next_width;
         height = next_height;
         if cacheable_stack_factor(factor) {
@@ -380,12 +384,15 @@ fn build_octave(
         HIERARCHICAL_RELIEF_DOMAIN,
     );
     let mut residual = vec![0_i32; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            residual[lattice_index(width, i, j)] = octave_cell_mm(
+    check_cancelled()?;
+    let width_us = width as usize;
+    residual
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            *slot = octave_cell_mm(
                 controls.grid,
                 &controls.elevation_mm,
                 &controls.crust_influence_ppm,
@@ -397,28 +404,23 @@ fn build_octave(
                 width,
                 height,
             );
-        }
-    }
+        });
+    check_cancelled()?;
     Ok((width, height, residual))
 }
 
 fn mean_remove(
     grid: Grid,
-    lattice_width: u32,
-    lattice_height: u32,
+    cells: &[usize],
     residual: &mut [i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(), AtlasError> {
     let mut sums = vec![0_i64; grid.sample_count()];
     let mut counts = vec![0_u32; grid.sample_count()];
-    for j in 0..lattice_height {
-        for i in 0..lattice_width {
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let cell = nearest_cell(grid, lon, lat);
-            sums[cell] += i64::from(residual[lattice_index(lattice_width, i, j)]);
-            counts[cell] += 1;
-        }
+    check_cancelled()?;
+    for (index, &cell) in cells.iter().enumerate() {
+        sums[cell] += i64::from(residual[index]);
+        counts[cell] += 1;
     }
     let means = sums
         .iter()
@@ -431,18 +433,14 @@ fn mean_remove(
             }
         })
         .collect::<Vec<_>>();
-    for j in 0..lattice_height {
-        if j % 8 == 0 {
-            check_cancelled()?;
-        }
-        for i in 0..lattice_width {
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let cell = nearest_cell(grid, lon, lat);
-            let index = lattice_index(lattice_width, i, j);
-            residual[index] = (i64::from(residual[index]) - means[cell]) as i32;
-        }
-    }
+    check_cancelled()?;
+    residual
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            *slot = (i64::from(*slot) - means[cells[index]]) as i32;
+        });
+    check_cancelled()?;
     Ok(())
 }
 
@@ -451,23 +449,25 @@ fn mean_remove_outside_envelope(
     sdf: &[i32],
     lattice_width: u32,
     lattice_height: u32,
+    cells: &[usize],
     residual: &mut [i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(), AtlasError> {
     let mut sums = vec![0_i64; grid.sample_count()];
     let mut counts = vec![0_u32; grid.sample_count()];
-    for j in 0..lattice_height {
-        for i in 0..lattice_width {
-            let lon = lattice_lon_micro(i, lattice_width);
-            let lat = lattice_lat_micro(j, lattice_height);
-            let sdf_ppm = sample_sdf_ppm(grid, sdf, lon, lat);
-            if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
-                continue;
-            }
-            let cell = nearest_cell(grid, lon, lat);
-            sums[cell] += i64::from(residual[lattice_index(lattice_width, i, j)]);
-            counts[cell] += 1;
+    let width_us = lattice_width as usize;
+    check_cancelled()?;
+    for (index, &cell) in cells.iter().enumerate() {
+        let i = (index % width_us) as u32;
+        let j = (index / width_us) as u32;
+        let lon = lattice_lon_micro(i, lattice_width);
+        let lat = lattice_lat_micro(j, lattice_height);
+        let sdf_ppm = sample_sdf_ppm(grid, sdf, lon, lat);
+        if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
+            continue;
         }
+        sums[cell] += i64::from(residual[index]);
+        counts[cell] += 1;
     }
     let means = sums
         .iter()
@@ -480,22 +480,22 @@ fn mean_remove_outside_envelope(
             }
         })
         .collect::<Vec<_>>();
-    for j in 0..lattice_height {
-        if j % 8 == 0 {
-            check_cancelled()?;
-        }
-        for i in 0..lattice_width {
+    check_cancelled()?;
+    residual
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
             let lon = lattice_lon_micro(i, lattice_width);
             let lat = lattice_lat_micro(j, lattice_height);
             let sdf_ppm = sample_sdf_ppm(grid, sdf, lon, lat);
             if sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM {
-                continue;
+                return;
             }
-            let cell = nearest_cell(grid, lon, lat);
-            let index = lattice_index(lattice_width, i, j);
-            residual[index] = (i64::from(residual[index]) - means[cell]) as i32;
-        }
-    }
+            *slot = (i64::from(*slot) - means[cells[index]]) as i32;
+        });
+    check_cancelled()?;
     Ok(())
 }
 
@@ -935,21 +935,33 @@ fn extract_mountain_features_on(
     system_labels: &[i32],
 ) -> OrometryPlan {
     let count = lattice_width as usize * lattice_height as usize;
-    let mut window = Vec::new();
+    let width_us = lattice_width as usize;
     let mut elevation = vec![0_i32; count];
-    for j in 0..lattice_height {
-        for i in 0..lattice_width {
+    elevation
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            *slot = controls.sample_elevation(
+                lattice_lon_micro(i, lattice_width),
+                lattice_lat_micro(j, lattice_height),
+            ) + residual[index];
+        });
+    let mut window = (0..count)
+        .into_par_iter()
+        .filter_map(|index| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
             let lon = lattice_lon_micro(i, lattice_width);
             let lat = lattice_lat_micro(j, lattice_height);
-            let index = lattice_index(lattice_width, i, j);
-            elevation[index] = controls.sample_elevation(lon, lat) + residual[index];
             if controls.sample_mountain_influence(lon, lat) <= 0 {
-                continue;
+                return None;
             }
             let system = system_labels[nearest_cell(controls.grid, lon, lat)];
-            window.push((elevation[index], i, j, lon, lat, system));
-        }
-    }
+            Some((elevation[index], i, j, lon, lat, system))
+        })
+        .collect::<Vec<_>>();
     window.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.1.cmp(&b.1))
@@ -1590,30 +1602,27 @@ fn upsample_residual(
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<Vec<i32>, AtlasError> {
     let mut dst = vec![0_i32; dst_width as usize * dst_height as usize];
-    for j in 0..dst_height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
+    check_cancelled()?;
+    let width_us = dst_width as usize;
+    dst.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        let i = (index % width_us) as u32;
+        let j = (index / width_us) as u32;
         let polar = j == 0 || j + 1 == dst_height;
         if polar {
             let src_j = if j == 0 { 0 } else { src_height - 1 };
-            let value = src[lattice_index(src_width, 0, src_j)];
-            for i in 0..dst_width {
-                dst[lattice_index(dst_width, i, j)] = value;
-            }
-            continue;
+            *slot = src[lattice_index(src_width, 0, src_j)];
+            return;
         }
-        for i in 0..dst_width {
-            dst[lattice_index(dst_width, i, j)] = sample_octave(
-                src_width,
-                src_height,
-                src,
-                lattice_lon_micro(i, dst_width),
-                lattice_lat_micro(j, dst_height),
-                radius_metres,
-            );
-        }
-    }
+        *slot = sample_octave(
+            src_width,
+            src_height,
+            src,
+            lattice_lon_micro(i, dst_width),
+            lattice_lat_micro(j, dst_height),
+            radius_metres,
+        );
+    });
+    check_cancelled()?;
     Ok(dst)
 }
 
@@ -1724,24 +1733,26 @@ pub(crate) fn apply_coastline(
     let land_ppm = land_mask_ppm(controls);
     let sea = controls.sea_level_mm;
     let sea_rise = sea.saturating_sub(structure_sea_level_mm);
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        let polar = j == 0 || j + 1 == height;
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    check_cancelled()?;
+    let width_us = width as usize;
+    surface
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
             if protected.get(index).copied().unwrap_or(false) {
-                continue;
+                return;
             }
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            let polar = j == 0 || j + 1 == height;
             let lon = lattice_lon_micro(if polar { 0 } else { i }, width);
             let lat = lattice_lat_micro(j, height);
             if controls.sample_lake_mask(lon, lat) > 0 {
-                continue;
+                return;
             }
             let sdf_ppm = sample_sdf_ppm(controls.grid, sdf, lon, lat);
             if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
-                continue;
+                return;
             }
             let fraction = sample_field_mm(controls.grid, &land_ppm, lon, lat);
             let proximity = 1_000_000_u32.saturating_sub(
@@ -1751,7 +1762,7 @@ pub(crate) fn apply_coastline(
                     .saturating_mul(2),
             );
             if proximity == 0 {
-                continue;
+                return;
             }
             let noise = coastline_noise_ppm(
                 &key,
@@ -1767,7 +1778,7 @@ pub(crate) fn apply_coastline(
             let ramp = ((i64::from(displaced.saturating_sub(500_000)) * i64::from(COASTAL_RAMP_MM))
                 / 500_000) as i32;
             let target = sea.saturating_add(ramp);
-            let current = structure_mm.get(index).copied().unwrap_or(surface[index]);
+            let current = structure_mm.get(index).copied().unwrap_or(*slot);
             let continental = controls.sample_crust_class(lon, lat) > 0;
             let blended = ((i64::from(current) * i64::from(1_000_000 - proximity as i32)
                 + i64::from(target) * i64::from(proximity as i32))
@@ -1796,9 +1807,9 @@ pub(crate) fn apply_coastline(
                     };
                 }
             }
-            surface[index] = signed;
-        }
-    }
+            *slot = signed;
+        });
+    check_cancelled()?;
     lock_polar_rows(width, height, surface);
     Ok(())
 }
@@ -1844,6 +1855,7 @@ pub(crate) fn finish_amplification_model(
     let sea = controls.sea_level_mm;
     let sdf =
         crate::detail::signed_coastal_distance_ppm(controls.grid, &controls.elevation_mm, sea);
+    let cells = lattice_nearest_cells(controls.grid, width, height);
     let (system_labels, system_min_cells) = mountain_system_labels(controls);
     let system_count = system_min_cells.len() as u32;
     let plan = extract_mountain_features(
@@ -1856,32 +1868,41 @@ pub(crate) fn finish_amplification_model(
         &system_labels,
         check_cancelled,
     )?;
-    mean_remove(
-        controls.grid,
-        width,
-        height,
-        &mut residual_mm,
-        check_cancelled,
-    )?;
+    mean_remove(controls.grid, &cells, &mut residual_mm, check_cancelled)?;
     let mut surface = vec![0_i32; residual_mm.len()];
     let mut protected = vec![false; residual_mm.len()];
     let mut land = vec![false; residual_mm.len()];
     let mut mountain = vec![false; residual_mm.len()];
     let mut mountain_ppm = vec![0_i32; residual_mm.len()];
     let mut watershed = vec![-1_i32; residual_mm.len()];
-    for j in 0..height {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            surface[index] = controls.sample_elevation(lon, lat) + residual_mm[index];
-            protected[index] = controls.sample_lake_mask(lon, lat) > 0;
-            land[index] = controls.sample_elevation(lon, lat) >= sea;
-            mountain[index] = controls.sample_mountain_influence(lon, lat) > 0;
-            mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
-            watershed[index] = controls.sample_watershed_id(lon, lat);
-        }
-    }
+    let width_us = width as usize;
+    check_cancelled()?;
+    surface
+        .par_iter_mut()
+        .zip(protected.par_iter_mut())
+        .zip(land.par_iter_mut())
+        .zip(mountain.par_iter_mut())
+        .zip(mountain_ppm.par_iter_mut())
+        .zip(watershed.par_iter_mut())
+        .zip(residual_mm.par_iter())
+        .enumerate()
+        .for_each(
+            |(index, ((((((surf, prot), land_slot), mtn), mtn_ppm), ws), residual))| {
+                let i = (index % width_us) as u32;
+                let j = (index / width_us) as u32;
+                let lon = lattice_lon_micro(i, width);
+                let lat = lattice_lat_micro(j, height);
+                let elevation = controls.sample_elevation(lon, lat);
+                let mountain_inf = controls.sample_mountain_influence(lon, lat);
+                *surf = elevation + *residual;
+                *prot = controls.sample_lake_mask(lon, lat) > 0;
+                *land_slot = elevation >= sea;
+                *mtn = mountain_inf > 0;
+                *mtn_ppm = mountain_inf;
+                *ws = controls.sample_watershed_id(lon, lat);
+            },
+        );
+    check_cancelled()?;
     lock_polar_rows(width, height, &mut surface);
     surface = priority_fill_pits(
         width,
@@ -1892,14 +1913,17 @@ pub(crate) fn finish_amplification_model(
         HIERARCHICAL_FILL_MM,
         check_cancelled,
     )?;
-    for j in 0..height {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            residual_mm[index] = surface[index] - controls.sample_elevation(lon, lat);
-        }
-    }
+    residual_mm
+        .par_iter_mut()
+        .zip(surface.par_iter())
+        .enumerate()
+        .for_each(|(index, (residual, surf))| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            *residual = *surf
+                - controls
+                    .sample_elevation(lattice_lon_micro(i, width), lattice_lat_micro(j, height));
+        });
     let (primary, secondary, weight) =
         assign_simple_flow(width, height, &surface, &watershed, sea, check_cancelled)?;
     let accumulation = accumulate_flow(
@@ -1930,18 +1954,13 @@ pub(crate) fn finish_amplification_model(
         &land,
         &mountain_ppm,
     );
-    mean_remove(
-        controls.grid,
-        width,
-        height,
-        &mut residual_mm,
-        check_cancelled,
-    )?;
+    mean_remove(controls.grid, &cells, &mut residual_mm, check_cancelled)?;
     mean_remove_outside_envelope(
         controls.grid,
         &sdf,
         width,
         height,
+        &cells,
         &mut residual_mm,
         check_cancelled,
     )?;
@@ -1965,6 +1984,7 @@ pub(crate) fn finish_amplification_model(
         mountain_system_count: system_count,
         features: complete_orometry(controls, plan.features, &system_labels, &system_min_cells),
         orometry_key,
+        structure_sea_level_mm: controls.sea_level_mm,
     })
 }
 
@@ -2006,6 +2026,7 @@ impl AmplificationModel {
             mountain_system_count: system_count,
             features,
             orometry_key,
+            structure_sea_level_mm: controls.sea_level_mm,
         }
     }
 }

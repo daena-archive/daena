@@ -6,13 +6,15 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use daena_physical::hydrology::{BasinStatus, HydrologyField};
+use rayon::prelude::*;
 
 use crate::amplify::{apply_coastline, AmplificationModel, MountainKind};
 use crate::constraint::AtlasConstraint;
 use crate::control::ControlFields;
 use crate::detail::{
     cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
-    lattice_sample, nearest_cell, nest_lattice_coord, sample_sdf_ppm, COASTAL_ENVELOPE_PPM,
+    lattice_nearest_cells, lattice_sample, nearest_cell, nest_lattice_coord, sample_sdf_ppm,
+    COASTAL_ENVELOPE_PPM,
 };
 use crate::erosion::{
     apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
@@ -330,19 +332,18 @@ fn build_source_surface(
 ) -> Result<Vec<i32>, AtlasError> {
     let width = model.detail.lattice_width;
     let height = model.detail.lattice_height;
-    let mut source = vec![0_i32; width as usize * height as usize];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            let sdf_ppm = sample_sdf_ppm(model.detail.grid, sdf, lon, lat);
-            source[lattice_index(width, i, j)] =
-                model.detail.refined_at(lon, lat, sea_level_mm, sdf_ppm);
-        }
-    }
+    let width_us = width as usize;
+    let mut source = vec![0_i32; width_us * height as usize];
+    check_cancelled()?;
+    source.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        let i = (index % width_us) as u32;
+        let j = (index / width_us) as u32;
+        let lon = lattice_lon_micro(i, width);
+        let lat = lattice_lat_micro(j, height);
+        let sdf_ppm = sample_sdf_ppm(model.detail.grid, sdf, lon, lat);
+        *slot = model.detail.refined_at(lon, lat, sea_level_mm, sdf_ppm);
+    });
+    check_cancelled()?;
     lock_polar_rows(width, height, &mut source);
     Ok(source)
 }
@@ -357,44 +358,46 @@ fn priority_fill(
 ) -> Result<(Vec<i32>, u32), AtlasError> {
     let count = source_mm.len();
     let mut routing = source_mm.to_vec();
-    let mut visited = vec![false; count];
-    let mut queue = BinaryHeap::new();
+    let mut visited = vec![0_u8; count];
+    let mut seeds = Vec::with_capacity(count / 2);
     for index in 0..count {
         if index.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
         if source_mm[index] < sea_level_mm || protected[index] {
-            visited[index] = true;
-            queue.push((Reverse(source_mm[index]), Reverse(index)));
+            visited[index] = 1;
+            seeds.push(Reverse((source_mm[index], index as u32)));
         }
     }
-    if queue.is_empty() {
+    if seeds.is_empty() {
         return Err(AtlasError::limit(
             "pit fill has no ocean or protected outlet",
         ));
     }
-    while let Some((Reverse(level), Reverse(index))) = queue.pop() {
-        let j = (index as u32) / width;
-        let i = (index as u32) % width;
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
+    let mut queue = BinaryHeap::from(seeds);
+    let mut pops = 0_usize;
+    while let Some(Reverse((level, index_u))) = queue.pop() {
+        pops += 1;
+        if pops.is_multiple_of(CANCELLATION_STRIDE) {
             check_cancelled()?;
         }
+        let j = index_u / width;
+        let i = index_u % width;
         for dir in DIRS {
-            let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
+            let Some((_, nj, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                 continue;
             };
-            if visited[neighbor] {
+            if visited[neighbor] != 0 {
                 continue;
             }
-            visited[neighbor] = true;
-            let nj = (neighbor as u32) / width;
+            visited[neighbor] = 1;
             let polar = nj == 0 || nj + 1 == height;
             if !protected[neighbor] && !polar {
                 let raised = routing[neighbor].max(level);
                 let capped = source_mm[neighbor].saturating_add(MAX_FILL_MM);
                 routing[neighbor] = raised.min(capped);
             }
-            queue.push((Reverse(routing[neighbor]), Reverse(neighbor)));
+            queue.push(Reverse((routing[neighbor], neighbor as u32)));
         }
     }
     lock_polar_rows(width, height, &mut routing);
@@ -441,6 +444,7 @@ fn assign_flow(
     hydrology: &HydrologyField,
     elevations_mm: &[i32],
     mouths: &[usize],
+    cells: &[usize],
     sea_level_mm: i32,
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), AtlasError> {
@@ -448,25 +452,27 @@ fn assign_flow(
     let mut primary = vec![NO_FLOW; count];
     let mut secondary = vec![NO_FLOW; count];
     let mut weight = vec![0_u32; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    check_cancelled()?;
+    let width_us = width as usize;
+    primary
+        .par_iter_mut()
+        .zip(secondary.par_iter_mut())
+        .zip(weight.par_iter_mut())
+        .enumerate()
+        .for_each(|(index, ((prim, sec), wgt))| {
             if filled_mm[index] < sea_level_mm {
-                continue;
+                return;
             }
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            let canonical = nearest_cell(hydrology.grid, lon, lat);
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            let canonical = cells[index];
             let watershed = hydrology
                 .watershed_id
                 .get(canonical)
                 .copied()
                 .unwrap_or(OCEAN);
             if watershed == OCEAN {
-                continue;
+                return;
             }
             let mut best_dir = 8_usize;
             let mut best_slope = 0_i64;
@@ -476,9 +482,7 @@ fn assign_flow(
                 let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                     continue;
                 };
-                let n_lon = lattice_lon_micro(neighbor as u32 % width, width);
-                let n_lat = lattice_lat_micro(neighbor as u32 / width, height);
-                let n_canonical = nearest_cell(hydrology.grid, n_lon, n_lat);
+                let n_canonical = cells[neighbor];
                 if !eligible_flow_neighbor(
                     hydrology,
                     elevations_mm,
@@ -511,9 +515,7 @@ fn assign_flow(
                     let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                         continue;
                     };
-                    let n_lon = lattice_lon_micro(neighbor as u32 % width, width);
-                    let n_lat = lattice_lat_micro(neighbor as u32 / width, height);
-                    let n_canonical = nearest_cell(hydrology.grid, n_lon, n_lat);
+                    let n_canonical = cells[neighbor];
                     if hydrology.watershed_id.get(n_canonical).copied() != Some(watershed) {
                         continue;
                     }
@@ -525,12 +527,12 @@ fn assign_flow(
                     }
                 }
                 if fallback != NO_FLOW && fallback != index as u32 {
-                    primary[index] = fallback;
-                    weight[index] = 1_000_000;
+                    *prim = fallback;
+                    *wgt = 1_000_000;
                 }
-                continue;
+                return;
             }
-            primary[index] = best_neighbor;
+            *prim = best_neighbor;
             let left = (best_dir + 7) % 8;
             let right = (best_dir + 1) % 8;
             let side = [candidates[left], candidates[right]]
@@ -541,15 +543,15 @@ fn assign_flow(
             if let Some((neighbor, slope)) = side {
                 let total = best_slope + slope;
                 if total > 0 {
-                    primary[index] = best_neighbor;
-                    secondary[index] = neighbor;
-                    weight[index] = ((best_slope * 1_000_000) / total) as u32;
-                    continue;
+                    *prim = best_neighbor;
+                    *sec = neighbor;
+                    *wgt = ((best_slope * 1_000_000) / total) as u32;
+                    return;
                 }
             }
-            weight[index] = 1_000_000;
-        }
-    }
+            *wgt = 1_000_000;
+        });
+    check_cancelled()?;
     Ok((primary, secondary, weight))
 }
 
@@ -563,7 +565,7 @@ fn accumulate(
 ) -> Result<Vec<u32>, AtlasError> {
     let count = filled_mm.len();
     let mut order = (0..count).collect::<Vec<_>>();
-    order.sort_by_key(|index| (Reverse(filled_mm[*index]), *index));
+    order.par_sort_unstable_by_key(|index| (Reverse(filled_mm[*index]), *index));
     let mut accum = vec![1_u32; count];
     for (rank, index) in order.iter().copied().enumerate() {
         if rank.is_multiple_of(CANCELLATION_STRIDE) {
@@ -607,24 +609,26 @@ fn extract_tributaries(
 ) -> Result<Vec<RefinedTributary>, AtlasError> {
     let threshold = accum_threshold(level);
     let count = filled_mm.len();
-    let mut channel = vec![false; count];
-    for index in 0..count {
-        if index.is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        let jitter = (lattice_sample(
-            drainage_key,
-            nest_lattice_coord((index as u32) % width, width),
-            nest_lattice_coord((index as u32) / width, height),
-            0,
-        ) >> 11) as u32
-            % 3;
-        if filled_mm[index] >= sea_level_mm
-            && accumulation[index] >= threshold.saturating_sub(jitter)
-        {
-            channel[index] = true;
-        }
-    }
+    let mut channel = vec![0_u8; count];
+    check_cancelled()?;
+    channel
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let jitter = (lattice_sample(
+                drainage_key,
+                nest_lattice_coord((index as u32) % width, width),
+                nest_lattice_coord((index as u32) / width, height),
+                0,
+            ) >> 11) as u32
+                % 3;
+            if filled_mm[index] >= sea_level_mm
+                && accumulation[index] >= threshold.saturating_sub(jitter)
+            {
+                *slot = 1;
+            }
+        });
+    check_cancelled()?;
     let mut features = Vec::new();
     for j in 0..height {
         for i in 0..width {
@@ -632,7 +636,7 @@ fn extract_tributaries(
             if index.is_multiple_of(CANCELLATION_STRIDE) {
                 check_cancelled()?;
             }
-            if !channel[index] || features.len() >= MAX_TRIBUTARIES {
+            if channel[index] == 0 || features.len() >= MAX_TRIBUTARIES {
                 continue;
             }
             let [lon, lat] = lattice_center(i, j, width, height);
@@ -651,7 +655,7 @@ fn extract_tributaries(
                 let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                     continue;
                 };
-                if channel[neighbor] && primary[neighbor] == index as u32 {
+                if channel[neighbor] != 0 && primary[neighbor] == index as u32 {
                     upstream_channel = true;
                     break;
                 }
@@ -770,13 +774,16 @@ fn extract_valleys(
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<Vec<RefinedValley>, AtlasError> {
     let threshold = accum_threshold(level).saturating_div(2).max(4);
-    let mut features = Vec::new();
-    for j in 1..height.saturating_sub(1) {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            if index.is_multiple_of(CANCELLATION_STRIDE) {
-                check_cancelled()?;
+    let width_us = width as usize;
+    check_cancelled()?;
+    let mut features = (0..filled_mm.len())
+        .into_par_iter()
+        .filter_map(|index| {
+            let j = (index / width_us) as u32;
+            if j == 0 || j + 1 == height {
+                return None;
             }
+            let i = (index % width_us) as u32;
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let sdf_ppm = sample_sdf_ppm(hydrology.grid, sdf, lon, lat);
@@ -793,7 +800,7 @@ fn extract_valleys(
                 || (filled_mm[index] < sea_level_mm && !drowned)
                 || accumulation[index] < threshold.saturating_sub(jitter)
             {
-                continue;
+                return None;
             }
             let canonical = nearest_cell(hydrology.grid, lon, lat);
             let watershed = hydrology
@@ -802,10 +809,9 @@ fn extract_valleys(
                 .copied()
                 .unwrap_or(OCEAN);
             if river_cells.contains(&canonical) || (watershed == OCEAN && !drowned) {
-                continue;
+                return None;
             }
             let down = primary[index];
-            let mut valley_bottom = true;
             for dir in DIRS {
                 let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
                     continue;
@@ -814,22 +820,19 @@ fn extract_valleys(
                     continue;
                 }
                 if filled_mm[neighbor] < filled_mm[index] {
-                    valley_bottom = false;
-                    break;
+                    return None;
                 }
             }
-            if !valley_bottom {
-                continue;
-            }
-            features.push(RefinedValley {
+            Some(RefinedValley {
                 id: RefinedValley::id_for(index),
                 lattice_index: index,
                 watershed_id: watershed,
                 lon_micro: lon,
                 lat_micro: lat,
-            });
-        }
-    }
+            })
+        })
+        .collect::<Vec<_>>();
+    check_cancelled()?;
     features.sort_by(|a, b| a.id.cmp(&b.id));
     features.truncate(MAX_VALLEYS);
     Ok(features)
@@ -855,19 +858,21 @@ fn extract_deposition(
         .iter()
         .map(|river| river.mouth_cell)
         .collect::<BTreeSet<_>>();
-    let mut features = Vec::new();
-    for j in 1..height.saturating_sub(1) {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    let width_us = width as usize;
+    check_cancelled()?;
+    let mut features = (0..worked_mm.len())
+        .into_par_iter()
+        .filter_map(|index| {
+            let j = (index / width_us) as u32;
+            if j == 0 || j + 1 == height {
+                return None;
+            }
             if protected[index] {
-                continue;
+                return None;
             }
             let dest = primary[index];
             if dest == NO_FLOW || dest as usize >= worked_mm.len() {
-                continue;
+                return None;
             }
             let drop = (filled_mm[index] - filled_mm[dest as usize]).max(0);
             let slope_ppm = (i64::from(drop) * 1_000) / 2;
@@ -876,6 +881,7 @@ fn extract_deposition(
                 accumulation[index],
                 runoff_mm.get(index).copied().unwrap_or(0),
             );
+            let i = (index % width_us) as u32;
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let canonical = nearest_cell(hydrology.grid, lon, lat);
@@ -884,7 +890,7 @@ fn extract_deposition(
                 && sdf_ppm.unsigned_abs() <= COASTAL_ENVELOPE_PPM
                 && discharge >= 12;
             if !is_mouth && (worked_mm[index] < sea_level_mm || (!deposited && discharge < 24)) {
-                continue;
+                return None;
             }
             let watershed = hydrology
                 .watershed_id
@@ -892,7 +898,7 @@ fn extract_deposition(
                 .copied()
                 .unwrap_or(OCEAN);
             if watershed == OCEAN && !is_mouth {
-                continue;
+                return None;
             }
             let kind = if is_mouth {
                 DepositionKind::Delta
@@ -901,23 +907,19 @@ fn extract_deposition(
             } else if slope_ppm < i64::from(FLOODPLAIN_SLOPE_PPM) && discharge >= 24 {
                 DepositionKind::Floodplain
             } else {
-                continue;
+                return None;
             };
-            if features.iter().any(|feature: &DepositionFeature| {
-                feature.kind == kind && feature.lattice_index == index
-            }) {
-                continue;
-            }
-            features.push(DepositionFeature {
+            Some(DepositionFeature {
                 id: DepositionFeature::id_for(kind, index),
                 kind,
                 lattice_index: index,
                 watershed_id: watershed,
                 lon_micro: lon,
                 lat_micro: lat,
-            });
-        }
-    }
+            })
+        })
+        .collect::<Vec<_>>();
+    check_cancelled()?;
     features.sort_by(|a, b| a.id.cmp(&b.id));
     features.truncate(MAX_DEPOSITION_FEATURES);
     Ok(features)
@@ -945,38 +947,44 @@ fn apply_mouth_deltas(
         return;
     }
     let sea_shift = sea_level_mm.abs_diff(structure_sea_level_mm);
-    for j in 1..height.saturating_sub(1) {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
-            if protected.get(index).copied().unwrap_or(false) {
-                continue;
+    let width_us = width as usize;
+    worked_mm
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let j = (index / width_us) as u32;
+            if j == 0 || j + 1 == height {
+                return;
             }
+            if protected.get(index).copied().unwrap_or(false) {
+                return;
+            }
+            let i = (index % width_us) as u32;
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
             let cell = nearest_cell(hydrology.grid, lon, lat);
             if !mouths.contains(&cell) {
-                continue;
+                return;
             }
             let sdf_ppm = sample_sdf_ppm(hydrology.grid, sdf, lon, lat);
             if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
-                continue;
+                return;
             }
             let discharge = channel_discharge(
                 accumulation.get(index).copied().unwrap_or(0),
                 runoff_mm.get(index).copied().unwrap_or(0),
             );
             if discharge < 12 {
-                continue;
+                return;
             }
             let grow = (discharge / 48)
                 .saturating_add(sea_shift / 64)
                 .min(MAX_EROSION_STEP_MM as u32);
             if grow == 0 {
-                continue;
+                return;
             }
-            worked_mm[index] = worked_mm[index].saturating_add(grow as i32);
-        }
-    }
+            *slot = slot.saturating_add(grow as i32);
+        });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -991,6 +999,7 @@ fn erode(
     weight: &[u32],
     accumulation: &[u32],
     erosion_key: &[u8; 32],
+    cells: &[usize],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<Vec<i32>, AtlasError> {
     let width = model.detail.lattice_width;
@@ -1002,12 +1011,21 @@ fn erode(
     let mut freeze_thaw = vec![0_i32; count];
     let mut aridity_ppm = vec![0_i32; count];
     let mut glacial_ppm = vec![0_i32; count];
-    for j in 0..height {
-        for i in 0..width {
-            let index = lattice_index(width, i, j);
+    check_cancelled()?;
+    let width_us = width as usize;
+    mountain_ppm
+        .par_iter_mut()
+        .zip(runoff_ppm.par_iter_mut())
+        .zip(freeze_thaw.par_iter_mut())
+        .zip(aridity_ppm.par_iter_mut())
+        .zip(glacial_ppm.par_iter_mut())
+        .enumerate()
+        .for_each(|(index, ((((mtn, runoff), freeze), arid), glacial))| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
             let lon = lattice_lon_micro(i, width);
             let lat = lattice_lat_micro(j, height);
-            mountain_ppm[index] = controls.sample_mountain_influence(lon, lat);
+            *mtn = controls.sample_mountain_influence(lon, lat);
             let nh_summer = controls.sample_nh_summer_temperature(lon, lat);
             let nh_winter = controls.sample_nh_winter_temperature(lon, lat);
             let (summer, winter) = if lat >= 0 {
@@ -1020,16 +1038,16 @@ fn erode(
                 controls.sample_precipitation(lon, lat),
                 controls.sample_temperature(lon, lat),
             );
-            runoff_ppm[index] = fluvial_gain_ppm(
+            *runoff = fluvial_gain_ppm(
                 controls.sample_runoff(lon, lat),
                 controls.sample_precipitation(lon, lat),
                 vegetation,
             );
-            freeze_thaw[index] = freeze_thaw_ppm(summer, winter);
-            aridity_ppm[index] = controls.sample_aridity(lon, lat).clamp(0, 1_000_000);
-            glacial_ppm[index] = glacial_work_ppm(controls.sample_ice_thickness(lon, lat), summer);
-        }
-    }
+            *freeze = freeze_thaw_ppm(summer, winter);
+            *arid = controls.sample_aridity(lon, lat).clamp(0, 1_000_000);
+            *glacial = glacial_work_ppm(controls.sample_ice_thickness(lon, lat), summer);
+        });
+    check_cancelled()?;
     let peaks = model
         .features
         .iter()
@@ -1060,6 +1078,7 @@ fn erode(
             land_at: &land_at,
             scales: &EROSION_SCALES,
             max_step_mm: MAX_EROSION_STEP_MM,
+            cells,
         },
         &mut worked,
         check_cancelled,
@@ -1123,24 +1142,24 @@ pub fn build_refined_hydrology_constrained(
         MULTI_SCALE_EROSION_DOMAIN,
     );
     let source_mm = build_source_surface(model, controls.sea_level_mm, sdf, check_cancelled)?;
+    let cells = lattice_nearest_cells(controls.grid, width, height);
     let mut protected = vec![false; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            let cell = nearest_cell(controls.grid, lon, lat);
-            protected[lattice_index(width, i, j)] = is_protected(hydrology, cell)
+    check_cancelled()?;
+    let width_us = width as usize;
+    protected
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let cell = cells[index];
+            *slot = is_protected(hydrology, cell)
                 && controls
                     .mountain_influence_ppm
                     .get(cell)
                     .copied()
                     .unwrap_or(0)
                     <= 0;
-        }
-    }
+        });
+    check_cancelled()?;
     crate::constraint::apply_to_protected(constraints, width, height, &mut protected);
     let mut coastal_mm = source_mm.clone();
     apply_coastline(
@@ -1180,6 +1199,7 @@ pub fn build_refined_hydrology_constrained(
         hydrology,
         &controls.elevation_mm,
         &mouths,
+        &cells,
         controls.sea_level_mm,
         check_cancelled,
     )?;
@@ -1193,16 +1213,17 @@ pub fn build_refined_hydrology_constrained(
     )?;
     let (river_cells, river_at) = river_occupancy(hydrology);
     let mut runoff_mm = vec![0_i32; count];
-    for j in 0..height {
-        if (j as usize).is_multiple_of(CANCELLATION_STRIDE) {
-            check_cancelled()?;
-        }
-        for i in 0..width {
-            let lon = lattice_lon_micro(i, width);
-            let lat = lattice_lat_micro(j, height);
-            runoff_mm[lattice_index(width, i, j)] = controls.sample_runoff(lon, lat);
-        }
-    }
+    check_cancelled()?;
+    runoff_mm
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(index, slot)| {
+            let i = (index % width_us) as u32;
+            let j = (index / width_us) as u32;
+            *slot =
+                controls.sample_runoff(lattice_lon_micro(i, width), lattice_lat_micro(j, height));
+        });
+    check_cancelled()?;
     let tributaries = extract_tributaries(
         width,
         height,
@@ -1244,6 +1265,7 @@ pub fn build_refined_hydrology_constrained(
         &primary_weight_ppm,
         &accumulation,
         &erosion_key,
+        &cells,
         check_cancelled,
     )?;
     apply_mouth_deltas(

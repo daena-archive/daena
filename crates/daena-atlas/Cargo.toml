@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 daena-physical = { path = "../daena-physical" }
+rayon = "1.12.0"
 png = "0.17.16"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = "0.10"
@@ -20,3 +21,7 @@ serde_json = "1"
 [[bin]]
 name = "atlas-map"
 path = "src/main.rs"
+
+[profile.profiling]
+inherits = "release"
+debug = 2

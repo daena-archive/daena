@@ -131,35 +131,35 @@ records the user's grants, and the Rust broker enforces them.
 
 The initial capability vocabulary is:
 
-| Capability                           | Scope and meaning                                                                      |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| `entity.read`                        | Read live core entities in the current project.                                        |
-| `entity.write`                       | Create and update entities; delete requires `entity.delete`.                           |
-| `entity.delete`                      | Soft-delete entities after explicit host UI confirmation when initiated interactively. |
-| `document.read`                      | Read documents attached to visible entities.                                           |
-| `document.write`                     | Create or update documents.                                                            |
-| `field.read:self`                    | Read fields in namespaces owned by the caller.                                         |
-| `field.read:shared`                  | Read fields explicitly exported by another plugin.                                     |
-| `field.write:self`                   | Write schema-valid fields in namespaces owned by the caller.                           |
-| `relationship.read`                  | Read relationships involving visible entities.                                         |
-| `relationship.write`                 | Create relationships using registered relationship types.                              |
-| `asset.read:self`                    | Read metadata for caller-owned assets; bytes require an explicit broker request.       |
+| Capability                           | Scope and meaning                                                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `entity.read`                        | Read live core entities in the current project.                                                                         |
+| `entity.write`                       | Create and update entities; delete requires `entity.delete`.                                                            |
+| `entity.delete`                      | Soft-delete entities after explicit host UI confirmation when initiated interactively.                                  |
+| `document.read`                      | Read documents attached to visible entities.                                                                            |
+| `document.write`                     | Create or update documents.                                                                                             |
+| `field.read:self`                    | Read fields in namespaces owned by the caller.                                                                          |
+| `field.read:shared`                  | Read fields explicitly exported by another plugin.                                                                      |
+| `field.write:self`                   | Write schema-valid fields in namespaces owned by the caller.                                                            |
+| `relationship.read`                  | Read relationships involving visible entities.                                                                          |
+| `relationship.write`                 | Create relationships using registered relationship types.                                                               |
+| `asset.read:self`                    | Read metadata for caller-owned assets; bytes require an explicit broker request.                                        |
 | `asset.read:shared`                  | Read project-visible assets (`referenceScope = project`) from another entity/namespace when the owning asset allows it. |
-| `asset.write:self`                   | Update metadata or replace bytes for caller-owned assets.                              |
-| `asset.register`                      | Register a plugin-supplied asset into a caller-owned namespace.                       |
-| `search.query`                       | Query the core search service.                                                         |
-| `schema.overlay`                     | Contribute a project-owned schema overlay for the caller's namespaces.                 |
-| `record.read:self`                   | Read plugin-owned record collections in caller namespaces.                             |
-| `record.write:self`                  | Create, update, and delete plugin-owned records in caller namespaces.                  |
-| `ai.text.generate`                   | Request brokered unstructured text inference. Does not imply data or network grants.   |
-| `ai.text.generate-structured`        | Request brokered structured text inference. Does not imply data or network grants.     |
-| `event.publish:<type>`               | Publish a declared event type.                                                         |
-| `event.subscribe:<type>`             | Subscribe to a declared event type.                                                    |
-| `host.surface:<name>@<major>`         | Use a versioned host-rendered surface declared by the plugin view.                      |
-| `service.provide:<name>`             | Register a declared service implementation.                                            |
-| `service.call:<name>`                | Call a declared service.                                                               |
-| `network:<origin>`                   | Make brokered requests to an approved HTTPS origin. Not in the first release.          |
-| `clipboard.read` / `clipboard.write` | Brokered clipboard operations with host policy. Not granted by default.                |
+| `asset.write:self`                   | Update metadata or replace bytes for caller-owned assets.                                                               |
+| `asset.register`                     | Register a plugin-supplied asset into a caller-owned namespace.                                                         |
+| `search.query`                       | Query the core search service.                                                                                          |
+| `schema.overlay`                     | Contribute a project-owned schema overlay for the caller's namespaces.                                                  |
+| `record.read:self`                   | Read plugin-owned record collections in caller namespaces.                                                              |
+| `record.write:self`                  | Create, update, and delete plugin-owned records in caller namespaces.                                                   |
+| `ai.text.generate`                   | Request brokered unstructured text inference. Does not imply data or network grants.                                    |
+| `ai.text.generate-structured`        | Request brokered structured text inference. Does not imply data or network grants.                                      |
+| `event.publish:<type>`               | Publish a declared event type.                                                                                          |
+| `event.subscribe:<type>`             | Subscribe to a declared event type.                                                                                     |
+| `host.surface:<name>@<major>`        | Use a versioned host-rendered surface declared by the plugin view.                                                      |
+| `service.provide:<name>`             | Register a declared service implementation.                                                                             |
+| `service.call:<name>`                | Call a declared service.                                                                                                |
+| `network:<origin>`                   | Make brokered requests to an approved HTTPS origin. Not in the first release.                                           |
+| `clipboard.read` / `clipboard.write` | Brokered clipboard operations with host policy. Not granted by default.                                                 |
 
 There is no generic `filesystem`, `shell`, `process`, `dialog`, `tauri`, or
 unrestricted `network` capability. File import/export uses host-owned dialogs
@@ -688,8 +688,18 @@ Key revocation matches the signing public key (not `keyId` alone). Revoked
 keys, digests, and plugin identities fail closed for local files and registry
 bytes alike. `review_manifest` is the install disclosure (publisher, digest,
 signature, trust status, capabilities). Unsigned local install still requires
-explicit consent. A marketplace remains deferred and is not an authorization
-layer.
+explicit consent. A marketplace is not an authorization layer.
+
+### Phase 9: Serverless GitHub registry
+
+Implement [`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md): identity-index repo,
+Pages `trust.json` / `catalog.json`, host snapshot refresh, catalog browse
+install (same verify as a local file), `daena-plugin keygen` / `sign`, and
+pre-install `review_manifest`. Local unsigned install with consent stays.
+
+**Exit gate:** A plugin registered and released per that document installs in
+Daena Archive with the same digest, signature, and grants path as a sideloaded
+copy of the same bytes. GitHub down does not block local install.
 
 ## Test and release requirements
 
@@ -722,7 +732,9 @@ isolation on every supported desktop platform.
 
 The following features are deferred, with their default behavior decided now:
 
-- **Marketplace:** deferred; local verified packages work without it.
+- **Marketplace as authorization:** disallowed. Distribution is Phase 9
+  ([`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md)). Local verified packages work
+  without GitHub.
 - **Cloud execution or sync:** deferred; plugins are local and project-scoped.
 - **Arbitrary internet access:** deferred; denied. Later access is the
   `network:<origin>` capability: HTTPS, origin-scoped, brokered, rate-limited,
@@ -810,17 +822,17 @@ contract, schemas and TypeScript are generated artifacts — is [ADR 0002]
 The five parallel representations that previously disagreed are now derived
 from one source:
 
-| Representation | Location | Role |
-| -------------- | -------- | ---- |
-| Rust contract types + `validate_manifest` | `crates/daena-plugin-api/src/lib.rs` | Single source of truth |
-| Theme catalog, merge, contrast | `crates/daena-plugin-api/src/theme.rs` | Token ids, builtin maps, pack validation |
-| RPC payload/envelope types | `crates/daena-plugin-api/src/rpc.rs` | Pins exact wire names |
-| RPC method catalog | `crates/daena-plugin-api/src/catalog.rs` | Methods, payload, revision, capability |
-| JSON schemas | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json`, `schemas/theme-tokens-v1.json` | Generated build artifacts |
-| TypeScript contract types | `packages/plugin-sdk/src/generated.ts` | Generated build artifact |
-| TS rule validator | `packages/plugin-sdk/src/index.ts` (`validatePluginManifest`) | Mirror of Rust rules, conformance-tested |
+| Representation                            | Location                                                                                                             | Role                                     |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Rust contract types + `validate_manifest` | `crates/daena-plugin-api/src/lib.rs`                                                                                 | Single source of truth                   |
+| Theme catalog, merge, contrast            | `crates/daena-plugin-api/src/theme.rs`                                                                               | Token ids, builtin maps, pack validation |
+| RPC payload/envelope types                | `crates/daena-plugin-api/src/rpc.rs`                                                                                 | Pins exact wire names                    |
+| RPC method catalog                        | `crates/daena-plugin-api/src/catalog.rs`                                                                             | Methods, payload, revision, capability   |
+| JSON schemas                              | `schemas/plugin-{manifest,rpc,error}-v1.json`, `schemas/capability-registry-v1.json`, `schemas/theme-tokens-v1.json` | Generated build artifacts                |
+| TypeScript contract types                 | `packages/plugin-sdk/src/generated.ts`                                                                               | Generated build artifact                 |
+| TS rule validator                         | `packages/plugin-sdk/src/index.ts` (`validatePluginManifest`)                                                        | Mirror of Rust rules, conformance-tested |
 
-JSON Schema cannot express the cross-reference *rules* (namespace ownership,
+JSON Schema cannot express the cross-reference _rules_ (namespace ownership,
 migration contiguity, template-field typing), so rules stay handwritten in Rust
 and are mirrored in TypeScript. Shapes are generated; parity is enforced.
 
@@ -892,7 +904,7 @@ rule:
   rejection class) indexed in `index.json`. Both validators must agree with the
   indexed `expected` outcomes, enforced by
   `crates/daena-plugin-api/tests/fixture_battery.rs`, `npm run
-  check:manifest-fixtures`, and the dual-validator conformance test
+check:manifest-fixtures`, and the dual-validator conformance test
   (`npm run test:plugin-conformance`, which also runs 42 broker checks and
   lifecycle install/enable/upgrade/rollback/uninstall against the test host).
 - Intentionally non-mutual rules (e.g. TS rejects duplicate capabilities and
@@ -926,7 +938,7 @@ rule:
   non-standard `uint32` format registered) at startup and prepends
   `schema:<instancePath>` errors to the TS validator's output in both validate
   paths, so shape-only rejections are caught too.
-- The Phase 0–5 *contract* exit gates (all representations agree on the frozen
+- The Phase 0–5 _contract_ exit gates (all representations agree on the frozen
   contract, generated types reviewed and tests green, full suites green, drift
   guard fails on an intentional Rust change without regen, docs match code)
   are all **met**. Bundled UI isolation in Phase 5 is not; see Remaining work.

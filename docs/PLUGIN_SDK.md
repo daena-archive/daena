@@ -168,19 +168,23 @@ Schemas declare entity types and fields in an owned namespace:
 ```json
 {
   "namespaces": ["weather"],
-  "schemas": [{
-    "namespace": "weather",
-    "entityTypes": [{
-      "id": "forecast",
-      "name": "Forecast",
-      "icon": { "kind": "catalog", "id": "storm" }
-    }],
-    "fields": [
-      { "key": "summary", "label": "Summary", "type": "text" },
-      { "key": "temperature", "label": "Temperature", "type": "number" },
-      { "key": "season", "label": "Season", "type": "enum", "options": ["spring", "summer", "autumn", "winter"] }
-    ]
-  }]
+  "schemas": [
+    {
+      "namespace": "weather",
+      "entityTypes": [
+        {
+          "id": "forecast",
+          "name": "Forecast",
+          "icon": { "kind": "catalog", "id": "storm" }
+        }
+      ],
+      "fields": [
+        { "key": "summary", "label": "Summary", "type": "text" },
+        { "key": "temperature", "label": "Temperature", "type": "number" },
+        { "key": "season", "label": "Season", "type": "enum", "options": ["spring", "summer", "autumn", "winter"] }
+      ]
+    }
+  ]
 }
 ```
 
@@ -216,26 +220,43 @@ plugin.
 
 ```json
 {
-  "views": [{
-    "id": "notes",
-    "title": "Field Notes",
-    "components": [
-      { "type": "heading", "id": "intro", "text": "Field Notes" },
-      { "type": "text", "id": "help", "text": "Review notes captured in this project." },
-      { "type": "entity-list", "id": "recent", "title": "Recent notes", "entityType": "note", "limit": 10 },
-      { "type": "entity-detail", "id": "selected", "title": "Selected note", "source": "recent" },
-      { "type": "field-form", "id": "note-fields", "title": "Note color", "source": "recent", "namespace": "field-notes", "fields": ["color"], "editable": true },
-      { "type": "button", "id": "refresh", "label": "Refresh", "command": "refresh" }
-    ]
-  }],
-  "commands": [{
-    "id": "refresh",
-    "title": "Refresh",
-    "action": { "type": "refresh-view" },
-    "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
-    "output": { "type": "object", "properties": { "type": { "type": "string" } }, "required": ["type"], "additionalProperties": false },
-    "exposure": ["view"]
-  }]
+  "views": [
+    {
+      "id": "notes",
+      "title": "Field Notes",
+      "components": [
+        { "type": "heading", "id": "intro", "text": "Field Notes" },
+        { "type": "text", "id": "help", "text": "Review notes captured in this project." },
+        { "type": "entity-list", "id": "recent", "title": "Recent notes", "entityType": "note", "limit": 10 },
+        { "type": "entity-detail", "id": "selected", "title": "Selected note", "source": "recent" },
+        {
+          "type": "field-form",
+          "id": "note-fields",
+          "title": "Note color",
+          "source": "recent",
+          "namespace": "field-notes",
+          "fields": ["color"],
+          "editable": true
+        },
+        { "type": "button", "id": "refresh", "label": "Refresh", "command": "refresh" }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "id": "refresh",
+      "title": "Refresh",
+      "action": { "type": "refresh-view" },
+      "input": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+      "output": {
+        "type": "object",
+        "properties": { "type": { "type": "string" } },
+        "required": ["type"],
+        "additionalProperties": false
+      },
+      "exposure": ["view"]
+    }
+  ]
 }
 ```
 
@@ -320,22 +341,22 @@ Capabilities are deny-by-default. A manifest requests them; the user/project
 grant is the authority. A plugin must declare and receive a capability before
 the broker permits the operation.
 
-| Capability | Purpose |
-| --- | --- |
-| `entity.read` | Read visible project entities. |
-| `entity.write` | Create and update entities. |
-| `entity.delete` | Delete entities; interactive confirmation applies. |
-| `document.read` / `document.write` | Read or create/update entity documents. |
-| `field.read:self` / `field.write:self` | Read or write fields in owned namespaces. |
-| `field.read:shared` | Read fields explicitly shared by another plugin. |
-| `relationship.read` / `relationship.write` | Read or create relationships. |
-| `asset.read:self` | Read metadata for plugin-owned assets. |
-| `asset.read:shared` | Read project-visible assets (`referenceScope = project`) owned by another entity/namespace when authorized. |
-| `asset.write:self` | Update metadata or replace bytes for plugin-owned assets. |
-| `asset.register` | Register a plugin-supplied asset into a caller-owned namespace. |
-| `search.query` | Query the project search service. |
-| `event.publish:<type>` / `event.subscribe:<type>` | Publish or subscribe to declared events. |
-| `service.provide:<name>` / `service.call:<name>` | Provide or call declared services. |
+| Capability                                        | Purpose                                                                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `entity.read`                                     | Read visible project entities.                                                                              |
+| `entity.write`                                    | Create and update entities.                                                                                 |
+| `entity.delete`                                   | Delete entities; interactive confirmation applies.                                                          |
+| `document.read` / `document.write`                | Read or create/update entity documents.                                                                     |
+| `field.read:self` / `field.write:self`            | Read or write fields in owned namespaces.                                                                   |
+| `field.read:shared`                               | Read fields explicitly shared by another plugin.                                                            |
+| `relationship.read` / `relationship.write`        | Read or create relationships.                                                                               |
+| `asset.read:self`                                 | Read metadata for plugin-owned assets.                                                                      |
+| `asset.read:shared`                               | Read project-visible assets (`referenceScope = project`) owned by another entity/namespace when authorized. |
+| `asset.write:self`                                | Update metadata or replace bytes for plugin-owned assets.                                                   |
+| `asset.register`                                  | Register a plugin-supplied asset into a caller-owned namespace.                                             |
+| `search.query`                                    | Query the project search service.                                                                           |
+| `event.publish:<type>` / `event.subscribe:<type>` | Publish or subscribe to declared events.                                                                    |
+| `service.provide:<name>` / `service.call:<name>`  | Provide or call declared services.                                                                          |
 
 There is no generic `filesystem`, `shell`, `process`, `dialog`, `tauri`, or
 unrestricted `network` capability. Plugins never receive arbitrary local
@@ -352,10 +373,7 @@ UI assets are static files served in a separate host-created webview. Use the
 host-provided broker transport with the framework-neutral SDK:
 
 ```ts
-import {
-  createBrowserPluginRpcTransport,
-  createPluginRpcClient,
-} from "@daena-archive/plugin-sdk";
+import { createBrowserPluginRpcTransport, createPluginRpcClient } from "@daena-archive/plugin-sdk";
 
 const transport = createBrowserPluginRpcTransport();
 const client = createPluginRpcClient(transport);
@@ -369,12 +387,9 @@ retry-safe operations.
 
 ```ts
 const [entry] = await client.listEntities("forecast");
-const updated = await client.updateEntity(
-  entry.id,
-  "Evening forecast",
-  "forecast",
-  { expectedRevision: entry.revision },
-);
+const updated = await client.updateEntity(entry.id, "Evening forecast", "forecast", {
+  expectedRevision: entry.revision,
+});
 ```
 
 Entity updates change the entry name/type; document and namespaced field
@@ -451,20 +466,18 @@ Migrations are declarative, contiguous, and package-owned. Runtime plugin code
 cannot submit arbitrary migration JSON.
 
 ```ts
-import {
-  createMigrationOperation,
-  migration,
-  validateMigrationChain,
-} from "@daena-archive/plugin-sdk";
+import { createMigrationOperation, migration, validateMigrationChain } from "@daena-archive/plugin-sdk";
 
 const migrationV2 = migration({
   id: "weather-v2",
   from: 1,
   to: 2,
   recovery: "backup",
-  operations: [createMigrationOperation("add-field", "weather", {
-    field: { key: "confidence", label: "Confidence", type: "number" },
-  })],
+  operations: [
+    createMigrationOperation("add-field", "weather", {
+      field: { key: "confidence", label: "Confidence", type: "number" },
+    }),
+  ],
 });
 
 const errors = validateMigrationChain([migrationV2], ["weather"]);
@@ -549,7 +562,8 @@ Verification uses the package digest, optional `signature.json` (Ed25519,
 optional `keyId` for rotation), and the host trust snapshot
 (`plugins/trust.json`): pinned publisher keys plus revocations. Unsigned
 packages still install only with explicit consent. Publisher signatures never
-grant capabilities.
+grant capabilities. Phase 9 (GitHub identity index, not a Daena server) is
+[`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md).
 
 ## 12. Upgrade, rollback, and removal
 

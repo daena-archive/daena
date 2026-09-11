@@ -26,8 +26,8 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 6;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 4;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;

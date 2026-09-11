@@ -42,7 +42,7 @@ use crate::planetary::{
 use rayon::prelude::*;
 use std::sync::OnceLock;
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 11;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 2;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -81,6 +81,15 @@ const STORM_PGRAD_KILL_CENTI: u32 = 900;
 const STORM_DIVERGENCE_START_PPM: u32 = 40_000;
 const STORM_DIVERGENCE_KILL_PPM: u32 = 350_000;
 const STORM_CONVERGENCE_FULL_PPM: u32 = 300_000;
+const STORM_VORTICITY_START_PPM: u32 = 40_000;
+const STORM_VORTICITY_FULL_PPM: u32 = 280_000;
+const STORM_EXTRA_MIN_SST_CENTI_C: i32 = -200;
+const STORM_EXTRA_FULL_SST_CENTI_C: i32 = 600;
+const STORM_EXTRA_MIN_HUMIDITY_PPM: u32 = 80_000;
+const STORM_EXTRA_PGRAD_START_CENTI: u32 = 80;
+const STORM_EXTRA_PGRAD_FULL_CENTI: u32 = 500;
+const STORM_LAND_MIN_CENTI_C: i32 = 800;
+const STORM_LAND_FULL_CENTI_C: i32 = 2_200;
 const STORM_TRACK_START_PPM: u32 = 40_000;
 const STORM_TRACK_STEPS: usize = 14;
 const STORM_SEED_BLOCK: u32 = 6;
@@ -103,6 +112,9 @@ const MIN_CURRENT_BASIN_CELLS: usize = 8;
 const CURRENT_WESTERN_RETURN: f64 = 2.35;
 const CURRENT_WESTERN_SCALE: f64 = 2.1;
 const CURRENT_SMOOTH_PASSES: usize = 2;
+const WIND_COUPLE_SCALE_M: f64 = 1_000_000.0;
+const WIND_COUPLE_MAX_PASSES: usize = 8;
+const PRESSURE_SMOOTH_SCALE_M: f64 = 1_200_000.0;
 pub const CLIMATE_MAX_TRANSPORT_ITERATIONS: u32 = 512;
 const CLIMATE_MIN_TRANSPORT_ITERATIONS: u32 = 8;
 const CLIMATE_TRANSPORT_TOLERANCE_MM: f64 = 2.0;
@@ -2705,6 +2717,14 @@ fn coriolis_parameter(latitude: f64, planetary: PlanetaryConfiguration) -> f64 {
     2.0 * omega * latitude.sin()
 }
 
+fn field_smooth_passes(grid: Grid, scale_m: f64) -> usize {
+    let cell_m = neighbor_metres(grid, grid.height / 2, 0, 0, 1);
+    let sigma_cells = scale_m / cell_m.max(1.0);
+    (sigma_cells * sigma_cells * 0.5)
+        .round()
+        .clamp(0.0, WIND_COUPLE_MAX_PASSES as f64) as usize
+}
+
 fn pressure_base(latitude: f64, itcz: f64, hadley: f64, ferrel: f64, amplitude: f64) -> f64 {
     let abs_phi = (latitude - itcz).abs();
     let pole = std::f64::consts::FRAC_PI_2;
@@ -2753,6 +2773,10 @@ fn pressure_anomaly(
         let elevation_m = surface_height_m(field, cell);
         let column = (-elevation_m / scale_height).exp();
         pressure[cell] = -thermal * t_anomaly + amplitude * (column - 1.0);
+    }
+    let passes = field_smooth_passes(field.grid, PRESSURE_SMOOTH_SCALE_M);
+    for _ in 0..passes {
+        smooth_scalar_field(field.grid, &mut pressure);
     }
     pressure
 }
@@ -2840,6 +2864,29 @@ fn wind_components(
     wind_seed: u64,
     meanders: bool,
 ) -> (Vec<i32>, Vec<i32>) {
+    let (east, north) = wind_components_local(
+        field,
+        temperatures,
+        settings,
+        itcz,
+        hadley,
+        ferrel,
+        wind_seed,
+        meanders,
+    );
+    couple_wind_field(field, east, north)
+}
+
+fn wind_components_local(
+    field: &PhysicalField,
+    temperatures: &[i32],
+    settings: ClimateSettings,
+    itcz: f64,
+    hadley: f64,
+    ferrel: f64,
+    wind_seed: u64,
+    meanders: bool,
+) -> (Vec<i32>, Vec<i32>) {
     let anomaly = pressure_anomaly(field, temperatures, settings);
     let omega = omega_ratio(settings.planetary);
     let amplitude = f64::from(settings.pressure_cell_amplitude);
@@ -2877,6 +2924,75 @@ fn wind_components(
     (east, north)
 }
 
+fn wind_couple_passes(grid: Grid) -> usize {
+    field_smooth_passes(grid, WIND_COUPLE_SCALE_M)
+}
+
+fn wind_smooth_cell(
+    field: &PhysicalField,
+    previous_east: &[f64],
+    previous_north: &[f64],
+    cell: usize,
+) -> (f64, f64) {
+    let grid = field.grid;
+    let (row, col) = grid.row_col(cell);
+    let neighbors = [
+        grid.index(row, wrapped_col(grid, col, -1)),
+        grid.index(row, wrapped_col(grid, col, 1)),
+        grid.index(clamped_row(grid, row, -1), col),
+        grid.index(clamped_row(grid, row, 1), col),
+    ];
+    let here = (field.elevations_mm[cell] - field.sea_level_mm).max(0);
+    let mut sum_u = previous_east[cell] * 2.0;
+    let mut sum_v = previous_north[cell] * 2.0;
+    let mut weight = 2.0;
+    for neighbor in neighbors {
+        let height = (field.elevations_mm[neighbor] - field.sea_level_mm).max(0);
+        if (height - here).unsigned_abs() < ALPINE_HEIGHT_MM.unsigned_abs() {
+            sum_u += previous_east[neighbor];
+            sum_v += previous_north[neighbor];
+            weight += 1.0;
+        }
+    }
+    (sum_u / weight, sum_v / weight)
+}
+
+fn couple_wind_field(
+    field: &PhysicalField,
+    east: Vec<i32>,
+    north: Vec<i32>,
+) -> (Vec<i32>, Vec<i32>) {
+    let passes = wind_couple_passes(field.grid);
+    if passes == 0 {
+        return (east, north);
+    }
+    let mut east_f = east
+        .iter()
+        .map(|value| f64::from(*value))
+        .collect::<Vec<_>>();
+    let mut north_f = north
+        .iter()
+        .map(|value| f64::from(*value))
+        .collect::<Vec<_>>();
+    for _ in 0..passes {
+        let previous_east = east_f.clone();
+        let previous_north = north_f.clone();
+        east_f
+            .par_iter_mut()
+            .zip(north_f.par_iter_mut())
+            .enumerate()
+            .for_each(|(cell, (east_slot, north_slot))| {
+                let (u, v) = wind_smooth_cell(field, &previous_east, &previous_north, cell);
+                *east_slot = u;
+                *north_slot = v;
+            });
+    }
+    (
+        east_f.into_iter().map(clamp_wind).collect(),
+        north_f.into_iter().map(clamp_wind).collect(),
+    )
+}
+
 fn wind_divergence_cell(
     grid: Grid,
     spacing: &GridSpacing,
@@ -2906,6 +3022,46 @@ fn wind_divergence_ppm(grid: Grid, east: &[i32], north: &[i32]) -> Vec<i32> {
             *slot = wind_divergence_cell(grid, &spacing, east, north, cell);
         });
     divergence
+}
+
+fn wind_vorticity_cell(
+    grid: Grid,
+    spacing: &GridSpacing,
+    east: &[i32],
+    north: &[i32],
+    cell: usize,
+) -> i32 {
+    let (row, col) = grid.row_col(cell);
+    let west = grid.index(row, wrapped_col(grid, col, -1));
+    let east_cell = grid.index(row, wrapped_col(grid, col, 1));
+    let south = grid.index(clamped_row(grid, row, -1), col);
+    let north_cell = grid.index(clamped_row(grid, row, 1), col);
+    let scale_x = spacing.scale_x(row);
+    let scale_y = spacing.scale_y(row);
+    let value = f64::from(north[east_cell] - north[west]) * scale_x
+        - f64::from(east[north_cell] - east[south]) * scale_y;
+    (value * 80.0).round().clamp(-1_000_000.0, 1_000_000.0) as i32
+}
+
+fn wind_vorticity_ppm(grid: Grid, east: &[i32], north: &[i32]) -> Vec<i32> {
+    let spacing = GridSpacing::new(grid);
+    let mut vorticity = vec![0; grid.sample_count()];
+    vorticity
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(cell, slot)| {
+            *slot = wind_vorticity_cell(grid, &spacing, east, north, cell);
+        });
+    vorticity
+}
+
+fn cyclonic_vorticity_ppm(vorticity_ppm: i32, latitude: f64) -> u32 {
+    let signed = if latitude >= 0.0 {
+        vorticity_ppm
+    } else {
+        vorticity_ppm.saturating_neg()
+    };
+    signed.max(0) as u32
 }
 
 fn wind_band_field(grid: Grid, itcz: f64, hadley: f64, ferrel: f64) -> Vec<u32> {
@@ -4415,6 +4571,34 @@ fn storm_latitude_factor(latitude: f64, itcz: f64, hadley: f64) -> f64 {
     coriolis_lat * band
 }
 
+fn storm_extratropical_latitude_factor(latitude: f64, itcz: f64, hadley: f64) -> f64 {
+    let scale = (hadley.to_degrees() / 30.0).clamp(0.4, 2.5);
+    let abs_phi = (latitude - itcz).abs().to_degrees();
+    let inner = 28.0 * scale;
+    let peak0 = 40.0 * scale;
+    let peak1 = 66.0 * scale;
+    let outer = 86.0 * scale;
+    if abs_phi < inner {
+        0.0
+    } else if abs_phi < peak0 {
+        (abs_phi - inner) / (peak0 - inner).max(1e-6)
+    } else if abs_phi <= peak1 {
+        1.0
+    } else if abs_phi < outer {
+        (outer - abs_phi) / (outer - peak1).max(1e-6)
+    } else {
+        0.0
+    }
+}
+
+fn storm_swirl_factor(vorticity_ppm: i32, latitude: f64) -> f64 {
+    unit_factor(
+        i64::from(cyclonic_vorticity_ppm(vorticity_ppm, latitude)),
+        i64::from(STORM_VORTICITY_START_PPM),
+        i64::from(STORM_VORTICITY_FULL_PPM),
+    )
+}
+
 fn storm_fetch_factor(east_ocean_cells: u32, west_ocean_cells: u32) -> f64 {
     let basin = east_ocean_cells.saturating_add(west_ocean_cells);
     if basin < 3 {
@@ -4543,13 +4727,13 @@ fn storm_pressure_gradient_factor(gradient_centi: u32, coupling: StormCoupling) 
     )
 }
 
-fn storm_thermal_pressure_gradient_centi(
+fn storm_neighbor_temperature_gradient_centi(
     grid: Grid,
     temperatures: &[i32],
-    ocean: &[bool],
     cell: usize,
+    ocean: Option<&[bool]>,
 ) -> u32 {
-    if !ocean[cell] {
+    if ocean.map(|mask| !mask[cell]).unwrap_or(false) {
         return 0;
     }
     let (row, col) = grid.row_col(cell);
@@ -4558,7 +4742,7 @@ fn storm_thermal_pressure_gradient_centi(
     let mut n = 0.0;
     for (drow, dcol) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
         let neighbor = grid.index(clamped_row(grid, row, drow), wrapped_col(grid, col, dcol));
-        if neighbor == cell || !ocean[neighbor] {
+        if neighbor == cell || ocean.map(|mask| !mask[neighbor]).unwrap_or(false) {
             continue;
         }
         let dt = f64::from((t - temperatures[neighbor]).unsigned_abs());
@@ -4572,6 +4756,23 @@ fn storm_thermal_pressure_gradient_centi(
     }
 }
 
+fn storm_seasonal_gradient_centi(
+    grid: Grid,
+    annual: &[i32],
+    summers: &[i32],
+    winters: &[i32],
+    cell: usize,
+    ocean: Option<&[bool]>,
+) -> u32 {
+    storm_neighbor_temperature_gradient_centi(grid, annual, cell, ocean)
+        .max(storm_neighbor_temperature_gradient_centi(
+            grid, summers, cell, ocean,
+        ))
+        .max(storm_neighbor_temperature_gradient_centi(
+            grid, winters, cell, ocean,
+        ))
+}
+
 fn storm_seasonal_pressure_gradient_centi(
     grid: Grid,
     annual: &[i32],
@@ -4580,13 +4781,7 @@ fn storm_seasonal_pressure_gradient_centi(
     ocean: &[bool],
     cell: usize,
 ) -> u32 {
-    storm_thermal_pressure_gradient_centi(grid, annual, ocean, cell)
-        .max(storm_thermal_pressure_gradient_centi(
-            grid, summers, ocean, cell,
-        ))
-        .max(storm_thermal_pressure_gradient_centi(
-            grid, winters, ocean, cell,
-        ))
+    storm_seasonal_gradient_centi(grid, annual, summers, winters, cell, Some(ocean))
 }
 
 fn storm_current_factor(east_milli: i32, north_milli: i32) -> f64 {
@@ -4637,6 +4832,7 @@ fn classify_storm_cell(
     fetch: f64,
     divergence_ppm: i32,
     pressure_gradient_centi: u32,
+    vorticity_ppm: i32,
     sst_min: i32,
     sst_full: i32,
 ) -> (u32, u32) {
@@ -4654,6 +4850,8 @@ fn classify_storm_cell(
         fetch,
         divergence_ppm,
         pressure_gradient_centi,
+        pressure_gradient_centi,
+        vorticity_ppm,
         StormCoupling::default(),
         sst_min,
         sst_full,
@@ -4674,11 +4872,18 @@ fn classify_storm_scaled(
     fetch: f64,
     divergence_ppm: i32,
     pressure_gradient_centi: u32,
+    airmass_gradient_centi: u32,
+    vorticity_ppm: i32,
     coupling: StormCoupling,
     sst_min: i32,
     sst_full: i32,
 ) -> (u32, u32) {
-    if !ocean || sst_centi_c < 0 {
+    if sst_centi_c < 0 {
+        return (0, 0);
+    }
+    let trop_lat = storm_latitude_factor(latitude, itcz, hadley) * coriolis;
+    let extra_lat = storm_extratropical_latitude_factor(latitude, itcz, hadley) * coriolis;
+    if trop_lat == 0.0 && extra_lat == 0.0 {
         return (0, 0);
     }
     let sst = unit_factor(
@@ -4686,29 +4891,74 @@ fn classify_storm_scaled(
         i64::from(sst_min),
         i64::from(sst_full),
     );
+    let extra_sst = if ocean {
+        unit_factor(
+            i64::from(sst_centi_c),
+            i64::from(STORM_EXTRA_MIN_SST_CENTI_C),
+            i64::from(STORM_EXTRA_FULL_SST_CENTI_C),
+        )
+    } else {
+        unit_factor(
+            i64::from(sst_centi_c),
+            i64::from(STORM_LAND_MIN_CENTI_C),
+            i64::from(STORM_LAND_FULL_CENTI_C),
+        )
+    };
     let humidity = unit_factor(
         i64::from(humidity_ppm),
         i64::from(STORM_MIN_HUMIDITY_PPM),
         i64::from(STORM_FULL_HUMIDITY_PPM),
     );
-    let latitude_factor = storm_latitude_factor(latitude, itcz, hadley) * coriolis;
+    let extra_humidity = unit_factor(
+        i64::from(humidity_ppm),
+        i64::from(STORM_EXTRA_MIN_HUMIDITY_PPM),
+        i64::from(STORM_FULL_HUMIDITY_PPM),
+    );
     let shear = unit_factor(
         i64::from(shear_milli),
         i64::from(STORM_SHEAR_START_MILLI),
         i64::from(STORM_SHEAR_KILL_MILLI),
     );
-    let suitability = (sst
-        * humidity
-        * latitude_factor
-        * (1.0 - shear)
-        * storm_convergence_factor(divergence_ppm, coupling)
-        * storm_pressure_gradient_factor(pressure_gradient_centi, coupling)
-        * proximity
-        * current
-        * fetch
-        * 1_000_000.0)
-        .round() as u32;
-    let intensity = (suitability as f64 * (0.45 + 0.55 * sst)).round() as u32;
+    let swirl = storm_swirl_factor(vorticity_ppm, latitude);
+    let conv = storm_convergence_factor(divergence_ppm, coupling);
+    let trop_front = storm_pressure_gradient_factor(pressure_gradient_centi, coupling);
+    let extra_front = unit_factor(
+        i64::from(airmass_gradient_centi),
+        i64::from(STORM_EXTRA_PGRAD_START_CENTI),
+        i64::from(STORM_EXTRA_PGRAD_FULL_CENTI),
+    );
+    let tropical = if ocean {
+        sst * humidity
+            * trop_lat
+            * (1.0 - shear)
+            * conv
+            * trop_front
+            * proximity
+            * current
+            * fetch
+            * (1.0 + 0.18 * swirl)
+    } else {
+        0.0
+    };
+    let extra = extra_sst
+        * extra_humidity
+        * extra_lat
+        * conv
+        * (0.15 + 0.85 * extra_front)
+        * (0.08 + 0.92 * swirl)
+        * if ocean {
+            (0.65 + 0.35 * proximity) * (0.70 + 0.30 * fetch) * (0.90 + 0.10 * shear.min(0.5))
+        } else {
+            0.38 * (0.45 + 0.55 * shear)
+        };
+    let suitability = (tropical.max(extra) * 1_000_000.0).round() as u32;
+    let intensity = (suitability as f64
+        * if tropical >= extra {
+            0.45 + 0.55 * sst
+        } else {
+            0.40 + 0.35 * extra_sst + 0.25 * swirl
+        })
+    .round() as u32;
     (suitability.min(1_000_000), intensity.min(1_000_000))
 }
 
@@ -4722,21 +4972,28 @@ pub fn explain_storm(
     track_ppm: u32,
     intensity_ppm: u32,
 ) -> String {
+    let abs_lat = f64::from(latitude_milli_deg.abs()) / 1_000.0;
     let zone = if !ocean {
-        "landfall exposure, not formation"
+        if suitability_ppm == 0 {
+            "landfall exposure, not formation"
+        } else {
+            "cyclonic shear favors land severe-weather / tornado corridors"
+        }
     } else if suitability_ppm == 0 {
-        "this ocean cell is outside the tropical-cyclone genesis band"
+        "this ocean cell is outside tropical and extra-tropical genesis bands"
+    } else if abs_lat >= 35.0 {
+        "baroclinic swirl favors extra-tropical or polar-low genesis"
     } else if suitability_ppm >= 500_000 {
         "warm, moist, rotating ocean favors tropical-cyclone genesis"
     } else {
         "marginal tropical-cyclone conditions"
     };
     format!(
-        "Storm suitability {}% ({zone}). Sea {:.1} °C, humidity {}% of saturation, |lat| {:.1}°, seasonal wind shear {} (solstice vector difference, not vertical), convergence and ocean thermal fronts also scale genesis, track corridor {}%, intensity potential {}%. Climatology, not a forecast.",
+        "Storm suitability {}% ({zone}). Sea {:.1} °C, humidity {}% of saturation, |lat| {:.1}°, seasonal wind shear {} (solstice vector difference, not vertical), cyclonic swirl, convergence, and thermal fronts also scale genesis, track corridor {}%, intensity potential {}%. Climatology, not a forecast.",
         suitability_ppm / 10_000,
         f64::from(sst_centi_c) / 100.0,
         humidity_ppm / 10_000,
-        f64::from(latitude_milli_deg.abs()) / 1_000.0,
+        abs_lat,
         shear_milli,
         track_ppm / 10_000,
         intensity_ppm / 10_000,
@@ -4998,6 +5255,9 @@ fn derive_storms(
     let east_fetch = &current_geometry.east_distance;
     let west_fetch = &current_geometry.west_distance;
     let itcz_by_col = thermal_equator_by_column(field.grid, annual);
+    let vorticity = wind_vorticity_ppm(field.grid, wind_east, wind_north);
+    let vorticity_summer = wind_vorticity_ppm(field.grid, wind_east_summer, wind_north_summer);
+    let vorticity_winter = wind_vorticity_ppm(field.grid, wind_east_winter, wind_north_winter);
     let mut suitability_ppm = vec![0u32; count];
     let mut track_ppm = vec![0u32; count];
     let mut intensity_ppm = vec![0u32; count];
@@ -5015,6 +5275,14 @@ fn derive_storms(
         let divergence = wind_divergence[cell]
             .min(wind_divergence_summer[cell])
             .min(wind_divergence_winter[cell]);
+        let swirl = [
+            vorticity[cell],
+            vorticity_summer[cell],
+            vorticity_winter[cell],
+        ]
+        .into_iter()
+        .max_by_key(|value| cyclonic_vorticity_ppm(*value, latitude))
+        .unwrap_or(0);
         let (suitability, intensity) = classify_storm_scaled(
             ocean[cell],
             sst,
@@ -5031,6 +5299,8 @@ fn derive_storms(
             storm_seasonal_pressure_gradient_centi(
                 field.grid, annual, summers, winters, ocean, cell,
             ),
+            storm_seasonal_gradient_centi(field.grid, annual, summers, winters, cell, None),
+            swirl,
             coupling,
             sst_min,
             sst_full,
@@ -5039,7 +5309,7 @@ fn derive_storms(
         intensity_ppm[cell] = intensity;
     }
     for origin in 0..count {
-        if !is_storm_track_seed(field.grid, &suitability_ppm, origin) {
+        if !ocean[origin] || !is_storm_track_seed(field.grid, &suitability_ppm, origin) {
             continue;
         }
         let mut cell = origin;
@@ -5452,7 +5722,7 @@ mod tests {
         let phase = (wind_seed as f64) * (std::f64::consts::TAU / (u64::MAX as f64));
         let wave_amp = 340.0 * omega.clamp(0.3, 2.0).sqrt();
         for meanders in [false, true] {
-            let (east, north) = wind_components(
+            let (east, north) = wind_components_local(
                 &physical,
                 &temperatures,
                 settings,
@@ -5481,13 +5751,128 @@ mod tests {
                 assert_eq!(wind_component_cell(&input, cell), (east[cell], north[cell]));
             }
             let parallel = wind_divergence_ppm(grid, &east, &north);
+            let parallel_vorticity = wind_vorticity_ppm(grid, &east, &north);
             for cell in 0..grid.sample_count() {
                 assert_eq!(
                     parallel[cell],
                     wind_divergence_cell(grid, &spacing, &east, &north, cell)
                 );
+                assert_eq!(
+                    parallel_vorticity[cell],
+                    wind_vorticity_cell(grid, &spacing, &east, &north, cell)
+                );
             }
         }
+    }
+
+    #[test]
+    fn coarse_grid_skips_wind_coupling() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        assert_eq!(wind_couple_passes(grid), 0);
+        assert_eq!(field_smooth_passes(grid, PRESSURE_SMOOTH_SCALE_M), 0);
+    }
+
+    #[test]
+    fn fine_grid_wind_coupling_matches_serial_and_changes_local_winds() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        assert!(wind_couple_passes(grid) > 0);
+        let mut elevations = vec![200_000; grid.sample_count()];
+        elevations[0] = -2_000_000;
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let temperatures = (0..grid.sample_count())
+            .map(|cell| {
+                let (row, col) = grid.row_col(cell);
+                let lat = grid.center_radians(row, col).1.abs();
+                (2_200.0 - lat / std::f64::consts::FRAC_PI_2 * 4_200.0).round() as i32
+            })
+            .collect::<Vec<_>>();
+        let omega = omega_ratio(settings.planetary);
+        let hadley = hadley_edge_radians(omega);
+        let ferrel = ferrel_edge_radians(hadley);
+        let (local_east, local_north) = wind_components_local(
+            &physical,
+            &temperatures,
+            settings,
+            0.0,
+            hadley,
+            ferrel,
+            0,
+            false,
+        );
+        let coupled = couple_wind_field(&physical, local_east.clone(), local_north.clone());
+        let again = couple_wind_field(&physical, local_east.clone(), local_north.clone());
+        assert_eq!(coupled, again);
+        assert_ne!(coupled.0, local_east);
+        let mut serial_east = local_east
+            .iter()
+            .map(|value| f64::from(*value))
+            .collect::<Vec<_>>();
+        let mut serial_north = local_north
+            .iter()
+            .map(|value| f64::from(*value))
+            .collect::<Vec<_>>();
+        for _ in 0..wind_couple_passes(grid) {
+            let previous_east = serial_east.clone();
+            let previous_north = serial_north.clone();
+            for cell in 0..grid.sample_count() {
+                let (u, v) = wind_smooth_cell(&physical, &previous_east, &previous_north, cell);
+                serial_east[cell] = u;
+                serial_north[cell] = v;
+            }
+        }
+        let serial_east = serial_east.into_iter().map(clamp_wind).collect::<Vec<_>>();
+        let serial_north = serial_north.into_iter().map(clamp_wind).collect::<Vec<_>>();
+        assert_eq!(coupled.0, serial_east);
+        assert_eq!(coupled.1, serial_north);
+    }
+
+    #[test]
+    fn coupled_fine_grid_keeps_tropical_easterlies_and_midlatitude_westerlies() {
+        let grid = Grid::new(128, 64, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![200_000; grid.sample_count()];
+        elevations[0] = -2_000_000;
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let temperatures = (0..grid.sample_count())
+            .map(|cell| {
+                let (row, col) = grid.row_col(cell);
+                let lat = grid.center_radians(row, col).1.abs();
+                (2_200.0 - lat / std::f64::consts::FRAC_PI_2 * 4_200.0).round() as i32
+            })
+            .collect::<Vec<_>>();
+        let omega = omega_ratio(settings.planetary);
+        let hadley = hadley_edge_radians(omega);
+        let ferrel = ferrel_edge_radians(hadley);
+        let (east, _) = wind_components(
+            &physical,
+            &temperatures,
+            settings,
+            0.0,
+            hadley,
+            ferrel,
+            0,
+            false,
+        );
+        let mut tropical = 0i64;
+        let mut tropical_n = 0i64;
+        let mut midlatitude = 0i64;
+        let mut midlatitude_n = 0i64;
+        for cell in 0..grid.sample_count() {
+            let (row, col) = grid.row_col(cell);
+            let lat = grid.center_radians(row, col).1.to_degrees();
+            if (8.0..22.0).contains(&lat) {
+                tropical += i64::from(east[cell]);
+                tropical_n += 1;
+            }
+            if (32.0..48.0).contains(&lat) {
+                midlatitude += i64::from(east[cell]);
+                midlatitude_n += 1;
+            }
+        }
+        assert!(tropical_n > 0 && midlatitude_n > 0);
+        assert!(tropical / tropical_n < 0);
+        assert!(midlatitude / midlatitude_n > 0);
     }
 
     #[test]
@@ -7711,6 +8096,54 @@ mod tests {
     }
 
     #[test]
+    fn coupled_winds_do_not_oppose_neighbors_inside_a_band() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[0] = -2_000;
+        let physical = field(grid, elevations, 0);
+        let climate = derive_current_climate(
+            &physical,
+            ClimateSettings::default_for(grid),
+            physical.seed,
+            physical.retry_index,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut compared = 0;
+        let mut opposed = 0;
+        for cell in 0..grid.sample_count() {
+            let (row, col) = grid.row_col(cell);
+            let neighbors = [
+                grid.index(row, wrapped_col(grid, col, 1)),
+                grid.index(clamped_row(grid, row, 1), col),
+            ];
+            let du = climate.wind_east_milli[cell];
+            let dv = climate.wind_north_milli[cell];
+            let speed_sq = i64::from(du) * i64::from(du) + i64::from(dv) * i64::from(dv);
+            if speed_sq < 160_000 {
+                continue;
+            }
+            for neighbor in neighbors {
+                if neighbor == cell || climate.wind_band[cell] != climate.wind_band[neighbor] {
+                    continue;
+                }
+                let eu = climate.wind_east_milli[neighbor];
+                let ev = climate.wind_north_milli[neighbor];
+                let dot = i64::from(du) * i64::from(eu) + i64::from(dv) * i64::from(ev);
+                compared += 1;
+                if dot < 0 {
+                    opposed += 1;
+                }
+            }
+        }
+        assert!(compared > 0);
+        assert!(
+            opposed * 10 < compared,
+            "neighboring winds should not reverse, opposed {opposed}/{compared}"
+        );
+    }
+
+    #[test]
     fn wind_meanders_depend_on_seed() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let mut elevations = vec![500; grid.sample_count()];
@@ -8253,42 +8686,44 @@ mod tests {
     fn storm_genesis_needs_warm_moist_rotating_ocean() {
         let hadley = 30.0_f64.to_radians();
         let (suitability, _) = classify_storm_cell(
-            false, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            false, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(suitability, 0);
         let (equator, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.0, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.0, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(equator, 0);
         let (cold, _) = classify_storm_cell(
-            true, -200, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            true, -200, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
         );
         assert_eq!(cold, 0);
         let (core, intensity) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
         );
         assert!(core > 500_000, "core {core}");
         assert!(intensity > 0);
         let (sheared, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 12_000, 1.0, 1.0, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 12_000, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200,
+            1_800,
         );
         assert_eq!(sheared, 0);
         let (coastal, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 0.35, 1.0, 1.0, 0, 0, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 0.35, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
         );
         assert!(coastal < core);
         let (diverging, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 350_000, 0, 1_200,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 350_000, 0, 0, 1_200,
             1_800,
         );
         let (converging, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, -300_000, 0, 1_200,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, -300_000, 0, 0, 1_200,
             1_800,
         );
         assert!(diverging < core, "diverging {diverging} core {core}");
         assert!(converging > core, "converging {converging} core {core}");
         let (front, _) = classify_storm_cell(
-            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 900, 1_200, 1_800,
+            true, 2_800, 800_000, 0.3, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 900, 0, 1_200,
+            1_800,
         );
         assert_eq!(front, 0);
         let shifted = storm_latitude_factor(18.0_f64.to_radians(), 10.0_f64.to_radians(), hadley);
@@ -8304,6 +8739,93 @@ mod tests {
             explain_storm(true, 2_800, 800_000, 18_000, 800, core, 200_000, intensity)
                 .contains("Climatology")
         );
+    }
+
+    #[test]
+    fn extratropical_storms_need_cyclonic_swirl_and_baroclinic_fronts() {
+        let hadley = 30.0_f64.to_radians();
+        let lat = 58.0_f64.to_radians();
+        let (quiet, _) = classify_storm_cell(
+            true, 400, 400_000, lat, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1_200, 1_800,
+        );
+        let (swirl, _) = classify_storm_cell(
+            true, 400, 400_000, lat, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, -200_000, 420, 280_000,
+            1_200, 1_800,
+        );
+        assert!(quiet < STORM_TRACK_START_PPM, "quiet {quiet}");
+        assert!(swirl > 200_000, "swirl {swirl}");
+        let (anticyclonic, _) = classify_storm_cell(
+            true, 400, 400_000, lat, 0.0, hadley, 800, 1.0, 1.0, 1.0, 1.0, 0, 420, -280_000, 1_200,
+            1_800,
+        );
+        assert!(
+            anticyclonic < swirl,
+            "anticyclonic {anticyclonic} swirl {swirl}"
+        );
+        let (land, _) = classify_storm_cell(
+            false, 1_800, 500_000, lat, 0.0, hadley, 6_000, 1.0, 0.0, 1.0, 0.08, 0, 300, 280_000,
+            1_200, 1_800,
+        );
+        let (land_quiet, _) = classify_storm_cell(
+            false, 1_800, 500_000, lat, 0.0, hadley, 6_000, 1.0, 0.0, 1.0, 0.08, 0, 300, 0, 1_200,
+            1_800,
+        );
+        assert!(land > 0, "land {land}");
+        assert!(land_quiet < land);
+        assert!(storm_extratropical_latitude_factor(lat, 0.0, hadley) > 0.8);
+        assert_eq!(storm_extratropical_latitude_factor(0.3, 0.0, hadley), 0.0);
+        assert!(
+            explain_storm(true, 400, 400_000, 58_000, 800, swirl, 100_000, 80_000)
+                .contains("extra-tropical")
+        );
+    }
+
+    #[test]
+    fn northern_cyclonic_vortex_has_positive_vorticity() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut east = vec![0i32; grid.sample_count()];
+        let mut north = vec![0i32; grid.sample_count()];
+        let row = 5;
+        let col = 8;
+        east[grid.index(row - 1, col)] = 2_000;
+        east[grid.index(row + 1, col)] = -2_000;
+        north[grid.index(row, col + 1)] = 2_000;
+        north[grid.index(row, col - 1)] = -2_000;
+        let spacing = GridSpacing::new(grid);
+        let vorticity = wind_vorticity_cell(grid, &spacing, &east, &north, grid.index(row, col));
+        assert!(vorticity > 0, "vorticity {vorticity}");
+        assert!(cyclonic_vorticity_ppm(vorticity, 0.4) > 0);
+        assert_eq!(cyclonic_vorticity_ppm(vorticity, -0.4), 0);
+        assert!(cyclonic_vorticity_ppm(-vorticity, -0.4) > 0);
+    }
+
+    #[test]
+    fn derived_storms_form_away_from_the_equator() {
+        let grid = Grid::new(32, 16, DEFAULT_RADIUS_METRES).unwrap();
+        let elevations = vec![-2_000; grid.sample_count()];
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let mut tropical = 0u32;
+        let mut extratropical = 0u32;
+        for cell in 0..grid.sample_count() {
+            let (row, col) = grid.row_col(cell);
+            let lat = grid.center_radians(row, col).1.to_degrees().abs();
+            let value = climate.storm_suitability_ppm[cell];
+            if (8.0..25.0).contains(&lat) {
+                tropical = tropical.max(value);
+            }
+            if lat >= 38.0 {
+                extratropical = extratropical.max(value);
+            }
+        }
+        assert!(tropical > 0, "tropical {tropical}");
+        assert!(extratropical > 0, "extratropical {extratropical}");
     }
 
     #[test]

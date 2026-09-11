@@ -207,19 +207,34 @@ pub fn sample_events(
     if request.event_kind == NaturalEventKind::Storm && climate.is_none() {
         return Err("storm materialization requires derived climate".into());
     }
+    let present = world.physical_field();
+    let track_field = epoch_field.unwrap_or(&present);
     let storm_rates = climate.map(|field| {
         field
             .storm_suitability_ppm
             .iter()
-            .copied()
-            .map(climate::storm_annual_rate_nano)
+            .enumerate()
+            .map(|(cell, value)| {
+                if track_field.elevations_mm[cell] <= track_field.sea_level_mm {
+                    climate::storm_annual_rate_nano(*value)
+                } else {
+                    0
+                }
+            })
             .collect::<Vec<_>>()
     });
     let storm_million = climate.map(|field| {
         field
             .storm_suitability_ppm
             .iter()
-            .map(|value| u32::try_from(u64::from(*value) * 1_000 / 1_000_000).unwrap_or(u32::MAX))
+            .enumerate()
+            .map(|(cell, value)| {
+                if track_field.elevations_mm[cell] <= track_field.sea_level_mm {
+                    u32::try_from(u64::from(*value) * 1_000 / 1_000_000).unwrap_or(u32::MAX)
+                } else {
+                    0
+                }
+            })
             .collect::<Vec<_>>()
     });
     let rates: &[u64] = match request.event_kind {
@@ -250,8 +265,6 @@ pub fn sample_events(
         request.hazard_seed ^ request.event_kind.tag() ^ 0x506f_6973_736f_6e31,
     )
     .min(request.max_events);
-    let present = world.physical_field();
-    let track_field = epoch_field.unwrap_or(&present);
     let notable_nano = climate
         .map(|field| {
             ((f64::from(field.metrics.mean_ocean_storm_suitability_ppm) / 1_000_000.0)

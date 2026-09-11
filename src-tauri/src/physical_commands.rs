@@ -356,6 +356,9 @@ pub(super) fn physical_climate_products(
         "meanLandDroughtPotentialPpm": climate.metrics.mean_land_drought_potential_ppm,
         "meanHeatWavePotentialPpm": climate.metrics.mean_heat_wave_potential_ppm,
         "meanExtremeRainfallPotentialPpm": climate.metrics.mean_extreme_rainfall_potential_ppm,
+        "meanLandGrowingSeasonPpm": climate.metrics.mean_land_growing_season_ppm,
+        "meanLandDrySeasonPpm": climate.metrics.mean_land_dry_season_ppm,
+        "meanLandWetSeasonPpm": climate.metrics.mean_land_wet_season_ppm,
     });
     products
 }

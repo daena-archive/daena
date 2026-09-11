@@ -13,15 +13,19 @@
 //! evaporation; saturation-limited condensation rain with orographic `V·∇h`
 //! cooling of `q_sat` and leftover convergence; land evaporation from an internal
 //! surface-water store `W`; humidity as remaining moisture over local
-//! saturation (`q / q_sat`); latent heating that re-relaxes T/V; aridity from
+//! saturation (`q / q_sat`); cloud fraction from RH and uplift that raises
+//! albedo, reduces OLR, and increases condensation; six-class surface albedo
+//! (ocean / vegetated / bare / desert / snow / ice) after moisture exists;
+//! latent heating that re-relaxes T/V; aridity from
 //! evaporative demand; precipitation that feeds runoff volumes
 //! using exact spherical cell areas; land biome classes from those climate
 //! conditions; and tropical-cyclone-like storm suitability, track corridors,
 //! and intensity potential. Storm genesis consumes temperature, moisture,
 //! convergence, thermal pressure gradient, Coriolis, land proximity, and
 //! currents. Wind shear is the seasonal (solstice) wind-vector difference, not
-//! vertical shear. Drought, heat-wave, and extreme-rainfall potentials are
-//! statistics of the Stage 6 seasonal fields, not new prognostic state.
+//! vertical shear. Drought, heat-wave, extreme-rainfall, growing-season, and
+//! dry/wet-season potentials are statistics of the Stage 6 seasonal fields,
+//! not new prognostic state.
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::too_many_arguments)]
@@ -35,8 +39,9 @@ use crate::planetary::{
     PlanetaryConfiguration, EARTH_BOND_ALBEDO_PPM, EARTH_ECCENTRICITY_PPM,
     EARTH_RETAINED_HEAT_CENTI_C, EARTH_ROTATION_PERIOD_SECONDS, SOLAR_LUMINOSITY_PPM,
 };
+use std::sync::OnceLock;
 
-pub const CLIMATE_DERIVATION_VERSION: u16 = 10;
+pub const CLIMATE_DERIVATION_VERSION: u16 = 11;
 pub const BIOME_OCEAN: u32 = 0;
 pub const BIOME_ICE: u32 = 1;
 pub const BIOME_TUNDRA: u32 = 2;
@@ -55,6 +60,7 @@ const TROPICAL_COLD_CENTI_C: i32 = 1_000;
 const FOREST_PRECIPITATION_MM: u32 = 500;
 const GRASSLAND_PRECIPITATION_MM: u32 = 450;
 const DESERT_PRECIPITATION_MM: u32 = 250;
+const SNOW_COVER_MM: u32 = 80;
 const DESERT_ARIDITY_PPM: u32 = 800_000;
 const SHRUBLAND_ARIDITY_PPM: u32 = 500_000;
 const GRASSLAND_ARIDITY_PPM: u32 = 200_000;
@@ -120,8 +126,12 @@ const CLIMATE_SECONDS_PER_YEAR: f64 = 31_557_600.0;
 const SATURATION_MOISTURE_PER_HPA: f64 = 90.0;
 const MAGNUS_T_MIN_C: f64 = -80.0;
 const MAGNUS_T_MAX_C: f64 = 60.0;
+const SATURATION_LUT_MIN_CENTI: i32 = -8_000;
+const SATURATION_LUT_MAX_CENTI: i32 = 6_000;
 const MAX_OROGRAPHIC_COOLING_C: f64 = 25.0;
 const OROGRAPHIC_KU_PPM_PER_C: f64 = 1_000.0;
+const GROWING_SEASON_CENTI_C: i32 = 500;
+const CLOUD_UPLIFT_SCALE: f64 = 400.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HydrologyPreset {
@@ -148,8 +158,15 @@ pub struct ClimateSettings {
     pub c_ocean_kj_m2_k: u32,
     pub albedo_ocean_ppm: u32,
     pub albedo_land_ppm: u32,
+    pub albedo_bare_ppm: u32,
+    pub albedo_desert_ppm: u32,
+    pub albedo_snow_ppm: u32,
     pub albedo_ice_ppm: u32,
+    pub albedo_cloud_ppm: u32,
     pub albedo_surface_ref_ppm: u32,
+    pub cloud_olr_reduction_ppm: u32,
+    pub cloud_rain_ppm: u32,
+    pub cloud_albedo_coupling_ppm: u32,
     pub insolation_p2_ppm: u32,
     pub insolation_polar_floor_ppm: u32,
     pub energy_balance_max_iterations: u32,
@@ -198,8 +215,15 @@ impl ClimateSettings {
             c_ocean_kj_m2_k: 200_000,
             albedo_ocean_ppm: 80_000,
             albedo_land_ppm: 200_000,
+            albedo_bare_ppm: 230_000,
+            albedo_desert_ppm: 260_000,
+            albedo_snow_ppm: 480_000,
             albedo_ice_ppm: 400_000,
+            albedo_cloud_ppm: 500_000,
             albedo_surface_ref_ppm: 150_000,
+            cloud_olr_reduction_ppm: 80_000,
+            cloud_rain_ppm: 120_000,
+            cloud_albedo_coupling_ppm: 150_000,
             insolation_p2_ppm: 477_000,
             insolation_polar_floor_ppm: 200_000,
             energy_balance_max_iterations: 768,
@@ -259,9 +283,16 @@ impl ClimateSettings {
             || self.c_ocean_kj_m2_k < self.c_land_kj_m2_k
             || !(20_000..=800_000).contains(&self.albedo_ocean_ppm)
             || !(20_000..=800_000).contains(&self.albedo_land_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_bare_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_desert_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_snow_ppm)
             || !(20_000..=800_000).contains(&self.albedo_ice_ppm)
+            || !(20_000..=800_000).contains(&self.albedo_cloud_ppm)
             || !(50_000..=400_000).contains(&self.albedo_surface_ref_ppm)
             || self.albedo_surface_ref_ppm >= 1_000_000
+            || self.cloud_olr_reduction_ppm > 800_000
+            || self.cloud_rain_ppm > 1_000_000
+            || self.cloud_albedo_coupling_ppm > 1_000_000
             || self.insolation_p2_ppm > 1_000_000
             || self.insolation_polar_floor_ppm > 500_000
             || !(1..=4_096).contains(&self.energy_balance_max_iterations)
@@ -377,9 +408,18 @@ impl ClimateSettings {
     fn ocean_coast_ocean_blend(self) -> f64 {
         f64::from(self.ocean_coast_blend_ppm) / 1_000_000.0
     }
+
+    fn cloud_olr_factor(self, cloud: f64) -> f64 {
+        (1.0 - f64::from(self.cloud_olr_reduction_ppm) / 1_000_000.0 * cloud.clamp(0.0, 1.0))
+            .clamp(0.2, 1.0)
+    }
+
+    fn cloud_rain_scale(self, cloud: f64) -> f64 {
+        1.0 + f64::from(self.cloud_rain_ppm) / 1_000_000.0 * cloud.clamp(0.0, 1.0)
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClimateMetrics {
     pub precipitation_volume_m3_per_year: u64,
     pub runoff_volume_m3_per_year: u64,
@@ -413,6 +453,9 @@ pub struct ClimateMetrics {
     pub mean_land_drought_potential_ppm: u32,
     pub mean_heat_wave_potential_ppm: u32,
     pub mean_extreme_rainfall_potential_ppm: u32,
+    pub mean_land_growing_season_ppm: u32,
+    pub mean_land_dry_season_ppm: u32,
+    pub mean_land_wet_season_ppm: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -670,6 +713,14 @@ impl ClimateField {
             field,
             &moisture.humidity_ppm,
             &moisture.aridity_ppm,
+            &moisture.precipitation_summer,
+            &moisture.precipitation_winter,
+            &mut metrics,
+        );
+        apply_season_length_metrics(
+            field,
+            &next.temperature_nh_summer_centi_c,
+            &next.temperature_nh_winter_centi_c,
             &moisture.precipitation_summer,
             &moisture.precipitation_winter,
             &mut metrics,
@@ -1057,15 +1108,103 @@ fn annual_insolation_weight(latitude: f64, settings: ClimateSettings) -> f64 {
     weight.max(f64::from(settings.insolation_polar_floor_ppm) / 1_000_000.0)
 }
 
-fn class_albedo(is_ocean: bool, icy: bool, settings: ClimateSettings) -> f64 {
-    let ppm = if icy {
-        settings.albedo_ice_ppm
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SurfaceClass {
+    Ocean,
+    Vegetated,
+    Bare,
+    Desert,
+    Snow,
+    Ice,
+}
+
+fn classify_surface(
+    is_ocean: bool,
+    temperature_centi_c: i32,
+    precipitation_mm: u32,
+    moisture_mm: u32,
+) -> SurfaceClass {
+    if temperature_centi_c < 0 {
+        if is_ocean {
+            return SurfaceClass::Ice;
+        }
+        if moisture_mm >= SNOW_COVER_MM || precipitation_mm >= SNOW_COVER_MM {
+            SurfaceClass::Snow
+        } else {
+            SurfaceClass::Ice
+        }
     } else if is_ocean {
-        settings.albedo_ocean_ppm
+        SurfaceClass::Ocean
+    } else if precipitation_mm <= DESERT_PRECIPITATION_MM {
+        SurfaceClass::Desert
+    } else if precipitation_mm >= GRASSLAND_PRECIPITATION_MM {
+        SurfaceClass::Vegetated
     } else {
-        settings.albedo_land_ppm
+        SurfaceClass::Bare
+    }
+}
+
+fn class_albedo(is_ocean: bool, icy: bool, settings: ClimateSettings) -> f64 {
+    let class = if icy {
+        SurfaceClass::Ice
+    } else if is_ocean {
+        SurfaceClass::Ocean
+    } else {
+        SurfaceClass::Vegetated
+    };
+    surface_albedo(class, settings)
+}
+
+fn surface_albedo(class: SurfaceClass, settings: ClimateSettings) -> f64 {
+    let ppm = match class {
+        SurfaceClass::Ocean => settings.albedo_ocean_ppm,
+        SurfaceClass::Vegetated => settings.albedo_land_ppm,
+        SurfaceClass::Bare => settings.albedo_bare_ppm,
+        SurfaceClass::Desert => settings.albedo_desert_ppm,
+        SurfaceClass::Snow => settings.albedo_snow_ppm,
+        SurfaceClass::Ice => settings.albedo_ice_ppm,
     };
     f64::from(ppm) / 1_000_000.0
+}
+
+fn mixed_albedo(surface: f64, cloud: f64, settings: ClimateSettings) -> f64 {
+    let cloud_albedo = f64::from(settings.albedo_cloud_ppm) / 1_000_000.0;
+    let weight = (cloud.clamp(0.0, 1.0) * f64::from(settings.cloud_albedo_coupling_ppm)
+        / 1_000_000.0)
+        .clamp(0.0, 1.0);
+    surface * (1.0 - weight) + cloud_albedo * weight
+}
+
+fn cloud_fraction(q: f64, q_sat: f64, u_oro: f64) -> f64 {
+    let rh = if q_sat <= 0.0 {
+        0.0
+    } else {
+        (q / q_sat).clamp(0.0, 1.0)
+    };
+    let uplift = (u_oro * CLOUD_UPLIFT_SCALE).clamp(0.0, 1.0);
+    (0.70 * rh * rh + 0.30 * uplift).clamp(0.0, 1.0)
+}
+
+fn coupled_surface_albedo(
+    field: &PhysicalField,
+    settings: ClimateSettings,
+    temperatures: &[i32],
+    precipitation: &[u32],
+    moisture: &[u32],
+) -> Vec<f64> {
+    (0..field.grid.sample_count())
+        .map(|cell| {
+            surface_albedo(
+                classify_surface(
+                    is_ocean(field, cell),
+                    temperatures[cell],
+                    precipitation[cell],
+                    moisture[cell],
+                ),
+                settings,
+            )
+        })
+        .collect()
 }
 
 fn absorbed_fraction(class: f64, settings: ClimateSettings) -> f64 {
@@ -1338,6 +1477,8 @@ fn relax_annual_temperature(
     winds: Option<(&[i32], &[i32])>,
     ice: IceAlbedo<'_>,
     latent_wm2: Option<&[f64]>,
+    albedo: Option<&[f64]>,
+    cloud: Option<&[f64]>,
     progress: &mut dyn ProgressSink,
 ) -> Result<Vec<f64>, PhysicalError> {
     relax_temperature(
@@ -1349,6 +1490,8 @@ fn relax_annual_temperature(
         ice,
         latent_wm2,
         None,
+        albedo,
+        cloud,
         ENERGY_BALANCE_DT_SECONDS,
         settings.energy_balance_max_iterations,
         ENERGY_BALANCE_MIN_ITERATIONS,
@@ -1365,6 +1508,8 @@ fn relax_temperature(
     ice: IceAlbedo<'_>,
     latent_wm2: Option<&[f64]>,
     insolation_weights: Option<&[f64]>,
+    albedo: Option<&[f64]>,
+    cloud: Option<&[f64]>,
     dt_seconds: f64,
     max_iterations: u32,
     min_iterations: u32,
@@ -1413,22 +1558,30 @@ fn relax_temperature(
             let insolation_weight = insolation_weights
                 .map(|weights| weights[cell])
                 .unwrap_or_else(|| annual_insolation_weight(geometry[cell].latitude, settings));
+            let cloud_f = cloud
+                .map(|values| values[cell].clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            let surface = albedo.map(|values| values[cell]).unwrap_or_else(|| {
+                class_albedo(
+                    is_ocean_cell,
+                    cell_is_icy(ice, cell, surface_centi_c),
+                    settings,
+                )
+            });
             let q_solar = toa
                 * insolation_weight
-                * absorbed_fraction(
-                    class_albedo(
-                        is_ocean_cell,
-                        cell_is_icy(ice, cell, surface_centi_c),
-                        settings,
-                    ),
-                    settings,
-                );
+                * absorbed_fraction(mixed_albedo(surface, cloud_f, settings), settings);
             let dt_over_c = dt_seconds / settings.heat_capacity_j_m2_k(is_ocean_cell);
             let k_diag = diffusivity * diag;
             let q_latent = latent_wm2.map(|values| values[cell]).unwrap_or(0.0);
+            let olr_cloud = settings.cloud_olr_factor(cloud_f);
             let mut numerator = temperature[cell]
-                + dt_over_c * (q_solar - olr_a + q_force + q_latent + diffusivity * neighbor_part);
-            let mut denominator = 1.0 + dt_over_c * (olr_b + k_diag);
+                + dt_over_c
+                    * (q_solar - olr_a * olr_cloud
+                        + q_force
+                        + q_latent
+                        + diffusivity * neighbor_part);
+            let mut denominator = 1.0 + dt_over_c * (olr_b * olr_cloud + k_diag);
             if let Some((east_wind, north_wind)) = winds {
                 if advection > 0.0 {
                     let (adv_neighbors, adv_diag) = flux_form_heat_advection(
@@ -1509,6 +1662,8 @@ fn temperature_field(
         None,
         IceAlbedo::Live,
         None,
+        None,
+        None,
         progress,
     )?;
     let omega = omega_ratio(settings.planetary);
@@ -1537,6 +1692,8 @@ fn temperature_field(
             &relaxed,
             Some((&east, &north)),
             IceAlbedo::Fixed(&ice_mask),
+            None,
+            None,
             None,
             progress,
         )?;
@@ -1794,6 +1951,8 @@ fn couple_moisture_and_latent(
     let mut winter_surface = climate.temperature_centi_c.clone();
     let mut transport_iterations = 0u32;
     let basin = ocean_mask(field);
+    let mut season_albedo: Option<Vec<f64>> = None;
+    let mut season_cloud: Option<Vec<f64>> = None;
     for year in 0..settings.seasonal_year_max {
         progress.check_cancelled()?;
         for nh_summer in seasons {
@@ -1812,6 +1971,8 @@ fn couple_moisture_and_latent(
                 IceAlbedo::Fixed(&annual_ice),
                 Some(&applied_latent),
                 Some(&weights),
+                season_albedo.as_deref(),
+                season_cloud.as_deref(),
                 dt,
                 1,
                 1,
@@ -1857,6 +2018,14 @@ fn couple_moisture_and_latent(
                 .collect();
             water = transport.water_mm;
             transport_iterations = transport_iterations.max(transport.iterations);
+            season_albedo = Some(coupled_surface_albedo(
+                field,
+                settings,
+                &surface,
+                &transport.precipitation,
+                &transport.moisture,
+            ));
+            season_cloud = Some(transport.cloud.clone());
             for cell in 0..sample_count {
                 let target = LATENT_HEAT_J_PER_KG
                     * (transport.condensation_mm[cell] - transport.evaporation_mm[cell])
@@ -1991,6 +2160,8 @@ fn couple_moisture_and_latent(
             Some((&climate.wind_east_milli, &climate.wind_north_milli)),
             IceAlbedo::Fixed(&ice_mask),
             Some(&applied_latent),
+            None,
+            None,
             progress,
         )?;
         last_dt = before
@@ -2746,13 +2917,31 @@ struct MoistureTransport {
     condensation_mm: Vec<f64>,
     evaporation_mm: Vec<f64>,
     water_mm: Vec<f64>,
+    cloud: Vec<f64>,
     iterations: u32,
 }
 
-fn saturation_moisture_mm(temperature_centi_c: i32) -> f64 {
-    let t = (f64::from(temperature_centi_c) / 100.0).clamp(MAGNUS_T_MIN_C, MAGNUS_T_MAX_C);
+fn magnus_saturation_mm(t_c: f64) -> f64 {
+    let t = t_c.clamp(MAGNUS_T_MIN_C, MAGNUS_T_MAX_C);
     let es = 6.112 * (17.67 * t / (t + 243.5)).exp();
     (SATURATION_MOISTURE_PER_HPA * es).clamp(80.0, f64::from(MAX_CLIMATE_MOISTURE_MM))
+}
+
+fn saturation_lut() -> &'static [f64] {
+    static LUT: OnceLock<Vec<f64>> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let count = (SATURATION_LUT_MAX_CENTI - SATURATION_LUT_MIN_CENTI + 1) as usize;
+        (0..count)
+            .map(|index| {
+                magnus_saturation_mm(f64::from(SATURATION_LUT_MIN_CENTI + index as i32) / 100.0)
+            })
+            .collect()
+    })
+}
+
+fn saturation_moisture_mm(temperature_centi_c: i32) -> f64 {
+    let t = temperature_centi_c.clamp(SATURATION_LUT_MIN_CENTI, SATURATION_LUT_MAX_CENTI);
+    saturation_lut()[(t - SATURATION_LUT_MIN_CENTI) as usize]
 }
 
 fn potential_evapotranspiration_mm(temperature_centi_c: i32) -> f64 {
@@ -2907,6 +3096,7 @@ fn transport_moisture_state(
     let mut precipitation = vec![0.0; sample_count];
     let mut condensation = vec![0.0; sample_count];
     let mut evaporation = vec![0.0; sample_count];
+    let mut cloud = vec![0.0; sample_count];
     let mut water = initial_water
         .map(|values| values.to_vec())
         .unwrap_or_else(|| vec![0.0; sample_count]);
@@ -2915,6 +3105,7 @@ fn transport_moisture_state(
     let mut final_condensation = vec![0.0; sample_count];
     let mut final_evaporation = vec![0.0; sample_count];
     let mut final_water = vec![0.0; sample_count];
+    let mut final_cloud = vec![0.0; sample_count];
     let mut iterations = 0;
     let mut converged = false;
     let row_step_metres = (0..field.grid.height)
@@ -3036,6 +3227,7 @@ fn transport_moisture_state(
                     u_oro,
                     settings.orographic_precipitation_ppm,
                 ));
+                let cell_cloud = cloud_fraction(incoming, q_sat, u_oro);
                 let convergence_boost = if wind_divergence_ppm[cell] < 0 {
                     convergence
                         * (-f64::from(wind_divergence_ppm[cell]) / 1_000_000.0).clamp(0.0, 1.0)
@@ -3044,7 +3236,9 @@ fn transport_moisture_state(
                 };
                 let path_m = zonal_frac * distance + meridional_frac * meridional_distance;
                 let path_scale = (path_m / PRECIPITATION_PATH_REF_METRES).clamp(0.05, 2.0);
-                let condensed = condensation_k * (incoming - q_sat).max(0.0);
+                let condensed = condensation_k
+                    * (incoming - q_sat).max(0.0)
+                    * settings.cloud_rain_scale(cell_cloud);
                 let after_condensation = (incoming - condensed).max(0.0);
                 let leftover_fraction = (convergence_boost * path_scale).clamp(0.0, 0.65);
                 let leftover_rain = after_condensation * leftover_fraction;
@@ -3059,6 +3253,8 @@ fn transport_moisture_state(
                     + condensation[cell] * (1.0 - CLIMATE_TRANSPORT_RELAXATION);
                 evaporation[cell] = cell_evaporation * CLIMATE_TRANSPORT_RELAXATION
                     + evaporation[cell] * (1.0 - CLIMATE_TRANSPORT_RELAXATION);
+                cloud[cell] = cell_cloud * CLIMATE_TRANSPORT_RELAXATION
+                    + cloud[cell] * (1.0 - CLIMATE_TRANSPORT_RELAXATION);
                 let target_water = close_surface_water_mm(
                     settings,
                     is_land,
@@ -3079,6 +3275,7 @@ fn transport_moisture_state(
         final_condensation.copy_from_slice(&condensation);
         final_evaporation.copy_from_slice(&evaporation);
         final_water.copy_from_slice(&water);
+        final_cloud.copy_from_slice(&cloud);
         iterations = iteration + 1;
         if iterations >= CLIMATE_MIN_TRANSPORT_ITERATIONS
             && maximum_delta <= CLIMATE_TRANSPORT_TOLERANCE_MM
@@ -3125,6 +3322,7 @@ fn transport_moisture_state(
         condensation_mm: final_condensation,
         evaporation_mm: final_evaporation,
         water_mm: final_water,
+        cloud: final_cloud,
         iterations,
     })
 }
@@ -3209,29 +3407,7 @@ fn runoff_fields(
             } else {
                 driest_land
             },
-            transport_iterations: 0,
-            mean_seasonal_range_centi_c: 0,
-            minimum_seasonal_temperature_centi_c: 0,
-            maximum_seasonal_temperature_centi_c: 0,
-            permanently_frozen_land_ppm: 0,
-            seasonally_frozen_land_ppm: 0,
-            mean_wind_speed_milli: 0,
-            itcz_latitude_milli_deg: 0,
-            easterly_cell_ppm: 0,
-            converging_cell_ppm: 0,
-            mean_current_speed_milli: 0,
-            mean_humidity_ppm: 0,
-            mean_land_aridity_ppm: 0,
-            mean_seasonal_precipitation_range_mm: 0,
-            dominant_land_biome: BIOME_OCEAN,
-            mean_ocean_storm_suitability_ppm: 0,
-            storm_prone_ocean_ppm: 0,
-            mean_storm_intensity_ppm: 0,
-            mean_land_storm_track_ppm: 0,
-            expected_storms_per_year_milli: 0,
-            mean_land_drought_potential_ppm: 0,
-            mean_heat_wave_potential_ppm: 0,
-            mean_extreme_rainfall_potential_ppm: 0,
+            ..ClimateMetrics::default()
         },
     ))
 }
@@ -3277,6 +3453,77 @@ fn apply_seasonal_metrics(
         0
     } else {
         (seasonal_area / land_area * 1_000_000.0).round() as u32
+    };
+}
+
+fn sinusoid_above_fraction(first: f64, second: f64, threshold: f64) -> f64 {
+    let mean = 0.5 * (first + second);
+    let amplitude = 0.5 * (first - second).abs();
+    if amplitude <= 1e-9 {
+        return if mean > threshold { 1.0 } else { 0.0 };
+    }
+    let k = (threshold - mean) / amplitude;
+    if k >= 1.0 {
+        0.0
+    } else if k <= -1.0 {
+        1.0
+    } else {
+        0.5 - k.asin() / std::f64::consts::PI
+    }
+}
+
+fn apply_season_length_metrics(
+    field: &PhysicalField,
+    summers: &[i32],
+    winters: &[i32],
+    precipitation_summer: &[u32],
+    precipitation_winter: &[u32],
+    metrics: &mut ClimateMetrics,
+) {
+    let mut land_area = 0.0;
+    let mut growing_sum = 0.0;
+    let mut dry_sum = 0.0;
+    let mut wet_sum = 0.0;
+    let growing_threshold = f64::from(GROWING_SEASON_CENTI_C);
+    let dry_threshold = f64::from(DESERT_PRECIPITATION_MM);
+    let wet_threshold = f64::from(FOREST_PRECIPITATION_MM);
+    for cell in 0..field.grid.sample_count() {
+        if is_ocean(field, cell) {
+            continue;
+        }
+        let area = field.grid.cell_area(field.grid.row_col(cell).0);
+        land_area += area;
+        growing_sum += sinusoid_above_fraction(
+            f64::from(summers[cell]),
+            f64::from(winters[cell]),
+            growing_threshold,
+        ) * area;
+        dry_sum +=
+            (1.0 - sinusoid_above_fraction(
+                f64::from(precipitation_summer[cell]),
+                f64::from(precipitation_winter[cell]),
+                dry_threshold,
+            )) * area;
+        wet_sum += sinusoid_above_fraction(
+            f64::from(precipitation_summer[cell]),
+            f64::from(precipitation_winter[cell]),
+            wet_threshold,
+        ) * area;
+    }
+    metrics.mean_land_growing_season_ppm = if land_area <= 0.0 {
+        0
+    } else {
+        (growing_sum / land_area * 1_000_000.0).round() as u32
+    };
+    metrics.mean_land_dry_season_ppm = if land_area <= 0.0 {
+        0
+    } else {
+        (dry_sum / land_area * 1_000_000.0).round() as u32
+    };
+    metrics.mean_land_wet_season_ppm = if land_area <= 0.0 {
+        0
+    } else {
+        (wet_sum / land_area * 1_000_000.0).round() as u32
     };
 }
 
@@ -4457,40 +4704,7 @@ pub fn derive_current_climate(
         storm_suitability_ppm: Vec::new(),
         storm_track_ppm: Vec::new(),
         storm_intensity_ppm: Vec::new(),
-        metrics: ClimateMetrics {
-            precipitation_volume_m3_per_year: 0,
-            runoff_volume_m3_per_year: 0,
-            mean_temperature_centi_c: 0,
-            minimum_temperature_centi_c: 0,
-            maximum_temperature_centi_c: 0,
-            mean_precipitation_mm_per_year: 0,
-            mean_runoff_mm_per_year: 0,
-            wettest_cell_precipitation_mm_per_year: 0,
-            driest_land_cell_precipitation_mm_per_year: 0,
-            transport_iterations: 0,
-            mean_seasonal_range_centi_c: 0,
-            minimum_seasonal_temperature_centi_c: 0,
-            maximum_seasonal_temperature_centi_c: 0,
-            permanently_frozen_land_ppm: 0,
-            seasonally_frozen_land_ppm: 0,
-            mean_wind_speed_milli: 0,
-            itcz_latitude_milli_deg: 0,
-            easterly_cell_ppm: 0,
-            converging_cell_ppm: 0,
-            mean_current_speed_milli: 0,
-            mean_humidity_ppm: 0,
-            mean_land_aridity_ppm: 0,
-            mean_seasonal_precipitation_range_mm: 0,
-            dominant_land_biome: BIOME_OCEAN,
-            mean_ocean_storm_suitability_ppm: 0,
-            storm_prone_ocean_ppm: 0,
-            mean_storm_intensity_ppm: 0,
-            mean_land_storm_track_ppm: 0,
-            expected_storms_per_year_milli: 0,
-            mean_land_drought_potential_ppm: 0,
-            mean_heat_wave_potential_ppm: 0,
-            mean_extreme_rainfall_potential_ppm: 0,
-        },
+        metrics: ClimateMetrics::default(),
     };
     let moisture = couple_moisture_and_latent(
         field,
@@ -4534,6 +4748,14 @@ pub fn derive_current_climate(
         field,
         &moisture.humidity_ppm,
         &moisture.aridity_ppm,
+        &moisture.precipitation_summer,
+        &moisture.precipitation_winter,
+        &mut metrics,
+    );
+    apply_season_length_metrics(
+        field,
+        &climate.temperature_nh_summer_centi_c,
+        &climate.temperature_nh_winter_centi_c,
         &moisture.precipitation_summer,
         &moisture.precipitation_winter,
         &mut metrics,
@@ -5040,6 +5262,23 @@ mod tests {
     }
 
     #[test]
+    fn tiny_world_still_produces_precipitation() {
+        let grid = Grid::new(8, 4, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![500; grid.sample_count()];
+        elevations[grid.index(2, 4)] = -2_000;
+        let climate = derive_current_climate(
+            &field(grid, elevations, 0),
+            ClimateSettings::default_for(grid),
+            831_429,
+            0,
+            &mut NoopProgress,
+        )
+        .unwrap();
+        assert!(climate.metrics.precipitation_volume_m3_per_year > 0);
+        assert!(climate.metrics.mean_land_growing_season_ppm <= 1_000_000);
+    }
+
+    #[test]
     fn climate_field_rejects_stale_derivation_version() {
         let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
         let physical = field(grid, vec![0; grid.sample_count()], 1);
@@ -5164,6 +5403,12 @@ mod tests {
         without_uplift.orographic_precipitation_ppm = 0;
         without_uplift.latent_heat_coupling_ppm = 0;
         without_uplift.moisture_temperature_coupling_passes = 1;
+        without_uplift.cloud_albedo_coupling_ppm = 0;
+        without_uplift.cloud_olr_reduction_ppm = 0;
+        without_uplift.cloud_rain_ppm = 0;
+        without_uplift.albedo_bare_ppm = without_uplift.albedo_land_ppm;
+        without_uplift.albedo_desert_ppm = without_uplift.albedo_land_ppm;
+        without_uplift.albedo_snow_ppm = without_uplift.albedo_ice_ppm;
         let mut with_uplift = without_uplift;
         with_uplift.orographic_precipitation_ppm = 18_000_000;
         let baseline = derive_current_climate(
@@ -5182,8 +5427,8 @@ mod tests {
             &mut NoopProgress,
         )
         .unwrap();
-        assert_eq!(baseline.temperature_centi_c, cooled.temperature_centi_c);
         let ridge = grid.index(row, 8);
+        assert_eq!(baseline.temperature_centi_c, cooled.temperature_centi_c);
         assert_ne!(
             baseline.precipitation_mm_per_year[ridge],
             cooled.precipitation_mm_per_year[ridge]
@@ -5200,6 +5445,69 @@ mod tests {
         assert!(t_eff >= (MAGNUS_T_MIN_C * 100.0) as i32);
         assert!(t_eff <= (MAGNUS_T_MAX_C * 100.0) as i32);
         assert!(t_eff >= 2_000 - (MAX_OROGRAPHIC_COOLING_C * 100.0) as i32);
+    }
+
+    #[test]
+    fn saturation_lookup_matches_magnus() {
+        for centi in [-4_000, -1_500, 0, 850, 2_000, 3_500] {
+            let looked_up = saturation_moisture_mm(centi);
+            let direct = magnus_saturation_mm(f64::from(centi) / 100.0);
+            assert!(
+                (looked_up - direct).abs() <= 1e-9,
+                "centi {centi} lut {looked_up} magnus {direct}"
+            );
+        }
+    }
+
+    #[test]
+    fn six_class_albedo_distinguishes_desert_snow_and_ice() {
+        let settings =
+            ClimateSettings::default_for(Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap());
+        assert_eq!(classify_surface(true, 1_800, 0, 0), SurfaceClass::Ocean);
+        assert_eq!(classify_surface(true, -200, 0, 0), SurfaceClass::Ice);
+        assert_eq!(classify_surface(false, -400, 200, 200), SurfaceClass::Snow);
+        assert_eq!(classify_surface(false, 2_400, 80, 40), SurfaceClass::Desert);
+        assert_eq!(classify_surface(false, 1_800, 300, 200), SurfaceClass::Bare);
+        assert_eq!(
+            classify_surface(false, 1_800, 600, 400),
+            SurfaceClass::Vegetated
+        );
+        assert!(
+            surface_albedo(SurfaceClass::Snow, settings)
+                > surface_albedo(SurfaceClass::Ice, settings)
+        );
+        assert!(
+            surface_albedo(SurfaceClass::Desert, settings)
+                > surface_albedo(SurfaceClass::Vegetated, settings)
+        );
+        assert!(
+            surface_albedo(SurfaceClass::Bare, settings)
+                > surface_albedo(SurfaceClass::Vegetated, settings)
+        );
+    }
+
+    #[test]
+    fn clouds_increase_albedo_and_condensation_scale() {
+        let settings =
+            ClimateSettings::default_for(Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap());
+        let surface = surface_albedo(SurfaceClass::Ocean, settings);
+        assert!(mixed_albedo(surface, 1.0, settings) > mixed_albedo(surface, 0.0, settings));
+        assert!(settings.cloud_rain_scale(1.0) > settings.cloud_rain_scale(0.0));
+        assert!(settings.cloud_olr_factor(1.0) < settings.cloud_olr_factor(0.0));
+        assert!(cloud_fraction(2_000.0, 2_000.0, 0.0) > cloud_fraction(200.0, 2_000.0, 0.0));
+        assert!(cloud_fraction(1_000.0, 2_000.0, 0.01) > cloud_fraction(1_000.0, 2_000.0, 0.0));
+    }
+
+    #[test]
+    fn growing_season_is_longer_in_the_tropics_than_at_the_pole() {
+        assert!(sinusoid_above_fraction(2_400.0, 2_200.0, 500.0) > 0.9);
+        assert!(sinusoid_above_fraction(-2_000.0, -3_000.0, 500.0) < 0.1);
+        assert!(sinusoid_above_fraction(2_000.0, -1_000.0, 500.0) > 0.3);
+        assert!(sinusoid_above_fraction(2_000.0, -1_000.0, 500.0) < 0.8);
+        let dry = 1.0 - sinusoid_above_fraction(80.0, 40.0, 250.0);
+        let wet = sinusoid_above_fraction(1_200.0, 900.0, 500.0);
+        assert!(dry > 0.9);
+        assert!(wet > 0.9);
     }
 
     #[test]
@@ -5375,6 +5683,9 @@ mod tests {
         assert!(climate.metrics.mean_seasonal_precipitation_range_mm > 0);
         assert!(climate.metrics.mean_humidity_ppm > 0);
         assert!(climate.metrics.mean_humidity_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_growing_season_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_dry_season_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_wet_season_ppm <= 1_000_000);
     }
 
     #[test]
@@ -7389,6 +7700,9 @@ mod tests {
         assert!(climate.metrics.mean_heat_wave_potential_ppm <= 1_000_000);
         assert!(climate.metrics.mean_extreme_rainfall_potential_ppm <= 1_000_000);
         assert!(climate.metrics.mean_land_drought_potential_ppm > 0);
+        assert!(climate.metrics.mean_land_growing_season_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_dry_season_ppm <= 1_000_000);
+        assert!(climate.metrics.mean_land_wet_season_ppm <= 1_000_000);
     }
 
     #[test]

@@ -295,6 +295,14 @@ function climateStats(): Array<{ label: string; value: string }> {
     { label: "Winds", value: strength },
     { label: "Biome", value: biomeLegendEntry(metrics.dominantLandBiome).name },
     { label: "Storms", value: `${stormsPerYear.toFixed(1)}/yr` },
+    {
+      label: "Growing",
+      value: `${(((metrics.meanLandGrowingSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+    },
+    {
+      label: "Dry / wet",
+      value: `${(((metrics.meanLandDrySeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} / ${(((metrics.meanLandWetSeasonPpm ?? 0) / 1_000_000) * 12).toFixed(1)} mo`,
+    },
   ];
 }
 

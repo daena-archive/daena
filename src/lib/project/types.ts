@@ -408,6 +408,12 @@ export interface PhysicalClimateProducts {
     meanStormIntensityPpm: number;
     meanLandStormTrackPpm: number;
     expectedStormsPerYearMilli: number;
+    meanLandDroughtPotentialPpm: number;
+    meanHeatWavePotentialPpm: number;
+    meanExtremeRainfallPotentialPpm: number;
+    meanLandGrowingSeasonPpm: number;
+    meanLandDrySeasonPpm: number;
+    meanLandWetSeasonPpm: number;
   };
 }
 export interface PhysicalEvolutionProducts {

@@ -51,7 +51,7 @@ fn physical_jobs_are_session_scoped_and_expire() {
 fn physical_climate_products_expose_derived_fields_without_source_data() {
     let grid = daena_physical::Grid::new(8, 4, daena_physical::DEFAULT_RADIUS_METRES).unwrap();
     let mut elevations = vec![500; grid.sample_count()];
-    elevations[0] = -2_000;
+    elevations[grid.index(2, 4)] = -2_000;
     let field = daena_physical::PhysicalField {
         grid,
         seed: 831_429,
@@ -116,6 +116,13 @@ fn physical_climate_products_expose_derived_fields_without_source_data() {
             .unwrap()
             > 0
     );
+    for key in [
+        "meanLandGrowingSeasonPpm",
+        "meanLandDrySeasonPpm",
+        "meanLandWetSeasonPpm",
+    ] {
+        assert!(products["metrics"][key].as_u64().is_some(), "{key}");
+    }
 }
 
 #[test]

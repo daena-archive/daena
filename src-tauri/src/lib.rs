@@ -26,8 +26,8 @@ use daena_plugin_api::{
     SCHEMA_OVERLAY_VERSION,
 };
 use daena_plugin_host::{
-    plugin_window_label, webview_policy, ArchiveLimits, DependencyResolver, PluginHost, Session,
-    VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
+    plugin_window_label, review_manifest, webview_policy, ArchiveLimits, DependencyResolver,
+    PluginHost, Session, VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -509,10 +509,11 @@ pub fn run() {
                 .lock()
                 .map_err(|_| "plugin host lock poisoned".to_string())?
                 .load_installed_packages(
-                    install_root,
+                    &install_root,
                     state_path,
                     ArchiveLimits::default(),
-                    VerificationPolicy::default(),
+                    VerificationPolicy::from_install_root(&install_root, false)
+                        .map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
             for error in rejected {

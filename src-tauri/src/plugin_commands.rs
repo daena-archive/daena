@@ -13,22 +13,35 @@ pub(super) fn plugin_install_package(
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("plugins");
-    let policy = if allow_unsigned {
-        VerificationPolicy::with_unsigned_consent()
-    } else {
-        VerificationPolicy::default()
-    };
+    let policy = VerificationPolicy::from_install_root(&install_root, allow_unsigned)
+        .map_err(|error| error.to_string())?;
     let package = plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?
-        .install_package(archive, install_root, ArchiveLimits::default(), policy)
+        .install_package(
+            archive,
+            install_root,
+            ArchiveLimits::default(),
+            policy.clone(),
+        )
         .map_err(|error| error.to_string())?;
+    let review = review_manifest(
+        &package.manifest,
+        &package.digest,
+        package.signature.as_ref(),
+        package.signed,
+        &policy.trust,
+    );
     serde_json::to_value(serde_json::json!({
         "id": package.manifest.id,
         "version": package.manifest.version,
         "publisher": package.manifest.publisher,
         "digest": package.digest,
         "signed": package.signed,
+        "keyId": review.key_id,
+        "trustStatus": review.trust_status,
+        "disclosures": review.disclosures,
+        "capabilities": review.capabilities,
     }))
     .map_err(|error| error.to_string())
 }

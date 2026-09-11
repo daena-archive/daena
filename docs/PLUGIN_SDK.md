@@ -544,6 +544,13 @@ Installing a package does not automatically enable it in every project.
 Installed code is global to the application profile; enablement, grants,
 stored data versions, health, and failure state are project-scoped.
 
+A registry, if present, is only a way to obtain the same `.daenaplugin` bytes.
+Verification uses the package digest, optional `signature.json` (Ed25519,
+optional `keyId` for rotation), and the host trust snapshot
+(`plugins/trust.json`): pinned publisher keys plus revocations. Unsigned
+packages still install only with explicit consent. Publisher signatures never
+grant capabilities.
+
 ## 12. Upgrade, rollback, and removal
 
 Install the newer `.daenaplugin` version with the same immutable plugin ID. In

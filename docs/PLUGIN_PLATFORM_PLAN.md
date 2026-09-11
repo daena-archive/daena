@@ -680,6 +680,17 @@ registry or marketplace is a distribution layer, never an authorization layer.
 **Exit gate:** The same verified package behaves identically whether installed
 locally or obtained from a registry.
 
+Current: `TrustSnapshot` (`plugins/trust.json`) is the host-owned publisher
+directory and revocation list. Packages verify from bytes plus that snapshot;
+there is no distribution-source input. Publisher identities pin one or more
+Ed25519 keys (`keyId`) so rotation keeps previous keys valid until revoked.
+Key revocation matches the signing public key (not `keyId` alone). Revoked
+keys, digests, and plugin identities fail closed for local files and registry
+bytes alike. `review_manifest` is the install disclosure (publisher, digest,
+signature, trust status, capabilities). Unsigned local install still requires
+explicit consent. A marketplace remains deferred and is not an authorization
+layer.
+
 ## Test and release requirements
 
 The plugin platform is not release-ready until automated tests cover:

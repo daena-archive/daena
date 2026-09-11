@@ -1,4 +1,5 @@
 use super::*;
+use ed25519_dalek::{Signer, SigningKey};
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
@@ -28,6 +29,93 @@ fn manifest_with_svg_icon(version: &str) -> String {
         r#""schemas":[]"#,
         r#""schemas":[{"namespace":"icons","entityTypes":[{"id":"note","name":"Note","icon":{"kind":"plugin-svg","path":"icons/note.svg"},"iconColor":{"kind":"preset","id":"slate"}}],"fields":[]}]"#,
     ).replace(r#""namespaces":[]"#, r#""namespaces":["icons"]"#)
+}
+
+fn signing_key(seed: u8) -> SigningKey {
+    SigningKey::from_bytes(&[seed; 32])
+}
+
+fn public_key_b64(key: &SigningKey) -> String {
+    BASE64.encode(key.verifying_key().as_bytes())
+}
+
+fn signed_archive(
+    path: &Path,
+    version: &str,
+    extra: &[(&str, &[u8])],
+    key: &SigningKey,
+    key_id: Option<&str>,
+) {
+    signed_archive_for_publisher(path, version, extra, key, key_id, "com.example");
+}
+
+fn signed_archive_for_publisher(
+    path: &Path,
+    version: &str,
+    extra: &[(&str, &[u8])],
+    key: &SigningKey,
+    key_id: Option<&str>,
+    publisher: &str,
+) {
+    let mut files: PackageFiles = vec![(
+        "manifest.json".into(),
+        manifest(version)
+            .replace(
+                "\"publisher\":\"com.example\"",
+                &format!("\"publisher\":\"{publisher}\""),
+            )
+            .into_bytes(),
+    )];
+    for (name, content) in extra {
+        files.push(((*name).into(), content.to_vec()));
+    }
+    let placeholder = PackageSignature {
+        algorithm: "ed25519".into(),
+        publisher: Some(publisher.into()),
+        key_id: key_id.map(str::to_string),
+        public_key: public_key_b64(key),
+        signature: String::new(),
+        digest: String::new(),
+    };
+    files.push((
+        SIGNATURE_FILE.into(),
+        serde_json::to_vec(&placeholder).unwrap(),
+    ));
+    let digest = archive_digest(&files).unwrap();
+    let signature = BASE64.encode(key.sign(digest.as_bytes()).to_bytes());
+    let signed = PackageSignature {
+        digest,
+        signature,
+        ..placeholder
+    };
+    files.last_mut().unwrap().1 = serde_json::to_vec(&signed).unwrap();
+    let file = File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+    for (name, content) in &files {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(content).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+fn pinned_policy(key: &SigningKey, key_id: &str) -> VerificationPolicy {
+    VerificationPolicy {
+        require_signature: true,
+        trust: TrustSnapshot {
+            publishers: BTreeMap::from([(
+                "com.example".into(),
+                PublisherIdentity {
+                    keys: vec![PublisherKey {
+                        key_id: key_id.into(),
+                        public_key: public_key_b64(key),
+                    }],
+                },
+            )]),
+            ..TrustSnapshot::default()
+        },
+        ..VerificationPolicy::default()
+    }
 }
 
 #[test]
@@ -383,4 +471,304 @@ fn cargo_fuzz_verify_archive_corpus_does_not_panic() {
         count += 1;
     }
     assert!(count > 0, "fuzz corpus verify_archive is empty");
+}
+
+#[test]
+fn publisher_key_rotation_accepts_current_and_previous_keys() {
+    let dir = tempdir().unwrap();
+    let previous = signing_key(1);
+    let current = signing_key(2);
+    let mut policy = pinned_policy(&current, "2026-02");
+    policy.trust.publishers.get_mut("com.example").unwrap().keys = vec![
+        PublisherKey {
+            key_id: "2026-01".into(),
+            public_key: public_key_b64(&previous),
+        },
+        PublisherKey {
+            key_id: "2026-02".into(),
+            public_key: public_key_b64(&current),
+        },
+    ];
+    for (seed, key_id, key) in [("old", "2026-01", &previous), ("new", "2026-02", &current)] {
+        let path = dir.path().join(format!("{seed}.daenaplugin"));
+        signed_archive(
+            &path,
+            "1.0.0",
+            &[("dist/index.html", b"ok")],
+            key,
+            Some(key_id),
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        let verified = verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap();
+        assert!(verified.signed);
+        assert_eq!(
+            review_package(&verified, &policy.trust).trust_status,
+            TrustStatus::TrustedPublisher
+        );
+    }
+}
+
+#[test]
+fn revoked_key_and_digest_fail_closed() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(3);
+    let path = dir.path().join("signed.daenaplugin");
+    signed_archive(
+        &path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-01"),
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let verified = verify_archive_bytes(
+        &bytes,
+        ArchiveLimits::default(),
+        &VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap();
+    let mut revoked_key = VerificationPolicy::with_unsigned_consent();
+    revoked_key.trust.revocations.keys.push(RevokedKey {
+        publisher: "com.example".into(),
+        key_id: Some("2026-01".into()),
+        public_key: Some(public_key_b64(&key)),
+    });
+    let key_error =
+        verify_archive_bytes(&bytes, ArchiveLimits::default(), &revoked_key).unwrap_err();
+    assert!(key_error.0.contains("signing key is revoked"));
+    let mut revoked_digest = VerificationPolicy::with_unsigned_consent();
+    revoked_digest
+        .trust
+        .revocations
+        .digests
+        .push(verified.digest.clone());
+    let digest_error =
+        verify_archive_bytes(&bytes, ArchiveLimits::default(), &revoked_digest).unwrap_err();
+    assert!(digest_error.0.contains("digest is revoked"));
+}
+
+#[test]
+fn local_file_and_registry_bytes_produce_the_same_review() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(4);
+    let path = dir.path().join("plugin.daenaplugin");
+    signed_archive(
+        &path,
+        "1.2.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-02"),
+    );
+    let policy = pinned_policy(&key, "2026-02");
+    let local = verify_and_extract(
+        &path,
+        &dir.path().join("local"),
+        ArchiveLimits::default(),
+        policy.clone(),
+    )
+    .unwrap();
+    let registry = verify_archive_bytes(
+        &std::fs::read(&path).unwrap(),
+        ArchiveLimits::default(),
+        &policy,
+    )
+    .unwrap();
+    assert_eq!(local.digest, registry.digest);
+    assert_eq!(local.signed, registry.signed);
+    assert_eq!(local.manifest.publisher, registry.manifest.publisher);
+    assert_eq!(
+        review_manifest(
+            &local.manifest,
+            &local.digest,
+            local.signature.as_ref(),
+            local.signed,
+            &policy.trust
+        ),
+        review_package(&registry, &policy.trust)
+    );
+}
+
+#[test]
+fn unsigned_local_install_still_works_with_consent() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("unsigned.daenaplugin");
+    archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    let bytes = std::fs::read(&path).unwrap();
+    let policy = VerificationPolicy::from_install_root(dir.path(), true).unwrap();
+    let verified = verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap();
+    assert!(!verified.signed);
+    assert_eq!(
+        review_package(&verified, &policy.trust).trust_status,
+        TrustStatus::Unsigned
+    );
+}
+
+#[test]
+fn trust_snapshot_unknown_schema_and_unknown_publisher_fail_closed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(TRUST_SNAPSHOT_FILE);
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":2,"publishers":{},"revocations":{}}"#,
+    )
+    .unwrap();
+    let error = TrustSnapshot::load(&path).unwrap_err();
+    assert!(error
+        .0
+        .contains("unsupported trust snapshot schema version"));
+    let key = signing_key(5);
+    let archive_path = dir.path().join("other.daenaplugin");
+    signed_archive_for_publisher(
+        &archive_path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-01"),
+        "com.other",
+    );
+    let policy = pinned_policy(&signing_key(9), "pinned");
+    let error = verify_archive_bytes(
+        &std::fs::read(&archive_path).unwrap(),
+        ArchiveLimits::default(),
+        &policy,
+    )
+    .unwrap_err();
+    assert!(error.0.contains("publisher is not trusted"));
+}
+
+#[test]
+fn key_revocation_matches_public_key_even_without_key_id() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(6);
+    let path = dir.path().join("signed.daenaplugin");
+    signed_archive(&path, "1.0.0", &[("dist/index.html", b"ok")], &key, None);
+    let mut policy = VerificationPolicy::with_unsigned_consent();
+    policy.trust.revocations.keys.push(RevokedKey {
+        publisher: "com.example".into(),
+        key_id: Some("2026-01".into()),
+        public_key: Some(public_key_b64(&key)),
+    });
+    let error = verify_archive_bytes(
+        &std::fs::read(&path).unwrap(),
+        ArchiveLimits::default(),
+        &policy,
+    )
+    .unwrap_err();
+    assert!(error.0.contains("signing key is revoked"));
+}
+
+#[test]
+fn key_id_only_revocation_is_rejected() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(TRUST_SNAPSHOT_FILE);
+    std::fs::write(
+        &path,
+        r#"{"schemaVersion":1,"publishers":{},"revocations":{"keys":[{"publisher":"com.example","keyId":"2026-01"}],"digests":[],"packages":[]}}"#,
+    )
+    .unwrap();
+    let error = TrustSnapshot::load(&path).unwrap_err();
+    assert!(error.0.contains("key revocation must include publicKey"));
+}
+
+#[test]
+fn revoked_package_identity_fails_closed_for_unsigned_bytes() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("unsigned.daenaplugin");
+    archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    let bytes = std::fs::read(&path).unwrap();
+    let mut policy = VerificationPolicy::with_unsigned_consent();
+    policy.trust.revocations.packages.push(RevokedPackage {
+        plugin_id: "com.example.test".into(),
+        version: Some("1.0.0".into()),
+    });
+    let identity_error =
+        verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap_err();
+    assert!(identity_error.0.contains("package identity is revoked"));
+    let digest = verify_archive_bytes(
+        &bytes,
+        ArchiveLimits::default(),
+        &VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap()
+    .digest;
+    let mut revoked_digest = VerificationPolicy::with_unsigned_consent();
+    revoked_digest.trust.revocations.digests.push(digest);
+    let digest_error =
+        verify_archive_bytes(&bytes, ArchiveLimits::default(), &revoked_digest).unwrap_err();
+    assert!(digest_error.0.contains("digest is revoked"));
+}
+
+#[test]
+fn rotated_key_survives_after_previous_key_is_revoked() {
+    let dir = tempdir().unwrap();
+    let previous = signing_key(7);
+    let current = signing_key(8);
+    let mut policy = pinned_policy(&current, "2026-02");
+    policy.trust.publishers.get_mut("com.example").unwrap().keys = vec![PublisherKey {
+        key_id: "2026-02".into(),
+        public_key: public_key_b64(&current),
+    }];
+    policy.trust.revocations.keys.push(RevokedKey {
+        publisher: "com.example".into(),
+        key_id: Some("2026-01".into()),
+        public_key: Some(public_key_b64(&previous)),
+    });
+    let old_path = dir.path().join("old.daenaplugin");
+    signed_archive(
+        &old_path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &previous,
+        Some("2026-01"),
+    );
+    let new_path = dir.path().join("new.daenaplugin");
+    signed_archive(
+        &new_path,
+        "1.1.0",
+        &[("dist/index.html", b"ok")],
+        &current,
+        Some("2026-02"),
+    );
+    let old_error = verify_archive_bytes(
+        &std::fs::read(&old_path).unwrap(),
+        ArchiveLimits::default(),
+        &policy,
+    )
+    .unwrap_err();
+    assert!(old_error.0.contains("signing key is revoked"));
+    let verified = verify_archive_bytes(
+        &std::fs::read(&new_path).unwrap(),
+        ArchiveLimits::default(),
+        &policy,
+    )
+    .unwrap();
+    assert_eq!(
+        review_package(&verified, &policy.trust).trust_status,
+        TrustStatus::TrustedPublisher
+    );
+}
+
+#[test]
+fn from_install_root_applies_on_disk_revocations() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("unsigned.daenaplugin");
+    archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    let bytes = std::fs::read(&path).unwrap();
+    let digest = verify_archive_bytes(
+        &bytes,
+        ArchiveLimits::default(),
+        &VerificationPolicy::with_unsigned_consent(),
+    )
+    .unwrap()
+    .digest;
+    std::fs::write(
+        dir.path().join(TRUST_SNAPSHOT_FILE),
+        format!(
+            r#"{{"schemaVersion":1,"publishers":{{}},"revocations":{{"keys":[],"digests":["{digest}"],"packages":[]}}}}"#
+        ),
+    )
+    .unwrap();
+    let policy = VerificationPolicy::from_install_root(dir.path(), true).unwrap();
+    let error = verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap_err();
+    assert!(error.0.contains("digest is revoked"));
 }

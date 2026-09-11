@@ -15,6 +15,13 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
+mod trust;
+
+pub use trust::{
+    review_manifest, review_package, PackageReview, PublisherIdentity, PublisherKey,
+    RevocationList, RevokedKey, RevokedPackage, TrustSnapshot, TrustStatus, TRUST_SNAPSHOT_FILE,
+};
+
 const SIGNATURE_FILE: &str = "signature.json";
 pub const MAX_PLUGIN_ICON_SVG_BYTES: usize = 32 * 1024;
 type PackageFiles = Vec<(String, Vec<u8>)>;
@@ -57,6 +64,8 @@ pub struct PackageSignature {
     pub algorithm: String,
     #[serde(default)]
     pub publisher: Option<String>,
+    #[serde(rename = "keyId", default)]
+    pub key_id: Option<String>,
     #[serde(rename = "publicKey")]
     pub public_key: String,
     pub signature: String,
@@ -97,7 +106,7 @@ pub struct InstalledVersion {
 pub struct VerificationPolicy {
     pub require_signature: bool,
     pub allow_unsigned: bool,
-    pub trusted_publishers: BTreeMap<String, String>,
+    pub trust: TrustSnapshot,
 }
 
 impl VerificationPolicy {
@@ -111,9 +120,20 @@ impl VerificationPolicy {
     pub fn trusted_publishers(publishers: BTreeMap<String, String>) -> Self {
         Self {
             require_signature: true,
-            trusted_publishers: publishers,
+            trust: TrustSnapshot::from_pinned_keys(publishers),
             ..Self::default()
         }
+    }
+
+    pub fn from_install_root(
+        root: impl AsRef<Path>,
+        allow_unsigned: bool,
+    ) -> Result<Self, PackageError> {
+        Ok(Self {
+            allow_unsigned,
+            trust: TrustSnapshot::load(root.as_ref().join(TRUST_SNAPSHOT_FILE))?,
+            ..Self::default()
+        })
     }
 }
 
@@ -387,7 +407,9 @@ pub fn verify_archive_bytes(
         signature.as_ref(),
         &digest,
         &manifest.publisher,
-        &policy.trusted_publishers,
+        &manifest.id,
+        &manifest.version,
+        &policy.trust,
     )?;
     if !signed && !policy.allow_unsigned {
         return Err(PackageError(
@@ -501,7 +523,9 @@ fn verify_installed(
         signature.as_ref(),
         &digest,
         &manifest.publisher,
-        &policy.trusted_publishers,
+        &manifest.id,
+        &manifest.version,
+        &policy.trust,
     )?;
     if !signed && !policy.allow_unsigned {
         return Err(PackageError(
@@ -834,11 +858,22 @@ fn verify_signature(
     signature: Option<&PackageSignature>,
     digest: &str,
     publisher: &str,
-    trusted_publishers: &BTreeMap<String, String>,
+    plugin_id: &str,
+    version: &str,
+    trust: &TrustSnapshot,
 ) -> Result<bool, PackageError> {
+    if trust.digest_revoked(digest) {
+        return Err(PackageError("package digest is revoked".into()));
+    }
+    if trust.package_revoked(plugin_id, version) {
+        return Err(PackageError("package identity is revoked".into()));
+    }
     let Some(signature) = signature else {
         return Ok(false);
     };
+    if trust.key_revoked(publisher, signature) {
+        return Err(PackageError("package signing key is revoked".into()));
+    }
     if signature
         .publisher
         .as_deref()
@@ -859,13 +894,12 @@ fn verify_signature(
     let key: [u8; 32] = key
         .try_into()
         .map_err(|_| PackageError("invalid Ed25519 public key length".into()))?;
-    if let Some(trusted_key) = trusted_publishers.get(publisher) {
-        if trusted_key != &signature.public_key {
+    if trust.pins_publishers() && !trust.key_is_pinned(publisher, signature) {
+        if trust.pinned_identity(publisher).is_some() {
             return Err(PackageError(
                 "signature key is not trusted for publisher".into(),
             ));
         }
-    } else if !trusted_publishers.is_empty() {
         return Err(PackageError("publisher is not trusted".into()));
     }
     let verifying = VerifyingKey::from_bytes(&key)

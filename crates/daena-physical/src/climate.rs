@@ -892,6 +892,32 @@ fn cell_geometry(grid: Grid, cell: usize) -> (f64, UnitVector) {
     (latitude, UnitVector::from_lon_lat(longitude, latitude))
 }
 
+fn maritime_geometry_cell(
+    field: &PhysicalField,
+    ocean_vectors: &[UnitVector],
+    ocean_tree: Option<&KdNode>,
+    maritime_scale_metres: f64,
+    cell: usize,
+) -> Result<CellClimateGeometry, PhysicalError> {
+    let (latitude, vector) = cell_geometry(field.grid, cell);
+    let distance = if field.elevations_mm[cell] <= field.sea_level_mm {
+        0.0
+    } else {
+        nearest_ocean_distance(ocean_vectors, ocean_tree, vector) * field.grid.radius_metres as f64
+    };
+    let maritime_factor = (-distance / maritime_scale_metres).exp();
+    if !distance.is_finite() || !maritime_factor.is_finite() {
+        return Err(PhysicalError::coded(
+            PhysicalErrorCode::NumericNonFinite,
+            "climate maritime distance is not finite",
+        ));
+    }
+    Ok(CellClimateGeometry {
+        latitude,
+        maritime_factor,
+    })
+}
+
 fn build_geometry(
     field: &PhysicalField,
     settings: ClimateSettings,
@@ -909,30 +935,28 @@ fn build_geometry(
     }
     let ocean_tree = KdNode::build(&ocean_vectors);
     let maritime_scale_metres = f64::from(settings.maritime_scale_km) * 1_000.0;
-    let mut geometry = Vec::with_capacity(field.grid.sample_count());
-    for cell in 0..field.grid.sample_count() {
-        if cell % 128 == 0 {
-            progress.check_cancelled()?;
-        }
-        let (latitude, vector) = cell_geometry(field.grid, cell);
-        let distance = if field.elevations_mm[cell] <= field.sea_level_mm {
-            0.0
-        } else {
-            nearest_ocean_distance(&ocean_vectors, ocean_tree.as_deref(), vector)
-                * field.grid.radius_metres as f64
+    progress.check_cancelled()?;
+    let mut geometry = vec![
+        CellClimateGeometry {
+            latitude: 0.0,
+            maritime_factor: 0.0,
         };
-        let maritime_factor = (-distance / maritime_scale_metres).exp();
-        if !distance.is_finite() || !maritime_factor.is_finite() {
-            return Err(PhysicalError::coded(
-                PhysicalErrorCode::NumericNonFinite,
-                "climate maritime distance is not finite",
-            ));
-        }
-        geometry.push(CellClimateGeometry {
-            latitude,
-            maritime_factor,
-        });
-    }
+        field.grid.sample_count()
+    ];
+    geometry
+        .par_iter_mut()
+        .enumerate()
+        .try_for_each(|(cell, slot)| {
+            *slot = maritime_geometry_cell(
+                field,
+                &ocean_vectors,
+                ocean_tree.as_deref(),
+                maritime_scale_metres,
+                cell,
+            )?;
+            Ok(())
+        })?;
+    progress.check_cancelled()?;
     Ok(geometry)
 }
 
@@ -2875,9 +2899,12 @@ fn wind_divergence_cell(
 fn wind_divergence_ppm(grid: Grid, east: &[i32], north: &[i32]) -> Vec<i32> {
     let spacing = GridSpacing::new(grid);
     let mut divergence = vec![0; grid.sample_count()];
-    divergence.par_iter_mut().enumerate().for_each(|(cell, slot)| {
-        *slot = wind_divergence_cell(grid, &spacing, east, north, cell);
-    });
+    divergence
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(cell, slot)| {
+            *slot = wind_divergence_cell(grid, &spacing, east, north, cell);
+        });
     divergence
 }
 
@@ -3053,6 +3080,134 @@ fn derive_currents(
     )
 }
 
+struct CurrentForceInput<'a> {
+    field: &'a PhysicalField,
+    ocean: &'a [bool],
+    temperatures: &'a [i32],
+    wind_east: &'a [i32],
+    wind_north: &'a [i32],
+    spacing: &'a GridSpacing,
+    west_distance: &'a [u32],
+    east_distance: &'a [u32],
+    omega: f64,
+    wind_scale: f64,
+}
+
+fn current_force_cell(input: &CurrentForceInput, cell: usize) -> (f64, f64) {
+    if !input.ocean[cell] {
+        return (0.0, 0.0);
+    }
+    let field = input.field;
+    let (row, col) = field.grid.row_col(cell);
+    let latitude = field.grid.center_radians(row, col).1;
+    let coriolis = (latitude.sin() * input.omega).clamp(-2.4, 2.4);
+    let turn = 1.08 * coriolis.tanh();
+    let (sin, cos) = turn.sin_cos();
+    let wind_u = f64::from(input.wind_east[cell]);
+    let wind_v = f64::from(input.wind_north[cell]);
+    let mut u = input.wind_scale * (wind_u * cos + wind_v * sin);
+    let mut v = input.wind_scale * (-wind_u * sin + wind_v * cos);
+    let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
+    let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
+    let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
+    let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
+    let scale_x = input.spacing.scale_x(row);
+    let scale_y = input.spacing.scale_y(row);
+    let here = input.temperatures[cell];
+    let dtx = f64::from(
+        ocean_temperature(input.temperatures, input.ocean, east_cell, here)
+            - ocean_temperature(input.temperatures, input.ocean, west_cell, here),
+    ) * scale_x;
+    let dty = f64::from(
+        ocean_temperature(input.temperatures, input.ocean, north_cell, here)
+            - ocean_temperature(input.temperatures, input.ocean, south_cell, here),
+    ) * scale_y;
+    let geostrophy = CURRENT_GEOSTROPHY * (2.2 * coriolis.abs()).clamp(0.0, 1.0);
+    let sign = if coriolis == 0.0 {
+        0.0
+    } else {
+        coriolis.signum()
+    };
+    u += geostrophy * (-dty) * sign;
+    v += geostrophy * dtx * sign;
+    let d_u_dy = f64::from(input.wind_east[north_cell] - input.wind_east[south_cell]) * scale_y;
+    let wind_curl = -d_u_dy;
+    let beta = latitude.cos().abs().max(0.2);
+    let sverdrup = CURRENT_SVERDRUP * input.omega.clamp(0.2, 2.2).sqrt() * wind_curl / beta;
+    v += sverdrup;
+    let dist_west = input.west_distance[cell];
+    let dist_east = input.east_distance[cell];
+    if dist_west <= dist_east && dist_west + dist_east + 1 < field.grid.width {
+        let boost =
+            1.0 + CURRENT_WESTERN_RETURN * (-f64::from(dist_west) / CURRENT_WESTERN_SCALE).exp();
+        v -= sverdrup * boost;
+        u *= 0.62 + 0.38 / boost;
+    }
+    (u, v)
+}
+
+fn current_smooth_cell(
+    grid: Grid,
+    ocean: &[bool],
+    previous_east: &[f64],
+    previous_north: &[f64],
+    cell: usize,
+) -> (f64, f64) {
+    if !ocean[cell] {
+        return (0.0, 0.0);
+    }
+    let (row, col) = grid.row_col(cell);
+    let neighbors = [
+        grid.index(row, wrapped_col(grid, col, -1)),
+        grid.index(row, wrapped_col(grid, col, 1)),
+        grid.index(clamped_row(grid, row, -1), col),
+        grid.index(clamped_row(grid, row, 1), col),
+    ];
+    let mut sum_u = previous_east[cell] * 2.0;
+    let mut sum_v = previous_north[cell] * 2.0;
+    let mut weight = 2.0;
+    for neighbor in neighbors {
+        if ocean[neighbor] {
+            sum_u += previous_east[neighbor];
+            sum_v += previous_north[neighbor];
+            weight += 1.0;
+        }
+    }
+    (sum_u / weight, sum_v / weight)
+}
+
+fn current_bound_cell(
+    grid: Grid,
+    ocean: &[bool],
+    east: f64,
+    north: f64,
+    cell: usize,
+) -> (f64, f64) {
+    if !ocean[cell] {
+        return (0.0, 0.0);
+    }
+    let (row, col) = grid.row_col(cell);
+    let west_cell = grid.index(row, wrapped_col(grid, col, -1));
+    let east_cell = grid.index(row, wrapped_col(grid, col, 1));
+    let south_cell = grid.index(clamped_row(grid, row, -1), col);
+    let north_cell = grid.index(clamped_row(grid, row, 1), col);
+    let mut east = east;
+    let mut north = north;
+    if !ocean[east_cell] {
+        east = east.min(0.0);
+    }
+    if !ocean[west_cell] {
+        east = east.max(0.0);
+    }
+    if !ocean[north_cell] {
+        north = north.min(0.0);
+    }
+    if !ocean[south_cell] {
+        north = north.max(0.0);
+    }
+    (east, north)
+}
+
 fn derive_currents_with(
     field: &PhysicalField,
     planetary: PlanetaryConfiguration,
@@ -3068,110 +3223,47 @@ fn derive_currents_with(
     let mut north = vec![0.0; count];
     let spacing = GridSpacing::new(field.grid);
     let wind_scale = CURRENT_WIND_COUPLING * omega.clamp(0.2, 2.2).sqrt();
-    for cell in 0..count {
-        if !ocean[cell] {
-            continue;
-        }
-        let (row, col) = field.grid.row_col(cell);
-        let latitude = field.grid.center_radians(row, col).1;
-        let coriolis = (latitude.sin() * omega).clamp(-2.4, 2.4);
-        let turn = 1.08 * coriolis.tanh();
-        let (sin, cos) = turn.sin_cos();
-        let wind_u = f64::from(wind_east[cell]);
-        let wind_v = f64::from(wind_north[cell]);
-        let mut u = wind_scale * (wind_u * cos + wind_v * sin);
-        let mut v = wind_scale * (-wind_u * sin + wind_v * cos);
-        let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
-        let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
-        let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
-        let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
-        let scale_x = spacing.scale_x(row);
-        let scale_y = spacing.scale_y(row);
-        let here = temperatures[cell];
-        let dtx = f64::from(
-            ocean_temperature(temperatures, ocean, east_cell, here)
-                - ocean_temperature(temperatures, ocean, west_cell, here),
-        ) * scale_x;
-        let dty = f64::from(
-            ocean_temperature(temperatures, ocean, north_cell, here)
-                - ocean_temperature(temperatures, ocean, south_cell, here),
-        ) * scale_y;
-        let geostrophy = CURRENT_GEOSTROPHY * (2.2 * coriolis.abs()).clamp(0.0, 1.0);
-        let sign = if coriolis == 0.0 {
-            0.0
-        } else {
-            coriolis.signum()
-        };
-        u += geostrophy * (-dty) * sign;
-        v += geostrophy * dtx * sign;
-        let d_u_dy = f64::from(wind_east[north_cell] - wind_east[south_cell]) * scale_y;
-        let wind_curl = -d_u_dy;
-        let beta = latitude.cos().abs().max(0.2);
-        let sverdrup = CURRENT_SVERDRUP * omega.clamp(0.2, 2.2).sqrt() * wind_curl / beta;
-        v += sverdrup;
-        let dist_west = geometry.west_distance[cell];
-        let dist_east = geometry.east_distance[cell];
-        if dist_west <= dist_east && dist_west + dist_east + 1 < field.grid.width {
-            let boost = 1.0
-                + CURRENT_WESTERN_RETURN * (-f64::from(dist_west) / CURRENT_WESTERN_SCALE).exp();
-            v -= sverdrup * boost;
-            u *= 0.62 + 0.38 / boost;
-        }
-        east[cell] = u;
-        north[cell] = v;
-    }
+    let input = CurrentForceInput {
+        field,
+        ocean,
+        temperatures,
+        wind_east,
+        wind_north,
+        spacing: &spacing,
+        west_distance: &geometry.west_distance,
+        east_distance: &geometry.east_distance,
+        omega,
+        wind_scale,
+    };
+    east.par_iter_mut()
+        .zip(north.par_iter_mut())
+        .enumerate()
+        .for_each(|(cell, (east_slot, north_slot))| {
+            let (u, v) = current_force_cell(&input, cell);
+            *east_slot = u;
+            *north_slot = v;
+        });
     for _ in 0..CURRENT_SMOOTH_PASSES {
         let previous_east = east.clone();
         let previous_north = north.clone();
-        for cell in 0..count {
-            if !ocean[cell] {
-                continue;
-            }
-            let (row, col) = field.grid.row_col(cell);
-            let neighbors = [
-                field.grid.index(row, wrapped_col(field.grid, col, -1)),
-                field.grid.index(row, wrapped_col(field.grid, col, 1)),
-                field.grid.index(clamped_row(field.grid, row, -1), col),
-                field.grid.index(clamped_row(field.grid, row, 1), col),
-            ];
-            let mut sum_u = previous_east[cell] * 2.0;
-            let mut sum_v = previous_north[cell] * 2.0;
-            let mut weight = 2.0;
-            for neighbor in neighbors {
-                if ocean[neighbor] {
-                    sum_u += previous_east[neighbor];
-                    sum_v += previous_north[neighbor];
-                    weight += 1.0;
-                }
-            }
-            east[cell] = sum_u / weight;
-            north[cell] = sum_v / weight;
-        }
+        east.par_iter_mut()
+            .zip(north.par_iter_mut())
+            .enumerate()
+            .for_each(|(cell, (east_slot, north_slot))| {
+                let (u, v) =
+                    current_smooth_cell(field.grid, ocean, &previous_east, &previous_north, cell);
+                *east_slot = u;
+                *north_slot = v;
+            });
     }
-    for cell in 0..count {
-        if !ocean[cell] {
-            east[cell] = 0.0;
-            north[cell] = 0.0;
-            continue;
-        }
-        let (row, col) = field.grid.row_col(cell);
-        let west_cell = field.grid.index(row, wrapped_col(field.grid, col, -1));
-        let east_cell = field.grid.index(row, wrapped_col(field.grid, col, 1));
-        let south_cell = field.grid.index(clamped_row(field.grid, row, -1), col);
-        let north_cell = field.grid.index(clamped_row(field.grid, row, 1), col);
-        if !ocean[east_cell] {
-            east[cell] = east[cell].min(0.0);
-        }
-        if !ocean[west_cell] {
-            east[cell] = east[cell].max(0.0);
-        }
-        if !ocean[north_cell] {
-            north[cell] = north[cell].min(0.0);
-        }
-        if !ocean[south_cell] {
-            north[cell] = north[cell].max(0.0);
-        }
-    }
+    east.par_iter_mut()
+        .zip(north.par_iter_mut())
+        .enumerate()
+        .for_each(|(cell, (east_slot, north_slot))| {
+            let (u, v) = current_bound_cell(field.grid, ocean, *east_slot, *north_slot, cell);
+            *east_slot = u;
+            *north_slot = v;
+        });
     (
         east.into_iter().map(clamp_current).collect(),
         north.into_iter().map(clamp_current).collect(),
@@ -3404,27 +3496,6 @@ struct MoistureJacobiRow<'a> {
     cloud: &'a mut [f64],
 }
 
-struct MoistureJacobiInput<'a> {
-    field: &'a PhysicalField,
-    settings: ClimateSettings,
-    climate_seed: u64,
-    temperatures: &'a [i32],
-    current_east: &'a [i32],
-    current_north: &'a [i32],
-    wind_east: &'a [i32],
-    wind_north: &'a [i32],
-    wind_divergence_ppm: &'a [i32],
-    wind_band: &'a [u32],
-    previous: &'a [f64],
-    water: &'a [f64],
-    row_step_metres: &'a [f64],
-    meridional_step_metres: &'a [f64],
-    source_multiplier: f64,
-    decay_at_scale: f64,
-    convergence: f64,
-    condensation_k: f64,
-}
-
 fn moisture_jacobi_row_slots<'a>(
     width: usize,
     next: &'a mut [f64],
@@ -3453,6 +3524,27 @@ fn moisture_jacobi_row_slots<'a>(
             },
         )
         .collect()
+}
+
+struct MoistureJacobiInput<'a> {
+    field: &'a PhysicalField,
+    settings: ClimateSettings,
+    climate_seed: u64,
+    temperatures: &'a [i32],
+    current_east: &'a [i32],
+    current_north: &'a [i32],
+    wind_east: &'a [i32],
+    wind_north: &'a [i32],
+    wind_divergence_ppm: &'a [i32],
+    wind_band: &'a [u32],
+    previous: &'a [f64],
+    water: &'a [f64],
+    row_step_metres: &'a [f64],
+    meridional_step_metres: &'a [f64],
+    source_multiplier: f64,
+    decay_at_scale: f64,
+    convergence: f64,
+    condensation_k: f64,
 }
 
 fn transport_moisture_row(
@@ -5398,6 +5490,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parallel_currents_match_serial_cells() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![200_000; grid.sample_count()];
+        for cell in 0..grid.sample_count() {
+            if cell.is_multiple_of(3) {
+                elevations[cell] = -2_000_000;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let temperatures = (0..grid.sample_count())
+            .map(|cell| 800 + (cell as i32 % 17) * 40)
+            .collect::<Vec<_>>();
+        let winds = derive_winds(
+            &physical,
+            settings,
+            &temperatures,
+            &temperatures,
+            &temperatures,
+            physical.seed,
+            physical.retry_index,
+        );
+        let geometry = CurrentGeometry::new(&physical);
+        let (east, north) = derive_currents_with(
+            &physical,
+            settings.planetary,
+            &temperatures,
+            &winds.east,
+            &winds.north,
+            &geometry,
+        );
+        let omega = omega_ratio(settings.planetary);
+        let spacing = GridSpacing::new(grid);
+        let input = CurrentForceInput {
+            field: &physical,
+            ocean: &geometry.ocean,
+            temperatures: &temperatures,
+            wind_east: &winds.east,
+            wind_north: &winds.north,
+            spacing: &spacing,
+            west_distance: &geometry.west_distance,
+            east_distance: &geometry.east_distance,
+            omega,
+            wind_scale: CURRENT_WIND_COUPLING * omega.clamp(0.2, 2.2).sqrt(),
+        };
+        let mut serial_east = vec![0.0; grid.sample_count()];
+        let mut serial_north = vec![0.0; grid.sample_count()];
+        for cell in 0..grid.sample_count() {
+            let (u, v) = current_force_cell(&input, cell);
+            serial_east[cell] = u;
+            serial_north[cell] = v;
+        }
+        for _ in 0..CURRENT_SMOOTH_PASSES {
+            let previous_east = serial_east.clone();
+            let previous_north = serial_north.clone();
+            for cell in 0..grid.sample_count() {
+                let (u, v) = current_smooth_cell(
+                    grid,
+                    &geometry.ocean,
+                    &previous_east,
+                    &previous_north,
+                    cell,
+                );
+                serial_east[cell] = u;
+                serial_north[cell] = v;
+            }
+        }
+        for cell in 0..grid.sample_count() {
+            let (u, v) = current_bound_cell(
+                grid,
+                &geometry.ocean,
+                serial_east[cell],
+                serial_north[cell],
+                cell,
+            );
+            assert_eq!(clamp_current(u), east[cell], "cell {cell} east");
+            assert_eq!(clamp_current(v), north[cell], "cell {cell} north");
+        }
+    }
+
     fn count_biome(classes: &[u32], class: u32) -> usize {
         classes.iter().filter(|value| **value == class).count()
     }
@@ -6807,6 +6980,46 @@ mod tests {
             assert!(
                 (brute - accelerated).abs() < 1e-12,
                 "cell {cell}: brute={brute} accelerated={accelerated}"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_maritime_geometry_matches_serial_cells() {
+        let grid = Grid::new(64, 32, DEFAULT_RADIUS_METRES).unwrap();
+        let mut elevations = vec![1_000; grid.sample_count()];
+        for (cell, elevation) in elevations.iter_mut().enumerate() {
+            if cell.is_multiple_of(7) {
+                *elevation = -500;
+            }
+        }
+        let physical = field(grid, elevations, 0);
+        let settings = ClimateSettings::default_for(grid);
+        let parallel = build_geometry(&physical, settings, &mut NoopProgress).unwrap();
+        let ocean_vectors = (0..grid.sample_count())
+            .filter(|cell| physical.elevations_mm[*cell] <= physical.sea_level_mm)
+            .map(|cell| cell_geometry(grid, cell).1)
+            .collect::<Vec<_>>();
+        let ocean_tree = KdNode::build(&ocean_vectors);
+        let maritime_scale_metres = f64::from(settings.maritime_scale_km) * 1_000.0;
+        for cell in 0..grid.sample_count() {
+            let serial = maritime_geometry_cell(
+                &physical,
+                &ocean_vectors,
+                ocean_tree.as_deref(),
+                maritime_scale_metres,
+                cell,
+            )
+            .unwrap();
+            assert_eq!(
+                parallel[cell].latitude.to_bits(),
+                serial.latitude.to_bits(),
+                "cell {cell} latitude"
+            );
+            assert_eq!(
+                parallel[cell].maritime_factor.to_bits(),
+                serial.maritime_factor.to_bits(),
+                "cell {cell} maritime_factor"
             );
         }
     }

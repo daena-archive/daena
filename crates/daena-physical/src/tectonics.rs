@@ -5,8 +5,8 @@
 //! terrain, climate, hydrology, and hazard products.
 
 use super::{
-    derive_subsystem_seed, resolution, splitmix64, Grid, PhysicalError, ProgressPhase,
-    ProgressSink, SeedDomain,
+    derive_subsystem_seed, resolution, splitmix64, Grid, GridTopology, PhysicalError,
+    ProgressPhase, ProgressSink, SeedDomain,
 };
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
@@ -913,8 +913,15 @@ fn assign_plates(
         best_cost[cell] = cost;
         owner[cell] = plate;
         for neighbor in topology.neighbors(cell) {
-            let step = boundary_step_cost(grid, cost_seed, cell, *neighbor).max(1);
-            heap.push(Reverse((cost.saturating_add(step), *neighbor, plate)));
+            let next =
+                cost.saturating_add(boundary_step_cost(grid, cost_seed, cell, *neighbor).max(1));
+            if next > best_cost[*neighbor] {
+                continue;
+            }
+            if next == best_cost[*neighbor] && plate >= owner[*neighbor] {
+                continue;
+            }
+            heap.push(Reverse((next, *neighbor, plate)));
         }
     }
     for (cell, assigned) in owner.iter_mut().enumerate() {
@@ -1432,6 +1439,7 @@ fn diversify_plates(
 #[allow(clippy::too_many_arguments)]
 fn crust_cost_delta(
     grid: Grid,
+    topology: &GridTopology,
     from: usize,
     to: usize,
     craton: CratonSeed,
@@ -1451,8 +1459,9 @@ fn crust_cost_delta(
     } else {
         layout.plate_crossing_ppm
     };
+    let neighbors = topology.neighbors(to);
     let (mut same_group, mut other_group) = (0_i64, 0_i64);
-    for neighbor in grid.topology().neighbors(to) {
+    for neighbor in neighbors {
         if crust_by_cell[*neighbor] != CrustType::Continental || group_by_cell[*neighbor] < 0 {
             continue;
         }
@@ -1467,17 +1476,19 @@ fn crust_cost_delta(
     } else {
         0
     };
-    let mut plates_here = vec![plate_by_cell[to]];
-    plates_here.extend(
-        grid.topology()
-            .neighbors(to)
-            .iter()
-            .map(|neighbor| plate_by_cell[*neighbor]),
-    );
-    plates_here.sort_unstable();
-    plates_here.dedup();
-    let convergent = cell_has_convergent_contact(grid, plates, plate_by_cell, to);
-    let junction = if plates_here.len() >= JUNCTION_NEIGHBOR_PLATES {
+    let mut plate_bits = 0_u64;
+    let mark_plate = |bits: &mut u64, plate: u16| {
+        if plate < MAX_PLATES {
+            *bits |= 1_u64 << plate;
+        }
+    };
+    mark_plate(&mut plate_bits, plate_by_cell[to]);
+    for neighbor in neighbors {
+        mark_plate(&mut plate_bits, plate_by_cell[*neighbor]);
+    }
+    let plates_here = plate_bits.count_ones() as usize;
+    let convergent = cell_has_convergent_contact(grid, topology, plates, plate_by_cell, to);
+    let junction = if plates_here >= JUNCTION_NEIGHBOR_PLATES {
         if convergent {
             layout.junction_attraction_ppm.saturating_mul(3) / 2
         } else {
@@ -1500,6 +1511,7 @@ fn crust_cost_delta(
 
 fn cell_has_convergent_contact(
     grid: Grid,
+    topology: &GridTopology,
     plates: &[Plate],
     plate_by_cell: &[u16],
     cell: usize,
@@ -1509,7 +1521,7 @@ fn cell_has_convergent_contact(
         return false;
     }
     let here_vec = cell_vector(grid, cell);
-    for neighbor in grid.topology().neighbors(cell) {
+    for neighbor in topology.neighbors(cell) {
         let other = plate_by_cell[*neighbor];
         if other == here || usize::from(other) >= plates.len() {
             continue;
@@ -1589,6 +1601,7 @@ fn grow_continental_crust(
             }
             let next = cost.saturating_add(crust_cost_delta(
                 grid,
+                &topology,
                 cell,
                 *neighbor,
                 craton,

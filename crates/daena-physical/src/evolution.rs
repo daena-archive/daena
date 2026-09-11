@@ -84,7 +84,7 @@ impl EvolutionSettings {
             EvolutionPreset::Mature => EvolutionBudget {
                 steps: 4,
                 timestep_years: 12_000,
-                climate_cadence_steps: 1,
+                climate_cadence_steps: 2,
                 erodibility_e12: 20_000_000_000,
                 discharge_exponent_milli: STREAM_POWER_M_MILLI,
                 slope_exponent_milli: STREAM_POWER_N_MILLI,
@@ -95,7 +95,7 @@ impl EvolutionSettings {
             EvolutionPreset::Old => EvolutionBudget {
                 steps: 8,
                 timestep_years: 16_000,
-                climate_cadence_steps: 1,
+                climate_cadence_steps: 4,
                 erodibility_e12: 20_000_000_000,
                 discharge_exponent_milli: STREAM_POWER_M_MILLI,
                 slope_exponent_milli: STREAM_POWER_N_MILLI,
@@ -1238,6 +1238,9 @@ pub fn evolve_terrain(
     let mut uplift_work_m3 = 0u64;
     let mut max_step_relief_loss_mm = 0;
     let mut active_climate = climate.clone();
+    let mut coast_ocean_cells: Vec<usize> = Vec::new();
+    let mut coast_dist = Vec::new();
+    let mut coast_exposure = Vec::new();
     progress.report(ProgressPhase::ErodingLandscape, 0, budget.steps)?;
     for step in 0..budget.steps {
         progress.check_cancelled()?;
@@ -1262,8 +1265,6 @@ pub fn evolve_terrain(
         }
         let drainage = derive_drainage(&step_field, &active_climate)?;
         let outline_locked = step * 2 >= budget.steps;
-        let mut coast_dist = Vec::new();
-        let mut coast_exposure = Vec::new();
         if outline_locked {
             let ocean_cells = current
                 .iter()
@@ -1271,32 +1272,35 @@ pub fn evolve_terrain(
                 .filter(|(_, elevation)| **elevation <= before_field.sea_level_mm)
                 .map(|(cell, _)| cell)
                 .collect::<Vec<_>>();
-            let (dist, nearest) = geodesic_nearest(
-                before_field.grid,
-                &ocean_cells,
-                COASTAL_EROSION_RADIUS_MM.saturating_mul(2),
-            );
-            let source_exposure = ocean_cells
-                .iter()
-                .map(|cell| {
-                    ocean_exposure_ppm(
-                        before_field.grid,
-                        |other| current[other] <= before_field.sea_level_mm,
-                        *cell,
-                    )
-                })
-                .collect::<Vec<_>>();
-            coast_exposure = nearest
-                .iter()
-                .map(|index| {
-                    if *index == u32::MAX || (*index as usize) >= source_exposure.len() {
-                        0
-                    } else {
-                        source_exposure[*index as usize]
-                    }
-                })
-                .collect();
-            coast_dist = dist;
+            if ocean_cells != coast_ocean_cells {
+                let (dist, nearest) = geodesic_nearest(
+                    before_field.grid,
+                    &ocean_cells,
+                    COASTAL_EROSION_RADIUS_MM.saturating_mul(2),
+                );
+                let source_exposure = ocean_cells
+                    .iter()
+                    .map(|cell| {
+                        ocean_exposure_ppm(
+                            before_field.grid,
+                            |other| current[other] <= before_field.sea_level_mm,
+                            *cell,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                coast_exposure = nearest
+                    .iter()
+                    .map(|index| {
+                        if *index == u32::MAX || (*index as usize) >= source_exposure.len() {
+                            0
+                        } else {
+                            source_exposure[*index as usize]
+                        }
+                    })
+                    .collect();
+                coast_dist = dist;
+                coast_ocean_cells = ocean_cells;
+            }
         }
         let mut incised = current.clone();
         let removable_relief =
@@ -1550,6 +1554,18 @@ mod tests {
 
     fn fixture(preset: EvolutionPreset) -> EvolutionField {
         fixture_parts(preset).2
+    }
+
+    #[test]
+    fn climate_cadence_restamps_at_outline_lock() {
+        for preset in [
+            EvolutionPreset::Young,
+            EvolutionPreset::Mature,
+            EvolutionPreset::Old,
+        ] {
+            let budget = EvolutionSettings { preset }.budget();
+            assert_eq!(budget.climate_cadence_steps, budget.steps / 2);
+        }
     }
 
     #[test]

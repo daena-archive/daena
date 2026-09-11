@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 #[test]
 fn canonical_bundled_manifests_validate() {
@@ -602,4 +604,111 @@ fn relationship_constraints_are_relationship_only_and_must_agree() {
         relationship_direction: None,
     });
     assert!(validate_manifest(&manifest).is_err());
+}
+
+fn consume_rpc_fuzz_input(data: &[u8]) {
+    let Ok(json) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(request) = serde_json::from_str::<RpcRequest>(json) else {
+        return;
+    };
+    let _ = validate_rpc_payload(&request.method, &request.payload);
+    struct Shared;
+    impl NamespaceView for Shared {
+        fn owner(&self, _namespace: &str) -> Option<&str> {
+            Some("fuzz.plugin")
+        }
+        fn field_is_shared(&self, _: &str, _: &str) -> bool {
+            true
+        }
+        fn namespace_has_shared_fields(&self, _: &str) -> bool {
+            true
+        }
+    }
+    if let Some(method) = rpc_method(&request.method) {
+        let context = RpcAuthorizationContext {
+            plugin_id: "fuzz.plugin",
+            namespaces: &Shared,
+        };
+        let _ = method.capability.resolve(&request.payload, &context);
+    }
+}
+
+fn replay_fuzz_corpus(target: &str, consume: impl Fn(&Path, &[u8])) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fuzz/corpus")
+        .join(target);
+    let mut count = 0usize;
+    for entry in fs::read_dir(&dir).unwrap_or_else(|_| panic!("missing fuzz corpus {dir:?}")) {
+        let path = entry.unwrap().path();
+        if !path.is_file()
+            || path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
+        consume(&path, &fs::read(&path).unwrap());
+        count += 1;
+    }
+    assert!(count > 0, "fuzz corpus {target} is empty");
+}
+
+#[test]
+fn cargo_fuzz_parse_manifest_corpus_matches_bundled_plugins_and_does_not_panic() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for plugin in ["lore", "timeline", "maps", "houses", "writing", "language"] {
+        let corpus = crate_root.join(format!("fuzz/corpus/parse_manifest/{plugin}.json"));
+        let source = crate_root.join(format!("../../packages/modules/{plugin}/manifest.json"));
+        assert_eq!(
+            fs::read(&corpus).unwrap(),
+            fs::read(&source).unwrap(),
+            "{plugin} fuzz corpus drifted from the bundled manifest"
+        );
+    }
+    replay_fuzz_corpus("parse_manifest", |path, data| {
+        let name = path.file_name().unwrap().to_string_lossy();
+        let parsed = std::str::from_utf8(data)
+            .ok()
+            .and_then(|json| parse_manifest(json).ok());
+        if name.ends_with(".json")
+            && !matches!(
+                name.as_ref(),
+                "unknown-key.json" | "not-object.json" | "truncated.json"
+            )
+        {
+            assert!(parsed.is_some(), "{name} should parse");
+        } else {
+            assert!(parsed.is_none(), "{name} should fail closed");
+        }
+    });
+}
+
+#[test]
+fn cargo_fuzz_parse_rpc_request_corpus_does_not_panic() {
+    replay_fuzz_corpus("parse_rpc_request", |path, data| {
+        consume_rpc_fuzz_input(data);
+        let name = path.file_name().unwrap().to_string_lossy();
+        let request = std::str::from_utf8(data)
+            .ok()
+            .and_then(|json| serde_json::from_str::<RpcRequest>(json).ok());
+        match name.as_ref() {
+            "entity-get.json"
+            | "appearance-get.json"
+            | "search-query.json"
+            | "field-set.json"
+            | "ai-start.json" => {
+                let request = request.unwrap_or_else(|| panic!("{name} should deserialize"));
+                validate_rpc_payload(&request.method, &request.payload).unwrap();
+            }
+            "unknown-method.json" | "unknown-payload-key.json" | "payload-array.json" => {
+                let request = request.unwrap_or_else(|| panic!("{name} should deserialize"));
+                assert!(validate_rpc_payload(&request.method, &request.payload).is_err());
+            }
+            _ => {
+                assert!(request.is_none(), "{name} should fail closed");
+            }
+        }
+    });
 }

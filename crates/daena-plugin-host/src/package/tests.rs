@@ -350,3 +350,37 @@ fn migration_selection_is_contiguous_and_hashed() {
     assert_eq!(plan.checksums.len(), 1);
     assert!(plan.requires_backup);
 }
+
+#[test]
+fn cargo_fuzz_verify_archive_corpus_does_not_panic() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/verify_archive");
+    let limits = ArchiveLimits {
+        max_compressed_bytes: 64 * 1024,
+        max_uncompressed_bytes: 256 * 1024,
+        max_file_count: 64,
+        max_path_length: 256,
+        max_file_bytes: 64 * 1024,
+    };
+    let mut count = 0usize;
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|_| panic!("missing fuzz corpus {dir:?}")) {
+        let path = entry.unwrap().path();
+        if !path.is_file()
+            || path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let result =
+            verify_archive_bytes(&bytes, limits, &VerificationPolicy::with_unsigned_consent());
+        let name = path.file_name().unwrap().to_string_lossy();
+        if name == "valid-unsigned" {
+            assert!(result.is_ok(), "{name} should verify: {result:?}");
+        } else {
+            assert!(result.is_err(), "{name} should fail closed");
+        }
+        count += 1;
+    }
+    assert!(count > 0, "fuzz corpus verify_archive is empty");
+}

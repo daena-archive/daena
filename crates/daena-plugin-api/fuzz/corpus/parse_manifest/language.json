@@ -1,0 +1,221 @@
+{
+  "manifestVersion": 1,
+  "id": "daena.language",
+  "name": "Language",
+  "version": "0.1.0",
+  "publisher": "daena-archive",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "sandboxed",
+  "entrypoints": { "ui": "dist/ui/index.html" },
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "document.read",
+    "document.write",
+    "field.read:self",
+    "field.write:self",
+    "record.read:self",
+    "record.write:self",
+    "host.surface:daena.language/workspace@1"
+  ],
+  "dependencies": {},
+  "namespaces": ["language"],
+  "schemas": [
+    {
+      "namespace": "language",
+      "entityTypes": [
+        {
+          "id": "language",
+          "name": "Language",
+          "icon": { "kind": "catalog", "id": "language" },
+          "iconColor": { "kind": "preset", "id": "ocean" }
+        }
+      ],
+      "fields": [
+        { "key": "nativeName", "label": "Native name", "type": "text" },
+        { "key": "aliases", "label": "Aliases", "type": "text" },
+        { "key": "status", "label": "Status", "type": "text" },
+        { "key": "family", "label": "Language family", "type": "text" },
+        { "key": "writingSystem", "label": "Writing system", "type": "text" }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "language",
+      "name": "Language",
+      "entityType": "language",
+      "description": "Document a fictional language, its sounds, writing, grammar, forms, samples, and lexicon.",
+      "fields": { "nativeName": "", "aliases": "", "status": "", "family": "", "writingSystem": "" },
+      "document": ""
+    }
+  ],
+  "records": [
+    {
+      "id": "lexemes",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "lemma": { "type": "string" },
+          "partOfSpeech": { "type": "string" },
+          "status": { "type": "string" },
+          "tags": { "type": "array" },
+          "etymology": { "type": "string" },
+          "sourceNotes": { "type": "string" },
+          "notes": { "type": "string" },
+          "meanings": { "type": "array" },
+          "pronunciation": { "type": "string" },
+          "pronunciations": { "type": "array" },
+          "forms": { "type": "array" },
+          "example": { "type": "object" },
+          "senses": { "type": "array" },
+          "paradigmId": { "type": "string" }
+        },
+        "required": ["lemma", "meanings"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "phonemes",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "ipa": { "type": "string" },
+          "kind": { "type": "string" },
+          "place": { "type": "string" },
+          "manner": { "type": "string" },
+          "voicing": { "type": "string" },
+          "height": { "type": "string" },
+          "backness": { "type": "string" },
+          "rounding": { "type": "string" },
+          "notes": { "type": "string" },
+          "example": { "type": "string" }
+        },
+        "required": ["symbol"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "phonology",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "syllableStructure": { "type": "string" },
+          "stress": { "type": "string" },
+          "tone": { "type": "string" },
+          "phonotactics": { "type": "string" },
+          "notes": { "type": "string" }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "orthographies",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "direction": { "type": "string" },
+          "description": { "type": "string" },
+          "mappings": { "type": "array" },
+          "samples": { "type": "array" }
+        },
+        "required": ["name", "direction", "mappings", "samples"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "grammar",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "recordKind": { "type": "string" },
+          "schemaVersion": { "type": "number" },
+          "systemId": { "type": "string" },
+          "status": { "type": "string" },
+          "config": { "type": "object" },
+          "notes": { "type": "string" },
+          "examples": { "type": "array" },
+          "links": { "type": "array" },
+          "title": { "type": "string" },
+          "controller": { "type": "object" },
+          "target": { "type": "object" },
+          "features": { "type": "array" },
+          "behavior": { "type": "string" },
+          "defaultForm": { "type": "string" },
+          "conditions": { "type": "string" },
+          "exceptions": { "type": "string" },
+          "tags": { "type": "array" },
+          "body": { "type": "string" },
+          "sectionId": { "type": "string" },
+          "note": { "type": "string" }
+        },
+        "required": ["recordKind", "schemaVersion"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "paradigms",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string" },
+          "partOfSpeech": { "type": "string" },
+          "notes": { "type": "string" },
+          "slots": { "type": "array" },
+          "rules": { "type": "array" }
+        },
+        "required": ["name", "kind", "slots", "rules"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "samples",
+      "ownerEntityTypes": ["language"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "kind": { "type": "string" },
+          "text": { "type": "string" },
+          "translation": { "type": "string" },
+          "transliteration": { "type": "string" },
+          "notes": { "type": "string" },
+          "tokens": { "type": "array" }
+        },
+        "required": ["kind", "text", "tokens"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "views": [
+    {
+      "id": "language-workspace",
+      "title": "Language",
+      "renderer": { "type": "host-surface", "id": "daena.language/workspace", "major": 1 },
+      "components": []
+    }
+  ],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [
+    {
+      "id": "language-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "language" }]
+    }
+  ]
+}

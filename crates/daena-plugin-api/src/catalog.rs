@@ -9,7 +9,7 @@
 //! types, service identities) live in `RpcCapability::resolve`; the host only
 //! supplies the authorization context.
 
-use crate::RpcError;
+use crate::{ContractError, RpcError};
 use serde_json::Value;
 
 /// Minimal namespace-ownership view the authorization context needs. The host
@@ -601,6 +601,189 @@ pub fn rpc_method(name: &str) -> Option<&'static RpcMethodDef> {
     RPC_METHOD_CATALOG.iter().find(|entry| entry.name == name)
 }
 
+pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), ContractError> {
+    let object = payload.as_object().ok_or_else(|| {
+        ContractError(format!("plugin RPC payload for {method} must be an object"))
+    })?;
+    let (required, optional): (&[&str], &[&str]) = match method {
+        "entity.list" => (&[], &["entityType"]),
+        "entity.query" => (
+            &[],
+            &[
+                "query",
+                "entityTypes",
+                "excludedEntityTypes",
+                "sortField",
+                "sortDirection",
+                "offset",
+                "limit",
+            ],
+        ),
+        "entity.get" => (&["id"], &[]),
+        "entity.getMany" => (&["ids"], &[]),
+        "entity.create" => (&["name"], &["type", "fields", "relationships", "document"]),
+        "entity.update" => (&["id", "expectedRevision"], &["name", "type"]),
+        "entity.delete" => (&["id", "expectedRevision"], &[]),
+        "document.list" => (&["entityId"], &[]),
+        "document.save" => (&["entityId", "body", "expectedRevision"], &["format"]),
+        "field.read" => (&["entityId", "namespace", "key"], &[]),
+        "field.list" => (&["entityId", "namespace"], &["sharedOnly"]),
+        "field.set" => (
+            &["entityId", "namespace", "key", "value", "expectedRevision"],
+            &[],
+        ),
+        "record.list" => (
+            &["collection", "ownerEntityId"],
+            &[
+                "query",
+                "limit",
+                "offset",
+                "sort",
+                "status",
+                "tag",
+                "homonymsOnly",
+            ],
+        ),
+        "record.create" => (&["collection", "ownerEntityId", "value"], &[]),
+        "record.update" => (
+            &[
+                "collection",
+                "id",
+                "ownerEntityId",
+                "value",
+                "expectedRevision",
+            ],
+            &[],
+        ),
+        "record.delete" => (
+            &["collection", "id", "ownerEntityId", "expectedRevision"],
+            &[],
+        ),
+        "relationship.list" => (&["entityId"], &[]),
+        "relationship.query" => (
+            &["entityIds", "direction"],
+            &["relationshipTypes", "offset", "limit"],
+        ),
+        "relationship.create" => (
+            &[
+                "source_id",
+                "target_id",
+                "relationship_type",
+                "expectedRevision",
+            ],
+            &["metadata"],
+        ),
+        "relationship.update" => (&["id", "expectedRevision"], &["metadata", "target_id"]),
+        "relationship.delete" => (&["id", "expectedRevision"], &["relationship_type"]),
+        "asset.list" => (&["entityId"], &["namespace"]),
+        "asset.register" => (
+            &[
+                "entity_id",
+                "namespace",
+                "filename",
+                "content_hash",
+                "size",
+                "mime_type",
+                "path",
+                "expectedRevision",
+            ],
+            &[],
+        ),
+        "asset.update" => (
+            &["assetId", "namespace", "expectedRevision"],
+            &["filename", "role", "referenceScope"],
+        ),
+        "asset.delete" => (&["assetId", "namespace", "expectedRevision"], &[]),
+        "asset.read.begin" => (&["assetId", "namespace"], &[]),
+        "asset.replace.begin" => (
+            &[
+                "assetId",
+                "namespace",
+                "expectedRevision",
+                "size",
+                "mimeType",
+            ],
+            &[],
+        ),
+        "asset.replace.commit" => (&["handle", "contentHash"], &[]),
+        "asset.transfer.cancel" => (&["handle"], &[]),
+        "maps.image.import.begin" => (&["name", "size", "mimeType", "filename"], &[]),
+        "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
+        "maps.vector.create.begin" => (&["name", "size", "generation"], &[]),
+        "maps.vector.create.commit" => (&["handle", "contentHash"], &[]),
+        "maps.physical.create.begin" => (&["name", "size", "generation"], &[]),
+        "maps.physical.create.commit" => (&["handle", "contentHash"], &[]),
+        "maps.vector.replace.begin" => (&["assetId", "expectedRevision", "size"], &[]),
+        "maps.vector.replace.commit" => (&["handle", "contentHash"], &[]),
+        "maps.layer.create" => (&["mapEntityId", "name", "expectedRevision"], &["kind"]),
+        "maps.layer.delete" => (
+            &["mapEntityId", "layerId", "expectedRevision"],
+            &["expectedSourceRevision", "expectedFeatureCount"],
+        ),
+        "maps.layer.update" => (
+            &["mapEntityId", "layerId", "expectedRevision"],
+            &[
+                "name",
+                "order",
+                "defaultVisible",
+                "opacity",
+                "locked",
+                "style",
+            ],
+        ),
+        "maps.recovery.export.begin" => (&["mapEntityId", "size"], &[]),
+        "maps.recovery.export.commit" => (&["handle", "contentHash"], &[]),
+        "maps.recovery.list" => (&["mapEntityId"], &[]),
+        "maps.recovery.restore" => (&["mapEntityId", "fileName"], &[]),
+        "maps.locations.list" => (&["mapEntityId"], &[]),
+        "maps.locations.upsert" => (&["entityId", "location"], &[]),
+        "maps.locations.unlink" => (&["entityId", "locationId"], &[]),
+        "maps.locations.create_and_link" => (&["name", "entityType", "location"], &[]),
+        "maps.reconcile.links" => (&["mapEntityId"], &[]),
+        "search.query" => (&["query"], &[]),
+        "event.publish" => (&["type", "payload"], &[]),
+        "event.subscribe" | "event.poll" => (&["type"], &[]),
+        "service.call" => (&["name", "major", "payload"], &["deadlineMs"]),
+        "ai.request.start" => (
+            &["operation", "taskId", "userInstruction", "immediateContext"],
+            &["outputContract", "deadlineMs", "retrievalPolicy"],
+        ),
+        "ai.request.poll" | "ai.request.cancel" | "ai.request.result" | "ai.request.citations" => {
+            (&["requestId"], &[])
+        }
+        "app.version" | "appearance.get" => (&[], &[]),
+        _ => {
+            return Err(ContractError(format!(
+                "unknown plugin RPC method: {method}"
+            )));
+        }
+    };
+    for key in required {
+        if !object.contains_key(*key) {
+            return Err(ContractError(format!(
+                "plugin RPC payload for {method} requires {key}"
+            )));
+        }
+    }
+    for key in object.keys() {
+        if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
+            return Err(ContractError(format!(
+                "plugin RPC payload for {method} contains unknown key {key}"
+            )));
+        }
+    }
+    if method == "field.list"
+        && object
+            .get("sharedOnly")
+            .is_some_and(|value| !value.is_null() && !value.is_boolean())
+    {
+        return Err(ContractError(
+            "plugin RPC payload for field.list requires sharedOnly to be boolean".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +824,24 @@ mod tests {
                 "maps.layer.update",
             ]
         );
+    }
+
+    #[test]
+    fn validate_rpc_payload_covers_every_catalog_method() {
+        for entry in RPC_METHOD_CATALOG {
+            match validate_rpc_payload(entry.name, &serde_json::json!({})) {
+                Ok(()) => {}
+                Err(error) => assert!(
+                    !error.0.contains("unknown plugin RPC method"),
+                    "{}",
+                    error.0
+                ),
+            }
+        }
+        assert!(validate_rpc_payload("not.a.method", &serde_json::json!({}))
+            .unwrap_err()
+            .0
+            .contains("unknown plugin RPC method"));
     }
 
     #[test]

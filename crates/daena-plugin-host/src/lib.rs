@@ -23,8 +23,9 @@ pub mod package;
 pub mod runtime;
 pub use package::{
     manifest_svg_icon_paths, plan_rollback, plan_upgrade, select_migrations, validate_icon_svg,
-    ArchiveLimits, CapabilityConsent, InstalledVersion, MigrationPlan, PackageCatalog,
-    PackageError, PackageSignature, PluginPackage, RollbackPlan, UpgradePlan, VerificationPolicy,
+    verify_archive_bytes, ArchiveLimits, CapabilityConsent, InstalledVersion, MigrationPlan,
+    PackageCatalog, PackageError, PackageSignature, PluginPackage, RollbackPlan, UpgradePlan,
+    VerificationPolicy, VerifiedPackage,
 };
 pub use runtime::{
     plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,

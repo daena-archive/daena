@@ -1,0 +1,255 @@
+{
+  "manifestVersion": 1,
+  "id": "daena.houses",
+  "name": "Houses",
+  "version": "0.1.0",
+  "publisher": "daena-archive",
+  "hostApi": ">=1.0.0 <2.0.0",
+  "kind": "declarative",
+  "entrypoints": {},
+  "capabilities": [
+    "entity.read",
+    "entity.write",
+    "entity.delete",
+    "field.read:shared",
+    "relationship.read",
+    "relationship.write",
+    "schema.overlay"
+  ],
+  "dependencies": {
+    "daena.lore": {
+      "version": ">=0.1.0 <1.0.0",
+      "required": true
+    }
+  },
+  "namespaces": ["houses"],
+  "schemas": [
+    {
+      "namespace": "houses",
+      "entityTypes": [
+        {
+          "id": "house",
+          "name": "House",
+          "icon": { "kind": "catalog", "id": "castle" },
+          "iconColor": { "kind": "preset", "id": "gold" }
+        }
+      ],
+      "fields": [
+        { "key": "summary", "label": "Summary", "type": "text", "entityTypes": ["house"] },
+        { "key": "aliases", "label": "Aliases", "type": "text", "entityTypes": ["house"] },
+        {
+          "key": "founded",
+          "label": "Founded",
+          "type": "date",
+          "entityTypes": ["house"],
+          "shared": true,
+          "timeline": { "role": "start", "group": "house", "label": "Founded", "layer": "dates" }
+        },
+        {
+          "key": "allies",
+          "label": "Allies",
+          "type": "relationship",
+          "relationshipType": "house_allied_with",
+          "relationshipDirection": "undirected",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["house", "daena.lore:faction"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
+        {
+          "key": "rivals",
+          "label": "Rivals",
+          "type": "relationship",
+          "relationshipType": "house_rival_of",
+          "relationshipDirection": "undirected",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["house", "daena.lore:faction"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [{ "key": "notes", "label": "Notes", "type": "text" }]
+        },
+        {
+          "key": "parents",
+          "label": "Parents",
+          "type": "relationship",
+          "relationshipType": "family_parent_of",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Parent type",
+              "type": "enum",
+              "required": true,
+              "options": ["biological", "adoptive", "legal", "guardian", "step", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "children",
+          "label": "Children",
+          "type": "relationship",
+          "relationshipType": "family_parent_of",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": true,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Parent type",
+              "type": "enum",
+              "required": true,
+              "options": ["biological", "adoptive", "legal", "guardian", "step", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "partners",
+          "label": "Partners",
+          "type": "relationship",
+          "relationshipType": "family_partner_with",
+          "relationshipDirection": "undirected",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "undirected"
+          },
+          "metadataFields": [
+            {
+              "key": "kind",
+              "label": "Partnership type",
+              "type": "enum",
+              "required": true,
+              "options": ["marriage", "partnership", "betrothal", "concubinage", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            {
+              "key": "status",
+              "label": "Status",
+              "type": "enum",
+              "options": ["active", "ended", "planned", "unknown"]
+            },
+            { "key": "start", "label": "Starts", "type": "date" },
+            { "key": "end", "label": "Ends", "type": "date" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "houses",
+          "label": "Houses",
+          "type": "relationship",
+          "relationshipType": "family_member_of",
+          "relationshipDirection": "outgoing",
+          "entityTypes": ["daena.lore:person"],
+          "targetEntityTypes": ["house"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "required": true,
+              "options": ["member", "head", "consort", "heir", "founder", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        },
+        {
+          "key": "members",
+          "label": "Members",
+          "type": "relationship",
+          "relationshipType": "family_member_of",
+          "relationshipDirection": "incoming",
+          "entityTypes": ["house"],
+          "targetEntityTypes": ["daena.lore:person"],
+          "cardinality": "many",
+          "relationshipConstraints": {
+            "allowSelf": false,
+            "acyclic": false,
+            "unique": "directed"
+          },
+          "metadataFields": [
+            {
+              "key": "role",
+              "label": "Role",
+              "type": "enum",
+              "required": true,
+              "options": ["member", "head", "consort", "heir", "founder", "custom"]
+            },
+            { "key": "customLabel", "label": "Custom label", "type": "text" },
+            { "key": "notes", "label": "Notes", "type": "text" }
+          ]
+        }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "house",
+      "name": "House",
+      "entityType": "house",
+      "description": "A lineage, dynasty, or household that binds people together.",
+      "requiredFields": [],
+      "fields": {
+        "summary": "",
+        "aliases": "",
+        "founded": "",
+        "allies": [],
+        "rivals": [],
+        "members": []
+      }
+    }
+  ],
+  "views": [],
+  "commands": [],
+  "services": { "provides": [], "consumes": [] },
+  "events": { "publishes": [], "subscribes": [] },
+  "migrations": [
+    {
+      "id": "houses-v1",
+      "from": 0,
+      "to": 1,
+      "recovery": "backup",
+      "operations": [{ "kind": "create-namespace", "namespace": "houses" }]
+    }
+  ]
+}

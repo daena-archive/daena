@@ -1,7 +1,7 @@
 //! Canonical RPC method payloads and wire shapes.
 //!
-//! These types pin down the exact wire names that `validate_broker_payload`
-//! (`src-tauri/src/lib.rs`) enforces. Field names deliberately mirror the
+//! These types pin down the exact wire names that `validate_rpc_payload`
+//! enforces. Field names deliberately mirror the
 //! frozen keys, including the mixed casing the contract has accumulated
 //! (`expectedRevision`, `mapEntityId`, `source_id`). They are the single Rust
 //! definition for Phase 1 contract generation and the Phase 2 data-driven

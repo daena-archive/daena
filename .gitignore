@@ -12,5 +12,8 @@ vite.config.ts.timestamp-*
 .codebase-memory/
 target/
 crates/**/target/
+**/fuzz/target/
+**/fuzz/artifacts/
+**/fuzz/coverage/
 schemas/fixtures/manifest/
 packages/plugin-cli/schema/

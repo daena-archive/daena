@@ -666,7 +666,10 @@ public documentation and tools.
 Current: `@daena-archive/plugin-{sdk,cli,test-host}` are on npm. `PLUGIN_SDK.md`
 documents `npm install`. The CLI ships `plugin-manifest-v1.json` in the tarball.
 Search and asset RPCs are rate-limited in `PluginHost::authorize`. Malformed
-`.daenaplugin` archives fail closed. A cargo-fuzz corpus is still open.
+`.daenaplugin` archives fail closed. Seed corpora for `parse_manifest`,
+`parse_rpc_request`, and `verify_archive` live under
+`crates/daena-plugin-api/fuzz/corpus` and `crates/daena-plugin-host/fuzz/corpus`;
+`cargo test` replays them, and `cargo fuzz run` is the nightly mutation path.
 
 ### Phase 8: Registry readiness, not registry dependency
 

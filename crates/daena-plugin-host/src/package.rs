@@ -287,22 +287,23 @@ impl PackageCatalog {
     }
 }
 
-fn verify_and_extract(
-    archive_path: &Path,
-    install_root: &Path,
+#[derive(Debug, Clone)]
+pub struct VerifiedPackage {
+    pub manifest: PluginManifest,
+    pub digest: String,
+    pub signature: Option<PackageSignature>,
+    pub signed: bool,
+    files: PackageFiles,
+}
+
+pub fn verify_archive_bytes(
+    bytes: &[u8],
     limits: ArchiveLimits,
-    policy: VerificationPolicy,
-) -> Result<PluginPackage, PackageError> {
-    if archive_path.extension().and_then(|v| v.to_str()) != Some("daenaplugin") {
-        return Err(PackageError(
-            "package must use the .daenaplugin extension; .wbplugin is not accepted".into(),
-        ));
-    }
-    let compressed = fs::metadata(archive_path).map_err(io_error)?.len();
-    if compressed > limits.max_compressed_bytes {
+    policy: &VerificationPolicy,
+) -> Result<VerifiedPackage, PackageError> {
+    if bytes.len() as u64 > limits.max_compressed_bytes {
         return Err(PackageError("compressed package exceeds size limit".into()));
     }
-    let bytes = fs::read(archive_path).map_err(io_error)?;
     let mut zip = ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| PackageError(format!("invalid ZIP archive: {e}")))?;
     if zip.len() > limits.max_file_count {
@@ -396,7 +397,35 @@ fn verify_and_extract(
     if policy.require_signature && !signed {
         return Err(PackageError("package signature is required".into()));
     }
-    let version_root = install_root.join(&manifest.id).join(&manifest.version);
+    Ok(VerifiedPackage {
+        manifest,
+        digest,
+        signature,
+        signed,
+        files,
+    })
+}
+
+fn verify_and_extract(
+    archive_path: &Path,
+    install_root: &Path,
+    limits: ArchiveLimits,
+    policy: VerificationPolicy,
+) -> Result<PluginPackage, PackageError> {
+    if archive_path.extension().and_then(|v| v.to_str()) != Some("daenaplugin") {
+        return Err(PackageError(
+            "package must use the .daenaplugin extension; .wbplugin is not accepted".into(),
+        ));
+    }
+    let compressed = fs::metadata(archive_path).map_err(io_error)?.len();
+    if compressed > limits.max_compressed_bytes {
+        return Err(PackageError("compressed package exceeds size limit".into()));
+    }
+    let bytes = fs::read(archive_path).map_err(io_error)?;
+    let verified = verify_archive_bytes(&bytes, limits, &policy)?;
+    let version_root = install_root
+        .join(&verified.manifest.id)
+        .join(&verified.manifest.version);
     let parent = version_root
         .parent()
         .ok_or_else(|| PackageError("invalid install root".into()))?;
@@ -409,7 +438,7 @@ fn verify_and_extract(
         .tempdir_in(parent)
         .map_err(io_error)?;
     let result = (|| {
-        for (name, content) in &files {
+        for (name, content) in &verified.files {
             let path = staging.path().join(name);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
@@ -421,11 +450,11 @@ fn verify_and_extract(
     })();
     result?;
     Ok(PluginPackage {
-        manifest,
+        manifest: verified.manifest,
         root: version_root,
-        digest,
-        signature,
-        signed,
+        digest: verified.digest,
+        signature: verified.signature,
+        signed: verified.signed,
     })
 }
 

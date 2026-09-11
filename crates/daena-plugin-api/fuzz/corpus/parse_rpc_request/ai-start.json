@@ -1,0 +1,1 @@
+{"rpcVersion":1,"sessionId":"s","requestId":"r","method":"ai.request.start","payload":{"operation":"generate_text","taskId":"t","userInstruction":"hi","immediateContext":{}}}

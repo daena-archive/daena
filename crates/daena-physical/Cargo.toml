@@ -14,3 +14,11 @@ serde = { version = "1", features = ["derive"] }
 [[bin]]
 name = "physical-map"
 path = "src/main.rs"
+
+[[bin]]
+name = "climate-profile"
+path = "src/bin/climate_profile.rs"
+
+[profile.profiling]
+inherits = "release"
+debug = 2

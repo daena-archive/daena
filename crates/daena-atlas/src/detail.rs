@@ -12,6 +12,7 @@ use crate::request::DetailLevel;
 use crate::AtlasError;
 
 pub const COASTAL_ENVELOPE_PPM: u32 = 500_000;
+pub const COASTAL_RAMP_MM: i32 = 72_000;
 pub const MAX_RESIDUAL_MM: i32 = 720_000;
 const CANCELLATION_STRIDE: usize = 4_096;
 
@@ -197,9 +198,13 @@ impl AtlasDetailModel {
         extra_mm: i32,
     ) -> i32 {
         let canonical = self.canonical_at(lon_micro, lat_micro);
-        let mut refined = canonical
-            .saturating_add(self.residual_at(lon_micro, lat_micro))
-            .saturating_add(extra_mm);
+        let prepared = canonical.saturating_add(self.residual_at(lon_micro, lat_micro));
+        let extra_mm = if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
+            extra_mm
+        } else {
+            extra_mm.clamp(-COASTAL_RAMP_MM, COASTAL_RAMP_MM)
+        };
+        let mut refined = prepared.saturating_add(extra_mm);
         if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
             let canon_land = canonical >= sea_level_mm;
             let refined_land = refined >= sea_level_mm;

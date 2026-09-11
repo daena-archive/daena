@@ -189,6 +189,7 @@ fn mask_at(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> bool {
     sample_mask_ppm(grid, mask, lon_micro, lat_micro) >= 500_000
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shade_ppm(
     model: &AtlasDetailModel,
     lon: i32,

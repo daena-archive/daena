@@ -2,8 +2,15 @@
 //! prepared residual; higher zoom adds factor-8/16 cells for the viewport plus
 //! a halo. Print is never built globally.
 
-use crate::amplify::{octave_sample_mm, HIERARCHICAL_RELIEF_DOMAIN};
-use crate::detail::{domain_key, lattice_lat_micro, lattice_lon_micro, AtlasDetailModel};
+use crate::amplify::{
+    coastline_remainder_delta_mm, coastline_remainder_ppm, octave_sample_mm,
+    COASTLINE_SYNTHESIS_DOMAIN, HIERARCHICAL_RELIEF_DOMAIN,
+};
+use crate::constraint::{pins_shoreline, AtlasConstraint};
+use crate::detail::{
+    domain_key, lattice_lat_micro, lattice_lon_micro, sample_mask_ppm, sample_sdf_ppm,
+    AtlasDetailModel, COASTAL_ENVELOPE_PPM, COASTAL_RAMP_MM,
+};
 use crate::erosion::lattice_index;
 use crate::projection::{bilinear_i32, lat_to_row_ppm, lon_to_column_ppm};
 use crate::{AtlasError, AtlasPreparedScene, ATLAS_DETAIL_ALGORITHM_VERSION};
@@ -12,6 +19,14 @@ pub const STUDIO_CHUNK_HALO: u32 = 8;
 pub const STUDIO_CHUNK_DETAILED_ZOOM: u32 = 4;
 pub const STUDIO_CHUNK_PRINT_ZOOM: u32 = 7;
 const MAX_CHUNK_CELLS: usize = 256 * 256;
+
+#[derive(Clone, Copy)]
+struct ChunkCoast<'a> {
+    sdf: &'a [i32],
+    sea_level_mm: i32,
+    lake_cells: &'a [bool],
+    constraints: &'a [AtlasConstraint],
+}
 
 #[must_use]
 pub fn studio_chunk_factor(prepared_factor: u32, z: u32) -> u32 {
@@ -45,12 +60,19 @@ impl DetailChunk {
         east_lon_micro: i32,
         south_lat_micro: i32,
         north_lat_micro: i32,
+        constraints: &[AtlasConstraint],
     ) -> Result<Option<Self>, AtlasError> {
         let prepared = scene.model.level.lattice_factor();
         let mut factor = studio_chunk_factor(prepared, z);
         if factor <= prepared {
             return Ok(None);
         }
+        let coast = ChunkCoast {
+            sdf: &scene.sdf,
+            sea_level_mm: scene.hydrology.sea_level_mm,
+            lake_cells: &scene.hydrology.lake_cells,
+            constraints,
+        };
         loop {
             match Self::build(
                 &scene.model,
@@ -62,6 +84,7 @@ impl DetailChunk {
                 east_lon_micro,
                 south_lat_micro,
                 north_lat_micro,
+                Some(coast),
             ) {
                 Ok(chunk) => return Ok(Some(chunk)),
                 Err(error) if error.code == crate::CODE_RESOURCE_LIMIT && factor > prepared * 2 => {
@@ -73,6 +96,7 @@ impl DetailChunk {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         model: &AtlasDetailModel,
         crust_influence_ppm: &[i32],
@@ -83,6 +107,7 @@ impl DetailChunk {
         east_lon_micro: i32,
         south_lat_micro: i32,
         north_lat_micro: i32,
+        coast: Option<ChunkCoast<'_>>,
     ) -> Result<Self, AtlasError> {
         let lattice_width = model
             .grid
@@ -147,6 +172,37 @@ impl DetailChunk {
             }
             octave = octave.saturating_mul(2);
         }
+        if let Some(coast) = coast {
+            let coast_key = domain_key(
+                identity,
+                ATLAS_DETAIL_ALGORITHM_VERSION,
+                model.variant,
+                COASTLINE_SYNTHESIS_DOMAIN,
+            );
+            for local_j in 0..height {
+                let world_j = origin_j + local_j;
+                let lat = lattice_lat_micro(world_j, lattice_height);
+                for local_i in 0..width {
+                    let world_i = (origin_i + local_i) % lattice_width;
+                    let lon = lattice_lon_micro(world_i, lattice_width);
+                    let index = lattice_index(width, local_i, local_j);
+                    extra_mm[index] = compose_coastal_extra(
+                        extra_mm[index],
+                        model,
+                        coast,
+                        &coast_key,
+                        world_i,
+                        world_j,
+                        lon,
+                        lat,
+                        lattice_width,
+                        lattice_height,
+                        prepared,
+                        factor,
+                    );
+                }
+            }
+        }
         Ok(Self {
             origin_i,
             origin_j,
@@ -192,6 +248,64 @@ impl DetailChunk {
         }
         Some(self.extra_mm[lattice_index(self.width, di, dj)])
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn has_nonzero_extra(&self) -> bool {
+        self.extra_mm.iter().any(|value| *value != 0)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compose_coastal_extra(
+    structure_extra_mm: i32,
+    model: &AtlasDetailModel,
+    coast: ChunkCoast<'_>,
+    coast_key: &[u8; 32],
+    world_i: u32,
+    world_j: u32,
+    lon: i32,
+    lat: i32,
+    lattice_width: u32,
+    lattice_height: u32,
+    prepared_factor: u32,
+    factor: u32,
+) -> i32 {
+    let sdf_ppm = sample_sdf_ppm(model.grid, coast.sdf, lon, lat);
+    let abs_sdf = sdf_ppm.unsigned_abs();
+    if abs_sdf > COASTAL_ENVELOPE_PPM {
+        return structure_extra_mm;
+    }
+    if pins_shoreline(coast.constraints, lon, lat) {
+        return 0;
+    }
+    let fade_ppm =
+        ((u64::from(abs_sdf) * 1_000_000) / u64::from(COASTAL_ENVELOPE_PPM.max(1))) as i32;
+    let prepared_mm = model
+        .canonical_at(lon, lat)
+        .saturating_add(model.residual_at(lon, lat));
+    let headroom = prepared_mm
+        .saturating_sub(coast.sea_level_mm)
+        .unsigned_abs()
+        .saturating_sub(1);
+    let faded = ((i64::from(structure_extra_mm) * i64::from(fade_ppm)) / 1_000_000) as i32;
+    let faded = faded.clamp(-(headroom as i32), headroom as i32);
+    if sample_mask_ppm(model.grid, coast.lake_cells, lon, lat) > 500_000 {
+        return faded;
+    }
+    let remainder = coastline_remainder_ppm(
+        coast_key,
+        world_i,
+        world_j,
+        lattice_width,
+        lattice_height,
+        model.grid.width,
+        prepared_factor,
+        factor,
+    );
+    faded
+        .saturating_add(coastline_remainder_delta_mm(remainder, sdf_ppm))
+        .clamp(-COASTAL_RAMP_MM, COASTAL_RAMP_MM)
 }
 
 #[cfg(test)]
@@ -261,6 +375,7 @@ mod tests {
             east,
             south,
             north,
+            None,
         )
         .unwrap();
         let right = DetailChunk::build(
@@ -273,6 +388,7 @@ mod tests {
             36_000_000,
             south,
             north,
+            None,
         )
         .unwrap();
         let i = left.origin_i + left.width / 2;
@@ -311,6 +427,7 @@ mod tests {
             east,
             south,
             north,
+            None,
         )
         .unwrap();
         let octave8 = octave_sample_mm(
@@ -335,5 +452,90 @@ mod tests {
         );
         assert_eq!(left.extra_at(lon, lat), octave8);
         assert_eq!(print.extra_at(lon, lat), octave8.saturating_add(octave16));
+    }
+
+    #[test]
+    fn coast_compose_preserves_inland_octaves_and_bounds_envelope() {
+        let (controls, identity) = controls();
+        let mut cancel = || Ok(());
+        let standard =
+            build_amplification_model(&controls, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let sdf = crate::detail::signed_coastal_distance_ppm(
+            controls.grid,
+            &controls.elevation_mm,
+            controls.sea_level_mm,
+        );
+        let lakes = vec![false; controls.grid.sample_count()];
+        let coast = ChunkCoast {
+            sdf: &sdf,
+            sea_level_mm: controls.sea_level_mm,
+            lake_cells: &lakes,
+            constraints: &[],
+        };
+        let (west, east, south, north) = sdf
+            .iter()
+            .enumerate()
+            .find_map(|(index, value)| {
+                (value.unsigned_abs() <= COASTAL_ENVELOPE_PPM).then(|| {
+                    let (row, col) = controls.grid.row_col(index);
+                    let lon = crate::detail::cell_center_lon_micro(col, controls.grid.width);
+                    let lat = crate::detail::cell_center_lat_micro(row, controls.grid.height);
+                    (
+                        lon.saturating_sub(8_000_000),
+                        lon.saturating_add(8_000_000),
+                        lat.saturating_sub(8_000_000),
+                        lat.saturating_add(8_000_000),
+                    )
+                })
+            })
+            .expect("golden world has a coastal cell");
+        let raw = DetailChunk::build(
+            &standard.detail,
+            &controls.crust_influence_ppm,
+            &controls.mountain_influence_ppm,
+            &identity,
+            8,
+            west,
+            east,
+            south,
+            north,
+            None,
+        )
+        .unwrap();
+        let composed = DetailChunk::build(
+            &standard.detail,
+            &controls.crust_influence_ppm,
+            &controls.mountain_influence_ppm,
+            &identity,
+            8,
+            west,
+            east,
+            south,
+            north,
+            Some(coast),
+        )
+        .unwrap();
+        let mut inland = 0_u32;
+        let mut coastal = 0_u32;
+        for local_j in 0..raw.height {
+            let world_j = raw.origin_j + local_j;
+            for local_i in 0..raw.width {
+                let world_i = (raw.origin_i + local_i) % raw.lattice_width;
+                let lon = lattice_lon_micro(world_i, raw.lattice_width);
+                let lat = lattice_lat_micro(world_j, raw.lattice_height);
+                let sdf_ppm = sample_sdf_ppm(controls.grid, &sdf, lon, lat);
+                let raw_cell = raw.cell(world_i, world_j).unwrap();
+                let composed_cell = composed.cell(world_i, world_j).unwrap();
+                if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
+                    assert_eq!(composed_cell, raw_cell);
+                    inland += 1;
+                } else {
+                    assert!(composed_cell.unsigned_abs() <= COASTAL_RAMP_MM as u32);
+                    coastal += 1;
+                }
+            }
+        }
+        assert!(inland > 0 && coastal > 0);
     }
 }

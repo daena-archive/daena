@@ -11,7 +11,7 @@ use crate::control::ControlFields;
 use crate::detail::{
     cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
     lattice_nearest_cells, lattice_sample, nearest_cell, nest_lattice_coord, sample_field_mm,
-    sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM,
+    sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM, COASTAL_RAMP_MM,
 };
 use crate::erosion::{
     accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
@@ -24,7 +24,6 @@ use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION};
 pub const HIERARCHICAL_RELIEF_DOMAIN: &str = "hierarchical-relief";
 pub const MOUNTAIN_OROMETRY_DOMAIN: &str = "mountain-orometry";
 pub const COASTLINE_SYNTHESIS_DOMAIN: &str = "coastline-synthesis";
-pub const COASTAL_RAMP_MM: i32 = 72_000;
 pub const COASTAL_DISPLACE_PPM: i32 = 380_000;
 pub const MAX_MOUNTAIN_FEATURES: usize = 768;
 pub const MAX_PEAKS_PER_SYSTEM: usize = 48;
@@ -1693,7 +1692,7 @@ fn octave_noise_ppm_keyed(
     )
 }
 
-fn coastline_noise_ppm(
+pub(crate) fn coastline_noise_ppm(
     key: &[u8; 32],
     i: u32,
     j: u32,
@@ -1708,6 +1707,57 @@ fn coastline_noise_ppm(
     let fine = octave_noise_ppm_keyed(key, i, j, width, height, 2, step(2), true);
     ((i64::from(coarse) * 520_000 + i64::from(mid) * 300_000 + i64::from(fine) * 180_000)
         / 1_000_000) as i32
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn coastline_remainder_ppm(
+    key: &[u8; 32],
+    i: u32,
+    j: u32,
+    width: u32,
+    height: u32,
+    grid_width: u32,
+    prepared_factor: u32,
+    factor: u32,
+) -> i32 {
+    let factor = factor.max(1);
+    let prepared_factor = prepared_factor.max(1);
+    if factor <= prepared_factor {
+        return 0;
+    }
+    let ratio = (factor / prepared_factor).max(1);
+    if i.is_multiple_of(ratio) && j.is_multiple_of(ratio) {
+        return 0;
+    }
+    let fine = coastline_noise_ppm(key, i, j, width, height, grid_width);
+    let coarse_w = (width / ratio).max(1);
+    let coarse_h = (height / ratio).max(1);
+    let ci = i / ratio;
+    let cj = j / ratio;
+    let ci1 = (ci + 1) % coarse_w;
+    let cj1 = (cj + 1).min(coarse_h.saturating_sub(1));
+    let fx = ((i % ratio) * 1_000_000) / ratio;
+    let fy = ((j % ratio) * 1_000_000) / ratio;
+    let coarse = bilinear_i32(
+        coastline_noise_ppm(key, ci, cj, coarse_w, coarse_h, grid_width),
+        coastline_noise_ppm(key, ci1, cj, coarse_w, coarse_h, grid_width),
+        coastline_noise_ppm(key, ci, cj1, coarse_w, coarse_h, grid_width),
+        coastline_noise_ppm(key, ci1, cj1, coarse_w, coarse_h, grid_width),
+        fx,
+        fy,
+    );
+    fine.saturating_sub(coarse)
+}
+
+pub(crate) fn coastline_remainder_delta_mm(remainder_ppm: i32, sdf_ppm: i32) -> i32 {
+    let proximity = 1_000_000_u32.saturating_sub(sdf_ppm.unsigned_abs().saturating_mul(2));
+    if proximity == 0 {
+        return 0;
+    }
+    let displaced =
+        ((i64::from(remainder_ppm) * i64::from(COASTAL_DISPLACE_PPM)) / 1_000_000) as i32;
+    let ramp = ((i64::from(displaced) * i64::from(COASTAL_RAMP_MM)) / 500_000) as i32;
+    ((i64::from(ramp) * i64::from(proximity as i32)) / 1_000_000) as i32
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2353,6 +2403,10 @@ mod tests {
                 assert_eq!(
                     coastline_noise_ppm(&key, i, j, w4, h4, grid_w),
                     coastline_noise_ppm(&key, i * 2, j * 2, w8, h8, grid_w)
+                );
+                assert_eq!(
+                    coastline_remainder_ppm(&key, i * 2, j * 2, w8, h8, grid_w, 4, 8),
+                    0
                 );
             }
         }

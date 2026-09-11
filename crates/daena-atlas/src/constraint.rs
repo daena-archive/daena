@@ -156,6 +156,14 @@ pub fn apply_to_protected(
     }
 }
 
+#[must_use]
+pub fn pins_shoreline(constraints: &[AtlasConstraint], lon_micro: i32, lat_micro: i32) -> bool {
+    constraints.iter().any(|constraint| {
+        constraint.kind == AtlasConstraintKind::PinShoreline
+            && near_path(&constraint.path, lon_micro, lat_micro, NEAR_PATH_RADIUS2)
+    })
+}
+
 pub fn apply_to_coastal(
     constraints: &[AtlasConstraint],
     width: u32,

@@ -840,7 +840,15 @@ fn render_studio_raster(
     let east = coordinates.lon.last().copied().unwrap_or(west);
     let north = coordinates.lat.first().copied().unwrap_or(0);
     let south = coordinates.lat.last().copied().unwrap_or(north);
-    let extra = DetailChunk::cover(scene, z, west, east, south.min(north), north.max(south))?;
+    let extra = DetailChunk::cover(
+        scene,
+        z,
+        west,
+        east,
+        south.min(north),
+        north.max(south),
+        &request.constraints,
+    )?;
     let extra_ref = extra.as_ref();
     let options = RasterOptions::for_studio(style, request);
     let shade = studio_shade_field(
@@ -1824,10 +1832,11 @@ mod tests {
             lon.saturating_add(4_000_000),
             lat.saturating_sub(4_000_000),
             lat.saturating_add(4_000_000),
+            &[],
         )
         .unwrap()
         .expect("high zoom should build a nested octave chunk");
-        assert_ne!(chunk.extra_at(lon, lat), 0);
+        assert!(chunk.has_nonzero_extra());
         let left = render_studio_tile(
             &scene,
             &scene_request,
@@ -1862,5 +1871,104 @@ mod tests {
             concat.extend_from_slice(&right.rgba[start..start + 256 * 4]);
         }
         assert_eq!(concat, joined);
+    }
+
+    #[test]
+    fn high_zoom_keeps_prepared_shore_at_nested_samples() {
+        let (scene, _) = prepared();
+        let sea = scene.hydrology.sea_level_mm;
+        let (lon, lat) = scene
+            .sdf
+            .iter()
+            .enumerate()
+            .find_map(|(index, sdf)| {
+                (sdf.unsigned_abs() <= crate::detail::COASTAL_ENVELOPE_PPM).then(|| {
+                    let (row, col) = scene.model.grid.row_col(index);
+                    (
+                        crate::detail::cell_center_lon_micro(col, scene.model.grid.width),
+                        crate::detail::cell_center_lat_micro(row, scene.model.grid.height),
+                    )
+                })
+            })
+            .expect("golden world has a coastal cell");
+        let chunk = DetailChunk::cover(
+            &scene,
+            5,
+            lon.saturating_sub(6_000_000),
+            lon.saturating_add(6_000_000),
+            lat.saturating_sub(6_000_000),
+            lat.saturating_add(6_000_000),
+            &[],
+        )
+        .unwrap()
+        .expect("coastal high zoom should build a chunk");
+        let prepared_factor = scene.model.level.lattice_factor();
+        let ratio = (chunk.factor / prepared_factor).max(1);
+        let mut checked = 0_u32;
+        for local_j in 0..chunk.height {
+            let world_j = chunk.origin_j + local_j;
+            if !world_j.is_multiple_of(ratio) {
+                continue;
+            }
+            for local_i in 0..chunk.width {
+                let world_i = (chunk.origin_i + local_i) % chunk.lattice_width;
+                if !world_i.is_multiple_of(ratio) {
+                    continue;
+                }
+                let sample_lon = crate::detail::lattice_lon_micro(world_i, chunk.lattice_width);
+                let sample_lat = crate::detail::lattice_lat_micro(world_j, chunk.lattice_height);
+                let sdf_ppm = crate::detail::sample_sdf_ppm(
+                    scene.model.grid,
+                    &scene.sdf,
+                    sample_lon,
+                    sample_lat,
+                );
+                if sdf_ppm.unsigned_abs() > crate::detail::COASTAL_ENVELOPE_PPM {
+                    continue;
+                }
+                let prepared = scene.model.refined_at(sample_lon, sample_lat, sea, sdf_ppm);
+                let extra = chunk.extra_at(sample_lon, sample_lat);
+                let zoomed = scene
+                    .model
+                    .refined_at_with_extra(sample_lon, sample_lat, sea, sdf_ppm, extra);
+                assert_eq!(
+                    prepared >= sea,
+                    zoomed >= sea,
+                    "nested even sample flipped shoreline"
+                );
+                assert!(extra.unsigned_abs() <= crate::detail::COASTAL_RAMP_MM as u32);
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "expected nested even coastal samples");
+        for local_j in 0..chunk.height {
+            let world_j = chunk.origin_j + local_j;
+            for local_i in 0..chunk.width {
+                let world_i = (chunk.origin_i + local_i) % chunk.lattice_width;
+                let sample_lon = crate::detail::lattice_lon_micro(world_i, chunk.lattice_width);
+                let sample_lat = crate::detail::lattice_lat_micro(world_j, chunk.lattice_height);
+                let sdf_ppm = crate::detail::sample_sdf_ppm(
+                    scene.model.grid,
+                    &scene.sdf,
+                    sample_lon,
+                    sample_lat,
+                );
+                if sdf_ppm.unsigned_abs() > crate::detail::COASTAL_ENVELOPE_PPM {
+                    continue;
+                }
+                let prepared = scene.model.refined_at(sample_lon, sample_lat, sea, sdf_ppm);
+                let extra = chunk.extra_at(sample_lon, sample_lat);
+                let zoomed = scene
+                    .model
+                    .refined_at_with_extra(sample_lon, sample_lat, sea, sdf_ppm, extra);
+                assert!(extra.unsigned_abs() <= crate::detail::COASTAL_RAMP_MM as u32);
+                if (prepared >= sea) != (zoomed >= sea) {
+                    assert!(
+                        prepared.saturating_sub(sea).unsigned_abs()
+                            <= crate::detail::COASTAL_RAMP_MM as u32
+                    );
+                }
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use std::fs::File;
 use std::io::Write;
+use std::process::Command;
 use tempfile::tempdir;
 use zip::write::SimpleFileOptions;
 
@@ -771,4 +772,193 @@ fn from_install_root_applies_on_disk_revocations() {
     let policy = VerificationPolicy::from_install_root(dir.path(), true).unwrap();
     let error = verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap_err();
     assert!(error.0.contains("digest is revoked"));
+}
+
+#[test]
+fn install_bytes_matches_local_file_digest() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(9);
+    let path = dir.path().join("plugin.daenaplugin");
+    signed_archive(
+        &path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-09"),
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let policy = pinned_policy(&key, "2026-09");
+    let from_file = verify_and_extract(
+        &path,
+        &dir.path().join("file"),
+        ArchiveLimits::default(),
+        policy.clone(),
+    )
+    .unwrap();
+    let mut catalog = PackageCatalog::default();
+    let from_bytes = catalog
+        .install_bytes(
+            &bytes,
+            dir.path().join("bytes"),
+            ArchiveLimits::default(),
+            policy,
+        )
+        .unwrap();
+    assert_eq!(from_file.digest, from_bytes.digest);
+    assert_eq!(from_file.signed, from_bytes.signed);
+    assert_eq!(from_file.manifest.id, from_bytes.manifest.id);
+}
+
+#[test]
+fn advertised_catalog_digest_is_fetch_integrity_only() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(10);
+    let path = dir.path().join("plugin.daenaplugin");
+    signed_archive(
+        &path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-09"),
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let policy = pinned_policy(&key, "2026-09");
+    let verified = verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap();
+    advertised_digest_matches(Some(&verified.digest), &verified.digest).unwrap();
+    advertised_digest_matches(None, &verified.digest).unwrap();
+    let error =
+        advertised_digest_matches(Some("00".repeat(32).as_str()), &verified.digest).unwrap_err();
+    assert!(error.0.contains("catalog digest"));
+}
+
+#[test]
+fn trust_snapshot_store_is_atomic_and_revokes_after_refresh() {
+    let dir = tempdir().unwrap();
+    let key = signing_key(11);
+    let path = dir.path().join("plugin.daenaplugin");
+    signed_archive(
+        &path,
+        "1.0.0",
+        &[("dist/index.html", b"ok")],
+        &key,
+        Some("2026-09"),
+    );
+    let bytes = std::fs::read(&path).unwrap();
+    let snapshot_path = dir.path().join(TRUST_SNAPSHOT_FILE);
+    pinned_policy(&key, "2026-09")
+        .trust
+        .store(&snapshot_path)
+        .unwrap();
+    let loaded = TrustSnapshot::load(&snapshot_path).unwrap();
+    let policy = VerificationPolicy {
+        trust: loaded,
+        ..VerificationPolicy::default()
+    };
+    verify_archive_bytes(&bytes, ArchiveLimits::default(), &policy).unwrap();
+
+    let mut revoked = TrustSnapshot::load(&snapshot_path).unwrap();
+    revoked.revocations.keys.push(RevokedKey {
+        publisher: "com.example".into(),
+        key_id: Some("2026-09".into()),
+        public_key: Some(public_key_b64(&key)),
+    });
+    revoked.store(&snapshot_path).unwrap();
+    let after_refresh = VerificationPolicy::from_install_root(dir.path(), false).unwrap();
+    let error = verify_archive_bytes(&bytes, ArchiveLimits::default(), &after_refresh).unwrap_err();
+    assert!(error.0.contains("signing key is revoked"));
+}
+
+#[test]
+fn missing_registry_catalog_does_not_block_local_install() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("unsigned.daenaplugin");
+    archive(&path, &manifest("1.0.0"), &[("dist/index.html", b"ok")]);
+    assert!(DiscoveryCatalog::load_from_install_root(dir.path())
+        .unwrap()
+        .plugins
+        .is_empty());
+    let policy = VerificationPolicy::from_install_root(dir.path(), true).unwrap();
+    verify_and_extract(&path, dir.path(), ArchiveLimits::default(), policy).unwrap();
+}
+
+#[test]
+fn discovery_catalog_rejects_unknown_fields_and_bad_digests() {
+    let error = DiscoveryCatalog::from_bytes(br#"{"schemaVersion":1,"plugins":[],"extra":true}"#)
+        .unwrap_err();
+    assert!(error.0.contains("invalid discovery catalog"));
+    let error = DiscoveryCatalog::from_bytes(
+        br#"{"schemaVersion":1,"plugins":[{"id":"com.example.test","publisher":"com.example","name":"Test","version":"1.0.0","digest":"nope","artifactUrl":"https://example.test/p.daenaplugin"}]}"#,
+    )
+    .unwrap_err();
+    assert!(error.0.contains("SHA-256"));
+}
+
+#[test]
+fn plugin_cli_signed_archive_verifies_on_the_host() {
+    let workspace = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let cli = workspace.join("scripts/plugin-cli.mjs");
+    let example = workspace.join("examples/plugins/declarative");
+    assert!(cli.is_file(), "plugin CLI wrapper is missing");
+    let dir = tempdir().unwrap();
+    let fixture = dir.path().join("fixture");
+    copy_dir(&example, &fixture);
+    let archive = dir.path().join("plugin.daenaplugin");
+    let key = dir.path().join("signing.json");
+    run_node(&[
+        cli.to_str().unwrap(),
+        "package",
+        fixture.to_str().unwrap(),
+        "--output",
+        archive.to_str().unwrap(),
+    ]);
+    run_node(&[
+        cli.to_str().unwrap(),
+        "keygen",
+        "--output",
+        key.to_str().unwrap(),
+        "--key-id",
+        "2026-09",
+    ]);
+    run_node(&[
+        cli.to_str().unwrap(),
+        "sign",
+        archive.to_str().unwrap(),
+        "--key",
+        key.to_str().unwrap(),
+    ]);
+    let bytes = std::fs::read(&archive).unwrap();
+    let verified = verify_archive_bytes(
+        &bytes,
+        ArchiveLimits::default(),
+        &VerificationPolicy::default(),
+    )
+    .unwrap();
+    assert!(verified.signed);
+    assert_eq!(verified.manifest.publisher, "com.example");
+    assert_eq!(verified.digest.len(), 64);
+}
+
+fn run_node(args: &[&str]) {
+    let output = Command::new("node")
+        .args(args)
+        .output()
+        .expect("node must be available to verify daena-plugin signatures");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }

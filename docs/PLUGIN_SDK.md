@@ -536,6 +536,10 @@ node scripts/plugin-cli.mjs validate path/to/my-plugin
 node scripts/plugin-cli.mjs migration validate path/to/my-plugin
 node scripts/plugin-cli.mjs package path/to/my-plugin \
   --output ./my-plugin.daenaplugin
+node scripts/plugin-cli.mjs keygen --output ./daena-plugin-ed25519.json \
+  --key-id 2026-09
+node scripts/plugin-cli.mjs sign ./my-plugin.daenaplugin \
+  --key ./daena-plugin-ed25519.json
 node scripts/plugin-cli.mjs validate ./my-plugin.daenaplugin
 ```
 
@@ -544,12 +548,19 @@ checks archive paths, file limits, collisions, symlinks, manifest references,
 digests, signatures, compatibility, and unsigned-package consent before any
 plugin code executes.
 
+Keep the signing key offline. Put only the printed verifying key and `keyId`
+in a `publishers/<id>/publisher.json` PR against the identity index (see
+[`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md)). Then attach the signed
+`.daenaplugin` to a GitHub Release on `sourceRepo`.
+
 To install it in Daena Archive:
 
 1. Open the **Plugins** panel.
-2. Select **Install package…** and choose the `.daenaplugin` file.
-3. Review the publisher, digest, requested capabilities, and unsigned-package
-   warning if applicable.
+2. Select **Install extension…** and choose the `.daenaplugin` file, or
+   **Refresh catalog** and install a listed package. Both paths review the
+   same bytes.
+3. Review the publisher, digest, trust status, requested capabilities, and
+   unsigned-package warning if applicable.
 4. Confirm installation, then use the plugin's **Enable** action for the
    current project.
 
@@ -558,7 +569,9 @@ Installed code is global to the application profile; enablement, grants,
 stored data versions, health, and failure state are project-scoped.
 
 A registry, if present, is only a way to obtain the same `.daenaplugin` bytes.
-Verification uses the package digest, optional `signature.json` (Ed25519,
+The host digest hashes archive names and file bytes, with `signature.json`
+keys sorted and `digest`/`signature` emptied so the CLI and host agree.
+Verification then uses that digest, optional `signature.json` (Ed25519,
 optional `keyId` for rotation), and the host trust snapshot
 (`plugins/trust.json`): pinned publisher keys plus revocations. Unsigned
 packages still install only with explicit consent. Publisher signatures never

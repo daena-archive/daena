@@ -15,11 +15,14 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
+mod registry;
 mod trust;
 
+pub use registry::{advertised_digest_matches, CatalogPlugin, DiscoveryCatalog, MAX_CATALOG_BYTES};
 pub use trust::{
     review_manifest, review_package, PackageReview, PublisherIdentity, PublisherKey,
-    RevocationList, RevokedKey, RevokedPackage, TrustSnapshot, TrustStatus, TRUST_SNAPSHOT_FILE,
+    RevocationList, RevokedKey, RevokedPackage, TrustSnapshot, TrustStatus, CATALOG_FILE,
+    MAX_TRUST_SNAPSHOT_BYTES, TRUST_SNAPSHOT_FILE,
 };
 
 const SIGNATURE_FILE: &str = "signature.json";
@@ -189,6 +192,24 @@ impl PackageCatalog {
         Ok(package)
     }
 
+    pub fn install_bytes(
+        &mut self,
+        bytes: &[u8],
+        install_root: impl AsRef<Path>,
+        limits: ArchiveLimits,
+        policy: VerificationPolicy,
+    ) -> Result<PluginPackage, PackageError> {
+        let install_root = install_root.as_ref();
+        fs::create_dir_all(install_root).map_err(io_error)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".download-")
+            .tempdir_in(install_root)
+            .map_err(io_error)?;
+        let archive = staging.path().join("package.daenaplugin");
+        fs::write(&archive, bytes).map_err(io_error)?;
+        self.install(archive, install_root, limits, policy)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self, PackageError> {
         let path = path.as_ref();
         if !path.is_file() {
@@ -237,7 +258,13 @@ impl PackageCatalog {
             let plugin_entry = plugin_entry.map_err(io_error)?;
             let plugin_root = plugin_entry.path();
             let plugin_type = plugin_entry.file_type().map_err(io_error)?;
-            if !plugin_type.is_dir() || plugin_type.is_symlink() {
+            if !plugin_type.is_dir()
+                || plugin_type.is_symlink()
+                || plugin_root
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with('.'))
+            {
                 continue;
             }
             for version_entry in fs::read_dir(&plugin_root).map_err(io_error)? {
@@ -1072,6 +1099,21 @@ fn unix_now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), PackageError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| PackageError("atomic write path has no parent directory".into()))?;
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
+    temporary.write_all(bytes).map_err(io_error)?;
+    temporary.flush().map_err(io_error)?;
+    match temporary.persist(path) {
+        Ok(_) => Ok(()),
+        Err(_error) if path.is_file() => fs::write(path, bytes).map_err(io_error),
+        Err(error) => Err(PackageError(error.error.to_string())),
+    }
+}
+
 fn io_error(error: std::io::Error) -> PackageError {
     PackageError(error.to_string())
 }

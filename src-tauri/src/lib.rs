@@ -48,6 +48,7 @@ mod module_commands;
 mod physical_commands;
 mod physical_jobs;
 mod plugin_commands;
+mod plugin_registry;
 mod plugin_webview;
 mod project_commands;
 mod settings;
@@ -62,6 +63,7 @@ use self::module_commands::*;
 use self::physical_commands::*;
 use self::physical_jobs::*;
 use self::plugin_commands::*;
+use self::plugin_registry::*;
 use self::plugin_webview::*;
 use self::project_commands::*;
 use self::transfer::*;
@@ -641,6 +643,11 @@ pub fn run() {
             module_enable,
             module_disable,
             plugin_install_package,
+            plugin_review_package,
+            plugin_refresh_registry,
+            plugin_registry_catalog,
+            plugin_prepare_catalog_package,
+            plugin_discard_prepared_package,
             plugin_upgrade,
             plugin_upgrade_plan,
             plugin_rollback,

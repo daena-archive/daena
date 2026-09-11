@@ -701,6 +701,12 @@ pre-install `review_manifest`. Local unsigned install with consent stays.
 Daena Archive with the same digest, signature, and grants path as a sideloaded
 copy of the same bytes. GitHub down does not block local install.
 
+Current: the identity index lives in `daena-archive/plugin-registry`. The host
+fetches default Pages `trust.json` / `catalog.json` into `plugins/`, reviews
+with `review_manifest` before install, and verifies catalog downloads as the
+same bytes as a local `.daenaplugin`. `daena-plugin keygen` and `sign` write
+Ed25519 `signature.json`. Release crawl remains follow-up.
+
 ## Test and release requirements
 
 The plugin platform is not release-ready until automated tests cover:

@@ -1,4 +1,4 @@
-use super::{PackageError, PackageSignature, VerifiedPackage};
+use super::{write_atomic_bytes, PackageError, PackageSignature, VerifiedPackage};
 use daena_plugin_api::PluginManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -6,8 +6,9 @@ use std::fs;
 use std::path::Path;
 
 pub const TRUST_SNAPSHOT_FILE: &str = "trust.json";
+pub const CATALOG_FILE: &str = "catalog.json";
 const TRUST_SCHEMA_VERSION: u32 = 1;
-const MAX_TRUST_SNAPSHOT_BYTES: u64 = 256 * 1024;
+pub const MAX_TRUST_SNAPSHOT_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,21 +101,38 @@ impl TrustSnapshot {
         }
     }
 
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, PackageError> {
+        if bytes.len() as u64 > MAX_TRUST_SNAPSHOT_BYTES {
+            return Err(PackageError("trust snapshot exceeds size limit".into()));
+        }
+        let snapshot: Self = serde_json::from_slice(bytes)
+            .map_err(|error| PackageError(format!("invalid trust snapshot: {error}")))?;
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self, PackageError> {
         let path = path.as_ref();
         if !path.is_file() {
             return Ok(Self::default());
         }
         let bytes = fs::read(path).map_err(|error| PackageError(error.to_string()))?;
+        Self::from_bytes(&bytes)
+    }
+
+    pub fn store(&self, path: impl AsRef<Path>) -> Result<(), PackageError> {
+        self.validate()?;
+        let path = path.as_ref();
+        let mut bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| PackageError(format!("invalid trust snapshot: {error}")))?;
+        bytes.push(b'\n');
         if bytes.len() as u64 > MAX_TRUST_SNAPSHOT_BYTES {
             return Err(PackageError("trust snapshot exceeds size limit".into()));
         }
-        let snapshot: Self = serde_json::from_slice(&bytes)
-            .map_err(|error| PackageError(format!("invalid trust snapshot: {error}")))?;
-        snapshot.validate()
+        write_atomic_bytes(path, &bytes)
     }
 
-    fn validate(self) -> Result<Self, PackageError> {
+    fn validate(&self) -> Result<(), PackageError> {
         if self.schema_version != TRUST_SCHEMA_VERSION {
             return Err(PackageError(
                 "unsupported trust snapshot schema version".into(),
@@ -140,7 +158,7 @@ impl TrustSnapshot {
                 return Err(PackageError("key revocation must include publicKey".into()));
             }
         }
-        Ok(self)
+        Ok(())
     }
 
     pub fn digest_revoked(&self, digest: &str) -> bool {

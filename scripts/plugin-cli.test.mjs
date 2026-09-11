@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
+import { createZipArchive, readZipArchive } from "../packages/plugin-cli/bin/zip.mjs";
 
 const workspace = resolve(import.meta.dirname, "..");
 const cli = join(workspace, "scripts/plugin-cli.mjs");
@@ -62,6 +62,22 @@ try {
   ecosystemManifest.services = { provides: [], consumes: [{ name: "daena.maps/navigation", major: 1 }] };
   writeFileSync(join(ecosystemNames, "manifest.json"), `${JSON.stringify(ecosystemManifest, null, 2)}\n`);
   execFileSync("node", [cli, "validate", ecosystemNames], { stdio: "pipe" });
+  const keyPath = join(temporary, "signing.json");
+  const generated = JSON.parse(
+    execFileSync("node", [cli, "keygen", "--output", keyPath, "--key-id", "2026-09"], { encoding: "utf8" }),
+  );
+  assert.equal(generated.ok, true);
+  assert.equal(generated.keyId, "2026-09");
+  const signedArchive = join(temporary, "signed.daenaplugin");
+  execFileSync("node", [cli, "package", fixture, "--output", signedArchive], { stdio: "pipe" });
+  const signed = JSON.parse(execFileSync("node", [cli, "sign", signedArchive, "--key", keyPath], { encoding: "utf8" }));
+  assert.equal(signed.ok, true);
+  assert.equal(signed.digest.length, 64);
+  const entries = readZipArchive(readFileSync(signedArchive));
+  const signature = JSON.parse(entries.find((entry) => entry.name === "signature.json").data.toString("utf8"));
+  assert.equal(signature.algorithm, "ed25519");
+  assert.equal(signature.publicKey, generated.publicKey);
+  assert.equal(signature.keyId, "2026-09");
   console.log("plugin CLI checks passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });

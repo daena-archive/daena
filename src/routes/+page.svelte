@@ -17,6 +17,8 @@ import {
   type ProjectInfo,
   type GitStatus,
   type PluginAdminEntry,
+  type PluginCatalogEntry,
+  type PluginPackageReview,
   type PluginUpgradePlan,
   type AiSettings,
   type AiProviderStatus,
@@ -740,7 +742,11 @@ let adminBusy = $state(false);
 let pluginActionId = $state<string | null>(null);
 let installing = $state(false);
 let installConsent = $state<{ path: string; message: string } | null>(null);
+let installReview = $state<{ path: string; review: PluginPackageReview } | null>(null);
 let installSummary = $state<{ id: string; version: string; signed: boolean; digest: string } | null>(null);
+let registryCatalog = $state<PluginCatalogEntry[]>([]);
+let registryBusy = $state(false);
+let registryError = $state("");
 let upgradePreview = $state<{ entry: PluginAdminEntry; version: string; plan: PluginUpgradePlan } | null>(null);
 let upgradeBusy = $state(false);
 let confirmAction = $state<{
@@ -811,6 +817,7 @@ $effect(() => {
     confirmAction !== null ||
     deleteTarget !== null ||
     installConsent !== null ||
+    installReview !== null ||
     deleteBackupPath !== "" ||
     metadataDialog !== null ||
     assetDialog !== null ||
@@ -843,6 +850,9 @@ $effect(() => {
     } else if (upgradePreview) {
       event.preventDefault();
       upgradePreview = null;
+    } else if (installReview) {
+      event.preventDefault();
+      void cancelInstallReview();
     } else if (installConsent) {
       event.preventDefault();
       installConsent = null;
@@ -6025,6 +6035,13 @@ async function refreshAdmin() {
     adminPlugins = view.plugins;
     themePacks = collectInstalledThemePacks(view.plugins);
     applyCurrentAppearance();
+    try {
+      const registry = await project.pluginRegistryCatalog();
+      registryCatalog = registry.catalog?.plugins ?? [];
+      registryError = registry.error ?? "";
+    } catch {
+      registryCatalog = [];
+    }
   } catch (cause) {
     error = friendlyError(cause);
   } finally {
@@ -6306,10 +6323,63 @@ async function installFromPicker() {
   try {
     const selection = await project.pickPluginPackage();
     const source = typeof selection === "string" ? selection : null;
-    if (source) await installPackage(source);
+    if (source) await reviewThenInstall(source);
   } catch (cause) {
     error = friendlyError(cause);
   }
+}
+async function reviewThenInstall(path: string) {
+  installing = true;
+  installConsent = null;
+  installSummary = null;
+  try {
+    const review = await project.reviewPlugin(path);
+    installReview = { path, review };
+  } catch (cause) {
+    error = friendlyError(cause);
+  } finally {
+    installing = false;
+  }
+}
+async function refreshPluginRegistry() {
+  registryBusy = true;
+  try {
+    const view = await project.refreshPluginRegistry();
+    registryCatalog = view.catalog?.plugins ?? [];
+    registryError = view.error ?? "";
+  } catch (cause) {
+    registryError = friendlyError(cause);
+  } finally {
+    registryBusy = false;
+  }
+}
+async function installFromCatalog(entry: PluginCatalogEntry) {
+  installing = true;
+  installSummary = null;
+  try {
+    const prepared = await project.prepareCatalogPlugin(entry.artifactUrl);
+    installReview = { path: prepared.archive, review: prepared.review };
+  } catch (cause) {
+    error = friendlyError(cause);
+  } finally {
+    installing = false;
+  }
+}
+async function cancelInstallReview() {
+  const current = installReview;
+  installReview = null;
+  if (!current) return;
+  try {
+    await project.discardPreparedPlugin(current.path);
+  } catch {
+    /* local picker paths are left in place */
+  }
+}
+async function confirmReviewedInstall() {
+  if (!installReview) return;
+  const { path, review } = installReview;
+  installReview = null;
+  await installPackage(path, !review.signed);
 }
 async function installPackage(path: string, allowUnsigned = false) {
   installing = true;
@@ -7153,6 +7223,49 @@ onMount(() => {
           </div>
         </div>
       </div>{/if}
+    {#if installReview}
+      {@const review = installReview.review}
+      <div class="modal-backdrop">
+        <div class="dialog" role="dialog" aria-modal="true">
+          <div class="new-form-heading">
+            <div>
+              <span class="panel-kicker">REVIEW PACKAGE</span><strong
+                >Install {review.pluginId} {review.version}?</strong>
+            </div>
+            <button type="button" class="new-form-close" onclick={() => void cancelInstallReview()}
+              ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+          </div>
+          <p class="dialog-body-copy">
+            Publisher <code>{review.publisher}</code>
+            {#if review.keyId}
+              · key <code>{review.keyId}</code>{/if}
+            · {review.signed ? review.trustStatus : "unsigned"}
+            · digest <code>{shortDigest(review.digest)}</code>
+          </p>
+          {#each review.disclosures as disclosure}
+            <p class="plugin-warning">{disclosure}</p>
+          {/each}
+          {#if review.capabilities.length > 0}
+            <h4 class="plugin-subhead">Requested capabilities</h4>
+            <p class="dialog-body-copy">{review.capabilities.join(", ")}</p>
+          {:else}
+            <p class="dialog-body-copy capability-empty">No capabilities requested.</p>
+          {/if}
+          <p class="dialog-body-copy">
+            Listing or signature never grants capabilities. Enablement is still per project.
+          </p>
+          <div class="new-form-actions">
+            <button type="button" class="quiet-button" onclick={() => void cancelInstallReview()}>Cancel</button>
+            <button
+              type="button"
+              class="primary-button"
+              onclick={() => void confirmReviewedInstall()}
+              disabled={installing}
+              >{installing ? "Installing…" : review.signed ? "Install" : "Install unsigned"}</button>
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if upgradePreview}
       {@const preview = upgradePreview}
       <div class="modal-backdrop">
@@ -7380,8 +7493,38 @@ onMount(() => {
               class="primary-button"
               disabled={installing || adminBusy}
               onclick={() => void installFromPicker()}>{installing ? "Installing…" : "Install extension…"}</button>
+            <button
+              type="button"
+              class="quiet-button"
+              disabled={registryBusy || installing}
+              onclick={() => void refreshPluginRegistry()}
+              >{registryBusy ? "Refreshing catalog…" : "Refresh catalog"}</button>
             <span class="muted-note">{adminBusy ? "Refreshing…" : ""}</span>
           </div>
+          {#if registryError}
+            <p class="plugin-muted">Catalog unavailable. Local install still works. {registryError}</p>
+          {/if}
+          {#if registryCatalog.length > 0}
+            <div class="plugins-list">
+              {#each registryCatalog as entry (entry.id + entry.version)}
+                <article class="plugin-card">
+                  <header class="plugin-card-head">
+                    <div class="plugin-card-title">
+                      <strong>{entry.name}</strong><span class="plugin-id">{entry.id}</span>
+                    </div>
+                  </header>
+                  <div class="plugin-card-meta">
+                    <span>v{entry.version} · {entry.publisher}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="quiet-button"
+                    disabled={installing}
+                    onclick={() => void installFromCatalog(entry)}>Install from catalog</button>
+                </article>
+              {/each}
+            </div>
+          {/if}
           {#if installSummary}
             <div class="plugins-note">
               Installed {installSummary.id}

@@ -916,6 +916,44 @@ export interface InstalledPluginVersion {
   publisher: string;
   digest: string;
   signed: boolean;
+  keyId?: string | null;
+  trustStatus?: PluginTrustStatus;
+  disclosures?: string[];
+  capabilities?: string[];
+}
+export type PluginTrustStatus = "unsigned" | "signed" | "trusted-publisher";
+export interface PluginPackageReview {
+  pluginId: string;
+  version: string;
+  publisher: string;
+  digest: string;
+  signed: boolean;
+  keyId: string | null;
+  trustStatus: PluginTrustStatus;
+  capabilities: string[];
+  disclosures: string[];
+}
+export interface PluginCatalogEntry {
+  id: string;
+  publisher: string;
+  name: string;
+  version: string;
+  digest?: string | null;
+  artifactUrl: string;
+}
+export interface PluginDiscoveryCatalog {
+  schemaVersion: number;
+  plugins: PluginCatalogEntry[];
+}
+export interface PluginRegistryView {
+  catalog: PluginDiscoveryCatalog;
+  trustLoaded: boolean;
+  error: string | null;
+  ok?: boolean;
+}
+export interface PreparedCatalogPackage {
+  archive: string;
+  review: PluginPackageReview;
 }
 export interface LifecycleInfo {
   state: string;

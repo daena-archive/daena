@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -11,6 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash, createPrivateKey, generateKeyPairSync, sign as signMessage } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import * as sdk from "@daena-archive/plugin-sdk";
@@ -47,8 +49,138 @@ function usage() {
   console.error(`Usage:
 daena-plugin validate <directory|archive>
 daena-plugin package <directory> [--output file]
+daena-plugin keygen [--output file] [--key-id id]
+daena-plugin sign <archive> --key <path> [--key-id <id>]
 daena-plugin migration validate <directory>
 daena-plugin init <directory> --id <plugin-id> [--name name]`);
+}
+
+const SIGNATURE_FILE = "signature.json";
+
+function rawKeyFromDer(der, size) {
+  if (der.length < size) throw new Error("Ed25519 key is truncated");
+  return der.subarray(der.length - size);
+}
+
+function defaultKeyId() {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function archiveDigest(files) {
+  const sorted = [...files].sort((a, b) => Buffer.from(a.name, "utf8").compare(Buffer.from(b.name, "utf8")));
+  const hasher = createHash("sha256");
+  for (const file of sorted) {
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(file.data);
+    hasher.update(file.name, "utf8");
+    hasher.update(Buffer.from([0]));
+    if (file.name === SIGNATURE_FILE) {
+      hasher.update(canonicalSignatureMetadata(data));
+    } else hasher.update(data);
+    hasher.update(Buffer.from([0]));
+  }
+  return hasher.digest("hex");
+}
+
+function canonicalSignatureMetadata(data) {
+  const metadata = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : String(data));
+  metadata.digest = "";
+  metadata.signature = "";
+  const sorted = {};
+  for (const key of Object.keys(metadata).sort()) sorted[key] = metadata[key];
+  return Buffer.from(JSON.stringify(sorted), "utf8");
+}
+
+function signatureJson(fields) {
+  const object = {
+    algorithm: "ed25519",
+    publisher: fields.publisher,
+  };
+  if (fields.keyId) object.keyId = fields.keyId;
+  object.publicKey = fields.publicKey;
+  object.signature = fields.signature ?? "";
+  object.digest = fields.digest ?? "";
+  return `${JSON.stringify(object)}\n`;
+}
+
+function generateKeyPair(output, keyId) {
+  const id = keyId || defaultKeyId();
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicRaw = rawKeyFromDer(publicKey.export({ type: "spki", format: "der" }), 32);
+  const privateRaw = rawKeyFromDer(privateKey.export({ type: "pkcs8", format: "der" }), 32);
+  const target = resolve(output ?? join(process.cwd(), `daena-plugin-${id}.ed25519.json`));
+  if (existsSync(target)) throw new Error(`key file already exists: ${target}`);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(
+    target,
+    `${JSON.stringify(
+      {
+        algorithm: "ed25519",
+        keyId: id,
+        publicKey: publicRaw.toString("base64"),
+        privateKey: privateRaw.toString("base64"),
+      },
+      null,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(target, 0o600);
+  return { target, keyId: id, publicKey: publicRaw.toString("base64") };
+}
+
+function loadSigningKey(path) {
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  if (parsed.algorithm !== "ed25519" || typeof parsed.privateKey !== "string" || typeof parsed.publicKey !== "string") {
+    throw new Error("signing key must be a daena-plugin Ed25519 key file");
+  }
+  const privateRaw = Buffer.from(parsed.privateKey, "base64");
+  const publicRaw = Buffer.from(parsed.publicKey, "base64");
+  if (privateRaw.length !== 32 || publicRaw.length !== 32) {
+    throw new Error("signing key must contain 32-byte Ed25519 keys");
+  }
+  const pkcs8 = Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), privateRaw]);
+  return {
+    privateKey: createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" }),
+    publicKey: parsed.publicKey,
+    keyId: typeof parsed.keyId === "string" ? parsed.keyId : undefined,
+  };
+}
+
+function signArchive(input, keyPath, keyId) {
+  const archive = resolve(input);
+  if (!isPluginArchive(archive)) throw new Error("sign requires a .daenaplugin archive");
+  const { manifest, files } = validateArchive(archive);
+  if (files.includes(SIGNATURE_FILE)) throw new Error("archive already contains signature.json");
+  const key = loadSigningKey(keyPath);
+  const resolvedKeyId = keyId || key.keyId;
+  const entries = readZipArchive(readFileSync(archive)).map((entry) => ({
+    name: entry.name,
+    data: entry.data,
+  }));
+  const placeholder = signatureJson({
+    publisher: manifest.publisher,
+    keyId: resolvedKeyId,
+    publicKey: key.publicKey,
+  });
+  const digest = archiveDigest([...entries, { name: SIGNATURE_FILE, data: placeholder }]);
+  const signature = signMessage(null, Buffer.from(digest, "utf8"), key.privateKey).toString("base64");
+  const signed = signatureJson({
+    publisher: manifest.publisher,
+    keyId: resolvedKeyId,
+    publicKey: key.publicKey,
+    signature,
+    digest,
+  });
+  const target = archive;
+  const temporary = `${target}.tmp-${process.pid}`;
+  try {
+    writeFileSync(temporary, createZipArchive([...entries, { name: SIGNATURE_FILE, data: signed }]));
+    renameSync(temporary, target);
+  } finally {
+    if (existsSync(temporary)) rmSync(temporary);
+  }
+  return { archive: target, digest, keyId: resolvedKeyId ?? null, publisher: manifest.publisher };
 }
 
 function readManifest(directory) {
@@ -246,6 +378,17 @@ try {
     );
   } else if (command === "init") {
     console.log(JSON.stringify({ ok: true, directory: initDirectory(args.shift(), args) }, null, 2));
+  } else if (command === "keygen") {
+    const result = generateKeyPair(parseFlag(args, "--output"), parseFlag(args, "--key-id"));
+    console.log(
+      JSON.stringify({ ok: true, keyId: result.keyId, publicKey: result.publicKey, path: result.target }, null, 2),
+    );
+  } else if (command === "sign") {
+    const archive = args[0];
+    const keyPath = parseFlag(args, "--key");
+    if (!archive || !keyPath) throw new Error("sign requires an archive and --key");
+    const result = signArchive(archive, keyPath, parseFlag(args, "--key-id"));
+    console.log(JSON.stringify({ ok: true, ...result }, null, 2));
   } else {
     usage();
     process.exitCode = 1;

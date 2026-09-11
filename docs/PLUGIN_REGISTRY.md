@@ -2,8 +2,12 @@
 
 ## Status and purpose
 
-Next delivery after Phase 8. Not implemented yet. Local `.daenaplugin`
-installation does not depend on it.
+Phase 9. Host refresh, catalog install, and `daena-plugin keygen` / `sign`
+live in this repository. The identity index is
+[daena-archive/plugin-registry](https://github.com/daena-archive/plugin-registry).
+Local `.daenaplugin` installation does not depend on GitHub. The default fetch
+URLs are `https://daena-archive.github.io/plugin-registry/trust.json` and
+`catalog.json`.
 
 Standing policy is [ADR 0001](adr/0001-plugin-platform-boundary.md): a registry
 or publisher signature may inform installation trust and cannot become an
@@ -244,9 +248,12 @@ When registry refresh exists:
 2. Parse with `TrustSnapshot::load` (size limit, schema 1, fail closed).
 3. Replace `plugins/trust.json` atomically.
 4. Optionally fetch `catalog.json` for the Plugins panel browse list.
-5. On install from the catalog, download the release asset bytes, require the
-   `.daenaplugin` extension, and call the same installer used for a local
-   file, with `VerificationPolicy::from_install_root`.
+5. On install from the catalog, the artifact URL must already be listed in the
+   local `catalog.json`. Fetch it over HTTPS from GitHub (including
+   `githubusercontent.com` redirects for Release assets), require the
+   `.daenaplugin` extension, compare the catalog digest if present, and call
+   the same installer used for a local file, with
+   `VerificationPolicy::from_install_root`.
 
 If fetch fails, keep the last good snapshot and local install. An empty or
 missing snapshot is today’s default: signatures still verify cryptographically,
@@ -312,15 +319,14 @@ in `trust.json`.
 
 ## Implementation remainder
 
-Phase 9 work. Host verify and `TrustSnapshot` already exist.
+Shipped here: `daena-plugin keygen` / `sign`, host snapshot refresh, catalog
+prepare/install (same `verify_archive_bytes` path), pre-install
+`review_manifest`, and the identity-index compiler used by tests
+(`scripts/plugin-registry-compile.mjs`). The live index, PR templates, and
+Pages workflows live in `daena-archive/plugin-registry`.
 
-1. Public identity-index repository, PR templates, and CI validation.
-2. Pages publish of `trust.json` and `catalog.json`.
-3. Host command to refresh the snapshot into `plugins/trust.json`.
-4. Plugins panel browse list driven by `catalog.json`, install still
-   file-equivalent; optional catalog digest is fetch integrity only. Show
-   `review_manifest` before writing the version store.
-5. `daena-plugin keygen` and `daena-plugin sign`, plus `PLUGIN_SDK.md` for
-   keys, signing, the registration PR, and releases.
-6. Packaged tests: same archive from disk vs downloaded bytes; revoked key
-   after a snapshot refresh; Pages unavailable leaves local install working.
+Still outside this repository:
+
+1. Protect `main` on `plugin-registry` and enable Pages.
+2. Optional CI crawl of publisher GitHub Releases to fill `catalog.json`
+   (unsigned assets omitted). Empty catalog is valid.

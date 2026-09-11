@@ -1,5 +1,6 @@
 // Runtime plugin management commands.
 use super::*;
+use crate::plugin_registry::cleanup_registry_download;
 
 #[tauri::command]
 pub(super) fn plugin_install_package(
@@ -15,16 +16,18 @@ pub(super) fn plugin_install_package(
         .join("plugins");
     let policy = VerificationPolicy::from_install_root(&install_root, allow_unsigned)
         .map_err(|error| error.to_string())?;
-    let package = plugins
+    let archive_path = std::path::PathBuf::from(&archive);
+    let install_result = plugins
         .lock()
         .map_err(|_| "plugin host lock poisoned".to_string())?
         .install_package(
-            archive,
-            install_root,
+            &archive_path,
+            &install_root,
             ArchiveLimits::default(),
             policy.clone(),
-        )
-        .map_err(|error| error.to_string())?;
+        );
+    cleanup_registry_download(&install_root, &archive_path);
+    let package = install_result.map_err(|error| error.to_string())?;
     let review = review_manifest(
         &package.manifest,
         &package.digest,

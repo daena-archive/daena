@@ -46,6 +46,9 @@ import type {
   ImportMappingOverrides,
   ImportObjectDecision,
   InstalledPluginVersion,
+  PluginPackageReview,
+  PluginRegistryView,
+  PreparedCatalogPackage,
   MapEditApply,
   MapFeatureSearchResult,
   MapLinkMutation,
@@ -696,6 +699,12 @@ export const project = {
   closePluginWebview: (pluginId: string) => invoke<void>("plugin_close_webview", { pluginId }),
   installPlugin: (archive: string, allowUnsigned = false) =>
     invoke<InstalledPluginVersion>("plugin_install_package", { archive, allowUnsigned }),
+  reviewPlugin: (archive: string) => invoke<PluginPackageReview>("plugin_review_package", { archive }),
+  refreshPluginRegistry: () => invoke<PluginRegistryView>("plugin_refresh_registry"),
+  pluginRegistryCatalog: () => invoke<PluginRegistryView>("plugin_registry_catalog"),
+  prepareCatalogPlugin: (artifactUrl: string) =>
+    invoke<PreparedCatalogPackage>("plugin_prepare_catalog_package", { artifactUrl }),
+  discardPreparedPlugin: (archive: string) => invoke<void>("plugin_discard_prepared_package", { archive }),
   upgradePlugin: (pluginId: string, version: string, consent: boolean) =>
     invoke<void>("plugin_upgrade", { pluginId, version, consent }),
   pluginUpgradePlan: (pluginId: string, version: string) =>

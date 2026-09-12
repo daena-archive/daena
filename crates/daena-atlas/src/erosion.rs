@@ -17,6 +17,10 @@ use crate::AtlasError;
 pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
 pub const MULTI_SCALE_EROSION_DOMAIN: &str = "multi-scale-erosion";
 pub const BOUNDED_SEDIMENT_DOMAIN: &str = "bounded-sediment";
+pub const VEGETATION_DOMAIN: &str = "vegetation";
+pub const VEGETATION_GRAIN_PPM: i32 = 120_000;
+pub const VEGETATION_COVER_CELL_MICRO: i64 = 100_000;
+pub const VEGETATION_TINT_STRENGTH_PPM: u32 = 70_000;
 pub const MAX_EROSION_STEP_MM: i32 = 18_000;
 pub const DUNE_MAX_MM: i32 = 4_000;
 pub const DUNE_ARIDITY_PPM: i32 = 550_000;
@@ -154,6 +158,49 @@ pub fn vegetation_resistance_ppm(humidity_ppm: i32, precip_mm: i32, temp_centi: 
         i64::from(4_000 - temp_centi) * 1_000_000 / 1_500
     };
     ((wet * humid / 1_000_000) * comfort / 1_000_000) as i32
+}
+
+#[must_use]
+pub fn vegetation_prf_ppm(key: &[u8; 32], i: u32, j: u32, width: u32, height: u32) -> i32 {
+    let prf = lattice_sample(
+        key,
+        nest_lattice_coord(i, width),
+        nest_lattice_coord(j, height),
+        0,
+    );
+    ((prf >> 11) % 2_000_001) as i32 - 1_000_000
+}
+
+#[must_use]
+pub fn vegetation_resistance_with_prf_ppm(climate_ppm: i32, prf_ppm: i32) -> i32 {
+    let climate = i64::from(climate_ppm.clamp(0, 1_000_000));
+    let prf = i64::from(prf_ppm.clamp(-1_000_000, 1_000_000));
+    let mixed = climate + climate * prf / 1_000_000 * i64::from(VEGETATION_GRAIN_PPM) / 1_000_000;
+    mixed.clamp(0, 1_000_000) as i32
+}
+
+#[must_use]
+pub fn vegetation_tint_rgb(
+    rgb: [u8; 3],
+    key: &[u8; 32],
+    lon_micro: i32,
+    lat_micro: i32,
+) -> [u8; 3] {
+    let unit = crate::detail::interpolated_unit_ppm(
+        key,
+        lon_micro,
+        lat_micro,
+        0,
+        VEGETATION_COVER_CELL_MICRO,
+    );
+    let signed = i64::from(unit) - 500_000;
+    let delta =
+        (signed * i64::from(VEGETATION_TINT_STRENGTH_PPM) * 255 / 1_000_000 / 1_000_000) as i32;
+    [
+        (i32::from(rgb[0]) - delta / 2).clamp(0, 255) as u8,
+        (i32::from(rgb[1]) + delta).clamp(0, 255) as u8,
+        (i32::from(rgb[2]) - delta / 2).clamp(0, 255) as u8,
+    ]
 }
 
 #[must_use]
@@ -887,6 +934,52 @@ mod tests {
         let dry = fluvial_gain_ppm(200, 80, lush);
         assert!(wet > dry);
         assert!(dry < 80_000);
+        let key = crate::detail::domain_key(
+            b"identity-fixture",
+            crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+            0,
+            VEGETATION_DOMAIN,
+        );
+        assert_ne!(
+            key,
+            crate::detail::domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+                0,
+                MULTI_SCALE_EROSION_DOMAIN
+            )
+        );
+        assert_ne!(
+            key,
+            crate::detail::domain_key(
+                b"identity-fixture",
+                crate::ATLAS_DETAIL_ALGORITHM_VERSION,
+                0,
+                crate::amplify::HIERARCHICAL_RELIEF_DOMAIN
+            )
+        );
+        let high = vegetation_prf_ppm(&key, 3, 5, 16, 8);
+        let low = vegetation_prf_ppm(&key, 4, 5, 16, 8);
+        assert_ne!(high, low);
+        assert_eq!(high, vegetation_prf_ppm(&key, 6, 10, 32, 16));
+        let patchy = vegetation_resistance_with_prf_ppm(lush, 1_000_000);
+        let bare = vegetation_resistance_with_prf_ppm(lush, -1_000_000);
+        assert!(patchy > bare);
+        assert!(patchy - lush <= lush / 8);
+        assert!(lush - bare <= lush / 8);
+        let rgb = [120_u8, 140, 90];
+        let tinted = vegetation_tint_rgb(rgb, &key, 0, 0);
+        assert!((i32::from(tinted[0]) - 120).unsigned_abs() <= 5);
+        assert!((i32::from(tinted[1]) - 140).unsigned_abs() <= 9);
+        assert!((i32::from(tinted[2]) - 90).unsigned_abs() <= 5);
+        assert_ne!(
+            tinted,
+            vegetation_tint_rgb(rgb, &key, 12_000_000, -6_000_000)
+        );
+        assert_eq!(
+            vegetation_tint_rgb(rgb, &key, 1_000_000, 2_000_000),
+            vegetation_tint_rgb(rgb, &key, 1_000_000, 2_000_000)
+        );
     }
 
     #[test]

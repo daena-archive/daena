@@ -8,12 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::amplify::MountainFeature;
 use crate::detail::domain_key;
-use crate::detail::lattice_sample;
 use crate::drainage::DerivedTributary;
-use crate::projection::{
-    bilinear_i32, clamp_lat_micro, wrap_lon_micro, ProjectedView, LAT_MICRO_MIN, LAT_MICRO_SPAN,
-    LON_MICRO_MIN, LON_MICRO_SPAN,
-};
+use crate::projection::ProjectedView;
 use crate::request::AtlasRenderRequest;
 use crate::style::AtlasStyle;
 
@@ -991,30 +987,7 @@ fn paper_unit_ppm(
     octave: u32,
     cell_micro: i64,
 ) -> i32 {
-    let cell_micro = cell_micro.max(1);
-    let lon_cells = (LON_MICRO_SPAN / cell_micro).max(1) as u32;
-    let lat_cells = (LAT_MICRO_SPAN / cell_micro).max(1) as u32;
-    let lon_pos = (i64::from(wrap_lon_micro(i64::from(lon_micro))) - i64::from(LON_MICRO_MIN))
-        .rem_euclid(LON_MICRO_SPAN);
-    let lat_pos = (i64::from(clamp_lat_micro(i64::from(lat_micro))) - i64::from(LAT_MICRO_MIN))
-        .clamp(0, LAT_MICRO_SPAN - 1);
-    let i = (lon_pos / cell_micro) as u32 % lon_cells;
-    let j = ((lat_pos / cell_micro) as u32).min(lat_cells.saturating_sub(1));
-    let ni = (i + 1) % lon_cells;
-    let nj = (j + 1).min(lat_cells.saturating_sub(1));
-    let fx = ((lon_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
-    let fy = ((lat_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
-    let corner = |ii: u32, jj: u32| -> i32 {
-        ((lattice_sample(key, ii, jj, octave) >> 11) % 1_000_001) as i32
-    };
-    bilinear_i32(
-        corner(i, j),
-        corner(ni, j),
-        corner(i, nj),
-        corner(ni, nj),
-        fx,
-        fy,
-    )
+    crate::detail::interpolated_unit_ppm(key, lon_micro, lat_micro, octave, cell_micro)
 }
 
 fn paper_grain_delta(key: &[u8; 32], lon_micro: i32, lat_micro: i32, strength_ppm: u32) -> i32 {

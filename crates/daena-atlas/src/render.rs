@@ -1,7 +1,10 @@
 use daena_physical::hydrology::HydrologyField;
 use daena_physical::Grid;
 
-use crate::detail::{sample_field_mm, sample_mask_ppm, sample_sdf_ppm, AtlasDetailModel};
+use crate::detail::{
+    domain_key, sample_field_mm, sample_mask_ppm, sample_sdf_ppm, AtlasDetailModel,
+};
+use crate::erosion::{vegetation_tint_rgb, VEGETATION_DOMAIN};
 use crate::overlay::composite_overlays;
 use crate::projection::wrap_lon_micro;
 use crate::request::{AtlasRenderRequest, TILE_HALO, TILE_SIZE};
@@ -13,7 +16,7 @@ use crate::style::{
     STORM_TRACKS_STYLE_ID, TEMPERATURE_NH_SUMMER_STYLE_ID, TEMPERATURE_NH_WINTER_STYLE_ID,
     TEMPERATURE_STYLE_ID,
 };
-use crate::{AtlasError, AtlasPhase, AtlasProgress};
+use crate::{AtlasError, AtlasPhase, AtlasProgress, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 /// Isolated sinks smaller than this stay land so one-cell puddles do not
 /// speckle continents. Matches `MIN_VISIBLE_INLAND_WATER_CELLS` on the
@@ -292,10 +295,11 @@ pub(crate) struct RasterOptions {
     coastlines: bool,
     theme: RasterTheme,
     approximate_shading: bool,
+    vegetation_key: Option<[u8; 32]>,
 }
 
 impl RasterOptions {
-    pub(crate) fn new(style: &AtlasStyle, request: &AtlasRenderRequest) -> Self {
+    pub(crate) fn new(style: &AtlasStyle, request: &AtlasRenderRequest, identity: &[u8]) -> Self {
         let theme = match style.id.as_str() {
             BIOME_STYLE_ID => RasterTheme::Biome,
             TEMPERATURE_STYLE_ID => RasterTheme::Temperature,
@@ -311,6 +315,16 @@ impl RasterOptions {
             STORM_TRACKS_STYLE_ID => RasterTheme::StormTracks,
             _ => RasterTheme::Relief,
         };
+        let vegetation_key = if theme == RasterTheme::Biome && request.layer_enabled("relief") {
+            Some(domain_key(
+                identity,
+                ATLAS_DETAIL_ALGORITHM_VERSION,
+                request.variant,
+                VEGETATION_DOMAIN,
+            ))
+        } else {
+            None
+        };
         Self {
             ice: request.layer_enabled("ice"),
             lakes: request.layer_enabled("lakes"),
@@ -319,13 +333,18 @@ impl RasterOptions {
             coastlines: request.layer_enabled("coastlines"),
             theme,
             approximate_shading: false,
+            vegetation_key,
         }
     }
 
-    pub(crate) fn for_studio(style: &AtlasStyle, request: &AtlasRenderRequest) -> Self {
+    pub(crate) fn for_studio(
+        style: &AtlasStyle,
+        request: &AtlasRenderRequest,
+        identity: &[u8],
+    ) -> Self {
         Self {
             approximate_shading: true,
-            ..Self::new(style, request)
+            ..Self::new(style, request, identity)
         }
     }
 }
@@ -373,6 +392,7 @@ pub(crate) fn pixel_rgba(
     sdf: &[i32],
     style: &AtlasStyle,
     request: &AtlasRenderRequest,
+    identity: &[u8],
     water: &VisibleWater,
     paint: PaintFields<'_>,
     lon: i32,
@@ -383,7 +403,7 @@ pub(crate) fn pixel_rgba(
         hydrology,
         sdf,
         style,
-        RasterOptions::new(style, request),
+        RasterOptions::new(style, request, identity),
         water,
         paint,
         lon,
@@ -607,6 +627,11 @@ fn paint_pixel(
     } else {
         base
     };
+    if land && options.theme == RasterTheme::Biome {
+        if let Some(key) = options.vegetation_key.as_ref() {
+            rgb = vegetation_tint_rgb(rgb, key, lon, lat);
+        }
+    }
     if options.coastlines {
         let band = elevation.saturating_sub(sea).unsigned_abs();
         if band < 28_000 {
@@ -653,7 +678,7 @@ pub fn render_rgba(
         return Err(AtlasError::invalid("tile order does not match tile count"));
     }
     let total = tiles.len() as u32;
-    let options = RasterOptions::new(style, request);
+    let options = RasterOptions::new(style, request, identity);
     for (step, tile_index) in tile_order.iter().enumerate() {
         progress.report(AtlasPhase::Rendering, step as u32, total)?;
         progress.check_cancelled()?;
@@ -782,5 +807,28 @@ mod tests {
         assert!(water.inland[20]);
         assert!(water.inland[31]);
         assert!(!water.ocean[20]);
+    }
+
+    #[test]
+    fn vegetation_key_is_biome_relief_and_year_independent() {
+        let mut request = crate::request::AtlasRenderRequest::spike_png(8, 4).unwrap();
+        let (biome, _) = crate::style::load_style(BIOME_STYLE_ID).unwrap();
+        let a = RasterOptions::new(&biome, &request, b"id");
+        request.offset_years = 12_000;
+        let b = RasterOptions::new(&biome, &request, b"id");
+        assert!(a.vegetation_key.is_some());
+        assert_eq!(a.vegetation_key, b.vegetation_key);
+        assert_ne!(
+            a.vegetation_key,
+            RasterOptions::new(&biome, &request, b"other").vegetation_key
+        );
+        let (relief, _) = crate::style::load_style(&request.style_id).unwrap();
+        assert!(RasterOptions::new(&relief, &request, b"id")
+            .vegetation_key
+            .is_none());
+        request.active_layer_ids.retain(|id| id != "relief");
+        assert!(RasterOptions::new(&biome, &request, b"id")
+            .vegetation_key
+            .is_none());
     }
 }

@@ -12,7 +12,7 @@ use crate::projection::{
     WEB_MERCATOR_MAX_LAT_MICRO,
 };
 #[cfg(test)]
-use crate::render::pixel_rgba;
+use crate::render::{pixel_rgba, pixel_rgba_with_options};
 use crate::render::{pixel_rgba_with_shade, studio_shade_ppm, RasterOptions};
 use crate::request::ATLAS_DEFAULT_VISIBLE_LAYER_IDS;
 use crate::request::{AtlasFormat, AtlasRenderRequest, DetailLevel};
@@ -866,7 +866,7 @@ fn render_studio_raster(
         &request.constraints,
     )?;
     let extra_ref = extra.as_ref();
-    let options = RasterOptions::for_studio(style, request);
+    let options = RasterOptions::for_studio(style, request, &scene.identity);
     let shade = studio_shade_field(
         scene, options, extra_ref, z, tile_x, tile_y, start_x, start_y, width, height, output_px,
     )?;
@@ -1187,6 +1187,7 @@ mod tests {
                     &scene.sdf,
                     &scene.style,
                     &export_request,
+                    &scene.identity,
                     &scene.visible_water,
                     scene.paint_fields(),
                     lon,
@@ -1203,6 +1204,7 @@ mod tests {
             &scene.sdf,
             &scene.style,
             &export_request,
+            &scene.identity,
             &scene.visible_water,
             scene.paint_fields(),
             center_lon,
@@ -1242,6 +1244,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.identity,
             &scene.visible_water,
             scene.paint_fields(),
             lon_a,
@@ -1257,6 +1260,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.identity,
             &scene.visible_water,
             scene.paint_fields(),
             lon_a,
@@ -1712,6 +1716,7 @@ mod tests {
                 .unwrap()
                 .normalize()
                 .unwrap(),
+            &scene.identity,
             &scene.visible_water,
             scene.paint_fields(),
             lon,
@@ -1723,6 +1728,7 @@ mod tests {
             &scene.sdf,
             &scene.style,
             &export,
+            &scene.identity,
             &scene.visible_water,
             scene.paint_fields(),
             lon,
@@ -1789,6 +1795,7 @@ mod tests {
                 &scene.sdf,
                 &scene.style,
                 &request,
+                &scene.identity,
                 &scene.visible_water,
                 scene.paint_fields(),
                 lon,
@@ -1800,6 +1807,7 @@ mod tests {
                 &scene.sdf,
                 &biome_style,
                 &request,
+                &scene.identity,
                 &scene.visible_water,
                 scene.paint_fields(),
                 lon,
@@ -1811,6 +1819,7 @@ mod tests {
                 &scene.sdf,
                 &temperature_style,
                 &request,
+                &scene.identity,
                 &scene.visible_water,
                 scene.paint_fields(),
                 lon,
@@ -1822,6 +1831,7 @@ mod tests {
                 &scene.sdf,
                 &precip_style,
                 &request,
+                &scene.identity,
                 &scene.visible_water,
                 scene.paint_fields(),
                 lon,
@@ -1834,6 +1844,172 @@ mod tests {
             break;
         }
         assert!(found, "golden fixture had no land sample for biome paint");
+    }
+
+    #[test]
+    fn vegetation_tint_moves_biome_land_not_ocean_ice_or_lakes() {
+        let (scene, scene_request) = prepared();
+        let request = scene_request
+            .as_render_request(256)
+            .unwrap()
+            .normalize()
+            .unwrap();
+        let (biome_style, _) = crate::style::load_style(crate::style::BIOME_STYLE_ID).unwrap();
+        let a = RasterOptions::new(&biome_style, &request, &scene.identity);
+        let b = RasterOptions::new(&biome_style, &request, b"other-identity");
+        let relief_a = RasterOptions::new(&scene.style, &request, &scene.identity);
+        let relief_b = RasterOptions::new(&scene.style, &request, b"other-identity");
+        let sea = scene.hydrology.sea_level_mm;
+        let grid = scene.model.grid;
+        let sample = |style: &crate::style::AtlasStyle, options, lon, lat| {
+            pixel_rgba_with_options(
+                &scene.model,
+                &scene.hydrology,
+                &scene.sdf,
+                style,
+                options,
+                &scene.visible_water,
+                scene.paint_fields(),
+                lon,
+                lat,
+            )
+        };
+        let mut found_land = false;
+        let mut found_ocean = false;
+        let mut found_ice = false;
+        let mut found_lake = false;
+        for cell in 0..grid.sample_count() {
+            let (row, col) = grid.row_col(cell);
+            let lon = crate::detail::cell_center_lon_micro(col, grid.width);
+            let lat = crate::detail::cell_center_lat_micro(row, grid.height);
+            let sdf_ppm = crate::detail::sample_sdf_ppm(grid, &scene.sdf, lon, lat);
+            let elevation = scene.model.refined_at(lon, lat, sea, sdf_ppm);
+            let pa = sample(&biome_style, a, lon, lat);
+            let pb = sample(&biome_style, b, lon, lat);
+            if crate::detail::sample_mask_ppm(grid, &scene.hydrology.ice_cells, lon, lat) >= 500_000
+            {
+                assert_eq!(pa, pb);
+                found_ice = true;
+                continue;
+            }
+            if crate::detail::sample_mask_ppm(grid, &scene.visible_water.inland, lon, lat)
+                >= 500_000
+            {
+                assert_eq!(pa, pb);
+                found_lake = true;
+                continue;
+            }
+            if elevation >= sea {
+                if pa != pb {
+                    found_land = true;
+                    assert_eq!(
+                        sample(&scene.style, relief_a, lon, lat),
+                        sample(&scene.style, relief_b, lon, lat)
+                    );
+                }
+            } else {
+                assert_eq!(pa, pb);
+                found_ocean = true;
+            }
+            if found_land && found_ocean && found_ice && found_lake {
+                break;
+            }
+        }
+        assert!(
+            found_land,
+            "golden fixture had no biome land for vegetation"
+        );
+        assert!(found_ocean, "golden fixture had no ocean for vegetation");
+        assert!(found_ice, "golden fixture had no ice for vegetation skip");
+        assert!(found_lake, "golden fixture had no lake for vegetation skip");
+    }
+
+    #[test]
+    fn biome_studio_tile_matches_export_vegetation_land() {
+        let (scene, scene_request) = prepared();
+        let mut biome_request = scene_request.clone();
+        biome_request.style_id = crate::style::BIOME_STYLE_ID.into();
+        let (biome_style, biome_raw) = crate::style::load_style(&biome_request.style_id).unwrap();
+        let biome_hash = biome_style.content_hash(biome_raw);
+        let tile = render_studio_tile_with_style_overlays(
+            &scene,
+            &biome_request,
+            &biome_style,
+            &biome_hash,
+            &AtlasStudioTileRequestV1::new(1, 0, 1),
+            &[],
+            &mut NoopProgress,
+        )
+        .unwrap();
+        let request = biome_request
+            .as_render_request(256)
+            .unwrap()
+            .normalize()
+            .unwrap();
+        let mut found = false;
+        for y in 0..256u32 {
+            for x in 0..256u32 {
+                let (lon, lat) = xyz_pixel_center(1, 0, 1, x, y, 256).unwrap();
+                let sdf_ppm = crate::detail::sample_sdf_ppm(scene.model.grid, &scene.sdf, lon, lat);
+                if scene
+                    .model
+                    .refined_at(lon, lat, scene.hydrology.sea_level_mm, sdf_ppm)
+                    < scene.hydrology.sea_level_mm
+                {
+                    continue;
+                }
+                if crate::detail::sample_mask_ppm(
+                    scene.model.grid,
+                    &scene.hydrology.ice_cells,
+                    lon,
+                    lat,
+                ) >= 500_000
+                    || crate::detail::sample_mask_ppm(
+                        scene.model.grid,
+                        &scene.visible_water.inland,
+                        lon,
+                        lat,
+                    ) >= 500_000
+                {
+                    continue;
+                }
+                let expected = pixel_rgba(
+                    &scene.model,
+                    &scene.hydrology,
+                    &scene.sdf,
+                    &biome_style,
+                    &request,
+                    &scene.identity,
+                    &scene.visible_water,
+                    scene.paint_fields(),
+                    lon,
+                    lat,
+                );
+                let relief = pixel_rgba(
+                    &scene.model,
+                    &scene.hydrology,
+                    &scene.sdf,
+                    &scene.style,
+                    &request,
+                    &scene.identity,
+                    &scene.visible_water,
+                    scene.paint_fields(),
+                    lon,
+                    lat,
+                );
+                if expected == relief {
+                    continue;
+                }
+                let offset = (y as usize * 256 + x as usize) * 4;
+                assert_eq!(&tile.rgba[offset..offset + 4], &expected);
+                found = true;
+                break;
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found, "biome tile 1/0/1 had no vegetated land sample");
     }
 
     #[test]

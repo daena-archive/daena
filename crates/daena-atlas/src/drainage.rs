@@ -123,7 +123,9 @@ impl DerivedDrainage {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn decode_product(bytes: &[u8]) -> Result<(Self, u32, u32, Vec<i32>, Vec<i32>), AtlasError> {
+    pub fn decode_product(
+        bytes: &[u8],
+    ) -> Result<(Self, u32, u32, Vec<i32>, Vec<i32>), AtlasError> {
         if bytes.len() < 12 {
             return Err(AtlasError::invalid("refined drainage cache is truncated"));
         }

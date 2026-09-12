@@ -62,6 +62,40 @@ pub fn domain_key(identity: &[u8], algorithm_version: u32, variant: u32, domain:
 }
 
 #[must_use]
+pub(crate) fn interpolated_unit_ppm(
+    key: &[u8; 32],
+    lon_micro: i32,
+    lat_micro: i32,
+    octave: u32,
+    cell_micro: i64,
+) -> i32 {
+    let cell_micro = cell_micro.max(1);
+    let lon_cells = (LON_MICRO_SPAN / cell_micro).max(1) as u32;
+    let lat_cells = (LAT_MICRO_SPAN / cell_micro).max(1) as u32;
+    let lon_pos = (i64::from(wrap_lon_micro(i64::from(lon_micro))) - i64::from(LON_MICRO_MIN))
+        .rem_euclid(LON_MICRO_SPAN);
+    let lat_pos = (i64::from(clamp_lat_micro(i64::from(lat_micro))) - i64::from(LAT_MICRO_MIN))
+        .clamp(0, LAT_MICRO_SPAN - 1);
+    let i = (lon_pos / cell_micro) as u32 % lon_cells;
+    let j = ((lat_pos / cell_micro) as u32).min(lat_cells.saturating_sub(1));
+    let ni = (i + 1) % lon_cells;
+    let nj = (j + 1).min(lat_cells.saturating_sub(1));
+    let fx = ((lon_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
+    let fy = ((lat_pos.rem_euclid(cell_micro)) * 1_000_000 / cell_micro) as u32;
+    let corner = |ii: u32, jj: u32| -> i32 {
+        ((lattice_sample(key, ii, jj, octave) >> 11) % 1_000_001) as i32
+    };
+    bilinear_i32(
+        corner(i, j),
+        corner(ni, j),
+        corner(i, nj),
+        corner(ni, nj),
+        fx,
+        fy,
+    )
+}
+
+#[must_use]
 pub fn lattice_sample(key: &[u8; 32], lattice_i: u32, lattice_j: u32, octave: u32) -> u64 {
     let k0 = u64::from_le_bytes(key[0..8].try_into().expect("key word"));
     let k1 = u64::from_le_bytes(key[8..16].try_into().expect("key word"));

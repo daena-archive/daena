@@ -18,9 +18,10 @@ use crate::detail::{
 };
 use crate::erosion::{
     apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
-    lock_polar_rows, neighbor_at, vegetation_resistance_ppm, ScaleErosion, DIRS, EROSION_SCALES,
-    BOUNDED_SEDIMENT_DOMAIN, FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM,
-    MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
+    lock_polar_rows, neighbor_at, vegetation_prf_ppm, vegetation_resistance_ppm,
+    vegetation_resistance_with_prf_ppm, ScaleErosion, BOUNDED_SEDIMENT_DOMAIN, DIRS,
+    EROSION_SCALES, FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM,
+    MULTI_SCALE_EROSION_DOMAIN, NO_FLOW, VEGETATION_DOMAIN,
 };
 
 use crate::request::DetailLevel;
@@ -1003,6 +1004,7 @@ fn erode(
     accumulation: &[u32],
     erosion_key: &[u8; 32],
     sediment_key: &[u8; 32],
+    vegetation_key: &[u8; 32],
     cells: &[usize],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(Vec<i32>, Vec<i32>), AtlasError> {
@@ -1038,10 +1040,13 @@ fn erode(
             } else {
                 (nh_winter, nh_summer)
             };
-            let vegetation = vegetation_resistance_ppm(
-                controls.sample_humidity(lon, lat),
-                controls.sample_precipitation(lon, lat),
-                controls.sample_temperature(lon, lat),
+            let vegetation = vegetation_resistance_with_prf_ppm(
+                vegetation_resistance_ppm(
+                    controls.sample_humidity(lon, lat),
+                    controls.sample_precipitation(lon, lat),
+                    controls.sample_temperature(lon, lat),
+                ),
+                vegetation_prf_ppm(vegetation_key, i, j, width, height),
             );
             *runoff = fluvial_gain_ppm(
                 controls.sample_runoff(lon, lat),
@@ -1153,6 +1158,12 @@ pub fn build_refined_hydrology_constrained(
         ATLAS_DETAIL_ALGORITHM_VERSION,
         model.detail.variant,
         BOUNDED_SEDIMENT_DOMAIN,
+    );
+    let vegetation_key = domain_key(
+        identity,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
+        model.detail.variant,
+        VEGETATION_DOMAIN,
     );
     let source_mm = build_source_surface(model, controls.sea_level_mm, sdf, check_cancelled)?;
     let cells = lattice_nearest_cells(controls.grid, width, height);
@@ -1279,6 +1290,7 @@ pub fn build_refined_hydrology_constrained(
         &accumulation,
         &erosion_key,
         &sediment_key,
+        &vegetation_key,
         &cells,
         check_cancelled,
     )?;
@@ -1643,6 +1655,12 @@ mod tests {
             0,
             BOUNDED_SEDIMENT_DOMAIN,
         );
+        let vegetation = domain_key(
+            b"identity-fixture",
+            ATLAS_DETAIL_ALGORITHM_VERSION,
+            0,
+            VEGETATION_DOMAIN,
+        );
         let next_version = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
         let other = domain_key(
             b"identity-fixture",
@@ -1653,6 +1671,9 @@ mod tests {
         assert_ne!(drainage, other);
         assert_ne!(drainage, erosion);
         assert_ne!(erosion, sediment);
+        assert_ne!(vegetation, erosion);
+        assert_ne!(vegetation, sediment);
+        assert_ne!(vegetation, drainage);
     }
 
     #[test]

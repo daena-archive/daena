@@ -913,7 +913,7 @@ pub fn prepare_from_source_with_structure(
     let unbaked = amplification.clone();
     let constraint_fp = constraint::fingerprint(&request.constraints);
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v4",
+        b"atlas-cache-drainage-v5",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),

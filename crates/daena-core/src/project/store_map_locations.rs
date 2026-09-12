@@ -1,6 +1,13 @@
 // Map location projection operations.
 use super::*;
 
+type LocationSourcePaths = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 impl ProjectStore {
     pub(crate) fn ensure_map_location_projection_schema(&self) -> Result<(), CoreError> {
         let mut statement = self
@@ -58,12 +65,7 @@ impl ProjectStore {
         if feature_kind != "geojson-feature" {
             return "unresolved";
         }
-        let source: Option<(
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = self
+        let source: Option<LocationSourcePaths> = self
             .connection
             .query_row(
                 "SELECT a.path,a.content_hash,authored.path,authored.content_hash FROM entity_fields f LEFT JOIN assets a ON a.id=json_extract(f.value, '$.sourceAssetId') LEFT JOIN assets authored ON authored.id=json_extract(f.value, '$.authoredSourceAssetId') WHERE f.entity_id=?1 AND f.namespace=?2 AND f.key='map'",

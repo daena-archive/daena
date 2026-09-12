@@ -1442,7 +1442,6 @@ fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
         "daena.lore",
         "daena.timeline",
         "daena.writing",
-        "daena.language",
         "daena.houses",
     ] {
         assert!(

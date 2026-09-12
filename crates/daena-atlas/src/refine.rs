@@ -2225,12 +2225,8 @@ mod tests {
         )
         .unwrap();
         let mut arid_controls = structure.clone();
-        for value in &mut arid_controls.aridity_ppm {
-            *value = 900_000;
-        }
-        for value in &mut arid_controls.ice_thickness_mm {
-            *value = 0;
-        }
+        arid_controls.aridity_ppm.fill(900_000);
+        arid_controls.ice_thickness_mm.fill(0);
         let arid = build_refined_hydrology(
             &model,
             &arid_controls,

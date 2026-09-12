@@ -8,7 +8,7 @@
 //! sparse notable-event rate, not the annual cyclone census shown on climate
 //! overlays. Floods are not a rate process: overflowing basins at epoch `t`
 //! (water at the outlet) become events. Earthquake and eruption provenance
-//! stay on materialization v1; storms use v2; floods use v3.
+//! stay on materialization v1; storms and floods use v2.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ use super::{
     Grid, PhysicalField,
 };
 
-pub const EVENT_MATERIALIZATION_VERSION: u16 = 3;
+pub const EVENT_MATERIALIZATION_VERSION: u16 = 2;
 pub const MAX_INTERVAL_OFFSET_YEARS: i64 = 100_000;
 pub const MAX_EVENTS: u32 = 128;
 const MAX_EXPECTED_EVENTS: f64 = 1_024.0;
@@ -70,8 +70,7 @@ impl NaturalEventKind {
     pub const fn materialization_version(self) -> u16 {
         match self {
             Self::Earthquake | Self::Eruption => 1,
-            Self::Storm => 2,
-            Self::Flood => 3,
+            Self::Storm | Self::Flood => 2,
         }
     }
 }
@@ -808,7 +807,7 @@ mod tests {
             NaturalEventKind::Flood.model_label(),
             "basin-outlet-threshold-v1"
         );
-        assert_eq!(NaturalEventKind::Flood.materialization_version(), 3);
+        assert_eq!(NaturalEventKind::Flood.materialization_version(), 2);
         let event = &first[0];
         assert_eq!(event.event_kind, NaturalEventKind::Flood);
         assert_eq!(event.year_offset, 0);

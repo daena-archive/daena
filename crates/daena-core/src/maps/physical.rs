@@ -611,7 +611,7 @@ mod tests {
 
         let mut mismatched = generation(None);
         let mut mismatched_planet = daena_physical::planetary::PlanetaryConfiguration::earth_like();
-        mismatched_planet.radius_metres = mismatched_planet.radius_metres + 1;
+        mismatched_planet.radius_metres += 1;
         mismatched["settings"]["planetary"] = serde_json::to_value(mismatched_planet).unwrap();
         assert!(validate_generation(&mismatched).is_err());
 

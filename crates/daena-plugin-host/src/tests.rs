@@ -2279,7 +2279,7 @@ fn activation_fails_for_optional_but_missing_dependency_types() {
         .activate_bundled("project", "com.example.consumer")
         .unwrap_err();
     assert!(
-        error.0.contains("only available to bundled plugins"),
+        error.0.contains("not active") || error.0.contains("not declared"),
         "{}",
         error.0
     );

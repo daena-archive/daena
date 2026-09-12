@@ -1,7 +1,7 @@
-import { collectionBytes, isReservedPhysicalLayerId, sha256Hex } from "../native-vector/source";
-import type { MapLayerDefinition, VectorFeatureCollection, VectorLayerStyle } from "../native-vector/types";
-import { layersFieldValue } from "./commands";
-import type { MapDocument } from "./model";
+import { collectionBytes, isReservedPhysicalLayerId, sha256Hex } from "../native-vector/source.ts";
+import type { MapLayerDefinition, VectorFeatureCollection, VectorLayerStyle } from "../native-vector/types.ts";
+import { layersFieldValue } from "./commands.ts";
+import type { MapDocument } from "./model.ts";
 
 const PHYSICAL_LAYER_STYLE_KEYS = ["fill", "fillOpacity", "stroke", "strokeWidth", "pointRadius"] as const;
 

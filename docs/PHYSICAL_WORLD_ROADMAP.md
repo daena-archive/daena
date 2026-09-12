@@ -1205,7 +1205,7 @@ It may use:
 - political/cultural layers;
 - event overlays.
 
-Atlas may add deterministic visual detail within the physical world's constraints, but it must not redefine macro geography or canonical climate/history.
+Atlas may add deterministic visual detail within the physical world's constraints, but it must not redefine macro geography or canonical climate/history. Epoch terrain operators consume climate at the selected offset; they must not treat elapsed years as erosion time or run a sequential simulation to jump epochs. Climate owns vegetation cover. See [`MAPS.md`](./MAPS.md) for the structure / epoch-operator / presentation split.
 
 ---
 

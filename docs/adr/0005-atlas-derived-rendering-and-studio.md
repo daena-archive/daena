@@ -27,6 +27,11 @@ device scale, traversal order, concurrency, and cache state cannot move a
 geographic result. Algorithm replacement is a new explicit version; removed
 experimental or production versions are not silently revived.
 
+Structure residual, epoch operators, and presentation must not share a PRF.
+Structure is independent of epoch and forcing. Epoch operators use climate and
+hydrology at the selected offset, not elapsed years. Presentation does not
+invent geography. [`MAPS.md`](../MAPS.md) is the product contract.
+
 Atlas Studio uses local Web Mercator XYZ tiles with a north-origin row
 convention and OpenLayers for interaction. A Studio session captures one
 project generation, physical epoch, style, layer set, and detail contract.
@@ -93,3 +98,6 @@ paths to plugins or web content.
   existing physical fields.
 - 2026-08-26: rendering, Studio, and algorithm iteration records were
   consolidated here. [`MAPS.md`](../MAPS.md) remains the product authority.
+- 2026-09-12: structure residual, climate-at-`t` epoch operators, isolated
+  sediment/vegetation domains, and biome presentation grain were recorded as
+  Atlas terrain contract in [`MAPS.md`](../MAPS.md).

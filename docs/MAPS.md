@@ -318,6 +318,32 @@ Atlas geography is addressed in world space. Zoom level, output dimensions,
 format, style, tile order, worker count, and cache state must not move a ridge,
 tributary, coastline detail, label anchor, or other geographic result.
 
+Atlas terrain is three layers that must not share a PRF:
+
+1. **Structure residual** from accepted elevation, crust, and mountain
+   influence. It is independent of epoch, forcing, climate, sea, ice, and lakes.
+   Its cache key must not include the physical offset or forcing.
+2. **Epoch operators** for local erosion, channels, lakes, shoreline, and
+   roughness. Magnitudes come from climate and hydrology at the selected offset
+   (and lagged ice), never from elapsed years or a sequential walk to that
+   offset.
+3. **Presentation** — style, shade, thematic tints, paper grain, and labels.
+   Presentation must not invent geography.
+
+Worked elevation, drainage, and artifacts may be keyed by epoch and forcing.
+Deleting those caches must not change pixels when canonical inputs are
+unchanged. PRF domains stay isolated (structure/orometry, relief, erosion,
+drainage, sediment, vegetation, style texture). Climate owns vegetation cover;
+Atlas vegetation PRF only grains fluvial resistance and biome presentation.
+
+Feature identity uses physical river/basin spines and coarse-stable orometry
+IDs, not pixel coordinates or finest-lattice indexes. Map-owned constraints
+(lock path, force lake, freeze erosion, pin shoreline) survive residual
+regeneration without mutating the physical source. Painting-only GeoJSON
+overlays do not move rivers. Ordinary Studio pan must not build print-scale
+lattices. Algorithm replacement is a new explicit version; removed versions are
+not revived behind a project flag.
+
 ### Atlas Studio
 
 Atlas Studio is the interactive detailed-map workspace. When a map reports the

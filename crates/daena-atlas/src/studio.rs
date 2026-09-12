@@ -633,6 +633,7 @@ pub fn render_studio_tile_with_style_overlays(
                     lattice_height: scene.model.lattice_height,
                     structure_residual_mm: &scene.structure_residual_mm,
                     worked_residual_mm: &scene.model.residual_mm,
+                    sediment_mm: &scene.sediment_mm,
                     runoff_mm: &scene.runoff_mm,
                     orometry: &scene.orometry,
                 }),

@@ -19,7 +19,8 @@ use crate::detail::{
 use crate::erosion::{
     apply_scale_erosion, fluvial_gain_ppm, freeze_thaw_ppm, glacial_work_ppm, lattice_index,
     lock_polar_rows, neighbor_at, vegetation_resistance_ppm, ScaleErosion, DIRS, EROSION_SCALES,
-    FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM, MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
+    BOUNDED_SEDIMENT_DOMAIN, FAN_SLOPE_PPM, FLOODPLAIN_SLOPE_PPM, MAX_EROSION_STEP_MM,
+    MULTI_SCALE_EROSION_DOMAIN, NO_FLOW,
 };
 
 use crate::request::DetailLevel;
@@ -145,6 +146,8 @@ pub struct RefinedHydrology {
     pub deposition: Vec<DepositionFeature>,
     pub drainage_key: [u8; 32],
     pub erosion_key: [u8; 32],
+    pub sediment_key: [u8; 32],
+    pub sediment_mm: Vec<i32>,
 }
 
 impl RefinedTributary {
@@ -999,13 +1002,15 @@ fn erode(
     weight: &[u32],
     accumulation: &[u32],
     erosion_key: &[u8; 32],
+    sediment_key: &[u8; 32],
     cells: &[usize],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
-) -> Result<Vec<i32>, AtlasError> {
+) -> Result<(Vec<i32>, Vec<i32>), AtlasError> {
     let width = model.detail.lattice_width;
     let height = model.detail.lattice_height;
     let count = filled_mm.len();
     let mut worked = filled_mm.to_vec();
+    let mut sediment_mm = vec![0_i32; count];
     let mut mountain_ppm = vec![0_i32; count];
     let mut runoff_ppm = vec![0_i32; count];
     let mut freeze_thaw = vec![0_i32; count];
@@ -1073,6 +1078,8 @@ fn erode(
             weight,
             accumulation,
             erosion_key,
+            sediment_key,
+            sediment_mm: Some(&mut sediment_mm),
             peaks: &peaks,
             filled_mm,
             land_at: &land_at,
@@ -1083,7 +1090,7 @@ fn erode(
         &mut worked,
         check_cancelled,
     )?;
-    Ok(worked)
+    Ok((worked, sediment_mm))
 }
 
 pub fn build_refined_hydrology(
@@ -1140,6 +1147,12 @@ pub fn build_refined_hydrology_constrained(
         ATLAS_DETAIL_ALGORITHM_VERSION,
         model.detail.variant,
         MULTI_SCALE_EROSION_DOMAIN,
+    );
+    let sediment_key = domain_key(
+        identity,
+        ATLAS_DETAIL_ALGORITHM_VERSION,
+        model.detail.variant,
+        BOUNDED_SEDIMENT_DOMAIN,
     );
     let source_mm = build_source_surface(model, controls.sea_level_mm, sdf, check_cancelled)?;
     let cells = lattice_nearest_cells(controls.grid, width, height);
@@ -1254,7 +1267,7 @@ pub fn build_refined_hydrology_constrained(
         &drainage_key,
         check_cancelled,
     )?;
-    let mut worked_mm = erode(
+    let (mut worked_mm, sediment_mm) = erode(
         model,
         controls,
         sdf,
@@ -1265,6 +1278,7 @@ pub fn build_refined_hydrology_constrained(
         &primary_weight_ppm,
         &accumulation,
         &erosion_key,
+        &sediment_key,
         &cells,
         check_cancelled,
     )?;
@@ -1312,6 +1326,8 @@ pub fn build_refined_hydrology_constrained(
         deposition,
         drainage_key,
         erosion_key,
+        sediment_key,
+        sediment_mm,
     })
 }
 
@@ -1621,6 +1637,12 @@ mod tests {
             0,
             MULTI_SCALE_EROSION_DOMAIN,
         );
+        let sediment = domain_key(
+            b"identity-fixture",
+            ATLAS_DETAIL_ALGORITHM_VERSION,
+            0,
+            BOUNDED_SEDIMENT_DOMAIN,
+        );
         let next_version = ATLAS_DETAIL_ALGORITHM_VERSION.wrapping_add(1);
         let other = domain_key(
             b"identity-fixture",
@@ -1630,6 +1652,7 @@ mod tests {
         );
         assert_ne!(drainage, other);
         assert_ne!(drainage, erosion);
+        assert_ne!(erosion, sediment);
     }
 
     #[test]
@@ -2049,6 +2072,17 @@ mod tests {
         assert_ne!(cold_ice, warm_ice);
         assert_eq!(present.erosion_key, cold.erosion_key);
         assert_eq!(cold.erosion_key, warm.erosion_key);
+        assert_eq!(present.sediment_key, cold.sediment_key);
+        assert_eq!(cold.sediment_key, warm.sediment_key);
+        assert_ne!(present.erosion_key, present.sediment_key);
+        for value in present
+            .sediment_mm
+            .iter()
+            .chain(&cold.sediment_mm)
+            .chain(&warm.sediment_mm)
+        {
+            assert!(value.abs() <= crate::erosion::DUNE_MAX_MM);
+        }
         let crests_hold = |refined: &RefinedHydrology| {
             for crest in model
                 .features
@@ -2135,6 +2169,111 @@ mod tests {
             "cold vs warm interior gully/roughness"
         );
         assert_ne!(present_work, cold_work);
+    }
+
+    #[test]
+    fn golden_world_dunes_fire_when_arid_and_keep_prf_across_epochs() {
+        let world = golden_world();
+        let identity = spike_identity_from_source(&world.source);
+        let forcing =
+            HistoricalForcingParameters::default_for(world.field.seed, world.field.retry_index);
+        let structure = ControlFields::from_accepted(
+            &world.field,
+            &world.tectonics,
+            &world.climate,
+            &world.hydrology,
+        )
+        .unwrap();
+        let mut cancel = || Ok(());
+        let model =
+            build_amplification_model(&structure, &identity, 0, DetailLevel::Standard, &mut cancel)
+                .unwrap();
+        let sdf = signed_coastal_distance_ppm(
+            world.field.grid,
+            &world.field.elevations_mm,
+            world.hydrology.sea_level_mm,
+        );
+        let present = build_refined_hydrology(
+            &model,
+            &structure,
+            &world.hydrology,
+            &sdf,
+            &identity,
+            structure.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap();
+        let mut arid_controls = structure.clone();
+        for value in &mut arid_controls.aridity_ppm {
+            *value = 900_000;
+        }
+        for value in &mut arid_controls.ice_thickness_mm {
+            *value = 0;
+        }
+        let arid = build_refined_hydrology(
+            &model,
+            &arid_controls,
+            &world.hydrology,
+            &sdf,
+            &identity,
+            structure.sea_level_mm,
+            &mut cancel,
+        )
+        .unwrap();
+        assert_eq!(present.sediment_key, arid.sediment_key);
+        assert_ne!(
+            present.sediment_mm, arid.sediment_mm,
+            "raising aridity at t must change dune magnitude, not only occupancy"
+        );
+        assert!(
+            arid.sediment_mm.iter().any(|&value| value != 0),
+            "forced-arid golden lattice must emit dune grain"
+        );
+        assert!(arid
+            .sediment_mm
+            .iter()
+            .all(|value| value.abs() <= crate::erosion::DUNE_MAX_MM));
+        let mut run = |offset: i64| {
+            let historical = derive_historical_world_with_planet(
+                &world.field,
+                world.report.reference_water_inventory_m3,
+                Some(&world.tectonics.crust_by_cell),
+                forcing,
+                offset,
+                world.climate.planetary,
+                &mut PhysicalNoop,
+            )
+            .unwrap();
+            let sdf = signed_coastal_distance_ppm(
+                world.field.grid,
+                &world.field.elevations_mm,
+                historical.metrics.sea_level_mm,
+            );
+            let controls = ControlFields::from_accepted(
+                &world.field,
+                &world.tectonics,
+                &historical.climate,
+                &historical.hydrology,
+            )
+            .unwrap();
+            build_refined_hydrology(
+                &model,
+                &controls,
+                &historical.hydrology,
+                &sdf,
+                &identity,
+                structure.sea_level_mm,
+                &mut cancel,
+            )
+            .unwrap()
+        };
+        let cold = run(-8_000);
+        let warm = run(8_000);
+        assert_eq!(present.sediment_key, cold.sediment_key);
+        assert_eq!(cold.sediment_key, warm.sediment_key);
+        for value in cold.sediment_mm.iter().chain(&warm.sediment_mm) {
+            assert!(value.abs() <= crate::erosion::DUNE_MAX_MM);
+        }
     }
 
     #[test]

@@ -257,6 +257,7 @@ pub struct AtlasPreparedScene {
     pub drainage_cache: cache::CacheLookup,
     pub orometry: Vec<amplify::MountainFeature>,
     pub structure_residual_mm: Vec<i32>,
+    pub sediment_mm: Vec<i32>,
     pub runoff_mm: Vec<i32>,
     pub crust_influence_ppm: Vec<i32>,
     pub mountain_influence_ppm: Vec<i32>,
@@ -532,18 +533,28 @@ fn build_constrained_refine(
 fn refine_or_fallback(
     result: Result<refine::RefinedHydrology, AtlasError>,
     structure: &amplify::AmplificationModel,
-) -> Result<(drainage::DerivedDrainage, Vec<i32>, bool), AtlasError> {
+) -> Result<(drainage::DerivedDrainage, Vec<i32>, Vec<i32>, bool), AtlasError> {
     match result {
-        Ok(refined) => Ok((drainage_from_refined(&refined), refined.worked_mm, true)),
-        Err(error) if error.code == CODE_RENDER_CANCELLED => Err(error),
-        Err(_) => Ok((
-            drainage::DerivedDrainage {
-                version: ATLAS_DERIVED_DRAINAGE_VERSION,
-                tributaries: Vec::new(),
-            },
-            structure_worked_mm(structure),
-            false,
+        Ok(refined) => Ok((
+            drainage_from_refined(&refined),
+            refined.worked_mm,
+            refined.sediment_mm,
+            true,
         )),
+        Err(error) if error.code == CODE_RENDER_CANCELLED => Err(error),
+        Err(_) => {
+            let worked = structure_worked_mm(structure);
+            let sediment_mm = vec![0_i32; worked.len()];
+            Ok((
+                drainage::DerivedDrainage {
+                    version: ATLAS_DERIVED_DRAINAGE_VERSION,
+                    tributaries: Vec::new(),
+                },
+                worked,
+                sediment_mm,
+                false,
+            ))
+        }
     }
 }
 
@@ -902,7 +913,7 @@ pub fn prepare_from_source_with_structure(
     let unbaked = amplification.clone();
     let constraint_fp = constraint::fingerprint(&request.constraints);
     let drainage_key = cache::cache_key(&[
-        b"atlas-cache-drainage-v2",
+        b"atlas-cache-drainage-v4",
         identity,
         &ATLAS_DETAIL_ALGORITHM_VERSION.to_le_bytes(),
         &ATLAS_DERIVED_DRAINAGE_VERSION.to_le_bytes(),
@@ -914,16 +925,17 @@ pub fn prepare_from_source_with_structure(
         &constraint_fp,
     ]);
     let mut drainage_cache = cache::CacheLookup::Off;
-    let (mut drainage, worked_mm, cache_refine) = if let Some(cache) = cache {
+    let (mut drainage, worked_mm, sediment_mm, cache_refine) = if let Some(cache) = cache {
         match cache.get(cache::KIND_DRAINAGE, &drainage_key) {
             cache::CacheLookupResult::Hit(payload) => {
                 match drainage::DerivedDrainage::decode_product(&payload) {
-                    Ok((drainage, width, height, worked_mm))
+                    Ok((drainage, width, height, worked_mm, sediment_mm))
                         if width == amplification.detail.lattice_width
-                            && height == amplification.detail.lattice_height =>
+                            && height == amplification.detail.lattice_height
+                            && sediment_mm.len() == worked_mm.len() =>
                     {
                         drainage_cache = cache::CacheLookup::Hit;
-                        (drainage, worked_mm, false)
+                        (drainage, worked_mm, sediment_mm, false)
                     }
                     _ => {
                         drainage_cache = cache::CacheLookup::Miss;
@@ -985,6 +997,7 @@ pub fn prepare_from_source_with_structure(
                     amplification.detail.lattice_width,
                     amplification.detail.lattice_height,
                     &worked_mm,
+                    &sediment_mm,
                 ),
             );
         }
@@ -1044,6 +1057,7 @@ pub fn prepare_from_source_with_structure(
             drainage_cache,
             orometry,
             structure_residual_mm,
+            sediment_mm,
             runoff_mm: controls.runoff_mm,
             crust_influence_ppm: controls.crust_influence_ppm,
             mountain_influence_ppm: controls.mountain_influence_ppm,
@@ -1076,7 +1090,7 @@ pub fn render_from_source_cached(
     let request_bytes = cache_json(&request)?;
     let forcing_fingerprint = fingerprint_forcing(forcing.as_ref());
     let artifact_key = cache::cache_key(&[
-        b"atlas-cache-artifact-v1",
+        b"atlas-cache-artifact-v2",
         identity,
         source_sha256.as_bytes(),
         &request_bytes,
@@ -1157,6 +1171,7 @@ pub fn render_from_source_cached(
                 lattice_height: scene.model.lattice_height,
                 structure_residual_mm: &scene.structure_residual_mm,
                 worked_residual_mm: &scene.model.residual_mm,
+                sediment_mm: &scene.sediment_mm,
                 runoff_mm: &scene.runoff_mm,
                 orometry: &scene.orometry,
             }),
@@ -2101,11 +2116,12 @@ mod tests {
         .unwrap();
         let worked = structure_worked_mm(&structure);
         assert_eq!(worked.len(), structure.detail.residual_mm.len());
-        let (drainage, fallback, cacheable) =
+        let (drainage, fallback, sediment, cacheable) =
             refine_or_fallback(Err(AtlasError::limit("refine failed")), &structure).unwrap();
         assert!(!cacheable);
         assert!(drainage.tributaries.is_empty());
         assert_eq!(fallback, worked);
+        assert_eq!(sediment, vec![0_i32; worked.len()]);
         assert_eq!(
             refine_or_fallback(Err(AtlasError::cancelled()), &structure)
                 .unwrap_err()

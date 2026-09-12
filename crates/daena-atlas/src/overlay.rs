@@ -30,6 +30,7 @@ pub struct OverlayDebug<'a> {
     pub lattice_height: u32,
     pub structure_residual_mm: &'a [i32],
     pub worked_residual_mm: &'a [i32],
+    pub sediment_mm: &'a [i32],
     pub runoff_mm: &'a [i32],
     pub orometry: &'a [MountainFeature],
 }
@@ -707,7 +708,7 @@ fn paint_debug_layers(
                         / 160_000) as u32;
                     put_pixel(buffer, width, height, x as i32, y as i32, [180, 60, 180], t);
                 }
-                if (erosion || sediment)
+                if erosion
                     && !debug.structure_residual_mm.is_empty()
                     && !debug.worked_residual_mm.is_empty()
                 {
@@ -720,12 +721,18 @@ fn paint_debug_layers(
                     let worked =
                         crate::detail::sample_field_mm(lattice, debug.worked_residual_mm, lon, lat);
                     let delta = worked.saturating_sub(structure);
-                    if erosion && delta < 0 {
+                    if delta < 0 {
                         let t = ((-delta).clamp(0, 40_000) as u64 * 700_000 / 40_000) as u32;
                         put_pixel(buffer, width, height, x as i32, y as i32, [220, 90, 20], t);
                     }
-                    if sediment && delta > 0 {
-                        let t = (delta.clamp(0, 40_000) as u64 * 700_000 / 40_000) as u32;
+                }
+                if sediment && !debug.sediment_mm.is_empty() {
+                    let value =
+                        crate::detail::sample_field_mm(lattice, debug.sediment_mm, lon, lat).abs();
+                    if value > 0 {
+                        let t = (value.clamp(0, crate::erosion::DUNE_MAX_MM) as u64 * 700_000
+                            / crate::erosion::DUNE_MAX_MM as u64)
+                            as u32;
                         put_pixel(buffer, width, height, x as i32, y as i32, [220, 200, 40], t);
                     }
                 }

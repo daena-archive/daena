@@ -1,5 +1,6 @@
-//! Multi-scale fluvial, thermal, arid, and glacial processes on the structure
-//! lattice. Magnitudes come from climate state at `t` (and lagged ice), not `|t|`.
+//! Multi-scale fluvial, thermal, arid, glacial, and bounded-sediment processes
+//! on the structure lattice. Magnitudes come from climate state at `t` (and
+//! lagged ice), not `|t|`. Dune PRF is year-independent.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -15,7 +16,10 @@ use crate::AtlasError;
 
 pub const REFINED_DRAINAGE_DOMAIN: &str = "refined-drainage";
 pub const MULTI_SCALE_EROSION_DOMAIN: &str = "multi-scale-erosion";
+pub const BOUNDED_SEDIMENT_DOMAIN: &str = "bounded-sediment";
 pub const MAX_EROSION_STEP_MM: i32 = 18_000;
+pub const DUNE_MAX_MM: i32 = 4_000;
+pub const DUNE_ARIDITY_PPM: i32 = 550_000;
 pub const HIERARCHICAL_EROSION_STEP_MM: i32 = 8_000;
 pub const HIERARCHICAL_FILL_MM: i32 = 720_000;
 pub const EROSION_SCALES: [u32; 3] = [4, 2, 1];
@@ -634,6 +638,67 @@ fn fluvial_and_deposition_delta(
     delta
 }
 
+#[allow(clippy::too_many_arguments)]
+fn dune_delta(
+    width: u32,
+    height: u32,
+    worked: &[i32],
+    protected: &[bool],
+    sea_level_mm: i32,
+    mountain_ppm: &[i32],
+    aridity_ppm: &[i32],
+    glacial_ppm: &[i32],
+    sediment_key: &[u8; 32],
+    scale: u32,
+) -> Vec<i32> {
+    let count = worked.len();
+    let width_us = width as usize;
+    let mut delta = vec![0_i32; count];
+    delta.par_iter_mut().enumerate().for_each(|(index, slot)| {
+        let j = (index / width_us) as u32;
+        if j == 0 || j + 1 == height {
+            return;
+        }
+        if protected[index] || worked[index] < sea_level_mm {
+            return;
+        }
+        if mountain_ppm[index] > 500_000 || glacial_ppm[index] > 0 {
+            return;
+        }
+        let arid = aridity_ppm[index].clamp(0, 1_000_000);
+        if arid < DUNE_ARIDITY_PPM {
+            return;
+        }
+        let i = (index % width_us) as u32;
+        let mut steepest = 0_i64;
+        for dir in DIRS {
+            let Some((_, _, neighbor)) = neighbor_at(width, height, i, j, dir) else {
+                continue;
+            };
+            let slope = ((i64::from(worked[index]) - i64::from(worked[neighbor])) * 1_000_000)
+                / i64::from(dist_ppm(dir));
+            if slope > steepest {
+                steepest = slope;
+            }
+        }
+        if steepest >= i64::from(FAN_SLOPE_PPM) {
+            return;
+        }
+        let prf = lattice_sample(
+            sediment_key,
+            nest_lattice_coord(i, width),
+            nest_lattice_coord(j, height),
+            scale,
+        );
+        let signed = ((prf >> 11) % 2_000_001) as i32 - 1_000_000;
+        let flat = i64::from(FAN_SLOPE_PPM) - steepest;
+        let gain = (i64::from(arid - DUNE_ARIDITY_PPM) * flat) / i64::from(FAN_SLOPE_PPM);
+        let amp = (gain * i64::from(DUNE_MAX_MM) / 450_000).clamp(0, i64::from(DUNE_MAX_MM));
+        *slot = ((amp * i64::from(signed)) / 1_000_000) as i32;
+    });
+    delta
+}
+
 pub struct ScaleErosion<'a> {
     pub grid: Grid,
     pub width: u32,
@@ -651,6 +716,8 @@ pub struct ScaleErosion<'a> {
     pub weight: &'a [u32],
     pub accumulation: &'a [u32],
     pub erosion_key: &'a [u8; 32],
+    pub sediment_key: &'a [u8; 32],
+    pub sediment_mm: Option<&'a mut [i32]>,
     pub peaks: &'a [usize],
     pub filled_mm: &'a [i32],
     pub land_at: &'a (dyn Fn(i32, i32) -> bool + Sync),
@@ -684,13 +751,14 @@ fn enforce_peaks(width: u32, height: u32, peaks: &[usize], filled_mm: &[i32], wo
 }
 
 pub fn apply_scale_erosion(
-    params: ScaleErosion<'_>,
+    mut params: ScaleErosion<'_>,
     surface: &mut [i32],
     check_cancelled: &mut dyn FnMut() -> Result<(), AtlasError>,
 ) -> Result<(), AtlasError> {
     let width = params.width;
     let height = params.height;
     let count = surface.len();
+    let last_scale = params.scales.last().copied();
     for &scale in params.scales {
         check_cancelled()?;
         let mut delta = fluvial_and_deposition_delta(
@@ -725,6 +793,27 @@ pub fn apply_scale_erosion(
         );
         for index in 0..count {
             delta[index] = delta[index].saturating_add(thermal[index]);
+        }
+        if last_scale == Some(scale) {
+            let dunes = dune_delta(
+                width,
+                height,
+                surface,
+                params.protected,
+                params.sea_level_mm,
+                params.mountain_ppm,
+                params.aridity_ppm,
+                params.glacial_ppm,
+                params.sediment_key,
+                1,
+            );
+            for index in 0..count {
+                let dune = dunes[index].clamp(-DUNE_MAX_MM, DUNE_MAX_MM);
+                if let Some(out) = params.sediment_mm.as_mut() {
+                    out[index] = dune;
+                }
+                delta[index] = delta[index].saturating_add(dune);
+            }
         }
         mean_remove_delta(params.grid, params.cells, &mut delta, check_cancelled)?;
         for index in 0..count {
@@ -843,6 +932,8 @@ mod tests {
                     weight: &weight,
                     accumulation: &accumulation,
                     erosion_key: &key,
+                    sediment_key: &key,
+                    sediment_mm: None,
                     peaks: &[],
                     filled_mm: &filled,
                     land_at: &land_at,
@@ -866,5 +957,223 @@ mod tests {
         let bare = erode(0, 0, 0, 0, &high);
         assert_eq!(bare, filled);
         assert_ne!(iced, filled);
+    }
+
+    #[test]
+    fn dunes_use_arid_operator_and_year_independent_prf() {
+        let grid = Grid {
+            width: 4,
+            height: 2,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+        };
+        let width = 8_u32;
+        let height = 4_u32;
+        let count = 32;
+        let filled = vec![80_000_i32; count];
+        let protected = vec![false; count];
+        let mountain = vec![0_i32; count];
+        let sdf = vec![1_000_000_i32; grid.sample_count()];
+        let primary = vec![NO_FLOW; count];
+        let secondary = vec![NO_FLOW; count];
+        let weight = vec![0_u32; count];
+        let accumulation = vec![1_u32; count];
+        let runoff = vec![0_i32; count];
+        let freeze = vec![0_i32; count];
+        let glacial = vec![0_i32; count];
+        let cells = crate::detail::lattice_nearest_cells(grid, width, height);
+        let mut key_a = [3_u8; 32];
+        key_a[0] = 1;
+        let mut key_b = [9_u8; 32];
+        key_b[0] = 2;
+        let run = |arid: i32, sediment: &[u8; 32]| {
+            let mut surface = filled.clone();
+            let aridity = vec![arid; count];
+            let land_at = |_lon: i32, _lat: i32| true;
+            let mut cancel = || Ok(());
+            apply_scale_erosion(
+                ScaleErosion {
+                    grid,
+                    width,
+                    height,
+                    sea_level_mm: 0,
+                    sdf: &sdf,
+                    protected: &protected,
+                    mountain_ppm: &mountain,
+                    runoff_ppm: &runoff,
+                    freeze_thaw_ppm: &freeze,
+                    aridity_ppm: &aridity,
+                    glacial_ppm: &glacial,
+                    primary: &primary,
+                    secondary: &secondary,
+                    weight: &weight,
+                    accumulation: &accumulation,
+                    erosion_key: &key_a,
+                    sediment_key: sediment,
+                    sediment_mm: None,
+                    peaks: &[],
+                    filled_mm: &filled,
+                    land_at: &land_at,
+                    scales: &[1],
+                    max_step_mm: MAX_EROSION_STEP_MM,
+                    cells: &cells,
+                },
+                &mut surface,
+                &mut cancel,
+            )
+            .unwrap();
+            surface
+        };
+        let wet = run(0, &key_a);
+        let arid = run(900_000, &key_a);
+        let milder = run(700_000, &key_a);
+        let arid_again = run(900_000, &key_a);
+        let other_prf = run(900_000, &key_b);
+        assert_eq!(wet, filled);
+        assert_ne!(arid, filled);
+        assert_eq!(arid, arid_again);
+        assert_ne!(arid, other_prf);
+        assert_ne!(arid, milder);
+        for index in 0..count {
+            let high = arid[index] - 80_000;
+            let low = milder[index] - 80_000;
+            assert!(high.abs() >= low.abs());
+            if high != 0 && low != 0 {
+                assert_eq!(high.signum(), low.signum());
+            }
+            assert!(high.abs() <= DUNE_MAX_MM);
+            assert!(arid[index] >= 0);
+        }
+    }
+
+    #[test]
+    fn dunes_do_not_run_on_mountains_or_ice() {
+        let grid = Grid {
+            width: 4,
+            height: 2,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+        };
+        let width = 8_u32;
+        let height = 4_u32;
+        let count = 32;
+        let filled = vec![80_000_i32; count];
+        let protected = vec![false; count];
+        let sdf = vec![1_000_000_i32; grid.sample_count()];
+        let primary = vec![NO_FLOW; count];
+        let secondary = vec![NO_FLOW; count];
+        let weight = vec![0_u32; count];
+        let accumulation = vec![1_u32; count];
+        let runoff = vec![0_i32; count];
+        let freeze = vec![0_i32; count];
+        let aridity = vec![900_000_i32; count];
+        let key = [3_u8; 32];
+        let cells = crate::detail::lattice_nearest_cells(grid, width, height);
+        let run = |mountains: &[i32], ice: i32| {
+            let mut surface = filled.clone();
+            let glacial = vec![ice; count];
+            let land_at = |_lon: i32, _lat: i32| true;
+            let mut cancel = || Ok(());
+            apply_scale_erosion(
+                ScaleErosion {
+                    grid,
+                    width,
+                    height,
+                    sea_level_mm: 0,
+                    sdf: &sdf,
+                    protected: &protected,
+                    mountain_ppm: mountains,
+                    runoff_ppm: &runoff,
+                    freeze_thaw_ppm: &freeze,
+                    aridity_ppm: &aridity,
+                    glacial_ppm: &glacial,
+                    primary: &primary,
+                    secondary: &secondary,
+                    weight: &weight,
+                    accumulation: &accumulation,
+                    erosion_key: &key,
+                    sediment_key: &key,
+                    sediment_mm: None,
+                    peaks: &[],
+                    filled_mm: &filled,
+                    land_at: &land_at,
+                    scales: &[1],
+                    max_step_mm: MAX_EROSION_STEP_MM,
+                    cells: &cells,
+                },
+                &mut surface,
+                &mut cancel,
+            )
+            .unwrap();
+            surface
+        };
+        let high = vec![600_000_i32; count];
+        let none = vec![0_i32; count];
+        assert_eq!(run(&high, 0), filled);
+        assert_eq!(run(&none, 800_000), filled);
+        assert_ne!(run(&none, 0), filled);
+    }
+
+    #[test]
+    fn dunes_stay_bounded_across_erosion_scales() {
+        let grid = Grid {
+            width: 4,
+            height: 2,
+            radius_metres: daena_physical::DEFAULT_RADIUS_METRES,
+        };
+        let width = 8_u32;
+        let height = 4_u32;
+        let count = 32;
+        let filled = vec![80_000_i32; count];
+        let protected = vec![false; count];
+        let mountain = vec![0_i32; count];
+        let sdf = vec![1_000_000_i32; grid.sample_count()];
+        let primary = vec![NO_FLOW; count];
+        let secondary = vec![NO_FLOW; count];
+        let weight = vec![0_u32; count];
+        let accumulation = vec![1_u32; count];
+        let runoff = vec![0_i32; count];
+        let freeze = vec![0_i32; count];
+        let glacial = vec![0_i32; count];
+        let aridity = vec![900_000_i32; count];
+        let mut key = [3_u8; 32];
+        key[0] = 1;
+        let cells = crate::detail::lattice_nearest_cells(grid, width, height);
+        let mut surface = filled.clone();
+        let land_at = |_lon: i32, _lat: i32| true;
+        let mut cancel = || Ok(());
+        apply_scale_erosion(
+            ScaleErosion {
+                grid,
+                width,
+                height,
+                sea_level_mm: 0,
+                sdf: &sdf,
+                protected: &protected,
+                mountain_ppm: &mountain,
+                runoff_ppm: &runoff,
+                freeze_thaw_ppm: &freeze,
+                aridity_ppm: &aridity,
+                glacial_ppm: &glacial,
+                primary: &primary,
+                secondary: &secondary,
+                weight: &weight,
+                accumulation: &accumulation,
+                erosion_key: &key,
+                sediment_key: &key,
+                sediment_mm: None,
+                peaks: &[],
+                filled_mm: &filled,
+                land_at: &land_at,
+                scales: &EROSION_SCALES,
+                max_step_mm: MAX_EROSION_STEP_MM,
+                cells: &cells,
+            },
+            &mut surface,
+            &mut cancel,
+        )
+        .unwrap();
+        assert_ne!(surface, filled);
+        for &value in &surface {
+            assert!((value - 80_000).abs() <= DUNE_MAX_MM);
+        }
     }
 }

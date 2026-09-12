@@ -102,39 +102,61 @@ impl DerivedDrainage {
     }
 
     #[must_use]
-    pub fn encode_product(&self, width: u32, height: u32, worked_mm: &[i32]) -> Vec<u8> {
+    pub fn encode_product(
+        &self,
+        width: u32,
+        height: u32,
+        worked_mm: &[i32],
+        sediment_mm: &[i32],
+    ) -> Vec<u8> {
         let inner = self.encode();
         let residual = crate::cache::encode_residual(width, height, worked_mm);
-        let mut bytes = Vec::with_capacity(8 + inner.len() + residual.len());
+        let sediment = crate::cache::encode_residual(width, height, sediment_mm);
+        let mut bytes = Vec::with_capacity(12 + inner.len() + residual.len() + sediment.len());
         bytes.extend_from_slice(&(inner.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&(residual.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(sediment.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&inner);
         bytes.extend_from_slice(&residual);
+        bytes.extend_from_slice(&sediment);
         bytes
     }
 
-    pub fn decode_product(bytes: &[u8]) -> Result<(Self, u32, u32, Vec<i32>), AtlasError> {
-        if bytes.len() < 8 {
+    #[allow(clippy::type_complexity)]
+    pub fn decode_product(bytes: &[u8]) -> Result<(Self, u32, u32, Vec<i32>, Vec<i32>), AtlasError> {
+        if bytes.len() < 12 {
             return Err(AtlasError::invalid("refined drainage cache is truncated"));
         }
         let inner_len = u32::from_le_bytes(bytes[0..4].try_into().expect("u32")) as usize;
         let residual_len = u32::from_le_bytes(bytes[4..8].try_into().expect("u32")) as usize;
-        let inner_end = 8usize.saturating_add(inner_len);
+        let sediment_len = u32::from_le_bytes(bytes[8..12].try_into().expect("u32")) as usize;
+        let inner_end = 12usize.saturating_add(inner_len);
         let residual_end = inner_end.saturating_add(residual_len);
+        let sediment_end = residual_end.saturating_add(sediment_len);
         let inner = bytes
-            .get(8..inner_end)
+            .get(12..inner_end)
             .ok_or_else(|| AtlasError::invalid("refined drainage cache is truncated"))?;
         let residual = bytes
             .get(inner_end..residual_end)
             .ok_or_else(|| AtlasError::invalid("refined drainage cache is truncated"))?;
-        if bytes.len() != residual_end {
+        let sediment = bytes
+            .get(residual_end..sediment_end)
+            .ok_or_else(|| AtlasError::invalid("refined drainage cache is truncated"))?;
+        if bytes.len() != sediment_end {
             return Err(AtlasError::invalid(
                 "refined drainage cache has trailing bytes",
             ));
         }
         let drainage = Self::decode(inner)?;
         let (width, height, worked_mm) = crate::cache::decode_residual(residual)?;
-        Ok((drainage, width, height, worked_mm))
+        let (sediment_width, sediment_height, sediment_mm) =
+            crate::cache::decode_residual(sediment)?;
+        if sediment_width != width || sediment_height != height {
+            return Err(AtlasError::invalid(
+                "refined drainage sediment lattice mismatch",
+            ));
+        }
+        Ok((drainage, width, height, worked_mm, sediment_mm))
     }
 }
 
@@ -196,8 +218,9 @@ mod tests {
             scene.model.lattice_width,
             scene.model.lattice_height,
             &scene.model.residual_mm,
+            &scene.sediment_mm,
         );
-        let (again, width, height, _) = DerivedDrainage::decode_product(&product).unwrap();
+        let (again, width, height, _, _) = DerivedDrainage::decode_product(&product).unwrap();
         assert_eq!(again, scene.drainage);
         assert_eq!(width, scene.model.lattice_width);
         assert_eq!(height, scene.model.lattice_height);

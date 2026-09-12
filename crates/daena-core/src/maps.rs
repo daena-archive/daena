@@ -13,6 +13,7 @@ pub const PHYSICAL_PROVIDER: &str = "daena-physical";
 pub const PHYSICAL_LAKE_FEATURE_KIND: &str = daena_physical::hydro_claim::KIND_LAKE;
 pub const PHYSICAL_RIVER_FEATURE_KIND: &str = daena_physical::hydro_claim::KIND_RIVER;
 pub const PHYSICAL_LANDMASS_FEATURE_KIND: &str = daena_physical::landmass_claim::KIND_LANDMASS;
+pub const ATLAS_OROMETRY_FEATURE_KIND: &str = daena_atlas::amplify::KIND_OROMETRY;
 pub const PHYSICAL_SOURCE_FORMAT: &str = "physical-world-v1";
 pub const PHYSICAL_ADAPTER_VERSION: u32 = 1;
 pub const VECTOR_ADAPTER_VERSION: u32 = 1;
@@ -940,6 +941,7 @@ fn anchor(value: &Value) -> Result<Anchor, CoreError> {
                 PHYSICAL_PROVIDER => {
                     daena_physical::hydro_claim::is_valid_id(feature_kind, feature_id)
                         || daena_physical::landmass_claim::is_valid_id(feature_kind, feature_id)
+                        || daena_atlas::amplify::is_valid_orometry_id(feature_kind, feature_id)
                         || (feature_kind == "geojson-feature"
                             && Uuid::parse_str(feature_id)
                                 .is_ok_and(|uuid| uuid.to_string() == *feature_id))

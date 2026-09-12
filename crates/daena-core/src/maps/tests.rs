@@ -468,6 +468,50 @@ fn vector_descriptors_layers_and_feature_anchors_round_trip() {
         "fallbackPoint": [0.5, 0.5]
     }))
     .is_err());
+    let orometry_id = format!(
+        "atlas:orometry:v{}:peak:12",
+        daena_atlas::ATLAS_DETAIL_ALGORITHM_VERSION
+    );
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": ATLAS_OROMETRY_FEATURE_KIND,
+        "featureId": orometry_id,
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": ATLAS_OROMETRY_FEATURE_KIND,
+        "featureId": format!("{orometry_id}:0"),
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_ok());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": "orometry-peak",
+        "featureId": orometry_id,
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": ATLAS_OROMETRY_FEATURE_KIND,
+        "featureId": "atlas:tributary:v2:4:0",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
+    assert!(anchor(&serde_json::json!({
+        "kind": "provider-feature",
+        "provider": PHYSICAL_PROVIDER,
+        "featureKind": ATLAS_OROMETRY_FEATURE_KIND,
+        "featureId": "atlas:valley:v2:18",
+        "fallbackPoint": [0.5, 0.5]
+    }))
+    .is_err());
     assert!(anchor(&serde_json::json!({
         "kind": "provider-feature",
         "provider": PHYSICAL_PROVIDER,

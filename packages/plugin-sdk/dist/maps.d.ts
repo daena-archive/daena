@@ -7,6 +7,9 @@ export declare const PHYSICAL_PROVIDER: "daena-physical";
 export declare const PHYSICAL_LAKE_FEATURE_KIND: "physical-lake";
 export declare const PHYSICAL_RIVER_FEATURE_KIND: "physical-river";
 export declare const PHYSICAL_LANDMASS_FEATURE_KIND: "physical-landmass";
+export declare const ATLAS_OROMETRY_FEATURE_KIND: "atlas-orometry";
+export declare const LORE_BINDABLE_FEATURE_KINDS: readonly ["physical-lake", "physical-river", "physical-landmass", "atlas-orometry"];
+export declare function isLoreBindableFeatureKind(kind: string | null | undefined): kind is (typeof LORE_BINDABLE_FEATURE_KINDS)[number];
 export declare const IMAGE_SOURCE_FORMATS: readonly ["png", "jpeg", "svg"];
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export declare const IMAGE_MAX_ENCODED_BYTES: number;

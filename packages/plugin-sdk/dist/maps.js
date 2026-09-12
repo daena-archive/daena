@@ -5,6 +5,16 @@ export const PHYSICAL_PROVIDER = "daena-physical";
 export const PHYSICAL_LAKE_FEATURE_KIND = "physical-lake";
 export const PHYSICAL_RIVER_FEATURE_KIND = "physical-river";
 export const PHYSICAL_LANDMASS_FEATURE_KIND = "physical-landmass";
+export const ATLAS_OROMETRY_FEATURE_KIND = "atlas-orometry";
+export const LORE_BINDABLE_FEATURE_KINDS = [
+    PHYSICAL_LAKE_FEATURE_KIND,
+    PHYSICAL_RIVER_FEATURE_KIND,
+    PHYSICAL_LANDMASS_FEATURE_KIND,
+    ATLAS_OROMETRY_FEATURE_KIND,
+];
+export function isLoreBindableFeatureKind(kind) {
+    return !!kind && LORE_BINDABLE_FEATURE_KINDS.includes(kind);
+}
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"];
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */
 export const IMAGE_MAX_ENCODED_BYTES = 32 * 1024 * 1024;

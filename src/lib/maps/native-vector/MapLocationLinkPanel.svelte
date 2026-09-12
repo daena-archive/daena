@@ -1,5 +1,13 @@
 <script lang="ts">
-import { MAP_ENTITY_TYPE, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import {
+  ATLAS_OROMETRY_FEATURE_KIND,
+  isLoreBindableFeatureKind,
+  MAP_ENTITY_TYPE,
+  PHYSICAL_LANDMASS_FEATURE_KIND,
+  PHYSICAL_LAKE_FEATURE_KIND,
+  PHYSICAL_RIVER_FEATURE_KIND,
+  type MapAnchor,
+} from "../../../../packages/plugin-sdk/src/maps";
 import { project, type Entity, type MapLocation, type MapPin } from "$lib/project/client";
 
 type CreateTypeOption = { value: string; label: string };
@@ -233,16 +241,21 @@ async function unlink(pin: MapPin) {
 let hydroNamed = false;
 $effect(() => {
   if (hydroNamed || anchor?.kind !== "provider-feature") return;
-  if (anchor.featureKind === "physical-lake") {
+  if (anchor.featureKind === PHYSICAL_LAKE_FEATURE_KIND) {
     role = "lake";
     mode = "create";
     hydroNamed = true;
-  } else if (anchor.featureKind === "physical-river") {
+  } else if (anchor.featureKind === PHYSICAL_RIVER_FEATURE_KIND) {
     role = "river";
     mode = "create";
     hydroNamed = true;
-  } else if (anchor.featureKind === "physical-landmass") {
+  } else if (anchor.featureKind === PHYSICAL_LANDMASS_FEATURE_KIND) {
     role = "landmass";
+    mode = "create";
+    hydroNamed = true;
+  } else if (anchor.featureKind === ATLAS_OROMETRY_FEATURE_KIND) {
+    role = seedRole.trim() || "orometry";
+    if (seedName.trim()) createName = seedName.trim();
     mode = "create";
     hydroNamed = true;
   } else if (anchor.featureKind === "geojson-feature") {
@@ -274,13 +287,7 @@ $effect(() => {
 $effect(() => {
   if (!anchor) return;
   if (anchor.kind === "provider-feature") {
-    if (
-      anchor.featureKind === "physical-lake" ||
-      anchor.featureKind === "physical-river" ||
-      anchor.featureKind === "physical-landmass" ||
-      anchor.featureKind === "geojson-feature"
-    )
-      return;
+    if (isLoreBindableFeatureKind(anchor.featureKind) || anchor.featureKind === "geojson-feature") return;
     createName = `${anchor.featureKind} ${anchor.featureId}`.trim();
   } else if (!createName.trim()) {
     createName = "Untitled place";

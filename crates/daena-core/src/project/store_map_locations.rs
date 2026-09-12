@@ -44,9 +44,11 @@ impl ProjectStore {
         if feature_kind == crate::maps::PHYSICAL_LAKE_FEATURE_KIND
             || feature_kind == crate::maps::PHYSICAL_RIVER_FEATURE_KIND
             || feature_kind == crate::maps::PHYSICAL_LANDMASS_FEATURE_KIND
+            || feature_kind == crate::maps::ATLAS_OROMETRY_FEATURE_KIND
         {
             return if daena_physical::hydro_claim::is_valid_id(feature_kind, feature_id)
                 || daena_physical::landmass_claim::is_valid_id(feature_kind, feature_id)
+                || daena_atlas::amplify::is_valid_orometry_id(feature_kind, feature_id)
             {
                 "resolved"
             } else {

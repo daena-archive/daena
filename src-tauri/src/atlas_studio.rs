@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use daena_atlas::amplify::{inspect_orometry, AmplificationModel, OROMETRY_LAYER};
+use daena_atlas::amplify::{inspect_orometry, AmplificationModel, KIND_OROMETRY, OROMETRY_LAYER};
 use daena_atlas::cache::AtlasDiskCache;
 use daena_atlas::overlay::{
     hit_test_features, polygon_from_micro_rings, AtlasInspectResult, AuthoredFeature, OverlayHit,
@@ -1122,7 +1122,7 @@ pub async fn project_atlas_studio_inspect(
             .map(|hit| OverlayHit {
                 id: hit.id,
                 layer_id: OROMETRY_LAYER.into(),
-                kind: format!("orometry-{}", hit.kind.as_str()),
+                kind: KIND_OROMETRY.into(),
                 label: Some(hit.label),
                 derived: true,
             })

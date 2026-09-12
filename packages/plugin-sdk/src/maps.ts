@@ -8,6 +8,19 @@ export const PHYSICAL_PROVIDER = "daena-physical" as const;
 export const PHYSICAL_LAKE_FEATURE_KIND = "physical-lake" as const;
 export const PHYSICAL_RIVER_FEATURE_KIND = "physical-river" as const;
 export const PHYSICAL_LANDMASS_FEATURE_KIND = "physical-landmass" as const;
+export const ATLAS_OROMETRY_FEATURE_KIND = "atlas-orometry" as const;
+export const LORE_BINDABLE_FEATURE_KINDS = [
+  PHYSICAL_LAKE_FEATURE_KIND,
+  PHYSICAL_RIVER_FEATURE_KIND,
+  PHYSICAL_LANDMASS_FEATURE_KIND,
+  ATLAS_OROMETRY_FEATURE_KIND,
+] as const;
+
+export function isLoreBindableFeatureKind(
+  kind: string | null | undefined,
+): kind is (typeof LORE_BINDABLE_FEATURE_KINDS)[number] {
+  return !!kind && (LORE_BINDABLE_FEATURE_KINDS as readonly string[]).includes(kind);
+}
 export const IMAGE_SOURCE_FORMATS = ["png", "jpeg", "svg"] as const;
 
 /** Recorded imported-image resource budgets. Mirrored from `daena-core` maps::image. */

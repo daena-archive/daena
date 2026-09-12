@@ -23,6 +23,7 @@ use crate::{AtlasError, ATLAS_DETAIL_ALGORITHM_VERSION};
 
 pub const HIERARCHICAL_RELIEF_DOMAIN: &str = "hierarchical-relief";
 pub const MOUNTAIN_OROMETRY_DOMAIN: &str = "mountain-orometry";
+pub const KIND_OROMETRY: &str = "atlas-orometry";
 pub const COASTLINE_SYNTHESIS_DOMAIN: &str = "coastline-synthesis";
 pub const COASTAL_DISPLACE_PPM: i32 = 380_000;
 pub const MAX_MOUNTAIN_FEATURES: usize = 768;
@@ -66,6 +67,22 @@ impl MountainKind {
             Self::Foothill => "foothill",
             Self::Plateau => "plateau",
             Self::Upland => "upland",
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "peak" => Some(Self::Peak),
+            "saddle" => Some(Self::Saddle),
+            "ridge" => Some(Self::Ridge),
+            "secondary-ridge" => Some(Self::SecondaryRidge),
+            "valley" => Some(Self::Valley),
+            "foothill" => Some(Self::Foothill),
+            "plateau" => Some(Self::Plateau),
+            "upland" => Some(Self::Upland),
+            _ => None,
         }
     }
 }
@@ -520,6 +537,28 @@ fn feature_id(kind: MountainKind, index: usize) -> String {
         ATLAS_DETAIL_ALGORITHM_VERSION,
         kind.as_str()
     )
+}
+
+#[must_use]
+pub(crate) fn parse_orometry_id(id: &str) -> Option<(u32, MountainKind, usize, Option<u32>)> {
+    let rest = id.strip_prefix("atlas:orometry:v")?;
+    let mut parts = rest.split(':');
+    let version = parts.next()?.parse().ok()?;
+    let kind = MountainKind::parse(parts.next()?)?;
+    let physical_cell = parts.next()?.parse().ok()?;
+    let ordinal = match parts.next() {
+        None => None,
+        Some(value) => Some(value.parse().ok()?),
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((version, kind, physical_cell, ordinal))
+}
+
+#[must_use]
+pub fn is_valid_orometry_id(kind: &str, id: &str) -> bool {
+    kind == KIND_OROMETRY && parse_orometry_id(id).is_some()
 }
 
 fn physical_lonlat(grid: Grid, cell: usize) -> (i32, i32) {
@@ -2719,6 +2758,42 @@ mod tests {
         };
         assert_eq!(systems(&model), systems(&detailed));
         assert_eq!(ridges(&model), ridges(&detailed));
+        for feature in &model.features {
+            assert!(
+                is_valid_orometry_id(KIND_OROMETRY, &feature.id),
+                "orometry id is not a lore selector: {}",
+                feature.id
+            );
+        }
+    }
+
+    #[test]
+    fn lore_selectors_accept_orometry_and_reject_lattice_ids() {
+        let id = feature_id(MountainKind::Peak, 12);
+        assert!(is_valid_orometry_id(KIND_OROMETRY, &id));
+        assert!(is_valid_orometry_id(KIND_OROMETRY, &format!("{id}:0")));
+        assert!(is_valid_orometry_id(
+            KIND_OROMETRY,
+            "atlas:orometry:v1:system:4"
+        ));
+        assert!(!is_valid_orometry_id("orometry-peak", &id));
+        assert!(!is_valid_orometry_id(
+            KIND_OROMETRY,
+            "atlas:tributary:v2:4:0"
+        ));
+        assert!(!is_valid_orometry_id(KIND_OROMETRY, "atlas:valley:v2:18"));
+        assert!(!is_valid_orometry_id(
+            KIND_OROMETRY,
+            "atlas:deposition:v2:fan:18"
+        ));
+        assert!(!is_valid_orometry_id(
+            KIND_OROMETRY,
+            "atlas:orometry:v2:peak"
+        ));
+        assert!(!is_valid_orometry_id(
+            KIND_OROMETRY,
+            "atlas:orometry:v2:unknown:1"
+        ));
     }
 
     #[test]

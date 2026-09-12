@@ -119,11 +119,24 @@ pub fn parse_studio_error(raw: &str) -> StudioDiagnostic {
 pub fn derived_feature_explanation(kind: &str, derived: bool) -> &'static str {
     if kind == "derived-tributary" {
         "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio."
+    } else if kind == crate::amplify::KIND_OROMETRY {
+        "Coarse-stable Atlas orometry. Naming creates a Place on the feature ID; the geometry stays derived."
     } else if derived {
         "Presentation overlay from the captured Atlas snapshot. It is not a Physical Map edit."
     } else {
         "Authored or semantic map feature from the captured project snapshot."
     }
+}
+
+#[must_use]
+pub fn lore_bindable_feature_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        daena_physical::hydro_claim::KIND_LAKE
+            | daena_physical::hydro_claim::KIND_RIVER
+            | daena_physical::landmass_claim::KIND_LANDMASS
+            | crate::amplify::KIND_OROMETRY
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1638,7 +1651,14 @@ mod tests {
         }
         assert!(derived_feature_explanation("derived-tributary", true)
             .contains("canonical Physical Map"));
+        assert!(derived_feature_explanation(crate::amplify::KIND_OROMETRY, true).contains("Place"));
         assert!(derived_feature_explanation("point", false).contains("Authored"));
+        assert!(lore_bindable_feature_kind(crate::amplify::KIND_OROMETRY));
+        assert!(lore_bindable_feature_kind(
+            daena_physical::hydro_claim::KIND_RIVER
+        ));
+        assert!(!lore_bindable_feature_kind("derived-tributary"));
+        assert!(!lore_bindable_feature_kind("orometry-peak"));
     }
 
     #[test]

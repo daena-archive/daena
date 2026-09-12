@@ -53,7 +53,15 @@ import type {
   RouteSuggestion,
   RouteSuggestResult,
 } from "$lib/project/types";
-import { PHYSICAL_PROVIDER, type MapAnchor } from "../../../../packages/plugin-sdk/src/maps";
+import {
+  ATLAS_OROMETRY_FEATURE_KIND,
+  isLoreBindableFeatureKind,
+  PHYSICAL_LANDMASS_FEATURE_KIND,
+  PHYSICAL_LAKE_FEATURE_KIND,
+  PHYSICAL_PROVIDER,
+  PHYSICAL_RIVER_FEATURE_KIND,
+  type MapAnchor,
+} from "../../../../packages/plugin-sdk/src/maps";
 import {
   PHYSICAL_COORDINATE_SPACE,
   authoredToNormalized,
@@ -253,9 +261,6 @@ let namedWaterSource: VectorSource | null = null;
 let namedWaterLayer: VectorLayer | null = null;
 let namedWaterPins = $state<ProjectMapPin[]>([]);
 let namedPlacePins = $state<ProjectMapPin[]>([]);
-const PHYSICAL_LAKE_FEATURE_KIND = "physical-lake";
-const PHYSICAL_RIVER_FEATURE_KIND = "physical-river";
-const PHYSICAL_LANDMASS_FEATURE_KIND = "physical-landmass";
 let routeSource: VectorSource | null = null;
 let routeLayer: VectorLayer | null = null;
 let overlaySource: VectorSource | null = null;
@@ -444,6 +449,9 @@ function derivedExplanation(hit: AtlasStudioInspectHit) {
   if (hit.kind === PHYSICAL_LANDMASS_FEATURE_KIND) {
     return "Generated land at this epoch. Naming creates a Place; the geometry stays derived.";
   }
+  if (hit.kind === ATLAS_OROMETRY_FEATURE_KIND) {
+    return "Coarse-stable Atlas orometry. Naming creates a Place on the feature ID; the geometry stays derived.";
+  }
   if (hit.kind === "derived-tributary") {
     return "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio.";
   }
@@ -454,11 +462,7 @@ function derivedExplanation(hit: AtlasStudioInspectHit) {
 }
 
 function claimableHit(hit: AtlasStudioInspectHit) {
-  return (
-    hit.kind === PHYSICAL_LAKE_FEATURE_KIND ||
-    hit.kind === PHYSICAL_RIVER_FEATURE_KIND ||
-    hit.kind === PHYSICAL_LANDMASS_FEATURE_KIND
-  );
+  return isLoreBindableFeatureKind(hit.kind);
 }
 
 function namedPlaceLabel(hit: AtlasStudioInspectHit) {
@@ -1124,8 +1128,8 @@ function openLinkPanel(lng: number, lat: number) {
 function nameClaimHit(hit: AtlasStudioInspectHit) {
   const point = sampledPoint ?? picked;
   if (!point) return;
-  overlayLinkSeedName = "";
-  overlayLinkSeedRole = "";
+  overlayLinkSeedName = namedPlaceLabel(hit);
+  overlayLinkSeedRole = hit.kind === ATLAS_OROMETRY_FEATURE_KIND ? hit.label?.trim() || "orometry" : "";
   const [nx, ny] = authoredToNormalized(wrapLon(point.lng), point.lat, PHYSICAL_COORDINATE_SPACE);
   linkAnchor = {
     kind: "provider-feature",
@@ -1223,7 +1227,12 @@ function namedWaterOverlayLayer() {
         image: new CircleStyle({
           radius: 5,
           fill: new Fill({
-            color: feature.get("kind") === PHYSICAL_LANDMASS_FEATURE_KIND ? "#d5ab6c" : "#7ec8e3",
+            color:
+              feature.get("kind") === PHYSICAL_LANDMASS_FEATURE_KIND
+                ? "#d5ab6c"
+                : feature.get("kind") === ATLAS_OROMETRY_FEATURE_KIND
+                  ? "#c4a882"
+                  : "#7ec8e3",
           }),
           stroke: new Stroke({ color: "#1b2822", width: 1.2 }),
         }),
@@ -1243,12 +1252,7 @@ function namedWaterOverlayLayer() {
 async function syncNamedWater() {
   const pins = await project.listMapPins(mapId).catch(() => []);
   namedPlacePins = pins;
-  namedWaterPins = pins.filter(
-    (pin) =>
-      pin.featureKind === PHYSICAL_LAKE_FEATURE_KIND ||
-      pin.featureKind === PHYSICAL_RIVER_FEATURE_KIND ||
-      pin.featureKind === PHYSICAL_LANDMASS_FEATURE_KIND,
-  );
+  namedWaterPins = pins.filter((pin) => isLoreBindableFeatureKind(pin.featureKind));
   namedWaterSource?.clear();
   if (!namedWaterSource) return;
   for (const pin of namedWaterPins) {

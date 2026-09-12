@@ -189,6 +189,10 @@ fn mask_at(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> bool {
     sample_mask_ppm(grid, mask, lon_micro, lat_micro) >= 500_000
 }
 
+fn overflowing_at(hydrology: &HydrologyField, lon_micro: i32, lat_micro: i32) -> bool {
+    daena_physical::hydro_claim::overflowing_at(hydrology, lon_micro, lat_micro).is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn shade_ppm(
     model: &AtlasDetailModel,
@@ -469,7 +473,12 @@ fn paint_pixel(
     }
     let inland = mask_at(grid, &water.inland, lon, lat);
     if options.lakes && inland {
-        return apply_shade(style.lake, shade);
+        let color = if overflowing_at(hydrology, lon, lat) {
+            mix_rgb(style.lake, [255, 255, 255], 280_000)
+        } else {
+            style.lake
+        };
+        return apply_shade(color, shade);
     }
     let land = elevation >= sea;
     if land && !options.relief {

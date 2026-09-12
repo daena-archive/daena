@@ -1114,7 +1114,34 @@ pub async fn project_atlas_studio_inspect(
             }
         }
     }
-    let orometry_at = if has_claim { 1 } else { 0 };
+    let mut flood_hit = false;
+    if let Some(flood) = daena_physical::hydro_claim::overflowing_at(
+        &prepared.hydrology,
+        input.lon_micro,
+        input.lat_micro,
+    ) {
+        let insert_at = usize::from(has_claim);
+        if let Some(pos) = hits.iter().position(|hit| hit.id == flood.id) {
+            let hit = hits.remove(pos);
+            hits.insert(insert_at.min(hits.len()), hit);
+        } else {
+            hits.insert(
+                insert_at.min(hits.len()),
+                OverlayHit {
+                    id: flood.id,
+                    layer_id: flood.layer_id.into(),
+                    kind: flood.kind.into(),
+                    label: Some(flood.label),
+                    derived: true,
+                },
+            );
+            if hits.len() > 32 {
+                hits.truncate(32);
+            }
+        }
+        flood_hit = true;
+    }
+    let orometry_at = usize::from(has_claim) + usize::from(flood_hit);
     let orometry_hits =
         inspect_orometry(&prepared.orometry, input.lon_micro, input.lat_micro, radius)
             .into_iter()

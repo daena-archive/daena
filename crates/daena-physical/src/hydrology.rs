@@ -373,6 +373,29 @@ impl HydrologyField {
         }
         Ok(())
     }
+
+    #[must_use]
+    pub fn basin_can_materialize_flood(&self, basin: &Basin) -> bool {
+        basin_qualifies_for_flood_event(basin, self.grid.sample_count())
+    }
+
+    #[must_use]
+    pub fn overflowing_event_basins(&self) -> Vec<&Basin> {
+        let cell_count = self.grid.sample_count();
+        let mut basins: Vec<_> = self
+            .basins
+            .iter()
+            .filter(|basin| basin_qualifies_for_flood_event(basin, cell_count))
+            .collect();
+        basins.sort_by_key(|basin| basin.minimum_cell);
+        basins
+    }
+}
+
+fn basin_qualifies_for_flood_event(basin: &Basin, cell_count: usize) -> bool {
+    basin.status == BasinStatus::Overflowing
+        && basin.minimum_cell < cell_count
+        && basin.spill_cell.is_none_or(|cell| cell < cell_count)
 }
 
 fn basin_is_descendant(basins: &[Basin], mut cursor: usize, ancestor: usize) -> bool {

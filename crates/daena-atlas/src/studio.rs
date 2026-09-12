@@ -119,6 +119,8 @@ pub fn parse_studio_error(raw: &str) -> StudioDiagnostic {
 pub fn derived_feature_explanation(kind: &str, derived: bool) -> &'static str {
     if kind == "derived-tributary" {
         "Atlas-only derived drainage. It is not canonical Physical Map data and cannot be edited or promoted from Studio."
+    } else if kind == daena_physical::hydro_claim::KIND_DERIVED_FLOOD {
+        "Overflowing basin at this epoch. Timeline can materialize a flood event; this overlay is not a Physical Map edit."
     } else if kind == crate::amplify::KIND_OROMETRY {
         "Coarse-stable Atlas orometry. Naming creates a Place on the feature ID; the geometry stays derived."
     } else if derived {
@@ -1651,6 +1653,10 @@ mod tests {
         }
         assert!(derived_feature_explanation("derived-tributary", true)
             .contains("canonical Physical Map"));
+        assert!(
+            derived_feature_explanation(daena_physical::hydro_claim::KIND_DERIVED_FLOOD, true)
+                .contains("Timeline")
+        );
         assert!(derived_feature_explanation(crate::amplify::KIND_OROMETRY, true).contains("Place"));
         assert!(derived_feature_explanation("point", false).contains("Authored"));
         assert!(lore_bindable_feature_kind(crate::amplify::KIND_OROMETRY));
@@ -1658,6 +1664,9 @@ mod tests {
             daena_physical::hydro_claim::KIND_RIVER
         ));
         assert!(!lore_bindable_feature_kind("derived-tributary"));
+        assert!(!lore_bindable_feature_kind(
+            daena_physical::hydro_claim::KIND_DERIVED_FLOOD
+        ));
         assert!(!lore_bindable_feature_kind("orometry-peak"));
     }
 

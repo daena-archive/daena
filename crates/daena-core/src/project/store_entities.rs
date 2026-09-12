@@ -636,6 +636,26 @@ impl ProjectStore {
         Ok(targets)
     }
 
+    pub fn entity_ids_with_field_value(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<Vec<String>, CoreError> {
+        let encoded = encode_field_value(value)?;
+        let mut statement = self.connection.prepare(
+            "SELECT e.id FROM entity_fields f JOIN entities e ON e.id=f.entity_id WHERE f.namespace=?1 AND f.key=?2 AND f.value=?3 AND e.deleted=0 ORDER BY e.id",
+        )?;
+        let rows = statement.query_map(params![namespace, key, encoded], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
     pub fn external_import_duplicate_targets(
         &self,
         importer_id: &str,

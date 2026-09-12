@@ -9,6 +9,7 @@ use crate::Grid;
 
 pub const KIND_LAKE: &str = "physical-lake";
 pub const KIND_RIVER: &str = "physical-river";
+pub const KIND_DERIVED_FLOOD: &str = "derived-flood";
 pub const LAYER_LAKES: &str = "lakes";
 pub const LAYER_RIVERS: &str = "rivers";
 
@@ -30,6 +31,35 @@ pub fn lake_id(minimum_cell: usize) -> String {
 #[must_use]
 pub fn river_id(source_cell: usize) -> String {
     format!("river:{source_cell}")
+}
+
+#[must_use]
+pub fn flood_id(minimum_cell: usize) -> String {
+    format!("flood:{minimum_cell}")
+}
+
+#[must_use]
+pub fn overflowing_at(
+    hydrology: &HydrologyField,
+    lon_micro: i32,
+    lat_micro: i32,
+) -> Option<HydroClaim> {
+    let cell = cell_from_microdegrees(hydrology.grid, lon_micro, lat_micro);
+    let basin_id = hydrology.basin_by_cell.get(cell).copied()?;
+    let basin = hydrology.basins.get(basin_id as usize)?;
+    if !hydrology.basin_can_materialize_flood(basin) {
+        return None;
+    }
+    overflowing_claim(hydrology, basin.minimum_cell)
+}
+
+#[must_use]
+pub fn overflowing_claims(hydrology: &HydrologyField) -> Vec<HydroClaim> {
+    hydrology
+        .overflowing_event_basins()
+        .into_iter()
+        .filter_map(|basin| overflowing_claim(hydrology, basin.minimum_cell))
+        .collect()
 }
 
 #[must_use]
@@ -103,6 +133,18 @@ fn lake_claim(hydrology: &HydrologyField, minimum_cell: usize) -> Option<HydroCl
         id: lake_id(minimum_cell),
         layer_id: LAYER_LAKES,
         label: "Unnamed lake".into(),
+        lon_micro,
+        lat_micro,
+    })
+}
+
+fn overflowing_claim(hydrology: &HydrologyField, minimum_cell: usize) -> Option<HydroClaim> {
+    let [lon_micro, lat_micro] = coordinate_for_cell(hydrology.grid, minimum_cell);
+    Some(HydroClaim {
+        kind: KIND_DERIVED_FLOOD,
+        id: flood_id(minimum_cell),
+        layer_id: LAYER_LAKES,
+        label: "Overflowing basin".into(),
         lon_micro,
         lat_micro,
     })
@@ -382,5 +424,25 @@ mod tests {
         hydrology.river_coordinates.push(vec![point]);
         let claim = claim_at(&hydrology, point[0], point[1], 50_000).expect("lake");
         assert_eq!(claim.kind, KIND_LAKE);
+    }
+
+    #[test]
+    fn overflowing_claim_is_derived_and_not_a_lake_id() {
+        let grid = Grid::new(16, 8, DEFAULT_RADIUS_METRES).unwrap();
+        let mut hydrology = empty_hydrology(grid);
+        let pit = grid.index(3, 8);
+        let spill = grid.index(3, 9);
+        hydrology.basin_by_cell[pit] = 0;
+        hydrology.basin_by_cell[spill] = 0;
+        let mut overflowing = basin(0, pit);
+        overflowing.status = BasinStatus::Overflowing;
+        overflowing.spill_cell = Some(spill);
+        hydrology.basins.push(overflowing);
+        let point = coordinate_for_cell(grid, spill);
+        let claim = overflowing_at(&hydrology, point[0], point[1]).expect("flood");
+        assert_eq!(claim.kind, KIND_DERIVED_FLOOD);
+        assert_eq!(claim.id, flood_id(pit));
+        assert!(!is_valid_id(KIND_LAKE, &claim.id));
+        assert_eq!(overflowing_claims(&hydrology).len(), 1);
     }
 }

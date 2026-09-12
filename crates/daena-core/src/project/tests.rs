@@ -3603,6 +3603,55 @@ fn purge_refreshes_entities_with_locations_on_purged_map() {
 }
 
 #[test]
+fn entity_ids_with_field_value_finds_live_flood_materialization_keys() {
+    let store = ProjectStore::in_memory().unwrap();
+    let key = "flood:map-a:world-1:1:12:-8000";
+    let live = store
+        .create_entry(CreateEntry {
+            name: "Flood".into(),
+            entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+            document: None,
+            fields: vec![CreateEntryField {
+                namespace: crate::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                key: "materializationKey".into(),
+                value: serde_json::json!(key),
+            }],
+            relationships: vec![],
+        })
+        .unwrap();
+    let other = store
+        .create_entry(CreateEntry {
+            name: "Other flood".into(),
+            entity_type: Some(crate::maps::PHYSICAL_EVENT_ENTITY_TYPE.into()),
+            document: None,
+            fields: vec![CreateEntryField {
+                namespace: crate::maps::PHYSICAL_EVENT_NAMESPACE.into(),
+                key: "materializationKey".into(),
+                value: serde_json::json!("flood:map-a:world-1:1:12:8000"),
+            }],
+            relationships: vec![],
+        })
+        .unwrap();
+    store.delete_entity(other.id.clone()).unwrap();
+    let ids = store
+        .entity_ids_with_field_value(
+            crate::maps::PHYSICAL_EVENT_NAMESPACE,
+            "materializationKey",
+            &serde_json::json!(key),
+        )
+        .unwrap();
+    assert_eq!(ids, vec![live.id]);
+    assert!(store
+        .entity_ids_with_field_value(
+            crate::maps::PHYSICAL_EVENT_NAMESPACE,
+            "materializationKey",
+            &serde_json::json!("flood:map-a:world-1:1:12:8000"),
+        )
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn create_entry_writes_template_content_atomically() {
     let store = ProjectStore::in_memory().unwrap();
     let entity = store

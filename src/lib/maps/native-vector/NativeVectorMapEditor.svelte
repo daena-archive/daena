@@ -45,6 +45,7 @@ import {
   type PhysicalClimateProducts,
   type PhysicalHistoricalProducts,
   type PhysicalHydrologyProducts,
+  type PhysicalNaturalEventKind,
   type AtlasRenderRequest,
 } from "$lib/project/client";
 import {
@@ -279,7 +280,7 @@ let epochProgress = $state<{ completed: number; total: number } | null>(null);
 let activeEpochRequestId = "";
 let epochRequest = 0;
 let epochTimer: ReturnType<typeof setTimeout> | undefined;
-let eventKind = $state<"earthquake" | "eruption" | "storm">("earthquake");
+let eventKind = $state<PhysicalNaturalEventKind>("earthquake");
 let eventStartYears = $state(-10_000);
 let eventEndYears = $state(10_000);
 let eventMaxEvents = $state(8);
@@ -1260,14 +1261,12 @@ async function loadPhysicalEpoch(offset: number) {
 
 async function materializePhysicalEvents() {
   if (!mapId || !physicalMap || eventBusy) return;
-  const requestSignature = JSON.stringify([
-    mapId,
-    eventKind,
-    eventStartYears,
-    eventEndYears,
-    eventMaxEvents,
-    eventHazardSeed,
-  ]);
+  const floodEpochYears = eventStartYears;
+  const requestSignature = JSON.stringify(
+    eventKind === "flood"
+      ? [mapId, eventKind, floodEpochYears, eventMaxEvents]
+      : [mapId, eventKind, eventStartYears, eventEndYears, eventMaxEvents, eventHazardSeed],
+  );
   if (eventRequestSignature !== requestSignature) {
     eventRequestId = crypto.randomUUID();
     eventRequestSignature = requestSignature;
@@ -1281,16 +1280,18 @@ async function materializePhysicalEvents() {
       mapId,
       {
         eventKind: eventKind,
-        intervalStartYears: eventStartYears,
-        intervalEndYears: eventEndYears,
+        intervalStartYears: eventKind === "flood" ? floodEpochYears : eventStartYears,
+        intervalEndYears: eventKind === "flood" ? floodEpochYears : eventEndYears,
         maxEvents: eventMaxEvents,
-        hazardSeed: eventHazardSeed,
+        hazardSeed: eventKind === "flood" ? 0 : eventHazardSeed,
       },
       { requestId },
     );
     eventNotice = result.events.length
       ? `Committed ${result.events.length} ${eventKind} event${result.events.length === 1 ? "" : "s"} as durable history.`
-      : "No events sampled for this bounded interval and hazard seed.";
+      : eventKind === "flood"
+        ? "No overflowing basins at this epoch."
+        : "No events sampled for this bounded interval and hazard seed.";
     eventRequestId = null;
     eventRequestSignature = "";
   } catch (cause) {
@@ -3433,25 +3434,37 @@ onMount(() => {
                         <option value="earthquake">Earthquake</option>
                         <option value="eruption">Eruption</option>
                         <option value="storm">Storm</option>
+                        <option value="flood">Flood</option>
                       </select>
                     </label>
                     <div class="event-grid">
-                      <label
-                        ><span>From (years)</span><input
-                          type="number"
-                          min="-100000"
-                          max="100000"
-                          step="1"
-                          bind:value={eventStartYears}
-                          disabled={eventBusy || busy} /></label>
-                      <label
-                        ><span>To (years)</span><input
-                          type="number"
-                          min="-100000"
-                          max="100000"
-                          step="1"
-                          bind:value={eventEndYears}
-                          disabled={eventBusy || busy} /></label>
+                      {#if eventKind === "flood"}
+                        <label
+                          ><span>Epoch (years)</span><input
+                            type="number"
+                            min="-100000"
+                            max="100000"
+                            step="1"
+                            bind:value={eventStartYears}
+                            disabled={eventBusy || busy} /></label>
+                      {:else}
+                        <label
+                          ><span>From (years)</span><input
+                            type="number"
+                            min="-100000"
+                            max="100000"
+                            step="1"
+                            bind:value={eventStartYears}
+                            disabled={eventBusy || busy} /></label>
+                        <label
+                          ><span>To (years)</span><input
+                            type="number"
+                            min="-100000"
+                            max="100000"
+                            step="1"
+                            bind:value={eventEndYears}
+                            disabled={eventBusy || busy} /></label>
+                      {/if}
                     </div>
                     <div class="event-grid">
                       <label
@@ -3462,13 +3475,15 @@ onMount(() => {
                           step="1"
                           bind:value={eventMaxEvents}
                           disabled={eventBusy || busy} /></label>
-                      <label
-                        ><span>Hazard seed</span><input
-                          type="number"
-                          min="0"
-                          step="1"
-                          bind:value={eventHazardSeed}
-                          disabled={eventBusy || busy} /></label>
+                      {#if eventKind !== "flood"}
+                        <label
+                          ><span>Hazard seed</span><input
+                            type="number"
+                            min="0"
+                            step="1"
+                            bind:value={eventHazardSeed}
+                            disabled={eventBusy || busy} /></label>
+                      {/if}
                     </div>
                     <button
                       type="button"
@@ -3477,8 +3492,12 @@ onMount(() => {
                       onclick={() => void materializePhysicalEvents()}
                       >{eventBusy ? "Committing…" : "Commit events"}</button>
                     <p class="field-hint">
-                      Creates revisioned entities and map links; generated hazards remain read-only and are not
-                      predictions.
+                      {#if eventKind === "flood"}
+                        Overflowing basins at the interval midpoint become history. Terrain is not rewritten.
+                      {:else}
+                        Creates revisioned entities and map links; generated hazards remain read-only and are not
+                        predictions.
+                      {/if}
                     </p>
                     {#if eventNotice}<p class="field-hint" role="status">{eventNotice}</p>{/if}
                   </div>

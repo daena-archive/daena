@@ -596,6 +596,20 @@ pub fn composite_overlays(
                 });
             }
         }
+        for claim in daena_physical::hydro_claim::overflowing_claims(hydrology)
+            .into_iter()
+            .take(32)
+        {
+            derived_labels.push(AuthoredFeature {
+                id: claim.id,
+                layer_id: "labels".into(),
+                kind: daena_physical::hydro_claim::KIND_DERIVED_FLOOD.into(),
+                label: Some(claim.label),
+                path: vec![[claim.lon_micro, claim.lat_micro]],
+                fill: None,
+                closed: false,
+            });
+        }
     }
     let mut label_source = overlays.to_vec();
     label_source.extend(derived_labels);

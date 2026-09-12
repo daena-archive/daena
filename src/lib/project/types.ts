@@ -784,7 +784,7 @@ export interface PhysicalGenerationInput {
     planetary?: PlanetaryConfiguration;
   };
 }
-export type PhysicalNaturalEventKind = "earthquake" | "eruption" | "storm";
+export type PhysicalNaturalEventKind = "earthquake" | "eruption" | "storm" | "flood";
 export interface PhysicalEventMaterializationRequest {
   eventKind: PhysicalNaturalEventKind;
   intervalStartYears: number;
@@ -806,6 +806,7 @@ export interface PhysicalMaterializedEvent {
   ratePerMillionYearsPpm: number;
   sampledCenterId: number | null;
   volcanicSourceDerivationVersion: number;
+  hydrologyDerivationVersion?: number;
   trackCells: number[];
 }
 export interface PhysicalEventMaterializationResult {
@@ -813,6 +814,7 @@ export interface PhysicalEventMaterializationResult {
   mapEntityId: string;
   materializationVersion: number;
   hazardDerivationVersion: number;
+  hydrologyDerivationVersion?: number;
   prediction: false;
   events: PhysicalMaterializedEvent[];
 }

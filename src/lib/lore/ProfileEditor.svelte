@@ -102,6 +102,7 @@ let changes = $state<StoredProfileChange[]>([]);
 let eventDates = $state<Map<string, unknown>>(new Map());
 let draft = $state<ProfileDocument>(emptyProfile());
 let historyDate = $state<unknown>(null);
+let historyDateOpen = $state(false);
 let historyReason = $state("");
 let historyCalendarId = $state(GREGORIAN_CALENDAR_ID);
 let loading = $state(true);
@@ -413,10 +414,11 @@ async function addProfile() {
   error = "";
   creating = true;
   try {
-    stored = await createProfile(context, entityId, profileFromPreset(selectedPreset));
+    const created = await createProfile(context, entityId, profileFromPreset(selectedPreset));
+    stored = created;
     changes = [];
     eventDates = new Map();
-    draft = structuredClone(stored.value);
+    draft = structuredClone(created.value);
     activeTab = "scores";
     await tick();
     const first = sheetEl?.querySelector<HTMLElement>("input, select, button.nudge");
@@ -474,6 +476,7 @@ async function patchComponent(id: string, patch: Partial<ProfileComponent>) {
 
 function close() {
   open = false;
+  historyDateOpen = false;
 }
 
 function isBackdropTarget(event: Event): boolean {
@@ -965,19 +968,26 @@ async function removeHistoryRow(change: StoredProfileChange) {
               </ol>
             {/if}
             <div class="history-add">
-              <DateEditor
-                label="Edit at date"
-                value={historyDate}
-                calendars={calendarCache.snapshot().entities}
-                calendar={calendarCache.getDefinition(historyCalendarId)}
-                selectedCalendarId={historyCalendarId}
-                onChange={setHistoryDate}
-                onClear={() => setHistoryDate(null)}
-                onSelectCalendar={(id) => {
-                  historyCalendarId = id;
-                  const parsed = parseCalendarDate(historyDate);
-                  if (parsed) setHistoryDate({ ...parsed, calendar: id });
-                }} />
+              {#if parseCalendarDate(historyDate) || historyDateOpen}
+                <DateEditor
+                  label="Edit at date"
+                  value={historyDate}
+                  calendars={calendarCache.snapshot().entities}
+                  calendar={calendarCache.getDefinition(historyCalendarId)}
+                  selectedCalendarId={historyCalendarId}
+                  onChange={setHistoryDate}
+                  onClear={() => {
+                    setHistoryDate(null);
+                    historyDateOpen = false;
+                  }}
+                  onSelectCalendar={(id) => {
+                    historyCalendarId = id;
+                    const parsed = parseCalendarDate(historyDate);
+                    if (parsed) setHistoryDate({ ...parsed, calendar: id });
+                  }} />
+              {:else}
+                <button class="date-empty" type="button" onclick={() => (historyDateOpen = true)}>Edit at date</button>
+              {/if}
               {#if parseCalendarDate(historyDate)}
                 <label class="stat">
                   <span>Reason</span>
@@ -1553,6 +1563,16 @@ async function removeHistoryRow(change: StoredProfileChange) {
 .history-add {
   display: grid;
   gap: 8px;
+}
+.history-add .date-empty {
+  width: fit-content;
+  padding: 8px 10px;
+  border: 1px dashed var(--theme-warning-border, #d3c0a9);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
 }
 @media (max-width: 760px) {
   .ability-grid.six,

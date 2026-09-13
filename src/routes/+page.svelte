@@ -9243,6 +9243,7 @@ onMount(() => {
           {#if fieldsDialogOpen}
             <EntityFieldsDialog
               title={inspectedEntity.name}
+              subtitle={entityTypeLabel(inspectedEntity.entity_type)}
               tabs={entityFieldsTabs()}
               bind:activeTab={fieldsDialogTab}
               relationships={fieldsRelationships}
@@ -10238,10 +10239,43 @@ onMount(() => {
   border-bottom: 0;
 }
 .fields-tab {
-  padding: 8px 18px 16px;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 14px 0 8px;
 }
+/* Modal-only treatment: module groups stay flat with simple dividers so the
+   dialog itself remains the single box. No nested cards. */
 .fields-tab :global(.inspector-group) {
-  margin: 0 -18px;
+  margin: 0 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.fields-tab :global(.inspector-group:last-child) {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+.fields-tab .section-title h3 {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.fields-tab .section-title span {
+  font-size: 11px;
+}
+.fields-tab .inspector-group-empty {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .fields-tab {
+    max-width: none;
+  }
 }
 .inspector-section.inspector-section-plain + .inspector-section.inspector-section-plain {
   margin-top: 15px;
@@ -10321,8 +10355,8 @@ onMount(() => {
 }
 .relationship-detail-list {
   display: grid;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 12px;
 }
 .relationship-detail-row {
   display: flex;
@@ -10330,10 +10364,13 @@ onMount(() => {
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 8px 9px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--theme-warning-bg, #fcf8f1);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.relationship-detail-row:hover {
+  border-color: var(--line-strong, var(--line));
 }
 .relationship-detail-copy {
   min-width: 0;
@@ -10363,12 +10400,12 @@ onMount(() => {
 }
 .relationship-detail-copy strong {
   color: var(--ink);
-  font-size: 11px;
+  font-size: 12px;
 }
 .relationship-detail-copy small {
   margin-top: 3px;
   color: var(--ink-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 .relationship-detail-actions {
   display: flex;
@@ -10378,12 +10415,12 @@ onMount(() => {
 }
 .relationship-details-button {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   padding: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   line-height: 1;
   color: var(--ink-faint);
 }
@@ -10398,12 +10435,12 @@ onMount(() => {
 }
 .relationship-remove-button {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
   padding: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   font-size: 14px;
   line-height: 1;
   color: var(--theme-danger-text, #a1482f);
@@ -10418,12 +10455,12 @@ onMount(() => {
   display: block;
 }
 .asset-row strong {
-  font-size: 10px;
+  font-size: 12px;
 }
 .asset-row small {
   margin-top: 3px;
   color: var(--ink-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 .drop-zone {
   display: flex;
@@ -10433,9 +10470,9 @@ onMount(() => {
   gap: 10px;
   width: 100%;
   margin-top: 12px;
-  padding: 10px 20px;
+  padding: 14px 20px;
   border: 1px dashed var(--theme-warning-border, #d3c0a9);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--theme-warning-bg, #fcf8f1);
   color: var(--accent);
   text-align: center;
@@ -10459,11 +10496,12 @@ onMount(() => {
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 9px;
-  padding: 7px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
 }
 .asset-row-button {
   width: 100%;
@@ -10527,10 +10565,12 @@ onMount(() => {
 }
 .map-location-row {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
 }
 .map-location-row > div:first-child {
   min-width: 0;
@@ -10542,23 +10582,23 @@ onMount(() => {
 }
 .map-location-row strong {
   color: var(--ink);
-  font-size: 10px;
+  font-size: 12px;
 }
 .map-location-row small {
   margin-top: 3px;
   color: var(--ink-faint);
-  font-size: 9px;
-  line-height: 1.4;
+  font-size: 10px;
+  line-height: 1.5;
 }
 .map-location-row > div:last-child {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  gap: 6px;
   align-items: center;
 }
 .map-location-row .quiet-button {
-  padding: 5px 6px;
-  font-size: 9px;
+  padding: 7px 10px;
+  font-size: 10px;
 }
 .map-unresolved-badge {
   color: var(--danger);

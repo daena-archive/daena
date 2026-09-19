@@ -246,6 +246,7 @@ let mapField = $state<FieldValue | null>(null);
 let sourceAsset = $state<Asset | null>(null);
 let activeLayerId = $state<string | null>(null);
 let tool = $state<VectorDrawMode>("static");
+let spacePanning = $state(false);
 let featureClipboard = $state<VectorFeature[]>([]);
 let editorState = $state<VectorEditorState>(initialVectorEditorState());
 let busy = $state(false);
@@ -672,8 +673,7 @@ function closeLinkPanel() {
   linkPanelOpen = false;
   linkArming = false;
   linkAnchor = null;
-  if (!picking && canDraw) editor?.setMode(tool);
-  else if (!picking) editor?.setMode("static");
+  if (!picking) applyCanvasMode();
 }
 
 function openLinkPanel(anchor: MapAnchor) {
@@ -688,7 +688,7 @@ function requestLinkFromToolbar() {
   if (linkArming) {
     linkArming = false;
     if (!linkAnchor) linkPanelOpen = false;
-    if (!picking && canDraw) editor?.setMode(tool);
+    if (!picking) applyCanvasMode();
     return;
   }
   if (selectedFeature) {
@@ -1416,11 +1416,7 @@ function mountEditor() {
   }
   editor = created;
   syncSnapToEditor();
-  editor.setMode(
-    canDraw || tool === "select" || tool === "static" || tool === "landmass" || tool.startsWith("measure-")
-      ? tool
-      : "static",
-  );
+  applyCanvasMode();
   paintLandmassPreview();
   requestAnimationFrame(() => editor?.resize());
   publish("ready", { liveEditors: liveMapAdapterCount(), renderer: "openlayers" });
@@ -1777,6 +1773,16 @@ function updateMeasureFromSelection() {
   }
 }
 
+function applyCanvasMode(next = tool) {
+  editor?.setMode(
+    picking || linkArming || linkPanelOpen || spacePanning
+      ? "static"
+      : canDraw || next === "select" || next === "static" || next === "landmass" || next.startsWith("measure-")
+        ? next
+        : "static",
+  );
+}
+
 function setTool(next: VectorDrawMode) {
   if (!canDraw && next !== "static" && next !== "select" && next !== "landmass" && !next.startsWith("measure-")) return;
   cancelGeometryPreview();
@@ -1784,12 +1790,21 @@ function setTool(next: VectorDrawMode) {
   tool = next;
   measureReadout = "";
   editor?.clearMeasure();
-  editor?.setMode(
-    canDraw || next === "select" || next === "static" || next === "landmass" || next.startsWith("measure-")
-      ? next
-      : "static",
-  );
+  applyCanvasMode(next);
   if (next === "measure-length" || next === "measure-area") updateMeasureFromSelection();
+}
+
+function beginSpacePan(event: KeyboardEvent) {
+  event.preventDefault();
+  if (event.repeat || spacePanning) return;
+  spacePanning = true;
+  applyCanvasMode();
+}
+
+function endSpacePan() {
+  if (!spacePanning) return;
+  spacePanning = false;
+  applyCanvasMode();
 }
 
 function switchLayer(layerId: string) {
@@ -1798,7 +1813,7 @@ function switchLayer(layerId: string) {
   activeLayerId = layerId;
   const layer = layers.find((item) => item.id === layerId);
   if (!layer || !isVectorLayer(layer) || layer.locked) setTool("static");
-  else editor?.setMode(tool);
+  else applyCanvasMode();
 }
 
 function createOverlayLayer(name?: string): string | null {
@@ -2118,8 +2133,7 @@ function addLayer() {
   const built = buildCreateLayer(commandStack.document, `Layer ${layers.filter(isVectorLayer).length + 1}`);
   dispatchCommand(built.command);
   switchLayer(built.layer.id);
-  tool = "select";
-  editor?.setMode("select");
+  setTool("select");
 }
 
 async function addRasterLayer() {
@@ -2221,9 +2235,8 @@ async function confirmDetach(scope: PhysicalDetachScope) {
   );
   detachLayerId = null;
   activeLayerId = plan.targetLayer.id;
-  tool = "select";
   editor?.switchLayer(plan.targetLayer.id);
-  editor?.setMode("select");
+  setTool("select");
   await tick();
   editor?.selectFeatureIds(plan.copies.map((feature) => feature.id));
   notice = `Detached ${plan.copies.length} features from ${plan.sourceLayerName} at ${formatEpoch(plan.epochOffsetYears)}. Save to commit the snapshot.`;
@@ -2236,7 +2249,7 @@ function toggleLock(layer: MapLayerDefinition) {
   dispatchCommand(setLayerLockedCommand(layer.id, nextLocked, layer.locked));
   if (layer.id === activeLayerId) {
     if (nextLocked || !isVectorLayer(layer)) setTool("static");
-    else editor?.setMode(tool);
+    else applyCanvasMode();
   }
 }
 
@@ -2440,7 +2453,7 @@ $effect(() => {
 });
 
 $effect(() => {
-  if ((picking || linkArming) && editor) editor.setMode("static");
+  if ((picking || linkArming) && editor) applyCanvasMode();
 });
 
 $effect(() => {
@@ -2515,6 +2528,16 @@ function onKey(event: KeyboardEvent) {
     return;
   }
   const meta = event.metaKey || event.ctrlKey;
+  if (!meta && event.code === "Space") {
+    if (
+      studioOpen ||
+      (event.target instanceof HTMLElement && event.target.closest("button, a, summary, [role='button']"))
+    ) {
+      return;
+    }
+    beginSpacePan(event);
+    return;
+  }
   if (meta && event.key.toLowerCase() === "s") {
     event.preventDefault();
     void save();
@@ -2538,8 +2561,8 @@ function onKey(event: KeyboardEvent) {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       deleteSelectedFeatures();
-    } else if (event.key === "v" || event.key === "h") setTool("static");
-    if (event.key === "s") setTool("select");
+    } else if (event.key === "v") setTool("select");
+    else if (event.key === "h") setTool("static");
     if (event.key === "t") setTool("trace");
     if (event.key === "p") setTool("point");
     if (event.key === "l") setTool("linestring");
@@ -2568,6 +2591,11 @@ onMount(() => {
   window.addEventListener("click", handleLayerMenuOutside);
   registerNativeVectorSession({ save, isDirty, teardown: () => editor?.dispose() });
   window.addEventListener("keydown", onKey);
+  const onKeyUp = (event: KeyboardEvent) => {
+    if (event.code === "Space") endSpacePan();
+  };
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", endSpacePan);
   void listen<PhysicalHistoricalProgress>(PHYSICAL_HISTORICAL_PROGRESS_EVENT, (event) => {
     handleHistoricalProgress(event.payload);
   })
@@ -2585,6 +2613,8 @@ onMount(() => {
   return () => {
     mounted = false;
     window.removeEventListener("keydown", onKey);
+    window.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("blur", endSpacePan);
     loadGeneration += 1;
     unlistenHistoricalProgress?.();
     destroyEditor();
@@ -2652,21 +2682,6 @@ onMount(() => {
             onclick={() => requestLinkFromToolbar()}><Link2 {...iconProps} /></button>
         {/if}
         {#if !studioOpen}
-          <MapEditorTools
-            {tool}
-            {canDraw}
-            {physicalMap}
-            {mapId}
-            {snapEnabled}
-            {snapConfigOpen}
-            {canUndo}
-            {canRedo}
-            editorReady={Boolean(editor)}
-            onset={setTool}
-            ontogglesnap={toggleSnapEnabled}
-            ontogglesnapconfig={() => (snapConfigOpen = !snapConfigOpen)}
-            onundo={undoEdit}
-            onredo={redoEdit} />
           <button
             type="button"
             class="icon-button"
@@ -2783,6 +2798,21 @@ onMount(() => {
       aria-busy={mapViewLoading}
       style={`--sidebar-width: ${sidebarWidth}px`}>
       {#if !studioOpen}
+        <MapEditorTools
+          {tool}
+          {canDraw}
+          {physicalMap}
+          {mapId}
+          {snapEnabled}
+          {snapConfigOpen}
+          {canUndo}
+          {canRedo}
+          editorReady={Boolean(editor)}
+          onset={setTool}
+          ontogglesnap={toggleSnapEnabled}
+          ontogglesnapconfig={() => (snapConfigOpen = !snapConfigOpen)}
+          onundo={undoEdit}
+          onredo={redoEdit} />
         <aside class="map-layers-panel" aria-label="Map layers">
           <div class="map-panel-head">
             <div class="map-panel-head-copy">
@@ -3834,6 +3864,7 @@ onMount(() => {
           <div
             class="canvas"
             class:picking={picking || linkArming}
+            class:panning={spacePanning || tool === "static"}
             tabindex="0"
             role="application"
             aria-label="Physical world map">
@@ -3931,6 +3962,7 @@ onMount(() => {
           <div
             class="canvas"
             class:picking={picking || linkArming}
+            class:panning={spacePanning || tool === "static"}
             tabindex="0"
             role="application"
             aria-label="Native vector map canvas">
@@ -4033,7 +4065,7 @@ onMount(() => {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: var(--sidebar-width, 300px) 6px minmax(0, 1fr);
+  grid-template-columns: 44px var(--sidebar-width, 300px) 6px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   background: var(--canvas, #f7f6f2);
 }
@@ -5143,6 +5175,16 @@ onMount(() => {
   outline: 2px solid var(--accent-soft, #c99965);
   outline-offset: -2px;
 }
+.canvas.panning,
+.canvas.panning :global(.ol-viewport),
+.canvas.panning :global(canvas) {
+  cursor: grab;
+}
+.canvas.panning:active,
+.canvas.panning:active :global(.ol-viewport),
+.canvas.panning:active :global(canvas) {
+  cursor: grabbing;
+}
 .map-busy {
   position: absolute;
   z-index: 3;
@@ -5266,7 +5308,7 @@ button:focus-visible {
 @media (max-width: 900px) {
   .editor-body {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 6px minmax(320px, 1fr);
+    grid-template-rows: auto auto minmax(320px, 1fr);
   }
   .map-layers-panel {
     max-height: 42vh;

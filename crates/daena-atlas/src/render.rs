@@ -2,7 +2,7 @@ use daena_physical::hydrology::HydrologyField;
 use daena_physical::Grid;
 
 use crate::detail::{
-    domain_key, sample_field_mm, sample_mask_ppm, sample_sdf_ppm, AtlasDetailModel,
+    domain_key, sample_cell_field_mm, sample_mask_ppm, sample_sdf_ppm, AtlasDetailModel,
 };
 use crate::erosion::{vegetation_tint_rgb, VEGETATION_DOMAIN};
 use crate::overlay::composite_overlays;
@@ -524,12 +524,12 @@ fn paint_pixel(
             true,
             painted,
             sea,
-            sample_field_mm(grid, paint.temperature_centi_c, lon, lat),
-            sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
-            sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
-            sample_field_mm(grid, paint.precipitation_mm, lon, lat).max(0) as u32,
-            sample_field_mm(grid, paint.humidity_ppm, lon, lat).max(0) as u32,
-            sample_field_mm(grid, paint.aridity_ppm, lon, lat).max(0) as u32,
+            sample_cell_field_mm(grid, paint.temperature_centi_c, lon, lat),
+            sample_cell_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+            sample_cell_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+            sample_cell_field_mm(grid, paint.precipitation_mm, lon, lat).max(0) as u32,
+            sample_cell_field_mm(grid, paint.humidity_ppm, lon, lat).max(0) as u32,
+            sample_cell_field_mm(grid, paint.aridity_ppm, lon, lat).max(0) as u32,
         ) as i32;
         if !options.ice && class == crate::control::CLIMATE_CLASS_ICE {
             class = crate::control::CLIMATE_CLASS_TUNDRA;
@@ -540,7 +540,7 @@ fn paint_pixel(
             base,
             temperature_fill(
                 style,
-                sample_field_mm(grid, paint.temperature_centi_c, lon, lat),
+                sample_cell_field_mm(grid, paint.temperature_centi_c, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
@@ -549,7 +549,7 @@ fn paint_pixel(
             base,
             temperature_fill(
                 style,
-                sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+                sample_cell_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
@@ -558,14 +558,14 @@ fn paint_pixel(
             base,
             temperature_fill(
                 style,
-                sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+                sample_cell_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Freeze {
         freeze_fill(
-            sample_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
-            sample_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
+            sample_cell_field_mm(grid, paint.temperature_nh_summer_centi_c, lon, lat),
+            sample_cell_field_mm(grid, paint.temperature_nh_winter_centi_c, lon, lat),
             base,
         )
     } else if land && options.theme == RasterTheme::Precipitation {
@@ -573,7 +573,7 @@ fn paint_pixel(
             base,
             precipitation_fill(
                 style,
-                sample_field_mm(grid, paint.precipitation_mm, lon, lat),
+                sample_cell_field_mm(grid, paint.precipitation_mm, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
@@ -582,7 +582,7 @@ fn paint_pixel(
             base,
             precipitation_fill(
                 style,
-                sample_field_mm(grid, paint.precipitation_nh_summer_mm, lon, lat),
+                sample_cell_field_mm(grid, paint.precipitation_nh_summer_mm, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
@@ -591,30 +591,36 @@ fn paint_pixel(
             base,
             precipitation_fill(
                 style,
-                sample_field_mm(grid, paint.precipitation_nh_winter_mm, lon, lat),
+                sample_cell_field_mm(grid, paint.precipitation_nh_winter_mm, lon, lat),
             ),
             STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Humidity {
         mix_rgb(
             base,
-            humidity_fill(style, sample_field_mm(grid, paint.humidity_ppm, lon, lat)),
+            humidity_fill(
+                style,
+                sample_cell_field_mm(grid, paint.humidity_ppm, lon, lat),
+            ),
             STYLE_OVERLAY_MIX_PPM,
         )
     } else if land && options.theme == RasterTheme::Aridity {
         mix_rgb(
             base,
-            aridity_fill(style, sample_field_mm(grid, paint.aridity_ppm, lon, lat)),
+            aridity_fill(
+                style,
+                sample_cell_field_mm(grid, paint.aridity_ppm, lon, lat),
+            ),
             STYLE_OVERLAY_MIX_PPM,
         )
     } else if options.theme == RasterTheme::Storms || options.theme == RasterTheme::StormTracks {
         let suitability = if options.theme == RasterTheme::Storms {
-            sample_field_mm(grid, paint.storm_suitability_ppm, lon, lat)
+            sample_cell_field_mm(grid, paint.storm_suitability_ppm, lon, lat)
         } else {
             0
         };
         let track = if options.theme == RasterTheme::StormTracks {
-            sample_field_mm(grid, paint.storm_track_ppm, lon, lat)
+            sample_cell_field_mm(grid, paint.storm_track_ppm, lon, lat)
         } else {
             0
         };

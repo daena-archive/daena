@@ -10,8 +10,8 @@ use rayon::prelude::*;
 use crate::control::ControlFields;
 use crate::detail::{
     cell_center_lat_micro, cell_center_lon_micro, domain_key, lattice_lat_micro, lattice_lon_micro,
-    lattice_nearest_cells, lattice_sample, nearest_cell, nest_lattice_coord, sample_field_mm,
-    sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM, COASTAL_RAMP_MM,
+    lattice_nearest_cells, lattice_sample, nearest_cell, nest_lattice_coord, sample_cell_field_mm,
+    sample_field_mm, sample_sdf_ppm, AtlasDetailModel, COASTAL_ENVELOPE_PPM, COASTAL_RAMP_MM,
 };
 use crate::erosion::{
     accumulate_flow, assign_simple_flow, lattice_index, lock_polar_rows, neighbor_at,
@@ -292,13 +292,13 @@ pub(crate) fn octave_cell_mm(
         octave_noise_step_for_factor(factor),
     );
     let amplitude = landform_amplitude_from(
-        sample_field_mm(grid, elevation_mm, lon, lat),
-        sample_field_mm(grid, crust_influence_ppm, lon, lat),
-        sample_field_mm(grid, mountain_influence_ppm, lon, lat),
+        sample_cell_field_mm(grid, elevation_mm, lon, lat),
+        sample_cell_field_mm(grid, crust_influence_ppm, lon, lat),
+        sample_cell_field_mm(grid, mountain_influence_ppm, lon, lat),
     );
     let unit = ((i64::from(noise) * i64::from(amplitude)) / 1_000_000) as i32;
     let shaped = shape_unit(
-        sample_field_mm(grid, mountain_influence_ppm, lon, lat),
+        sample_cell_field_mm(grid, mountain_influence_ppm, lon, lat),
         unit,
     );
     ((i64::from(shaped) * i64::from(octave_weight_for_factor(factor))) / 1_000_000) as i32
@@ -1843,7 +1843,7 @@ pub(crate) fn apply_coastline(
             if sdf_ppm.unsigned_abs() > COASTAL_ENVELOPE_PPM {
                 return;
             }
-            let fraction = sample_field_mm(controls.grid, &land_ppm, lon, lat);
+            let fraction = sample_cell_field_mm(controls.grid, &land_ppm, lon, lat);
             let proximity = 1_000_000_u32.saturating_sub(
                 fraction
                     .saturating_sub(500_000)
@@ -2644,7 +2644,7 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 3);
     }
 
     #[test]
@@ -2728,8 +2728,8 @@ mod tests {
         let ridge = model
             .features
             .iter()
-            .find(|feature| is_ridge_kind(feature.kind))
-            .expect("ridge");
+            .find(|feature| is_ridge_kind(feature.kind) && !feature.system_id.is_empty())
+            .expect("ridge with a system");
         let ridge_hits =
             inspect_orometry(&model.features, ridge.lon_micro, ridge.lat_micro, 2_000_000);
         assert_eq!(ridge_hits[0].kind, MountainKind::System);

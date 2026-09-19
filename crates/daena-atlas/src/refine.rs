@@ -1704,7 +1704,7 @@ mod tests {
         }
         assert!(refined.worked_mm.len() * 4 <= 2_000_000);
         assert_eq!(refined.version, ATLAS_DERIVED_DRAINAGE_VERSION);
-        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 2);
+        assert_eq!(ATLAS_DERIVED_DRAINAGE_VERSION, 3);
         assert!(
             refined
                 .tributaries

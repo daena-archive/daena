@@ -174,8 +174,8 @@ fn draw_flow_arrows(
             let px = (x as i32 + ox).clamp(0, view.width.saturating_sub(1) as i32) as u32;
             let py = (y as i32 + oy).clamp(0, view.height.saturating_sub(1) as i32) as u32;
             let (lon, lat) = view.pixel_center(px, py);
-            let east_milli = crate::detail::sample_field_mm(grid, east, lon, lat);
-            let north_milli = crate::detail::sample_field_mm(grid, north, lon, lat);
+            let east_milli = crate::detail::sample_cell_field_mm(grid, east, lon, lat);
+            let north_milli = crate::detail::sample_cell_field_mm(grid, north, lon, lat);
             let speed = (east_milli as f32).hypot(north_milli as f32);
             if speed >= FLOW_ARROW_MIN_MILLI {
                 let length = 8.0 + (speed / 450.0).min(10.0);
@@ -734,13 +734,13 @@ fn paint_debug_layers(
                 }
                 if runoff && !debug.runoff_mm.is_empty() {
                     let value =
-                        crate::detail::sample_field_mm(debug.grid, debug.runoff_mm, lon, lat)
+                        crate::detail::sample_cell_field_mm(debug.grid, debug.runoff_mm, lon, lat)
                             .max(0);
                     let t = (value.clamp(0, 4_000) as u64 * 500_000 / 4_000) as u32;
                     put_pixel(buffer, width, height, x as i32, y as i32, [20, 160, 200], t);
                 }
                 if sea && hydrology.water_level_mm.len() == debug.grid.sample_count() {
-                    let elev = crate::detail::sample_field_mm(
+                    let elev = crate::detail::sample_cell_field_mm(
                         debug.grid,
                         &hydrology.water_level_mm,
                         lon,

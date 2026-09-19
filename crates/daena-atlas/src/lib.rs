@@ -26,8 +26,8 @@ pub mod style;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ATLAS_REQUEST_SCHEMA_VERSION: u32 = 1;
-pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 2;
-pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 2;
+pub const ATLAS_DETAIL_ALGORITHM_VERSION: u32 = 3;
+pub const ATLAS_DERIVED_DRAINAGE_VERSION: u32 = 3;
 pub const ATLAS_SEED_POLICY_VERSION: u32 = 1;
 pub const ATLAS_RENDERER_VERSION: u32 = 1;
 pub const ATLAS_PROVENANCE_SCHEMA_VERSION: u32 = 1;
@@ -295,14 +295,14 @@ impl AtlasPreparedScene {
             .model
             .refined_at(lon_micro, lat_micro, sea_level_mm, sdf_ppm);
         let temperature_centi_c =
-            detail::sample_field_mm(grid, &self.temperature_centi_c, lon_micro, lat_micro);
-        let temperature_nh_summer_centi_c = detail::sample_field_mm(
+            detail::sample_cell_field_mm(grid, &self.temperature_centi_c, lon_micro, lat_micro);
+        let temperature_nh_summer_centi_c = detail::sample_cell_field_mm(
             grid,
             &self.temperature_nh_summer_centi_c,
             lon_micro,
             lat_micro,
         );
-        let temperature_nh_winter_centi_c = detail::sample_field_mm(
+        let temperature_nh_winter_centi_c = detail::sample_cell_field_mm(
             grid,
             &self.temperature_nh_winter_centi_c,
             lon_micro,
@@ -318,26 +318,42 @@ impl AtlasPreparedScene {
             "none"
         };
         let wind_east_milli =
-            detail::sample_field_mm(grid, &self.wind_east_milli, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.wind_east_milli, lon_micro, lat_micro);
         let wind_north_milli =
-            detail::sample_field_mm(grid, &self.wind_north_milli, lon_micro, lat_micro);
-        let wind_east_nh_summer_milli =
-            detail::sample_field_mm(grid, &self.wind_east_nh_summer_milli, lon_micro, lat_micro);
-        let wind_north_nh_summer_milli =
-            detail::sample_field_mm(grid, &self.wind_north_nh_summer_milli, lon_micro, lat_micro);
-        let wind_east_nh_winter_milli =
-            detail::sample_field_mm(grid, &self.wind_east_nh_winter_milli, lon_micro, lat_micro);
-        let wind_north_nh_winter_milli =
-            detail::sample_field_mm(grid, &self.wind_north_nh_winter_milli, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.wind_north_milli, lon_micro, lat_micro);
+        let wind_east_nh_summer_milli = detail::sample_cell_field_mm(
+            grid,
+            &self.wind_east_nh_summer_milli,
+            lon_micro,
+            lat_micro,
+        );
+        let wind_north_nh_summer_milli = detail::sample_cell_field_mm(
+            grid,
+            &self.wind_north_nh_summer_milli,
+            lon_micro,
+            lat_micro,
+        );
+        let wind_east_nh_winter_milli = detail::sample_cell_field_mm(
+            grid,
+            &self.wind_east_nh_winter_milli,
+            lon_micro,
+            lat_micro,
+        );
+        let wind_north_nh_winter_milli = detail::sample_cell_field_mm(
+            grid,
+            &self.wind_north_nh_winter_milli,
+            lon_micro,
+            lat_micro,
+        );
         let wind_divergence_ppm =
-            detail::sample_field_mm(grid, &self.wind_divergence_ppm, lon_micro, lat_micro);
-        let wind_divergence_nh_summer_ppm = detail::sample_field_mm(
+            detail::sample_cell_field_mm(grid, &self.wind_divergence_ppm, lon_micro, lat_micro);
+        let wind_divergence_nh_summer_ppm = detail::sample_cell_field_mm(
             grid,
             &self.wind_divergence_nh_summer_ppm,
             lon_micro,
             lat_micro,
         );
-        let wind_divergence_nh_winter_ppm = detail::sample_field_mm(
+        let wind_divergence_nh_winter_ppm = detail::sample_cell_field_mm(
             grid,
             &self.wind_divergence_nh_winter_ppm,
             lon_micro,
@@ -349,17 +365,27 @@ impl AtlasPreparedScene {
         let wind_band_nh_winter =
             control::wind_band_name(self.wind_band_nh_winter.get(cell).copied().unwrap_or(0));
         let current_east_milli =
-            detail::sample_field_mm(grid, &self.current_east_milli, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.current_east_milli, lon_micro, lat_micro);
         let current_north_milli =
-            detail::sample_field_mm(grid, &self.current_north_milli, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.current_north_milli, lon_micro, lat_micro);
         let precipitation_mm =
-            detail::sample_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
-        let humidity_ppm = detail::sample_field_mm(grid, &self.humidity_ppm, lon_micro, lat_micro);
-        let aridity_ppm = detail::sample_field_mm(grid, &self.aridity_ppm, lon_micro, lat_micro);
-        let precipitation_nh_summer_mm =
-            detail::sample_field_mm(grid, &self.precipitation_nh_summer_mm, lon_micro, lat_micro);
-        let precipitation_nh_winter_mm =
-            detail::sample_field_mm(grid, &self.precipitation_nh_winter_mm, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.precipitation_mm, lon_micro, lat_micro);
+        let humidity_ppm =
+            detail::sample_cell_field_mm(grid, &self.humidity_ppm, lon_micro, lat_micro);
+        let aridity_ppm =
+            detail::sample_cell_field_mm(grid, &self.aridity_ppm, lon_micro, lat_micro);
+        let precipitation_nh_summer_mm = detail::sample_cell_field_mm(
+            grid,
+            &self.precipitation_nh_summer_mm,
+            lon_micro,
+            lat_micro,
+        );
+        let precipitation_nh_winter_mm = detail::sample_cell_field_mm(
+            grid,
+            &self.precipitation_nh_winter_mm,
+            lon_micro,
+            lat_micro,
+        );
         let climate_class = self.climate_class.get(cell).copied().unwrap_or(99);
         let climate = control::climate_class_name(climate_class);
         let ice = self.hydrology.ice_cells.get(cell).copied().unwrap_or(false);
@@ -379,11 +405,11 @@ impl AtlasPreparedScene {
             biome_reason.push_str(" No ice cover on this cell.");
         }
         let storm_suitability_ppm =
-            detail::sample_field_mm(grid, &self.storm_suitability_ppm, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.storm_suitability_ppm, lon_micro, lat_micro);
         let storm_track_ppm =
-            detail::sample_field_mm(grid, &self.storm_track_ppm, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.storm_track_ppm, lon_micro, lat_micro);
         let storm_intensity_ppm =
-            detail::sample_field_mm(grid, &self.storm_intensity_ppm, lon_micro, lat_micro);
+            detail::sample_cell_field_mm(grid, &self.storm_intensity_ppm, lon_micro, lat_micro);
         let shear_east = wind_east_nh_summer_milli - wind_east_nh_winter_milli;
         let shear_north = wind_north_nh_summer_milli - wind_north_nh_winter_milli;
         let shear_milli = ((i64::from(shear_east).pow(2) + i64::from(shear_north).pow(2)) as f64)

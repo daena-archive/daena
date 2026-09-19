@@ -5,8 +5,9 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::projection::{
-    bilinear_i32, clamp_lat_micro, lat_to_row_ppm, lon_to_column_ppm, wrap_lon_micro,
-    LAT_MICRO_MIN, LAT_MICRO_SPAN, LON_MICRO_MIN, LON_MICRO_SPAN,
+    bilinear_i32, clamp_lat_micro, lat_to_row_center_ppm, lat_to_row_ppm, lon_to_column_center_ppm,
+    lon_to_column_ppm, wrap_lon_micro, LAT_MICRO_MIN, LAT_MICRO_SPAN, LON_MICRO_MIN,
+    LON_MICRO_SPAN,
 };
 use crate::request::DetailLevel;
 use crate::AtlasError;
@@ -145,9 +146,23 @@ pub fn sample_field_mm(grid: Grid, field: &[i32], lon_micro: i32, lat_micro: i32
 }
 
 #[must_use]
+pub fn sample_cell_field_mm(grid: Grid, field: &[i32], lon_micro: i32, lat_micro: i32) -> i32 {
+    let (col, next_col, fx) = lon_to_column_center_ppm(lon_micro, grid.width);
+    let (row, next_row, fy) = lat_to_row_center_ppm(lat_micro, grid.height);
+    bilinear_i32(
+        field[grid.index(row, col)],
+        field[grid.index(row, next_col)],
+        field[grid.index(next_row, col)],
+        field[grid.index(next_row, next_col)],
+        fx,
+        fy,
+    )
+}
+
+#[must_use]
 pub fn sample_mask_ppm(grid: Grid, mask: &[bool], lon_micro: i32, lat_micro: i32) -> i32 {
-    let (col, next_col, fx) = lon_to_column_ppm(lon_micro, grid.width);
-    let (row, next_row, fy) = lat_to_row_ppm(lat_micro, grid.height);
+    let (col, next_col, fx) = lon_to_column_center_ppm(lon_micro, grid.width);
+    let (row, next_row, fy) = lat_to_row_center_ppm(lat_micro, grid.height);
     let bit = |row: u32, col: u32| {
         if mask.get(grid.index(row, col)).copied().unwrap_or(false) {
             1_000_000
@@ -182,16 +197,14 @@ pub(crate) fn lattice_lat_micro(j: u32, lattice_height: u32) -> i32 {
 pub(crate) fn cell_center_lon_micro(i: u32, width: u32) -> i32 {
     wrap_lon_micro(
         i64::from(LON_MICRO_MIN)
-            + (LON_MICRO_SPAN * (i64::from(i).saturating_mul(2) + 1))
-                / (i64::from(width.max(1)) * 2),
+            + crate::projection::cell_center_offset_micro(i, width, LON_MICRO_SPAN),
     )
 }
 
 pub(crate) fn cell_center_lat_micro(j: u32, height: u32) -> i32 {
     clamp_lat_micro(
         i64::from(LAT_MICRO_MIN)
-            + (LAT_MICRO_SPAN * (i64::from(j).saturating_mul(2) + 1))
-                / (i64::from(height.max(1)) * 2),
+            + crate::projection::cell_center_offset_micro(j, height, LAT_MICRO_SPAN),
     )
 }
 
@@ -208,7 +221,7 @@ impl AtlasDetailModel {
 
     #[must_use]
     pub fn canonical_at(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.elevations_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.elevations_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
@@ -270,7 +283,7 @@ impl AtlasDetailModel {
             .for_each(|(index, (slot, &absolute))| {
                 let i = (index % width_us) as u32;
                 let j = (index / width_us) as u32;
-                let canonical = sample_field_mm(
+                let canonical = sample_cell_field_mm(
                     grid,
                     elevations,
                     lattice_lon_micro(i, width),
@@ -330,7 +343,7 @@ pub fn signed_coastal_distance_ppm(
 
 #[must_use]
 pub fn sample_sdf_ppm(grid: Grid, sdf: &[i32], lon_micro: i32, lat_micro: i32) -> i32 {
-    sample_field_mm(grid, sdf, lon_micro, lat_micro)
+    sample_cell_field_mm(grid, sdf, lon_micro, lat_micro)
 }
 
 pub fn downsample_mean_mm(
@@ -380,6 +393,37 @@ mod tests {
         derive_historical_world_with_planet, HistoricalForcingParameters,
     };
     use daena_physical::NoopProgress as PhysicalNoop;
+
+    #[test]
+    fn sample_cell_field_mm_returns_stored_value_at_cell_centres() {
+        for (width, height) in [(8_u32, 4_u32), (384, 192), (512, 256)] {
+            let grid = Grid {
+                width,
+                height,
+                radius_metres: 6_371_000,
+            };
+            let field = (0..grid.sample_count())
+                .map(|index| {
+                    let (row, col) = grid.row_col(index);
+                    (col * 1_000 + row) as i32
+                })
+                .collect::<Vec<_>>();
+            for col in 0..width {
+                for row in 0..height {
+                    assert_eq!(
+                        sample_cell_field_mm(
+                            grid,
+                            &field,
+                            cell_center_lon_micro(col, width),
+                            cell_center_lat_micro(row, height),
+                        ),
+                        field[grid.index(row, col)],
+                        "{width}x{height} cell {col},{row}"
+                    );
+                }
+            }
+        }
+    }
 
     fn model() -> (AtlasDetailModel, i32, Vec<i32>, Vec<u8>) {
         let world = golden_world();

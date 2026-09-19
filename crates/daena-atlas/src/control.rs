@@ -5,7 +5,7 @@ use daena_physical::hydrology::HydrologyField;
 use daena_physical::tectonics::{BoundaryKind, CrustType, TectonicWorld};
 use daena_physical::{Grid, PhysicalField};
 
-use crate::detail::{nearest_cell, sample_field_mm};
+use crate::detail::{nearest_cell, sample_cell_field_mm};
 use crate::projection::{clamp_lat_micro, wrap_lon_micro};
 
 pub const CLIMATE_CLASS_OCEAN: i32 = daena_physical::climate::BIOME_OCEAN as i32;
@@ -214,22 +214,22 @@ impl ControlFields {
 
     #[must_use]
     pub fn sample_elevation(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.elevation_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.elevation_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_crust_influence(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.crust_influence_ppm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.crust_influence_ppm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.temperature_centi_c, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.temperature_centi_c, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_nh_summer_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(
+        sample_cell_field_mm(
             self.grid,
             &self.temperature_nh_summer_centi_c,
             lon_micro,
@@ -239,7 +239,7 @@ impl ControlFields {
 
     #[must_use]
     pub fn sample_nh_winter_temperature(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(
+        sample_cell_field_mm(
             self.grid,
             &self.temperature_nh_winter_centi_c,
             lon_micro,
@@ -249,37 +249,37 @@ impl ControlFields {
 
     #[must_use]
     pub fn sample_wind_east(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.wind_east_milli, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.wind_east_milli, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_wind_north(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.wind_north_milli, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.wind_north_milli, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_runoff(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.runoff_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.runoff_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_precipitation(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.precipitation_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.precipitation_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_humidity(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.humidity_ppm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.humidity_ppm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_aridity(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.aridity_ppm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.aridity_ppm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_precipitation_nh_summer(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(
+        sample_cell_field_mm(
             self.grid,
             &self.precipitation_nh_summer_mm,
             lon_micro,
@@ -289,7 +289,7 @@ impl ControlFields {
 
     #[must_use]
     pub fn sample_precipitation_nh_winter(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(
+        sample_cell_field_mm(
             self.grid,
             &self.precipitation_nh_winter_mm,
             lon_micro,
@@ -299,22 +299,22 @@ impl ControlFields {
 
     #[must_use]
     pub fn sample_ice_thickness(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.ice_thickness_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.ice_thickness_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_water_level(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.water_level_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.water_level_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_lake_level(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(self.grid, &self.lake_level_mm, lon_micro, lat_micro)
+        sample_cell_field_mm(self.grid, &self.lake_level_mm, lon_micro, lat_micro)
     }
 
     #[must_use]
     pub fn sample_mountain_influence(&self, lon_micro: i32, lat_micro: i32) -> i32 {
-        sample_field_mm(
+        sample_cell_field_mm(
             self.grid,
             &self.mountain_influence_ppm,
             lon_micro,

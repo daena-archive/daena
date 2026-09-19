@@ -350,6 +350,81 @@ pub fn lat_to_row_ppm(lat_micro: i32, height: u32) -> (u32, u32, u32) {
 }
 
 #[must_use]
+pub(crate) fn cell_center_offset_micro(index: u32, dim: u32, span: i64) -> i64 {
+    let dim = i64::from(dim.max(1));
+    span * (i64::from(index) * 2 + 1) / (dim * 2)
+}
+
+fn ppm_frac(numer: i64, denom: i64) -> u32 {
+    if denom <= 0 {
+        0
+    } else {
+        ((numer * 1_000_000) / denom).clamp(0, 1_000_000) as u32
+    }
+}
+
+#[must_use]
+pub fn lon_to_column_center_ppm(lon_micro: i32, width: u32) -> (u32, u32, u32) {
+    let width = width.max(1);
+    let w = i64::from(width);
+    let x = (i64::from(wrap_lon_micro(i64::from(lon_micro))) - i64::from(LON_MICRO_MIN))
+        .rem_euclid(LON_MICRO_SPAN);
+    let first = cell_center_offset_micro(0, width, LON_MICRO_SPAN);
+    if x < first {
+        let last = width - 1;
+        let west = cell_center_offset_micro(last, width, LON_MICRO_SPAN);
+        let east = first + LON_MICRO_SPAN;
+        return (last, 0, ppm_frac(x + LON_MICRO_SPAN - west, east - west));
+    }
+    let mut col = ((x * w) / LON_MICRO_SPAN) as u32;
+    col = col.min(width - 1);
+    while col > 0 && x < cell_center_offset_micro(col, width, LON_MICRO_SPAN) {
+        col -= 1;
+    }
+    while col + 1 < width && x >= cell_center_offset_micro(col + 1, width, LON_MICRO_SPAN) {
+        col += 1;
+    }
+    let west = cell_center_offset_micro(col, width, LON_MICRO_SPAN);
+    if col + 1 == width {
+        let east = first + LON_MICRO_SPAN;
+        return (col, 0, ppm_frac(x - west, east - west));
+    }
+    let east = cell_center_offset_micro(col + 1, width, LON_MICRO_SPAN);
+    (col, col + 1, ppm_frac(x - west, east - west))
+}
+
+#[must_use]
+pub fn lat_to_row_center_ppm(lat_micro: i32, height: u32) -> (u32, u32, u32) {
+    let height = height.max(1);
+    let last = height - 1;
+    let h = i64::from(height);
+    let x = (i64::from(clamp_lat_micro(i64::from(lat_micro))) - i64::from(LAT_MICRO_MIN))
+        .clamp(0, LAT_MICRO_SPAN);
+    let first = cell_center_offset_micro(0, height, LAT_MICRO_SPAN);
+    if x < first {
+        return (0, 1.min(last), 0);
+    }
+    let last_center = cell_center_offset_micro(last, height, LAT_MICRO_SPAN);
+    if x >= last_center {
+        return (last, last, 0);
+    }
+    let mut row = ((x * h) / LAT_MICRO_SPAN) as u32;
+    row = row.min(last.saturating_sub(1));
+    while row > 0 && x < cell_center_offset_micro(row, height, LAT_MICRO_SPAN) {
+        row -= 1;
+    }
+    while row < last && x >= cell_center_offset_micro(row + 1, height, LAT_MICRO_SPAN) {
+        row += 1;
+    }
+    if row == last {
+        return (last, last, 0);
+    }
+    let south = cell_center_offset_micro(row, height, LAT_MICRO_SPAN);
+    let north = cell_center_offset_micro(row + 1, height, LAT_MICRO_SPAN);
+    (row, row + 1, ppm_frac(x - south, north - south))
+}
+
+#[must_use]
 pub fn bilinear_i32(c00: i32, c10: i32, c01: i32, c11: i32, frac_x: u32, frac_y: u32) -> i32 {
     let fx = i128::from(frac_x.min(1_000_000));
     let fy = i128::from(frac_y.min(1_000_000));
@@ -395,6 +470,48 @@ mod tests {
         assert_eq!(clamp_lat_micro(-100_000_000), -90_000_000);
         let (col, next, _) = lon_to_column_ppm(179_999_000, 8);
         assert_eq!(next, (col + 1) % 8);
+    }
+
+    #[test]
+    fn cell_center_split_aligns_centres_and_blends_between() {
+        for width in [8_u32, 384, 512, 1024] {
+            for i in 0..width {
+                let lon = crate::detail::cell_center_lon_micro(i, width);
+                let (col, _, frac) = lon_to_column_center_ppm(lon, width);
+                assert_eq!((col, frac), (i, 0), "{width} cell {i}");
+            }
+            let first = crate::detail::cell_center_lon_micro(0, width);
+            let second = crate::detail::cell_center_lon_micro(1, width);
+            let (col, next, frac) = lon_to_column_center_ppm((first + second) / 2, width);
+            assert_eq!((col, next), (0, 1), "{width} midpoint");
+            assert!(
+                (i64::from(frac) - 500_000).abs() <= 1,
+                "{width} midpoint frac {frac}"
+            );
+            let (col, next, frac) = lon_to_column_center_ppm(180_000_000, width);
+            assert_eq!((col, next), (width - 1, 0), "{width} antimeridian");
+            assert!(
+                (i64::from(frac) - 500_000).abs() <= 1,
+                "{width} antimeridian frac {frac}"
+            );
+        }
+
+        for height in [4_u32, 192, 256, 512] {
+            for j in 0..height {
+                let lat = crate::detail::cell_center_lat_micro(j, height);
+                let (row, _, frac) = lat_to_row_center_ppm(lat, height);
+                assert_eq!((row, frac), (j, 0), "{height} row {j}");
+            }
+            let (row, _, frac) = lat_to_row_center_ppm(LAT_MICRO_MIN, height);
+            assert_eq!((row, frac), (0, 0), "{height} south pole");
+            let (row, _, frac) = lat_to_row_center_ppm(90_000_000, height);
+            assert_eq!((row, frac), (height - 1, 0), "{height} north pole");
+        }
+
+        let (col, _, frac) = lon_to_column_ppm(LON_MICRO_MIN, 8);
+        assert_eq!((col, frac), (0, 0), "node split keeps index == position");
+        let (row, _, frac) = lat_to_row_ppm(LAT_MICRO_MIN, 4);
+        assert_eq!((row, frac), (0, 0), "node split keeps index == position");
     }
 
     #[test]

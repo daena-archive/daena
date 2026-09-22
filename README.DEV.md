@@ -21,8 +21,8 @@ From the repository root, install the JavaScript dependencies:
 deno install --node-modules-dir=auto
 ```
 
-The repository has no root `Cargo.toml`. Rust commands must point to the
-specific manifest they are checking.
+The repository uses a root Cargo workspace (`Cargo.toml`). Rust commands can run
+across the entire workspace or focus on individual crates using `-p <crate>`.
 
 ## Run Daena
 
@@ -97,38 +97,30 @@ deno task test:plugin-transport
 
 ## Rust Checks
 
-Run tests for the core crates and desktop shell with the cached dependency set:
+Run tests across the workspace with the cached dependency set:
 
 ```bash
-cargo test --manifest-path crates/daena-core/Cargo.toml --locked --offline
-cargo test --manifest-path crates/daena-ai/Cargo.toml --locked --offline
-cargo test --manifest-path crates/daena-atlas/Cargo.toml --locked --offline
-cargo test --manifest-path crates/daena-plugin-api/Cargo.toml --locked --offline
-cargo test --manifest-path crates/daena-plugin-host/Cargo.toml --locked --offline
-cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
+cargo test --workspace --locked --offline
 ```
 
-The standalone `daena-physical` crate can be checked with:
+To test a specific crate:
 
 ```bash
-cargo test --manifest-path crates/daena-physical/Cargo.toml --locked --offline
+cargo test -p daena-core --locked --offline
+cargo test -p daena-ai --locked --offline
+cargo test -p daena-atlas --locked --offline
+cargo test -p daena-plugin-api --locked --offline
+cargo test -p daena-plugin-host --locked --offline
+cargo test -p daena-physical --locked --offline
+cargo test -p daena --locked --offline
 ```
 
 Run lint and format checks (strict — warnings deny):
 
 ```bash
-cargo clippy --manifest-path crates/daena-core/Cargo.toml --locked --offline --all-targets -- -D warnings
-cargo clippy --manifest-path crates/daena-atlas/Cargo.toml --locked --offline --all-targets -- -D warnings
-cargo clippy --manifest-path crates/daena-physical/Cargo.toml --locked --offline --all-targets -- -D warnings
-cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
-RUSTFLAGS="-D warnings" cargo check --manifest-path crates/daena-core/Cargo.toml --locked --offline
+cargo clippy --workspace --locked --offline --all-targets -- -D warnings
+cargo check --workspace --locked --offline
 cargo fmt -- --check
-```
-
-Desktop shell's canonical lint:
-
-```bash
-cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
 ```
 
 ## Plugin Development

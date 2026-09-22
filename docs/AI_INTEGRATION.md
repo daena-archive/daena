@@ -1365,10 +1365,10 @@ Agents implementing this plan must follow this protocol.
 Use focused tests plus the relevant full checks. The normal command forms are:
 
 ```text
-rtk cargo fmt --manifest-path src-tauri/Cargo.toml --check
-rtk cargo test --manifest-path src-tauri/Cargo.toml --locked --offline
-rtk cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings
-rtk cargo test --manifest-path crates/daena-ai/Cargo.toml --locked --offline
+rtk cargo fmt -- --check
+rtk cargo test --workspace --locked --offline
+rtk cargo clippy --workspace --locked --offline --all-targets -- -D warnings
+rtk cargo test -p daena-ai --locked --offline
 rtk npm run check
 rtk npm run check:plugin-contract
 rtk npm run test:plugin-conformance

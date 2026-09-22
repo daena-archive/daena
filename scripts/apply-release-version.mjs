@@ -103,7 +103,7 @@ export function applyReleaseVersion(root, rawVersion) {
   const packagePath = path.join(root, "package.json");
   const tauriPath = path.join(root, "src-tauri/tauri.conf.json");
   const cargoPath = path.join(root, "src-tauri/Cargo.toml");
-  const lockPath = path.join(root, "src-tauri/Cargo.lock");
+  const lockPath = path.join(root, "Cargo.lock");
 
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
   packageJson.version = version;

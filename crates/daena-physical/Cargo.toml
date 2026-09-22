@@ -3,6 +3,7 @@ name = "daena-physical"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "physical-map"
 
 [lib]
 name = "daena_physical"
@@ -24,6 +25,3 @@ path = "src/bin/climate_profile.rs"
 name = "epoch-profile"
 path = "src/bin/epoch_profile.rs"
 
-[profile.profiling]
-inherits = "release"
-debug = 2

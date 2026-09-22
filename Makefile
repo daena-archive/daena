@@ -1,7 +1,7 @@
 # Daena Archive developer shortcuts.
 # Canonical docs: README.DEV.md, docs/ARCHITECTURE.md, docs/STORAGE.md.
 # JS tasks run via `deno task` (see package.json scripts).
-# Rust commands pin an explicit manifest; there is no root Cargo.toml.
+# Rust commands use the root workspace Cargo.toml.
 
 .DEFAULT_GOAL := help
 
@@ -9,15 +9,6 @@ DENO ?= deno
 CARGO ?= cargo
 CARGO_FLAGS ?= --locked --offline
 DENO_INSTALL_FLAGS ?= --node-modules-dir=auto
-
-RUST_MANIFESTS := \
-	crates/daena-core/Cargo.toml \
-	crates/daena-ai/Cargo.toml \
-	crates/daena-atlas/Cargo.toml \
-	crates/daena-plugin-api/Cargo.toml \
-	crates/daena-plugin-host/Cargo.toml \
-	crates/daena-physical/Cargo.toml \
-	src-tauri/Cargo.toml
 
 .PHONY: help install dev dev-web dev-desktop preview build build-desktop \
 	test test-js test-unit test-plugins test-maps test-rust \
@@ -60,10 +51,8 @@ test-plugins: ## Run plugin contract, isolation, conformance, and transport test
 test-maps: ## Run maps tests (native-vector, physical, atlas)
 	$(DENO) task test:maps
 
-test-rust: ## Run Rust tests for every crate and the desktop shell
-	@ for m in $(RUST_MANIFESTS); do \
-		$(CARGO) test --manifest-path $$m $(CARGO_FLAGS) || exit 1; \
-	done
+test-rust: ## Run Rust tests across the workspace
+	$(CARGO) test --workspace $(CARGO_FLAGS)
 
 check: ## Typecheck frontend + plugin contract (svelte-check)
 	$(DENO) task check
@@ -80,10 +69,8 @@ format: ## Format JS/TS/Svelte with prettier
 format-check: ## Check JS/TS/Svelte formatting without writing
 	$(DENO) task format:check
 
-clippy: ## Run clippy with warnings denied on every manifest
-	@ for m in $(RUST_MANIFESTS); do \
-		$(CARGO) clippy --manifest-path $$m $(CARGO_FLAGS) --all-targets -- -D warnings || exit 1; \
-	done
+clippy: ## Run clippy with warnings denied across the workspace
+	$(CARGO) clippy --workspace $(CARGO_FLAGS) --all-targets -- -D warnings
 
 fmt-check: ## Check Rust formatting without writing
 	$(CARGO) fmt -- --check

@@ -41,7 +41,7 @@ fs.writeFileSync(
   `${JSON.stringify({ productName: "Daena", version: "0.1.0" }, null, 2)}\n`,
 );
 fs.writeFileSync(path.join(root, "src-tauri/Cargo.toml"), '[package]\nname = "daena"\nversion = "0.1.0"\n');
-fs.writeFileSync(path.join(root, "src-tauri/Cargo.lock"), '[[package]]\nname = "daena"\nversion = "0.1.0"\n');
+fs.writeFileSync(path.join(root, "Cargo.lock"), '[[package]]\nname = "daena"\nversion = "0.1.0"\n');
 
 assert.equal(applyReleaseVersion(root, "v0.1.0-alpha.2"), "0.1.0-alpha.2");
 assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version, "0.1.0-alpha.2");
@@ -50,6 +50,7 @@ assert.equal(
   "0.1.0-alpha.2",
 );
 assert.equal(cargoPackageVersion(fs.readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8")), "0.1.0-alpha.2");
+assert.match(fs.readFileSync(path.join(root, "Cargo.lock"), "utf8"), /version = "0.1.0-alpha.2"/);
 fs.rmSync(root, { recursive: true, force: true });
 
 console.log("apply release version checks passed");

@@ -6,7 +6,7 @@
 - Plan the intended vertical slice before editing; keep changes scoped to the requested phase.
 - Do not stage, commit, or push unless the user explicitly asks.
 - Use `rtk` to run shell commands. For example: `rtk git status`, `rtk cargo test`, and `rtk npm run build`.
-- Use explicit Cargo manifests. This repository has no root `Cargo.toml`; Rust checks normally use `--manifest-path src-tauri/Cargo.toml --locked --offline` when dependencies are cached.
+- This repository uses a root Cargo workspace (`Cargo.toml`); Rust checks normally use `cargo test --workspace --locked --offline` (or `cargo test -p <crate> --locked --offline` for focused checks) when dependencies are cached.
 - This is a Tauri desktop project. Browser automation cannot interact with the native app; validate desktop behavior through appropriate Tauri-native or rendered checks instead.
 
 ## Architecture authorities

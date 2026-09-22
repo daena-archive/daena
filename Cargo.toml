@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/daena-ai",
+    "crates/daena-atlas",
+    "crates/daena-core",
+    "crates/daena-physical",
+    "crates/daena-plugin-api",
+    "crates/daena-plugin-host",
+    "src-tauri",
+]
+exclude = [
+    "crates/daena-plugin-api/fuzz",
+    "crates/daena-plugin-host/fuzz",
+]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The generator is CPU-bound; keep it optimized even in dev builds.
+[profile.dev.package.daena-physical]
+opt-level = 3

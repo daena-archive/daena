@@ -14,8 +14,9 @@ maps, physical worlds, and Atlas. It is the single focused authority for:
 It is subordinate to [`ARCHITECTURE.md`](./ARCHITECTURE.md) for project-wide
 boundaries and [`STORAGE.md`](./STORAGE.md) for runtime authority, checkpoints,
 recovery, and asset publication. Exact public field shapes are defined by the
-plugin SDK and the Maps schema. Future physical-world product work belongs in
-[`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md).
+plugin SDK and the Maps schema. Current planetary, climate, Find Place,
+routing, and landmass behavior is defined below. Remaining physical-world
+product work belongs in [`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md).
 
 The consolidated [`ADR history`](./adr/README.md) may lock narrower
 compatibility, determinism, security, or numerical decisions, but it must not
@@ -497,10 +498,66 @@ they affect:
 Passing compilation or unit tests alone does not prove interaction, native
 lifecycle, persistence, recovery, deterministic rendering, or output safety.
 
+## Current physical-world product
+
+The accepted world already includes a planetary configuration and a disposable
+climate derivation. Climate does not rewrite elevation or bathymetry. Cached
+climate that does not match `CLIMATE_DERIVATION_VERSION` fails validation
+rather than mixing semantics. The live derivation is
+`crates/daena-physical/src/climate.rs`. The climate model, not a second product
+authority, is [`ATLAS_PROCEDURAL_CLIMATE_SIMULATION.md`](./ATLAS_PROCEDURAL_CLIMATE_SIMULATION.md).
+
+### Planetary configuration
+
+Authors configure the planet before or with generation. Presets cover ordinary
+worlds. Advanced controls expose star luminosity, orbital distance,
+eccentricity, axial tilt, rotation period, retained heat, bond albedo, radius,
+and density. Secondary values such as year length, sunlight, and surface
+gravity are derived. `ClimateSettings.global_temperature_centi_c` remains an
+artistic offset, not a substitute for the planetary cause.
+
+### Climate, biomes, and storms
+
+Derivation follows planetary forcing into an energy-balance temperature field,
+pressure-driven winds, saturation-limited moisture, orographic cooling, a land
+surface-water store, a seasonal loop in which ocean heat capacity lags land,
+and surface currents whose heat is imprinted on product temperature. Humidity
+is remaining moisture over local saturation. Land biome classes are a reading
+of those conditions, not an independent paint. Storm genesis, tracks, and
+intensity potential, plus drought, heat-wave, and extreme-rain metrics, are
+climatology of that seasonal state. They are not a weather forecast.
+Materialized storms remain explicit natural events.
+
+Climate views may show annual and solstice temperature, freeze, wind, rainfall,
+humidity, aridity, biome, storm genesis, storm tracks, ice, and currents.
+Toggling a view does not change physical truth. Cell inspection explains the
+derived reading, including why a biome class was chosen.
+
+### Find Place
+
+Find Place searches derived physical fields at the selected epoch. A query
+needs at least one criterion. Results are candidates with the field values and
+explanations that satisfied the query. Search does not write the project.
+Pinning a result or creating an entity is a separate authored action.
+
+### Suggested routes
+
+The author can ask for route suggestions between two points. Suggestions respect
+terrain and hydrology and may use biome cost. Accepting a suggestion stores
+ordinary authored road geometry. The suggestion itself is not canon. Epoch-aware
+road validity, abandonment, and historical routing are not part of this product.
+
+### Landmass selection
+
+At the viewed epoch, the author can select the connected landmass at a point,
+add to it, or subtract from it. Saving captures that geometry as an authored
+overlay. Later sea-level or epoch changes do not rewrite the saved geometry.
+The selection must say which epoch it came from.
+
 ## Future work
 
-Future planetary configuration, climate, wind, currents, biomes, roads, place
-search, natural-event presentation, and related physical-world product work is
-maintained in [`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md). That
-roadmap may extend this product, but it must preserve the authority,
-authorship, detachment, persistence, offline, and recovery boundaries above.
+Remaining physical-world product work — extended natural-event consequences,
+natural-event map presentation, and epoch-aware road history — is maintained in
+[`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md). That roadmap may
+extend this product, but it must preserve the authority, authorship,
+detachment, persistence, offline, and recovery boundaries above.

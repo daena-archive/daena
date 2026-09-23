@@ -3,10 +3,10 @@
 Architecture and data contracts for the bundled Language workspace: overview,
 lexicon, sounds, writing, grammar, forms, and samples.
 
-This document is the Language module authority. It is subordinate to
+This document is the Language module product spec. It is subordinate to
 [`ARCHITECTURE.md`](./ARCHITECTURE.md), [`STORAGE.md`](./STORAGE.md), and the
 public module-record contract. Grammar product and record contracts are in
-section 10.
+the Grammar section. Work that is not shipped is under Record families.
 
 ## 1. Purpose and scope
 
@@ -22,8 +22,6 @@ The module must fit Daena rather than become a separate application inside it:
 - SQLite is live runtime authority, and deterministic portable files provide the checkpoint used for Git, inspection, and clean reconstruction;
 - UI and creation behavior are derived from the enabled module manifest, not checks for a hard-coded Language module ID.
 
-This document defines iterations 1–6 and the boundaries later iterations must preserve. It is not approval to implement the later feature list now.
-
 ## 2. Product model
 
 ### 2.1 Language entity
@@ -32,7 +30,7 @@ Register `language` as an entity type contributed by the bundled Language module
 
 Only the entity name is required. The template must not persist fake starter content or defaults merely to make the form look complete.
 
-Iteration 1 overview fields are:
+Overview fields are:
 
 - native name;
 - aliases;
@@ -61,11 +59,11 @@ Daena entity graph
 
 Do not model lexemes as global entities. Large lexicons would overwhelm global search, entity lists, and relationship views. Do not store the entire lexicon as one JSON array in an entity field either; that would create whole-lexicon conflicts, expensive rewrites, and unstable item identity.
 
-Iteration 1 therefore introduces a generic **module-owned record collection** contract in core and the broker. Language is its first consumer. The primitive must be module-neutral so later bundled modules and third-party plugins can use the same facility.
+Language uses the generic **module-owned record collection** contract in core and the broker. The primitive is module-neutral so other bundled modules and third-party plugins can use the same facility.
 
-Phonemes, orthographies, senses, paradigms, and samples are future record families. Do not create placeholder tables, empty screens, or speculative schemas for them in iteration 1.
+Current collections are `lexemes`, `phonemes`, `phonology`, `orthographies`, `grammar`, `paradigms`, and `samples`. Senses, forms, and pronunciation variants are nested in the lexeme value. They are not separate collections.
 
-## 3. Iteration 1
+## 3. Lexeme contract
 
 ### 3.1 User outcome
 
@@ -109,17 +107,13 @@ Only `lemma` is required. `meanings` is list-shaped in storage even if the first
 
 The exact generated Rust and TypeScript names must follow repository conventions. Wire payloads also carry request IDs and expected revisions according to the existing RPC contract.
 
-### 3.4 Non-goals
+### 3.4 Not in this contract
 
-Iteration 1 does not include:
+Sounds, writing systems, grammar, paradigms, and samples are current product and are specified below. This contract does not add:
 
-- phoneme inventories or IPA charts;
-- phonotactic, sound-change, or language-evolution engines;
-- orthography mapping or custom glyph/font tooling;
-- structured grammar reference pages;
-- conjugation, declension, morphology, or generated paradigms;
-- multiple structured senses, etymology graphs, or form trees;
-- interlinear glossing or corpus analysis;
+- sound-change or language-evolution engines;
+- custom glyph or font tooling;
+- corpus analysis;
 - audio recording or playback;
 - specialist import/export formats;
 - automatic translation or AI generation;
@@ -150,7 +144,7 @@ Do not add lexemes to the main Daena entity list. The Language list may show nat
 
 ### 4.2 Overview
 
-The overview uses the existing entity name/document editing behavior plus a small namespaced field form. Show only fields that work now. Use visible optional labels or supporting text; do not display disabled future sections.
+The overview uses the existing entity name/document editing behavior plus a small namespaced field form. Show the overview fields above. Use visible optional labels or supporting text; do not display disabled sections for unshipped tools.
 
 Saving behavior must match Daena:
 
@@ -320,126 +314,15 @@ Choose explicit, tested bounds during implementation and keep them in the genera
 
 Bounds protect the host; they must not prescribe how a fictional language works. Preserve Unicode and user notation.
 
-## 6. Implementation sequence
+## 6. Record families
 
-Implement only this vertical slice:
+The collections below are current product. They use the same Language entity and module-record boundary.
 
-1. Add the generic module-record core model, storage, revisions, portable codec, and rebuild validation.
-2. Add broker authorization, RPC schema, SDK helpers, and test-host support for module records.
-3. Add the bundled Language manifest and register its entity schema/template.
-4. Add the Language workspace with Overview and Lexicon.
-5. Add scoped lexeme search and its rebuildable projection.
-6. Verify iteration 1 exit gates.
+### Lexicon beyond the minimum lexeme
 
-Iteration 2:
+Senses, forms, examples, and pronunciation variants are structured objects with stable IDs nested in the lexeme value. They are not separate collections. The record primitive is scoped to an owner entity, not a parent record.
 
-1. Extend the lexeme schema with nested senses, forms, pronunciations, tags, and status while remaining backward-compatible.
-2. Add allowlisted `record.list` sort and filter parameters.
-3. Replace the lexicon editor with the richer form, filters, homonym workflow, and JSON import/export.
-4. Verify iteration 2 exit gates.
-
-Iteration 3:
-
-1. Add Language-owned `phonemes`, `phonology`, and `orthographies` record collections.
-2. Add allowlisted `symbol` and `name` sorts for those collections.
-3. Add Sounds and Writing panes with optional IPA-style charts and grapheme-to-sound mappings.
-4. Verify iteration 3 exit gates.
-
-Iteration 4:
-
-1. Add a Language-owned `grammar` collection of discriminated system, agreement, custom-rule, and section-state records.
-2. Ship specialized Grammar editors (not generic Markdown topics).
-3. Verify iteration 4 exit gates and the Grammar section contracts.
-
-Iteration 5:
-
-1. Add a Language-owned `paradigms` collection with nested slots and rules.
-2. Generate form previews from those rules without writing generated cells into lexemes.
-3. Add a Forms pane plus lexeme overrides that distinguish authored from generated provenance.
-4. Verify iteration 5 exit gates.
-
-Iteration 6:
-
-1. Add a Language-owned `samples` collection for sentences and paragraphs.
-2. Store translation, transliteration, and optional interlinear tokens with lexeme links and grammar tags.
-3. Add a Samples pane with an editable form and a readable rendered view.
-4. Verify iteration 6 exit gates.
-
-Do not begin AI or relationship-specific work as part of this slice.
-
-## 7. Verification and exit gates
-
-Iteration 1 is complete only when all of these are demonstrated:
-
-- A Language can be created with only a name.
-- Overview edits save without untouched defaults causing dirty state.
-- Lexemes can be created, edited, paged, searched, and deleted within one Language.
-- Duplicate lemmas remain distinct records.
-- A lexeme cannot be read or mutated through another Language owner ID or another module session.
-- Stale revisions and mismatched request-ID retries fail with typed errors.
-- Lexemes never appear in entity lists or global search.
-- Disable/re-enable hides and restores the active module UI without deleting authored data.
-- Close/reopen preserves all Language data.
-- A flushed clean checkpoint deterministically contains Language data.
-- Deleting `.daena/` only after confirming a clean checkpoint and reopening reconstructs overview and lexemes.
-- Malformed portable Language data yields diagnostics rather than partial silent import.
-- Generated manifest/RPC schemas, TypeScript SDK, fixtures, and test host are in sync.
-- Focused Rust tests, broker conformance tests, frontend checks, and a rendered desktop interaction pass succeed.
-- The rendered pass covers empty, populated, loading, save failure, deletion confirmation, and stale-conflict states.
-
-Iteration 2 is complete only when all of these are demonstrated:
-
-- A lexeme can store multiple senses, examples, forms, and pronunciation variants with stable nested IDs.
-- Iteration 1 lexemes open and save without losing lemma, meanings, pronunciation, or example.
-- Status and tag filters and lemma/status/updated sorts return the expected page.
-- Homonyms remain distinct; the editor reports other matches and can create another entry with the same lemma.
-- JSON export round-trips authored lexeme values; JSON import recreates them as new records.
-- Search still matches lemma, glosses, and nested definitions within one Language.
-- Generated `record.list` schemas and TypeScript SDK include the new allowlisted list parameters.
-
-Iteration 3 is complete only when all of these are demonstrated:
-
-- A Language can store consonant and vowel inventory items, phonotactic notes, and one or more orthographies as module-owned records.
-- IPA is optional; user-defined symbols are accepted.
-- Incomplete inventories still save; unplaced sounds appear outside the chart rather than being rejected.
-- Grapheme-to-sound mappings can name sounds by symbol without requiring a complete inventory.
-- Phonology and orthography data survive checkpoint rebuild and stay scoped to one Language.
-- Lexicon behavior from iterations 1 and 2 remains available in the same workspace.
-
-Iteration 4 is complete only when all of these are demonstrated:
-
-- Grammar is a guided design workspace of named systems, not a generic Markdown topic list.
-- `{ title, section, body, links }` records are rejected; there is no legacy reader or `language-v2` migration.
-- Fixed systems, Agreement, and Other Rules round-trip through module records and reconstruct after deleting `.daena/`.
-- Sounds, writing, and lexicon panes remain available.
-
-Iteration 5 is complete only when all of these are demonstrated:
-
-- A Language can store inflectional and derivational paradigm tables as module-owned records.
-- Generated-form previews fill from rules; more specific lemma-ending matches win over default rules.
-- Irregular and other authored forms can override a generated cell and keep an explicit authored provenance.
-- Changing a rule updates the generated preview and never deletes or rewrites authored forms, exceptions, or examples.
-- Paradigm records survive checkpoint rebuild and stay scoped to one Language.
-- Grammar, sounds, writing, and lexicon panes remain available.
-
-Iteration 6 is complete only when all of these are demonstrated:
-
-- A Language can store sentence and paragraph samples as module-owned records.
-- Samples can include translation, transliteration, and optional interlinear tokens.
-- Tokens can carry glosses, grammar annotations, and lexeme links that open the linked word.
-- Tokenizing whitespace preserves matching authored glosses and links rather than wiping them.
-- Sample records survive checkpoint rebuild and stay scoped to one Language.
-- Forms, grammar, sounds, writing, and lexicon panes remain available.
-
-## 8. Later iterations
-
-Later work must extend the same Language entity and generic module-record boundary. Each iteration should be independently useful.
-
-### Iteration 2: richer lexicon
-
-Iteration 2 extends the same Language entity and `lexemes` collection. Senses, forms, examples, and pronunciation variants remain module-owned structured objects with stable IDs nested in the lexeme value. The generic record primitive is still scoped to an owner entity, not a parent record; nested families avoid a parallel identity/revision plane until a later generic parent-record contract exists.
-
-Iteration 1 lexemes remain valid. On edit, `meanings`, a top-level `example`, and a single `pronunciation` are normalized into senses and pronunciation variants. Saves keep `meanings` as the list of sense glosses so list columns and search stay compatible.
+A lexeme with only `meanings`, a top-level `example`, and a single `pronunciation` remains valid. On edit, those fields normalize into senses and pronunciation variants. Saves keep `meanings` as the list of sense glosses so list columns and search stay compatible.
 
 #### User outcome
 
@@ -453,17 +336,17 @@ An author can document multiple senses and examples for a word, record alternate
 4. Optional status and tags, with list filters and allowlisted sorts (`lemma`, `status`, `updatedAt`).
 5. Homonym notice in the editor, **Add homonym**, and a **Homonyms only** list filter.
 6. Lossless JSON export of authored lexeme values and import that recreates those values as new records.
-7. Iteration 1 create/read/update/delete, paging, search, revision, and checkpoint behavior remains true.
+7. Create, read, update, delete, paging, search, revision, and checkpoint behavior remains true.
 
 `record.list` may accept allowlisted `sort`, `status`, `tag`, and `homonymsOnly` parameters. It still must not accept raw SQL or arbitrary JSON predicates.
 
 #### Non-goals
 
-Iteration 2 does not add separate sense/form/example collections, parent-record IDs, spreadsheet editing, specialist interchange formats, or phonology/grammar work.
+This family does not add separate sense, form, or example collections, parent-record IDs, spreadsheet editing, or specialist interchange formats.
 
-### Iteration 3: phonology and orthography
+### Phonology and orthography
 
-Iteration 3 adds Language-owned record families beside `lexemes`:
+Language-owned record families beside `lexemes`:
 
 - `phonemes` — inventory items with a required symbol and optional IPA, kind, articulatory features, and notes;
 - `phonology` — optional syllable, stress, tone, and phonotactic notes for the language;
@@ -482,17 +365,17 @@ An author can sketch a sound inventory and one or more writing systems without f
 3. Syllable structure, stress, tone, and phonotactic notes.
 4. Multiple orthography records with grapheme-to-sound mappings.
 5. Optional IPA-style consonant and vowel charts derived from authored features.
-6. Iteration 1–2 lexicon behavior remains true.
+6. Lexicon behavior remains true.
 
 #### Non-goals
 
-Iteration 3 does not add phonotactic engines, sound-change rules, custom fonts, audio, or required IPA validity.
+This family does not add phonotactic engines, sound-change rules, custom fonts, audio, or required IPA validity.
 
-### Iteration 4: grammar
+### Grammar records
 
-Iteration 4 replaces generic categorized notes with specialized Grammar
-editors. Collection ID `grammar` remains Language-owned module records. The
-product model, UX, and record contract are in the Grammar section below.
+Grammar is a guided design workspace, not a generic Markdown topic list.
+Collection ID `grammar` is Language-owned module records. The product model,
+UX, and record contract are in the Grammar section below.
 
 #### User outcome
 
@@ -506,16 +389,16 @@ unsupported features.
 1. Discriminated grammar records (`system`, `agreement`, `custom-rule`, `section-state`).
 2. Specialized editors for the initial catalog, plus Agreement and Other Rules.
 3. Generated summaries and catalog-aware search, including unconfigured systems.
-4. Iteration 1–3 lexicon, phonology, and orthography behavior remains true.
+4. Lexicon, phonology, and orthography behavior remains true.
 
 #### Non-goals
 
-Iteration 4 does not generate morphology, parse the language, add interlinear
-samples, or keep a dual-write path for the old topic shape.
+Grammar records do not generate morphology, parse the language, or keep a
+legacy `{ title, section, body, links }` reader.
 
-### Iteration 5: morphology and paradigms
+### Morphology and paradigms
 
-Iteration 5 adds a Language-owned `paradigms` collection. Each paradigm has a name, inflection or derivation kind, slots, and nested rules. Rules stay nested in the paradigm value so they do not need a parent-record identity plane.
+`paradigms` is a Language-owned collection. Each paradigm has a name, inflection or derivation kind, slots, and nested rules. Rules stay nested in the paradigm value so they do not need a parent-record identity plane.
 
 Generation is a derived preview: prefix, suffix, replace-suffix, and identity operations compute cells from the lemma or typed stem. Generated cells are not written to the lexeme unless the author pins an override. Lexeme `forms` remain the authored store; pinned cells record `paradigmId`, `slotId`, and `provenance: override`. Existing alternate forms without those fields stay authored.
 
@@ -531,17 +414,17 @@ An author can define a conjugation or derivation table, see generated forms for 
 2. Nested rules with optional lemma-ending matches and affix operations.
 3. Generated-form previews that label each cell generated, authored, or missing.
 4. Authored overrides that win over generated cells and survive rule edits.
-5. Iteration 1–4 lexicon, phonology, orthography, and grammar behavior remains true.
+5. Lexicon, phonology, orthography, and grammar behavior remains true.
 
 Changing a rule must never silently destroy authored forms, exceptions, or examples.
 
 #### Non-goals
 
-Iteration 5 does not add a full morphological parser, automatic paradigm inference, or sample/interlinear text.
+Paradigms do not add a full morphological parser or automatic paradigm inference.
 
-### Iteration 6: samples and interlinear text
+### Samples and interlinear text
 
-Iteration 6 adds a Language-owned `samples` collection. Each sample is a sentence or paragraph with source text plus optional translation, transliteration, notes, and nested interlinear tokens. Tokens stay nested in the sample value so they do not need a parent-record identity plane. Samples remain module-owned; they are not promoted to global entities.
+`samples` is a Language-owned collection. Each sample is a sentence or paragraph with source text plus optional translation, transliteration, notes, and nested interlinear tokens. Tokens stay nested in the sample value so they do not need a parent-record identity plane. Samples are not global entities.
 
 Interlinear tokens store a surface form, optional gloss, optional grammar annotation, and an optional lexeme ID in the same Language. Tokenize splits the source text on whitespace and reuses existing tokens when the surface form still matches, so retokenizing does not wipe authored glosses or links for words that remain.
 
@@ -557,13 +440,13 @@ An author can collect example sentences and short passages, gloss them interline
 2. Translation and transliteration fields.
 3. Optional interlinear tokens with glosses, grammar annotations, and lexeme links.
 4. Editable token rows and a readable rendered preview.
-5. Iteration 1–5 lexicon, phonology, orthography, grammar, and paradigm behavior remains true.
+5. Lexicon, phonology, orthography, grammar, and paradigm behavior remains true.
 
 #### Non-goals
 
-Iteration 6 does not add corpus statistics, audio, automatic aligners, or specialist interchange formats.
+Samples do not add corpus statistics, audio, automatic aligners, or specialist interchange formats.
 
-### Iteration 7: advanced tools
+### Not shipped
 
 - sound changes and historical development;
 - language-family and dialect comparison;
@@ -575,12 +458,12 @@ Iteration 6 does not add corpus statistics, audio, automatic aligners, or specia
 
 Temporal modeling remains deferred until explicitly planned.
 
-## 9. Decisions that must remain true
+## 7. Decisions that must remain true
 
 1. Language is a first-class Daena entity and top-level module experience.
 2. Only a Language name is required at creation.
 3. Overview data uses normal entity fields and documents.
-4. Lexemes and future linguistic collections are module-owned records, not global entities by default.
+4. Lexemes, phonemes, phonology, orthographies, grammar, paradigms, and samples are module-owned records, not global entities.
 5. The module-record facility is generic, schema-declared, revision-aware, and broker-authorized.
 6. Bundled Language code has no private storage or Tauri bypass.
 7. SQLite remains live runtime authority; deterministic portable checkpoints reconstruct clean state.
@@ -588,7 +471,7 @@ Temporal modeling remains deferred until explicitly planned.
 9. Future features add explicit record families instead of an unbounded metadata escape hatch.
 10. Cross-entity relationships are normal Daena behavior, not an iteration-1 Language subsystem.
 
-## 10. Grammar
+## 8. Grammar
 
 The grammar area is a guided language-design workspace, not a collection of generic categorized notes. Ask what grammatical system exists first, then present the workflow appropriate for that system.
 

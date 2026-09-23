@@ -2,10 +2,9 @@
 
 ## Purpose and authority
 
-This document defines Daena's requirements, architecture, and implementation
-plan for migrating external material into an open project. It translates the
-external product specification into the current Daena architecture. It is
-subordinate to [`ARCHITECTURE.md`](./ARCHITECTURE.md),
+This document is the product and architecture spec for migrating external
+material into an open project. It is subordinate to
+[`ARCHITECTURE.md`](./ARCHITECTURE.md),
 [`STORAGE.md`](./STORAGE.md), and
 [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) where their ownership,
 storage, security, or plugin boundaries apply.
@@ -143,16 +142,16 @@ present and is not an error on sparse notes/pages. Unmapped fields are retained
 in source provenance and summarized in one warning instead of generating a
 warning per field per object.
 
-### Initial formats
+### Supported formats
 
-Delivery order is:
+The built-in importer accepts:
 
 1. Markdown, plain text, HTML, DOCX, and recursive folders;
-2. ZIP, followed by Obsidian as a specialization of Markdown;
-3. streaming MediaWiki-compatible XML and conservative wikitext preservation;
-4. third-party importer plugins; and
-5. ODT and RTF after their dedicated parser, fidelity, and security work is
-   planned and accepted.
+2. ZIP, and Obsidian as a folder-only specialization of Markdown;
+3. streaming MediaWiki-compatible XML with conservative wikitext preservation.
+
+Third-party importer plugins are not shipped. ODT and RTF are not advertised
+and are not selectable.
 
 Markdown initially remains one staged object per file. Headings are preserved
 in the document body and do not create entities automatically. Obsidian adds
@@ -161,7 +160,7 @@ rules while producing the same staged contract.
 
 ### Deferred ODT and RTF support
 
-ODT and RTF are explicitly deferred beyond Iteration 6. They are not advertised
+ODT and RTF are not part of the current product. They are not advertised
 by the built-in importer and are not selectable in the current UI. Each format
 needs a maintained parser path, malformed-input and resource-limit fixtures,
 conversion-quality expectations, attachment/link handling, and commit plus
@@ -349,95 +348,12 @@ content-addressed runtime assets with rollback-safe bookkeeping. No plugin code,
 source parsing, network request, or user prompt occurs while the SQLite
 transaction is open.
 
-## Implementation plan
+`create`, `skip`, and `map to existing` are enabled. `replace` and `merge` are
+not.
 
-Each iteration is a bounded vertical slice with its own exit gate. Later work
-is retained here but does not expand the first release implicitly.
+## Remaining work
 
-### Iteration 1: staged contract and generic analysis
-
-Implement the versioned neutral types, diagnostics, summary generation,
-resource limits, deterministic Markdown/plain-text file staging, recursive
-folder staging, stable source-relative ordering/identity, and symlink refusal.
-No project mutation or UI is added in this iteration.
-
-**Exit gate:** focused core tests prove that analysis leaves project state
-untouched, produces deterministic staged output for files and folders,
-preserves Markdown/text bytes as UTF-8 content, reports unsupported entries,
-rejects invalid roots and non-UTF-8/oversized content safely, never follows
-symlinks, and enforces item and total-byte limits.
-
-### Iteration 2: trusted-shell analysis sessions
-
-Add Tauri commands for importer discovery, file/folder selection, starting and
-cancelling an analysis job, paged staged-item reads, and progress events. Bind
-sessions to project lifecycle and spill large staged batches to bounded local
-storage. Add typed frontend client contracts.
-
-**Exit gate:** the native app can analyze a folder without mutation, report
-progress, cancel promptly, page results, clean local staging on lifecycle
-changes, and reject stale/guessed session IDs.
-
-### Iteration 3: shared preview and mapping
-
-Add the project-level Import entry point, source/importer chooser, analysis
-summary, item inspector, diagnostics, and global/folder/item mapping controls.
-Derive entity/field/relationship choices from enabled manifests. Produce an
-immutable candidate plan without committing it.
-
-**Exit gate:** a user can review every Markdown/text item, override suggested
-mappings, see unsupported information and unresolved decisions, and close or
-cancel without project mutation. Disabled module contributions disappear.
-
-### Iteration 4: validation, atomic commit, and report
-
-Add duplicate/source-identity detection, explicit conflict decisions, plan
-validation, warning acknowledgement, generation/revision preconditions, the
-dedicated receipt-backed import transaction, and the complete result report.
-Start with create/skip/map-to-existing; keep replace/merge disabled until their
-field, document, relationship, and asset semantics are specified and tested.
-
-**Exit gate:** confirmed Markdown/text/folder imports are atomic and
-idempotent; injected validation, transaction, and checkpoint failures do not
-leave partial project content; successful imports survive close/reopen and a
-clean rebuild after removing `.daena/`; stale plans fail closed; the report
-matches every applied or skipped item.
-
-### Iteration 5: Markdown completeness, ZIP, and assets
-
-Add standard Markdown link/image discovery, safe relative resolution,
-frontmatter preservation/mapping, preflighted assets, ZIP central-directory
-limits and safe extraction, and the HTML/DOCX parsers that pass quality and
-security fixtures. ODT and RTF remain deferred as described above.
-
-**Exit gate:** nested folders and ZIPs produce equivalent staged structure;
-HTML and DOCX produce reviewable Markdown without active content; traversal,
-symlinks, bombs, malformed documents/XML, unsafe targets, and missing assets are
-safely blocked or reported; successful document and asset imports round-trip
-through checkpoint rebuild without path or hash drift.
-
-### Iteration 6: Obsidian specialization
-
-Build the Obsidian adapter on the Markdown path. Add YAML frontmatter aliases,
-wikilinks, embeds, attachment discovery, and vault-wide resolved/ambiguous/
-missing reference analysis. Preserve unsupported plugin syntax intact.
-
-**Exit gate:** a representative vault retains useful hierarchy, Markdown,
-frontmatter, aliases, links, embeds, and assets; ambiguous/missing links are
-never invented and remain reviewable; reopen and clean rebuild preserve the
-accepted result.
-
-### Iteration 7: streaming MediaWiki
-
-Add a streaming, external-entity-disabled XML adapter for latest page revisions,
-namespaces, redirects, categories, links, raw wikitext, templates, and infobox
-hints. Do not add revision-history import.
-
-**Exit gate:** a large fixture stays within an explicit memory ceiling, can be
-cancelled, preserves unconverted wikitext/source metadata, and completes the
-same preview-plan-commit-report flow.
-
-### Iteration 8: plugin importer ecosystem
+### Plugin importer ecosystem
 
 Add importer declarations to the canonical Rust plugin contract, generate JSON
 Schema and TypeScript SDK types, implement broker discovery and bounded opaque
@@ -449,7 +365,7 @@ neutral contract without storage knowledge or project-write authority;
 malformed, oversized, timed-out, disabled, and revoked providers fail closed;
 bundled and plugin output pass identical core validation.
 
-## Explicit non-goals for the first release
+## Non-goals
 
 - bidirectional sync, background watching, or live external mirrors;
 - full source revision history;
@@ -458,81 +374,3 @@ bundled and plugin output pass identical core validation.
 - silent entity-type creation, destructive conversion, or automatic merge;
 - unrestricted plugin filesystem/network access; and
 - first-party support for every proprietary worldbuilding product.
-
-## Implementation status
-
-- Iteration 1: implemented in the core; the initial slice covers the neutral
-  contract and deterministic generic Markdown/plain-text/folder analysis.
-- Iteration 2: implemented; trusted-shell source handles, project-bound
-  background sessions, progress/cancellation, paged results, lifecycle cleanup,
-  bounded local spill storage, Tauri commands, and frontend client types are in
-  place.
-- Iteration 3: implemented; the project menu opens a shared import workflow with
-  importer/source selection, live progress, paged item inspection, diagnostics,
-  enabled-manifest-derived entity/field/relationship choices, global/folder/item
-  overrides, and a deterministic generation-bound candidate plan. Closing or
-  cancelling cleans the session without mutating project content.
-- Iteration 4: implemented for Markdown/plain-text/folder imports. The server
-  rebuilds and validates plans against the current enabled manifests and project
-  generation, detects repeated source identities, requires explicit conflict
-  decisions, and supports create/skip/map-to-existing. Commit uses one
-  receipt-backed transaction with revision preconditions, warning acknowledgement,
-  idempotent retry, canonical source-identity fields, session cleanup, and a
-  per-item result report. Replace and merge remain intentionally disabled.
-- Iteration 5: implemented. The delivered slice preserves raw YAML
-  frontmatter without rewriting the Markdown body, discovers standard Markdown
-  links/images (including reference links), resolves normalized relative paths,
-  reports missing or escaping targets, and preflights referenced PNG/JPEG/GIF/
-  WebP/PDF attachments by signature, size, and SHA-256. Commit reopens the
-  project-bound source through symlink-refusing normalized paths, verifies the
-  analyzed hash and size, and adds attachment rows in the same receipt-backed
-  transaction as their created or mapped owner. Attachment bytes and metadata
-  are covered by checkpoint and clean-rebuild tests. ZIP sources now pass the
-  same staging/validation/commit path without extracting to disk; central-
-  directory preflight rejects non-UTF-8, absolute, traversal, platform-prefix,
-  duplicate/case-colliding, link/special-file, oversized, excessive-depth, and
-  high-compression-ratio entries before content parsing. Folder/ZIP equivalence,
-  malformed/traversal/bomb rejection, cancellation checks, archive attachment
-  commit, and clean rebuild are covered. HTML and HTM sources now use a bounded
-  HTML5-to-Markdown converter that retains the original bytes in transient staged
-  review data, preserves safe document structure, routes converted links and
-  images through the Markdown resolver, removes active/embedded content and
-  unsafe targets with diagnostics, and rejects excessive DOM complexity. Quality,
-  malformed-input, active-content, link/asset, limit, commit, and clean-rebuild
-  fixtures cover the enabled path. DOCX sources now pass bounded OOXML package
-  and DTD-disabled XML preflight, preserve common document structure and core
-  title metadata as Markdown, resolve safe hyperlinks, and import signature-
-  checked embedded images from direct, folder, or nested-ZIP sources. Traversal,
-  malformed package/XML, active/unsupported content diagnostics, conversion
-  quality, attachment re-read, commit, and clean-rebuild fixtures cover the
-  enabled DOCX path. ODT/RTF parsers remain explicitly deferred and will only be
-  enabled with their own format-specific quality and security fixtures.
-- Iteration 6: implemented. A separate folder-only Obsidian importer reuses the
-  staged analysis, mapping, validation, and atomic commit pipeline while leaving
-  generic Markdown semantics unchanged. It parses a bounded YAML subset into
-  generic fields, aliases, tags, and type hints while retaining raw frontmatter;
-  preserves note bodies and plugin syntax; excludes configuration/trash folders;
-  resolves path, filename, title, and alias wikilinks plus note/attachment embeds;
-  and reports ambiguous, missing, partially parsed, and unsupported data for
-  review. Preview exposes field values and source context; commit retains
-  aliases, tags, metadata, unmapped fields, and link resolutions in source
-  provenance. Resolved links can be explicitly mapped to enabled relationship
-  types and commit atomically with notes and attachments. Representative,
-  ambiguity, missing-target, generic-compatibility, folder-only, relationship,
-  attachment commit, and clean-rebuild fixtures cover the profile.
-- Iteration 7: implemented. A file-only MediaWiki importer streams UTF-8 XML
-  without constructing a complete XML tree, rejects DTD/entity expansion,
-  enforces explicit source/page/content/depth/diagnostic limits, reports
-  progress, and supports cancellation. It stages the latest revision per page,
-  namespaces, source metadata, redirects, categories, internal links, raw
-  wikitext, templates, and infobox field hints through the existing preview,
-  mapping, validation, atomic commit, and report pipeline. Sparse global field
-  mappings apply only when a key exists; accepted categories, redirect aliases,
-  namespace/revision/site metadata, template names, infobox values, and link
-  resolution remain in source provenance. Explicit resolved-link mappings
-  create deduplicated relationships in the same transaction. Fixtures cover
-  multi-revision selection, metadata and structure preservation, link and
-  redirect resolution, malformed XML and DTD rejection, page limits,
-  cancellation, commit, checkpoint, and clean rebuild. Full revision history,
-  wikitext-to-Markdown conversion, and media-file retrieval remain out of scope.
-- Iteration 8: planned, not yet implemented.

@@ -1,5 +1,9 @@
 # Lore Profiles
 
+This document is the Lore Profile product spec. The current product is section
+27. Section 28 is not shipped. Architectural constraints are
+[ADR 0006](./adr/0006-lore-profiles.md).
+
 ## 1. Overview
 
 **Profiles** are an optional structured capability of the **Lore** module that allows any Lore entity to have measurable attributes, skills, traits, proficiencies, resources, and other characteristics.
@@ -1509,9 +1513,9 @@ The system should provide structured worldbuilding data without attempting to im
 
 ---
 
-# 27. Initial Scope
+# 27. Current product
 
-The initial implementation should include:
+The shipped Profile capability includes:
 
 ### Profile
 
@@ -1569,7 +1573,7 @@ Potential future extensions:
 - Cross-entity statistics
 - Historical statistical analysis
 
-These should not be required for the initial implementation.
+These are not part of the current product.
 
 ---
 

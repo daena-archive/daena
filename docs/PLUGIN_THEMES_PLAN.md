@@ -4,10 +4,10 @@
 
 Accepted. Standing policy is [ADR 0007](adr/0007-plugin-theme-packs.md). The
 authoring contract is in [`PLUGIN_SDK.md`](PLUGIN_SDK.md); architecture is in
-[`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) §13. This file retains
-delivery notes, contrast floors, and rejected alternatives.
+[`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) §13. Shipped theme-pack
+behavior lives there, not in a delivery sequence.
 
-This plan must stay inside the existing plugin boundary:
+Theme packs stay inside the existing plugin boundary:
 
 - [ADR 0001](adr/0001-plugin-platform-boundary.md) — isolation; untrusted code
   never runs in the trusted webview and never receives the host DOM.
@@ -257,70 +257,11 @@ No `url()`, external fonts, or host CSS attachment. Plugin CSP is unchanged.
 
 A project-scoped `themePack` overlay could let a world look different while
 open, still as host-applied JSON. That conflicts with current Settings copy
-(“follows you across projects”) and with welcome-screen theming, so it waits
-until the app-global pack path is real.
+(“follows you across projects”) and with welcome-screen theming, so it is not
+part of the current product.
 
 Fonts and density tokens can join the catalog later as parsed structured
 values, never as CSS strings.
-
-## Delivery
-
-### Phase 0 — Tokenize the host (implemented)
-
-Extract the builtin light/dark maps into a Rust-owned catalog and a host
-resolver. Apply builtin tokens through that resolver. Visual result is a
-no-op if the maps match the former `:root` CSS.
-
-The closed token catalog and builtin maps are generated into
-`schemas/theme-tokens-v1.json` and `packages/plugin-sdk/src/generated.ts`
-(`THEME_TOKEN_IDS`, `BUILTIN_THEME_TOKENS`). That is Decision 5 scaffolding
-and matches `CATALOG_ICON_IDS`: the trusted shell already imports generated
-contract constants (`src/lib/entity-icons/catalog.ts`,
-`src/lib/entity-colors/presets.ts`). It is not a theme contribution, picker,
-`appearance.get`, or bootstrap field.
-
-No `themes` manifest field. Settings still only offers mode.
-
-Exit: resolver tests; Settings still only offers mode; welcome screen and
-project chrome both consume the resolver.
-
-Out of slice: `src/lib/maps/atlas/constants.ts` and other non-theme diffs.
-
-### Phase 1 — Manifest and Settings (implemented)
-
-Add `themes` to the contract, validate (Rust + TypeScript dual fixtures),
-persist `themePack`, list installed packs in Appearance, apply/fallback.
-
-Missing or unreadable packs apply builtin tokens without leaving the shell
-unstyled. The persisted ref is kept until the user picks Default or a live pack.
-Welcome-screen paint uses the cached merged maps when present.
-
-Exit: dual-validator fixtures; uninstall/corrupt pack falls back to builtin;
-`daena-plugin validate` rejects unknown keys and illegal color strings.
-
-### Phase 2 — Sandbox sync (implemented)
-
-Bootstrap `appearance`, `appearance.get` (`Static([])`), live host push via
-plugin-webview eval of a host-owned apply script, `appearance@1` on
-`optionalFeatures`. Example pack-only plugin: `examples/plugins/theme`.
-Ink Tools consumes the same CSS variables; the host paints tokens before
-plugin script runs so the sandbox does not flash builtin.
-
-Host push targets `plugin:` webviews (DOM). Wasm/service sessions have no
-document; they read `appearance.get`. Sandbox bootstrap still requires an
-open project; welcome-screen theming is host-only. Init-script snapshots
-seed light/dark from app settings; `system` resolves on the first frontend
-sync.
-
-Exit: a sandboxed UI restyles with host tokens without flashing the wrong
-mode; no plugin CSS appears in the host document.
-
-### Phase 3 — Record the decision (implemented)
-
-Folded into `PLUGIN_SDK.md` and `PLUGIN_PLATFORM_PLAN.md`. Standing policy is
-[ADR 0007](adr/0007-plugin-theme-packs.md). Also added short pointers in
-`ARCHITECTURE.md` and ADR 0001 (beyond the named fold-in; consistent, not a
-contract change).
 
 ## Rejected alternatives
 
@@ -334,10 +275,3 @@ contract change).
 | Require complete token maps | Hostile to authors; merge plus contrast is enough. |
 | `event.subscribe` for theme changes | Appearance is not a data grant; bootstrap plus host push is enough. |
 | Builtin look as a bundled plugin | The trusted shell is not a plugin. |
-
-## Vertical slice (when implementing)
-
-Phase 0 first: host tokens as data. Until that exists, plugins have nothing
-safe to contribute. Phase 1 is the first user-visible plugin theme. Phase 2
-is required before sandboxed module UIs can match the chosen pack. Do not
-stage, commit, or push unless explicitly asked.

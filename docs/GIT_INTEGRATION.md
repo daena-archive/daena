@@ -1,9 +1,9 @@
-# Daena Git Integration Architecture and Delivery Plan
+# Daena Git integration
 
 ## Status, authority, and purpose
 
-This document is the definitive architecture and implementation plan for
-built-in Git in Daena Archive. It governs system-git probing, Settings → Git UX,
+This document is the contract for built-in Git in Daena Archive. It governs
+system-git probing, Settings → Git UX,
 canonical preflight and selective staging, commit messages, history and snapshot
 browsing, hard-reset restore, remotes, and post-reset remote recovery.
 
@@ -23,10 +23,8 @@ storage rule wins. Git must remain an optional, user-controlled helper around
 canonical files. It must not become a collaboration protocol, automatic sync
 engine, semantic merge resolver, or plugin-reachable filesystem API.
 
-Status as of 2026-08-08: **architecture approved by this document; core APIs,
-Tauri commands, client bindings, and Settings → Git UI are implemented in
-source**. Agents must still verify the worktree and run focused tests before
-treating any behavior as complete.
+The Settings → Git surface described here is current product. The product
+summary is in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 The governing rule is:
 
@@ -63,7 +61,7 @@ The governing rule is:
 - Staging noncanonical paths (anything outside the canonical allowlist).
 - Bare `git push --force` (lease-protected force only).
 - Exposing Git commands to plugins or sandboxed webviews.
-- AI-authored commit messages as a requirement of this plan (may appear later
+- AI-authored commit messages as a requirement of this contract (may appear later
   under [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) without changing this
   contract).
 
@@ -101,10 +99,6 @@ and filename are authoritative.
 | Settings shell | `src/lib/SettingsView.svelte` | Add a `git` section beside General / Plugins. |
 | Open external URLs | `tauri-plugin-opener` already initialized in `src-tauri` | Use for `https://git-scm.com/downloads`. |
 | App settings file | `src-tauri/src/settings.rs` (`settings.json`) | Git tool prefs are not required in v1; remotes live in the repo’s `.git/`. |
-
-**Baseline gaps this plan fills:** no `git --version` probe UI, no selective
-path commit API, unused `gitLog` in the UI, no snapshot tree/file show, no hard
-reset, no remotes UI, no post-reset remote recovery.
 
 ---
 
@@ -420,78 +414,3 @@ one place owns staging, messaging, history, and repository sync.
 
 Flush autosave before commit and before hard reset (reuse the shell
 `flushAutoSave` path). Core still re-validates via preflight / reset guards.
-
----
-
-## 10. Implementation plan for agents
-
-Implement in this order unless a task explicitly narrows scope:
-
-### Phase A — Core APIs and tests
-
-1. Add `git_tool_info`.
-2. Extend `git_commit` for explicit path subsets with membership checks.
-3. Add `git_show_tree` / `git_show_file`.
-4. Add `git_reset_hard` with divergence metadata for the UI.
-5. Add remote list/add/set-url/remove.
-6. Add `git_push` (including force-with-lease) and `git_restore_from_upstream`.
-7. Cover with `crates/daena-core` tests that require system `git`: selective
-   commit rejection, reset moves HEAD, remotes round-trip, tree filter is
-   canonical-only.
-
-### Phase B — Tauri and TypeScript client
-
-1. Register commands.
-2. Extend `project/client.ts` types and methods.
-3. Open download URL via opener plugin.
-
-### Phase C — Settings UI
-
-1. Add `git` to `SettingsSection` in `SettingsView.svelte` and `+page.svelte`.
-2. Implement the Git panel sections and danger dialogs.
-3. Deep-link rail Git → Settings → Git.
-4. After reset/restore, call existing reconcile/rebuild paths and refresh Git
-   state.
-
-### Phase D — Verification
-
-- `rtk cargo test --manifest-path crates/daena-core/Cargo.toml --locked --offline`
-  with Git-focused filters, plus broader core/tauri tests as needed.
-- `rtk npm run check`.
-- Manual smoke: missing git → download; selective commit; history preview;
-  hard-reset warning; force-with-lease vs restore-from-remote.
-
----
-
-## 11. Testing requirements
-
-Passing unit tests alone do not prove the Settings Git surface. Agents must:
-
-- Exercise preflight rejection (unmerged / noncanonical staged) still blocks
-  commit.
-- Prove selective commit cannot add paths outside `staging_paths`.
-- Prove snapshot tree filtering drops noncanonical paths.
-- Prove hard reset updates HEAD and that the shell rebuilds usable project
-  state afterward.
-- Prove force push invocations include `--force-with-lease` and never bare
-  `--force`.
-- Prove plugin/webview code paths cannot call new Git commands.
-
----
-
-## 12. Exit gate
-
-This plan is done when, in the rendered Tauri app:
-
-1. Settings → Git shows git version or a working download affordance.
-2. A user can select a subset of canonical changes, generate or type a message,
-   and commit only that subset.
-3. A user can open history, browse files in a snapshot, and hard-reset only
-   after an explicit danger confirmation.
-4. A user can add and remove a remote.
-5. After a divergent hard reset with upstream configured, the user can either
-   force-push-with-lease or restore from remote, and the project index remains
-   coherent either way.
-
-Until that gate is met, treat missing APIs or UI as unfinished work under this
-document—not as implied product behavior.

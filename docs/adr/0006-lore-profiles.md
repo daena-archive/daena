@@ -7,7 +7,8 @@
 
 [`LORE_PROFILES.md`](../LORE_PROFILES.md) specifies optional structured
 attributes, skills, traits, resources, and related values on any Lore entity,
-with Timeline as the author-facing history. Nothing in that spec is shipped.
+with Timeline as the author-facing history. The current product in that
+document is shipped. Future scope there is not.
 
 Current storage cannot host it as ordinary fields: `entity_fields` is a
 current-value UPSERT, Timeline only projects shared dates, and Fields & Types
@@ -77,10 +78,10 @@ and not an RPG engine.
 - Record-owner contracts need an explicit extension so overlay types in Lore
   namespaces can own a Profile. That change begins in the Rust plugin API and
   must compare qualified runtime type ids.
-- P1 is current-state Custom profiles on any Lore type, including overlay
-  types, with trusted-shell wiki and editor surfaces. P2 copies D&D, Fantasy,
-  Sci-Fi, or Custom into the instance and may store an optional point pool.
-  Formulas and Timeline fold are later phases. Search indexes, if added, are
-  disposable projections over stable component ids.
-- Product intent remains [`LORE_PROFILES.md`](../LORE_PROFILES.md). Delivery
-  order remains [`LORE_PROFILES_PLAN.md`](../LORE_PROFILES_PLAN.md).
+- Current product is Custom, D&D, Fantasy, and Sci-Fi profiles on any Lore
+  type, including overlay types, with trusted-shell wiki and editor surfaces,
+  copy-on-create presets, an optional point pool, read-time formulas, and
+  `profile-change` history folded against Timeline. Search indexes, if added,
+  are disposable projections over stable component ids.
+- Product behavior remains [`LORE_PROFILES.md`](../LORE_PROFILES.md). There is
+  no separate delivery plan.

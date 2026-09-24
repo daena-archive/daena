@@ -6,9 +6,9 @@
 **Scope:** Natural-event consequences and presentation, and epoch-aware road history.
 **Non-goal:** This document does not prescribe implementation architecture, algorithms, storage formats, or delivery dates.
 
-Shipped planetary configuration, climate, biomes, storm climatology, climate views, Find Place, suggested routes, and landmass selection are the current product in [`MAPS.md`](./MAPS.md). Do not re-plan them here.
+Shipped planetary configuration, climate, biomes, storm climatology, climate views, Find Place, suggested routes, and landmass selection are the current product in [`MAPS.md`](../maps/MAPS.md). Do not re-plan them here.
 
-This roadmap extends that product. It must preserve the authority, authorship, detachment, persistence, offline, and recovery boundaries in [`MAPS.md`](./MAPS.md), together with the platform and AI boundaries in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) and [`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
+This roadmap extends that product. It must preserve the authority, authorship, detachment, persistence, offline, and recovery boundaries in [`MAPS.md`](../maps/MAPS.md), together with the platform and AI boundaries in [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) and [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md).
 
 The accepted physical map remains stable. Future features must not rewrite canonical terrain because the viewed year changes or because an earthquake, eruption, storm, or other event occurs.
 

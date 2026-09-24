@@ -1,6 +1,6 @@
 # Plugin examples
 
-See the [definitive Daena Archive plugin guide](../../docs/PLUGIN_SDK.md) for
+See the [definitive Daena Archive plugin guide](../../docs/plugins/PLUGIN_SDK.md) for
 the complete authoring and packaging workflow. These examples correspond to
 the guide's host-rendered declarative, sandboxed UI, executable Wasm, and
 plugin-to-plugin service sections. Date Lens (`timeline-consumer/`) is an

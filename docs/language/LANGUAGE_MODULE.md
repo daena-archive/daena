@@ -4,7 +4,7 @@ Architecture and data contracts for the bundled Language workspace: overview,
 lexicon, sounds, writing, grammar, forms, and samples.
 
 This document is the Language module product spec. It is subordinate to
-[`ARCHITECTURE.md`](./ARCHITECTURE.md), [`STORAGE.md`](./STORAGE.md), and the
+[`ARCHITECTURE.md`](../ARCHITECTURE.md), [`STORAGE.md`](../storage/STORAGE.md), and the
 public module-record contract. Grammar product and record contracts are in
 the Grammar section. Work that is not shipped is under Record families.
 

@@ -9,13 +9,13 @@ instructions belong with the implementation.
 
 | ADR                                                        | Decision                                                       | Primary authority                                                                            |
 | ---------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [0001](./0001-plugin-platform-boundary.md)                 | Plugin isolation, authority, package trust, and data ownership | [`PLUGIN_PLATFORM_PLAN.md`](../PLUGIN_PLATFORM_PLAN.md)                                      |
-| [0002](./0002-rust-owned-public-contracts.md)              | Rust-owned public contracts and project schema overlays        | [`PLUGIN_PLATFORM_PLAN.md`](../PLUGIN_PLATFORM_PLAN.md), [`PLUGIN_SDK.md`](../PLUGIN_SDK.md) |
-| [0003](./0003-ai-trust-privacy-and-proposals.md)           | AI trust, privacy, retrieval, and proposal lifecycle           | [`AI_INTEGRATION.md`](../AI_INTEGRATION.md)                                                  |
-| [0004](./0004-physical-world-authority-and-determinism.md) | Physical-world authority, derivation, history, and determinism | [`MAPS.md`](../MAPS.md)                                                                      |
-| [0005](./0005-atlas-derived-rendering-and-studio.md)       | Atlas-derived geography, Studio, and static export             | [`MAPS.md`](../MAPS.md)                                                                      |
-| [0006](./0006-lore-profiles.md)                            | Lore Profiles storage, owners, history, and naming             | [`LORE_PROFILES.md`](../LORE_PROFILES.md)                                                    |
-| [0007](./0007-plugin-theme-packs.md)                       | Declarative, install-scoped, host-painted theme packs          | [`PLUGIN_PLATFORM_PLAN.md`](../PLUGIN_PLATFORM_PLAN.md), [`PLUGIN_SDK.md`](../PLUGIN_SDK.md) |
+| [0001](./0001-plugin-platform-boundary.md)                 | Plugin isolation, authority, package trust, and data ownership | [`PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md)                                      |
+| [0002](./0002-rust-owned-public-contracts.md)              | Rust-owned public contracts and project schema overlays        | [`PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md), [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md) |
+| [0003](./0003-ai-trust-privacy-and-proposals.md)           | AI trust, privacy, retrieval, and proposal lifecycle           | [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md)                                                  |
+| [0004](./0004-physical-world-authority-and-determinism.md) | Physical-world authority, derivation, history, and determinism | [`MAPS.md`](../maps/MAPS.md)                                                                      |
+| [0005](./0005-atlas-derived-rendering-and-studio.md)       | Atlas-derived geography, Studio, and static export             | [`MAPS.md`](../maps/MAPS.md)                                                                      |
+| [0006](./0006-lore-profiles.md)                            | Lore Profiles storage, owners, history, and naming             | [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md)                                                    |
+| [0007](./0007-plugin-theme-packs.md)                       | Declarative, install-scoped, host-painted theme packs          | [`PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md), [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md) |
 
 ## Maintenance policy
 

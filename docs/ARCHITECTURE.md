@@ -8,26 +8,27 @@ product model, host boundaries, project storage, bundled modules, and
 runtime plugins.
 
 It consolidates the former product and architecture documents. Detailed
-contracts remain in the focused plans below:
+contracts remain in the focused documents below. Unfinished delivery work is
+in [`plans/`](./plans/).
 
-- [`STORAGE.md`](./STORAGE.md) defines the authoritative runtime database,
+- [`STORAGE.md`](./storage/STORAGE.md) defines the authoritative runtime database,
   portable project format, checkpoint, recovery, and rebuild contracts.
-- [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) defines plugin
+- [`plans/PLUGIN_PLATFORM_PLAN.md`](./plans/PLUGIN_PLATFORM_PLAN.md) defines plugin
   isolation, package trust, broker authorization, lifecycle, and compatibility.
-- [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) is the definitive plugin authoring guide.
-- [`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) defines the optional built-in Git
+- [`PLUGIN_SDK.md`](./plugins/PLUGIN_SDK.md) is the definitive plugin authoring guide.
+- [`GIT_INTEGRATION.md`](./git/GIT_INTEGRATION.md) defines the optional built-in Git
   integration.
-- [`MAPS.md`](./MAPS.md) defines map authoring, generated physical worlds,
+- [`MAPS.md`](./maps/MAPS.md) defines map authoring, generated physical worlds,
   Atlas interaction and export, and map/entity integration.
-- [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
-- [`AI_IMAGE_GENERATION.md`](./AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
-- [`EXTERNAL_IMPORT_SYSTEM.md`](./EXTERNAL_IMPORT_SYSTEM.md) defines the
+- [`AI_INTEGRATION.md`](./ai/AI_INTEGRATION.md) defines the provider-neutral text and image AI subsystem.
+- [`AI_IMAGE_GENERATION.md`](./ai/AI_IMAGE_GENERATION.md) defines the implemented local ComfyUI V1 workflow.
+- [`EXTERNAL_IMPORT_SYSTEM.md`](./import/EXTERNAL_IMPORT_SYSTEM.md) defines the
   reviewable external-source migration pipeline and importer boundary.
-- [`UI_UX.md`](./UI_UX.md) defines entity lifecycle, Houses/Tree, and Fields &
+- [`UI_UX.md`](./ui/UI_UX.md) defines entity lifecycle, Houses/Tree, and Fields &
   Types author experience.
-- [`HOUSES.md`](./HOUSES.md) defines the Houses module and Tree view contracts.
-- [`LANGUAGE_MODULE.md`](./LANGUAGE_MODULE.md) defines the Language workspace and Grammar contracts.
-- [`LORE_PROFILES.md`](./LORE_PROFILES.md) is product intent for optional Lore
+- [`HOUSES.md`](./houses/HOUSES.md) defines the Houses module and Tree view contracts.
+- [`LANGUAGE_MODULE.md`](./language/LANGUAGE_MODULE.md) defines the Language workspace and Grammar contracts.
+- [`LORE_PROFILES.md`](./lore/LORE_PROFILES.md) is product intent for optional Lore
   Profiles; [`ADR 0006`](./adr/0006-lore-profiles.md) constrains storage, owners,
   history, and naming.
 
@@ -194,7 +195,7 @@ list-and-scan fallback.
 
 The database-first writer is the current hard-cut storage boundary. There is
 no dual-authority writer, fallback writer, persistent source catalog, or
-automatic reconciliation path. See [`STORAGE.md`](./STORAGE.md) for the
+automatic reconciliation path. See [`STORAGE.md`](./storage/STORAGE.md) for the
 recovery, checkpoint, and synchronization contract.
 
 ## Core and trusted shell
@@ -239,7 +240,7 @@ fields are never exposed as author schema). Houses custom Types are
 collection-only; Tree only hydrates `daena.lore:person` and `daena.houses:house`.
 Overlay saves use opaque content revisions, idempotent request IDs, and a
 trusted-core impact preview. See
-[`UI_UX.md`](./UI_UX.md) and [`STORAGE.md`](./STORAGE.md).
+[`UI_UX.md`](./ui/UI_UX.md) and [`STORAGE.md`](./storage/STORAGE.md).
 
 The host aggregates enabled module templates and views into the workspace, but
 the module does not receive a database handle, filesystem handle, raw Tauri
@@ -304,7 +305,7 @@ never staged by built-in Git helpers. Git subprocesses spawn headlessly (no
 console window on Windows) and off the app’s main thread, and background
 status refreshes may serve a cached absent-repository answer; the
 Settings → Git surface re-probes repository detection whenever it opens. See
-[`GIT_INTEGRATION.md`](./GIT_INTEGRATION.md) for the binding contracts.
+[`GIT_INTEGRATION.md`](./git/GIT_INTEGRATION.md) for the binding contracts.
 
 Maps are normal shared entities, not a parallel identity table. Provider source
 files remain opaque native assets; map locations, roles, dates, relationships,

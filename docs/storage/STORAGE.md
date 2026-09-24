@@ -198,7 +198,7 @@ Overlay-capable modules (those that declare the `schema.overlay` capability)
 may also store a project-owned `schemaOverlay` on `plugins/{module_id}.json`. The
 overlay disables packaged builtins and adds custom entity types, fields, and
 templates for that project only. Package manifest defaults remain immutable;
-see [`adr/0002-rust-owned-public-contracts.md`](./adr/0002-rust-owned-public-contracts.md).
+see [`adr/0002-rust-owned-public-contracts.md`](../adr/0002-rust-owned-public-contracts.md).
 
 Overlay load/save uses an opaque content revision (compare-and-swap) and an
 idempotent mutation request ID. Risky changes require a trusted-core
@@ -206,7 +206,7 @@ idempotent mutation request ID. Risky changes require a trusted-core
 entities are rejected even if the UI is bypassed, and saves that report live-data
 impact require explicit acknowledgement. Module compatibility policy (which
 plugins may overlay, Tree-compatible vs collection-only Houses types) lives in
-[`UI_UX.md`](./UI_UX.md).
+[`UI_UX.md`](../ui/UI_UX.md).
 
 Search indexes, map projections, relationship indexes, Atlas render
 intermediates under `.daena/cache/atlas/`, accepted physical-world physics

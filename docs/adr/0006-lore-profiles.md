@@ -5,7 +5,7 @@
 
 ## Context
 
-[`LORE_PROFILES.md`](../LORE_PROFILES.md) specifies optional structured
+[`LORE_PROFILES.md`](../lore/LORE_PROFILES.md) specifies optional structured
 attributes, skills, traits, resources, and related values on any Lore entity,
 with Timeline as the author-facing history. The current product in that
 document is shipped. Future scope there is not.
@@ -83,5 +83,5 @@ and not an RPG engine.
   copy-on-create presets, an optional point pool, read-time formulas, and
   `profile-change` history folded against Timeline. Search indexes, if added,
   are disposable projections over stable component ids.
-- Product behavior remains [`LORE_PROFILES.md`](../LORE_PROFILES.md). There is
+- Product behavior remains [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md). There is
   no separate delivery plan.

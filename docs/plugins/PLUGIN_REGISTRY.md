@@ -9,16 +9,16 @@ Local `.daenaplugin` installation does not depend on GitHub. The default fetch
 URLs are `https://daena-archive.github.io/plugin-registry/trust.json` and
 `catalog.json`.
 
-Standing policy is [ADR 0001](adr/0001-plugin-platform-boundary.md): a registry
+Standing policy is [ADR 0001](../adr/0001-plugin-platform-boundary.md): a registry
 or publisher signature may inform installation trust and cannot become an
 authorization dependency. Phase 8 in
-[`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) already ships host-owned
+[`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) already ships host-owned
 `TrustSnapshot` (`plugins/trust.json`), signature rotation, revocation, and
 source-independent verify. Phase 9 is this document: a GitHub-hosted index
 that feeds that snapshot without a Daena server.
 
-Authoring remains [`PLUGIN_SDK.md`](PLUGIN_SDK.md). This file does not change
-the canonical project data model in [`STORAGE.md`](STORAGE.md).
+Authoring remains [`PLUGIN_SDK.md`](./PLUGIN_SDK.md). This file does not change
+the canonical project data model in [`STORAGE.md`](../storage/STORAGE.md).
 
 ## Goal
 
@@ -317,16 +317,4 @@ in `trust.json`.
   the key identity.
 - **Plugin-supplied marketplace UI.** Host chrome only.
 
-## Implementation remainder
-
-Shipped here: `daena-plugin keygen` / `sign`, host snapshot refresh, catalog
-prepare/install (same `verify_archive_bytes` path), pre-install
-`review_manifest`, and the identity-index compiler used by tests
-(`scripts/plugin-registry-compile.mjs`). The live index, PR templates, and
-Pages workflows live in `daena-archive/plugin-registry`.
-
-Still outside this repository:
-
-1. Protect `main` on `plugin-registry` and enable Pages.
-2. Optional CI crawl of publisher GitHub Releases to fill `catalog.json`
-   (unsigned assets omitted). Empty catalog is valid.
+Work still outside this repository is in [`plans/plugin-registry.md`](../plans/plugin-registry.md).

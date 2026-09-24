@@ -83,5 +83,5 @@ changes.
 - 2026-08-16: production morphology and erosion refinements changed the
   generator contract without changing source ownership.
 - 2026-08-26: phase and packet records were consolidated here; current product
-  behavior is documented in [`MAPS.md`](../MAPS.md), and future work remains in
-  [`PHYSICAL_WORLD_ROADMAP.md`](../PHYSICAL_WORLD_ROADMAP.md).
+  behavior is documented in [`MAPS.md`](../maps/MAPS.md), and future work remains in
+  [`PHYSICAL_WORLD_ROADMAP.md`](../plans/PHYSICAL_WORLD_ROADMAP.md).

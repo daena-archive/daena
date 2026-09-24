@@ -1,6 +1,6 @@
 # `@daena-archive/plugin-sdk`
 
-Use the definitive [Daena Archive plugin guide](../../docs/PLUGIN_SDK.md) for
+Use the definitive [Daena Archive plugin guide](../../docs/plugins/PLUGIN_SDK.md) for
 the SDK contract, broker client, capabilities, migrations, testing, and
 packaging workflow.
 

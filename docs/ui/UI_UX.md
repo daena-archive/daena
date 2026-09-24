@@ -2,9 +2,9 @@
 
 This document is the UI/UX record for entity lifecycle, Houses and Tree, and
 Fields & Types. Product architecture and storage remain in
-[`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`STORAGE.md`](./STORAGE.md). Tree
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) and [`STORAGE.md`](../storage/STORAGE.md). Tree
 data contracts remain in
-[`HOUSES.md`](./HOUSES.md).
+[`HOUSES.md`](../houses/HOUSES.md).
 
 Author-facing labels in the app must match this vocabulary. Do not invent
 parallel names for the same actions. Shared host chrome for these actions lives
@@ -26,7 +26,7 @@ in `src/lib/entity-lifecycle`.
 Lore **Profile** is the structured capability on an entity (attributes, skills,
 traits). **Portrait** is the entity image. Storage for that image remains asset
 `role: profile`. Do not use “Sheet” or “Stats” as the product name. See
-[`ADR 0006`](./adr/0006-lore-profiles.md).
+[`ADR 0006`](../adr/0006-lore-profiles.md).
 
 ## Shared lifecycle
 

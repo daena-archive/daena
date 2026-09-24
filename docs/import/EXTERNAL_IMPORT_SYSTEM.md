@@ -4,9 +4,9 @@
 
 This document is the product and architecture spec for migrating external
 material into an open project. It is subordinate to
-[`ARCHITECTURE.md`](./ARCHITECTURE.md),
-[`STORAGE.md`](./STORAGE.md), and
-[`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) where their ownership,
+[`ARCHITECTURE.md`](../ARCHITECTURE.md),
+[`STORAGE.md`](../storage/STORAGE.md), and
+[`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) where their ownership,
 storage, security, or plugin boundaries apply.
 
 Import is an explicit, user-reviewed migration operation. It is not live file
@@ -351,19 +351,8 @@ transaction is open.
 `create`, `skip`, and `map to existing` are enabled. `replace` and `merge` are
 not.
 
-## Remaining work
-
-### Plugin importer ecosystem
-
-Add importer declarations to the canonical Rust plugin contract, generate JSON
-Schema and TypeScript SDK types, implement broker discovery and bounded opaque
-source reads, and add plugin test-host conformance fixtures. Importer
-availability follows enabled service/capability state.
-
-**Exit gate:** a test plugin can detect and analyze a new format into the
-neutral contract without storage knowledge or project-write authority;
-malformed, oversized, timed-out, disabled, and revoked providers fail closed;
-bundled and plugin output pass identical core validation.
+Plugin importers are not shipped. That work is in
+[`plans/external-import.md`](../plans/external-import.md).
 
 ## Non-goals
 

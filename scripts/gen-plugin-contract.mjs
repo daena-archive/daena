@@ -1,5 +1,5 @@
 // Regenerate `packages/plugin-sdk/src/generated.ts` from the five Rust-derived
-// contract schemas. See docs/PLUGIN_PLATFORM_PLAN.md, "Contract
+// contract schemas. See docs/plans/PLUGIN_PLATFORM_PLAN.md, "Contract
 // reconciliation and generation record".
 //
 // Steps:

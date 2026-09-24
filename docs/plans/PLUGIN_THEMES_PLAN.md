@@ -2,23 +2,23 @@
 
 ## Status and purpose
 
-Accepted. Standing policy is [ADR 0007](adr/0007-plugin-theme-packs.md). The
-authoring contract is in [`PLUGIN_SDK.md`](PLUGIN_SDK.md); architecture is in
+Accepted. Standing policy is [ADR 0007](../adr/0007-plugin-theme-packs.md). The
+authoring contract is in [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md); architecture is in
 [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) §13. Shipped theme-pack
 behavior lives there, not in a delivery sequence.
 
 Theme packs stay inside the existing plugin boundary:
 
-- [ADR 0001](adr/0001-plugin-platform-boundary.md) — isolation; untrusted code
+- [ADR 0001](../adr/0001-plugin-platform-boundary.md) — isolation; untrusted code
   never runs in the trusted webview and never receives the host DOM.
-- [ADR 0002](adr/0002-rust-owned-public-contracts.md) — Rust owns public
+- [ADR 0002](../adr/0002-rust-owned-public-contracts.md) — Rust owns public
   contracts; generated SDK/schema artifacts; the host validates and merges
   contributions.
 - [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) — declarative data is
   the preferred extension class; unknown manifest keys are rejected; minor
   host API releases may add optional fields.
 
-It does not change the canonical project data model in `STORAGE.md`.
+It does not change the canonical project data model in [`STORAGE.md`](../storage/STORAGE.md).
 
 ## Baseline (historical)
 
@@ -47,7 +47,7 @@ Plugins could not style the host:
 
 That isolation still holds. Phases 0–2 shipped the catalog, `themes` field,
 Settings picker, bootstrap appearance, and sandbox sync. The shipped contract
-is in `PLUGIN_SDK.md` and `PLUGIN_PLATFORM_PLAN.md` §13.
+is in [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md) and [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) §13.
 
 ## Goal
 

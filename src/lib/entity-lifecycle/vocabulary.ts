@@ -58,7 +58,7 @@ export const MUTATION_STATUS_MESSAGES = {
   revisionConflictCode: "revision-conflict",
 } as const;
 
-/** Tree keyboard contract. Author-facing model: docs/UI_UX.md. */
+/** Tree keyboard contract. Author-facing model: docs/ui/UI_UX.md. */
 export const TREE_KEYBOARD = {
   canvasRolePreference: "grouped-buttons-or-application-after-focus-model",
   canvasAriaLabel: "Tree canvas",

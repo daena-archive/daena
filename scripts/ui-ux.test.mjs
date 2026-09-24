@@ -125,7 +125,7 @@ assert.ok(CONTEXTUAL_NEW_DEFAULTS.lore);
 assert.deepEqual(CONTEXTUAL_NEW_DEFAULTS["houses.tree"], [ENTITY_ACTIONS.newPerson, ENTITY_ACTIONS.newHouse]);
 assert.equal(CONTEXTUAL_NEW_DEFAULTS.maps, "provider-menu");
 
-const uiUx = await read("docs/UI_UX.md");
+const uiUx = await read("docs/ui/UI_UX.md");
 
 assert.match(uiUx, /Edit identity/);
 assert.match(uiUx, /Shift\+Enter/);

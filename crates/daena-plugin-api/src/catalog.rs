@@ -202,7 +202,7 @@ pub struct RpcMethodDef {
 /// (`entity.read`, `entity.write`, `document.read`, `document.write`,
 /// `relationship.read`, `relationship.write`, `asset.read`, `field.write`,
 /// `service.provide`) are intentionally absent — they are grouping keys only
-/// (see `docs/PLUGIN_PLATFORM_PLAN.md`, "Contract reconciliation and
+/// (see `docs/plans/PLUGIN_PLATFORM_PLAN.md`, "Contract reconciliation and
 /// generation record", § "Resolved contract decisions").
 pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
     RpcMethodDef {

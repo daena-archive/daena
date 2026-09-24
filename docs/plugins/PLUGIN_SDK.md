@@ -12,7 +12,7 @@ The public platform is provided by:
 - `@daena-archive/plugin-test-host` — an in-memory broker and lifecycle test
   host.
 
-The normative contract is in [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json), [`schemas/plugin-rpc-v1.json`](../schemas/plugin-rpc-v1.json), and [`schemas/capability-registry-v1.json`](../schemas/capability-registry-v1.json). The architecture and security decisions are in [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md).
+The normative contract is in [`schemas/plugin-manifest-v1.json`](../../schemas/plugin-manifest-v1.json), [`schemas/plugin-rpc-v1.json`](../../schemas/plugin-rpc-v1.json), and [`schemas/capability-registry-v1.json`](../../schemas/capability-registry-v1.json). The architecture and security decisions are in [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md).
 
 ## 1. Platform model
 
@@ -332,8 +332,8 @@ Settings. Packs follow **installation**, not project enablement, so they work
 with no project open. If the selected pack is missing or fails validation, the
 host keeps builtin tokens applied until the user picks Default or a live pack.
 
-See [ADR 0007](adr/0007-plugin-theme-packs.md). The example pack-only plugin is
-[`examples/plugins/theme`](../examples/plugins/theme).
+See [ADR 0007](../adr/0007-plugin-theme-packs.md). The example pack-only plugin is
+[`examples/plugins/theme`](../../examples/plugins/theme).
 
 ## 6. Capabilities and broker access
 
@@ -449,7 +449,7 @@ const events = await client.pollEvents("com.example.weather/forecast-updated", 1
 Services are versioned request/response contracts. Only one provider for a
 service major is active in a project. Calls have deadlines and return a typed
 provider-unavailable error when the provider is missing. Date Lens
-([`examples/plugins/timeline-consumer`](../examples/plugins/timeline-consumer))
+([`examples/plugins/timeline-consumer`](../../examples/plugins/timeline-consumer))
 is an optional consumer of Timeline's `daena.timeline.resolve-date@1` service.
 
 WASM providers use the synchronous `daena.service.sync.v1` ABI. A provider exports
@@ -550,7 +550,7 @@ plugin code executes.
 
 Keep the signing key offline. Put only the printed verifying key and `keyId`
 in a `publishers/<id>/publisher.json` PR against the identity index (see
-[`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md)). Then attach the signed
+[`PLUGIN_REGISTRY.md`](./PLUGIN_REGISTRY.md)). Then attach the signed
 `.daenaplugin` to a GitHub Release on `sourceRepo`.
 
 To install it in Daena Archive:
@@ -576,7 +576,7 @@ optional `keyId` for rotation), and the host trust snapshot
 (`plugins/trust.json`): pinned publisher keys plus revocations. Unsigned
 packages still install only with explicit consent. Publisher signatures never
 grant capabilities. Phase 9 (GitHub identity index, not a Daena server) is
-[`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md).
+[`PLUGIN_REGISTRY.md`](./PLUGIN_REGISTRY.md).
 
 ## 12. Upgrade, rollback, and removal
 
@@ -623,33 +623,33 @@ Before publishing a plugin, verify:
 This guide is the author-facing source of truth. The following files define the
 machine-readable or architectural contract it summarizes:
 
-- [`crates/daena-plugin-api/src/lib.rs`](../crates/daena-plugin-api/src/lib.rs)
+- [`crates/daena-plugin-api/src/lib.rs`](../../crates/daena-plugin-api/src/lib.rs)
   — the Rust manifest types and `validate_manifest`: the enforcement boundary
   and the source of truth for the contract.
-- [`crates/daena-plugin-api/src/rpc.rs`](../crates/daena-plugin-api/src/rpc.rs)
+- [`crates/daena-plugin-api/src/rpc.rs`](../../crates/daena-plugin-api/src/rpc.rs)
   — the Rust RPC payload and envelope types.
-- [`crates/daena-plugin-api/src/catalog.rs`](../crates/daena-plugin-api/src/catalog.rs)
+- [`crates/daena-plugin-api/src/catalog.rs`](../../crates/daena-plugin-api/src/catalog.rs)
   — the RPC method catalog: methods, payload shapes, revision and capability
   requirements.
-- [`crates/daena-plugin-api/src/theme.rs`](../crates/daena-plugin-api/src/theme.rs)
+- [`crates/daena-plugin-api/src/theme.rs`](../../crates/daena-plugin-api/src/theme.rs)
   — token catalog, builtin maps, merge, contrast, and pack validation.
-- [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json)
-- [`schemas/plugin-rpc-v1.json`](../schemas/plugin-rpc-v1.json)
-- [`schemas/plugin-error-v1.json`](../schemas/plugin-error-v1.json)
-- [`schemas/capability-registry-v1.json`](../schemas/capability-registry-v1.json)
-- [`schemas/theme-tokens-v1.json`](../schemas/theme-tokens-v1.json)
+- [`schemas/plugin-manifest-v1.json`](../../schemas/plugin-manifest-v1.json)
+- [`schemas/plugin-rpc-v1.json`](../../schemas/plugin-rpc-v1.json)
+- [`schemas/plugin-error-v1.json`](../../schemas/plugin-error-v1.json)
+- [`schemas/capability-registry-v1.json`](../../schemas/capability-registry-v1.json)
+- [`schemas/theme-tokens-v1.json`](../../schemas/theme-tokens-v1.json)
   — the JSON Schemas are generated from the Rust types by
   `npm run gen:plugin-contract`; do not hand-edit them.
-- [`adr/0007-plugin-theme-packs.md`](adr/0007-plugin-theme-packs.md)
-- [`packages/plugin-sdk/src/generated.ts`](../packages/plugin-sdk/src/generated.ts)
+- [`adr/0007-plugin-theme-packs.md`](../adr/0007-plugin-theme-packs.md)
+- [`packages/plugin-sdk/src/generated.ts`](../../packages/plugin-sdk/src/generated.ts)
   — the TypeScript contract types, generated from the schemas.
-- [`packages/plugin-sdk/src/index.ts`](../packages/plugin-sdk/src/index.ts) —
+- [`packages/plugin-sdk/src/index.ts`](../../packages/plugin-sdk/src/index.ts) —
   `validatePluginManifest`, the TypeScript rule validator kept in parity with
   the Rust validator by the dual-validator conformance test
   (`npm run test:plugin-conformance`).
-- [`schemas/fixtures/manifest/`](../schemas/fixtures/manifest/) — the shared
+- [`schemas/fixtures/manifest/`](../../schemas/fixtures/manifest/) — the shared
   fixture battery the conformance and structural checks run against.
-- [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md)
-- [`adr/0002-rust-owned-public-contracts.md`](adr/0002-rust-owned-public-contracts.md)
+- [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md)
+- [`adr/0002-rust-owned-public-contracts.md`](../adr/0002-rust-owned-public-contracts.md)
   — the decision that Rust owns the contract and schemas/TS are generated
   artifacts.

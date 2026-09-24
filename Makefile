@@ -1,5 +1,5 @@
 # Daena Archive developer shortcuts.
-# Canonical docs: README.DEV.md, docs/ARCHITECTURE.md, docs/STORAGE.md.
+# Canonical docs: README.DEV.md, docs/ARCHITECTURE.md, docs/storage/STORAGE.md.
 # JS tasks run via `deno task` (see package.json scripts).
 # Rust commands use the root workspace Cargo.toml.
 

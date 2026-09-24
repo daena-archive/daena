@@ -55,7 +55,7 @@ See [`README.DEV.md`](README.DEV.md) for full prerequisites.
 - **Find your way around** — Navigate with Quick Open, breadcrumbs, history, workspace guides, light/dark themes, and Project Center.
 - **Optional AI assistance** — Opt-in per-project text/image help (local-first via LM Studio/Ollama/ComfyUI) that proposes editable, cited changes without auto-modifying your project.
 - **Keep your work under your control** — Stay offline with portable files, backups, optional Git snapshots, update channels, and rebuildable indexes.
-- **Add more through plugins** — Extend with permission-scoped plugins without changing your core project. See [`docs/PLUGIN_SDK.md`](docs/PLUGIN_SDK.md) and [`docs/PLUGIN_PLATFORM_PLAN.md`](docs/PLUGIN_PLATFORM_PLAN.md).
+- **Add more through plugins** — Extend with permission-scoped plugins without changing your core project. See [`docs/plugins/PLUGIN_SDK.md`](./docs/plugins/PLUGIN_SDK.md) and [`docs/plans/PLUGIN_PLATFORM_PLAN.md`](docs/plans/PLUGIN_PLATFORM_PLAN.md).
 
 ## About Daena
 

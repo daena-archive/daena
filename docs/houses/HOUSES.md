@@ -7,11 +7,11 @@ Houses module (`daena.houses`) and its host-owned Tree view.
 
 It is subordinate to:
 
-1. [`ARCHITECTURE.md`](./ARCHITECTURE.md) for product and trust boundaries.
-2. [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) and
-   [`PLUGIN_SDK.md`](./PLUGIN_SDK.md) for plugin contracts and lifecycle.
-3. [`STORAGE.md`](./STORAGE.md) for durable and portable project data.
-4. [`UI_UX.md`](./UI_UX.md) for author-facing Houses/Tree vocabulary and chrome.
+1. [`ARCHITECTURE.md`](../ARCHITECTURE.md) for product and trust boundaries.
+2. [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) and
+   [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md) for plugin contracts and lifecycle.
+3. [`STORAGE.md`](../storage/STORAGE.md) for durable and portable project data.
+4. [`UI_UX.md`](../ui/UI_UX.md) for author-facing Houses/Tree vocabulary and chrome.
 
 Exact field shapes live in `packages/modules/houses/manifest.json`. Host
 implementation lives in `src/lib/houses/`. If source and this document
@@ -49,7 +49,7 @@ house and kinship data after `.daena/` is removed.
 Custom entity types authored under the Houses `schema.overlay` are
 **collection-only**: they appear in the Houses collection and editor, but never
 as Tree nodes. Tree roots and membership remain limited to
-`daena.lore:person` and `daena.houses:house`. See [`UI_UX.md`](./UI_UX.md).
+`daena.lore:person` and `daena.houses:house`. See [`UI_UX.md`](../ui/UI_UX.md).
 
 ## Core principles
 
@@ -385,7 +385,7 @@ For a selected person root:
 8. Hydrate discovered entity IDs and shared Lore fields in batches.
 
 House-rooted Tree uses membership plus an optional immediate-family scope
-(`members-only` or `members-plus-immediate-family`). See [`UI_UX.md`](./UI_UX.md).
+(`members-only` or `members-plus-immediate-family`). See [`UI_UX.md`](../ui/UI_UX.md).
 
 Frontier batches use `relationship.query`. IDs and relationships are
 deduplicated at every step.
@@ -466,7 +466,7 @@ branch expansion.
 ## Canvas and interaction
 
 Author-facing labels, empty states, keyboard contract, and surface IDs are in
-[`UI_UX.md`](./UI_UX.md). Architecture constraints for the canvas:
+[`UI_UX.md`](../ui/UI_UX.md). Architecture constraints for the canvas:
 
 - Toolbar: root search, recent roots, secondary-field choice, fit, reset.
 - Person cards: avatar, name, life dates, secondary field, root marker,

@@ -2,7 +2,7 @@
 
 Daena uses Rust, Tauri 2, Svelte 5, TypeScript, Vite, and Deno.
 
-For plugin development, please refer to the [definitive plugin guide](docs/PLUGIN_SDK.md).
+For plugin development, please refer to the [definitive plugin guide](./docs/plugins/PLUGIN_SDK.md).
 
 ## Prerequisites
 
@@ -125,7 +125,7 @@ cargo fmt -- --check
 
 ## Plugin Development
 
-Plugin authors should start with the [definitive plugin guide](docs/PLUGIN_SDK.md).
+Plugin authors should start with the [definitive plugin guide](./docs/plugins/PLUGIN_SDK.md).
 The checked-in CLI wrapper can be inspected with:
 
 ```bash
@@ -156,13 +156,14 @@ docker run --rm \
 ## Project Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Storage and recovery](docs/STORAGE.md)
-- [AI integration and phase gates](docs/AI_INTEGRATION.md)
-- [Language module](docs/LANGUAGE_MODULE.md)
-- [Plugin SDK](docs/PLUGIN_SDK.md)
-- [Plugin platform plan](docs/PLUGIN_PLATFORM_PLAN.md)
-- [Maps, physical worlds, and Atlas](docs/MAPS.md)
-- [Git integration](docs/GIT_INTEGRATION.md)
+- [Storage and recovery](./docs/storage/STORAGE.md)
+- [AI integration](./docs/ai/AI_INTEGRATION.md)
+- [AI delivery plan](docs/plans/ai.md)
+- [Language module](./docs/language/LANGUAGE_MODULE.md)
+- [Plugin SDK](./docs/plugins/PLUGIN_SDK.md)
+- [Plugin platform plan](docs/plans/PLUGIN_PLATFORM_PLAN.md)
+- [Maps, physical worlds, and Atlas](./docs/maps/MAPS.md)
+- [Git integration](./docs/git/GIT_INTEGRATION.md)
 
 ## License
 

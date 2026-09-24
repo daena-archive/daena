@@ -8,7 +8,7 @@ refines the runtime-extension architecture in `ARCHITECTURE.md` where this
 document is more specific. It does not change the canonical
 project data model described there.
 
-Plugin authors should use the [definitive plugin authoring guide](PLUGIN_SDK.md)
+Plugin authors should use the [definitive plugin authoring guide](../plugins/PLUGIN_SDK.md)
 for the current manifest, SDK, testing, packaging, installation, and lifecycle
 workflow. This plan remains the architectural record and phase authority.
 
@@ -26,7 +26,7 @@ the Rust broker is the enforcement boundary. Remaining bundled-UI isolation
 is recorded under **Remaining work** below; it does not change the isolation
 rule.
 
-For the future AI broker surface, see [`AI_INTEGRATION.md`](./AI_INTEGRATION.md).
+For the future AI broker surface, see [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md).
 AI grants do not imply project-data grants, provider access, or network access.
 
 The target platform has one non-negotiable rule:
@@ -180,7 +180,7 @@ types are removed. Cross-reference rules (namespace ownership, migration
 contiguity, template-field typing) stay handwritten in Rust's
 `validate_manifest` and are mirrored in the TypeScript `validatePluginManifest`,
 with parity enforced by a dual-validator conformance test over a shared fixture
-battery. See [ADR 0002](adr/0002-rust-owned-public-contracts.md).
+battery. See [ADR 0002](../adr/0002-rust-owned-public-contracts.md).
 
 The initial manifest contains:
 
@@ -486,7 +486,7 @@ cannot draw or auto-apply that choice.
 ### 13. Theme packs
 
 Theme packs are host-painted JSON overlays. See
-[ADR 0007](adr/0007-plugin-theme-packs.md).
+[ADR 0007](../adr/0007-plugin-theme-packs.md).
 
 - A pack is presentation, not project data. It needs no namespace, capability
   grant, or project enablement. Availability follows **installation**.
@@ -563,7 +563,7 @@ module lists are host UI state fed by `PluginHost`, not a source of truth.
 Create the manifest and RPC contract types in Rust, generate the JSON Schemas
 and TypeScript declarations from them, and define the capability registry,
 lifecycle state machine, and error model. Confirm that
-[ADR 0001](adr/0001-plugin-platform-boundary.md) captures isolation, package
+[ADR 0001](../adr/0001-plugin-platform-boundary.md) captures isolation, package
 trust, plugin-to-plugin communication, and data ownership. Update
 `ARCHITECTURE.md` to link to this document.
 
@@ -692,7 +692,7 @@ explicit consent. A marketplace is not an authorization layer.
 
 ### Phase 9: Serverless GitHub registry
 
-Implement [`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md): identity-index repo,
+Implement [`PLUGIN_REGISTRY.md`](../plugins/PLUGIN_REGISTRY.md): identity-index repo,
 Pages `trust.json` / `catalog.json`, host snapshot refresh, catalog browse
 install (same verify as a local file), `daena-plugin keygen` / `sign`, and
 pre-install `review_manifest`. Local unsigned install with consent stays.
@@ -739,7 +739,7 @@ isolation on every supported desktop platform.
 The following features are deferred, with their default behavior decided now:
 
 - **Marketplace as authorization:** disallowed. Distribution is Phase 9
-  ([`PLUGIN_REGISTRY.md`](PLUGIN_REGISTRY.md)). Local verified packages work
+  ([`PLUGIN_REGISTRY.md`](../plugins/PLUGIN_REGISTRY.md)). Local verified packages work
   without GitHub.
 - **Cloud execution or sync:** deferred; plugins are local and project-scoped.
 - **Arbitrary internet access:** deferred; denied. Later access is the

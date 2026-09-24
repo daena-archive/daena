@@ -9,13 +9,13 @@ browsing, hard-reset restore, remotes, and post-reset remote recovery.
 
 It supplements, and does not override, these authorities:
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines the product and shared
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) defines the product and shared
   entity/document model.
-- [`STORAGE.md`](./STORAGE.md) defines canonical project files, runtime
+- [`STORAGE.md`](../storage/STORAGE.md) defines canonical project files, runtime
   indexes, and the Git checkpoint boundary.
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines shell-owned helpers vs plugin
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md) defines shell-owned helpers vs plugin
   isolation.
-- [`PLUGIN_PLATFORM_PLAN.md`](./PLUGIN_PLATFORM_PLAN.md) forbids raw Git/Tauri
+- [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) forbids raw Git/Tauri
   commands in plugin webviews.
 
 If this document conflicts with those boundaries, the stricter authority and
@@ -24,7 +24,7 @@ canonical files. It must not become a collaboration protocol, automatic sync
 engine, semantic merge resolver, or plugin-reachable filesystem API.
 
 The Settings → Git surface described here is current product. The product
-summary is in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+summary is in [`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 The governing rule is:
 
@@ -62,12 +62,12 @@ The governing rule is:
 - Bare `git push --force` (lease-protected force only).
 - Exposing Git commands to plugins or sandboxed webviews.
 - AI-authored commit messages as a requirement of this contract (may appear later
-  under [`AI_INTEGRATION.md`](./AI_INTEGRATION.md) without changing this
+  under [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md) without changing this
   contract).
 
 ### 1.3 Relationship to prior Phase 5 Git boundary
 
-[`STORAGE.md`](./STORAGE.md) § Git, backups, plugins, and derived data
+[`STORAGE.md`](../storage/STORAGE.md) § Git, backups, plugins, and derived data
 already requires:
 
 1. flush pending autosaves;

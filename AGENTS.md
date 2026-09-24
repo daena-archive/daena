@@ -12,9 +12,9 @@
 ## Architecture authorities
 
 - `docs/ARCHITECTURE.md` defines the product and current architecture.
-- `docs/PLUGIN_PLATFORM_PLAN.md` defines plugin-platform acceptance criteria.
-- `docs/STORAGE.md` defines canonical project-storage behavior.
-- `.daena/index.sqlite` and `.daena/assets/` are the live runtime authority. Portable project files are deterministic checkpoints and must be sufficient to rebuild runtime state when the checkpoint is clean and validated; see `docs/STORAGE.md`.
+- `docs/plans/PLUGIN_PLATFORM_PLAN.md` defines plugin-platform acceptance criteria.
+- `docs/storage/STORAGE.md` defines canonical project-storage behavior.
+- `.daena/index.sqlite` and `.daena/assets/` are the live runtime authority. Portable project files are deterministic checkpoints and must be sufficient to rebuild runtime state when the checkpoint is clean and validated; see `docs/storage/STORAGE.md`.
 
 ## Code discovery
 

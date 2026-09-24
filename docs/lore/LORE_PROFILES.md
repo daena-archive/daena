@@ -2,7 +2,7 @@
 
 This document is the Lore Profile product spec. The current product is section
 27. Section 28 is not shipped. Architectural constraints are
-[ADR 0006](./adr/0006-lore-profiles.md).
+[ADR 0006](../adr/0006-lore-profiles.md).
 
 ## 1. Overview
 

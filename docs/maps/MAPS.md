@@ -11,14 +11,14 @@ maps, physical worlds, and Atlas. It is the single focused authority for:
 - Atlas Studio and deterministic static Atlas rendering; and
 - map integration with Daena entities, search, Timeline, plugins, and storage.
 
-It is subordinate to [`ARCHITECTURE.md`](./ARCHITECTURE.md) for project-wide
-boundaries and [`STORAGE.md`](./STORAGE.md) for runtime authority, checkpoints,
+It is subordinate to [`ARCHITECTURE.md`](../ARCHITECTURE.md) for project-wide
+boundaries and [`STORAGE.md`](../storage/STORAGE.md) for runtime authority, checkpoints,
 recovery, and asset publication. Exact public field shapes are defined by the
 plugin SDK and the Maps schema. Current planetary, climate, Find Place,
 routing, and landmass behavior is defined below. Remaining physical-world
-product work belongs in [`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md).
+product work belongs in [`plans/PHYSICAL_WORLD_ROADMAP.md`](../plans/PHYSICAL_WORLD_ROADMAP.md).
 
-The consolidated [`ADR history`](./adr/README.md) may lock narrower
+The consolidated [`ADR history`](../adr/README.md) may lock narrower
 compatibility, determinism, security, or numerical decisions, but it must not
 create a second product model.
 
@@ -558,6 +558,6 @@ The selection must say which epoch it came from.
 
 Remaining physical-world product work — extended natural-event consequences,
 natural-event map presentation, and epoch-aware road history — is maintained in
-[`PHYSICAL_WORLD_ROADMAP.md`](./PHYSICAL_WORLD_ROADMAP.md). That roadmap may
+[`plans/PHYSICAL_WORLD_ROADMAP.md`](../plans/PHYSICAL_WORLD_ROADMAP.md). That roadmap may
 extend this product, but it must preserve the authority, authorship,
 detachment, persistence, offline, and recovery boundaries above.

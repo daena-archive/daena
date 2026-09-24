@@ -30,7 +30,7 @@ experimental or production versions are not silently revived.
 Structure residual, epoch operators, and presentation must not share a PRF.
 Structure is independent of epoch and forcing. Epoch operators use climate and
 hydrology at the selected offset, not elapsed years. Presentation does not
-invent geography. [`MAPS.md`](../MAPS.md) is the product contract.
+invent geography. [`MAPS.md`](../maps/MAPS.md) is the product contract.
 
 Atlas Studio uses local Web Mercator XYZ tiles with a north-origin row
 convention and OpenLayers for interaction. A Studio session captures one
@@ -97,7 +97,7 @@ paths to plugins or web content.
 - 2026-08-16: biome and thematic styles were added as presentation over
   existing physical fields.
 - 2026-08-26: rendering, Studio, and algorithm iteration records were
-  consolidated here. [`MAPS.md`](../MAPS.md) remains the product authority.
+  consolidated here. [`MAPS.md`](../maps/MAPS.md) remains the product authority.
 - 2026-09-12: structure residual, climate-at-`t` epoch operators, isolated
   sediment/vegetation domains, and biome presentation grain were recorded as
-  Atlas terrain contract in [`MAPS.md`](../MAPS.md).
+  Atlas terrain contract in [`MAPS.md`](../maps/MAPS.md).

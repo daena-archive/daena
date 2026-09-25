@@ -1,8 +1,9 @@
 # Lore Profiles
 
 This document is the Lore Profile product spec. The current product is section
-27. Section 28 is not shipped. Architectural constraints are
-[ADR 0006](../adr/0006-lore-profiles.md).
+27. Section 28 is planned scope; the delivery plan is
+[`plans/profile-presets.md`](../plans/profile-presets.md). Architectural
+constraints are [ADR 0006](../adr/0006-lore-profiles.md).
 
 ## 1. Overview
 
@@ -27,12 +28,9 @@ Profiles are designed for RPG-like character sheets, but are **not tied to chara
 
 Profiles use a generic schema and can be configured through presets or completely customized by the user.
 
-Initial presets:
-
-1. **D&D**
-2. **Fantasy**
-3. **Sci-Fi**
-4. **Custom**
+Bundled presets are data, grouped by genre (D&D, Fantasy, Sci-Fi) or left
+ungenred (Custom, Culture, Concept). A preset names the qualified entity types
+it is for; Custom names none. See sections 8–12. What ships today is section 27.
 
 Profiles integrate directly with **Timeline**, allowing values to change throughout history and allowing users to inspect an entity's Profile at a specific point in time.
 
@@ -567,24 +565,79 @@ However, manually dated changes should still participate in historical reconstru
 
 # 8. Presets
 
-Presets are predefined Profile templates.
+Presets are Profile templates stored as data.
+
+## 8.1 Preset Architecture
+
+Presets are `module_records` entries in a `profile-preset` collection on
+`daena.lore`. Bundled presets and user-created presets use the same storage
+and code path. Presets are never hardcoded constants once that collection
+ships.
+
+The collection is project-scoped, not entity-owned. Do not create a sentinel,
+nil, or hidden entity to own presets. `module_records.owner_entity_id` is a
+required foreign key to `entities`, and a checkpoint rejects a record whose
+owner entity is missing. A fake owner would also delete every preset when that
+entity is deleted. Shipping the collection requires a project owner scope
+whose rows have no entity owner, including on checkpoint restore. `profile`
+and `profile-change` stay entity-owned.
 
 A preset defines:
 
+- Name
+- Description
+- Icon
+- Entity types (qualified runtime ids, such as `daena.lore:person` or an overlay `daena.lore:…` id)
+- Genre (grouping label: D&D, Fantasy, Sci-Fi, or user-defined; omit for ungenred presets)
 - Components
-- Categories
 - Default values
 - Scales
-- Skills
-- Proficiencies
 - Derived formulas
 - Optional allocation rules
-- Recommended entity types
-- Display organization
+
+Declared entity types are matched against the entity's qualified type. A
+preset with no declared entity types is universal and always suggested.
+Custom is the only bundled universal preset. Culture and Concept are ungenred,
+but they declare a type and are not universal.
+
+Unless a section states a starting value, numeric attributes start at the
+minimum of their scale.
+
+Trait lists in sections 9–12 are examples for the author. They are not preset
+components and must not be seeded. Skill lists, proficiency lists, attribute
+tables, resource lists, and derived formulas are components unless a section
+says otherwise.
+
+All presets remain accessible regardless of entity-type scoping. An author
+may apply any preset to any entity. Suggestions are hints, not a claim that
+every entity of a declared type is that kind of thing.
+
+## 8.2 Bundled and User Presets
+
+**Bundled presets** ship with Daena and are seeded as `profile-preset`
+records on project creation. Bundled presets:
+
+- May be edited (the project's copy diverges from the shipped default).
+- May be reset to the shipped default.
+- May not be deleted (they may be hidden).
+
+**User presets** are created by the author:
+
+- From scratch (blank).
+- By duplicating a bundled or user preset.
+- By using "Save as Preset" from an existing entity's Profile.
+
+User presets may be renamed, edited, and deleted.
+
+## 8.3 Copy-on-Create
 
 Presets are **templates, not restrictions**.
 
-After creating a Profile from a preset, the user can:
+Creating a Profile from a preset copies the preset's components into a new
+independent Profile instance. The instance retains a `presetOrigin`
+reference (the preset record ID) for display purposes only.
+
+After creation, the user can:
 
 - Add components
 - Remove components
@@ -594,17 +647,44 @@ After creating a Profile from a preset, the user can:
 - Add formulas
 - Add custom categories
 
-Preset updates must never overwrite user customizations.
+Preset updates never overwrite existing Profile instances.
+
+## 8.4 Preset Picker
+
+When creating a Profile on an entity, the picker shows:
+
+**Suggested** — presets whose declared entity types include the current
+entity's qualified type, plus universal presets. Custom is here because it
+declares no types. It is not a separate action.
+
+**All Presets** — every other preset, grouped by genre. Presets with no genre
+appear together. Do not invent a genre to hold them.
+
+## 8.5 Preset Management
+
+Authors may manage presets through a dedicated surface:
+
+- Browse all presets grouped by genre with entity-type badges.
+- Create a new preset or duplicate an existing one.
+- Edit name, description, icon, genre, entity types, and components.
+- Preview a preset before applying.
+- Reset a bundled preset to its shipped default, including making it visible again.
+- Hide or unhide a bundled preset. Hidden presets stay in the project and do not appear in the picker.
+- Delete user presets (with confirmation). Deletion does not change existing Profile instances.
 
 ---
 
-# 9. D&D Preset
+# 9. D&D Presets
 
-The D&D preset should provide a recognizable tabletop-RPG character sheet without making the entire Profile system dependent on D&D rules.
+The D&D genre provides presets for character, faction, and location entities.
+These presets should provide recognizable tabletop-RPG structures without
+making the entire Profile system dependent on D&D rules.
 
-## 9.1 Attributes
+## 9.1 D&D Character
 
-### Core Ability Scores
+Entity types: `daena.lore:person`.
+
+### Attributes — Core Ability Scores
 
 | Attribute    | Default Scale |
 | ------------ | ------------- |
@@ -625,7 +705,7 @@ Modifier = floor((Score - 10) / 2)
 
 The implementation should allow users to modify the formula.
 
-## 9.2 Skills
+### Skills
 
 Default skill set:
 
@@ -658,7 +738,7 @@ History → Intelligence
 Persuasion → Charisma
 ```
 
-## 9.3 Proficiencies
+### Proficiencies
 
 Default categories:
 
@@ -680,7 +760,7 @@ Master
 
 The exact game-specific meaning may be customized.
 
-## 9.4 Character Properties
+### Character Properties
 
 Optional predefined properties:
 
@@ -695,7 +775,7 @@ Optional predefined properties:
 
 These should be ordinary Profile fields rather than special hard-coded properties.
 
-## 9.5 Combat Values
+### Combat Values
 
 Optional Derived Values / Resources:
 
@@ -710,36 +790,108 @@ Optional Derived Values / Resources:
 
 These should be implemented using the generic value system.
 
+## 9.2 D&D Faction
+
+Entity types: `daena.lore:faction`.
+
+### Attributes
+
+| Attribute         | Scale | Purpose                         |
+| ----------------- | ----- | ------------------------------- |
+| Influence         | 0–20  | Political and social reach      |
+| Military Strength | 0–20  | Combat capability and readiness |
+| Wealth            | 0–20  | Economic resources              |
+| Secrecy           | 0–20  | Ability to operate covertly     |
+| Reach             | 0–20  | Geographic or institutional scope |
+
+### Resources
+
+- Gold
+- Members
+- Strongholds
+- Allies
+
+### Traits
+
+Example traits (not seeded):
+
+- Lawful
+- Chaotic
+- Good
+- Evil
+- Secretive
+- Militant
+- Mercantile
+- Religious
+- Criminal
+- Noble
+
+### Specialization
+
+One optional text field. Example values, not seeded components: Assassination,
+Espionage, Trade, War, Diplomacy.
+
+## 9.3 D&D Location
+
+Entity types: `daena.lore:place`.
+
+### Attributes
+
+| Attribute          | Scale | Purpose                     |
+| ------------------ | ----- | --------------------------- |
+| Danger Level       | 0–20  | Threat to visitors          |
+| Accessibility      | 0–20  | Ease of reaching or entering |
+| Magical Saturation | 0–20  | Ambient magical energy      |
+
+### Resources
+
+- Treasure (resource with unit: gold)
+- Population (numeric, optional for settlements)
+
+### Traits
+
+Example traits (not seeded):
+
+- Dungeon
+- Wilderness
+- Urban
+- Planar
+- Cursed
+- Sacred
+- Fortified
+- Ruined
+- Hidden
+
 ---
 
-# 10. Fantasy Preset
+# 10. Fantasy Presets
 
-The Fantasy preset should be system-neutral and suitable for original fantasy worlds.
+The Fantasy genre provides system-neutral presets suitable for original
+fantasy worlds. Presets cover characters, factions, kingdoms, places, and
+artifacts.
 
-## 10.1 Attributes
+## 10.1 Fantasy Character
 
-Default attributes:
+Entity types: `daena.lore:person`.
 
-| Attribute    | Purpose                                       |
-| ------------ | --------------------------------------------- |
-| Strength     | Physical power                                |
-| Agility      | Speed, coordination, reflexes                 |
-| Endurance    | Physical resilience                           |
-| Intelligence | Reasoning and knowledge                       |
-| Willpower    | Mental resilience                             |
-| Perception   | Awareness and senses                          |
-| Presence     | Social force and personality                  |
-| Magic        | Capacity to interact with supernatural forces |
+Point allocation: 40 points. Default starting value: 5.
 
-Default scale:
+### Attributes
 
-```text
-0–20
-```
+| Attribute    | Scale | Purpose                                       |
+| ------------ | ----- | --------------------------------------------- |
+| Strength     | 0–20  | Physical power                                |
+| Agility      | 0–20  | Speed, coordination, reflexes                 |
+| Endurance    | 0–20  | Physical resilience                           |
+| Intelligence | 0–20  | Reasoning and knowledge                       |
+| Willpower    | 0–20  | Mental resilience                             |
+| Perception   | 0–20  | Awareness and senses                          |
+| Presence     | 0–20  | Social force and personality                  |
+| Magic        | 0–20  | Capacity to interact with supernatural forces |
 
-## 10.2 Skills
+### Skills
 
-### Physical
+#### Physical
 
 - Athletics
 - Acrobatics
@@ -748,7 +900,7 @@ Default scale:
 - Swimming
 - Climbing
 
-### Combat
+#### Combat
 
 - Swordsmanship
 - Archery
@@ -757,7 +909,7 @@ Default scale:
 - Shield Fighting
 - Tactics
 
-### Knowledge
+#### Knowledge
 
 - History
 - Politics
@@ -766,7 +918,7 @@ Default scale:
 - Naturalism
 - Arcana
 
-### Social
+#### Social
 
 - Diplomacy
 - Deception
@@ -775,7 +927,7 @@ Default scale:
 - Leadership
 - Etiquette
 
-### Practical
+#### Practical
 
 - Smithing
 - Crafting
@@ -786,7 +938,7 @@ Default scale:
 - Survival
 - Navigation
 
-### Magic
+#### Magic
 
 - Spellcraft
 - Ritualism
@@ -797,7 +949,7 @@ Default scale:
 
 Users may remove or rename any of these.
 
-## 10.3 Proficiencies
+### Proficiencies
 
 Examples:
 
@@ -821,9 +973,9 @@ Master
 Legendary
 ```
 
-## 10.4 Traits
+### Traits
 
-Suggested examples:
+Example traits (not seeded):
 
 - Brave
 - Cunning
@@ -837,9 +989,9 @@ Suggested examples:
 - Blessed
 - Cursed
 
-Traits are examples, not required fields.
+These are examples, not preset components.
 
-## 10.5 Resources
+### Resources
 
 Optional:
 
@@ -850,36 +1002,207 @@ Optional:
 - Renown
 - Political Power
 
----
+## 10.2 Fantasy Faction
 
-# 11. Sci-Fi Preset
+Entity types: `daena.lore:faction`.
 
-The Sci-Fi preset should support characters, crews, factions, ships, colonies, corporations, and other science-fiction entities.
+### Attributes
 
-## 11.1 Attributes
+| Attribute          | Scale | Purpose                           |
+| ------------------ | ----- | --------------------------------- |
+| Military Power     | 0–100 | Armed strength and readiness      |
+| Political Influence| 0–100 | Ability to affect governance      |
+| Economic Power     | 0–100 | Trade, production, wealth         |
+| Intelligence       | 0–100 | Information gathering and secrecy |
+| Stability          | 0–100 | Internal cohesion and loyalty     |
 
-Default attributes:
+### Resources
 
-| Attribute          | Purpose                               |
-| ------------------ | ------------------------------------- |
-| Strength           | Physical force                        |
-| Agility            | Coordination and reaction             |
-| Endurance          | Physical resilience                   |
-| Intelligence       | Reasoning and analysis                |
-| Awareness          | Perception and sensory capability     |
-| Willpower          | Mental resilience                     |
-| Presence           | Social influence                      |
-| Technical Aptitude | Ability to work with advanced systems |
+- Treasury (resource with unit)
+- Population (numeric)
+- Territory (numeric)
+- Armies (numeric)
 
-Default scale:
+### Traits
+
+Example traits (not seeded):
+
+- Expansionist
+- Isolationist
+- Religious
+- Militaristic
+- Mercantile
+- Democratic
+- Tyrannical
+- Feudal
+- Nomadic
+
+### Derived Values
 
 ```text
-0–20
+Overall Power = avg(Military Power, Political Influence, Economic Power)
 ```
 
-## 11.2 Skills
+The result stays on the 0–100 scale. Do not sum the attributes.
 
-### Combat
+## 10.3 Fantasy Kingdom
+
+Entity types: `daena.lore:faction`, `daena.lore:place`.
+
+Suggested for both types. A tavern or dungeon that is a place will see this
+beside Fantasy Place. That is a hint, not a claim that the place is a kingdom.
+
+### Attributes
+
+| Attribute              | Scale | Purpose                          |
+| ---------------------- | ----- | -------------------------------- |
+| Stability              | 0–100 | Resistance to internal unrest    |
+| Technology             | 0–100 | Advancement of tools and methods |
+| Infrastructure         | 0–100 | Roads, cities, logistics         |
+| Military Power         | 0–100 | Defensive and offensive strength |
+| Administrative Capacity| 0–100 | Governance effectiveness         |
+
+### Resources
+
+- Population (numeric)
+- Treasury (resource with unit: gold)
+- Food (numeric)
+- Territory (numeric)
+
+### Traits
+
+Example traits (not seeded):
+
+- Feudal
+- Imperial
+- Theocratic
+- Republic
+- Magocratic
+- Declining
+- Rising
+- At War
+- Prosperous
+
+### Derived Values
+
+```text
+Regional Influence = avg(Military Power, Stability)
+Economic Output = avg(Infrastructure, Technology)
+```
+
+Both results stay on the 0–100 scale.
+
+## 10.4 Fantasy Place
+
+Entity types: `daena.lore:place`.
+
+### Attributes
+
+| Attribute        | Scale | Purpose                                 |
+| ---------------- | ----- | --------------------------------------- |
+| Strategic Value  | 0–20  | Military and political importance       |
+| Defensibility    | 0–20  | Natural and constructed defenses        |
+| Prosperity       | 0–20  | Economic health and trade activity      |
+| Magical Resonance| 0–20  | Ambient supernatural energy             |
+
+### Resources
+
+- Population (numeric)
+- Trade Volume (resource with unit)
+- Garrison (numeric)
+
+### Traits
+
+Example traits (not seeded):
+
+- Fortified
+- Sacred
+- Cursed
+- Contested
+- Ruined
+- Hidden
+- Port
+- Capital
+- Frontier
+- Ancient
+
+## 10.5 Fantasy Artifact
+
+Entity types: `daena.lore:artifact`.
+
+### Attributes
+
+| Attribute  | Scale | Purpose                                |
+| ---------- | ----- | -------------------------------------- |
+| Power      | 0–20  | Raw magical or physical potency        |
+| Durability | 0–20  | Resistance to damage and degradation   |
+| Resonance  | 0–20  | Sensitivity to magical interaction     |
+
+### Skills
+
+Artifact capabilities:
+
+- Binding
+- Manipulation
+- Protection
+- Destruction
+- Divination
+- Communication
+
+### Resources
+
+- Charges (resource with max)
+
+### Traits
+
+Example traits (not seeded):
+
+- Cursed
+- Sentient
+- Ancient
+- Blessed
+- Legendary
+- Dormant
+- Corrupting
+- Bonded
+
+### Derived Values
+
+```text
+Magical Potency = avg(Power, Resonance)
+```
+
+The result stays on the 0–20 scale.
+
+---
+
+# 11. Sci-Fi Presets
+
+The Sci-Fi genre provides presets for characters, factions, starships,
+and colonies or stations.
+
+## 11.1 Sci-Fi Character
+
+Entity types: `daena.lore:person`.
+
+Default starting value: 5.
+
+### Attributes
+
+| Attribute          | Scale | Purpose                               |
+| ------------------ | ----- | ------------------------------------- |
+| Strength           | 0–20  | Physical force                        |
+| Agility            | 0–20  | Coordination and reaction             |
+| Endurance          | 0–20  | Physical resilience                   |
+| Intelligence       | 0–20  | Reasoning and analysis                |
+| Awareness          | 0–20  | Perception and sensory capability     |
+| Willpower          | 0–20  | Mental resilience                     |
+| Presence           | 0–20  | Social influence                      |
+| Technical Aptitude | 0–20  | Ability to work with advanced systems |
+
+### Skills
+
+#### Combat
 
 - Firearms
 - Melee Combat
@@ -889,7 +1212,7 @@ Default scale:
 - Defense
 - Zero-G Combat
 
-### Technical
+#### Technical
 
 - Engineering
 - Electronics
@@ -899,7 +1222,7 @@ Default scale:
 - Systems Maintenance
 - Fabrication
 
-### Science
+#### Science
 
 - Physics
 - Biology
@@ -908,7 +1231,7 @@ Default scale:
 - Xenobiology
 - Medicine
 
-### Spaceflight
+#### Spaceflight
 
 - Piloting
 - Navigation
@@ -916,7 +1239,7 @@ Default scale:
 - Flight Operations
 - Ship Handling
 
-### Social
+#### Social
 
 - Diplomacy
 - Negotiation
@@ -925,7 +1248,7 @@ Default scale:
 - Espionage
 - Command
 
-### Survival
+#### Survival
 
 - Survival
 - Scavenging
@@ -933,7 +1256,7 @@ Default scale:
 - Tracking
 - Field Medicine
 
-## 11.3 Proficiencies
+### Proficiencies
 
 Examples:
 
@@ -946,9 +1269,9 @@ Examples:
 - Industrial Equipment
 - Alien Technologies
 
-## 11.4 Traits
+### Traits
 
-Examples:
+Example traits (not seeded):
 
 - Genetically Modified
 - Cybernetically Augmented
@@ -961,9 +1284,7 @@ Examples:
 - Immune
 - Psionic
 
-## 11.5 Resources
-
-Examples:
+### Resources
 
 - Credits
 - Reputation
@@ -972,14 +1293,150 @@ Examples:
 - Ammunition
 - Fuel
 - Data
-- Population
-- Fleet Strength
+
+## 11.2 Sci-Fi Faction
+
+Entity types: `daena.lore:faction`.
+
+### Attributes
+
+| Attribute                | Scale | Purpose                                 |
+| ------------------------ | ----- | --------------------------------------- |
+| Military Strength        | 0–100 | Fleet and ground force capability       |
+| Technological Advancement| 0–100 | Research and engineering sophistication  |
+| Economic Power           | 0–100 | Industrial output and trade volume      |
+| Intelligence Network     | 0–100 | Espionage and information capability    |
+| Diplomatic Influence     | 0–100 | Standing in interstellar relations      |
+
+### Resources
+
+- Credits (resource with unit)
+- Fleet Size (numeric)
+- Population (numeric)
+- Territory (numeric — systems or sectors)
+- Research Output (numeric)
+
+### Traits
+
+Example traits (not seeded):
+
+- Expansionist
+- Isolationist
+- Corporate
+- Military Junta
+- Democratic
+- Theocratic
+- Hive Mind
+- Federation
+- Empire
+- Rebel Alliance
+
+### Derived Values
+
+```text
+Power Index = avg(Military Strength, Technological Advancement, Economic Power)
+```
+
+The result stays on the 0–100 scale. Do not sum the attributes.
+
+## 11.3 Starship
+
+Entity types: `daena.lore:artifact`.
+
+### Attributes
+
+| Attribute          | Scale | Purpose                              |
+| ------------------ | ----- | ------------------------------------ |
+| Speed              | 0–20  | Sublight and FTL velocity            |
+| Maneuverability    | 0–20  | Agility in combat and navigation     |
+| Hull Strength      | 0–20  | Structural integrity and armor       |
+| Sensor Capability  | 0–20  | Detection and scanning range         |
+| Firepower          | 0–20  | Offensive weapon systems             |
+| Stealth            | 0–20  | Ability to avoid detection           |
+
+### Resources
+
+- Fuel (resource with max)
+- Ammunition (resource with max)
+- Crew (resource with max)
+- Cargo (resource with max and unit: tons)
+- Shield Strength (resource with max)
+
+### Traits
+
+Example traits (not seeded):
+
+- Damaged
+- Veteran Crew
+- Experimental
+- Stealth-Capable
+- Decommissioned
+- Flagship
+- Prototype
+- Salvaged
+- Alien Design
+
+### Derived Values
+
+```text
+Combat Rating = avg(Firepower, Hull Strength, Maneuverability)
+```
+
+The result stays on the 0–20 scale. Do not mix Speed with Fuel; those are different quantities.
+
+## 11.4 Colony / Station
+
+Entity types: `daena.lore:place`.
+
+### Attributes
+
+| Attribute         | Scale | Purpose                             |
+| ----------------- | ----- | ----------------------------------- |
+| Infrastructure    | 0–100 | Built environment and facilities    |
+| Life Support      | 0–100 | Environmental sustainability        |
+| Defenses          | 0–100 | Military and shield installations   |
+| Research Capacity | 0–100 | Scientific and engineering output   |
+| Trade Hub         | 0–100 | Commercial activity and connections |
+
+### Resources
+
+- Population (numeric)
+- Power Supply (resource with unit: MW)
+- Food (resource with max)
+- Water (resource with max)
+- Atmosphere (resource — percentage)
+
+### Traits
+
+Example traits (not seeded):
+
+- Self-Sustaining
+- Under Siege
+- Quarantined
+- Mining Colony
+- Research Station
+- Military Outpost
+- Trade Hub
+- Frontier Settlement
+- Orbital
+- Planetary
+
+### Derived Values
+
+```text
+Readiness = avg(Infrastructure, Life Support, Defenses)
+```
+
+The result stays on the 0–100 scale. Do not divide a stock by Population or add that ratio to a 0–100 attribute.
 
 ---
 
-# 12. Custom Preset
+# 12. Custom and Ungenred Presets
 
-The Custom preset starts with an empty Profile.
+## 12.1 Custom Preset
+
+The Custom preset starts with an empty Profile. It declares no entity types,
+so it is suggested for every entity, including overlay types.
 
 The user defines:
 
@@ -1023,116 +1480,134 @@ Derived Values
 
 The Custom preset should impose no assumptions about the entity or setting.
 
+## 12.2 Culture
+
+Entity types: `daena.lore:culture`.
+
+No genre. Suggested only for that type.
+
+### Attributes
+
+| Attribute           | Scale | Purpose                            |
+| ------------------- | ----- | ---------------------------------- |
+| Technological Level | 0–100 | Advancement of tools and knowledge |
+| Military Tradition  | 0–100 | Martial capability and doctrine    |
+| Artistic Achievement| 0–100 | Creative and cultural output       |
+| Religious Devotion  | 0–100 | Spiritual practice and influence   |
+| Expansionism        | 0–100 | Tendency to spread and colonize    |
+
+### Resources
+
+- Population (numeric)
+- Territory (numeric)
+- Sacred Sites (numeric)
+
+### Traits
+
+Example traits (not seeded):
+
+- Nomadic
+- Settled
+- Seafaring
+- Warlike
+- Pacifist
+- Matriarchal
+- Caste-Based
+- Oral Tradition
+- Written Law
+- Ancestor Worship
+
+## 12.3 Concept
+
+Entity types: `daena.lore:concept`.
+
+No genre. Suggested only for that type.
+
+### Attributes
+
+| Attribute | Scale | Purpose                              |
+| --------- | ----- | ------------------------------------ |
+| Influence | 0–100 | Impact on world events and decisions |
+| Spread    | 0–100 | Geographic and cultural reach        |
+| Orthodoxy | 0–100 | Rigidity of doctrine or definition   |
+
+### Resources
+
+- Adherents (numeric)
+- Institutions (numeric)
+- Texts (numeric)
+
+### Traits
+
+Example traits (not seeded):
+
+- Dominant
+- Suppressed
+- Evolving
+- Ancient
+- Revolutionary
+- Underground
+- State-Sponsored
+- Heretical
+- Universal
+- Localized
+
 ---
 
 # 13. Profiles for Non-Person Entities
 
-Profiles must not contain implicit assumptions that an entity represents a person.
+Profiles must not contain implicit assumptions that an entity represents a
+person. The genre presets in sections 9–12 demonstrate this principle:
 
-Examples:
+- **D&D** provides Character, Faction, and Location presets.
+- **Fantasy** provides Character, Faction, Kingdom, Place, and Artifact presets.
+- **Sci-Fi** provides Character, Faction, Starship, and Colony/Station presets.
+- Ungenred presets provide Custom, Culture, and Concept. Custom is the only universal preset.
 
-### Faction
+Every preset declares which entity types it is designed for. When an author
+creates a Profile on a non-person entity, the preset picker suggests
+appropriate presets rather than character-oriented ones.
 
-```text
-Military Power
-Political Influence
-Economic Power
-Intelligence
-Stability
-
-Resources
-  Treasury
-  Population
-  Territory
-
-Traits
-  Expansionist
-  Isolationist
-  Religious
-```
-
-### Kingdom
-
-```text
-Attributes
-  Stability
-  Technology
-  Infrastructure
-  Military Power
-  Administrative Capacity
-
-Resources
-  Population
-  Treasury
-  Food
-  Territory
-```
-
-### Ship
-
-```text
-Attributes
-  Speed
-  Maneuverability
-  Hull Strength
-  Sensor Capability
-  Firepower
-
-Resources
-  Fuel
-  Ammunition
-  Crew
-
-Traits
-  Damaged
-  Veteran Crew
-  Experimental
-```
-
-### Artifact
-
-```text
-Attributes
-  Power
-  Durability
-  Resonance
-
-Skills
-  Binding
-  Manipulation
-
-Traits
-  Cursed
-  Sentient
-  Ancient
-
-Resources
-  Charges
-```
-
-The same underlying Profile system should support all of these.
+The underlying Profile system is entity-neutral. Any component type
+(attributes, skills, proficiencies, traits, resources, derived values,
+conditions, tags) can appear on any entity type. The presets select and
+arrange components to be useful for a particular kind of entity.
 
 ---
 
-# 14. Entity Templates
+# 14. User-Defined Presets
 
-Profiles should optionally be saved as **Entity Profile Templates**.
+Authors may save any Profile as a reusable preset through "Save as Preset"
+in the Profile editor. User-defined presets serve the same purpose as the
+former Entity Profile Templates concept.
 
-A template defines which components should be created for a particular kind of entity.
+"Save as Preset" copies structure: component kinds, names, scales, units,
+formulas, allocation rules, and starting defaults. It does not copy the
+entity's current progressed values.
+
+A user preset defines:
+
+- Name
+- Description
+- Entity types (qualified runtime ids; omit for a universal preset)
+- Genre (optional grouping label)
+- Components, scales, formulas, and allocation rules
 
 Examples:
 
 ```text
-Person → Fantasy Character
-Faction → Fantasy Faction
-Ship → Sci-Fi Ship
-Kingdom → Fantasy Kingdom
-Artifact → Magical Artifact
+Person  → My World Character
+Faction → Trade Guild
+Faction → Noble House
+Place   → Frontier Settlement
+Artifact → Enchanted Weapon
 ```
 
-Templates are separate from the global presets.
+User presets and bundled presets use the same data model and storage.
+Authors may duplicate, rename, edit, and delete their own presets.
 
-A preset provides the building blocks; an entity template selects and arranges them.
+The distinction between "preset" and "template" is collapsed: a preset
+with declared entity types is effectively a template for that entity type.
 
 ---
 
@@ -1408,7 +1883,7 @@ Presets should be editable after creation.
 
 Example:
 
-A user creates a Profile using **Fantasy**.
+A user creates a Profile using **Fantasy Character**.
 
 They can then:
 
@@ -1533,10 +2008,16 @@ The shipped Profile capability includes:
 
 ### Presets
 
-- D&D
-- Fantasy
-- Sci-Fi
-- Custom
+Shipped presets are hardcoded TypeScript constants:
+
+- D&D (person-oriented)
+- Fantasy (person-oriented)
+- Sci-Fi (person-oriented)
+- Custom (empty)
+
+Presets are copy-on-create. Preset updates do not rewrite instances.
+
+Shipped presets are person-centric. Non-person entities must use Custom.
 
 ### Timeline
 
@@ -1548,13 +2029,41 @@ The shipped Profile capability includes:
 ### Entity Support
 
 - All Lore entity types
-- No person-specific assumptions
+- No person-specific assumptions in the core model
 
 ---
 
-# 28. Future Scope
+# 28. Planned Scope
 
-Potential future extensions:
+The next delivery priority is data-driven and entity-oriented presets.
+The delivery plan is [`plans/profile-presets.md`](../plans/profile-presets.md).
+
+### Data-Driven Presets
+
+- Presets stored as project-scoped `profile-preset` records, not entity-owned records and not hardcoded constants.
+- `presetOrigin` changes from a hardcoded enum to a string (preset record ID).
+- Bundled presets seeded on project creation.
+- User-created presets via "Save as Preset" and preset management surface.
+- Preset picker reads from records instead of code.
+
+### Entity-Oriented Presets
+
+- D&D: Character, Faction, Location.
+- Fantasy: Character, Faction, Kingdom, Place, Artifact.
+- Sci-Fi: Character, Faction, Starship, Colony/Station.
+- Ungenred: Custom, Culture, Concept. Only Custom is universal.
+- Each non-universal preset declares qualified entity type ids.
+- Preset picker suggests matching presets. Suggestions are hints.
+- Bundled presets may be hidden. They may not be deleted.
+
+### Preset Management
+
+- Browse, create, edit, duplicate, delete, reset presets.
+- Entity-type scoping and genre grouping.
+
+### Remaining Future Scope
+
+Potential extensions not part of the current or planned product:
 
 - Advanced formula language
 - Conditional modifiers
@@ -1569,11 +2078,10 @@ Potential future extensions:
 - Encounters and combat
 - Dice integration
 - AI-assisted Profile generation
+- Profile comparison
 - Profile charts and analytics
 - Cross-entity statistics
 - Historical statistical analysis
-
-These are not part of the current product.
 
 ---
 

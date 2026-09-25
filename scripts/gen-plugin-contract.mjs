@@ -197,6 +197,7 @@ const MANIFEST_DEF_ORDER = [
   "Event",
   "Services",
   "Events",
+  "ImporterContribution",
   "ThemePackTokens",
   "ThemePack",
 ];

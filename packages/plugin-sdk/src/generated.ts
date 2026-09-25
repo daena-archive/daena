@@ -44,9 +44,10 @@ export interface Service { major: number; name: string }
 export interface Event { name: string; version: number }
 export interface Services { consumes: Service[]; provides: Service[] }
 export interface Events { publishes: Event[]; subscribes: Event[] }
+export interface ImporterContribution { description: string; extensions: string[]; id: string; mimeTypes?: string[]; name: string; sourceKinds: string[]; version: string }
 export interface ThemePackTokens { dark: Record<string, string>; light: Record<string, string> }
 export interface ThemePack { id: string; name: string; tokens: ThemePackTokens }
-export interface PluginManifest { capabilities: string[]; commands: Command[]; dependencies: Record<string, Dependency>; enabledByDefault?: boolean; entrypoints: Entrypoints; events: Events; hostApi: string; id: string; kind: PluginKind; manifestVersion: 1; migrations: Migration[]; name: string; namespaces: string[]; publisher: string; schemas: SchemaContribution[]; services: Services; stability?: PluginStability; templates: EntityTemplate[]; themes?: ThemePack[]; version: string; views: View[] }
+export interface PluginManifest { capabilities: string[]; commands: Command[]; dependencies: Record<string, Dependency>; enabledByDefault?: boolean; entrypoints: Entrypoints; events: Events; hostApi: string; id: string; importers?: ImporterContribution[]; kind: PluginKind; manifestVersion: 1; migrations: Migration[]; name: string; namespaces: string[]; publisher: string; schemas: SchemaContribution[]; services: Services; stability?: PluginStability; templates: EntityTemplate[]; themes?: ThemePack[]; version: string; views: View[] }
 
 export interface RpcRequest { rpcVersion: 1; sessionId: string; requestId: string; method: string; payload: unknown }
 export interface RpcError { code: string; details?: unknown; message: string; retryable: boolean }

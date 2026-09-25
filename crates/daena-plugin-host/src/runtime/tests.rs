@@ -23,6 +23,7 @@ fn manifest(kind: PluginKind) -> PluginManifest {
         templates: vec![],
         records: vec![],
         themes: vec![],
+        importers: vec![],
         views: vec![],
         commands: vec![],
         services: daena_plugin_api::Services {

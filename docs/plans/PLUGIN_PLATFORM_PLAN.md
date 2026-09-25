@@ -492,6 +492,10 @@ Theme packs are host-painted JSON overlays. See
   grant, or project enablement. Availability follows **installation**.
 - Mode stays `appearance.theme`. The active pack is `appearance.themePack`.
   Builtin Warm paper / Forest night is host chrome, not a plugin.
+- A project may store `themePack` in `project.json`: omit the field to follow
+  the application pack, `builtin`, or one pack ref. That overlay applies only
+  while the project is open. The application pack still paints the welcome
+  screen. This is not stacking and does not require project enablement.
 - Exactly one pack is active. Token maps may be sparse; the host fills from
   the builtin map for the resolved mode and contrast-checks the merge.
 - Rust owns `THEME_TOKEN_IDS` and the builtin maps. Values are parsed colors
@@ -759,7 +763,8 @@ The following features are deferred, with their default behavior decided now:
   compatibility, but version 1 targets the desktop host only.
 - **Theme fonts, images, radii, spacing, or motion tokens:** deferred; v1 packs
   are parsed colors on the closed catalog only.
-- **Stacked or per-project theme packs:** deferred; one install-scoped pack.
+- **Stacked theme packs:** deferred. One pack is active. A project may overlay
+  that choice while open; see §13.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
 - **Bundled Timeline / Language / remaining UIs in isolated webviews:**

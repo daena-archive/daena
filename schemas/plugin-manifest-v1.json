@@ -602,6 +602,51 @@
         }
       ]
     },
+    "ImporterContribution": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mimeTypes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sourceKinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "extensions",
+        "id",
+        "name",
+        "sourceKinds",
+        "version"
+      ],
+      "type": "object"
+    },
     "MetadataFieldDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -865,6 +910,13 @@
         },
         "id": {
           "type": "string"
+        },
+        "importers": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ImporterContribution"
+          },
+          "type": "array"
         },
         "kind": {
           "$ref": "#/$defs/PluginKind"
@@ -1637,6 +1689,12 @@
     },
     "id": {
       "$ref": "#/$defs/identifier"
+    },
+    "importers": {
+      "items": {
+        "$ref": "#/$defs/ImporterContribution"
+      },
+      "type": "array"
     },
     "kind": {
       "$ref": "#/$defs/PluginKind"

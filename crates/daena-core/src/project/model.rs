@@ -480,6 +480,14 @@ pub struct ProjectInfo {
     pub sync: SyncSummary,
     #[serde(rename = "aiEnabled", alias = "ai_enabled", default)]
     pub ai_enabled: bool,
+    #[serde(rename = "themePack", default)]
+    pub theme_pack: crate::storage::ProjectThemePack,
+    #[serde(
+        rename = "themePackError",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub theme_pack_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -15,6 +15,51 @@ use uuid::Uuid;
 /// This is an intentional alpha hard cut; older projects must be reset and
 /// re-imported rather than silently interpreted by this runtime.
 pub const PROJECT_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProjectThemePack {
+    #[default]
+    Follow,
+    Builtin,
+    Pack {
+        #[serde(rename = "pluginId")]
+        plugin_id: String,
+        #[serde(rename = "themeId")]
+        theme_id: String,
+    },
+}
+
+impl ProjectThemePack {
+    fn is_follow(&self) -> bool {
+        matches!(self, Self::Follow)
+    }
+
+    pub fn validate(&self, path: &Path) -> Result<(), CoreError> {
+        let ProjectThemePack::Pack {
+            plugin_id,
+            theme_id,
+        } = self
+        else {
+            return Ok(());
+        };
+        for (label, value) in [("pluginId", plugin_id), ("themeId", theme_id)] {
+            if value.trim().is_empty()
+                || value.len() > 128
+                || value.chars().any(|character| {
+                    character.is_whitespace() || matches!(character, '/' | '\\' | '\0')
+                })
+            {
+                return Err(codec_error(
+                    path,
+                    "project.theme-pack",
+                    format!("{label} is invalid"),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 pub const CORE_PLUGIN_ID: &str = "daena.core";
 pub const CHECKPOINT_MANIFEST_FILE: &str = "checkpoint.json";
 
@@ -28,6 +73,8 @@ pub struct ProjectManifest {
     pub created_at: String,
     #[serde(default)]
     pub ai_enabled: bool,
+    #[serde(default, skip_serializing_if = "ProjectThemePack::is_follow")]
+    pub theme_pack: ProjectThemePack,
 }
 
 impl ProjectManifest {
@@ -38,6 +85,7 @@ impl ProjectManifest {
             name: name.into(),
             created_at: crate::project::chrono_like_now(),
             ai_enabled: false,
+            theme_pack: ProjectThemePack::Follow,
         }
     }
 
@@ -56,6 +104,7 @@ impl ProjectManifest {
         if self.name.trim().is_empty() {
             return Err(codec_error(path, "project.name", "name cannot be empty"));
         }
+        self.theme_pack.validate(path)?;
         if self.created_at.trim().is_empty() {
             return Err(codec_error(
                 path,

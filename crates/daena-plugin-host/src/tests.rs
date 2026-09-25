@@ -61,6 +61,7 @@ fn manifest(id: &str, namespace: &str) -> PluginManifest {
         templates: vec![],
         records: vec![],
         themes: vec![],
+        importers: vec![],
         views: vec![daena_plugin_api::View {
             id: "overview".into(),
             title: "Overview".into(),
@@ -786,7 +787,10 @@ fn wasm_service_provider_is_registered_and_invokable_after_activation() {
     fs::create_dir_all(&dist).unwrap();
     fs::write(
         dist.join("service.wasm"),
-        wat::parse_str("(module (func (export \"run\") (result i32) i32.const 7))").unwrap(),
+        wat::parse_str(
+            "(module (global $n (mut i32) (i32.const 0)) (func (export \"run\") (result i32) global.get $n i32.const 1 i32.add global.set $n global.get $n))",
+        )
+        .unwrap(),
     )
     .unwrap();
     let mut provider = manifest("com.example.wasm-provider", "wasm-provider");
@@ -814,8 +818,50 @@ fn wasm_service_provider_is_registered_and_invokable_after_activation() {
             provider.capabilities.iter().cloned().collect(),
         )
         .unwrap();
-    host.activate_bundled("project", &provider.id).unwrap();
-    let value = host
+    host.grants
+        .set(
+            "project-a",
+            &provider.id,
+            &provider.capabilities,
+            provider.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    host.activate_bundled("project-a", &provider.id).unwrap();
+    assert_eq!(
+        host.services
+            .call(
+                "consumer",
+                "com.example.wasm.count",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .unwrap()["value"],
+        2
+    );
+    assert_eq!(
+        host.services
+            .call(
+                "consumer",
+                "com.example.wasm.count",
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .unwrap()["value"],
+        3
+    );
+    host.deactivate_bundled("project-a", &provider.id);
+    host.grants
+        .set(
+            "project-b",
+            &provider.id,
+            &provider.capabilities,
+            provider.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    host.activate_bundled("project-b", &provider.id).unwrap();
+    let rebound = host
         .services
         .call(
             "consumer",
@@ -825,7 +871,7 @@ fn wasm_service_provider_is_registered_and_invokable_after_activation() {
             Duration::from_millis(100),
         )
         .unwrap();
-    assert_eq!(value["value"], 7);
+    assert_eq!(rebound["value"], 2);
 }
 
 #[test]
@@ -2429,4 +2475,325 @@ fn houses_activates_when_lore_is_active() {
         LifecycleState::Active
     );
     host.deactivate_bundled("project", "daena.houses");
+}
+
+fn valid_staged_import() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "importer": {"id": "com.example.notes", "version": "1.0.0", "name": "Notes"},
+        "source": {"id": "source", "kind": "plugin", "display_name": "notes.txt"},
+        "summary": {
+            "document_count": 0,
+            "candidate_entity_count": 0,
+            "folder_count": 0,
+            "asset_count": 0,
+            "link_count": 0,
+            "unresolved_link_count": 0,
+            "unsupported_count": 0,
+            "warning_count": 0,
+            "error_count": 0,
+            "total_source_bytes": 0
+        }
+    })
+}
+
+fn importer_manifest() -> PluginManifest {
+    let mut manifest = manifest("com.example.notes", "notes");
+    manifest.importers = vec![daena_plugin_api::ImporterContribution {
+        id: "com.example.notes".into(),
+        version: "1.0.0".into(),
+        name: "Notes".into(),
+        description: "Plain notes".into(),
+        source_kinds: vec!["file".into()],
+        extensions: vec!["txt".into()],
+        mime_types: vec!["text/plain".into()],
+    }];
+    manifest
+        .capabilities
+        .push("service.provide:com.example.notes@1".into());
+    manifest.services.provides.push(daena_plugin_api::Service {
+        name: "com.example.notes".into(),
+        major: 1,
+    });
+    manifest
+}
+
+fn install_importer(host: &mut PluginHost, manifest: PluginManifest) {
+    host.catalog
+        .insert_for_test(CatalogEntry {
+            manifest: manifest.clone(),
+            package_root: Default::default(),
+            digest: "d".repeat(64),
+            embedded_wasm: None,
+        })
+        .unwrap();
+    host.grant_capabilities(
+        "project",
+        &manifest.id,
+        manifest.capabilities.into_iter().collect(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn plugin_importer_reads_opaque_bytes_and_fails_closed() {
+    let mut host = PluginHost::new();
+    let manifest = importer_manifest();
+    install_importer(&mut host, manifest.clone());
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(20),
+        )
+        .is_err());
+    host.lifecycle.force_active("project", &manifest.id);
+    host.bootstrap(&manifest.id, "project", "test").unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        &manifest.id,
+        1,
+        std::sync::Arc::new(|request| {
+            assert!(request.payload.get("path").is_none());
+            assert_eq!(request.payload["displayName"], "notes.txt");
+            assert!(request.payload["bytes"].is_string());
+            if request.payload["op"] == "detect" {
+                return Ok(serde_json::json!({"detected": true}));
+            }
+            Ok(valid_staged_import())
+        }),
+    )
+    .unwrap();
+    assert!(host
+        .detect_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .unwrap());
+    let analyzed = host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .unwrap();
+    assert!(analyzed.get("path").is_none());
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.md",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("extension"));
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            &vec![0; IMPORT_SOURCE_BYTE_LIMIT],
+            Duration::from_millis(50),
+        )
+        .is_ok());
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            &vec![0; IMPORT_SOURCE_BYTE_LIMIT + 1],
+            Duration::from_millis(20),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds"));
+    host.revoke_plugin("project", &manifest.id);
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(20),
+        )
+        .is_err());
+}
+
+#[test]
+fn plugin_importer_rejects_malformed_and_timed_out_results() {
+    let mut host = PluginHost::new();
+    let manifest = importer_manifest();
+    install_importer(&mut host, manifest.clone());
+    host.lifecycle.force_active("project", &manifest.id);
+    host.bootstrap(&manifest.id, "project", "test").unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        &manifest.id,
+        1,
+        std::sync::Arc::new(|_| Ok(serde_json::json!([1, 2]))),
+    )
+    .unwrap();
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .is_err());
+
+    let mut host = PluginHost::new();
+    let manifest = importer_manifest();
+    install_importer(&mut host, manifest.clone());
+    host.lifecycle.force_active("project", &manifest.id);
+    host.bootstrap(&manifest.id, "project", "test").unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        &manifest.id,
+        1,
+        std::sync::Arc::new(|request| {
+            let started = std::time::Instant::now();
+            while started.elapsed() < Duration::from_millis(200) {
+                if request.cancellation.is_cancelled() {
+                    return Err(HostError("cancelled".into()));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(serde_json::json!({}))
+        }),
+    )
+    .unwrap();
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(20),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("deadline"));
+    let mut host = PluginHost::new();
+    let manifest = importer_manifest();
+    install_importer(&mut host, manifest.clone());
+    host.lifecycle.force_active("project", &manifest.id);
+    host.bootstrap(&manifest.id, "project", "test").unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        &manifest.id,
+        1,
+        std::sync::Arc::new(|_| Ok(serde_json::json!({"schema_version": 1}))),
+    )
+    .unwrap();
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            &manifest.id,
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("malformed"));
+}
+
+#[test]
+fn plugin_importer_grant_does_not_expose_siblings_or_foreign_providers() {
+    let mut host = PluginHost::new();
+    let mut manifest = importer_manifest();
+    manifest
+        .importers
+        .push(daena_plugin_api::ImporterContribution {
+            id: "com.example.other".into(),
+            version: "1.0.0".into(),
+            name: "Other".into(),
+            description: "Other notes".into(),
+            source_kinds: vec!["file".into()],
+            extensions: vec!["txt".into()],
+            mime_types: vec![],
+        });
+    manifest
+        .capabilities
+        .push("service.provide:com.example.other@1".into());
+    manifest.services.provides.push(daena_plugin_api::Service {
+        name: "com.example.other".into(),
+        major: 1,
+    });
+    install_importer(&mut host, manifest.clone());
+    host.grants
+        .set(
+            "project",
+            &manifest.id,
+            &manifest.capabilities,
+            ["service.provide:com.example.notes@1".into()]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+    host.lifecycle.force_active("project", &manifest.id);
+    host.bootstrap(&manifest.id, "project", "test").unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        &manifest.id,
+        1,
+        std::sync::Arc::new(|_| Ok(valid_staged_import())),
+    )
+    .unwrap();
+    host.register_declared_service_provider(
+        &manifest.id,
+        "com.example.other",
+        1,
+        std::sync::Arc::new(|_| Ok(valid_staged_import())),
+    )
+    .unwrap();
+    let listed = host
+        .enabled_importers("project")
+        .into_iter()
+        .map(|(_, importer)| importer.id)
+        .collect::<Vec<_>>();
+    assert_eq!(listed, vec!["com.example.notes".to_string()]);
+    assert!(host
+        .analyze_import(
+            "project",
+            &manifest.id,
+            "com.example.other",
+            "notes.txt",
+            b"hello",
+            Duration::from_millis(50),
+        )
+        .is_err());
+
+    let mut other = importer_manifest();
+    other.id = "com.example.foreign".into();
+    install_importer(&mut host, other.clone());
+    assert!(host
+        .register_declared_service_provider(
+            &other.id,
+            "com.example.notes",
+            1,
+            std::sync::Arc::new(|_| Ok(valid_staged_import())),
+        )
+        .is_err());
 }

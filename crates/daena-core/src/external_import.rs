@@ -58,6 +58,13 @@ pub fn analyze_generic_documents(
     analyze_generic_documents_with_progress(source, limits, |_| Ok(()))
 }
 
+pub fn parse_staged_import(value: serde_json::Value) -> Result<StagedImport, CoreError> {
+    let import = serde_json::from_value::<StagedImport>(value)
+        .map_err(|error| CoreError::Validation(format!("staged import is malformed: {error}")))?;
+    import.validate()?;
+    Ok(import)
+}
+
 pub fn analyze_generic_documents_with_progress(
     source: impl AsRef<Path>,
     limits: GenericDocumentImportLimits,

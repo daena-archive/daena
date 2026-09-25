@@ -277,6 +277,7 @@ import { htmlToMarkdown } from "$lib/markdown";
 import { normalizeDocument } from "$lib/markdown/normalize";
 import {
   applyThemePreference,
+  normalizeProjectThemePack,
   cacheThemePackTokens,
   cacheThemePreference,
   collectInstalledThemePacks,
@@ -359,6 +360,7 @@ const initialSystemPrefersDark =
   typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)").matches : false;
 let themePreference = $state<ThemePreference>(initialThemePreference);
 let themePack = $state<ThemePackRef | null>(null);
+let projectThemePack = $state<ReturnType<typeof normalizeProjectThemePack>>({ mode: "follow" });
 let themePacks = $state<InstalledThemePack[]>([]);
 const initialUpdateChannelPreference = readUpdateChannelPreference();
 let updateChannelPreference = $state<UpdateChannelPreference>(initialUpdateChannelPreference);
@@ -3255,6 +3257,7 @@ async function setProjectAiEnabled(enabled: boolean) {
   }
   try {
     projectInfo = await project.setAiEnabled(enabled);
+    rememberProjectTheme(projectInfo);
   } catch (cause) {
     showAiIndexMessage(friendlyError(cause));
   }
@@ -3828,9 +3831,14 @@ function rememberProject(info: ProjectInfo) {
 function removeRecentProject(root: string) {
   void persistRecentProjects(recentProjects.filter((entry) => entry.root !== root));
 }
+function effectiveThemePack(): ThemePackRef | null {
+  if (!projectInfo || projectThemePack.mode === "follow") return themePack;
+  if (projectThemePack.mode === "builtin") return null;
+  return { pluginId: projectThemePack.pluginId, themeId: projectThemePack.themeId };
+}
 function currentThemeOverlay(systemPrefersDark = matchMedia("(prefers-color-scheme: dark)").matches) {
   const resolved = resolveTheme(themePreference, systemPrefersDark);
-  return overlayForThemePack(themePacks, themePack, resolved);
+  return overlayForThemePack(themePacks, effectiveThemePack(), resolved);
 }
 
 function applyCurrentAppearance(
@@ -3842,10 +3850,11 @@ function applyCurrentAppearance(
   const cached = resolvedPackTokenCache(themePacks, themePack);
   if (cached) cacheThemePackTokens(cached);
   else if (!themePack || catalogReady) cacheThemePackTokens(null);
+  const appliedPack = effectiveThemePack();
   const payload = {
     preference: themePreference,
     resolved,
-    pack: catalogReady ? themePack : null,
+    pack: catalogReady ? appliedPack : null,
     tokens: resolveAppliedTokens(resolved, overlay),
   };
   void project.pluginAppearanceSync(payload).catch(() => {
@@ -3886,6 +3895,27 @@ function updateThemePreference(preference: ThemePreference) {
   cacheThemePreference(preference);
   applyCurrentAppearance();
   void project.settingsUpdate({ general: { appearance: { theme: preference } } }).catch(() => {});
+}
+function rememberProjectTheme(info: ProjectInfo | null) {
+  projectThemePack = normalizeProjectThemePack(info?.themePack);
+}
+async function updateProjectThemePack(next: ReturnType<typeof normalizeProjectThemePack>) {
+  const epoch = projectStatusEpoch;
+  const root = projectInfo?.root ?? null;
+  const previous = projectThemePack;
+  projectThemePack = next;
+  applyCurrentAppearance();
+  try {
+    const info = await project.setThemePack(next);
+    if (epoch !== projectStatusEpoch || projectInfo?.root !== root) return;
+    projectInfo = info;
+    rememberProjectTheme(info);
+    applyCurrentAppearance();
+  } catch {
+    if (epoch !== projectStatusEpoch || projectInfo?.root !== root) return;
+    projectThemePack = previous;
+    applyCurrentAppearance();
+  }
 }
 function updateThemePack(next: ThemePackRef | null) {
   themePack = next;
@@ -4122,7 +4152,14 @@ async function refreshGit(epoch = projectStatusEpoch) {
 
 async function applyProjectInfo(info: ProjectInfo | null, epoch: number) {
   if (epoch !== projectStatusEpoch) return;
-  if (info) projectInfo = info;
+  if (info) {
+    projectInfo = info;
+    const previous = projectThemePack;
+    rememberProjectTheme(info);
+    if (previous.mode !== projectThemePack.mode || JSON.stringify(previous) !== JSON.stringify(projectThemePack)) {
+      applyCurrentAppearance();
+    }
+  }
 }
 
 async function loadProjectStatus(includeGit: boolean) {
@@ -4295,6 +4332,8 @@ function statusCenterSummary() {
 async function finishOpening(info?: ProjectInfo) {
   projectInfo = info ?? (await project.info());
   if (!projectInfo) throw new Error("The project did not return an identity");
+  rememberProjectTheme(projectInfo);
+  applyCurrentAppearance();
   await loadAiPromptTemplates();
   await refreshRemoteCredential();
   modules = await project.listModuleManifests();
@@ -6635,6 +6674,7 @@ function resetProjectSessionState() {
   projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
+  rememberProjectTheme(null);
   projectStatusEpoch += 1;
   modules = [];
   adminPlugins = null;
@@ -6677,6 +6717,7 @@ function resetProjectSessionState() {
   schemaEditorDirty = false;
   schemaOverlayLoadToken += 1;
   ready = false;
+  applyCurrentAppearance();
 }
 async function openExternalImport() {
   showProjectMenu = false;
@@ -7464,7 +7505,11 @@ onMount(() => {
         onSeedExample={seedExample}
         typeLabel={entityTypeLabel}
         onArchiveChanged={() => void handleArchiveChanged()}
-        onArchiveToast={showToast}>
+        onArchiveToast={showToast}
+        themePacks={themePackChoices()}
+        {projectThemePack}
+        projectThemeError={projectInfo.themePackError}
+        onProjectThemePackChange={(next) => void updateProjectThemePack(next)}>
         {#snippet extensions()}
           <div class="panel-hero">
             <div class="hero-icon">

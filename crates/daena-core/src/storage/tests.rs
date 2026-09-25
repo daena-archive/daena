@@ -9,6 +9,7 @@ fn project_manifest_is_byte_stable_and_lexicographically_ordered() {
         name: "Eldermere".into(),
         created_at: "2026-08-05T10:30:00Z".into(),
         ai_enabled: false,
+        theme_pack: ProjectThemePack::Follow,
     };
 
     assert_eq!(

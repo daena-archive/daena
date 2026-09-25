@@ -28,6 +28,17 @@ pub(super) async fn project_ai_prompts_set(
 }
 
 #[tauri::command]
+pub(super) async fn project_set_theme_pack(
+    state: tauri::State<'_, SharedCore>,
+    theme_pack: daena_core::ProjectThemePack,
+) -> Result<ProjectInfo, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?.set_theme_pack(theme_pack)
+    })
+    .await
+}
+
+#[tauri::command]
 pub(super) async fn project_set_ai_enabled(
     state: tauri::State<'_, SharedCore>,
     enabled: bool,

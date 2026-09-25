@@ -59,6 +59,10 @@ let {
   typeLabel,
   onArchiveChanged,
   onArchiveToast,
+  themePacks = [],
+  projectThemePack = { mode: "follow" },
+  projectThemeError = null,
+  onProjectThemePackChange,
 }: {
   section?: ProjectSection;
   summary: ProjectSummary;
@@ -84,12 +88,33 @@ let {
   typeLabel: (entityType: string | null) => string;
   onArchiveChanged?: () => void;
   onArchiveToast?: (message: string) => void;
+  themePacks?: Array<{ pluginId: string; themeId: string; name: string }>;
+  projectThemePack?: { mode: "follow" } | { mode: "builtin" } | { mode: "pack"; pluginId: string; themeId: string };
+  projectThemeError?: string | null;
+  onProjectThemePackChange?: (
+    next: { mode: "follow" } | { mode: "builtin" } | { mode: "pack"; pluginId: string; themeId: string },
+  ) => void;
 } = $props();
 
 let actionBusy = $state(false);
 let actionMessage = $state("");
 let actionError = $state("");
 let recoveryPath = $state("");
+
+function projectThemeValue() {
+  if (projectThemePack.mode === "pack") return `${projectThemePack.pluginId}/${projectThemePack.themeId}`;
+  return projectThemePack.mode;
+}
+function projectThemeFromValue(value: string) {
+  if (value === "builtin") return { mode: "builtin" as const };
+  if (value === "follow") return { mode: "follow" as const };
+  const slash = value.indexOf("/");
+  return {
+    mode: "pack" as const,
+    pluginId: value.slice(0, slash),
+    themeId: value.slice(slash + 1),
+  };
+}
 
 onMount(() => {
   setSchemaEditorDiscardPrompt(() =>
@@ -280,6 +305,21 @@ async function seedExampleProject() {
           <div>
             <span>AI features</span><button type="button" class="quiet-button" onclick={() => void goToSection("ai")}
               >{summary.aiEnabled ? "Enabled" : "Off"}</button>
+          </div>
+          <div>
+            <span>Theme pack</span>
+            <select
+              aria-label="Project theme pack"
+              value={projectThemeValue()}
+              onchange={(event) => onProjectThemePackChange?.(projectThemeFromValue(event.currentTarget.value))}>
+              <option value="follow">Follow application</option>
+              <option value="builtin">Default</option>
+              {#each themePacks as pack (pack.pluginId + "/" + pack.themeId)}
+                <option value="{pack.pluginId}/{pack.themeId}">{pack.name}</option>
+              {/each}
+            </select>
+            <small>Applies only while this project is open. The welcome screen keeps the application pack.</small>
+            {#if projectThemeError}<small class="error-copy">{projectThemeError}</small>{/if}
           </div>
         </div>
         {#if diagnostics.length > 0}
@@ -644,6 +684,22 @@ async function seedExampleProject() {
 }
 .project-identity > div + div {
   border-left: 1px solid var(--line);
+}
+.project-identity select {
+  justify-self: end;
+  max-width: 220px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.project-identity small {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 .project-identity span {
   color: var(--ink-faint);

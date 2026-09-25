@@ -46,6 +46,9 @@ impl ProjectStore {
         if let Some(enabled) = self.runtime_ai_enabled()? {
             manifest.ai_enabled = enabled;
         }
+        if let Some(theme_pack) = self.runtime_theme_pack()? {
+            manifest.theme_pack = theme_pack;
+        }
         manifest.validate(&path)?;
         Ok(manifest)
     }
@@ -60,6 +63,81 @@ impl ProjectStore {
         transaction.execute(
             "INSERT INTO project_meta(key,value) VALUES ('ai_enabled',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [if enabled { "true" } else { "false" }],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        Ok(self.info().expect("root is present"))
+    }
+
+    pub(crate) fn runtime_theme_pack(
+        &self,
+    ) -> Result<Option<crate::storage::ProjectThemePack>, CoreError> {
+        let value = self
+            .connection
+            .query_row(
+                "SELECT value FROM project_meta WHERE key='theme_pack'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match value {
+            Some(raw) => serde_json::from_str(&raw).map(Some).map_err(|error| {
+                CoreError::Validation(format!("runtime project theme pack is invalid: {error}"))
+            }),
+            None => Ok(None),
+        }
+    }
+
+    fn manifest_theme_pack(&self) -> Result<crate::storage::ProjectThemePack, CoreError> {
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("no project is open".to_string()))?;
+        let path = root.join("project.json");
+        let manifest = crate::storage::read_json::<crate::storage::ProjectManifest>(&path)?;
+        manifest.theme_pack.validate(&path)?;
+        Ok(manifest.theme_pack)
+    }
+
+    pub fn theme_pack(&self) -> Result<crate::storage::ProjectThemePack, CoreError> {
+        match self.runtime_theme_pack() {
+            Ok(Some(theme_pack)) => Ok(theme_pack),
+            Ok(None) => self.manifest_theme_pack(),
+            Err(_) => self.manifest_theme_pack(),
+        }
+    }
+
+    pub(crate) fn persist_theme_pack(
+        &self,
+        theme_pack: &crate::storage::ProjectThemePack,
+    ) -> Result<(), CoreError> {
+        let encoded = serde_json::to_string(theme_pack)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        self.connection.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('theme_pack',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [encoded],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_theme_pack(
+        &self,
+        theme_pack: crate::storage::ProjectThemePack,
+    ) -> Result<ProjectInfo, CoreError> {
+        let root = self
+            .root
+            .as_ref()
+            .ok_or_else(|| CoreError::NotFound("no project is open".to_string()))?;
+        theme_pack.validate(&root.join("project.json"))?;
+        if self.theme_pack().ok().as_ref() == Some(&theme_pack) {
+            return Ok(self.info().expect("root is present"));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let encoded = serde_json::to_string(&theme_pack)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        transaction.execute(
+            "INSERT INTO project_meta(key,value) VALUES ('theme_pack',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [encoded],
         )?;
         transaction.commit()?;
         self.notify_export_worker()?;

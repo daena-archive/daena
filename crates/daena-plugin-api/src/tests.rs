@@ -95,6 +95,29 @@ fn effective_schema_record_collections_may_omit_owner_entity_types() {
 }
 
 #[test]
+fn reserved_importer_ids_are_rejected() {
+    let json = include_str!("../../../packages/modules/lore/manifest.json");
+    let mut manifest = parse_manifest(json).unwrap();
+    manifest.importers.push(ImporterContribution {
+        id: "daena.generic-documents".into(),
+        version: "1.0.0".into(),
+        name: "Documents".into(),
+        description: "Reserved".into(),
+        source_kinds: vec!["file".into()],
+        extensions: vec!["txt".into()],
+        mime_types: vec![],
+    });
+    manifest
+        .capabilities
+        .push("service.provide:daena.generic-documents@1".into());
+    manifest.services.provides.push(Service {
+        name: "daena.generic-documents".into(),
+        major: 1,
+    });
+    assert!(validate_manifest(&manifest).is_err());
+}
+
+#[test]
 fn theme_packs_are_validated() {
     let json = include_str!("../../../packages/modules/lore/manifest.json");
     let mut manifest = parse_manifest(json).unwrap();

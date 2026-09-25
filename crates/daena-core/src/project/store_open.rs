@@ -182,6 +182,7 @@ impl ProjectStore {
                 "false"
             }],
         )?;
+        store.persist_theme_pack(&canonical.manifest.theme_pack)?;
         store.rebuild_search()?;
         store.verify_index()?;
         store.connection.execute(
@@ -553,6 +554,7 @@ impl ProjectStore {
                 "false"
             }],
         )?;
+        candidate.persist_theme_pack(&canonical.manifest.theme_pack)?;
         let digest =
             crate::storage::canonical_json_bytes(&checkpoint).map(|bytes| digest_bytes(&bytes))?;
         candidate.rebuild_search()?;
@@ -828,6 +830,11 @@ impl ProjectStore {
             &root.join("project.json"),
         )
         .ok();
+        let mut theme_pack_error = None;
+        let theme_pack = self.theme_pack().unwrap_or_else(|error| {
+            theme_pack_error = Some(error.to_string());
+            crate::storage::ProjectThemePack::Follow
+        });
         Some(ProjectInfo {
             name: manifest.as_ref().map_or_else(
                 || {
@@ -848,6 +855,8 @@ impl ProjectStore {
             assets: root.join("assets").to_string_lossy().to_string(),
             sync,
             ai_enabled: self.ai_enabled().unwrap_or(false),
+            theme_pack,
+            theme_pack_error,
         })
     }
 

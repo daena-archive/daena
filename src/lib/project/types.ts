@@ -848,6 +848,10 @@ export interface SyncSummary {
   dirty_count: number;
   export_error: string | null;
 }
+export type ProjectThemePack =
+  | { mode: "follow" }
+  | { mode: "builtin" }
+  | { mode: "pack"; pluginId: string; themeId: string };
 export interface ProjectInfo {
   name: string;
   root: string;
@@ -855,6 +859,8 @@ export interface ProjectInfo {
   assets: string;
   sync: SyncSummary;
   aiEnabled: boolean;
+  themePack?: ProjectThemePack;
+  themePackError?: string | null;
 }
 export interface ExternalChangeReport {
   changed: boolean;
@@ -1195,6 +1201,7 @@ export interface PluginUpgradePlan {
 export type DialogSelection = string | string[] | null;
 export interface ExternalImporterDescriptor {
   id: string;
+  pluginId?: string;
   version: string;
   name: string;
   description: string;

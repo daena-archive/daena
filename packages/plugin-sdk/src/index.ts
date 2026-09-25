@@ -633,6 +633,7 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
     "templates",
     "records",
     "themes",
+    "importers",
     "views",
     "commands",
     "services",
@@ -642,7 +643,7 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   const value = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(value)) if (!knownManifestKeys.has(key)) errors.push(`unknown manifest key: ${key}`);
   for (const key of knownManifestKeys)
-    if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && !(key in value))
+    if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && key !== "importers" && !(key in value))
       errors.push(`missing manifest key: ${key}`);
   if (value.manifestVersion !== 1) errors.push("manifestVersion must be 1");
   if (typeof value.id !== "string" || !isPluginIdentifier(value.id)) errors.push("id is invalid");
@@ -690,6 +691,7 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   if (!Array.isArray(templates)) errors.push("templates must be an array");
   if (records !== undefined && !Array.isArray(records)) errors.push("records must be an array");
   if (themes !== undefined && !Array.isArray(themes)) errors.push("themes must be an array");
+  if (value.importers !== undefined && !Array.isArray(value.importers)) errors.push("importers must be an array");
   if (!Array.isArray(views)) errors.push("views must be an array");
   if (!Array.isArray(commands)) errors.push("commands must be an array");
   if (!services || typeof services !== "object" || Array.isArray(services)) errors.push("services must be an object");
@@ -1088,6 +1090,63 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
           tokens: { light: pack.tokens.light, dark: pack.tokens.dark },
         }),
       );
+    }
+  }
+  if (Array.isArray(value.importers)) {
+    if (value.importers.length > 8) errors.push("too many importer contributions");
+    const importerIds = new Set<string>();
+    const services = isRecord(value.services) ? value.services : {};
+    const provides = Array.isArray(services.provides) ? services.provides : [];
+    const capabilities = Array.isArray(value.capabilities) ? value.capabilities : [];
+    const reserved = new Set(["daena.generic-documents", "daena.obsidian-vault", "daena.mediawiki-xml"]);
+    for (const importer of value.importers) {
+      if (!isRecord(importer)) {
+        errors.push("importers must contain objects");
+        continue;
+      }
+      const id = typeof importer.id === "string" ? importer.id : "";
+      if (reserved.has(id)) errors.push(`importer ${id} uses a reserved id`);
+      if (!isPluginIdentifier(id) || importerIds.has(id)) errors.push(`invalid or duplicate importer: ${id}`);
+      else importerIds.add(id);
+      if (typeof importer.version !== "string" || !isSemanticVersion(importer.version))
+        errors.push(`importer ${id} version is invalid`);
+      if (typeof importer.name !== "string" || importer.name.trim().length === 0 || importer.name.length > 128)
+        errors.push(`importer ${id} name is invalid`);
+      if (
+        typeof importer.description !== "string" ||
+        importer.description.trim().length === 0 ||
+        importer.description.length > 512
+      )
+        errors.push(`importer ${id} description is invalid`);
+      if (!Array.isArray(importer.sourceKinds) || importer.sourceKinds.length !== 1 || importer.sourceKinds[0] !== "file")
+        errors.push(`importer ${id} must declare file sources only`);
+      if (
+        !Array.isArray(importer.extensions) ||
+        importer.extensions.length === 0 ||
+        importer.extensions.some(
+          (extension) =>
+            typeof extension !== "string" ||
+            extension.length === 0 ||
+            extension.length > 16 ||
+            extension.startsWith(".") ||
+            !/^[a-z0-9]+$/.test(extension),
+        )
+      )
+        errors.push(`importer ${id} extensions are invalid`);
+      if (
+        importer.mimeTypes !== undefined &&
+        (!Array.isArray(importer.mimeTypes) ||
+          importer.mimeTypes.some((mime) => {
+            if (typeof mime !== "string" || mime.includes(" ")) return true;
+            const slash = mime.indexOf("/");
+            return slash <= 0 || slash === mime.length - 1;
+          }))
+      )
+        errors.push(`importer ${id} MIME types are invalid`);
+      const capability = `service.provide:${id}@1`;
+      if (!capabilities.includes(capability)) errors.push(`importer ${id} requires capability ${capability}`);
+      if (!provides.some((service) => isRecord(service) && service.name === id && service.major === 1))
+        errors.push(`importer ${id} requires service ${id}@1`);
     }
   }
   const fields = new Map<string, FieldDefinition>();

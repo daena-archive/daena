@@ -310,6 +310,15 @@ export interface Events {
     publishes: Event[];
     subscribes: Event[];
 }
+export interface ImporterContribution {
+    description: string;
+    extensions: string[];
+    id: string;
+    mimeTypes?: string[];
+    name: string;
+    sourceKinds: string[];
+    version: string;
+}
 export interface ThemePackTokens {
     dark: Record<string, string>;
     light: Record<string, string>;
@@ -328,6 +337,7 @@ export interface PluginManifest {
     events: Events;
     hostApi: string;
     id: string;
+    importers?: ImporterContribution[];
     kind: PluginKind;
     manifestVersion: 1;
     migrations: Migration[];

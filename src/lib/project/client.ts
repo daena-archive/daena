@@ -74,6 +74,7 @@ import type {
   PluginAdminView,
   PluginUpgradePlan,
   ProjectInfo,
+  ProjectThemePack,
   ProjectModuleManifest,
   RasterLayerChange,
   Relationship,
@@ -124,16 +125,26 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   setAiEnabled: (enabled: boolean) => invoke<ProjectInfo>("project_set_ai_enabled", { enabled }),
+  setThemePack: (themePack: ProjectThemePack) =>
+    invoke<ProjectInfo>("project_set_theme_pack", { themePack }),
   aiPromptsGet: () => invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_get"),
   aiPromptsSet: (overlay: { templates?: Array<Record<string, unknown>> }) =>
     invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_set", { overlay }),
   importCheckpoint: () => invoke<ExternalChangeReport>("project_import_checkpoint"),
   externalImporters: () => invoke<ExternalImporterDescriptor[]>("project_external_importers"),
-  externalImportSelectSource: (sourceKind: "file" | "folder") =>
-    invoke<ExternalImportSourceHandle | null>("project_external_import_select_source", { sourceKind }),
-  externalImportAnalyzeBegin: (sourceHandle: string, importerId: string, limits?: ExternalImportLimits) =>
+  externalImportSelectSource: (sourceKind: "file" | "folder", extensions?: string[]) =>
+    invoke<ExternalImportSourceHandle | null>("project_external_import_select_source", {
+      sourceKind,
+      extensions: extensions ?? null,
+    }),
+  externalImportAnalyzeBegin: (
+    sourceHandle: string,
+    importerId: string,
+    limits?: ExternalImportLimits,
+    pluginId?: string,
+  ) =>
     invoke<ExternalImportAnalysisStatus>("project_external_import_analyze_begin", {
-      input: { sourceHandle, importerId, limits: limits ?? null },
+      input: { sourceHandle, importerId, pluginId: pluginId ?? null, limits: limits ?? null },
     }),
   externalImportAnalysisStatus: (sessionId: string) =>
     invoke<ExternalImportAnalysisStatus>("project_external_import_analysis_status", { sessionId }),

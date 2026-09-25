@@ -4593,6 +4593,63 @@ fn directory_projects_create_portable_layout() {
 }
 
 #[test]
+fn project_theme_pack_round_trips_without_changing_other_projects() {
+    let root = std::env::temp_dir().join(format!("daena-theme-pack-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        store.theme_pack().unwrap(),
+        crate::storage::ProjectThemePack::Follow
+    );
+    let pack = crate::storage::ProjectThemePack::Pack {
+        plugin_id: "com.example.skins".into(),
+        theme_id: "parchment".into(),
+    };
+    store.set_theme_pack(pack.clone()).unwrap();
+    store.flush_checkpoint("project theme pack").unwrap();
+    let manifest =
+        crate::storage::read_json::<crate::storage::ProjectManifest>(&root.join("project.json"))
+            .unwrap();
+    assert_eq!(manifest.theme_pack, pack);
+    drop(store);
+    let store = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(store.info().unwrap().theme_pack, pack);
+    let other = std::env::temp_dir().join(format!("daena-theme-pack-other-{}", Uuid::new_v4()));
+    let other_store = ProjectStore::open_directory(&other).unwrap();
+    other_store
+        .set_theme_pack(crate::storage::ProjectThemePack::Builtin)
+        .unwrap();
+    assert_eq!(store.theme_pack().unwrap(), pack);
+    drop(other_store);
+    std::fs::remove_dir_all(&other).unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO project_meta(key,value) VALUES ('theme_pack','not-json') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [],
+        )
+        .unwrap();
+    assert_eq!(store.theme_pack().unwrap(), pack);
+    assert!(store.info().unwrap().theme_pack_error.is_none());
+    store
+        .set_theme_pack(crate::storage::ProjectThemePack::Builtin)
+        .unwrap();
+    assert_eq!(
+        store.theme_pack().unwrap(),
+        crate::storage::ProjectThemePack::Builtin
+    );
+    store.flush_checkpoint("builtin project theme").unwrap();
+    drop(store);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    assert_eq!(
+        rebuilt.theme_pack().unwrap(),
+        crate::storage::ProjectThemePack::Builtin
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn ai_enabled_defaults_to_false_and_round_trips() {
     let root = std::env::temp_dir().join(format!("daena-ai-flag-{}", Uuid::new_v4()));
     let mut store = ProjectStore::open_directory(&root).unwrap();

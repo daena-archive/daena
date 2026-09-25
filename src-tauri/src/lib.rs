@@ -602,6 +602,7 @@ pub fn run() {
             ai::ai_provider_set_credential,
             ai::ai_provider_clear_credential,
             project_set_ai_enabled,
+            project_set_theme_pack,
             project_ai_prompts_get,
             project_ai_prompts_set,
             ai::ai_remote_set_consent,

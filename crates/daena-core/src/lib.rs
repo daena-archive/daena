@@ -12,7 +12,7 @@ pub use error::CoreError;
 pub use external_import::{
     analyze_generic_documents, analyze_generic_documents_with_progress, analyze_mediawiki_xml,
     analyze_mediawiki_xml_with_progress, analyze_obsidian_vault,
-    analyze_obsidian_vault_with_progress, build_import_candidate_plan,
+    analyze_obsidian_vault_with_progress, build_import_candidate_plan, parse_staged_import,
     validate_import_candidate_plan, ExternalImportCommitReport, GenericDocumentImportLimits,
     ImportAnalysisProgress, ImportAnalysisSummary, ImportCandidateIssue, ImportCandidateMapping,
     ImportCandidateObject, ImportCandidatePlan, ImportCandidatePlanBuild, ImportDecisionReport,
@@ -53,8 +53,8 @@ pub use storage::{
     write_canonical_project, write_checkpoint_manifest, write_json, AssetsFile, CanonicalAsset,
     CanonicalMigration, CanonicalProject, CanonicalRelationship, CheckpointFile,
     CheckpointManifest, EntityDocumentRef, EntityFile, FieldsFile, FilesystemRepository,
-    PluginStateFile, ProjectManifest, RelationshipsFile, CHECKPOINT_MANIFEST_FILE, CORE_PLUGIN_ID,
-    PROJECT_FORMAT_VERSION,
+    PluginStateFile, ProjectManifest, ProjectThemePack, RelationshipsFile,
+    CHECKPOINT_MANIFEST_FILE, CORE_PLUGIN_ID, PROJECT_FORMAT_VERSION,
 };
 
 #[derive(Default)]

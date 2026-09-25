@@ -44,7 +44,7 @@ let {
 const pageSize = 50;
 let dialogElement = $state<HTMLDivElement | null>(null);
 let importers = $state<ExternalImporterDescriptor[]>([]);
-let importerId = $state("");
+let importerKey = $state("");
 let sourceKind = $state<"file" | "folder">("folder");
 let sourceName = $state("");
 let status = $state<ExternalImportAnalysisStatus | null>(null);
@@ -75,7 +75,8 @@ let unlistenProgress: (() => void) | null = null;
 let lastFocused: Element | null = null;
 
 const catalog = () => buildExternalImportMappingCatalog(modules);
-const activeImporter = () => importers.find((importer) => importer.id === importerId) ?? null;
+const importerKeyOf = (importer: ExternalImporterDescriptor) => `${importer.pluginId ?? ""}:${importer.id}`;
+const activeImporter = () => importers.find((importer) => importerKeyOf(importer) === importerKey) ?? null;
 const importerSupports = (kind: "file" | "folder") => activeImporter()?.sourceKinds.includes(kind) ?? false;
 const selectedPageItem = () => inspectedItem;
 const selectedObject = (): StagedObject | null => {
@@ -311,10 +312,15 @@ async function chooseAndAnalyze() {
   validation = null;
   report = null;
   try {
-    const source = await project.externalImportSelectSource(sourceKind);
+    const source = await project.externalImportSelectSource(
+      sourceKind,
+      sourceKind === "file" ? importer.extensions : undefined,
+    );
     if (!source) return;
     sourceName = source.displayName;
-    applyStatus(await project.externalImportAnalyzeBegin(source.sourceHandle, importer.id));
+    applyStatus(
+      await project.externalImportAnalyzeBegin(source.sourceHandle, importer.id, undefined, importer.pluginId),
+    );
   } catch (cause) {
     error = displayError(cause);
   } finally {
@@ -375,7 +381,7 @@ onMount(() => {
     .then((available) => {
       if (disposed) return;
       importers = available;
-      importerId = available[0]?.id ?? "";
+      importerKey = available[0] ? `${available[0].pluginId ?? ""}:${available[0].id}` : "";
       normalizeSourceKind();
     })
     .catch((cause) => (error = displayError(cause)));
@@ -446,8 +452,10 @@ onMount(() => {
       <section class="source-step" aria-label="Choose import source">
         <label>
           <span>Importer</span>
-          <select bind:value={importerId} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
-            {#each importers as importer}<option value={importer.id}>{importer.name}</option>{/each}
+          <select bind:value={importerKey} disabled={busy || importers.length === 0} onchange={normalizeSourceKind}>
+            {#each importers as importer (importerKeyOf(importer))}
+              <option value={importerKeyOf(importer)}>{importer.name}</option>
+            {/each}
           </select>
           {#if activeImporter()}<small>{activeImporter()!.description}</small>{/if}
         </label>

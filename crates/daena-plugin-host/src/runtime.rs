@@ -291,9 +291,17 @@ impl WasmRuntime {
         &self,
         payload: &serde_json::Value,
     ) -> Result<serde_json::Value, WasmFailure> {
+        self.invoke_service_limited(payload, WASM_SERVICE_MAX_BYTES)
+    }
+
+    pub fn invoke_service_limited(
+        &self,
+        payload: &serde_json::Value,
+        input_limit: usize,
+    ) -> Result<serde_json::Value, WasmFailure> {
         let input = serde_json::to_vec(payload)
             .map_err(|error| WasmFailure::Trap(format!("service request is not JSON: {error}")))?;
-        if input.len() > WASM_SERVICE_MAX_BYTES {
+        if input.len() > input_limit {
             return Err(WasmFailure::Trap(
                 "service request exceeds payload limit".into(),
             ));

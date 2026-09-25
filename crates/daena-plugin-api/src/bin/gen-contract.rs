@@ -155,6 +155,7 @@ fn manifest_schema() -> Value {
             "schemas": {"type": "array", "items": ref_to("SchemaContribution")},
             "templates": {"type": "array", "items": ref_to("EntityTemplate")},
             "themes": {"type": "array", "items": ref_to("ThemePack")},
+            "importers": {"type": "array", "items": ref_to("ImporterContribution")},
             "views": {"type": "array", "items": ref_to("View")},
             "commands": {"type": "array", "items": ref_to("Command")},
             "services": ref_to("Services"),

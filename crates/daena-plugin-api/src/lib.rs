@@ -776,6 +776,20 @@ pub struct Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImporterContribution {
+    pub id: String,
+    pub version: String,
+    pub name: String,
+    pub description: String,
+    pub source_kinds: Vec<String>,
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub mime_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Services {
     pub provides: Vec<Service>,
@@ -816,6 +830,8 @@ pub struct PluginManifest {
     pub records: Vec<RecordCollection>,
     #[serde(default)]
     pub themes: Vec<ThemePack>,
+    #[serde(default)]
+    pub importers: Vec<ImporterContribution>,
     pub views: Vec<View>,
     pub commands: Vec<Command>,
     pub services: Services,
@@ -1952,6 +1968,100 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
             )));
         }
         validate_theme_pack(pack)?;
+    }
+    validate_importers(manifest)?;
+    Ok(())
+}
+
+fn validate_importers(manifest: &PluginManifest) -> Result<(), ContractError> {
+    if manifest.importers.len() > 8 {
+        return Err(ContractError("too many importer contributions".into()));
+    }
+    let mut ids = BTreeSet::new();
+    for importer in &manifest.importers {
+        if matches!(
+            importer.id.as_str(),
+            "daena.generic-documents" | "daena.obsidian-vault" | "daena.mediawiki-xml"
+        ) {
+            return Err(ContractError(format!(
+                "importer {} uses a reserved id",
+                importer.id
+            )));
+        }
+        if !is_identifier(&importer.id) || !ids.insert(importer.id.as_str()) {
+            return Err(ContractError(format!(
+                "invalid or duplicate importer: {}",
+                importer.id
+            )));
+        }
+        if !is_semver(&importer.version) {
+            return Err(ContractError(format!(
+                "importer {} version is invalid",
+                importer.id
+            )));
+        }
+        if importer.name.trim().is_empty() || importer.name.chars().count() > 128 {
+            return Err(ContractError(format!(
+                "importer {} name is invalid",
+                importer.id
+            )));
+        }
+        if importer.description.trim().is_empty() || importer.description.chars().count() > 512 {
+            return Err(ContractError(format!(
+                "importer {} description is invalid",
+                importer.id
+            )));
+        }
+        if importer.source_kinds != ["file"] {
+            return Err(ContractError(format!(
+                "importer {} must declare file sources only",
+                importer.id
+            )));
+        }
+        if importer.extensions.is_empty()
+            || importer.extensions.iter().any(|extension| {
+                extension.is_empty()
+                    || extension.len() > 16
+                    || extension.starts_with('.')
+                    || !extension.chars().all(|character| {
+                        character.is_ascii_lowercase() || character.is_ascii_digit()
+                    })
+            })
+        {
+            return Err(ContractError(format!(
+                "importer {} extensions are invalid",
+                importer.id
+            )));
+        }
+        if importer.mime_types.iter().any(|mime| {
+            let Some((kind, subtype)) = mime.split_once('/') else {
+                return true;
+            };
+            kind.is_empty() || subtype.is_empty() || mime.chars().any(char::is_whitespace)
+        }) {
+            return Err(ContractError(format!(
+                "importer {} MIME types are invalid",
+                importer.id
+            )));
+        }
+        let capability = format!("service.provide:{}@1", importer.id);
+        if !manifest.capabilities.iter().any(|item| item == &capability) {
+            return Err(ContractError(format!(
+                "importer {} requires capability {capability}",
+                importer.id
+            )));
+        }
+        if !manifest
+            .services
+            .provides
+            .iter()
+            .any(|service| service.name == importer.id && service.major == 1)
+        {
+            return Err(ContractError(format!(
+                "importer {} requires service {}@1",
+                importer.id, importer.id
+            )));
+        }
     }
     Ok(())
 }

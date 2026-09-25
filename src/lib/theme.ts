@@ -34,6 +34,23 @@ export function normalizeThemePreference(value: unknown): ThemePreference {
   return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 
+export type ProjectThemePack =
+  | { mode: "follow" }
+  | { mode: "builtin" }
+  | { mode: "pack"; pluginId: string; themeId: string };
+
+export function normalizeProjectThemePack(value: unknown): ProjectThemePack {
+  if (!value || typeof value !== "object") return { mode: "follow" };
+  const mode = "mode" in value ? value.mode : undefined;
+  if (mode === "builtin") return { mode: "builtin" };
+  if (mode === "pack") {
+    const pluginId = "pluginId" in value && typeof value.pluginId === "string" ? value.pluginId.trim() : "";
+    const themeId = "themeId" in value && typeof value.themeId === "string" ? value.themeId.trim() : "";
+    return pluginId && themeId ? { mode: "pack", pluginId, themeId } : { mode: "follow" };
+  }
+  return { mode: "follow" };
+}
+
 export function normalizeThemePackRef(value: unknown): ThemePackRef | null {
   if (!value || typeof value !== "object") return null;
   const pluginId = "pluginId" in value && typeof value.pluginId === "string" ? value.pluginId.trim() : "";

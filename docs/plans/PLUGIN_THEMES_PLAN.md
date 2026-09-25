@@ -5,7 +5,8 @@
 Accepted. Standing policy is [ADR 0007](../adr/0007-plugin-theme-packs.md). The
 authoring contract is in [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md); architecture is in
 [`PLUGIN_PLATFORM_PLAN.md`](PLUGIN_PLATFORM_PLAN.md) §13. Shipped theme-pack
-behavior lives there, not in a delivery sequence.
+behavior, including the project overlay, lives there, not in a delivery
+sequence.
 
 Theme packs stay inside the existing plugin boundary:
 
@@ -253,12 +254,13 @@ No `url()`, external fonts, or host CSS attachment. Plugin CSP is unchanged.
 - Per-project world skins.
 - A new plugin kind, capability, or manifest version.
 
-## Follow-on (not v1)
+## Project overlay
 
-A project-scoped `themePack` overlay could let a world look different while
-open, still as host-applied JSON. That conflicts with current Settings copy
-(“follows you across projects”) and with welcome-screen theming, so it is not
-part of the current product.
+Shipped. A project may store `themePack` in `project.json`: `follow` (omit the
+field), `builtin`, or a pack ref. It applies only while that project is open.
+The application pack still follows the user and paints the welcome screen. The
+welcome cache is not replaced by the project overlay. This is a presentation
+selection, not canonical project content, and it does not stack packs.
 
 Fonts and density tokens can join the catalog later as parsed structured
 values, never as CSS strings.

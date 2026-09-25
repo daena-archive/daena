@@ -3,6 +3,7 @@
 //! This crate has no Tauri dependency. Authorization lives here;
 //! method dispatch to `daena-core` lives in the Tauri adapter.
 
+use base64::Engine;
 use daena_plugin_api::{
     command_exposes, lifecycle_transition, parse_manifest, validate_command_value, Command,
     CommandAction, CommandExposure, LifecycleState, NamespaceView, PluginManifest,
@@ -18,6 +19,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+
+pub const IMPORT_SOURCE_BYTE_LIMIT: usize = 256 * 1024;
+pub const IMPORT_BROKER_BYTE_LIMIT: usize = IMPORT_SOURCE_BYTE_LIMIT.div_ceil(3) * 4 + 64 * 1024;
 
 pub mod package;
 pub mod runtime;
@@ -524,6 +528,18 @@ impl SessionRegistry {
     pub fn get(&self, id: &str) -> Option<&Session> {
         self.sessions.get(id)
     }
+    pub fn get_active(&self, project_id: &str, plugin_id: &str) -> Option<Session> {
+        self.sessions
+            .values()
+            .find(|session| {
+                session.plugin_id == plugin_id
+                    && session.project_id == project_id
+                    && !session.revoked
+                    && session.expires_at > SystemTime::now()
+            })
+            .cloned()
+    }
+
     fn find_active(&self, plugin_id: &str, project_id: &str, origin: &str) -> Option<Session> {
         self.sessions
             .values()
@@ -1135,6 +1151,15 @@ impl ServiceRegistry {
         })
     }
 
+    pub fn provider_plugin(&self, name: &str, major: u32) -> Option<String> {
+        self.providers
+            .get(&ServiceKey {
+                name: name.into(),
+                major,
+            })
+            .map(|provider| provider.plugin_id.clone())
+    }
+
     pub fn provider_health(&self, name: &str, major: u32) -> Option<ProviderHealth> {
         self.providers
             .get(&ServiceKey {
@@ -1232,10 +1257,51 @@ impl ServiceRegistry {
         payload: serde_json::Value,
         deadline: Duration,
     ) -> Result<serde_json::Value, HostError> {
+        self.dispatch(
+            stack,
+            name,
+            major,
+            payload,
+            deadline,
+            self.payload_limit,
+            None,
+        )
+    }
+
+    pub fn call_owned(
+        &self,
+        plugin_id: &str,
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+        payload_limit: usize,
+    ) -> Result<serde_json::Value, HostError> {
+        self.dispatch(
+            &[],
+            name,
+            major,
+            payload,
+            deadline,
+            payload_limit,
+            Some(plugin_id),
+        )
+    }
+
+    fn dispatch(
+        &self,
+        stack: &[String],
+        name: &str,
+        major: u32,
+        payload: serde_json::Value,
+        deadline: Duration,
+        payload_limit: usize,
+        expected_plugin: Option<&str>,
+    ) -> Result<serde_json::Value, HostError> {
         let size = serde_json::to_vec(&payload)
             .map_err(|error| HostError(format!("service payload is not serializable: {error}")))?
             .len();
-        if size > self.payload_limit {
+        if size > payload_limit {
             return Err(HostError("service payload exceeds host limit".into()));
         }
         let key = format!("{name}@{major}");
@@ -1249,6 +1315,9 @@ impl ServiceRegistry {
                 major,
             })
             .ok_or_else(|| HostError("service provider unavailable".into()))?;
+        if expected_plugin.is_some_and(|plugin_id| provider.plugin_id != plugin_id) {
+            return Err(HostError("service provider unavailable".into()));
+        }
         let health = provider
             .health
             .lock()
@@ -1431,6 +1500,11 @@ impl LifecycleRegistry {
         self.records
             .insert((project_id.into(), plugin_id.into()), record);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn force_active(&mut self, project_id: &str, plugin_id: &str) {
+        self.set_state(project_id, plugin_id, LifecycleState::Active);
     }
 
     fn activation_succeeded(&mut self, project_id: &str, plugin_id: &str) {
@@ -2461,9 +2535,6 @@ impl PluginHost {
             {
                 continue;
             }
-            if self.services.has_provider(&service.name, service.major) {
-                continue;
-            }
             let runtime = runtime.clone();
             self.register_declared_service_provider(
                 plugin_id,
@@ -2474,7 +2545,7 @@ impl PluginHost {
                         .as_ref()
                         .ok_or_else(|| HostError("service provider unavailable".into()))?;
                     let value = runtime
-                        .invoke_service(&_request.payload)
+                        .invoke_service_limited(&_request.payload, IMPORT_BROKER_BYTE_LIMIT)
                         .map_err(|error| HostError(format!("WASM service failed: {error}")))?;
                     Ok(value)
                 }),
@@ -2621,6 +2692,176 @@ impl PluginHost {
     ) -> Result<serde_json::Value, HostError> {
         self.services
             .call(consumer_id, name, major, payload, deadline)
+    }
+
+    pub fn enabled_importers(
+        &self,
+        project_id: &str,
+    ) -> Vec<(String, daena_plugin_api::ImporterContribution)> {
+        let declared = self
+            .catalog
+            .list()
+            .map(|entry| (entry.manifest.id.clone(), entry.manifest.importers.clone()))
+            .collect::<Vec<_>>();
+        declared
+            .into_iter()
+            .flat_map(|(id, importers)| {
+                importers
+                    .into_iter()
+                    .map(move |importer| (id.clone(), importer))
+            })
+            .filter(|(id, importer)| self.importer_runnable(project_id, id, &importer.id))
+            .collect()
+    }
+
+    pub fn analyze_import(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        importer_id: &str,
+        display_name: &str,
+        bytes: &[u8],
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        self.call_importer(
+            project_id,
+            plugin_id,
+            importer_id,
+            "analyze",
+            display_name,
+            bytes,
+            deadline,
+        )
+    }
+
+    pub fn detect_import(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        importer_id: &str,
+        display_name: &str,
+        bytes: &[u8],
+        deadline: Duration,
+    ) -> Result<bool, HostError> {
+        let result = self.call_importer(
+            project_id,
+            plugin_id,
+            importer_id,
+            "detect",
+            display_name,
+            bytes,
+            deadline,
+        )?;
+        result
+            .get("detected")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| HostError("importer detect result is malformed".into()))
+    }
+
+    fn call_importer(
+        &mut self,
+        project_id: &str,
+        plugin_id: &str,
+        importer_id: &str,
+        op: &str,
+        display_name: &str,
+        bytes: &[u8],
+        deadline: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        if bytes.len() > IMPORT_SOURCE_BYTE_LIMIT {
+            return Err(HostError("importer source exceeds host limit".into()));
+        }
+        if !self.importer_runnable(project_id, plugin_id, importer_id) {
+            return Err(HostError("importer is not available".into()));
+        }
+        let importer = self
+            .catalog
+            .get(plugin_id)
+            .and_then(|entry| {
+                entry
+                    .manifest
+                    .importers
+                    .iter()
+                    .find(|importer| importer.id == importer_id)
+                    .cloned()
+            })
+            .ok_or_else(|| HostError("importer is not declared".into()))?;
+        if display_name.trim().is_empty()
+            || display_name
+                .chars()
+                .any(|character| character == '/' || character == '\\')
+        {
+            return Err(HostError("importer display name is invalid".into()));
+        }
+        let extension = display_name
+            .rsplit_once('.')
+            .map(|(_, extension)| extension);
+        if !extension.is_some_and(|extension| {
+            importer
+                .extensions
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(extension))
+        }) {
+            return Err(HostError(
+                "importer source extension is not declared".into(),
+            ));
+        }
+        let payload = serde_json::json!({
+            "op": op,
+            "importerId": importer.id,
+            "sourceKind": "file",
+            "displayName": display_name,
+            "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
+        let result = self.services.call_owned(
+            plugin_id,
+            &importer.id,
+            1,
+            payload,
+            deadline,
+            IMPORT_BROKER_BYTE_LIMIT,
+        )?;
+        let encoded = serde_json::to_vec(&result)
+            .map_err(|error| HostError(format!("importer result is not serializable: {error}")))?;
+        if encoded.len() > IMPORT_SOURCE_BYTE_LIMIT {
+            return Err(HostError("importer result exceeds host limit".into()));
+        }
+        if !result.is_object() || result.get("path").is_some() {
+            return Err(HostError("importer result is malformed".into()));
+        }
+        if op == "analyze" {
+            daena_core::parse_staged_import(result.clone())
+                .map_err(|error| HostError(format!("importer result is malformed: {error}")))?;
+        }
+        Ok(result)
+    }
+
+    fn importer_runnable(&self, project_id: &str, plugin_id: &str, importer_id: &str) -> bool {
+        if self.lifecycle.state(project_id, plugin_id).state != LifecycleState::Active {
+            return false;
+        }
+        let Some(entry) = self.catalog.get(plugin_id) else {
+            return false;
+        };
+        if !entry
+            .manifest
+            .importers
+            .iter()
+            .any(|importer| importer.id == importer_id)
+        {
+            return false;
+        }
+        let grants = self.grants.get(project_id, plugin_id);
+        if !grants.contains(&format!("service.provide:{importer_id}@1")) {
+            return false;
+        }
+        if self.services.provider_plugin(importer_id, 1).as_deref() != Some(plugin_id) {
+            return false;
+        }
+        if self.services.provider_health(importer_id, 1) != Some(ProviderHealth::Active) {
+            return false;
+        }
+        self.sessions.get_active(project_id, plugin_id).is_some()
     }
 
     pub fn register_declared_service_provider(

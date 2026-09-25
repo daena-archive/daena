@@ -150,7 +150,7 @@ The built-in importer accepts:
 2. ZIP, and Obsidian as a folder-only specialization of Markdown;
 3. streaming MediaWiki-compatible XML with conservative wikitext preservation.
 
-Third-party importer plugins are not shipped. ODT and RTF are not advertised
+Enabled plugin importers are discovered from the manifest and called with bounded file bytes, not a path. Their staged output uses the same validation as built-in importers. ODT and RTF are not advertised
 and are not selectable.
 
 Markdown initially remains one staged object per file. Headings are preserved
@@ -351,8 +351,7 @@ transaction is open.
 `create`, `skip`, and `map to existing` are enabled. `replace` and `merge` are
 not.
 
-Plugin importers are not shipped. That work is in
-[`plans/external-import.md`](../plans/external-import.md).
+Plugin importers are discovered from enabled packages and analyzed through the broker. See [`plans/external-import.md`](../plans/external-import.md) for the contract limits.
 
 ## Non-goals
 

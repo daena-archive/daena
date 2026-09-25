@@ -4,6 +4,8 @@ The import product is in [`EXTERNAL_IMPORT_SYSTEM.md`](../import/EXTERNAL_IMPORT
 
 ## Plugin importer ecosystem
 
-Add importer declarations to the canonical Rust plugin contract, generate JSON Schema and TypeScript SDK types, implement broker discovery and bounded opaque source reads, and add plugin test-host conformance fixtures. Importer availability follows enabled service/capability state.
+Shipped. Do not re-plan this slice.
 
-**Exit gate:** a test plugin can detect and analyze a new format into the neutral contract without storage knowledge or project-write authority; malformed, oversized, timed-out, disabled, and revoked providers fail closed; bundled and plugin output pass identical core validation.
+`ImporterContribution` is on the Rust manifest and the generated schema and SDK. The host discovers enabled file importers and calls them with opaque bytes and a display name, never a path. Availability requires an active session, that importer's `service.provide:<importer-id>@1` grant, and an active provider owned by that plugin. Output is accepted only through `StagedImport::validate`. Reserved built-in ids cannot be claimed. Malformed, oversized, timed-out, disabled, and revoked providers fail closed. Folder sources are not part of this slice.
+
+The import dialog lists those importers and uses the selected importer's extensions. Host `detect` exists; the shell selects an importer explicitly.

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use daena_core::{
     analyze_generic_documents_with_progress, analyze_mediawiki_xml_with_progress,
-    analyze_obsidian_vault_with_progress, build_import_candidate_plan,
+    analyze_obsidian_vault_with_progress, build_import_candidate_plan, parse_staged_import,
     validate_import_candidate_plan, CoreError, ExternalImportCommitReport,
     GenericDocumentImportLimits, ImportAnalysisProgress, ImportAnalysisSummary,
     ImportCandidatePlan, ImportCandidatePlanBuild, ImportDiagnostic, ImportFieldTarget,
@@ -53,6 +53,8 @@ type CandidateMaterial = (
 #[serde(rename_all = "camelCase")]
 pub struct ExternalImporterDescriptor {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
     pub version: String,
     pub name: String,
     pub description: String,
@@ -147,6 +149,8 @@ impl From<ExternalImportLimitsInput> for GenericDocumentImportLimits {
 pub struct ExternalImportBeginInput {
     pub source_handle: String,
     pub importer_id: String,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
     #[serde(default)]
     pub limits: Option<ExternalImportLimitsInput>,
 }
@@ -387,11 +391,11 @@ impl ExternalImportJobManager {
     }
 }
 
-#[tauri::command]
-pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
+fn built_in_external_importers() -> Vec<ExternalImporterDescriptor> {
     vec![
         ExternalImporterDescriptor {
             id: GENERIC_DOCUMENT_IMPORTER_ID.into(),
+            plugin_id: None,
             version: GENERIC_DOCUMENT_IMPORTER_VERSION.into(),
             name: "Generic documents".into(),
             description: "Markdown, HTML, DOCX, plain-text, ZIP, and recursive folder analysis"
@@ -409,6 +413,7 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
         },
         ExternalImporterDescriptor {
             id: OBSIDIAN_IMPORTER_ID.into(),
+            plugin_id: None,
             version: OBSIDIAN_IMPORTER_VERSION.into(),
             name: "Obsidian vault".into(),
             description: "Markdown vaults with YAML, wikilinks, embeds, and attachments".into(),
@@ -417,6 +422,7 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
         },
         ExternalImporterDescriptor {
             id: MEDIAWIKI_IMPORTER_ID.into(),
+            plugin_id: None,
             version: MEDIAWIKI_IMPORTER_VERSION.into(),
             name: "MediaWiki XML".into(),
             description: "Streaming MediaWiki-compatible XML dump analysis".into(),
@@ -427,21 +433,82 @@ pub fn project_external_importers() -> Vec<ExternalImporterDescriptor> {
 }
 
 #[tauri::command]
+pub fn project_external_importers(
+    core: tauri::State<'_, SharedCore>,
+    plugins: tauri::State<'_, SharedPluginHost>,
+) -> Result<Vec<ExternalImporterDescriptor>, String> {
+    let mut importers = built_in_external_importers();
+    let Ok(project_id) = current_project_id(core.inner()) else {
+        return Ok(importers);
+    };
+    let host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    for (plugin_id, importer) in host.enabled_importers(&project_id) {
+        importers.push(ExternalImporterDescriptor {
+            id: importer.id,
+            plugin_id: Some(plugin_id),
+            version: importer.version,
+            name: importer.name,
+            description: importer.description,
+            source_kinds: importer.source_kinds,
+            extensions: importer.extensions,
+        });
+    }
+    Ok(importers)
+}
+
+fn dialog_extensions(extensions: Option<Vec<String>>) -> Vec<String> {
+    let fallback = ["md", "markdown", "html", "htm", "docx", "txt", "zip", "xml"];
+    let Some(extensions) = extensions else {
+        return fallback.into_iter().map(str::to_string).collect();
+    };
+    let cleaned = extensions
+        .into_iter()
+        .map(|extension| {
+            extension
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|extension| {
+            !extension.is_empty()
+                && extension.len() <= 16
+                && extension
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        })
+        .collect::<Vec<_>>();
+    if cleaned.is_empty() {
+        vec!["daena-rejected".into()]
+    } else {
+        cleaned
+    }
+}
+
+fn is_built_in_importer(importer_id: &str) -> bool {
+    matches!(
+        importer_id,
+        GENERIC_DOCUMENT_IMPORTER_ID | OBSIDIAN_IMPORTER_ID | MEDIAWIKI_IMPORTER_ID
+    )
+}
+
+#[tauri::command]
 pub async fn project_external_import_select_source(
     app: AppHandle,
     core: tauri::State<'_, SharedCore>,
     imports: tauri::State<'_, SharedExternalImports>,
     source_kind: String,
+    extensions: Option<Vec<String>>,
 ) -> Result<Option<ExternalImportSourceHandle>, String> {
     let project_id = current_project_id(core.inner())?;
+    let extensions = dialog_extensions(extensions);
+    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
     let selected = match source_kind.as_str() {
         "file" => app
             .dialog()
             .file()
-            .add_filter(
-                "Documents and archives",
-                &["md", "markdown", "html", "htm", "docx", "txt", "zip", "xml"],
-            )
+            .add_filter("Import sources", &extension_refs)
             .blocking_pick_file(),
         "folder" => app.dialog().file().blocking_pick_folder(),
         _ => {
@@ -472,15 +539,39 @@ pub async fn project_external_import_analyze_begin(
     app: AppHandle,
     core: tauri::State<'_, SharedCore>,
     imports: tauri::State<'_, SharedExternalImports>,
+    plugins: tauri::State<'_, SharedPluginHost>,
     input: ExternalImportBeginInput,
 ) -> Result<ExternalImportAnalysisStatus, String> {
-    if !matches!(
-        input.importer_id.as_str(),
-        GENERIC_DOCUMENT_IMPORTER_ID | OBSIDIAN_IMPORTER_ID | MEDIAWIKI_IMPORTER_ID
-    ) {
-        return Err("external_import.importer_not_found: importer is not available".into());
-    }
     let project_id = current_project_id(core.inner())?;
+    let plugin_importer = if input.plugin_id.is_some() || !is_built_in_importer(&input.importer_id)
+    {
+        let host = plugins
+            .lock()
+            .map_err(|_| "plugin host lock poisoned".to_string())?;
+        let mut matches = host
+            .enabled_importers(&project_id)
+            .into_iter()
+            .filter(|(plugin_id, importer)| {
+                importer.id == input.importer_id
+                    && input
+                        .plugin_id
+                        .as_ref()
+                        .is_none_or(|expected| expected == plugin_id)
+            })
+            .map(|(plugin_id, _)| plugin_id)
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        match matches.as_slice() {
+            [plugin_id] => Some(plugin_id.clone()),
+            [] => {
+                return Err("external_import.importer_not_found: importer is not available".into())
+            }
+            _ => return Err("external_import.importer_not_found: importer id is ambiguous".into()),
+        }
+    } else {
+        None
+    };
     let captured_content_generation =
         with_read_project(core.clone(), daena_core::ProjectStore::content_generation).await?;
     let limits = input.limits.map(Into::into).unwrap_or_default();
@@ -541,11 +632,13 @@ pub async fn project_external_import_analyze_begin(
     spawn_analysis(
         app,
         imports.inner().clone(),
+        plugins.inner().clone(),
         AnalysisTask {
             session_id,
             project_id,
             source,
             importer_id: input.importer_id,
+            plugin_id: plugin_importer,
             limits,
             cancel,
         },
@@ -990,16 +1083,73 @@ struct AnalysisTask {
     project_id: String,
     source: SourceSelection,
     importer_id: String,
+    plugin_id: Option<String>,
     limits: GenericDocumentImportLimits,
     cancel: Arc<AtomicBool>,
 }
 
-fn spawn_analysis(app: AppHandle, imports: SharedExternalImports, task: AnalysisTask) {
+fn analyze_plugin_source(
+    plugins: &SharedPluginHost,
+    project_id: &str,
+    plugin_id: &str,
+    importer_id: &str,
+    source: &SourceSelection,
+) -> Result<StagedImport, CoreError> {
+    if source.source_kind != "file" {
+        return Err(CoreError::Validation(
+            "plugin import requires a file source".into(),
+        ));
+    }
+    let length = fs::metadata(&source.path)
+        .map_err(|error| CoreError::Io {
+            operation: "read plugin import source",
+            source: error,
+        })?
+        .len();
+    if length > daena_plugin_host::IMPORT_SOURCE_BYTE_LIMIT as u64 {
+        return Err(CoreError::Validation(
+            "importer source exceeds host limit".into(),
+        ));
+    }
+    let bytes = fs::read(&source.path).map_err(|error| CoreError::Io {
+        operation: "read plugin import source",
+        source: error,
+    })?;
+    let display_name = source
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("source");
+    let result = {
+        let mut host = plugins
+            .lock()
+            .map_err(|_| CoreError::Validation("plugin host is unavailable".into()))?;
+        host.analyze_import(
+            project_id,
+            &plugin_id,
+            importer_id,
+            display_name,
+            &bytes,
+            Duration::from_secs(5),
+        )
+        .map_err(|error| CoreError::Validation(error.to_string()))?
+    };
+    parse_staged_import(result)
+}
+
+fn spawn_analysis(
+    app: AppHandle,
+    imports: SharedExternalImports,
+    plugins: SharedPluginHost,
+    task: AnalysisTask,
+) {
     let AnalysisTask {
         session_id,
         project_id,
         source,
         importer_id,
+        plugin_id,
         limits,
         cancel,
     } = task;
@@ -1010,7 +1160,9 @@ fn spawn_analysis(app: AppHandle, imports: SharedExternalImports, task: Analysis
             &session_id,
             ImportAnalysisProgress::default(),
         );
-        let staged = if importer_id == OBSIDIAN_IMPORTER_ID {
+        let staged = if let Some(plugin_id) = plugin_id {
+            analyze_plugin_source(&plugins, &project_id, &plugin_id, &importer_id, &source)
+        } else if importer_id == OBSIDIAN_IMPORTER_ID {
             let progress_app = app.clone();
             let progress_imports = imports.clone();
             let progress_session_id = session_id.clone();
@@ -1443,8 +1595,17 @@ mod tests {
     }
 
     #[test]
+    fn supplied_dialog_extensions_do_not_fall_back_to_built_ins() {
+        assert_eq!(
+            dialog_extensions(Some(vec!["..".into(), "".into()])),
+            vec!["daena-rejected"]
+        );
+        assert!(dialog_extensions(None).contains(&"md".to_string()));
+    }
+
+    #[test]
     fn built_in_importers_advertise_specialized_source_kinds() {
-        let importers = project_external_importers();
+        let importers = built_in_external_importers();
         let generic = importers
             .iter()
             .find(|importer| importer.id == GENERIC_DOCUMENT_IMPORTER_ID)

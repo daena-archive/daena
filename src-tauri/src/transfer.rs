@@ -837,12 +837,28 @@ pub(super) fn binary_asset_response(
     };
     if request.method().as_str() == "GET" && parts.next().is_none() {
         return Some(match manager.take_read(token, plugin_id, session_id) {
-            Ok((bytes, mime_type)) => tauri::http::Response::builder()
-                .status(200)
-                .header("Content-Type", mime_type)
-                .header("Content-Length", bytes.len().to_string())
-                .body(bytes)
-                .unwrap(),
+            Ok((bytes, mime_type)) => {
+                let valid_mime = if mime_type.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+                    && mime_type.contains('/')
+                    && tauri::http::HeaderValue::from_str(&mime_type).is_ok()
+                {
+                    mime_type
+                } else {
+                    "application/octet-stream".to_string()
+                };
+                match tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", valid_mime)
+                    .header("Content-Length", bytes.len().to_string())
+                    .body(bytes)
+                {
+                    Ok(response) => response,
+                    Err(error) => json_response(
+                        serde_json::json!({"error": format!("Failed to build response: {error}")}),
+                        500,
+                    ),
+                }
+            }
             Err(error) => json_response(serde_json::json!({"error":error}), 404),
         });
     }

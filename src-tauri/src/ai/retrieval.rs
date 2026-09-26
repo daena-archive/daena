@@ -498,8 +498,16 @@ pub(super) async fn semantic_retrieval_passages(
             .map_err(|error| error.to_string())?
             .pop()
             .ok_or_else(|| "embedding provider returned no query vector".to_string())?;
-        let records = index.records().map_err(|error| error.to_string())?;
-        let semantic = daena_ai::index::exact_cosine_search(&records, &query_vector, limit);
+        let semantic = index
+            .search(&query_vector, limit)
+            .map_err(|error| error.to_string())?;
+        let chunk_ids = semantic
+            .iter()
+            .map(|matched| matched.chunk_id.clone())
+            .collect::<Vec<_>>();
+        let chunks = index
+            .chunks_for_ids(&chunk_ids)
+            .map_err(|error| error.to_string())?;
         let allowed_kind = |kind: &str| {
             allowed_source_kinds.is_empty()
                 || allowed_source_kinds.iter().any(|allowed| allowed == kind)
@@ -508,29 +516,27 @@ pub(super) async fn semantic_retrieval_passages(
             .into_iter()
             .enumerate()
             .filter_map(|(rank, matched)| {
-                let record = records
-                    .iter()
-                    .find(|record| record.chunk.id == matched.chunk_id)?;
-                let source_metadata = allowed_source_ids.get(&record.chunk.source.source_id)?;
-                if !allowed_kind(&record.chunk.source.source_kind) {
+                let chunk = chunks.iter().find(|chunk| chunk.id == matched.chunk_id)?;
+                let source_metadata = allowed_source_ids.get(&chunk.source.source_id)?;
+                if !allowed_kind(&chunk.source.source_kind) {
                     return None;
                 }
                 let source = SourceRef {
-                    source_kind: record.chunk.source.source_kind.clone(),
+                    source_kind: chunk.source.source_kind.clone(),
                     summary: source_metadata.summary.clone(),
                     entity_id: source_metadata.entity_id.clone(),
-                    document_id: (record.chunk.source.source_kind == "document")
-                        .then(|| record.chunk.source.source_id.clone()),
+                    document_id: (chunk.source.source_kind == "document")
+                        .then(|| chunk.source.source_id.clone()),
                     canonical_path: source_metadata.canonical_path.clone(),
-                    revision: record.chunk.source.revision.clone(),
-                    content_hash: record.chunk.source.source_hash.clone(),
-                    byte_start: Some(record.chunk.byte_start),
-                    byte_end: Some(record.chunk.byte_end),
-                    excerpt_hash: record.chunk.text_hash.clone(),
+                    revision: chunk.source.revision.clone(),
+                    content_hash: chunk.source.source_hash.clone(),
+                    byte_start: Some(chunk.byte_start),
+                    byte_end: Some(chunk.byte_end),
+                    excerpt_hash: chunk.text_hash.clone(),
                 };
                 Some(RetrievedPassage {
                     source,
-                    text: record.chunk.text.clone(),
+                    text: chunk.text.clone(),
                     lexical_rank: rank as u32,
                 })
             })

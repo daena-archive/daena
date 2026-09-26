@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use daena_plugin_api::{PluginKind, PluginManifest, RpcRequest};
@@ -129,6 +130,53 @@ impl std::fmt::Display for WasmFailure {
     }
 }
 
+static EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(5);
+static ACTIVE_ENGINES: Mutex<Vec<Weak<Engine>>> = Mutex::new(Vec::new());
+static TICKER_STARTED: AtomicBool = AtomicBool::new(false);
+static TICKER_START: Mutex<()> = Mutex::new(());
+
+fn register_engine_for_epoch_ticker(engine: &Arc<Engine>) {
+    ensure_epoch_ticker();
+    let mut engines = match ACTIVE_ENGINES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    engines.push(Arc::downgrade(engine));
+}
+
+fn ensure_epoch_ticker() {
+    if TICKER_STARTED.load(Ordering::Acquire) {
+        return;
+    }
+    let _start = match TICKER_START.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if TICKER_STARTED.load(Ordering::Acquire) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("daena-wasm-epoch-ticker".into())
+        .spawn(|| loop {
+            std::thread::sleep(EPOCH_TICK_INTERVAL);
+            let mut engines = match ACTIVE_ENGINES.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            engines.retain(|weak| {
+                if let Some(engine) = weak.upgrade() {
+                    engine.increment_epoch();
+                    true
+                } else {
+                    false
+                }
+            });
+        });
+    if spawned.is_ok() {
+        TICKER_STARTED.store(true, Ordering::Release);
+    }
+}
+
 /// Executes a plugin component without linking WASI or any host imports.
 ///
 /// This is intentionally a deny-by-default WASI boundary: a module that asks
@@ -137,7 +185,7 @@ impl std::fmt::Display for WasmFailure {
 /// process environment or opening a preopened directory.
 #[derive(Clone)]
 pub struct WasmRuntime {
-    engine: Engine,
+    engine: Arc<Engine>,
     limits: WasmLimits,
     module: Option<Module>,
     instance: Arc<Mutex<Option<PersistentInstance>>>,
@@ -233,7 +281,9 @@ impl WasmRuntime {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
-        let engine = Engine::new(&config).map_err(|e| WasmFailure::InvalidModule(e.to_string()))?;
+        let engine =
+            Arc::new(Engine::new(&config).map_err(|e| WasmFailure::InvalidModule(e.to_string()))?);
+        register_engine_for_epoch_ticker(&engine);
         Ok(Self {
             engine,
             limits,
@@ -337,58 +387,60 @@ impl WasmRuntime {
             .ok_or(WasmFailure::MissingEntryPoint)?
             .clone();
         let memory = instance.memory.ok_or(WasmFailure::MissingEntryPoint)?;
-        instance
-            .store
-            .set_fuel(self.limits.fuel)
-            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        instance.store.set_epoch_deadline(1);
-        let ptr = alloc
-            .call(&mut instance.store, input.len() as i32)
-            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        if ptr < 0 {
-            return Err(WasmFailure::Trap(
-                "WASM allocator returned a negative pointer".into(),
-            ));
-        }
-        memory
-            .write(&mut instance.store, ptr as usize, &input)
-            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        let engine = self.engine.clone();
-        let timeout = self.limits.timeout;
-        let (cancel_timer, timer_cancelled) = std::sync::mpsc::channel();
-        let timer = std::thread::spawn(move || {
-            if timer_cancelled.recv_timeout(timeout).is_err() {
-                engine.increment_epoch();
+
+        let mut execute = || -> Result<serde_json::Value, WasmFailure> {
+            instance
+                .store
+                .set_fuel(self.limits.fuel)
+                .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+            let ticks = (self.limits.timeout.as_millis() / 5).saturating_add(1) as u64;
+            instance.store.set_epoch_deadline(ticks);
+            let ptr = alloc
+                .call(&mut instance.store, input.len() as i32)
+                .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+            if ptr < 0 {
+                return Err(WasmFailure::Trap(
+                    "WASM allocator returned a negative pointer".into(),
+                ));
             }
-        });
-        let result = handle
-            .call(&mut instance.store, (ptr, input.len() as i32))
-            .map_err(|e| {
-                let message = e.to_string();
-                if message.contains("all fuel consumed") {
-                    WasmFailure::FuelExhausted
-                } else if message.contains("epoch deadline") {
-                    WasmFailure::TimedOut
-                } else {
-                    WasmFailure::Trap(message)
-                }
-            });
-        let _ = cancel_timer.send(());
-        let _ = timer.join();
-        let packed = result? as u64;
-        let output_ptr = (packed & u32::MAX as u64) as usize;
-        let output_len = (packed >> 32) as usize;
-        if output_len > WASM_SERVICE_MAX_BYTES {
-            return Err(WasmFailure::Trap(
-                "service response exceeds payload limit".into(),
-            ));
+            memory
+                .write(&mut instance.store, ptr as usize, &input)
+                .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+            let result = handle
+                .call(&mut instance.store, (ptr, input.len() as i32))
+                .map_err(|e| {
+                    let message = e.to_string();
+                    if message.contains("all fuel consumed") {
+                        WasmFailure::FuelExhausted
+                    } else if message.contains("epoch deadline") {
+                        WasmFailure::TimedOut
+                    } else {
+                        WasmFailure::Trap(message)
+                    }
+                })?;
+            let packed = result as u64;
+            let output_ptr = (packed & u32::MAX as u64) as usize;
+            let output_len = (packed >> 32) as usize;
+            if output_len > WASM_SERVICE_MAX_BYTES {
+                return Err(WasmFailure::Trap(
+                    "service response exceeds payload limit".into(),
+                ));
+            }
+            let mut output = vec![0; output_len];
+            memory
+                .read(&mut instance.store, output_ptr, &mut output)
+                .map_err(|e| WasmFailure::Trap(e.to_string()))?;
+            serde_json::from_slice(&output).map_err(|error| {
+                WasmFailure::Trap(format!("service response is not JSON: {error}"))
+            })
+        };
+
+        let result = execute();
+        if result.is_err() {
+            // A trapped or interrupted store is not reused (PLUG-03).
+            *guard = None;
         }
-        let mut output = vec![0; output_len];
-        memory
-            .read(&mut instance.store, output_ptr, &mut output)
-            .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        serde_json::from_slice(&output)
-            .map_err(|error| WasmFailure::Trap(format!("service response is not JSON: {error}")))
+        result
     }
 
     fn compile(&self, bytes: &[u8]) -> Result<Module, WasmFailure> {
@@ -446,16 +498,9 @@ impl WasmRuntime {
             .store
             .set_fuel(self.limits.fuel)
             .map_err(|e| WasmFailure::Trap(e.to_string()))?;
-        instance.store.set_epoch_deadline(1);
-        let engine = self.engine.clone();
-        let timeout = self.limits.timeout;
-        let (cancel_timer, timer_cancelled) = std::sync::mpsc::channel();
-        let timer = std::thread::spawn(move || {
-            if timer_cancelled.recv_timeout(timeout).is_err() {
-                engine.increment_epoch();
-            }
-        });
-        let result = entry.call(&mut instance.store, ()).map_err(|e| {
+        let ticks = (self.limits.timeout.as_millis() / 5).saturating_add(1) as u64;
+        instance.store.set_epoch_deadline(ticks);
+        entry.call(&mut instance.store, ()).map_err(|e| {
             let message = e.to_string();
             if message.contains("all fuel consumed") {
                 WasmFailure::FuelExhausted
@@ -464,10 +509,7 @@ impl WasmRuntime {
             } else {
                 WasmFailure::Trap(message)
             }
-        });
-        let _ = cancel_timer.send(());
-        let _ = timer.join();
-        result
+        })
     }
 }
 

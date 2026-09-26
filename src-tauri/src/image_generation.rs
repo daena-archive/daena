@@ -801,10 +801,16 @@ fn history_images(entry: &Value) -> Result<Vec<ProviderImageRef>, ImageError> {
                         (filename, subfolder, folder_type)
                     {
                         if !matches!(folder_type, "output" | "temp")
+                            || filename.is_empty()
                             || filename.len() > 1_024
                             || subfolder.len() > 1_024
                             || filename.contains(['/', '\\', '\0'])
+                            || filename.starts_with('.')
+                            || subfolder.contains(['/', '\\', '\0', ':'])
                             || subfolder.contains("..")
+                            || subfolder.starts_with('.')
+                            || subfolder.starts_with('/')
+                            || subfolder.starts_with('\\')
                         {
                             return Err(ImageError::new(
                                 "provider_error",
@@ -908,6 +914,7 @@ fn run_generation(
     let provider_prompt_id = provider_prompt_id.to_string();
 
     let started = Instant::now();
+    let mut consecutive_poll_failures = 0;
     let image_refs = loop {
         if cancel.load(Ordering::Relaxed) {
             cancel_provider_prompt(&client, &endpoint, &provider_prompt_id);
@@ -927,10 +934,21 @@ fn run_generation(
             ));
         }
 
-        let history = get_json(
-            &client,
-            endpoint_url(&endpoint, &format!("history/{provider_prompt_id}"))?,
-        )?;
+        let history_url = endpoint_url(&endpoint, &format!("history/{provider_prompt_id}"))?;
+        let history = match get_json(&client, history_url) {
+            Ok(json) => {
+                consecutive_poll_failures = 0;
+                json
+            }
+            Err(error) => {
+                consecutive_poll_failures += 1;
+                if consecutive_poll_failures >= 5 {
+                    return Err(error);
+                }
+                thread::sleep(POLL_INTERVAL);
+                continue;
+            }
+        };
         if let Some(entry) = history_entry(&history, &provider_prompt_id) {
             let images = history_images(entry)?;
             if images.is_empty() {
@@ -1334,13 +1352,45 @@ pub async fn image_candidate_accept(
         return Ok(asset);
     }
     let bytes = bytes.ok_or_else(|| "Image candidate bytes are unavailable".to_string())?;
-    let temporary = std::env::temp_dir().join(format!(
+    let staging_dir = if let Ok(Some(info)) = crate::current_info(core.inner()) {
+        std::path::PathBuf::from(info.root).join(".daena")
+    } else {
+        std::env::temp_dir().join("daena-staging")
+    };
+    let _ = std::fs::create_dir_all(&staging_dir);
+    let temporary = staging_dir.join(format!(
         "daena-generated-image-{}-{}",
         candidate_id,
         safe_extension(&mime_type)
     ));
-    std::fs::write(&temporary, &bytes)
-        .map_err(|error| format!("Could not stage the generated image: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("Could not stage the generated image: {error}"))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("Could not stage the generated image: {error}"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&temporary, &bytes)
+            .map_err(|error| format!("Could not stage the generated image: {error}"))?;
+    }
+
+    struct StagedImageCleanup(std::path::PathBuf);
+    impl Drop for StagedImageCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = StagedImageCleanup(temporary.clone());
+
     let source_path = temporary.to_string_lossy().into_owned();
     let result = crate::with_core(core, move |core| {
         core.project(crate::trusted_shell())?
@@ -1358,7 +1408,6 @@ pub async fn image_candidate_accept(
             )
     })
     .await;
-    let _ = std::fs::remove_file(&temporary);
     let asset = result?;
     {
         let mut manager = jobs

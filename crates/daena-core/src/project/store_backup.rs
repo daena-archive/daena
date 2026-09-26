@@ -262,7 +262,10 @@ impl ProjectStore {
                  DELETE FROM module_fields;
                  DELETE FROM module_namespaces;
                  DELETE FROM module_schema_overlays;
-                 DELETE FROM migration_history;",
+                 DELETE FROM migration_history;
+                 DELETE FROM map_projection;
+                 DELETE FROM map_location_projection;
+                 DELETE FROM map_feature_projection;",
             )?;
         }
         {
@@ -407,6 +410,9 @@ impl ProjectStore {
         transaction.commit()?;
         if rebuild_search {
             self.rebuild_search()?;
+        }
+        if replace {
+            self.rebuild_maps_projection()?;
         }
         if sync_canonical {
             self.notify_export_worker()?;

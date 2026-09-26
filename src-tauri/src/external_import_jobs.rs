@@ -503,18 +503,32 @@ pub async fn project_external_import_select_source(
 ) -> Result<Option<ExternalImportSourceHandle>, String> {
     let project_id = current_project_id(core.inner())?;
     let extensions = dialog_extensions(extensions);
-    let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
-    let selected = match source_kind.as_str() {
-        "file" => app
-            .dialog()
-            .file()
-            .add_filter("Import sources", &extension_refs)
-            .blocking_pick_file(),
-        "folder" => app.dialog().file().blocking_pick_folder(),
+    let (tx, rx) = std::sync::mpsc::channel();
+    match source_kind.as_str() {
+        "file" => {
+            let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+            app.dialog()
+                .file()
+                .add_filter("Import sources", &extension_refs)
+                .pick_file(move |path| {
+                    let _ = tx.send(path);
+                });
+        }
+        "folder" => {
+            app.dialog().file().pick_folder(move |path| {
+                let _ = tx.send(path);
+            });
+        }
         _ => {
             return Err("external_import.invalid_source: source kind must be file or folder".into())
         }
-    };
+    }
+    let selected = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|error| format!("external_import.dialog_failed: {error}"))?
+        .map_err(|_| {
+            "external_import.dialog_failed: file dialog closed without a result".to_string()
+        })?;
     let Some(selected) = selected else {
         return Ok(None);
     };
@@ -709,25 +723,41 @@ pub async fn project_external_import_analysis_page(
     let project_id = current_project_id(core.inner())?;
     let imports = imports.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut manager = imports
-            .lock()
-            .map_err(|_| "external import state is unavailable".to_string())?;
-        manager.reap()?;
-        let job = project_job(&manager, &project_id, &session_id)?;
-        if job.status.state != "ready" {
-            return Err("external_import.not_ready: analysis result is not ready".into());
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut manager = imports
+                .lock()
+                .map_err(|_| "external import state is unavailable".to_string())?;
+            manager.reap()?;
+            let job = project_job(&manager, &project_id, &session_id)?;
+            if job.status.state != "ready" {
+                return Err("external_import.not_ready: analysis result is not ready".into());
+            }
+            let result = job.result.as_ref().ok_or_else(|| {
+                "external_import.not_ready: analysis result is missing".to_string()
+            })?;
+            Ok(ExternalImportPage {
+                session_id: session_id.clone(),
+                offset,
+                limit,
+                total_items: result.metadata().total_items,
+                items: result.page(offset, limit)?,
+            })
+        }));
+        match panic_result {
+            Ok(res) => res,
+            Err(_) => {
+                if let Ok(mut manager) = imports.lock() {
+                    if let Some(job) = manager.jobs.get_mut(&session_id) {
+                        job.status.state = "failed".into();
+                        job.status.stage = "failed".into();
+                        job.status.error =
+                            Some("worker panicked during external import paging".into());
+                        job.status.error_code = Some("external_import.paging_failed".into());
+                    }
+                }
+                Err("worker panicked during external import paging".into())
+            }
         }
-        let result = job
-            .result
-            .as_ref()
-            .ok_or_else(|| "external_import.not_ready: analysis result is missing".to_string())?;
-        Ok(ExternalImportPage {
-            session_id,
-            offset,
-            limit,
-            total_items: result.metadata().total_items,
-            items: result.page(offset, limit)?,
-        })
     })
     .await
     .map_err(|error| format!("external import paging worker failed: {error}"))?
@@ -742,37 +772,53 @@ pub async fn project_external_import_candidate_plan(
     let project_id = current_project_id(core.inner())?;
     let current_content_generation =
         with_read_project(core, daena_core::ProjectStore::content_generation).await?;
+    let plan_session_id = input.session_id.clone();
     let imports = imports.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut manager = imports
-            .lock()
-            .map_err(|_| "external import state is unavailable".to_string())?;
-        manager.reap()?;
-        let job = project_job(&manager, &project_id, &input.session_id)?;
-        if job.status.state != "ready" {
-            return Err("external_import.not_ready: analysis result is not ready".into());
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut manager = imports
+                .lock()
+                .map_err(|_| "external import state is unavailable".to_string())?;
+            manager.reap()?;
+            let job = project_job(&manager, &project_id, &input.session_id)?;
+            if job.status.state != "ready" {
+                return Err("external_import.not_ready: analysis result is not ready".into());
+            }
+            let result = job.result.as_ref().ok_or_else(|| {
+                "external_import.not_ready: analysis result is missing".to_string()
+            })?;
+            let metadata = result.metadata().clone();
+            let (objects, _, _, diagnostics) = result.candidate_material()?;
+            build_import_candidate_plan(
+                ImportCandidatePlanBuild {
+                    session_id: input.session_id,
+                    importer: metadata.importer,
+                    source: metadata.source,
+                    captured_content_generation: job.status.captured_content_generation,
+                    current_content_generation,
+                    manifest_fingerprint: input.manifest_fingerprint,
+                    objects,
+                    unsupported_count: metadata.summary.unsupported_count,
+                    diagnostics,
+                },
+                &input.mappings,
+            )
+            .map_err(|error| format!("external_import.invalid_candidate_plan: {error}"))
+        }));
+        match panic_result {
+            Ok(res) => res,
+            Err(_) => {
+                if let Ok(mut manager) = imports.lock() {
+                    if let Some(job) = manager.jobs.get_mut(&plan_session_id) {
+                        job.status.state = "failed".into();
+                        job.status.stage = "failed".into();
+                        job.status.error = Some("worker panicked during candidate planning".into());
+                        job.status.error_code = Some("external_import.planning_failed".into());
+                    }
+                }
+                Err("worker panicked during candidate planning".into())
+            }
         }
-        let result = job
-            .result
-            .as_ref()
-            .ok_or_else(|| "external_import.not_ready: analysis result is missing".to_string())?;
-        let metadata = result.metadata().clone();
-        let (objects, _, _, diagnostics) = result.candidate_material()?;
-        build_import_candidate_plan(
-            ImportCandidatePlanBuild {
-                session_id: input.session_id,
-                importer: metadata.importer,
-                source: metadata.source,
-                captured_content_generation: job.status.captured_content_generation,
-                current_content_generation,
-                manifest_fingerprint: input.manifest_fingerprint,
-                objects,
-                unsupported_count: metadata.summary.unsupported_count,
-                diagnostics,
-            },
-            &input.mappings,
-        )
-        .map_err(|error| format!("external_import.invalid_candidate_plan: {error}"))
     })
     .await
     .map_err(|error| format!("external import planning worker failed: {error}"))?
@@ -794,28 +840,47 @@ pub async fn project_external_import_validate(
     let material_session_id = validation_session_id.clone();
     let (captured_generation, metadata, objects, assets, unsupported, diagnostics) =
         tauri::async_runtime::spawn_blocking(move || {
-            let mut manager = imports_shared
-                .lock()
-                .map_err(|_| "external import state is unavailable".to_string())?;
-            manager.reap()?;
-            let job = project_job(&manager, &material_project_id, &material_session_id)?;
-            if job.status.state != "ready" {
-                return Err(String::from(
-                    "external_import.not_ready: analysis result is not ready",
-                ));
+            let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut manager = imports_shared
+                    .lock()
+                    .map_err(|_| "external import state is unavailable".to_string())?;
+                manager.reap()?;
+                let job = project_job(&manager, &material_project_id, &material_session_id)?;
+                if job.status.state != "ready" {
+                    return Err(String::from(
+                        "external_import.not_ready: analysis result is not ready",
+                    ));
+                }
+                let result = job.result.as_ref().ok_or_else(|| {
+                    "external_import.not_ready: analysis result is missing".to_string()
+                })?;
+                let (objects, assets, unsupported, diagnostics) = result.candidate_material()?;
+                Ok((
+                    job.status.captured_content_generation,
+                    result.metadata().clone(),
+                    objects,
+                    assets,
+                    unsupported,
+                    diagnostics,
+                ))
+            }));
+            match panic_result {
+                Ok(res) => res,
+                Err(_) => {
+                    if let Ok(mut manager) = imports_shared.lock() {
+                        if let Some(job) = manager.jobs.get_mut(&material_session_id) {
+                            job.status.state = "failed".into();
+                            job.status.stage = "failed".into();
+                            job.status.error = Some(
+                                "worker panicked during validation material extraction".into(),
+                            );
+                            job.status.error_code =
+                                Some("external_import.validation_failed".into());
+                        }
+                    }
+                    Err("worker panicked during validation material extraction".into())
+                }
             }
-            let result = job.result.as_ref().ok_or_else(|| {
-                "external_import.not_ready: analysis result is missing".to_string()
-            })?;
-            let (objects, assets, unsupported, diagnostics) = result.candidate_material()?;
-            Ok((
-                job.status.captured_content_generation,
-                result.metadata().clone(),
-                objects,
-                assets,
-                unsupported,
-                diagnostics,
-            ))
         })
         .await
         .map_err(|error| format!("external import validation worker failed: {error}"))??;
@@ -1153,124 +1218,137 @@ fn spawn_analysis(
         limits,
         cancel,
     } = task;
+    let app_for_panic = app.clone();
+    let imports_for_panic = imports.clone();
+    let session_id_for_panic = session_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        update_progress(
-            &app,
-            &imports,
-            &session_id,
-            ImportAnalysisProgress::default(),
-        );
-        let staged = if let Some(plugin_id) = plugin_id {
-            analyze_plugin_source(&plugins, &project_id, &plugin_id, &importer_id, &source)
-        } else if importer_id == OBSIDIAN_IMPORTER_ID {
-            let progress_app = app.clone();
-            let progress_imports = imports.clone();
-            let progress_session_id = session_id.clone();
-            let progress_cancel = cancel.clone();
-            analyze_obsidian_vault_with_progress(&source.path, limits, move |progress| {
-                if progress_cancel.load(Ordering::Relaxed) {
-                    return Err(CoreError::Conflict(
-                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
-                    ));
-                }
-                update_progress(
-                    &progress_app,
-                    &progress_imports,
-                    &progress_session_id,
-                    progress,
-                );
-                Ok(())
-            })
-        } else if importer_id == MEDIAWIKI_IMPORTER_ID {
-            let progress_app = app.clone();
-            let progress_imports = imports.clone();
-            let progress_session_id = session_id.clone();
-            let progress_cancel = cancel.clone();
-            analyze_mediawiki_xml_with_progress(&source.path, limits, move |progress| {
-                if progress_cancel.load(Ordering::Relaxed) {
-                    return Err(CoreError::Conflict(
-                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
-                    ));
-                }
-                update_progress(
-                    &progress_app,
-                    &progress_imports,
-                    &progress_session_id,
-                    progress,
-                );
-                Ok(())
-            })
-        } else {
-            let progress_app = app.clone();
-            let progress_imports = imports.clone();
-            let progress_session_id = session_id.clone();
-            let progress_cancel = cancel.clone();
-            analyze_generic_documents_with_progress(&source.path, limits, move |progress| {
-                if progress_cancel.load(Ordering::Relaxed) {
-                    return Err(CoreError::Conflict(
-                        EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
-                    ));
-                }
-                update_progress(
-                    &progress_app,
-                    &progress_imports,
-                    &progress_session_id,
-                    progress,
-                );
-                Ok(())
-            })
-        };
-        if cancel.load(Ordering::Relaxed) {
-            finish_cancelled(&app, &imports, &session_id);
-            return;
-        }
-        let staged = match staged {
-            Ok(staged) => staged,
-            Err(error) if error.to_string() == EXTERNAL_IMPORT_ANALYSIS_CANCELLED => {
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            update_progress(
+                &app,
+                &imports,
+                &session_id,
+                ImportAnalysisProgress::default(),
+            );
+            let staged = if let Some(plugin_id) = plugin_id {
+                analyze_plugin_source(&plugins, &project_id, &plugin_id, &importer_id, &source)
+            } else if importer_id == OBSIDIAN_IMPORTER_ID {
+                let progress_app = app.clone();
+                let progress_imports = imports.clone();
+                let progress_session_id = session_id.clone();
+                let progress_cancel = cancel.clone();
+                analyze_obsidian_vault_with_progress(&source.path, limits, move |progress| {
+                    if progress_cancel.load(Ordering::Relaxed) {
+                        return Err(CoreError::Conflict(
+                            EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                        ));
+                    }
+                    update_progress(
+                        &progress_app,
+                        &progress_imports,
+                        &progress_session_id,
+                        progress,
+                    );
+                    Ok(())
+                })
+            } else if importer_id == MEDIAWIKI_IMPORTER_ID {
+                let progress_app = app.clone();
+                let progress_imports = imports.clone();
+                let progress_session_id = session_id.clone();
+                let progress_cancel = cancel.clone();
+                analyze_mediawiki_xml_with_progress(&source.path, limits, move |progress| {
+                    if progress_cancel.load(Ordering::Relaxed) {
+                        return Err(CoreError::Conflict(
+                            EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                        ));
+                    }
+                    update_progress(
+                        &progress_app,
+                        &progress_imports,
+                        &progress_session_id,
+                        progress,
+                    );
+                    Ok(())
+                })
+            } else {
+                let progress_app = app.clone();
+                let progress_imports = imports.clone();
+                let progress_session_id = session_id.clone();
+                let progress_cancel = cancel.clone();
+                analyze_generic_documents_with_progress(&source.path, limits, move |progress| {
+                    if progress_cancel.load(Ordering::Relaxed) {
+                        return Err(CoreError::Conflict(
+                            EXTERNAL_IMPORT_ANALYSIS_CANCELLED.into(),
+                        ));
+                    }
+                    update_progress(
+                        &progress_app,
+                        &progress_imports,
+                        &progress_session_id,
+                        progress,
+                    );
+                    Ok(())
+                })
+            };
+            if cancel.load(Ordering::Relaxed) {
                 finish_cancelled(&app, &imports, &session_id);
                 return;
             }
-            Err(error) => {
-                finish_failed(&app, &imports, &session_id, error.to_string());
+            let staged = match staged {
+                Ok(staged) => staged,
+                Err(error) if error.to_string() == EXTERNAL_IMPORT_ANALYSIS_CANCELLED => {
+                    finish_cancelled(&app, &imports, &session_id);
+                    return;
+                }
+                Err(error) => {
+                    finish_failed(&app, &imports, &session_id, error.to_string());
+                    return;
+                }
+            };
+            let result = match prepare_result(&project_id, &session_id, staged) {
+                Ok(result) => result,
+                Err(error) => {
+                    finish_failed(&app, &imports, &session_id, error);
+                    return;
+                }
+            };
+            if cancel.load(Ordering::Relaxed) {
+                let _ = result.cleanup();
+                finish_cancelled(&app, &imports, &session_id);
                 return;
             }
-        };
-        let result = match prepare_result(&project_id, &session_id, staged) {
-            Ok(result) => result,
-            Err(error) => {
-                finish_failed(&app, &imports, &session_id, error);
+            let mut manager = if let Ok(manager) = imports.lock() {
+                manager
+            } else {
+                let _ = result.cleanup();
+                return;
+            };
+            let Some(job) = manager.jobs.get_mut(&session_id) else {
+                let _ = result.cleanup();
+                return;
+            };
+            if job.cancel.load(Ordering::Relaxed) {
+                let _ = result.cleanup();
                 return;
             }
-        };
-        if cancel.load(Ordering::Relaxed) {
-            let _ = result.cleanup();
-            finish_cancelled(&app, &imports, &session_id);
-            return;
+            job.status.state = "ready".into();
+            job.status.stage = "ready".into();
+            job.status.sequence = job.status.sequence.saturating_add(1);
+            job.status.current_source_path = None;
+            job.status.result = Some(result.metadata().clone());
+            job.expires_at = Instant::now() + ANALYSIS_SESSION_TTL;
+            job.result = Some(result);
+            let status = job.status.clone();
+            drop(manager);
+            let _ = app.emit(EXTERNAL_IMPORT_PROGRESS_EVENT, status);
+        }));
+        if panic_result.is_err() {
+            finish_failed(
+                &app_for_panic,
+                &imports_for_panic,
+                &session_id_for_panic,
+                "worker panicked during external import analysis".to_string(),
+            );
         }
-        let mut manager = if let Ok(manager) = imports.lock() {
-            manager
-        } else {
-            let _ = result.cleanup();
-            return;
-        };
-        let Some(job) = manager.jobs.get_mut(&session_id) else {
-            let _ = result.cleanup();
-            return;
-        };
-        if job.cancel.load(Ordering::Relaxed) {
-            let _ = result.cleanup();
-            return;
-        }
-        job.status.state = "ready".into();
-        job.status.stage = "ready".into();
-        job.status.sequence = job.status.sequence.saturating_add(1);
-        job.status.current_source_path = None;
-        job.status.result = Some(result.metadata().clone());
-        job.expires_at = Instant::now() + ANALYSIS_SESSION_TTL;
-        job.result = Some(result);
-        let status = job.status.clone();
-        drop(manager);
-        let _ = app.emit(EXTERNAL_IMPORT_PROGRESS_EVENT, status);
     });
 }
 

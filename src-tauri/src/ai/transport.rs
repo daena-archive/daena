@@ -230,10 +230,12 @@ pub(super) fn drain_remote_sse_lines(
     while let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
         let line = bytes.drain(..=newline).collect::<Vec<_>>();
         let line = String::from_utf8_lossy(&line);
-        let line = line.trim();
         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
             continue;
         };
+        if data.is_empty() {
+            continue;
+        }
         if data == "[DONE]" {
             done = true;
             break;

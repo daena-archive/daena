@@ -155,6 +155,7 @@ fn decode(bytes: &[u8]) -> Result<StaticDerivedPhysics, PhysicalError> {
     let evolution = decode_evolution(&mut reader)?;
     let hydrology = decode_hydrology(&mut reader)?;
     let curve_len = reader.u32()? as usize;
+    reader.check_remaining(curve_len, 12)?;
     let mut ocean_curve = Vec::with_capacity(curve_len);
     for _ in 0..curve_len {
         ocean_curve.push(OceanVolumeSample {
@@ -184,6 +185,16 @@ struct Reader<'a> {
 impl Reader<'_> {
     fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
+    }
+
+    fn check_remaining(&self, count: usize, element_size: usize) -> Result<(), PhysicalError> {
+        let needed = count
+            .checked_mul(element_size)
+            .ok_or_else(|| cache_error("physical derived cache length overflow"))?;
+        if self.remaining() < needed {
+            return Err(cache_error("physical derived cache truncated"));
+        }
+        Ok(())
     }
 
     fn read_exact(&mut self, dest: &mut [u8]) -> Result<(), PhysicalError> {
@@ -248,6 +259,7 @@ impl Reader<'_> {
 
     fn vec_i32(&mut self) -> Result<Vec<i32>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 4)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.i32()?);
@@ -257,6 +269,7 @@ impl Reader<'_> {
 
     fn vec_u32(&mut self) -> Result<Vec<u32>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 4)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.u32()?);
@@ -266,6 +279,7 @@ impl Reader<'_> {
 
     fn vec_u64(&mut self) -> Result<Vec<u64>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 8)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.u64()?);
@@ -275,6 +289,7 @@ impl Reader<'_> {
 
     fn vec_bool(&mut self) -> Result<Vec<bool>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 1)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.bool()?);
@@ -284,6 +299,7 @@ impl Reader<'_> {
 
     fn vec_usize(&mut self) -> Result<Vec<usize>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 4)?;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
             values.push(self.usize()?);
@@ -297,6 +313,7 @@ impl Reader<'_> {
 
     fn path(&mut self) -> Result<Vec<[i32; 2]>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 8)?;
         let mut path = Vec::with_capacity(len);
         for _ in 0..len {
             path.push(self.point()?);
@@ -306,6 +323,7 @@ impl Reader<'_> {
 
     fn paths(&mut self) -> Result<Vec<Vec<[i32; 2]>>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 4)?;
         let mut paths = Vec::with_capacity(len);
         for _ in 0..len {
             paths.push(self.path()?);
@@ -315,6 +333,7 @@ impl Reader<'_> {
 
     fn polygons(&mut self) -> Result<Vec<Vec<Vec<[i32; 2]>>>, PhysicalError> {
         let len = self.u32()? as usize;
+        self.check_remaining(len, 4)?;
         let mut polygons = Vec::with_capacity(len);
         for _ in 0..len {
             polygons.push(self.paths()?);

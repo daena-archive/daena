@@ -1022,6 +1022,9 @@ struct ServiceKey {
     major: u32,
 }
 
+pub const MAX_IN_FLIGHT_CALLS_PER_PROVIDER: usize = 16;
+pub const MAX_TOTAL_IN_FLIGHT_SERVICE_CALLS: usize = 64;
+
 #[derive(Clone)]
 pub struct ServiceRegistry {
     providers: BTreeMap<ServiceKey, ServiceProvider>,
@@ -1220,7 +1223,10 @@ impl ServiceRegistry {
                 break;
             }
             let timeout = deadline.saturating_duration_since(now);
-            let (next, result) = wake.wait_timeout(calls, timeout).unwrap();
+            let (next, result) = match wake.wait_timeout(calls, timeout) {
+                Ok(pair) => pair,
+                Err(_) => return false,
+            };
             calls = next;
             if result.timed_out() {
                 break;
@@ -1331,11 +1337,23 @@ impl ServiceRegistry {
         let worker_token = cancellation.clone();
         let provider_id = provider.plugin_id.clone();
         let call_id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.in_flight
+        let mut in_flight_guard = self
+            .in_flight
             .0
             .lock()
-            .map_err(|_| HostError("service lifecycle state unavailable".into()))?
-            .insert((provider_id.clone(), call_id), cancellation.clone());
+            .map_err(|_| HostError("service lifecycle state unavailable".into()))?;
+        if in_flight_guard.len() >= MAX_TOTAL_IN_FLIGHT_SERVICE_CALLS {
+            return Err(HostError("service host at capacity".into()));
+        }
+        let provider_in_flight = in_flight_guard
+            .keys()
+            .filter(|(owner, _)| owner == &provider_id)
+            .count();
+        if provider_in_flight >= MAX_IN_FLIGHT_CALLS_PER_PROVIDER {
+            return Err(HostError("service provider at capacity".into()));
+        }
+        in_flight_guard.insert((provider_id.clone(), call_id), cancellation.clone());
+        drop(in_flight_guard);
         let in_flight = Arc::clone(&self.in_flight);
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -1633,7 +1651,18 @@ pub struct PluginHost {
     legacy_grants: GrantStore,
     /// Open-project grant file paths keyed by project id (directory root).
     project_grant_paths: BTreeMap<String, PathBuf>,
-    ai_requests: BTreeMap<String, (String, String, String, String, Option<serde_json::Value>)>,
+    ai_requests: BTreeMap<
+        String,
+        (
+            String,
+            String,
+            String,
+            String,
+            Option<serde_json::Value>,
+            u64,
+        ),
+    >,
+    ai_request_seq: u64,
     rate_limits: Arc<Mutex<MethodRateLimiter>>,
     pub(crate) rate_limit_config: RateLimitConfig,
 }
@@ -1663,6 +1692,7 @@ impl PluginHost {
             legacy_grants: GrantStore::default(),
             project_grant_paths: BTreeMap::new(),
             ai_requests: BTreeMap::new(),
+            ai_request_seq: 0,
             rate_limits: Arc::new(Mutex::new(MethodRateLimiter::default())),
             rate_limit_config: RateLimitConfig::default(),
         }
@@ -2682,7 +2712,7 @@ impl PluginHost {
         Ok(self.events.drain(project_id, plugin_id, name, version))
     }
     pub fn call_service_authorized(
-        &mut self,
+        &self,
         consumer_id: &str,
         _project_id: &str,
         name: &str,
@@ -3083,10 +3113,16 @@ impl PluginHost {
         output_contract: Option<serde_json::Value>,
     ) {
         if self.ai_requests.len() >= 256 {
-            if let Some(oldest) = self.ai_requests.keys().next().cloned() {
+            if let Some(oldest) = self
+                .ai_requests
+                .iter()
+                .min_by_key(|(_, entry)| entry.5)
+                .map(|(id, _)| id.clone())
+            {
                 self.ai_requests.remove(&oldest);
             }
         }
+        self.ai_request_seq = self.ai_request_seq.wrapping_add(1);
         self.ai_requests.insert(
             request_id.to_string(),
             (
@@ -3095,6 +3131,7 @@ impl PluginHost {
                 session_id.to_string(),
                 operation.to_string(),
                 output_contract,
+                self.ai_request_seq,
             ),
         );
     }
@@ -3106,7 +3143,7 @@ impl PluginHost {
         plugin_id: &str,
         session_id: &str,
     ) -> Result<String, HostError> {
-        let Some((bound_project, bound_plugin, bound_session, operation, _contract)) =
+        let Some((bound_project, bound_plugin, bound_session, operation, _contract, _seq)) =
             self.ai_requests.get(request_id)
         else {
             return Err(HostError("AI request does not exist".into()));

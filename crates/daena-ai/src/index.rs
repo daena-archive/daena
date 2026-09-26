@@ -15,7 +15,7 @@ use std::path::Path;
 
 pub const CHUNKER_VERSION: &str = "markdown.blocks.v1";
 pub const EMBEDDING_SERIALIZER_VERSION: &str = "embedding.normalized.v1";
-const INDEX_SCHEMA_VERSION: u32 = 1;
+const INDEX_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkSource {
@@ -389,12 +389,13 @@ impl AiIndex {
                  text TEXT NOT NULL,
                  byte_start INTEGER NOT NULL,
                  byte_end INTEGER NOT NULL,
-                 text_hash TEXT NOT NULL,
-                 vector TEXT NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS ai_chunks_source_id ON ai_chunks(source_id);
-             CREATE INDEX IF NOT EXISTS ai_chunks_text_hash ON ai_chunks(text_hash);",
+                  text_hash TEXT NOT NULL,
+                  vector BLOB NOT NULL
+              );
+              CREATE INDEX IF NOT EXISTS ai_chunks_source_id ON ai_chunks(source_id);
+              CREATE INDEX IF NOT EXISTS ai_chunks_text_hash ON ai_chunks(text_hash);",
         )?;
+        ensure_vector_blobs(&connection)?;
         connection.pragma_update(None, "user_version", INDEX_SCHEMA_VERSION)?;
         let index = Self { connection };
         if index.metadata_value("state")?.is_none() {
@@ -437,7 +438,7 @@ impl AiIndex {
         let compatible = self.embedding_metadata()?.as_ref() == Some(metadata);
         if !compatible {
             self.connection
-                .execute("UPDATE ai_chunks SET vector='[]'", [])?;
+                .execute("UPDATE ai_chunks SET vector=?1", params![Vec::<u8>::new()])?;
             self.set_state(IndexState::Incompatible)?;
             self.set_metadata(
                 "embedding_metadata",
@@ -452,34 +453,75 @@ impl AiIndex {
         let mut statement = self.connection.prepare(
             "SELECT chunk_id,source_id,source_kind,revision,source_hash,ordinal,
                     heading_ancestry,text,byte_start,byte_end,text_hash,vector
-             FROM ai_chunks WHERE vector <> '[]' ORDER BY ordinal,chunk_id",
+             FROM ai_chunks WHERE length(vector) > 0 ORDER BY ordinal,chunk_id",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok(VectorRecord {
-                chunk: TextChunk {
-                    id: row.get(0)?,
-                    source: ChunkSource {
-                        source_id: row.get(1)?,
-                        source_kind: row.get(2)?,
-                        revision: row.get(3)?,
-                        source_hash: row.get(4)?,
-                    },
-                    ordinal: row.get(5)?,
-                    heading_ancestry: parse_json(row.get(6)?)?,
-                    text: row.get(7)?,
-                    byte_start: row.get(8)?,
-                    byte_end: row.get(9)?,
-                    text_hash: row.get(10)?,
-                },
-                vector: parse_json(row.get(11)?)?,
-            })
-        })?;
+        let mut records = Vec::new();
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(11)?;
+            records.push(VectorRecord {
+                chunk: text_chunk_from_row(row)?,
+                vector: decode_vector(&bytes)?,
+            });
+        }
+        Ok(records)
+    }
+
+    pub fn chunks_for_ids(&self, chunk_ids: &[String]) -> Result<Vec<TextChunk>, IndexError> {
+        if chunk_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT chunk_id,source_id,source_kind,revision,source_hash,ordinal,
+                    heading_ancestry,text,byte_start,byte_end,text_hash
+             FROM ai_chunks WHERE chunk_id=?1",
+        )?;
+        let mut chunks = Vec::with_capacity(chunk_ids.len());
+        for chunk_id in chunk_ids {
+            if let Some(chunk) = statement
+                .query_row(params![chunk_id], text_chunk_from_row)
+                .optional()?
+            {
+                chunks.push(chunk);
+            }
+        }
+        Ok(chunks)
+    }
+
+    pub fn chunk_texts(&self) -> Result<Vec<(String, String)>, IndexError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT chunk_id, text FROM ai_chunks ORDER BY ordinal, chunk_id")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(IndexError::from)
     }
 
     pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<VectorMatch>, IndexError> {
-        Ok(exact_cosine_search(&self.records()?, query, limit))
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut statement = self
+            .connection
+            .prepare("SELECT chunk_id, vector FROM ai_chunks WHERE length(vector) > 0")?;
+        let mut matches = Vec::new();
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let chunk_id: String = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            let vector = decode_vector(&bytes)?;
+            if let Some(cosine) = cosine_similarity(&vector, query) {
+                matches.push(VectorMatch { chunk_id, cosine });
+            }
+        }
+        matches.sort_by(|left, right| {
+            right
+                .cosine
+                .total_cmp(&left.cosine)
+                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+        });
+        matches.truncate(limit);
+        Ok(matches)
     }
 
     /// Index one source atomically. Cancellation or an embedding failure
@@ -605,8 +647,7 @@ impl AiIndex {
                     chunk.byte_start,
                     chunk.byte_end,
                     chunk.text_hash,
-                    serde_json::to_string(&vector)
-                        .map_err(|error| IndexError::Serialization(error.to_string()))?,
+                    encode_vector(&vector),
                 ],
             )?;
         }
@@ -619,23 +660,63 @@ impl AiIndex {
         })
     }
 
+    pub fn delete_source(&mut self, source_id: &str) -> Result<usize, IndexError> {
+        let deleted = self.connection.execute(
+            "DELETE FROM ai_chunks WHERE source_id=?1",
+            params![source_id],
+        )?;
+        Ok(deleted)
+    }
+
+    pub fn prune_missing_sources(
+        &mut self,
+        live_source_ids: &[String],
+    ) -> Result<usize, IndexError> {
+        let live_set: std::collections::BTreeSet<&str> =
+            live_source_ids.iter().map(|s| s.as_str()).collect();
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT source_id FROM ai_chunks")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut to_delete = Vec::new();
+        for row in rows {
+            let source_id = row?;
+            if !live_set.contains(source_id.as_str()) {
+                to_delete.push(source_id);
+            }
+        }
+        drop(statement);
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut total_deleted = 0;
+        for source_id in to_delete {
+            total_deleted += transaction.execute(
+                "DELETE FROM ai_chunks WHERE source_id=?1",
+                params![source_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(total_deleted)
+    }
+
     fn cached_vector(
         &self,
         text_hash: &str,
         metadata: &EmbeddingMetadata,
     ) -> Result<Option<Vec<f32>>, IndexError> {
-        let value: Option<String> = self
+        let value: Option<Vec<u8>> = self
             .connection
             .query_row(
-                "SELECT vector FROM ai_chunks WHERE text_hash=?1 AND vector <> '[]' LIMIT 1",
+                "SELECT vector FROM ai_chunks WHERE text_hash=?1 AND length(vector) > 0 LIMIT 1",
                 params![text_hash],
                 |row| row.get(0),
             )
             .optional()?;
         value
             .map(|value| {
-                let vector: Vec<f32> = serde_json::from_str(&value)
-                    .map_err(|error| IndexError::Serialization(error.to_string()))?;
+                let vector = decode_vector(&value)?;
                 validate_embedding(&vector, metadata)?;
                 Ok(vector)
             })
@@ -661,6 +742,124 @@ impl AiIndex {
         )?;
         Ok(())
     }
+}
+
+fn text_chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TextChunk> {
+    Ok(TextChunk {
+        id: row.get(0)?,
+        source: ChunkSource {
+            source_id: row.get(1)?,
+            source_kind: row.get(2)?,
+            revision: row.get(3)?,
+            source_hash: row.get(4)?,
+        },
+        ordinal: row.get(5)?,
+        heading_ancestry: parse_json(row.get(6)?)?,
+        text: row.get(7)?,
+        byte_start: row.get(8)?,
+        byte_end: row.get(9)?,
+        text_hash: row.get(10)?,
+    })
+}
+
+fn encode_vector(vector: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>, IndexError> {
+    if bytes.len() % 4 != 0 {
+        return Err(IndexError::Serialization(
+            "embedding blob length is not a multiple of 4".into(),
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn ensure_vector_blobs(connection: &Connection) -> Result<(), IndexError> {
+    let declared: Option<String> = connection
+        .query_row(
+            "SELECT type FROM pragma_table_info('ai_chunks') WHERE name='vector'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if declared
+        .as_deref()
+        .map(|column_type| column_type.eq_ignore_ascii_case("BLOB"))
+        .unwrap_or(true)
+    {
+        return Ok(());
+    }
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE ai_chunks_v2 (
+             chunk_id TEXT PRIMARY KEY NOT NULL,
+             source_id TEXT NOT NULL,
+             source_kind TEXT NOT NULL,
+             revision TEXT NOT NULL,
+             source_hash TEXT NOT NULL,
+             ordinal INTEGER NOT NULL,
+             heading_ancestry TEXT NOT NULL,
+             text TEXT NOT NULL,
+             byte_start INTEGER NOT NULL,
+             byte_end INTEGER NOT NULL,
+             text_hash TEXT NOT NULL,
+             vector BLOB NOT NULL
+         );",
+    )?;
+    {
+        let mut select = transaction.prepare(
+            "SELECT chunk_id,source_id,source_kind,revision,source_hash,ordinal,
+                    heading_ancestry,text,byte_start,byte_end,text_hash,vector
+             FROM ai_chunks",
+        )?;
+        let mut insert = transaction.prepare(
+            "INSERT INTO ai_chunks_v2
+             (chunk_id,source_id,source_kind,revision,source_hash,ordinal,
+              heading_ancestry,text,byte_start,byte_end,text_hash,vector)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        )?;
+        let mut rows = select.query([])?;
+        while let Some(row) = rows.next()? {
+            let vector_text: String = row.get(11)?;
+            let vector = if vector_text.is_empty() || vector_text == "[]" {
+                Vec::new()
+            } else {
+                let parsed: Vec<f32> = serde_json::from_str(&vector_text)
+                    .map_err(|error| IndexError::Serialization(error.to_string()))?;
+                encode_vector(&parsed)
+            };
+            insert.execute(params![
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, String>(10)?,
+                vector,
+            ])?;
+        }
+    }
+    transaction.execute_batch(
+        "DROP TABLE ai_chunks;
+         ALTER TABLE ai_chunks_v2 RENAME TO ai_chunks;
+         CREATE INDEX IF NOT EXISTS ai_chunks_source_id ON ai_chunks(source_id);
+         CREATE INDEX IF NOT EXISTS ai_chunks_text_hash ON ai_chunks(text_hash);",
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn parse_json<T: DeserializeOwned>(value: String) -> rusqlite::Result<T> {
@@ -1065,5 +1264,101 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM ai_chunks", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn delete_source_and_prune_missing_sources_remove_chunks() {
+        let mut index = AiIndex::in_memory().unwrap();
+        let provider = FakeEmbeddingProvider {
+            calls: std::cell::Cell::new(0),
+        };
+        let mut s1 = source();
+        s1.source_id = "doc1".into();
+        let mut s2 = source();
+        s2.source_id = "doc2".into();
+        let mut s3 = source();
+        s3.source_id = "doc3".into();
+
+        index
+            .index_source(
+                &chunk_markdown(s1, "text one", 100),
+                &embedding_metadata(),
+                &provider,
+                || false,
+            )
+            .unwrap();
+        index
+            .index_source(
+                &chunk_markdown(s2, "text two", 100),
+                &embedding_metadata(),
+                &provider,
+                || false,
+            )
+            .unwrap();
+        index
+            .index_source(
+                &chunk_markdown(s3, "text three", 100),
+                &embedding_metadata(),
+                &provider,
+                || false,
+            )
+            .unwrap();
+
+        assert_eq!(index.records().unwrap().len(), 3);
+
+        let deleted = index.delete_source("doc1").unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(index.records().unwrap().len(), 2);
+
+        let pruned = index.prune_missing_sources(&["doc3".to_string()]).unwrap();
+        assert_eq!(pruned, 1);
+        let remaining = index.records().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].chunk.source.source_id, "doc3");
+    }
+
+    #[test]
+    fn search_scores_blob_vectors_and_migrates_json_text() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE ai_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+                 CREATE TABLE ai_chunks (
+                     chunk_id TEXT PRIMARY KEY NOT NULL,
+                     source_id TEXT NOT NULL,
+                     source_kind TEXT NOT NULL,
+                     revision TEXT NOT NULL,
+                     source_hash TEXT NOT NULL,
+                     ordinal INTEGER NOT NULL,
+                     heading_ancestry TEXT NOT NULL,
+                     text TEXT NOT NULL,
+                     byte_start INTEGER NOT NULL,
+                     byte_end INTEGER NOT NULL,
+                     text_hash TEXT NOT NULL,
+                     vector TEXT NOT NULL
+                 );
+                 INSERT INTO ai_chunks VALUES
+                     ('keep','src','document','1','hash',0,'[]','kept text',0,9,'h1','[1.0,0.0]'),
+                     ('drop','src','document','1','hash',1,'[]','other text',10,20,'h2','[0.0,1.0]');",
+            )
+            .unwrap();
+        let index = AiIndex::from_connection(connection).unwrap();
+        let column_type: String = index
+            .connection
+            .query_row(
+                "SELECT type FROM pragma_table_info('ai_chunks') WHERE name='vector'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(column_type.eq_ignore_ascii_case("BLOB"));
+        let matches = index.search(&[1.0, 0.0], 1).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].chunk_id, "keep");
+        let loaded = index
+            .chunks_for_ids(&[matches[0].chunk_id.clone()])
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text, "kept text");
     }
 }

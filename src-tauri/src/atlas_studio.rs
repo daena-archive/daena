@@ -655,9 +655,16 @@ fn serve_studio_tile(
             "atlas studio prefetch deferred",
         ));
     }
+    struct WaitingTileGuard;
+    impl Drop for WaitingTileGuard {
+        fn drop(&mut self) {
+            WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
     let waiting = WAITING_TILES.fetch_add(1, Ordering::SeqCst) + 1;
+    let waiting_guard = WaitingTileGuard;
     if waiting > MAX_WAITING_TILES || (parsed.prefetch && waiting > MAX_PREFETCH_WAITING) {
-        WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
         return Err(AtlasError::new(
             CODE_STUDIO_RESOURCE_LIMIT,
             "atlas studio tile queue is full",
@@ -670,7 +677,7 @@ fn serve_studio_tile(
         manager.tile_gate.clone()
     };
     let permit = tile_gate.acquire(parsed.prefetch);
-    WAITING_TILES.fetch_sub(1, Ordering::SeqCst);
+    drop(waiting_guard);
     let _permit = permit?;
     let current_project = current_info(core)
         .ok()

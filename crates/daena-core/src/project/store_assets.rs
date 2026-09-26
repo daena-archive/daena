@@ -584,6 +584,16 @@ impl ProjectStore {
             &[format!("entities/{}/", asset.entity_id), asset.path.clone()],
             &input_fingerprint,
         )?;
+        let is_referenced: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM entity_fields WHERE json_extract(value, '$.sourceAssetId') = ?1 OR json_extract(value, '$.authoredSourceAssetId') = ?1)",
+            params![asset_id],
+            |row| row.get(0),
+        )?;
+        if is_referenced {
+            return Err(CoreError::Validation(
+                "cannot delete an asset currently referenced as a map source".into(),
+            ));
+        }
         let deleted = transaction.execute("DELETE FROM assets WHERE id=?1", params![asset_id])?;
         if deleted == 0 {
             return Err(CoreError::NotFound("asset not found".into()));

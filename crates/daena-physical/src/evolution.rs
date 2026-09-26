@@ -502,14 +502,7 @@ fn tangent_offset_metres(grid: Grid, origin: usize, neighbor: usize) -> Option<(
 }
 
 fn wrapped_delta(from: f64, to: f64) -> f64 {
-    let mut delta = to - from;
-    while delta <= -std::f64::consts::PI {
-        delta += std::f64::consts::TAU;
-    }
-    while delta > std::f64::consts::PI {
-        delta -= std::f64::consts::TAU;
-    }
-    delta
+    crate::wrap_radians(to - from)
 }
 
 fn facet_split(

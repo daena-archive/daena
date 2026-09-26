@@ -180,12 +180,8 @@ pub(super) fn write_location_projection(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
     let bounds = match kind {
-        "point" => bounds_for_points(anchor.get("point").and_then(serde_json::Value::as_array)),
-        "provider-feature" => bounds_for_points(
-            anchor
-                .get("fallbackPoint")
-                .and_then(serde_json::Value::as_array),
-        ),
+        "point" => bounds_for_single_point(anchor.get("point")),
+        "provider-feature" => bounds_for_single_point(anchor.get("fallbackPoint")),
         "path" => bounds_for_points(anchor.get("points").and_then(serde_json::Value::as_array)),
         "area" => anchor
             .get("rings")
@@ -227,6 +223,24 @@ pub(super) fn write_location_projection(
         ],
     )?;
     Ok(())
+}
+
+pub(super) fn bounds_for_single_point(
+    point: Option<&serde_json::Value>,
+) -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
+    let arr = match point.and_then(serde_json::Value::as_array) {
+        Some(arr) => arr,
+        None => return (None, None, None, None),
+    };
+    let x = match arr.first().and_then(serde_json::Value::as_f64) {
+        Some(x) => x,
+        None => return (None, None, None, None),
+    };
+    let y = match arr.get(1).and_then(serde_json::Value::as_f64) {
+        Some(y) => y,
+        None => return (None, None, None, None),
+    };
+    (Some(x), Some(y), Some(x), Some(y))
 }
 
 pub(super) fn bounds_for_points(

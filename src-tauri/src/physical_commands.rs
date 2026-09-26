@@ -84,36 +84,50 @@ pub(super) async fn project_physical_generate(
         );
     let jobs_for_worker = jobs.inner().clone();
     let worker_job_id = job_id.clone();
+    let radius_metres = input.settings.planetary.radius_metres;
     tauri::async_runtime::spawn_blocking(move || {
-        let mut progress = PhysicalProgress {
-            jobs: jobs_for_worker.clone(),
-            job_id: worker_job_id.clone(),
-            cancel: cancel.clone(),
-        };
-        let radius_metres = input.settings.planetary.radius_metres;
-        let settings = daena_physical::GenerationSettings {
-            width: input.settings.width,
-            height: input.settings.height,
-            radius_metres,
-            target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
-        };
-        let outcome = daena_physical::generate_world_with_evolution(
-            settings,
-            input.seed,
-            input.retry_index,
-            daena_physical::evolution::EvolutionSettings {
-                preset: evolution_preset,
-            },
-            input.settings.planetary,
-            tectonic_style,
-            &mut progress,
-        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut progress = PhysicalProgress {
+                jobs: jobs_for_worker.clone(),
+                job_id: worker_job_id.clone(),
+                cancel: cancel.clone(),
+            };
+            let settings = daena_physical::GenerationSettings {
+                width: input.settings.width,
+                height: input.settings.height,
+                radius_metres,
+                target_land_fraction_ppm: input.settings.target_land_fraction_ppm,
+            };
+            daena_physical::generate_world_with_evolution(
+                settings,
+                input.seed,
+                input.retry_index,
+                daena_physical::evolution::EvolutionSettings {
+                    preset: evolution_preset,
+                },
+                input.settings.planetary,
+                tectonic_style,
+                &mut progress,
+            )
+        }));
         let mut manager = match jobs_for_worker.lock() {
             Ok(manager) => manager,
             Err(_) => return,
         };
         let Some(job) = manager.jobs.get_mut(&worker_job_id) else {
             return;
+        };
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                job.status.state = "failed".into();
+                job.status.stage = daena_physical::ProgressPhase::ValidatingWorld
+                    .label()
+                    .into();
+                job.status.error = Some("worker panicked during physical generation".into());
+                job.status.error_code = Some("WORKER_PANIC".into());
+                return;
+            }
         };
         match outcome {
             Ok(world) => {

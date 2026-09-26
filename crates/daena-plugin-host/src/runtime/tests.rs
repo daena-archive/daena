@@ -202,3 +202,23 @@ fn loaded_wasm_service_keeps_successful_instance_state_between_calls() {
     assert_eq!(runtime.invoke().unwrap(), 1);
     assert_eq!(runtime.invoke().unwrap(), 2);
 }
+
+#[test]
+fn trapped_wasm_service_instance_is_cleared_and_not_reused() {
+    let module = wat::parse_str(
+        r#"(module
+            (memory (export "memory") 1 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 0)
+            (func (export "handle_json") (param i32 i32) (result i64) unreachable)
+        )"#,
+    )
+    .unwrap();
+    let mut runtime = WasmRuntime::new(WasmLimits::default()).unwrap();
+    runtime.load(&module).unwrap();
+    let res = runtime.invoke_service(&serde_json::json!({"test": 1}));
+    assert!(res.is_err());
+    assert!(matches!(
+        runtime.invoke_service(&serde_json::json!({"test": 2})),
+        Err(WasmFailure::MissingEntryPoint)
+    ));
+}

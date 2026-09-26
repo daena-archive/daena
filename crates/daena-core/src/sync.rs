@@ -280,7 +280,7 @@ impl SyncExporter {
         mut self,
         _result: Option<&T>,
     ) -> Result<Vec<String>, CoreError> {
-        let mut applied = Vec::with_capacity(self.replacements.len());
+        // 1. Pre-flight validation: check all baselines and staged hashes before touching disk
         for replacement in self.replacements.values() {
             let target = normalized_project_path(&self.root, &replacement.target)?;
             if hash_file(&target)? != replacement.expected_old_hash {
@@ -289,52 +289,109 @@ impl SyncExporter {
                     replacement.target
                 )));
             }
-            match (&replacement.staged, replacement.new_hash.as_ref()) {
-                (Some(staged), Some(expected_hash)) => {
-                    if hash_file(staged)?.as_deref() != Some(expected_hash) {
-                        return Err(CoreError::Conflict(format!(
-                            "staged sync bytes changed for {}",
-                            replacement.target
-                        )));
-                    }
-                    if let Some(parent) = target.parent() {
-                        fs::create_dir_all(parent).map_err(|source| CoreError::Io {
-                            operation: "create portable target parent",
-                            source,
-                        })?;
-                    }
-                    replace_staged_file(staged, &target).map_err(|source| CoreError::Io {
-                        operation: "replace portable target",
-                        source,
-                    })?;
+            if let (Some(staged), Some(expected_hash)) =
+                (&replacement.staged, replacement.new_hash.as_ref())
+            {
+                if hash_file(staged)?.as_deref() != Some(expected_hash) {
+                    return Err(CoreError::Conflict(format!(
+                        "staged sync bytes changed for {}",
+                        replacement.target
+                    )));
                 }
-                (None, None) => {
-                    if target.exists() {
-                        fs::remove_file(&target).map_err(|source| CoreError::Io {
-                            operation: "remove portable target",
-                            source,
-                        })?;
-                    }
-                }
-                _ => unreachable!("sync replacement hash/staging mismatch"),
             }
-            if let Some(parent) = target.parent() {
-                sync_directory(parent)?;
-            }
-            if hash_file(&target)? != replacement.new_hash {
-                return Err(CoreError::Conflict(format!(
-                    "portable target verification failed for {}",
-                    replacement.target
-                )));
-            }
-            applied.push(replacement.target.clone());
         }
-        fs::remove_dir_all(&self.directory).map_err(|source| CoreError::Io {
-            operation: "clean sync staging directory",
+
+        let backup_dir = self.directory.join("backup");
+        fs::create_dir_all(&backup_dir).map_err(|source| CoreError::Io {
+            operation: "create sync rollback backup directory",
             source,
         })?;
-        self.lock.take();
-        Ok(applied)
+
+        struct JournalEntry {
+            target: PathBuf,
+            backup_file: Option<PathBuf>,
+        }
+
+        let mut journal: Vec<JournalEntry> = Vec::new();
+
+        let mut apply_batch = || -> Result<Vec<String>, CoreError> {
+            let mut applied = Vec::with_capacity(self.replacements.len());
+            for (idx, replacement) in self.replacements.values().enumerate() {
+                let target = normalized_project_path(&self.root, &replacement.target)?;
+
+                let backup_file = if target.exists() {
+                    let b = backup_dir.join(format!("backup_{idx}"));
+                    fs::copy(&target, &b).map_err(|source| CoreError::Io {
+                        operation: "backup portable target before replacement",
+                        source,
+                    })?;
+                    Some(b)
+                } else {
+                    None
+                };
+
+                journal.push(JournalEntry {
+                    target: target.clone(),
+                    backup_file,
+                });
+
+                match (&replacement.staged, replacement.new_hash.as_ref()) {
+                    (Some(staged), Some(_)) => {
+                        if let Some(parent) = target.parent() {
+                            fs::create_dir_all(parent).map_err(|source| CoreError::Io {
+                                operation: "create portable target parent",
+                                source,
+                            })?;
+                        }
+                        replace_staged_file(staged, &target).map_err(|source| CoreError::Io {
+                            operation: "replace portable target",
+                            source,
+                        })?;
+                    }
+                    (None, None) => {
+                        if target.exists() {
+                            fs::remove_file(&target).map_err(|source| CoreError::Io {
+                                operation: "remove portable target",
+                                source,
+                            })?;
+                        }
+                    }
+                    _ => unreachable!("sync replacement hash/staging mismatch"),
+                }
+                if let Some(parent) = target.parent() {
+                    sync_directory(parent)?;
+                }
+                if hash_file(&target)? != replacement.new_hash {
+                    return Err(CoreError::Conflict(format!(
+                        "portable target verification failed for {}",
+                        replacement.target
+                    )));
+                }
+                applied.push(replacement.target.clone());
+            }
+            Ok(applied)
+        };
+
+        match apply_batch() {
+            Ok(applied) => {
+                fs::remove_dir_all(&self.directory).map_err(|source| CoreError::Io {
+                    operation: "clean sync staging directory",
+                    source,
+                })?;
+                self.lock.take();
+                Ok(applied)
+            }
+            Err(apply_err) => {
+                for entry in journal.into_iter().rev() {
+                    if let Some(backup) = entry.backup_file {
+                        let _ = replace_staged_file(&backup, &entry.target);
+                    } else if entry.target.exists() {
+                        let _ = fs::remove_file(&entry.target);
+                    }
+                }
+                Err(apply_err)
+            }
+        }
     }
 }
 
@@ -447,12 +504,31 @@ fn lock_is_stale(path: &Path) -> bool {
             .and_then(|modified| SystemTime::now().duration_since(modified).ok())
             .is_some_and(|age| age >= Duration::from_secs(30));
     };
+    if pid <= 0 {
+        return fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_secs(30));
+    }
     if pid == std::process::id() as i32 {
         return false;
     }
     #[cfg(unix)]
     unsafe {
-        libc::kill(pid, 0) != 0
+        let ret = libc::kill(pid, 0);
+        if ret == 0 {
+            false
+        } else {
+            let err = std::io::Error::last_os_error().raw_os_error();
+            if err == Some(libc::EPERM) {
+                false
+            } else if err == Some(libc::ESRCH) {
+                true
+            } else {
+                false
+            }
+        }
     }
     #[cfg(not(unix))]
     {

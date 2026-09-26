@@ -1553,26 +1553,72 @@ fn derive_rivers(
             }
         }
     }
-    fn stream_order(cell: usize, parents_of: &[Vec<usize>], cache: &mut [u16]) -> u16 {
-        if cache[cell] > 0 {
-            return cache[cell];
+    fn stream_order(root: usize, parents_of: &[Vec<usize>], cache: &mut [u16]) -> u16 {
+        const IN_PROGRESS: u16 = u16::MAX;
+        const MAX_DEPTH: usize = 4096;
+
+        if cache[root] > 0 && cache[root] != IN_PROGRESS {
+            return cache[root];
         }
-        let parents = parents_of[cell]
-            .iter()
-            .map(|parent| stream_order(*parent, parents_of, cache))
-            .collect::<Vec<_>>();
-        let result = if parents.is_empty() {
-            1
-        } else {
-            let max = parents.iter().copied().max().unwrap_or(1);
-            if parents.iter().filter(|order| **order == max).count() > 1 {
-                max.saturating_add(1)
-            } else {
-                max
+
+        let mut stack = vec![(root, 0usize, 0usize)];
+        cache[root] = IN_PROGRESS;
+
+        while let Some(&(cell, next_parent_idx, depth)) = stack.last() {
+            if depth >= MAX_DEPTH {
+                cache[cell] = 1;
+                stack.pop();
+                continue;
             }
-        };
-        cache[cell] = result;
-        result
+
+            let parents = &parents_of[cell];
+            if next_parent_idx < parents.len() {
+                let parent = parents[next_parent_idx];
+                stack.last_mut().unwrap().1 += 1;
+
+                if cache[parent] == IN_PROGRESS {
+                    continue;
+                } else if cache[parent] == 0 {
+                    cache[parent] = IN_PROGRESS;
+                    stack.push((parent, 0, depth + 1));
+                }
+            } else {
+                let mut max = 1u16;
+                let mut count_max = 0usize;
+                let mut has_parents = false;
+
+                for &p in parents {
+                    let p_order = if cache[p] == IN_PROGRESS || cache[p] == 0 {
+                        1
+                    } else {
+                        cache[p]
+                    };
+                    has_parents = true;
+                    if p_order > max {
+                        max = p_order;
+                        count_max = 1;
+                    } else if p_order == max {
+                        count_max += 1;
+                    }
+                }
+
+                let result = if !has_parents {
+                    1
+                } else if count_max > 1 {
+                    max.saturating_add(1)
+                } else {
+                    max
+                };
+
+                cache[cell] = result;
+                stack.pop();
+            }
+        }
+
+        if cache[root] == IN_PROGRESS {
+            cache[root] = 1;
+        }
+        cache[root]
     }
     let mut segments = Vec::new();
     let mut coordinates = Vec::new();

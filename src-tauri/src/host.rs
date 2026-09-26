@@ -255,7 +255,8 @@ pub(super) fn dispatch_host_rpc(
         let name = payload
             .get("name")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "service RPC payload requires name".to_string())?;
+            .ok_or_else(|| "service RPC payload requires name".to_string())?
+            .to_string();
         let major = payload
             .get("major")
             .and_then(serde_json::Value::as_u64)
@@ -266,11 +267,12 @@ pub(super) fn dispatch_host_rpc(
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(5_000)
             .clamp(1, 30_000);
-        return host
-            .call_service_authorized(
+        let services = host.services.clone();
+        drop(host);
+        return services
+            .call(
                 plugin_id,
-                project_id,
-                name,
+                &name,
                 major,
                 payload
                     .get("payload")

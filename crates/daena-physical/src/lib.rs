@@ -340,16 +340,21 @@ impl Grid {
             + std::f64::consts::PI * (f64::from(row) + 0.5) / f64::from(self.height);
         (longitude, latitude)
     }
+}
 
+pub fn wrap_radians(delta: f64) -> f64 {
+    if !delta.is_finite() {
+        return 0.0;
+    }
+    let tau = std::f64::consts::TAU;
+    let pi = std::f64::consts::PI;
+    (delta + pi).rem_euclid(tau) - pi
+}
+
+impl Grid {
     /// Great-circle distance using wrapped longitude and haversine arithmetic.
     pub fn great_circle_distance(self, first: (f64, f64), second: (f64, f64)) -> f64 {
-        let mut delta_lon = second.0 - first.0;
-        while delta_lon > std::f64::consts::PI {
-            delta_lon -= std::f64::consts::TAU;
-        }
-        while delta_lon < -std::f64::consts::PI {
-            delta_lon += std::f64::consts::TAU;
-        }
+        let delta_lon = wrap_radians(second.0 - first.0);
         let delta_lat = second.1 - first.1;
         let haversine = (delta_lat / 2.0).sin().powi(2)
             + first.1.cos() * second.1.cos() * (delta_lon / 2.0).sin().powi(2);

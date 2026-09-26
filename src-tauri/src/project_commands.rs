@@ -1263,7 +1263,12 @@ pub(super) async fn project_backup(
     })
     .await?;
     let backup_path_buf = PathBuf::from(&backup_path);
-    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+    let app_handle = app.clone();
+    let folder =
+        tokio::task::spawn_blocking(move || app_handle.dialog().file().blocking_pick_folder())
+            .await
+            .map_err(|error| error.to_string())?;
+    if let Some(folder) = folder {
         let folder_path = folder.into_path().map_err(|error| error.to_string())?;
         if let Some(file_name) = backup_path_buf.file_name() {
             let dest = folder_path.join(file_name);
@@ -1325,7 +1330,12 @@ pub(super) async fn project_recovery_backup(
     })
     .await?;
     let backup_path_buf = PathBuf::from(&backup_path);
-    if let Some(folder) = app.dialog().file().blocking_pick_folder() {
+    let app_handle = app.clone();
+    let folder =
+        tokio::task::spawn_blocking(move || app_handle.dialog().file().blocking_pick_folder())
+            .await
+            .map_err(|error| error.to_string())?;
+    if let Some(folder) = folder {
         let folder_path = folder.into_path().map_err(|error| error.to_string())?;
         if let Some(file_name) = backup_path_buf.file_name() {
             let dest = folder_path.join(file_name);

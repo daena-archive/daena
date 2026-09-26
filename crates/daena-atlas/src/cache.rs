@@ -393,7 +393,13 @@ pub fn decode_residual(bytes: &[u8]) -> Result<(u32, u32, Vec<i32>), AtlasError>
     let expected = (lattice_width as usize)
         .checked_mul(lattice_height as usize)
         .ok_or_else(|| AtlasError::limit("residual lattice overflowed"))?;
-    if count != expected || bytes.len() != 12 + count * 4 {
+    let count_bytes = count
+        .checked_mul(4)
+        .ok_or_else(|| AtlasError::limit("residual lattice overflowed"))?;
+    let needed = 12usize
+        .checked_add(count_bytes)
+        .ok_or_else(|| AtlasError::limit("residual lattice overflowed"))?;
+    if count != expected || bytes.len() != needed {
         return Err(AtlasError::invalid("residual cache length mismatch"));
     }
     let mut residual = Vec::with_capacity(count);
@@ -422,22 +428,31 @@ pub fn encode_artifact(png: &[u8], artifact: &[u8], provenance_json: &str) -> Ve
 pub fn decode_artifact(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>, String), AtlasError> {
     let mut offset = 0;
     let provenance_len = read_u32(bytes, &mut offset)? as usize;
-    let provenance = bytes
-        .get(offset..offset + provenance_len)
+    let end = offset
+        .checked_add(provenance_len)
         .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
-    offset += provenance_len;
+    let provenance = bytes
+        .get(offset..end)
+        .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
+    offset = end;
     let png_len = read_u32(bytes, &mut offset)? as usize;
+    let end = offset
+        .checked_add(png_len)
+        .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
     let png = bytes
-        .get(offset..offset + png_len)
+        .get(offset..end)
         .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?
         .to_vec();
-    offset += png_len;
+    offset = end;
     let artifact_len = read_u32(bytes, &mut offset)? as usize;
+    let end = offset
+        .checked_add(artifact_len)
+        .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
     let artifact = bytes
-        .get(offset..offset + artifact_len)
+        .get(offset..end)
         .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?
         .to_vec();
-    offset += artifact_len;
+    offset = end;
     if offset != bytes.len() {
         return Err(AtlasError::invalid("artifact cache has trailing bytes"));
     }
@@ -447,10 +462,13 @@ pub fn decode_artifact(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>, String), Atlas
 }
 
 fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32, AtlasError> {
-    let slice = bytes
-        .get(*offset..*offset + 4)
+    let end = offset
+        .checked_add(4)
         .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
-    *offset += 4;
+    let slice = bytes
+        .get(*offset..end)
+        .ok_or_else(|| AtlasError::invalid("artifact cache is truncated"))?;
+    *offset = end;
     Ok(u32::from_le_bytes(slice.try_into().expect("u32")))
 }
 

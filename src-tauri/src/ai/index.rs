@@ -197,32 +197,41 @@ pub async fn ai_index_search(
             .map_err(|error| error.to_string())?
             .pop()
             .ok_or_else(|| "embedding provider returned no query vector".to_string())?;
-        let records = index.records().map_err(|error| error.to_string())?;
-        let semantic = daena_ai::index::exact_cosine_search(&records, &query_vector, limit);
+        let semantic = index
+            .search(&query_vector, limit)
+            .map_err(|error| error.to_string())?;
+        let texts = index.chunk_texts().map_err(|error| error.to_string())?;
         let terms = query
             .split_whitespace()
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
-        let lexical = records
+        let lexical = texts
             .iter()
-            .filter(|record| {
-                let text = record.chunk.text.to_lowercase();
+            .filter(|(_, text)| {
+                let text = text.to_lowercase();
                 terms.iter().all(|term| text.contains(term))
             })
             .enumerate()
-            .map(|(rank, record)| (record.chunk.id.clone(), rank))
+            .map(|(rank, (chunk_id, _))| (chunk_id.clone(), rank))
             .collect::<Vec<_>>();
         let fused = daena_ai::index::reciprocal_rank_fusion(&lexical, &semantic, limit);
+        let chunk_ids = fused
+            .iter()
+            .map(|(chunk_id, _)| chunk_id.clone())
+            .collect::<Vec<_>>();
+        let chunks = index
+            .chunks_for_ids(&chunk_ids)
+            .map_err(|error| error.to_string())?;
         Ok(fused
             .into_iter()
             .filter_map(|(chunk_id, score)| {
-                records
+                chunks
                     .iter()
-                    .find(|record| record.chunk.id == chunk_id)
-                    .map(|record| AiHybridMatch {
+                    .find(|chunk| chunk.id == chunk_id)
+                    .map(|chunk| AiHybridMatch {
                         chunk_id,
-                        source_id: record.chunk.source.source_id.clone(),
-                        source_kind: record.chunk.source.source_kind.clone(),
+                        source_id: chunk.source.source_id.clone(),
+                        source_kind: chunk.source.source_kind.clone(),
                         score,
                     })
             })
@@ -393,7 +402,7 @@ pub async fn ai_index_rebuild(
     .await?;
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (index, cancel) = {
+        let (mut index, cancel) = {
             let mut runtime = runtime
                 .lock()
                 .map_err(|_| "AI runtime lock poisoned".to_string())?;
@@ -457,6 +466,10 @@ pub async fn ai_index_rebuild(
                     .map_err(|error| error.to_string())?
                     .unwrap_or(metadata);
             }
+            let live_source_ids: Vec<String> = sources.keys().cloned().collect();
+            index
+                .prune_missing_sources(&live_source_ids)
+                .map_err(|error| error.to_string())?;
             Ok(AiIndexRebuildResult {
                 chunk_count,
                 embedded_count,

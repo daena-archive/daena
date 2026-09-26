@@ -8523,3 +8523,62 @@ fn image_map_semantic_features_survive_checkpoint_rebuild_and_spatial_query() {
     drop(rebuilt);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn point_location_projection_and_spatial_query() {
+    let root = std::env::temp_dir().join(format!("daena-point-query-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let place = store
+        .create_entity(CreateEntity {
+            name: "Town".into(),
+            entity_type: Some("daena.lore:place".into()),
+        })
+        .unwrap();
+    let png = crate::maps::encode_transparent_png(8, 6).unwrap();
+    let imported = store
+        .import_image_map(
+            "Atlas".into(),
+            png,
+            "image/png".into(),
+            "atlas.png".into(),
+            None,
+        )
+        .unwrap();
+    let map_id = imported.entity.id.clone();
+    let point_loc_id = Uuid::new_v4().to_string();
+    store
+        .upsert_map_location(
+            place.id.clone(),
+            crate::maps::LocationReference {
+                id: point_loc_id.clone(),
+                map_entity_id: map_id.clone(),
+                role: "settlement".into(),
+                label: "Town Center".into(),
+                anchor: crate::maps::Anchor::Point {
+                    point: crate::maps::Point(0.5, 0.5),
+                },
+                validity: crate::maps::Validity {
+                    from: None,
+                    to: None,
+                },
+            },
+            None,
+        )
+        .unwrap();
+
+    let hits = store
+        .query_map_locations(map_id.clone(), 0.4, 0.4, 0.6, 0.6)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["id"], point_loc_id);
+    assert_eq!(hits[0]["anchor"]["kind"], "point");
+    assert_eq!(hits[0]["bounds"], serde_json::json!([0.5, 0.5, 0.5, 0.5]));
+
+    let miss = store
+        .query_map_locations(map_id, 0.6, 0.6, 0.8, 0.8)
+        .unwrap();
+    assert!(miss.is_empty());
+
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -449,12 +449,15 @@ pub fn derive_hazards(world: &TectonicWorld) -> Result<HazardField, PhysicalErro
                 .collect::<Vec<_>>();
             let mut rates = vec![0u64; cell_count];
             for handle in handles {
-                for (total, partial) in rates.iter_mut().zip(handle.join().unwrap()) {
+                let partial_rates = handle.join().map_err(|_| {
+                    PhysicalError::Validation("hazard worker thread panicked".into())
+                })?;
+                for (total, partial) in rates.iter_mut().zip(partial_rates) {
                     *total = total.saturating_add(partial);
                 }
             }
-            rates
-        })
+            Ok(rates)
+        })?
     };
     let mut volcanic_annual_rate_nano = vec![0u64; cell_count];
 

@@ -2797,3 +2797,71 @@ fn plugin_importer_grant_does_not_expose_siblings_or_foreign_providers() {
         )
         .is_err());
 }
+
+#[test]
+fn ai_request_eviction_drops_oldest_by_insertion_order() {
+    let mut host = PluginHost::new();
+    host.register_ai_request("z_first", "proj", "plug", "sess", "op1", None);
+    for i in 0..255 {
+        host.register_ai_request(&format!("a_{i:03}"), "proj", "plug", "sess", "op", None);
+    }
+    host.register_ai_request("b_new", "proj", "plug", "sess", "op_new", None);
+    assert!(host
+        .authorize_ai_request("z_first", "proj", "plug", "sess")
+        .is_err());
+    assert!(host
+        .authorize_ai_request("a_000", "proj", "plug", "sess")
+        .is_ok());
+    assert!(host
+        .authorize_ai_request("b_new", "proj", "plug", "sess")
+        .is_ok());
+}
+
+#[test]
+fn service_dispatch_enforces_in_flight_cap() {
+    let mut registry = ServiceRegistry::new(256 * 1024);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(
+        MAX_IN_FLIGHT_CALLS_PER_PROVIDER + 1,
+    ));
+    let barrier_clone = barrier.clone();
+    registry.register(
+        "com.provider",
+        "service.test",
+        1,
+        std::sync::Arc::new(move |_| {
+            barrier_clone.wait();
+            Ok(serde_json::json!({"ok": true}))
+        }),
+    );
+
+    let mut handles = Vec::new();
+    for _ in 0..MAX_IN_FLIGHT_CALLS_PER_PROVIDER {
+        let reg = registry.clone();
+        handles.push(std::thread::spawn(move || {
+            reg.call(
+                "consumer",
+                "service.test",
+                1,
+                serde_json::json!({}),
+                Duration::from_secs(5),
+            )
+        }));
+    }
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    let overflow_result = registry.call(
+        "consumer",
+        "service.test",
+        1,
+        serde_json::json!({}),
+        Duration::from_secs(5),
+    );
+    assert!(overflow_result.is_err());
+    assert!(overflow_result.unwrap_err().0.contains("capacity"));
+
+    barrier.wait();
+    for handle in handles {
+        assert!(handle.join().unwrap().is_ok());
+    }
+}

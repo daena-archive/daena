@@ -673,6 +673,9 @@ pub fn start_ai_request_mode(
                 let Some(line) = line.strip_prefix("data:").map(str::trim) else {
                     continue;
                 };
+                if line.is_empty() {
+                    continue;
+                }
                 if line == "[DONE]" {
                     emit(AiStreamEvent {
                         sequence: 0,

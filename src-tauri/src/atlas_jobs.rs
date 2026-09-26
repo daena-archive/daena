@@ -213,125 +213,147 @@ fn spawn_render(
     snapshot: AtlasRenderSnapshot,
     kind: &'static str,
 ) {
+    let jobs_for_panic = jobs.clone();
+    let job_id_for_panic = job_id.clone();
+    let app_for_panic = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (cancel, project_root) = {
-            let manager = match jobs.lock() {
-                Ok(manager) => manager,
-                Err(_) => return,
-            };
-            match manager.jobs.get(&job_id) {
-                Some(job) => (job.cancel.clone(), job.project_id.clone()),
-                None => return,
-            }
-        };
-        let mut progress = JobProgress {
-            jobs: jobs.clone(),
-            job_id: job_id.clone(),
-            app: app.clone(),
-            sequence: 0,
-        };
-        let cache = AtlasDiskCache::open(atlas_cache_dir(Path::new(&project_root))).ok();
-        let rendered = render_from_source_cached(
-            &snapshot.source_bytes,
-            snapshot.identity.as_bytes(),
-            &snapshot.request,
-            None,
-            Some(snapshot.forcing),
-            &snapshot.overlays,
-            cache.as_ref(),
-            &mut progress,
-        );
-        let dir = match atlas_dir(&app) {
-            Ok(dir) => dir,
-            Err(error) => {
-                if let Ok(mut manager) = jobs.lock() {
-                    if let Some(job) = manager.jobs.get_mut(&job_id) {
-                        fail_status(
-                            &mut job.status,
-                            daena_atlas::AtlasError::new(daena_atlas::CODE_RENDER_FAILED, error),
-                        );
-                    }
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (cancel, project_root) = {
+                let manager = match jobs.lock() {
+                    Ok(manager) => manager,
+                    Err(_) => return,
+                };
+                match manager.jobs.get(&job_id) {
+                    Some(job) => (job.cancel.clone(), job.project_id.clone()),
+                    None => return,
                 }
-                return;
-            }
-        };
-        let rendered = match rendered {
-            Ok(rendered) => rendered,
-            Err(error) => {
+            };
+            let mut progress = JobProgress {
+                jobs: jobs.clone(),
+                job_id: job_id.clone(),
+                app: app.clone(),
+                sequence: 0,
+            };
+            let cache = AtlasDiskCache::open(atlas_cache_dir(Path::new(&project_root))).ok();
+            let rendered = render_from_source_cached(
+                &snapshot.source_bytes,
+                snapshot.identity.as_bytes(),
+                &snapshot.request,
+                None,
+                Some(snapshot.forcing),
+                &snapshot.overlays,
+                cache.as_ref(),
+                &mut progress,
+            );
+            let dir = match atlas_dir(&app) {
+                Ok(dir) => dir,
+                Err(error) => {
+                    if let Ok(mut manager) = jobs.lock() {
+                        if let Some(job) = manager.jobs.get_mut(&job_id) {
+                            fail_status(
+                                &mut job.status,
+                                daena_atlas::AtlasError::new(
+                                    daena_atlas::CODE_RENDER_FAILED,
+                                    error,
+                                ),
+                            );
+                        }
+                    }
+                    return;
+                }
+            };
+            let rendered = match rendered {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    if let Ok(mut manager) = jobs.lock() {
+                        if let Some(job) = manager.jobs.get_mut(&job_id) {
+                            fail_status(&mut job.status, error);
+                            let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+                        }
+                    }
+                    return;
+                }
+            };
+            let ext = if kind == "preview" {
+                "png"
+            } else {
+                rendered.request.format.as_str()
+            };
+            let bytes = if kind == "preview" {
+                &rendered.png
+            } else {
+                &rendered.artifact
+            };
+            let path = dir.join(format!("{job_id}.{ext}"));
+            if cancel.is_cancelled() {
                 if let Ok(mut manager) = jobs.lock() {
                     if let Some(job) = manager.jobs.get_mut(&job_id) {
-                        fail_status(&mut job.status, error);
+                        fail_status(&mut job.status, daena_atlas::AtlasError::cancelled());
                         let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
                     }
                 }
                 return;
             }
-        };
-        let ext = if kind == "preview" {
-            "png"
-        } else {
-            rendered.request.format.as_str()
-        };
-        let bytes = if kind == "preview" {
-            &rendered.png
-        } else {
-            &rendered.artifact
-        };
-        let path = dir.join(format!("{job_id}.{ext}"));
-        if cancel.is_cancelled() {
-            if let Ok(mut manager) = jobs.lock() {
-                if let Some(job) = manager.jobs.get_mut(&job_id) {
-                    fail_status(&mut job.status, daena_atlas::AtlasError::cancelled());
-                    let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+            if let Err(error) = fs::write(&path, bytes) {
+                if let Ok(mut manager) = jobs.lock() {
+                    if let Some(job) = manager.jobs.get_mut(&job_id) {
+                        fail_status(
+                            &mut job.status,
+                            daena_atlas::AtlasError::new(
+                                daena_atlas::CODE_ENCODER_FAILED,
+                                error.to_string(),
+                            ),
+                        );
+                        let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+                    }
                 }
+                return;
             }
-            return;
-        }
-        if let Err(error) = fs::write(&path, bytes) {
-            if let Ok(mut manager) = jobs.lock() {
-                if let Some(job) = manager.jobs.get_mut(&job_id) {
+            if cancel.is_cancelled() {
+                let _ = remove_atlas_path(&path);
+                if let Ok(mut manager) = jobs.lock() {
+                    if let Some(job) = manager.jobs.get_mut(&job_id) {
+                        fail_status(&mut job.status, daena_atlas::AtlasError::cancelled());
+                        let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+                    }
+                }
+                return;
+            }
+            let mut manager = if let Ok(manager) = jobs.lock() {
+                manager
+            } else {
+                let _ = remove_atlas_path(&path);
+                return;
+            };
+            let Some(job) = manager.jobs.get_mut(&job_id) else {
+                let _ = remove_atlas_path(&path);
+                return;
+            };
+            job.artifact = Some(path.clone());
+            job.status.state = "ready-to-save".into();
+            job.status.stage = "ready-to-save".into();
+            job.status.preview_token = Some(path.to_string_lossy().into_owned());
+            job.status.width_px = rendered.request.width_px;
+            job.status.height_px = rendered.request.height_px;
+            job.status.captured_content_generation = Some(snapshot.content_generation);
+            job.status.provenance = serde_json::to_value(&rendered.provenance).ok();
+            let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+            let _ = kind;
+        }));
+        if panic_result.is_err() {
+            if let Ok(mut manager) = jobs_for_panic.lock() {
+                if let Some(job) = manager.jobs.get_mut(&job_id_for_panic) {
                     fail_status(
                         &mut job.status,
                         daena_atlas::AtlasError::new(
-                            daena_atlas::CODE_ENCODER_FAILED,
-                            error.to_string(),
+                            daena_atlas::CODE_RENDER_FAILED,
+                            "worker panicked during atlas render",
                         ),
                     );
-                    let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
+                    let _ = app_for_panic.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
                 }
             }
-            return;
         }
-        if cancel.is_cancelled() {
-            let _ = remove_atlas_path(&path);
-            if let Ok(mut manager) = jobs.lock() {
-                if let Some(job) = manager.jobs.get_mut(&job_id) {
-                    fail_status(&mut job.status, daena_atlas::AtlasError::cancelled());
-                    let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
-                }
-            }
-            return;
-        }
-        let mut manager = if let Ok(manager) = jobs.lock() {
-            manager
-        } else {
-            let _ = remove_atlas_path(&path);
-            return;
-        };
-        let Some(job) = manager.jobs.get_mut(&job_id) else {
-            let _ = remove_atlas_path(&path);
-            return;
-        };
-        job.artifact = Some(path.clone());
-        job.status.state = "ready-to-save".into();
-        job.status.stage = "ready-to-save".into();
-        job.status.preview_token = Some(path.to_string_lossy().into_owned());
-        job.status.width_px = rendered.request.width_px;
-        job.status.height_px = rendered.request.height_px;
-        job.status.captured_content_generation = Some(snapshot.content_generation);
-        job.status.provenance = serde_json::to_value(&rendered.provenance).ok();
-        let _ = app.emit(ATLAS_PROGRESS_EVENT, job.status.clone());
-        let _ = kind;
     });
 }
 

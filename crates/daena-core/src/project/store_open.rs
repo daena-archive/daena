@@ -573,18 +573,52 @@ impl ProjectStore {
         let old_connection = std::mem::replace(&mut self.connection, Connection::open_in_memory()?);
         drop(old_connection);
         let index_path = project_database_path(&root);
-        crate::sync::replace_staged_file(&next_path, &index_path).map_err(|error| {
-            CoreError::Io {
+        if let Err(error) = crate::sync::replace_staged_file(&next_path, &index_path) {
+            self.restore_database_connection(&index_path);
+            return Err(CoreError::Io {
                 operation: "install checkpoint candidate database",
                 source: error,
-            }
-        })?;
+            });
+        }
         for suffix in ["-wal", "-shm", "-journal"] {
             let path = PathBuf::from(format!("{}{}", index_path.display(), suffix));
             let _ = std::fs::remove_file(path);
         }
-        crate::sync::sync_directory(&root.join(".daena"))?;
-        self.connection = Connection::open(&index_path)?;
+        let sync_result = crate::sync::sync_directory(&root.join(".daena"));
+        self.attach_database_connection(&index_path)?;
+        let worker_result = self.restart_export_worker();
+        sync_result?;
+        worker_result?;
+        Ok(ExternalChangeReport {
+            changed: true,
+            paths: checkpoint
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect(),
+            diagnostics: vec![format!("runtime archive preserved at {archive}")],
+        })
+    }
+
+    fn attach_database_connection(&mut self, path: &Path) -> Result<(), CoreError> {
+        let conn = Connection::open(path)
+            .or_else(|_| Connection::open(path))
+            .map_err(|source| {
+                CoreError::RecoveryFailed(format!(
+                    "checkpoint database was installed at {} but reopening failed: {source}",
+                    path.display()
+                ))
+            })?;
+        self.connection = conn;
+        self.configure_attached_connection().map_err(|source| {
+            CoreError::RecoveryFailed(format!(
+                "checkpoint database was installed at {} but reopening failed: {source}",
+                path.display()
+            ))
+        })
+    }
+
+    fn configure_attached_connection(&mut self) -> Result<(), rusqlite::Error> {
         self.connection.busy_timeout(Duration::from_secs(2))?;
         self.connection.pragma_update(None, "foreign_keys", true)?;
         self.connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -595,16 +629,28 @@ impl ProjectStore {
             [],
             |row| row.get(0),
         )?;
-        self.restart_export_worker()?;
-        Ok(ExternalChangeReport {
-            changed: true,
-            paths: checkpoint
-                .files
-                .iter()
-                .map(|file| file.path.clone())
-                .collect(),
-            diagnostics: vec![format!("runtime archive preserved at {archive}")],
-        })
+        Ok(())
+    }
+
+    fn restore_database_connection(&mut self, path: &Path) {
+        let Ok(conn) = Connection::open(path).or_else(|_| Connection::open(path)) else {
+            return;
+        };
+        self.connection = conn;
+        if self.configure_attached_connection().is_err() {
+            let _ = self.connection.busy_timeout(Duration::from_secs(2));
+            let _ = self.connection.pragma_update(None, "foreign_keys", true);
+            let _ = self.connection.pragma_update(None, "journal_mode", "WAL");
+            let _ = self.connection.pragma_update(None, "synchronous", "NORMAL");
+            if let Ok(epoch) = self.connection.query_row(
+                "SELECT database_epoch FROM runtime_meta WHERE key='runtime'",
+                [],
+                |row| row.get::<_, String>(0),
+            ) {
+                self.database_epoch = epoch;
+            }
+        }
+        let _ = self.restart_export_worker();
     }
 
     pub fn save_recovery_copy(&self, entity_id: &str, body: &str) -> Result<String, CoreError> {
@@ -973,6 +1019,7 @@ impl ProjectStore {
              CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
               CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT NOT NULL REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
               CREATE INDEX IF NOT EXISTS module_records_owner_idx ON module_records(module_id, collection, owner_entity_id, id);
+              CREATE INDEX IF NOT EXISTS module_records_owner_entity_idx ON module_records(owner_entity_id);
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));
              CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, filename TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL, mime_type TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'attachment' CHECK(role IN ('attachment','profile')), reference_scope TEXT NOT NULL DEFAULT 'entity' CHECK(reference_scope IN ('entity','project')), provenance TEXT);
              CREATE TABLE IF NOT EXISTS map_projection (map_entity_id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_asset_id TEXT NOT NULL, source_path TEXT, source_hash TEXT);
@@ -1050,7 +1097,8 @@ impl ProjectStore {
             "CREATE INDEX IF NOT EXISTS entities_live_name_nocase_idx ON entities(name COLLATE NOCASE,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS entities_live_type_name_nocase_idx ON entities(entity_type,name COLLATE NOCASE,id) WHERE deleted=0;
              CREATE INDEX IF NOT EXISTS documents_entity_updated_idx ON documents(entity_id,updated_at DESC);
-             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);",
+             CREATE INDEX IF NOT EXISTS assets_entity_created_idx ON assets(entity_id,created_at);
+             CREATE INDEX IF NOT EXISTS module_records_owner_entity_idx ON module_records(owner_entity_id);",
         )?;
         Ok(())
     }

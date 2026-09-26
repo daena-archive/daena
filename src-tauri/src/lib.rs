@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -90,6 +91,61 @@ const ATLAS_STUDIO_PROGRESS_EVENT: &str = "atlas-studio-progress";
 static ATLAS_STUDIO: OnceLock<SharedAtlasStudio> = OnceLock::new();
 static EXTERNAL_IMPORTS: OnceLock<SharedExternalImports> = OnceLock::new();
 static PLUGIN_APPEARANCE: OnceLock<SharedAppearance> = OnceLock::new();
+static CLOSE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static PROJECT_COMMANDS_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static ON_CLOSE_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct ProjectCommandGuard {
+    tracked: bool,
+}
+
+impl Drop for ProjectCommandGuard {
+    fn drop(&mut self) {
+        if self.tracked {
+            PROJECT_COMMANDS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+fn closing_thread() -> bool {
+    ON_CLOSE_THREAD.with(|flag| flag.get())
+}
+
+pub(crate) fn begin_project_command() -> Result<ProjectCommandGuard, String> {
+    if closing_thread() {
+        return Ok(ProjectCommandGuard { tracked: false });
+    }
+    if CLOSE_IN_PROGRESS.load(Ordering::Acquire) {
+        return Err("project is closing".into());
+    }
+    PROJECT_COMMANDS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    if CLOSE_IN_PROGRESS.load(Ordering::Acquire) {
+        PROJECT_COMMANDS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+        return Err("project is closing".into());
+    }
+    Ok(ProjectCommandGuard { tracked: true })
+}
+
+fn wait_for_project_commands() {
+    while PROJECT_COMMANDS_IN_FLIGHT.load(Ordering::Acquire) > 0 {
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+struct CloseWorkerGuard {
+    destroy_scheduled: bool,
+}
+
+impl Drop for CloseWorkerGuard {
+    fn drop(&mut self) {
+        ON_CLOSE_THREAD.with(|flag| flag.set(false));
+        if !self.destroy_scheduled {
+            CLOSE_IN_PROGRESS.store(false, Ordering::Release);
+        }
+    }
+}
 
 fn new_shared_core() -> SharedCore {
     Arc::new(Mutex::new(Arc::new(ProjectSession {
@@ -132,6 +188,9 @@ fn cancel_ai_requests_for(
 }
 
 fn refresh_ai_index(core: &SharedCore, ai_runtime: &ai::SharedAiRuntime) {
+    let Ok(_guard) = begin_project_command() else {
+        return;
+    };
     ai::detach_project_index(ai_runtime);
     let root = core.lock().ok().and_then(|session| {
         session
@@ -290,8 +349,10 @@ where
     T: Send + 'static,
     F: FnOnce(&mut CoreService) -> Result<T, CoreError> + Send + 'static,
 {
+    let guard = begin_project_command()?;
     let lifecycle = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
         let session = lifecycle
             .lock()
             .map_err(|_| CoreError::Conflict("project lifecycle lock poisoned".into()))?
@@ -357,8 +418,10 @@ where
     T: Send + 'static,
     F: FnOnce(&ProjectStore) -> Result<T, CoreError> + Send + 'static,
 {
+    let guard = begin_project_command()?;
     let lifecycle = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
         let session = lifecycle
             .lock()
             .map_err(|_| CoreError::Conflict("project lifecycle lock poisoned".into()))?
@@ -369,10 +432,12 @@ where
                 .lock()
                 .map_err(|_| CoreError::Conflict("core lock poisoned".into()))?;
             let project = core.project(trusted_shell())?;
-            (
-                project.info().ok_or(CoreError::ProjectNotOpen)?.root,
-                project.database_epoch().to_string(),
-            )
+            if let Some(info) = project.info() {
+                (info.root, project.database_epoch().to_string())
+            } else {
+                // In-memory project: run operation directly on the session connection (TAURI-04)
+                return operation(project);
+            }
         };
         let project = {
             let mut pool = session
@@ -529,18 +594,43 @@ pub fn run() {
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                if let Err(error) = close_project_for_app(
-                    window.app_handle(),
-                    &close_core,
-                    &close_jobs,
-                    &close_plugins,
-                    &close_ai_runtime,
-                    &close_watcher,
-                    &close_image_jobs,
-                ) {
-                    eprintln!("project cleanup during window close failed: {error}");
+                if CLOSE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+                    return;
                 }
-                let _ = window.destroy();
+                let window = window.clone();
+                let close_core = close_core.clone();
+                let close_jobs = close_jobs.clone();
+                let close_plugins = close_plugins.clone();
+                let close_ai_runtime = close_ai_runtime.clone();
+                let close_watcher = close_watcher.clone();
+                let close_image_jobs = close_image_jobs.clone();
+                let app_handle = window.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    ON_CLOSE_THREAD.with(|flag| flag.set(true));
+                    let mut close_worker = CloseWorkerGuard {
+                        destroy_scheduled: false,
+                    };
+                    wait_for_project_commands();
+                    if let Err(error) = close_project_for_app(
+                        &app_handle,
+                        &close_core,
+                        &close_jobs,
+                        &close_plugins,
+                        &close_ai_runtime,
+                        &close_watcher,
+                        &close_image_jobs,
+                    ) {
+                        eprintln!("project cleanup during window close failed: {error}");
+                    }
+                    let window = window.clone();
+                    close_worker.destroy_scheduled = app_handle
+                        .run_on_main_thread(move || {
+                            if window.destroy().is_err() {
+                                CLOSE_IN_PROGRESS.store(false, Ordering::Release);
+                            }
+                        })
+                        .is_ok();
+                });
             }
         })
         .register_uri_scheme_protocol("plugin", move |ctx, request| {

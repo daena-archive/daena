@@ -250,10 +250,29 @@ impl daena_physical::ProgressSink for PhysicalProgress {
     }
 }
 
-pub(super) fn current_session(core: &SharedCore) -> Result<Arc<ProjectSession>, String> {
-    core.lock()
-        .map_err(|_| "project lifecycle lock poisoned".to_string())
-        .map(|session| session.clone())
+pub(super) struct SessionLease {
+    session: Arc<ProjectSession>,
+    _guard: ProjectCommandGuard,
+}
+
+impl std::ops::Deref for SessionLease {
+    type Target = ProjectSession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+pub(super) fn current_session(core: &SharedCore) -> Result<SessionLease, String> {
+    let guard = begin_project_command()?;
+    let session = core
+        .lock()
+        .map_err(|_| "project lifecycle lock poisoned".to_string())?
+        .clone();
+    Ok(SessionLease {
+        session,
+        _guard: guard,
+    })
 }
 
 pub(super) fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, String> {
@@ -268,6 +287,7 @@ pub(super) fn current_info(core: &SharedCore) -> Result<Option<ProjectInfo>, Str
 /// Project-level AI opt-in gate. Reads the authoritative runtime database on
 /// every decision and fails closed when the project cannot be opened.
 pub(crate) fn ensure_project_ai_enabled(project_root: &str) -> Result<(), String> {
+    let _guard = begin_project_command()?;
     let enabled = ProjectStore::open_read_only(project_root)
         .ok()
         .and_then(|project| project.ai_enabled().ok())

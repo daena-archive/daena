@@ -1299,16 +1299,20 @@ function handleEdit() {
   position: sticky;
   top: 0;
   display: grid;
+  min-width: 0;
   gap: 13px;
 }
 .profile-asof {
+  min-width: 0;
   margin-top: 8px;
+  padding: 0 16px;
 }
 .profile-asof :global(.property-field) {
   margin-top: 0;
 }
 .info-card,
 .rail-card {
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--theme-neutral-border, #dde1da);
   border-radius: 13px;

@@ -8,7 +8,10 @@ import {
   formatProfileValue,
   canEditLoreProfile,
   parseProfile,
+  profileCardGroups,
+  profileCardRows,
   profileCardShows,
+  profileCardSummary,
   profileValidationErrors,
   withDerivedDependencies,
 } from "../src/lib/lore/profile.ts";
@@ -147,6 +150,16 @@ assert.equal(
   }),
   false,
 );
+const cardRows = profileCardRows(parsed);
+assert.deepEqual(
+  profileCardSummary(cardRows).map((row) => row.name),
+  ["Strength"],
+);
+assert.deepEqual(
+  profileCardGroups(cardRows).map((group) => group.kind),
+  ["attribute", "skill", "trait", "resource"],
+);
+assert.equal(profileCardGroups(cardRows).find((group) => group.kind === "trait")?.rows[0].value, "Stands first");
 assert.deepEqual(
   parseProfile({
     schemaVersion: 1,
@@ -711,6 +724,10 @@ assert.deepEqual(applyDndAncestry(profileFromPreset("dnd"), "beholder"), profile
 assert.equal(
   profileCardShows(profileFromPreset("dnd").components.find((component) => component.name === "Hit Points")),
   false,
+);
+assert.deepEqual(
+  profileCardSummary(profileCardRows(profileFromPreset("dnd"))).map((row) => row.name),
+  ["Strength", "Dexterity", "Constitution", "Intelligence"],
 );
 
 const parsedFormula = parseFormula("floor(({attribute-strength} - 10) / 2)");

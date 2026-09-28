@@ -492,6 +492,55 @@ function formatUnboundedNumber(value: number): string {
   return Object.is(rounded, -0) ? "0" : String(rounded);
 }
 
+export const PROFILE_KIND_LABELS: Record<ProfileComponentKind, string> = {
+  attribute: "Attributes",
+  skill: "Skills",
+  proficiency: "Proficiencies",
+  trait: "Traits",
+  resource: "Resources",
+  condition: "Conditions",
+  tag: "Tags",
+  derived: "Derived",
+};
+
+export type ProfileCardRow = {
+  id: string;
+  kind: ProfileComponentKind;
+  name: string;
+  value: string;
+};
+
+export function profileCardRows(profile: ProfileDocument): ProfileCardRow[] {
+  const evaluated = evaluateProfile(profile);
+  return profile.components
+    .filter((component) => profileCardShows(component, evaluated.get(component.id) ?? null))
+    .map((component) => ({
+      id: component.id,
+      kind: component.kind,
+      name: component.name,
+      value: formatProfileValue(component, evaluated.get(component.id) ?? null),
+    }));
+}
+
+export function profileCardSummary(rows: readonly ProfileCardRow[], attributeLimit = 4): ProfileCardRow[] {
+  const tags = rows.filter((row) => row.kind === "tag" && row.value).slice(0, 2);
+  const attributes = rows.filter((row) => row.kind === "attribute").slice(0, attributeLimit);
+  const picked = [...tags, ...attributes];
+  return picked.length ? picked : rows.slice(0, attributeLimit);
+}
+
+export function profileCardGroups(rows: readonly ProfileCardRow[]): {
+  kind: ProfileComponentKind;
+  label: string;
+  rows: ProfileCardRow[];
+}[] {
+  return PROFILE_COMPONENT_KINDS.map((kind) => ({
+    kind,
+    label: PROFILE_KIND_LABELS[kind],
+    rows: rows.filter((row) => row.kind === kind),
+  })).filter((group) => group.rows.length > 0);
+}
+
 export function formatProfileValue(component: ProfileComponent, evaluated: number | null = null): string {
   if (component.kind === "derived") {
     const value = component.override ?? evaluated;

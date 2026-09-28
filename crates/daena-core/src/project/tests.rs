@@ -2278,6 +2278,276 @@ fn module_records_are_scoped_revisioned_and_rebuild_from_checkpoint() {
 }
 
 #[test]
+fn project_scoped_records_omit_owner_and_survive_entity_delete() {
+    let root = std::env::temp_dir().join(format!("daena-project-records-{}", Uuid::new_v4()));
+    let scopes = [("daena.lore".to_string(), "profile-preset".to_string())];
+    let store = ProjectStore::open_directory_with_project_records(&root, &scopes).unwrap();
+    let owner = store
+        .create_entity(CreateEntity {
+            name: "Ada".into(),
+            entity_type: Some("daena.lore:person".into()),
+        })
+        .unwrap();
+    let preset_id = "ef2bce76-ca39-59f5-ab9d-28a0b665eb15";
+    let preset = store
+        .create_project_module_record(
+            "daena.lore",
+            "profile-preset",
+            Some(preset_id),
+            serde_json::json!({"schemaVersion": 1, "name": "Custom", "builtin": true, "components": []}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(preset.id, preset_id);
+    assert!(preset.owner_entity_id.is_none());
+    let profile = store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &owner.id,
+            serde_json::json!({"schemaVersion": 1, "components": []}),
+            None,
+        )
+        .unwrap();
+    store.flush_checkpoint("project-record-test").unwrap();
+    drop(store);
+
+    let plugin_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("plugins/daena.lore.json")).unwrap(),
+    )
+    .unwrap();
+    let records = plugin_json["records"].as_array().unwrap();
+    let preset_row = records
+        .iter()
+        .find(|record| record["id"] == preset_id)
+        .unwrap();
+    assert!(preset_row.get("ownerEntityId").is_none());
+    let profile_row = records
+        .iter()
+        .find(|record| record["id"] == profile.id)
+        .unwrap();
+    assert_eq!(profile_row["ownerEntityId"], owner.id);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory_with_project_records(&root, &scopes).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_project_module_records(
+                "daena.lore",
+                "profile-preset",
+                ModuleRecordListParams::default()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    rebuilt.delete_entity(owner.id.clone()).unwrap();
+    assert_eq!(
+        rebuilt
+            .list_project_module_records(
+                "daena.lore",
+                "profile-preset",
+                ModuleRecordListParams::default()
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(rebuilt);
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    assert!(ProjectStore::open_directory(&root).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn entity_owned_profile_rows_survive_rebuild_and_reject_missing_owner() {
+    let root = std::env::temp_dir().join(format!("daena-profile-owner-{}", Uuid::new_v4()));
+    let scopes = [("daena.lore".to_string(), "profile-preset".to_string())];
+    let store = ProjectStore::open_directory_with_project_records(&root, &scopes).unwrap();
+    let owner = store
+        .create_entity(CreateEntity {
+            name: "Ada".into(),
+            entity_type: Some("daena.lore:person".into()),
+        })
+        .unwrap();
+    let profile = store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &owner.id,
+            serde_json::json!({"schemaVersion": 1, "presetOrigin": "dnd", "components": []}),
+            None,
+        )
+        .unwrap();
+    let change = store
+        .create_module_record(
+            "daena.lore",
+            "profile-change",
+            &owner.id,
+            serde_json::json!({"schemaVersion": 1, "patches": []}),
+            None,
+        )
+        .unwrap();
+    store
+        .create_project_module_record(
+            "daena.lore",
+            "profile-preset",
+            Some("ef2bce76-ca39-59f5-ab9d-28a0b665eb15"),
+            serde_json::json!({"schemaVersion": 1, "name": "Custom", "components": []}),
+            None,
+        )
+        .unwrap();
+    store.flush_checkpoint("profile-owner-rebuild").unwrap();
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory_with_project_records(&root, &scopes).unwrap();
+    let profiles = rebuilt
+        .list_module_records("daena.lore", "profile", &owner.id, None, 10, 0)
+        .unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].id, profile.id);
+    assert_eq!(
+        profiles[0].owner_entity_id.as_deref(),
+        Some(owner.id.as_str())
+    );
+    assert_eq!(profiles[0].value["presetOrigin"], "dnd");
+    let changes = rebuilt
+        .list_module_records("daena.lore", "profile-change", &owner.id, None, 10, 0)
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].id, change.id);
+    assert_eq!(
+        changes[0].owner_entity_id.as_deref(),
+        Some(owner.id.as_str())
+    );
+    drop(rebuilt);
+
+    let plugin_path = root.join("plugins/daena.lore.json");
+    let original = std::fs::read_to_string(&plugin_path).unwrap();
+    let mut plugin: serde_json::Value = serde_json::from_str(&original).unwrap();
+    for record in plugin["records"].as_array_mut().unwrap() {
+        if record["collection"] == "profile" {
+            record.as_object_mut().unwrap().remove("ownerEntityId");
+        }
+    }
+    std::fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let missing_profile = match ProjectStore::open_directory_with_project_records(&root, &scopes) {
+        Ok(_) => panic!("profile row without an owner restored"),
+        Err(error) => error,
+    };
+    assert!(
+        missing_profile
+            .to_string()
+            .contains("record owner entity is missing"),
+        "{missing_profile}"
+    );
+
+    let mut plugin: serde_json::Value = serde_json::from_str(&original).unwrap();
+    for record in plugin["records"].as_array_mut().unwrap() {
+        if record["collection"] == "profile-change" {
+            record.as_object_mut().unwrap().remove("ownerEntityId");
+        }
+    }
+    std::fs::write(&plugin_path, serde_json::to_vec_pretty(&plugin).unwrap()).unwrap();
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let missing_change = match ProjectStore::open_directory_with_project_records(&root, &scopes) {
+        Ok(_) => panic!("profile-change row without an owner restored"),
+        Err(error) => error,
+    };
+    assert!(
+        missing_change
+            .to_string()
+            .contains("record owner entity is missing"),
+        "{missing_change}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn legacy_preset_origin_rewrite_includes_archived_profiles() {
+    let root = std::env::temp_dir().join(format!("daena-preset-origin-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let archived = store
+        .create_entity(CreateEntity {
+            name: "Archived".into(),
+            entity_type: Some("daena.lore:person".into()),
+        })
+        .unwrap();
+    let live = store
+        .create_entity(CreateEntity {
+            name: "Live".into(),
+            entity_type: Some("daena.lore:person".into()),
+        })
+        .unwrap();
+    let dnd = "9771b70b-04c4-506e-949b-b26ea5b61235";
+    store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &archived.id,
+            serde_json::json!({"schemaVersion": 1, "presetOrigin": "dnd", "components": []}),
+            None,
+        )
+        .unwrap();
+    store
+        .create_module_record(
+            "daena.lore",
+            "profile",
+            &live.id,
+            serde_json::json!({"schemaVersion": 1, "presetOrigin": dnd, "components": []}),
+            None,
+        )
+        .unwrap();
+    store.delete_entity(archived.id.clone()).unwrap();
+    let replaced = store
+        .replace_owned_record_string_field(
+            "daena.lore",
+            "profile",
+            "presetOrigin",
+            &[("dnd".into(), dnd.into())],
+        )
+        .unwrap();
+    assert_eq!(replaced, 1);
+    let records = store
+        .list_owned_module_records("daena.lore", "profile")
+        .unwrap();
+    let archived_profile = records
+        .iter()
+        .find(|record| record.owner_entity_id.as_deref() == Some(archived.id.as_str()))
+        .unwrap();
+    assert_eq!(archived_profile.value["presetOrigin"], dnd);
+    let live_profile = records
+        .iter()
+        .find(|record| record.owner_entity_id.as_deref() == Some(live.id.as_str()))
+        .unwrap();
+    assert_eq!(live_profile.value["presetOrigin"], dnd);
+    assert!(store.get_entity(&archived.id).unwrap().is_none());
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_schema_v1_is_reset_required() {
+    let root = std::env::temp_dir().join(format!("daena-runtime-v1-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE runtime_meta SET schema_version=1 WHERE key='runtime'",
+            [],
+        )
+        .unwrap();
+    drop(store);
+    assert!(matches!(
+        ProjectStore::open_directory(&root),
+        Err(CoreError::ResetRequired(_))
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn language_phonology_and_orthography_records_round_trip() {
     let root = std::env::temp_dir().join(format!("daena-language-phonology-{}", Uuid::new_v4()));
     let store = ProjectStore::open_directory(&root).unwrap();

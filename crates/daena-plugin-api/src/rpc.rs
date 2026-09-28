@@ -355,8 +355,12 @@ pub struct FieldSetPayload {
 #[serde(deny_unknown_fields)]
 pub struct RecordListPayload {
     pub collection: String,
-    #[serde(rename = "ownerEntityId")]
-    pub owner_entity_id: String,
+    #[serde(
+        default,
+        rename = "ownerEntityId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub owner_entity_id: Option<String>,
     pub query: Option<String>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -372,8 +376,14 @@ pub struct RecordListPayload {
 #[serde(deny_unknown_fields)]
 pub struct RecordCreatePayload {
     pub collection: String,
-    #[serde(rename = "ownerEntityId")]
-    pub owner_entity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        default,
+        rename = "ownerEntityId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub owner_entity_id: Option<String>,
     pub value: Value,
 }
 
@@ -383,8 +393,12 @@ pub struct RecordCreatePayload {
 pub struct RecordUpdatePayload {
     pub collection: String,
     pub id: String,
-    #[serde(rename = "ownerEntityId")]
-    pub owner_entity_id: String,
+    #[serde(
+        default,
+        rename = "ownerEntityId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub owner_entity_id: Option<String>,
     pub value: Value,
     #[serde(rename = "expectedRevision")]
     pub expected_revision: String,
@@ -396,8 +410,12 @@ pub struct RecordUpdatePayload {
 pub struct RecordDeletePayload {
     pub collection: String,
     pub id: String,
-    #[serde(rename = "ownerEntityId")]
-    pub owner_entity_id: String,
+    #[serde(
+        default,
+        rename = "ownerEntityId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub owner_entity_id: Option<String>,
     #[serde(rename = "expectedRevision")]
     pub expected_revision: String,
 }

@@ -18,16 +18,18 @@ import {
   withDerivedDependencies,
   type ProfileComponent,
   type ProfileDocument,
-  type ProfilePresetOrigin,
 } from "./profile.ts";
 import {
   applyDndAncestry,
   dndAncestriesByLineage,
   matchingDndAncestry,
-  PROFILE_PRESETS,
-  profileFromPreset,
+  ensureBundledProfilePresets,
+  loadProfilePresets,
+  profileForPresetSelection,
   profilePresetLabel,
+  type LoadedProfilePreset,
 } from "./profilePresets.ts";
+import { CUSTOM_PRESET_ID, isDndPresetOrigin, type LegacyPresetOrigin } from "./profilePresetSeed.ts";
 import { compareCalendarDates, formatCalendarDate, GREGORIAN_CALENDAR_ID, parseCalendarDate } from "$lib/date";
 import * as calendarCache from "$lib/chronology/calendarCache";
 import DateEditor from "$lib/date/DateEditor.svelte";
@@ -47,14 +49,7 @@ import {
 } from "./profileStore";
 import { effectiveChangeDate, foldProfile, type StoredProfileChange } from "./profileHistory";
 
-const PRESET_BLURBS: Record<ProfilePresetOrigin, string> = {
-  custom: "Blank sheet. Field schema comes later.",
-  dnd: "Six abilities, skills, and combat basics.",
-  fantasy: "Eight attributes with a 40-point pool.",
-  scifi: "Technical scores, skills, and resources.",
-};
-
-const PRESET_ICONS: Record<ProfilePresetOrigin, Component> = {
+const PRESET_ICONS: Record<LegacyPresetOrigin, Component> = {
   custom: UserRound,
   dnd: Dices,
   fantasy: Sparkles,
@@ -109,7 +104,8 @@ let loading = $state(true);
 let creating = $state(false);
 let removing = $state(false);
 let error = $state("");
-let selectedPreset = $state<ProfilePresetOrigin>("custom");
+let presets = $state<LoadedProfilePreset[]>([]);
+let selectedPreset = $state(CUSTOM_PRESET_ID);
 let activeTab = $state("scores");
 let writeChain = Promise.resolve();
 let persistGeneration = 0;
@@ -289,6 +285,11 @@ $effect(() => {
 });
 
 async function loadEditorState(moduleContext: ReturnType<typeof buildModuleContext>, id: string) {
+  await ensureBundledProfilePresets(moduleContext);
+  presets = await loadProfilePresets(moduleContext);
+  if (!presets.some((preset) => preset.id === selectedPreset)) {
+    selectedPreset = presets.find((preset) => preset.id === CUSTOM_PRESET_ID)?.id ?? presets[0]?.id ?? "";
+  }
   const profile = await loadProfile(moduleContext, id);
   if (!profile || profile.invalid) {
     return {
@@ -414,7 +415,7 @@ async function addProfile() {
   error = "";
   creating = true;
   try {
-    const created = await createProfile(context, entityId, profileFromPreset(selectedPreset));
+    const created = await createProfile(context, entityId, profileForPresetSelection(presets, selectedPreset));
     stored = created;
     changes = [];
     eventDates = new Map();
@@ -721,10 +722,17 @@ async function removeHistoryRow(change: StoredProfileChange) {
       {/if}
       {#if !stored}
         <div class="dialog-body" bind:this={sheetEl}>
-          <p class="lead">Choose a starting sheet. Values can be edited after you create it.</p>
+          <p class="lead">
+            {#if presets.length}
+              Choose a starting sheet. Values can be edited after you create it.
+            {:else}
+              No presets are stored. Creating a Profile starts empty.
+            {/if}
+          </p>
           <div class="preset-grid" role="group" aria-label="Profile presets">
-            {#each PROFILE_PRESETS as preset}
-              {@const Icon = PRESET_ICONS[preset.id]}
+            {#each presets as preset (preset.id)}
+              {@const iconKey = preset.document.icon === "dnd" || preset.document.icon === "fantasy" || preset.document.icon === "scifi" || preset.document.icon === "custom" ? preset.document.icon : "custom"}
+              {@const Icon = PRESET_ICONS[iconKey]}
               <button
                 type="button"
                 class="preset-card"
@@ -733,8 +741,8 @@ async function removeHistoryRow(change: StoredProfileChange) {
                 disabled={creating}
                 onclick={() => (selectedPreset = preset.id)}>
                 <span class="preset-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
-                <strong>{preset.name}</strong>
-                <span>{PRESET_BLURBS[preset.id]}</span>
+                <strong>{preset.document.name}</strong>
+                <span>{preset.document.description ?? ""}</span>
                 {#if selectedPreset === preset.id}
                   <span class="preset-check" aria-hidden="true"><Check size={14} strokeWidth={2.2} /></span>
                 {/if}
@@ -797,7 +805,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                 {/if}
                 {#if section.layout === "identity"}
                   <div class="identity-grid">
-                    {#if draft.presetOrigin === "dnd"}
+                    {#if isDndPresetOrigin(draft.presetOrigin)}
                       <label class="stat">
                         <span>Ancestry</span>
                         <select
@@ -816,7 +824,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
                       </label>
                     {/if}
                     {#each section.items as component (component.id)}
-                      {#if !(draft.presetOrigin === "dnd" && component.id === "tag-species" && matchingDndAncestry(draft))}
+                      {#if !(isDndPresetOrigin(draft.presetOrigin) && component.id === "tag-species" && matchingDndAncestry(draft))}
                         <label class="stat">
                           <span>{component.name}</span>
                           {@render textInput(component)}

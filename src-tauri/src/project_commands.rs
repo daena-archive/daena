@@ -356,7 +356,15 @@ pub(super) async fn project_open_default(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        core.open_directory_without_flush(trusted_shell(), project_directory)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let records = super::broker::project_record_collections(&host);
+        core.open_directory_without_flush_with_project_records(
+            trusted_shell(),
+            project_directory,
+            &records,
+        )?;
         Ok(())
     })
     .await;
@@ -380,6 +388,21 @@ pub(super) async fn project_create_entity(
     with_core(state, move |core| {
         core.project(trusted_shell())?
             .create_entity_with_request(input, request_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+pub(super) async fn project_replace_record_string_field(
+    state: tauri::State<'_, SharedCore>,
+    module_id: String,
+    collection: String,
+    field: String,
+    replacements: Vec<(String, String)>,
+) -> Result<usize, String> {
+    with_core(state, move |core| {
+        core.project(trusted_shell())?
+            .replace_owned_record_string_field(&module_id, &collection, &field, &replacements)
     })
     .await
 }

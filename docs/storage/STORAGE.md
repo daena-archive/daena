@@ -52,11 +52,23 @@ the validated metadata JSON, including metadata keys that are not currently
 rendered by the active UI, so a plugin schema change does not silently erase
 authored relationship context.
 
+Module records are portable content inside `plugins/<plugin-id>.json`
+(`records`), not a separate tree and not entity field files. Each record has
+`collection`, `id`, `value`, `createdAt`, and `updatedAt`. `id` is a UUID.
+Entity-owned records also have `ownerEntityId`, a UUID naming an entity in the
+same checkpoint, and deleting that entity deletes those records. Lore Profile
+and profile-change rows use that path. A collection declared `ownerScope:
+project` omits `ownerEntityId`. Lore `profile-preset` rows use that path and
+are not deleted with an entity. There is no sentinel owner, nil UUID, or empty
+owner string. An absent owner is accepted only when the module manifest
+declares that collection as project-scoped.
+
 `entities/<entity-uuid>/assets.json` stores attachment identity and typed
 metadata separately from the native bytes. `role` is `attachment` or
 `profile`; `referenceScope` is `entity` or `project`. At most one profile asset
 may exist for an entity and owning namespace, and profile media is restricted
-to supported raster image types. Renaming changes the portable asset path but
+to supported raster image types. That asset role is portrait media. It is not
+a Lore Profile record. Renaming changes the portable asset path but
 not the asset UUID or content hash. Replacing bytes preserves the filename,
 role, reference scope, and UUID. References use the asset UUID;
 `referenceScope` records whether cross-entity consumers may offer the asset as

@@ -153,8 +153,12 @@ derived indexes. When the checkpoint is clean, portable files reconstruct the
 same durable project content. When it is pending or failed, the runtime may
 contain newer committed work and is not safe to delete. Plugin grants,
 installed packages, runtime sessions, and capability state are machine-local
-as well. Portable plugin interpretation state belongs in
-`plugins/<plugin-id>.json`.
+as well. Portable plugin interpretation state, including module records,
+belongs in `plugins/<plugin-id>.json`. Entity-owned record owners are entity
+UUIDs. Project-scoped records omit `ownerEntityId` and are not deleted with an
+entity. Lore `profile-preset` is the shipped project-scoped collection; later
+preset work remains in
+[`plans/profile-presets.md`](./plans/profile-presets.md).
 
 ## Storage and consistency
 

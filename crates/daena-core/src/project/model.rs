@@ -404,7 +404,8 @@ pub struct ModuleRecord {
     pub module_id: String,
     pub collection: String,
     pub id: String,
-    pub owner_entity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_entity_id: Option<String>,
     pub value: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,

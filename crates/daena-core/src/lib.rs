@@ -103,8 +103,17 @@ impl CoreService {
         context: AuthorityContext,
         path: impl AsRef<std::path::Path>,
     ) -> Result<ProjectInfo, CoreError> {
+        self.open_directory_without_flush_with_project_records(context, path, &[])
+    }
+
+    pub fn open_directory_without_flush_with_project_records(
+        &mut self,
+        context: AuthorityContext,
+        path: impl AsRef<std::path::Path>,
+        project_records: &[(String, String)],
+    ) -> Result<ProjectInfo, CoreError> {
         self.require_trusted_shell(context, "open project directory")?;
-        let project = ProjectStore::open_directory(path)?;
+        let project = ProjectStore::open_directory_with_project_records(path, project_records)?;
         let info = project
             .info()
             .ok_or_else(|| CoreError::Validation("project has no directory root".into()))?;

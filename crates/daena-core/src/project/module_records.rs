@@ -158,6 +158,49 @@ pub(super) fn validate_module_record_scope(
     Ok(())
 }
 
+pub(super) fn validate_project_module_record_scope(
+    module_id: &str,
+    collection: &str,
+) -> Result<(), CoreError> {
+    let valid_component = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    };
+    if !valid_component(module_id) {
+        return Err(CoreError::Validation(
+            "invalid module record module ID".into(),
+        ));
+    }
+    if !valid_component(collection) {
+        return Err(CoreError::Validation(
+            "invalid module record collection".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_project_module_record_input(
+    module_id: &str,
+    collection: &str,
+    value: &serde_json::Value,
+) -> Result<(), CoreError> {
+    validate_project_module_record_scope(module_id, collection)?;
+    if !value.is_object() {
+        return Err(CoreError::Validation(
+            "module record value must be an object".into(),
+        ));
+    }
+    let bytes =
+        serde_json::to_vec(value).map_err(|error| CoreError::Serialization(error.to_string()))?;
+    if bytes.len() > 64 * 1024 {
+        return Err(CoreError::Validation("module record exceeds 64 KiB".into()));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_module_record_input(
     module_id: &str,
     collection: &str,

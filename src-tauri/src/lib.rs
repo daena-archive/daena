@@ -787,6 +787,7 @@ pub fn run() {
             project_open_default,
             project_create_entity,
             project_list_entities,
+            project_replace_record_string_field,
             project_get_entity,
             project_query_entities,
             project_search,

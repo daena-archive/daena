@@ -123,10 +123,10 @@ export interface MapsVectorCreateBeginPayload { generation: unknown; name: strin
 export interface MapsVectorCreateCommitPayload { contentHash: string; handle: string }
 export interface MapsVectorReplaceBeginPayload { assetId: string; expectedRevision: string; size: number }
 export interface MapsVectorReplaceCommitPayload { contentHash: string; handle: string }
-export interface RecordCreatePayload { collection: string; ownerEntityId: string; value: unknown }
-export interface RecordDeletePayload { collection: string; expectedRevision: string; id: string; ownerEntityId: string }
-export interface RecordListPayload { collection: string; homonymsOnly?: boolean | null; limit?: number | null; offset?: number | null; ownerEntityId: string; query?: string | null; sort?: string | null; status?: string | null; tag?: string | null }
-export interface RecordUpdatePayload { collection: string; expectedRevision: string; id: string; ownerEntityId: string; value: unknown }
+export interface RecordCreatePayload { collection: string; id?: string | null; ownerEntityId?: string | null; value: unknown }
+export interface RecordDeletePayload { collection: string; expectedRevision: string; id: string; ownerEntityId?: string | null }
+export interface RecordListPayload { collection: string; homonymsOnly?: boolean | null; limit?: number | null; offset?: number | null; ownerEntityId?: string | null; query?: string | null; sort?: string | null; status?: string | null; tag?: string | null }
+export interface RecordUpdatePayload { collection: string; expectedRevision: string; id: string; ownerEntityId?: string | null; value: unknown }
 export interface RelationshipCreatePayload { expectedRevision: string; metadata?: string | null; relationship_type: string; source_id: string; target_id: string }
 export interface RelationshipDeletePayload { expectedRevision: string; id: string; relationship_type?: string | null }
 export interface RelationshipListPayload { entityId: string }

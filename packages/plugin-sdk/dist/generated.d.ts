@@ -721,21 +721,22 @@ export interface MapsVectorReplaceCommitPayload {
 }
 export interface RecordCreatePayload {
     collection: string;
-    ownerEntityId: string;
+    id?: string | null;
+    ownerEntityId?: string | null;
     value: unknown;
 }
 export interface RecordDeletePayload {
     collection: string;
     expectedRevision: string;
     id: string;
-    ownerEntityId: string;
+    ownerEntityId?: string | null;
 }
 export interface RecordListPayload {
     collection: string;
     homonymsOnly?: boolean | null;
     limit?: number | null;
     offset?: number | null;
-    ownerEntityId: string;
+    ownerEntityId?: string | null;
     query?: string | null;
     sort?: string | null;
     status?: string | null;
@@ -745,7 +746,7 @@ export interface RecordUpdatePayload {
     collection: string;
     expectedRevision: string;
     id: string;
-    ownerEntityId: string;
+    ownerEntityId?: string | null;
     value: unknown;
 }
 export interface RelationshipCreatePayload {

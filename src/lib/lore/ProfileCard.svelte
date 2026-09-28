@@ -1,6 +1,7 @@
 <script lang="ts">
 import { evaluateProfile, formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
 import { profilePresetLabel } from "./profilePresets.ts";
+import { isCustomPresetOrigin } from "./profilePresetSeed.ts";
 
 let { profile, asOfLabel = "" }: { profile: ProfileDocument; asOfLabel?: string } = $props();
 
@@ -15,7 +16,7 @@ const rows = $derived(
     })),
 );
 const origin = $derived(
-  profile.presetOrigin && profile.presetOrigin !== "custom" ? profilePresetLabel(profile.presetOrigin) : "",
+  profile.presetOrigin && !isCustomPresetOrigin(profile.presetOrigin) ? profilePresetLabel(profile.presetOrigin) : "",
 );
 </script>
 

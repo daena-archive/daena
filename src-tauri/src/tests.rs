@@ -2125,6 +2125,156 @@ fn broker_dispatch_allows_effective_schema_record_owners() {
 }
 
 #[test]
+fn broker_dispatch_project_scoped_preset_crud_rejects_entity_owner_gaps() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    let project = || RecordOwnerConstraint::Project;
+    let entity = || RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec!["daena.lore:person".into()],
+        unique_per_owner: true,
+    };
+    let changes = || RecordOwnerConstraint::EffectiveSchema {
+        live_types: vec!["daena.lore:person".into()],
+        unique_per_owner: false,
+    };
+    let value = serde_json::json!({
+        "schemaVersion": 1,
+        "name": "Custom",
+        "builtin": true,
+        "components": []
+    });
+    let preset_id = "ef2bce76-ca39-59f5-ab9d-28a0b665eb15";
+    let created = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-preset",
+            "id": preset_id,
+            "value": value
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert!(created.get("owner_entity_id").is_none());
+    assert_eq!(created["id"], preset_id);
+    let owned = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-preset",
+            "ownerEntityId": "daena.lore:person",
+            "value": value
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(owned, Err(CoreError::Validation(_))));
+    let empty_owner = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-preset",
+            "ownerEntityId": " ",
+            "value": value
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(empty_owner, Err(CoreError::Validation(_))));
+    let listed = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.list",
+        serde_json::json!({ "collection": "profile-preset" }),
+        None,
+    )
+    .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    let updated = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.update",
+        serde_json::json!({
+            "collection": "profile-preset",
+            "id": preset_id,
+            "value": {
+                "schemaVersion": 1,
+                "name": "Custom sheet",
+                "builtin": true,
+                "components": []
+            },
+            "expectedRevision": created["revision"]
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    assert_eq!(updated["value"]["name"], "Custom sheet");
+    assert!(updated.get("owner_entity_id").is_none());
+    let missing_profile = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(entity()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile",
+            "value": { "schemaVersion": 1, "components": [] }
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(missing_profile, Err(CoreError::Validation(_))));
+    let missing_change = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(changes()),
+        "record.create",
+        serde_json::json!({
+            "collection": "profile-change",
+            "value": { "schemaVersion": 1, "patches": [] }
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    );
+    assert!(matches!(missing_change, Err(CoreError::Validation(_))));
+    dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.delete",
+        serde_json::json!({
+            "collection": "profile-preset",
+            "id": preset_id,
+            "expectedRevision": updated["revision"]
+        }),
+        Some(&uuid::Uuid::new_v4().to_string()),
+    )
+    .unwrap();
+    let after_delete = dispatch_module_rpc(
+        &mut core,
+        Some("daena.lore"),
+        None,
+        Some(project()),
+        "record.list",
+        serde_json::json!({ "collection": "profile-preset" }),
+        None,
+    )
+    .unwrap();
+    assert!(after_delete.as_array().unwrap().is_empty());
+}
+
+#[test]
 fn effective_schema_record_owners_use_merged_overlay_types() {
     let mut core = CoreService::new();
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();
@@ -2165,7 +2315,9 @@ fn effective_schema_record_owners_use_merged_overlay_types() {
             assert!(live_types.iter().any(|id| id == "daena.lore:species"));
             assert!(!live_types.iter().any(|id| id == "daena.maps:world-map"));
         }
-        RecordOwnerConstraint::Package(_) => panic!("profile owners use effective schema"),
+        RecordOwnerConstraint::Package(_) | RecordOwnerConstraint::Project => {
+            panic!("profile owners use effective schema")
+        }
     }
 }
 

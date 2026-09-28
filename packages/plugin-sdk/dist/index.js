@@ -859,12 +859,12 @@ export function validatePluginManifest(manifest) {
             else
                 recordIds.add(record.id);
             const ownerScope = record.ownerScope ?? "package";
-            if (ownerScope !== "package" && ownerScope !== "effective-schema")
+            if (ownerScope !== "package" && ownerScope !== "effective-schema" && ownerScope !== "project")
                 errors.push(`record collection ${String(record.id)} has invalid ownerScope`);
-            else if (ownerScope === "effective-schema") {
+            else if (ownerScope === "effective-schema" || ownerScope === "project") {
                 if (record.ownerEntityTypes !== undefined &&
                     (!Array.isArray(record.ownerEntityTypes) || record.ownerEntityTypes.length !== 0))
-                    errors.push(`record collection ${String(record.id)} with ownerScope effective-schema must omit owner entity types`);
+                    errors.push(`record collection ${String(record.id)} with ownerScope ${ownerScope} must omit owner entity types`);
             }
             else if (!Array.isArray(record.ownerEntityTypes) ||
                 record.ownerEntityTypes.length === 0 ||

@@ -379,6 +379,27 @@
       }
     },
     {
+      "id": "profile-preset",
+      "ownerScope": "project",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": { "type": "number" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "icon": { "type": "string" },
+          "entityTypes": { "type": "array" },
+          "genre": { "type": "string" },
+          "builtin": { "type": "boolean" },
+          "hidden": { "type": "boolean" },
+          "allocation": { "type": "object" },
+          "components": { "type": "array" }
+        },
+        "required": ["schemaVersion", "name", "components"],
+        "additionalProperties": false
+      }
+    },
+    {
       "id": "profile-change",
       "ownerScope": "effective-schema",
       "ownerEntityTypes": [],

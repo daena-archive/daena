@@ -571,6 +571,7 @@ pub enum RecordOwnerScope {
     #[default]
     Package,
     EffectiveSchema,
+    Project,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1630,6 +1631,20 @@ pub fn validate_manifest(manifest: &PluginManifest) -> Result<(), ContractError>
                 if !collection.owner_entity_types.is_empty() {
                     return Err(ContractError(format!(
                         "record collection {} with ownerScope effective-schema must omit owner entity types",
+                        collection.id
+                    )));
+                }
+            }
+            RecordOwnerScope::Project => {
+                if collection.unique_per_owner {
+                    return Err(ContractError(format!(
+                        "record collection {} uniquePerOwner requires ownerScope effective-schema",
+                        collection.id
+                    )));
+                }
+                if !collection.owner_entity_types.is_empty() {
+                    return Err(ContractError(format!(
+                        "record collection {} with ownerScope project must omit owner entity types",
                         collection.id
                     )));
                 }

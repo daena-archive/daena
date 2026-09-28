@@ -29,6 +29,7 @@ impl ProjectStore {
             suppress_sync: Cell::new(true),
             _session_lock: None,
             export_worker: None,
+            project_record_collections: std::collections::BTreeSet::new(),
         })
     }
 
@@ -64,6 +65,13 @@ impl ProjectStore {
     }
 
     pub fn open_directory(path: impl AsRef<Path>) -> Result<Self, CoreError> {
+        Self::open_directory_with_project_records(path, &[])
+    }
+
+    pub fn open_directory_with_project_records(
+        path: impl AsRef<Path>,
+        project_records: &[(String, String)],
+    ) -> Result<Self, CoreError> {
         let root = path.as_ref();
         std::fs::create_dir_all(root).map_err(|error| CoreError::NotFound(error.to_string()))?;
         if root.join("daena.sqlite").exists() {
@@ -136,17 +144,22 @@ impl ProjectStore {
                 .map_err(|error| CoreError::NotFound(error.to_string()))?;
         }
         let index_path = project_database_path(root);
+        let project_records = project_records.iter().cloned().collect();
         if index_path.is_file() {
-            return Self::open_database(
+            let mut store = Self::open_database(
                 &index_path,
                 Some(root.to_path_buf()),
                 Some(session_lock),
                 false,
                 true,
-            );
+            )?;
+            store.project_record_collections = project_records;
+            return Ok(store);
         }
-        let canonical = repository.scan()?;
-        Self::rebuild_directory_index(root, &canonical, session_lock)
+        let canonical = repository.scan_with_project_records(&project_records)?;
+        let mut store = Self::rebuild_directory_index(root, &canonical, session_lock)?;
+        store.project_record_collections = project_records;
+        Ok(store)
     }
 
     pub(crate) fn rebuild_directory_index(
@@ -253,6 +266,7 @@ impl ProjectStore {
             suppress_sync: Cell::new(false),
             _session_lock: session_lock,
             export_worker: None,
+            project_record_collections: std::collections::BTreeSet::new(),
         };
         if !existing_database {
             store.initialize(true)?;
@@ -529,7 +543,8 @@ impl ProjectStore {
             ));
         }
         let archive = self.recovery_backup_to(root.join(".daena/backups"))?;
-        let canonical = crate::storage::FilesystemRepository::open(&root)?.scan()?;
+        let canonical = crate::storage::FilesystemRepository::open(&root)?
+            .scan_with_project_records(&self.project_record_collections)?;
         let payload = serde_json::to_string(&canonical.snapshot)
             .map_err(|error| CoreError::Serialization(error.to_string()))?;
         let next_path = root.join(".daena/index.sqlite.next");
@@ -1017,7 +1032,7 @@ impl ProjectStore {
               CREATE TABLE IF NOT EXISTS module_package_versions(module_id TEXT PRIMARY KEY, package_version TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS module_namespaces(module_id TEXT NOT NULL, namespace TEXT NOT NULL, PRIMARY KEY(module_id, namespace));
              CREATE TABLE IF NOT EXISTS module_fields(module_id TEXT NOT NULL, namespace TEXT NOT NULL, key TEXT NOT NULL, field_type TEXT NOT NULL, required INTEGER NOT NULL, PRIMARY KEY(module_id, namespace, key));
-              CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT NOT NULL REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
+              CREATE TABLE IF NOT EXISTS module_records(id TEXT PRIMARY KEY, module_id TEXT NOT NULL, collection TEXT NOT NULL, owner_entity_id TEXT REFERENCES entities(id), value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(module_id, collection, id));
               CREATE INDEX IF NOT EXISTS module_records_owner_idx ON module_records(module_id, collection, owner_entity_id, id);
               CREATE INDEX IF NOT EXISTS module_records_owner_entity_idx ON module_records(owner_entity_id);
               CREATE TABLE IF NOT EXISTS entity_fields(entity_id TEXT NOT NULL REFERENCES entities(id), namespace TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(entity_id, namespace, key));

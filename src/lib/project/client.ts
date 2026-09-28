@@ -200,6 +200,18 @@ export const project = {
   gitRestoreFromUpstream: () => invoke<GitResetResult>("project_git_restore_from_upstream"),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
   listEntities: () => invoke<Entity[]>("project_list_entities"),
+  replaceRecordStringField: (
+    moduleId: string,
+    collection: string,
+    field: string,
+    replacements: readonly (readonly [string, string])[],
+  ) =>
+    invoke<number>("project_replace_record_string_field", {
+      moduleId,
+      collection,
+      field,
+      replacements,
+    }),
   getEntity: (id: string) => invoke<Entity | null>("project_get_entity", { id }),
   queryEntities: (query: EntityListQuery = {}) =>
     invoke<EntityPage>("project_query_entities", {

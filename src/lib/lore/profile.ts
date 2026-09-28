@@ -1,13 +1,9 @@
 import { evaluateFormula, formulaHasCycle, parseFormula } from "./profileFormula.ts";
+import { canonicalPresetOrigin, isPresetOrigin } from "./profilePresetSeed.ts";
 
 export const PROFILE_COLLECTION = "profile";
 export const PROFILE_SCHEMA_VERSION = 1;
 export const PROFILE_ALREADY_EXISTS = "This entity already has a Profile";
-export const PROFILE_PRESET_ORIGINS = ["custom", "dnd", "fantasy", "scifi"] as const;
-
-export type ProfilePresetOrigin = (typeof PROFILE_PRESET_ORIGINS)[number];
-
-const PRESET_ORIGIN_SET = new Set<string>(PROFILE_PRESET_ORIGINS);
 
 export const PROFILE_COMPONENT_KINDS = [
   "attribute",
@@ -55,7 +51,7 @@ export type ProfileAllocation = {
 
 export type ProfileDocument = {
   schemaVersion: number;
-  presetOrigin?: ProfilePresetOrigin;
+  presetOrigin?: string;
   allocation?: ProfileAllocation;
   components: ProfileComponent[];
 };
@@ -68,7 +64,7 @@ export function canEditLoreProfile(entityType: string | null | undefined, ownerT
 }
 
 export function emptyProfile(): ProfileDocument {
-  return { schemaVersion: PROFILE_SCHEMA_VERSION, presetOrigin: "custom", components: [] };
+  return { schemaVersion: PROFILE_SCHEMA_VERSION, components: [] };
 }
 
 export function defaultValueForKind(kind: ProfileComponentKind): ProfileValue {
@@ -188,7 +184,7 @@ export function profileValidationErrors(input: unknown): string[] {
   if (!input || typeof input !== "object" || Array.isArray(input)) return ["Profile must be an object"];
   const document = input as Record<string, unknown>;
   if (document.schemaVersion !== PROFILE_SCHEMA_VERSION) errors.push("Unsupported Profile version");
-  if (document.presetOrigin !== undefined && !PRESET_ORIGIN_SET.has(String(document.presetOrigin))) {
+  if (document.presetOrigin !== undefined && !isPresetOrigin(String(document.presetOrigin))) {
     errors.push("Unknown Profile preset");
   }
   parseAllocation(document.allocation, errors);
@@ -372,9 +368,10 @@ export function parseProfile(input: unknown): ProfileDocument {
 
 function readProfile(input: unknown): ProfileDocument {
   const document = input as Record<string, unknown>;
-  const presetOrigin = PRESET_ORIGIN_SET.has(String(document.presetOrigin))
-    ? (document.presetOrigin as ProfilePresetOrigin)
-    : undefined;
+  const presetOrigin =
+    document.presetOrigin !== undefined && isPresetOrigin(String(document.presetOrigin))
+      ? canonicalPresetOrigin(String(document.presetOrigin))
+      : undefined;
   const allocation = parseAllocation(document.allocation, []);
   return {
     schemaVersion: PROFILE_SCHEMA_VERSION,

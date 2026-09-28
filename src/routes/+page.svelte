@@ -176,6 +176,7 @@ import InspectorOverview from "$lib/shell/InspectorOverview.svelte";
 import EntityFieldsDialog from "$lib/shell/EntityFieldsDialog.svelte";
 import { type EntityFieldsTab, type EntityFieldsTabId } from "$lib/shell/entityFields";
 import ProfileEditor from "$lib/lore/ProfileEditor.svelte";
+import { ensureProjectProfilePresets } from "$lib/lore/profileStore";
 import ProfileEventChanges from "$lib/lore/ProfileEventChanges.svelte";
 import { canEditLoreProfile as entityTypeCanHaveProfile } from "$lib/lore/profile";
 import { notifyProfileTimelineChanged } from "$lib/lore/profileStore";
@@ -4337,6 +4338,13 @@ async function finishOpening(info?: ProjectInfo) {
   await loadAiPromptTemplates();
   await refreshRemoteCredential();
   modules = await project.listModuleManifests();
+  if (modules.some((module) => module.id === "daena.lore" && module.enabled)) {
+    try {
+      await ensureProjectProfilePresets(projectInfo.root);
+    } catch (cause) {
+      error = friendlyError(cause);
+    }
+  }
   await reconcileWorkspaceSection();
   rememberProject(projectInfo);
   await loadEntities();

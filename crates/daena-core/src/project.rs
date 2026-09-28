@@ -109,6 +109,7 @@ pub struct ProjectStore {
     suppress_sync: Cell<bool>,
     _session_lock: Option<crate::sync::ProjectSessionLock>,
     export_worker: Option<ExportWorker>,
+    project_record_collections: std::collections::BTreeSet<(String, String)>,
 }
 
 #[cfg(windows)]

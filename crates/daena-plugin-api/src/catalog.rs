@@ -633,8 +633,9 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
             &[],
         ),
         "record.list" => (
-            &["collection", "ownerEntityId"],
+            &["collection"],
             &[
+                "ownerEntityId",
                 "query",
                 "limit",
                 "offset",
@@ -644,20 +645,14 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
                 "homonymsOnly",
             ],
         ),
-        "record.create" => (&["collection", "ownerEntityId", "value"], &[]),
+        "record.create" => (&["collection", "value"], &["ownerEntityId", "id"]),
         "record.update" => (
-            &[
-                "collection",
-                "id",
-                "ownerEntityId",
-                "value",
-                "expectedRevision",
-            ],
-            &[],
+            &["collection", "id", "value", "expectedRevision"],
+            &["ownerEntityId"],
         ),
         "record.delete" => (
-            &["collection", "id", "ownerEntityId", "expectedRevision"],
-            &[],
+            &["collection", "id", "expectedRevision"],
+            &["ownerEntityId"],
         ),
         "relationship.list" => (&["entityId"], &[]),
         "relationship.query" => (

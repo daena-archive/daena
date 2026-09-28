@@ -1310,14 +1310,22 @@
         "collection": {
           "type": "string"
         },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ownerEntityId": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "value": true
       },
       "required": [
         "collection",
-        "ownerEntityId",
         "value"
       ],
       "type": "object"
@@ -1335,14 +1343,16 @@
           "type": "string"
         },
         "ownerEntityId": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "collection",
         "expectedRevision",
-        "id",
-        "ownerEntityId"
+        "id"
       ],
       "type": "object"
     },
@@ -1375,7 +1385,10 @@
           ]
         },
         "ownerEntityId": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "query": {
           "type": [
@@ -1403,8 +1416,7 @@
         }
       },
       "required": [
-        "collection",
-        "ownerEntityId"
+        "collection"
       ],
       "type": "object"
     },
@@ -1421,7 +1433,10 @@
           "type": "string"
         },
         "ownerEntityId": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "value": true
       },
@@ -1429,7 +1444,6 @@
         "collection",
         "expectedRevision",
         "id",
-        "ownerEntityId",
         "value"
       ],
       "type": "object"
@@ -3141,8 +3155,7 @@
       "requiredPayload": [
         "collection",
         "expectedRevision",
-        "id",
-        "ownerEntityId"
+        "id"
       ]
     },
     "record.list": {
@@ -3156,7 +3169,6 @@
         "collection",
         "expectedRevision",
         "id",
-        "ownerEntityId",
         "value"
       ]
     },

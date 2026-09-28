@@ -449,7 +449,8 @@ pub struct PluginStateFile {
 pub struct CanonicalModuleRecord {
     pub collection: String,
     pub id: String,
-    pub owner_entity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_entity_id: Option<String>,
     pub value: serde_json::Value,
     pub created_at: String,
     pub updated_at: String,
@@ -537,7 +538,14 @@ impl FilesystemRepository {
     }
 
     pub fn scan(&self) -> Result<CanonicalProject, CoreError> {
-        read_canonical_project(&self.root)
+        self.scan_with_project_records(&std::collections::BTreeSet::new())
+    }
+
+    pub fn scan_with_project_records(
+        &self,
+        project_records: &std::collections::BTreeSet<(String, String)>,
+    ) -> Result<CanonicalProject, CoreError> {
+        read_canonical_project_with_project_records(&self.root, project_records)
     }
 
     #[must_use]
@@ -574,7 +582,9 @@ impl PluginStateFile {
         for record in &self.records {
             validate_component(&record.collection, path, "plugin.record.collection")?;
             validate_uuid(path, "plugin.record.id", &record.id)?;
-            validate_uuid(path, "plugin.record.owner", &record.owner_entity_id)?;
+            if let Some(owner) = &record.owner_entity_id {
+                validate_uuid(path, "plugin.record.owner", owner)?;
+            }
             if !record.value.is_object() {
                 return Err(codec_error(
                     path,
@@ -1221,6 +1231,13 @@ pub(crate) fn write_canonical_plugin(
 }
 
 pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError> {
+    read_canonical_project_with_project_records(root, &std::collections::BTreeSet::new())
+}
+
+pub fn read_canonical_project_with_project_records(
+    root: &Path,
+    project_records: &std::collections::BTreeSet<(String, String)>,
+) -> Result<CanonicalProject, CoreError> {
     let manifest_path = root.join("project.json");
     let manifest: ProjectManifest = read_json(&manifest_path)?;
     manifest.validate(&manifest_path)?;
@@ -1585,12 +1602,31 @@ pub fn read_canonical_project(root: &Path) -> Result<CanonicalProject, CoreError
                 schema_overlay: state.schema_overlay,
             });
             for record in state.records {
-                if !entity_ids.contains(&record.owner_entity_id) {
-                    return Err(codec_error(
-                        &path,
-                        "plugin.record.owner",
-                        "record owner entity is missing",
-                    ));
+                let project_scoped =
+                    project_records.contains(&(plugin_id.to_string(), record.collection.clone()));
+                match &record.owner_entity_id {
+                    Some(_owner) if project_scoped => {
+                        return Err(codec_error(
+                            &path,
+                            "plugin.record.owner",
+                            "project-scoped record must omit ownerEntityId",
+                        ));
+                    }
+                    Some(owner) if !entity_ids.contains(owner) => {
+                        return Err(codec_error(
+                            &path,
+                            "plugin.record.owner",
+                            "record owner entity is missing",
+                        ));
+                    }
+                    None if !project_scoped => {
+                        return Err(codec_error(
+                            &path,
+                            "plugin.record.owner",
+                            "record owner entity is missing",
+                        ));
+                    }
+                    _ => {}
                 }
                 module_records.push(ModuleRecord {
                     module_id: plugin_id.into(),

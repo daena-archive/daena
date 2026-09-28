@@ -142,7 +142,7 @@ impl ProjectStore {
                     module_id: row.get(0)?,
                     collection: row.get(1)?,
                     id: row.get(2)?,
-                    owner_entity_id: row.get(3)?,
+                    owner_entity_id: row.get::<_, Option<String>>(3)?,
                     value: decode_field_value(value),
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
@@ -451,7 +451,8 @@ impl ProjectStore {
         dir: impl AsRef<Path>,
     ) -> Result<String, CoreError> {
         let root = self.project_root()?;
-        crate::storage::FilesystemRepository::open(root)?.scan()?;
+        crate::storage::FilesystemRepository::open(root)?
+            .scan_with_project_records(&self.project_record_collections)?;
 
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|source| CoreError::Io {
@@ -763,7 +764,8 @@ impl ProjectStore {
     pub fn restore(&mut self, path: String) -> Result<(), CoreError> {
         let path_ref = Path::new(&path);
         if path_ref.is_dir() {
-            let canonical = crate::storage::FilesystemRepository::open(path_ref)?.scan()?;
+            let canonical = crate::storage::FilesystemRepository::open(path_ref)?
+                .scan_with_project_records(&self.project_record_collections)?;
             let payload = serde_json::to_string(&canonical.snapshot)
                 .map_err(|error| CoreError::Serialization(error.to_string()))?;
             self.restore_payload(&payload)?;

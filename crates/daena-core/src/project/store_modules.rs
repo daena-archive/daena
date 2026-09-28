@@ -236,7 +236,7 @@ impl ProjectStore {
             module_id: module_id.into(),
             collection: collection.into(),
             id: id.clone(),
-            owner_entity_id: owner_entity_id.into(),
+            owner_entity_id: Some(owner_entity_id.into()),
             value: value.clone(),
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -341,7 +341,7 @@ impl ProjectStore {
                 module_id: row.get(0)?,
                 collection: row.get(1)?,
                 id: row.get(2)?,
-                owner_entity_id: row.get(3)?,
+                owner_entity_id: row.get::<_, Option<String>>(3)?,
                 value: decode_field_value(encoded),
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
@@ -494,6 +494,393 @@ impl ProjectStore {
         Ok(())
     }
 
+    pub fn list_project_module_records(
+        &self,
+        module_id: &str,
+        collection: &str,
+        params: ModuleRecordListParams<'_>,
+    ) -> Result<Vec<ModuleRecord>, CoreError> {
+        validate_project_module_record_scope(module_id, collection)?;
+        let limit = params.limit.clamp(1, 100) as i64;
+        let offset = i64::try_from(params.offset)
+            .map_err(|_| CoreError::Validation("record offset is too large".into()))?;
+        let query = params.query.unwrap_or_default().trim();
+        if query.len() > 200 {
+            return Err(CoreError::Validation(
+                "record search query exceeds 200 bytes".into(),
+            ));
+        }
+        let status = optional_record_filter(params.status, "record status")?;
+        let tag = optional_record_filter(params.tag, "record tag")?;
+        let order = module_record_order_sql(
+            params.sort.unwrap_or("name"),
+            if query.is_empty() { "" } else { "r." },
+        )?;
+        let alias = if query.is_empty() { "" } else { "r." };
+        let json_source = if alias.is_empty() {
+            "module_records.value".to_string()
+        } else {
+            format!("{alias}value")
+        };
+        let filters = format!(
+            "AND (:status IS NULL OR json_extract({json_source}, '$.status') = :status) \
+             AND (:tag IS NULL OR EXISTS (SELECT 1 FROM json_each({json_source}, '$.tags') AS tag_item WHERE tag_item.atom = :tag))"
+        );
+        let sql = if query.is_empty() {
+            format!(
+                "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE module_id=:module AND collection=:collection AND owner_entity_id IS NULL {filters} ORDER BY {order} LIMIT :limit OFFSET :offset"
+            )
+        } else {
+            format!(
+                "SELECT r.module_id,r.collection,r.id,r.owner_entity_id,r.value,r.created_at,r.updated_at FROM module_records r JOIN module_record_search s ON s.record_id=r.id WHERE s.module_id=:module AND s.collection=:collection AND s.owner_entity_id='' AND module_record_search MATCH :terms {filters} ORDER BY {order} LIMIT :limit OFFSET :offset"
+            )
+        };
+        let terms = query
+            .split_whitespace()
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let mut statement = self.connection.prepare(&sql)?;
+        let read_record = |row: &rusqlite::Row<'_>| {
+            let encoded: String = row.get(4)?;
+            Ok(ModuleRecord {
+                module_id: row.get(0)?,
+                collection: row.get(1)?,
+                id: row.get(2)?,
+                owner_entity_id: row.get::<_, Option<String>>(3)?,
+                value: decode_field_value(encoded),
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                revision: String::new(),
+            })
+        };
+        let rows = if query.is_empty() {
+            statement.query_map(
+                named_params! {
+                    ":module": module_id,
+                    ":collection": collection,
+                    ":status": status,
+                    ":tag": tag,
+                    ":limit": limit,
+                    ":offset": offset,
+                },
+                read_record,
+            )?
+        } else {
+            statement.query_map(
+                named_params! {
+                    ":module": module_id,
+                    ":collection": collection,
+                    ":terms": terms,
+                    ":status": status,
+                    ":tag": tag,
+                    ":limit": limit,
+                    ":offset": offset,
+                },
+                read_record,
+            )?
+        };
+        let mut records = rows.collect::<Result<Vec<_>, _>>()?;
+        for record in &mut records {
+            record.revision = self.revision_for_module_record_value(record)?;
+        }
+        Ok(records)
+    }
+
+    pub fn create_project_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: Option<&str>,
+        value: serde_json::Value,
+        request_id: Option<&str>,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_project_module_record_input(module_id, collection, &value)?;
+        let id = match id {
+            Some(id) => {
+                Uuid::parse_str(id)
+                    .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
+                id.to_string()
+            }
+            None => Uuid::new_v4().to_string(),
+        };
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(module_id, collection, &id, &value))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut record) = self
+            .committed_mutation_with_fingerprint::<ModuleRecord>(request_id, Some(&fingerprint))?
+        {
+            record.revision = self.revision_for_module_record_value(&record)?;
+            return Ok(record);
+        }
+        if self
+            .connection
+            .query_row(
+                "SELECT 1 FROM module_records WHERE id=?1",
+                params![id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        {
+            return Err(CoreError::Validation(
+                "module record ID is already in use".into(),
+            ));
+        }
+        let now = chrono_like_now();
+        let encoded = serde_json::to_string(&value)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let result = ModuleRecord {
+            module_id: module_id.into(),
+            collection: collection.into(),
+            id: id.clone(),
+            owner_entity_id: None,
+            value: value.clone(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+        };
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::to_value(&result)?),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "INSERT INTO module_records(module_id,collection,id,owner_entity_id,value,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?5)",
+            params![module_id, collection, id, encoded, now],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let mut record = result;
+        record.revision = self.revision_for_module_record(&record.id)?;
+        Ok(record)
+    }
+
+    pub fn update_project_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+        value: serde_json::Value,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_project_module_record_input(module_id, collection, &value)?;
+        Uuid::parse_str(id)
+            .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(module_id, collection, id, &value, expected_revision))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if let Some(mut record) = self
+            .committed_mutation_with_fingerprint::<ModuleRecord>(request_id, Some(&fingerprint))?
+        {
+            record.revision = self.revision_for_module_record_value(&record)?;
+            return Ok(record);
+        }
+        let current = self.project_module_record(module_id, collection, id)?;
+        Self::ensure_expected_revision(Some(expected_revision), current.revision, "module record")?;
+        let now = chrono_like_now();
+        let encoded = serde_json::to_string(&value)
+            .map_err(|error| CoreError::Serialization(error.to_string()))?;
+        let result = ModuleRecord {
+            value: value.clone(),
+            updated_at: now.clone(),
+            revision: String::new(),
+            ..current
+        };
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::to_value(&result)?),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "UPDATE module_records SET value=?1,updated_at=?2 WHERE id=?3 AND module_id=?4 AND collection=?5 AND owner_entity_id IS NULL",
+            params![encoded, now, id, module_id, collection],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        let mut record = result;
+        record.revision = self.revision_for_module_record(id)?;
+        Ok(record)
+    }
+
+    pub fn delete_project_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+        expected_revision: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), CoreError> {
+        validate_project_module_record_scope(module_id, collection)?;
+        Uuid::parse_str(id)
+            .map_err(|_| CoreError::Validation("module record ID must be a UUID".into()))?;
+        let fingerprint = digest_bytes(
+            &serde_json::to_vec(&(module_id, collection, id, expected_revision))
+                .map_err(|error| CoreError::Serialization(error.to_string()))?,
+        );
+        if self
+            .committed_mutation_with_fingerprint::<serde_json::Value>(
+                request_id,
+                Some(&fingerprint),
+            )?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let current = self.project_module_record(module_id, collection, id)?;
+        Self::ensure_expected_revision(Some(expected_revision), current.revision, "module record")?;
+        let request_id = self.request_id(request_id)?;
+        let transaction = self.begin_mutation_with_fingerprint(
+            &request_id,
+            Some(&serde_json::Value::Null),
+            &[format!("plugins/{module_id}.json")],
+            &fingerprint,
+        )?;
+        transaction.execute(
+            "DELETE FROM module_records WHERE id=?1 AND module_id=?2 AND collection=?3 AND owner_entity_id IS NULL",
+            params![id, module_id, collection],
+        )?;
+        transaction.commit()?;
+        self.notify_export_worker()?;
+        Ok(())
+    }
+
+    pub(crate) fn project_module_record(
+        &self,
+        module_id: &str,
+        collection: &str,
+        id: &str,
+    ) -> Result<ModuleRecord, CoreError> {
+        validate_project_module_record_scope(module_id, collection)?;
+        let mut record = self
+            .connection
+            .query_row(
+                "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE id=?1 AND module_id=?2 AND collection=?3 AND owner_entity_id IS NULL",
+                params![id, module_id, collection],
+                |row| {
+                    let encoded: String = row.get(4)?;
+                    Ok(ModuleRecord {
+                        module_id: row.get(0)?,
+                        collection: row.get(1)?,
+                        id: row.get(2)?,
+                        owner_entity_id: row.get::<_, Option<String>>(3)?,
+                        value: decode_field_value(encoded),
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                        revision: String::new(),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| CoreError::NotFound("module record not found".into()))?;
+        record.revision = self.revision_for_module_record(&record.id)?;
+        Ok(record)
+    }
+
+    pub fn list_owned_module_records(
+        &self,
+        module_id: &str,
+        collection: &str,
+    ) -> Result<Vec<ModuleRecord>, CoreError> {
+        validate_project_module_record_scope(module_id, collection)?;
+        let mut statement = self.connection.prepare(
+            "SELECT module_id,collection,id,owner_entity_id,value,created_at,updated_at FROM module_records WHERE module_id=?1 AND collection=?2 AND owner_entity_id IS NOT NULL ORDER BY id",
+        )?;
+        let rows = statement.query_map(params![module_id, collection], |row| {
+            let encoded: String = row.get(4)?;
+            Ok(ModuleRecord {
+                module_id: row.get(0)?,
+                collection: row.get(1)?,
+                id: row.get(2)?,
+                owner_entity_id: row.get::<_, Option<String>>(3)?,
+                value: decode_field_value(encoded),
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                revision: String::new(),
+            })
+        })?;
+        let mut records = rows.collect::<Result<Vec<_>, _>>()?;
+        for record in &mut records {
+            record.revision = self.revision_for_module_record(&record.id)?;
+        }
+        Ok(records)
+    }
+
+    pub fn replace_owned_record_string_field(
+        &self,
+        module_id: &str,
+        collection: &str,
+        field: &str,
+        replacements: &[(String, String)],
+    ) -> Result<usize, CoreError> {
+        if field.is_empty()
+            || !field
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(CoreError::Validation(
+                "module record field name is invalid".into(),
+            ));
+        }
+        if replacements.is_empty() || replacements.len() > 32 {
+            return Err(CoreError::Validation(
+                "module record string replacements must contain 1 to 32 entries".into(),
+            ));
+        }
+        if replacements
+            .iter()
+            .any(|(from, to)| from.is_empty() || to.is_empty())
+        {
+            return Err(CoreError::Validation(
+                "module record string replacements cannot be empty".into(),
+            ));
+        }
+        let records = self.list_owned_module_records(module_id, collection)?;
+        let mut replaced = 0;
+        for record in records {
+            let Some(current) = record.value.get(field).and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(next) = replacements
+                .iter()
+                .find(|(from, _)| from == current)
+                .map(|(_, to)| to.as_str())
+            else {
+                continue;
+            };
+            if next == current {
+                continue;
+            }
+            let Some(owner) = record.owner_entity_id.as_deref() else {
+                continue;
+            };
+            let mut value = record.value;
+            if let Some(object) = value.as_object_mut() {
+                object.insert(field.to_owned(), serde_json::Value::String(next.to_owned()));
+            } else {
+                continue;
+            }
+            self.update_module_record(
+                module_id,
+                collection,
+                &record.id,
+                owner,
+                value,
+                &record.revision,
+                None,
+            )?;
+            replaced += 1;
+        }
+        Ok(replaced)
+    }
+
     pub(crate) fn module_record(
         &self,
         module_id: &str,
@@ -513,7 +900,7 @@ impl ProjectStore {
                         module_id: row.get(0)?,
                         collection: row.get(1)?,
                         id: row.get(2)?,
-                        owner_entity_id: row.get(3)?,
+                        owner_entity_id: row.get::<_, Option<String>>(3)?,
                         value: decode_field_value(encoded),
                         created_at: row.get(5)?,
                         updated_at: row.get(6)?,
@@ -652,9 +1039,9 @@ impl ProjectStore {
         )?;
         self.connection.execute_batch(
             "CREATE VIRTUAL TABLE module_record_search USING fts5(module_id UNINDEXED, collection UNINDEXED, owner_entity_id UNINDEXED, record_id UNINDEXED, content);
-             INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) SELECT module_id,collection,owner_entity_id,id,value FROM module_records;
-             CREATE TRIGGER module_records_search_insert AFTER INSERT ON module_records BEGIN INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,new.owner_entity_id,new.id,new.value); END;
-             CREATE TRIGGER module_records_search_update AFTER UPDATE ON module_records BEGIN DELETE FROM module_record_search WHERE record_id=old.id; INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,new.owner_entity_id,new.id,new.value); END;
+             INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) SELECT module_id,collection,COALESCE(owner_entity_id, ''),id,value FROM module_records;
+             CREATE TRIGGER module_records_search_insert AFTER INSERT ON module_records BEGIN INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,COALESCE(new.owner_entity_id, ''),new.id,new.value); END;
+             CREATE TRIGGER module_records_search_update AFTER UPDATE ON module_records BEGIN DELETE FROM module_record_search WHERE record_id=old.id; INSERT INTO module_record_search(module_id,collection,owner_entity_id,record_id,content) VALUES (new.module_id,new.collection,COALESCE(new.owner_entity_id, ''),new.id,new.value); END;
              CREATE TRIGGER module_records_search_delete AFTER DELETE ON module_records BEGIN DELETE FROM module_record_search WHERE record_id=old.id; END;",
         )?;
         self.rebuild_maps_projection()?;

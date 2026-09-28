@@ -571,16 +571,17 @@ Presets are Profile templates stored as data.
 
 Presets are `module_records` entries in a `profile-preset` collection on
 `daena.lore`. Bundled presets and user-created presets use the same storage
-and code path. Presets are never hardcoded constants once that collection
-ships.
+and code path. The collection is shipped. The picker copies stored records.
+Seed data remains in a migration file so new projects can be seeded.
 
 The collection is project-scoped, not entity-owned. Do not create a sentinel,
-nil, or hidden entity to own presets. `module_records.owner_entity_id` is a
-required foreign key to `entities`, and a checkpoint rejects a record whose
-owner entity is missing. A fake owner would also delete every preset when that
-entity is deleted. Shipping the collection requires a project owner scope
-whose rows have no entity owner, including on checkpoint restore. `profile`
-and `profile-change` stay entity-owned.
+nil, or hidden entity to own presets, and do not store a nil UUID or an empty
+owner string. Preset rows are portable records in `plugins/daena.lore.json`.
+They omit `ownerEntityId`. A checkpoint must accept that omission only for a
+collection the module manifest declares as project-scoped. `profile` and
+`profile-change` stay entity-owned and still require an owner entity. Portrait
+assets (`role: profile`) are not Profile records. Record ids are stable UUIDs;
+the delivery plan lists them.
 
 A preset defines:
 
@@ -2008,16 +2009,23 @@ The shipped Profile capability includes:
 
 ### Presets
 
-Shipped presets are hardcoded TypeScript constants:
+Shipped presets are project-scoped `profile-preset` records, seeded from
+bundled definitions. Portable rows omit `ownerEntityId`.
 
 - D&D (person-oriented)
 - Fantasy (person-oriented)
 - Sci-Fi (person-oriented)
 - Custom (empty)
 
-Presets are copy-on-create. Preset updates do not rewrite instances.
+Presets are copy-on-create. The picker reads stored records, not seed
+constants. Preset updates do not rewrite instances. If no preset records
+exist, creating a Profile starts empty and leaves `presetOrigin` unset.
+`presetOrigin` stores the preset record ID. Legacy `"custom"`, `"dnd"`,
+`"fantasy"`, and `"scifi"` values are accepted on read and rewritten to those
+IDs.
 
-Shipped presets are person-centric. Non-person entities must use Custom.
+Shipped presets are person-centric. Non-person entities must use Custom when
+that record is present.
 
 ### Timeline
 
@@ -2040,11 +2048,10 @@ The delivery plan is [`plans/profile-presets.md`](../plans/profile-presets.md).
 
 ### Data-Driven Presets
 
-- Presets stored as project-scoped `profile-preset` records, not entity-owned records and not hardcoded constants.
-- `presetOrigin` changes from a hardcoded enum to a string (preset record ID).
-- Bundled presets seeded on project creation.
-- User-created presets via "Save as Preset" and preset management surface.
-- Preset picker reads from records instead of code.
+Project-scoped preset storage, bundled seeding, and record-backed
+copy-on-create are shipped. See section 27. Still planned:
+
+- User-created presets via "Save as Preset" and a preset management surface.
 
 ### Entity-Oriented Presets
 

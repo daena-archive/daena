@@ -1,6 +1,8 @@
 import { parseCalendarDate } from "$lib/date";
+import { buildModuleContext } from "$lib/modules/context";
 import { project } from "$lib/project/client";
-import type { ModuleContext, UUID } from "../../../packages/module-api/src/index";
+import type { ModuleContext, ModuleManifest, UUID } from "../../../packages/module-api/src/index";
+import loreManifestJson from "../../../packages/modules/lore/manifest.json";
 import {
   emptyProfile,
   parseProfile,
@@ -8,6 +10,8 @@ import {
   PROFILE_COLLECTION,
   type ProfileDocument,
 } from "./profile";
+import { ensureBundledProfilePresets } from "./profilePresets";
+import { LEGACY_PRESET_IDS } from "./profilePresetSeed";
 import {
   changesForEvent,
   dateAfter,
@@ -33,6 +37,18 @@ export type StoredProfile = {
   error?: string;
   invalid?: boolean;
 };
+
+export async function ensureProjectProfilePresets(projectId: string): Promise<void> {
+  const context = buildModuleContext(loreManifestJson as unknown as ModuleManifest, projectId);
+  await ensureBundledProfilePresets(context);
+  const manifest = loreManifestJson as { id?: string };
+  await project.replaceRecordStringField(
+    manifest.id ?? "daena.lore",
+    PROFILE_COLLECTION,
+    "presetOrigin",
+    Object.entries(LEGACY_PRESET_IDS),
+  );
+}
 
 export const PROFILE_CHANGED_EVENT = "daena:profile-changed";
 export const PROFILE_TIMELINE_EVENT = "daena:profile-timeline-changed";

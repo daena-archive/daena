@@ -29,9 +29,19 @@ import {
   valuePatches,
 } from "../src/lib/lore/profileHistory.ts";
 import {
-  PROFILE_PRESETS,
+  BUNDLED_PROFILE_PRESET_SEEDS,
+  CUSTOM_PRESET_ID,
+  DND_PRESET_ID,
+  FANTASY_PRESET_ID,
+  canonicalPresetOrigin,
+} from "../src/lib/lore/profilePresetSeed.ts";
+import {
   applyDndAncestry,
+  bundledPresetDocument,
+  ensureBundledProfilePresets,
   matchingDndAncestry,
+  migrateLegacyPresetOrigins,
+  profileForPresetSelection,
   profileFromPreset,
 } from "../src/lib/lore/profilePresets.ts";
 
@@ -241,18 +251,31 @@ assert.equal(
   "",
 );
 assert.equal(parseProfile({ schemaVersion: 1, components: [] }).presetOrigin, undefined);
-assert.equal(parseProfile({ schemaVersion: 1, presetOrigin: "custom", components: [] }).presetOrigin, "custom");
-assert.equal(emptyProfile().presetOrigin, "custom");
+assert.equal(parseProfile({ schemaVersion: 1, presetOrigin: "custom", components: [] }).presetOrigin, CUSTOM_PRESET_ID);
+assert.equal(emptyProfile().presetOrigin, undefined);
 assert.deepEqual(profileValidationErrors({ schemaVersion: 1, presetOrigin: "dnd", components: [] }), []);
+assert.deepEqual(profileValidationErrors({ schemaVersion: 1, presetOrigin: DND_PRESET_ID, components: [] }), []);
 assert.ok(profileValidationErrors({ schemaVersion: 1, presetOrigin: "modern", components: [] }).length);
 assert.ok(profileValidationErrors({ schemaVersion: 1, allocation: { pool: -1 }, components: [] }).length);
 
-for (const preset of PROFILE_PRESETS) {
-  const copied = profileFromPreset(preset.id);
+assert.deepEqual(
+  BUNDLED_PROFILE_PRESET_SEEDS.map((preset) => preset.id),
+  [
+    "ef2bce76-ca39-59f5-ab9d-28a0b665eb15",
+    "9771b70b-04c4-506e-949b-b26ea5b61235",
+    "1b2c999f-65b5-57b6-9d02-6ce2c40cc977",
+    "d9ff8d59-1cd3-52ae-8adb-5700fbff6ba1",
+  ],
+);
+for (const preset of BUNDLED_PROFILE_PRESET_SEEDS) {
+  const copied = profileFromPreset(preset.legacyKey);
   const ids = copied.components.map((component) => component.id);
-  assert.equal(new Set(ids).size, ids.length, preset.id);
+  assert.equal(new Set(ids).size, ids.length, preset.legacyKey);
   assert.deepEqual(profileValidationErrors(copied), []);
   assert.equal(copied.presetOrigin, preset.id);
+  assert.equal(canonicalPresetOrigin(preset.legacyKey), preset.id);
+  assert.equal("entityTypes" in preset, false);
+  assert.equal("genre" in preset, false);
 }
 
 const mutated = profileFromPreset("dnd");
@@ -261,12 +284,82 @@ if (mutated.components[0].value.type === "number") mutated.components[0].value.v
 const fresh = profileFromPreset("dnd");
 assert.equal(fresh.components[0].name, "Strength");
 assert.equal(fresh.components[0].value.type === "number" ? fresh.components[0].value.value : null, 10);
-assert.equal(parseProfile(fresh).presetOrigin, "dnd");
+assert.equal(parseProfile(fresh).presetOrigin, DND_PRESET_ID);
 
 const fantasy = profileFromPreset("fantasy");
 assert.equal(fantasy.allocation?.pool, 40);
 assert.equal(allocationSpent(fantasy), 40);
 assert.equal(allocationRemaining(fantasy), 0);
+const loadedPresets = BUNDLED_PROFILE_PRESET_SEEDS.map((seed) => ({
+  id: seed.id,
+  revision: "1",
+  document: bundledPresetDocument(seed),
+}));
+for (const preset of loadedPresets) {
+  const fromRecord = profileForPresetSelection(loadedPresets, preset.id);
+  assert.deepEqual(fromRecord, profileFromPreset(preset.id));
+  fromRecord.components.push({
+    id: "extra",
+    kind: "tag",
+    name: "Extra",
+    value: { type: "text", value: null },
+  });
+  assert.equal(profileForPresetSelection(loadedPresets, preset.id).components.length, profileFromPreset(preset.id).components.length);
+}
+const emptySelection = profileForPresetSelection([], CUSTOM_PRESET_ID);
+assert.equal(emptySelection.presetOrigin, undefined);
+assert.deepEqual(emptySelection.components, []);
+assert.equal(profileForPresetSelection(loadedPresets, "missing").presetOrigin, undefined);
+
+const seeded = [];
+await ensureBundledProfilePresets({
+  projectRecords: {
+    async list() {
+      return [{ id: CUSTOM_PRESET_ID }];
+    },
+    async create(_collection, value, options) {
+      seeded.push({ id: options.id, value });
+      return { id: options.id, revision: "1", value };
+    },
+  },
+});
+assert.equal(seeded.length, 3);
+assert.equal(seeded.some((row) => row.id === CUSTOM_PRESET_ID), false);
+assert.equal(seeded.every((row) => row.value.builtin === true && !("entityTypes" in row.value) && !("genre" in row.value)), true);
+
+const listedOrigins = [];
+const rewritten = [];
+await assert.rejects(
+  () =>
+    migrateLegacyPresetOrigins(
+      {
+        records: {
+          async list(_collection, entityId) {
+            listedOrigins.push(entityId);
+            if (entityId === "bad") throw new Error("list failed");
+            if (entityId === "legacy") {
+              return [{ id: "p1", revision: "r1", value: { schemaVersion: 1, presetOrigin: "fantasy", components: [] } }];
+            }
+            if (entityId === "current") {
+              return [{ id: "p2", revision: "r2", value: { schemaVersion: 1, presetOrigin: DND_PRESET_ID, components: [] } }];
+            }
+            return [];
+          },
+          async update(_collection, id, owner, value, options) {
+            rewritten.push({ id, owner, value, options });
+          },
+        },
+      },
+      ["bad", "legacy", "current", "none"],
+    ),
+  /list failed/,
+);
+assert.deepEqual(listedOrigins, ["bad", "legacy", "current", "none"]);
+assert.equal(rewritten.length, 1);
+assert.equal(rewritten[0].id, "p1");
+assert.equal(rewritten[0].value.presetOrigin, FANTASY_PRESET_ID);
+assert.equal(rewritten[0].options.expectedRevision, "r1");
+
 assert.equal(profileFromPreset("custom").components.length, 0);
 assert.equal(profileFromPreset("scifi").allocation, undefined);
 assert.ok(profileFromPreset("dnd").components.some((component) => component.kind === "proficiency"));

@@ -1057,7 +1057,8 @@
     "RecordOwnerScope": {
       "enum": [
         "package",
-        "effective-schema"
+        "effective-schema",
+        "project"
       ],
       "type": "string"
     },

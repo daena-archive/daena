@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub(super) const RUNTIME_STORAGE_ROLE: &str = "daena.runtime";
-pub(super) const RUNTIME_SCHEMA_VERSION: i64 = 1;
+pub(super) const RUNTIME_SCHEMA_VERSION: i64 = 2;
 pub(super) const EXPORTER_CONTRACT_VERSION: &str = "1";
 pub(super) const BACKGROUND_EXPORT_IDLE_DELAY: Duration = Duration::from_secs(2);
 pub(super) const BACKGROUND_EXPORT_MAX_DELAY: Duration = Duration::from_secs(30);

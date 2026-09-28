@@ -211,6 +211,15 @@ export interface ModuleRecord<T = Record<string, unknown>> {
   revision: string;
 }
 
+export interface ProjectModuleRecord<T = Record<string, unknown>> {
+  id: UUID;
+  collection: string;
+  value: T;
+  createdAt: string;
+  updatedAt: string;
+  revision: string;
+}
+
 export interface ModuleRecordQuery {
   query?: string;
   limit?: number;
@@ -350,6 +359,21 @@ export interface ModuleContext {
       options: MutationOptions,
     ): Promise<ModuleRecord<T>>;
     delete(collection: string, id: UUID, ownerEntityId: UUID, options: MutationOptions): Promise<void>;
+  };
+  projectRecords: {
+    list<T = Record<string, unknown>>(collection: string, query?: ModuleRecordQuery): Promise<ProjectModuleRecord<T>[]>;
+    create<T = Record<string, unknown>>(
+      collection: string,
+      value: T,
+      options?: MutationOptions & { id?: string },
+    ): Promise<ProjectModuleRecord<T>>;
+    update<T = Record<string, unknown>>(
+      collection: string,
+      id: UUID,
+      value: T,
+      options: MutationOptions,
+    ): Promise<ProjectModuleRecord<T>>;
+    delete(collection: string, id: UUID, options: MutationOptions): Promise<void>;
   };
   relationships: {
     list(entityId: UUID): Promise<Relationship[]>;

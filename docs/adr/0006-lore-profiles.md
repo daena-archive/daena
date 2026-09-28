@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Decided: 2026-09-07
-- Updated: 2026-09-25
+- Updated: 2026-09-26
 
 ## Context
 
@@ -47,14 +47,21 @@ and not an RPG engine.
    to host a preset.
 
    Preset definitions are project-scoped `profile-preset` records on
-   `daena.lore` once that collection ships, not entity-owned records.
-   `module_records.owner_entity_id` is `NOT NULL REFERENCES entities(id)`, the
-   broker requires a live owner, and checkpoint restore rejects a record whose
-   owner entity is missing. A sentinel or hidden entity is not a preset owner:
-   it would appear in the entity graph, and deleting it would delete the
-   presets. Shipping `profile-preset` requires a project owner scope whose
-   rows have no entity owner, including on checkpoint restore. `profile` and
-   `profile-change` stay entity-owned.
+   `daena.lore`, not entity-owned records. Entity-owned rows still require
+   `owner_entity_id`. Project-scoped rows store SQL `NULL` and omit
+   `ownerEntityId`. A sentinel or hidden entity is not a preset owner: it
+   would appear in the entity graph, and deleting it would delete the
+   presets. A nil UUID or empty owner string is the same mistake.
+
+   Project scope is a contract extension, not a new table. A project-scoped
+   row stores no entity owner: SQL `NULL`, and no `ownerEntityId` in
+   `plugins/<plugin-id>.json`. A present `ownerEntityId` must still name an
+   entity in that checkpoint. An absent owner is valid only when the module
+   manifest declares that collection as project-scoped. If the manifest is
+   unavailable, reject the row. Do not hardcode `profile-preset` in core.
+   Do not bump the portable format version. The runtime schema version must
+   change with the column constraint; rebuild from the checkpoint instead of
+   altering an open database. `profile` and `profile-change` stay entity-owned.
 
 4. **History.** Authored changelog with optional `eventId`. Fold
    `baseline + changes with date ≤ T` on read. Editing current state updates
@@ -83,6 +90,8 @@ and not an RPG engine.
 - A formula or fold engine in `daena-core`.
 - New first-class entity types for kingdoms, ships, or creatures.
 - A sentinel, nil, or hidden entity as the owner of preset records.
+- A nil UUID or empty string standing in for “no owner.”
+- An in-place table alter that leaves the runtime schema version unchanged.
 - Reusing asset “profile” or RPG “character sheet” as the only UI name.
 
 ## Consequences
@@ -99,8 +108,10 @@ and not an RPG engine.
   type, including overlay types, with trusted-shell wiki and editor surfaces,
   copy-on-create presets, an optional point pool, read-time formulas, and
   `profile-change` history folded against Timeline. Search indexes, if added,
-  are disposable projections over stable component ids. Those four presets
-  remain hardcoded until the delivery plan replaces them with project-scoped
-  records.
+  are disposable projections over stable component ids. Those four presets are
+  project-scoped `profile-preset` records seeded from bundled definitions.
+  `presetOrigin` stores the preset record ID. Legacy string ids are accepted
+  on read and rewritten to those IDs. The picker copies the stored record. If
+  no preset records exist, a new Profile is empty and `presetOrigin` is unset.
 - Product behavior remains [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md).
   Preset delivery is [`plans/profile-presets.md`](../plans/profile-presets.md).

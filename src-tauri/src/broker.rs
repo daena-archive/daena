@@ -50,16 +50,21 @@ pub(super) enum RecordOwnerConstraint {
         live_types: Vec<String>,
         unique_per_owner: bool,
     },
+    Project,
 }
 
 impl RecordOwnerConstraint {
     fn unique_per_owner(&self) -> bool {
         match self {
-            Self::Package(_) => false,
+            Self::Package(_) | Self::Project => false,
             Self::EffectiveSchema {
                 unique_per_owner, ..
             } => *unique_per_owner,
         }
+    }
+
+    fn is_project(&self) -> bool {
+        matches!(self, Self::Project)
     }
 }
 
@@ -78,7 +83,23 @@ pub(super) fn record_owner_constraint_from_declaration(
                 unique_per_owner: collection.unique_per_owner,
             })
         }
+        daena_plugin_api::RecordOwnerScope::Project => Ok(RecordOwnerConstraint::Project),
     }
+}
+
+pub(super) fn project_record_collections(host: &PluginHost) -> Vec<(String, String)> {
+    host.catalog
+        .list()
+        .flat_map(|entry| {
+            let module_id = entry.manifest.id.clone();
+            entry
+                .manifest
+                .records
+                .iter()
+                .filter(|record| record.owner_scope == daena_plugin_api::RecordOwnerScope::Project)
+                .map(move |record| (module_id.clone(), record.id.clone()))
+        })
+        .collect()
 }
 
 fn live_record_owner_types(
@@ -108,6 +129,43 @@ fn live_record_owner_types(
     Ok(types_of(&merged))
 }
 
+pub(super) fn record_owner_from_payload(
+    payload: &serde_json::Value,
+    constraint: Option<&RecordOwnerConstraint>,
+) -> Result<Option<String>, CoreError> {
+    let constraint = constraint.ok_or_else(|| CoreError::Unauthorized {
+        operation: "access undeclared module record collection",
+    })?;
+    let owner = match payload.get("ownerEntityId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(CoreError::Validation(
+                    "ownerEntityId must be omitted, not empty".into(),
+                ));
+            }
+            Some(trimmed.to_owned())
+        }
+        Some(_) => {
+            return Err(CoreError::Validation(
+                "ownerEntityId must be a string".into(),
+            ));
+        }
+    };
+    if constraint.is_project() {
+        if owner.is_some() {
+            return Err(CoreError::Validation(
+                "project-scoped record must omit ownerEntityId".into(),
+            ));
+        }
+        return Ok(None);
+    }
+    owner
+        .ok_or_else(|| CoreError::Validation("plugin RPC payload requires ownerEntityId".into()))
+        .map(Some)
+}
+
 pub(super) fn validate_record_owner_entity_type(
     project: &ProjectStore,
     owner_entity_id: &str,
@@ -117,6 +175,11 @@ pub(super) fn validate_record_owner_entity_type(
     let constraint = constraint.ok_or_else(|| CoreError::Unauthorized {
         operation: "access undeclared module record collection",
     })?;
+    if constraint.is_project() {
+        return Err(CoreError::Validation(
+            "project-scoped record must omit ownerEntityId".into(),
+        ));
+    }
     let owner = project
         .get_entity(owner_entity_id)?
         .ok_or_else(|| CoreError::NotFound("module record owner entity not found".into()))?;
@@ -140,6 +203,11 @@ pub(super) fn validate_record_owner_entity_type(
                     operation: "use disallowed module record owner entity type",
                 });
             }
+        }
+        RecordOwnerConstraint::Project => {
+            return Err(CoreError::Validation(
+                "project-scoped record must omit ownerEntityId".into(),
+            ));
         }
     }
     Ok(())
@@ -429,12 +497,15 @@ pub(super) fn dispatch_module_rpc(
             let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
                 operation: "access module records without plugin identity",
             })?;
-            validate_record_owner_entity_type(
-                project,
-                &payload_string(&payload, "ownerEntityId")?,
-                method,
-                record_owner_entity_types.as_ref(),
-            )?;
+            let owner = record_owner_from_payload(&payload, record_owner_entity_types.as_ref())?;
+            if let Some(owner) = &owner {
+                validate_record_owner_entity_type(
+                    project,
+                    owner,
+                    method,
+                    record_owner_entity_types.as_ref(),
+                )?;
+            }
             let limit = usize::try_from(
                 payload
                     .get("limit")
@@ -449,106 +520,150 @@ pub(super) fn dispatch_module_rpc(
                     .unwrap_or_default(),
             )
             .unwrap_or(usize::MAX);
-            serde_json::to_value(
+            let params = daena_core::ModuleRecordListParams {
+                query: payload.get("query").and_then(serde_json::Value::as_str),
+                limit,
+                offset,
+                sort: payload.get("sort").and_then(serde_json::Value::as_str),
+                status: payload.get("status").and_then(serde_json::Value::as_str),
+                tag: payload.get("tag").and_then(serde_json::Value::as_str),
+                homonyms_only: payload
+                    .get("homonymsOnly")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            };
+            let collection = payload_string(&payload, "collection")?;
+            let records = if owner.is_none() {
+                project.list_project_module_records(module_id, &collection, params)?
+            } else {
                 project.list_module_records_with(
                     module_id,
-                    &payload_string(&payload, "collection")?,
-                    &payload_string(&payload, "ownerEntityId")?,
-                    daena_core::ModuleRecordListParams {
-                        query: payload.get("query").and_then(serde_json::Value::as_str),
-                        limit,
-                        offset,
-                        sort: payload.get("sort").and_then(serde_json::Value::as_str),
-                        status: payload.get("status").and_then(serde_json::Value::as_str),
-                        tag: payload.get("tag").and_then(serde_json::Value::as_str),
-                        homonyms_only: payload
-                            .get("homonymsOnly")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                    },
-                )?,
-            )
-            .map_err(|error| CoreError::Validation(error.to_string()))
+                    &collection,
+                    owner.as_deref().unwrap_or_default(),
+                    params,
+                )?
+            };
+            serde_json::to_value(records).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.create" => {
             let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
                 operation: "create module records without plugin identity",
             })?;
-            validate_record_owner_entity_type(
-                project,
-                &payload_string(&payload, "ownerEntityId")?,
-                method,
-                record_owner_entity_types.as_ref(),
-            )?;
-            serde_json::to_value(
+            let owner = record_owner_from_payload(&payload, record_owner_entity_types.as_ref())?;
+            let value = payload
+                .get("value")
+                .cloned()
+                .ok_or_else(|| CoreError::Validation("record value is required".into()))?;
+            let collection = payload_string(&payload, "collection")?;
+            let record = if let Some(owner) = owner {
+                validate_record_owner_entity_type(
+                    project,
+                    &owner,
+                    method,
+                    record_owner_entity_types.as_ref(),
+                )?;
                 project.create_module_record_with(
                     module_id,
-                    &payload_string(&payload, "collection")?,
-                    &payload_string(&payload, "ownerEntityId")?,
-                    payload
-                        .get("value")
-                        .cloned()
-                        .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
+                    &collection,
+                    &owner,
+                    value,
                     request_id,
                     record_owner_entity_types
                         .as_ref()
                         .is_some_and(RecordOwnerConstraint::unique_per_owner),
-                )?,
-            )
-            .map_err(|error| CoreError::Validation(error.to_string()))
+                )?
+            } else {
+                let id = payload.get("id").and_then(serde_json::Value::as_str);
+                project.create_project_module_record(
+                    module_id,
+                    &collection,
+                    id,
+                    value,
+                    request_id,
+                )?
+            };
+            serde_json::to_value(record).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.update" => {
             let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
                 operation: "update module records without plugin identity",
             })?;
-            validate_record_owner_entity_type(
-                project,
-                &payload_string(&payload, "ownerEntityId")?,
-                method,
-                record_owner_entity_types.as_ref(),
+            let owner = record_owner_from_payload(&payload, record_owner_entity_types.as_ref())?;
+            let value = payload
+                .get("value")
+                .cloned()
+                .ok_or_else(|| CoreError::Validation("record value is required".into()))?;
+            let collection = payload_string(&payload, "collection")?;
+            let id = payload_string(&payload, "id")?;
+            let expected = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
             )?;
-            serde_json::to_value(
+            let record = if let Some(owner) = owner {
+                validate_record_owner_entity_type(
+                    project,
+                    &owner,
+                    method,
+                    record_owner_entity_types.as_ref(),
+                )?;
                 project.update_module_record(
                     module_id,
-                    &payload_string(&payload, "collection")?,
-                    &payload_string(&payload, "id")?,
-                    &payload_string(&payload, "ownerEntityId")?,
-                    payload
-                        .get("value")
-                        .cloned()
-                        .ok_or_else(|| CoreError::Validation("record value is required".into()))?,
-                    &required_payload_string(
-                        &payload,
-                        &["expectedRevision", "expected_revision", "revision"],
-                        "expectedRevision",
-                    )?,
+                    &collection,
+                    &id,
+                    &owner,
+                    value,
+                    &expected,
                     request_id,
-                )?,
-            )
-            .map_err(|error| CoreError::Validation(error.to_string()))
+                )?
+            } else {
+                project.update_project_module_record(
+                    module_id,
+                    &collection,
+                    &id,
+                    value,
+                    &expected,
+                    request_id,
+                )?
+            };
+            serde_json::to_value(record).map_err(|error| CoreError::Validation(error.to_string()))
         }
         "record.delete" => {
             let module_id = plugin_id.ok_or_else(|| CoreError::Unauthorized {
                 operation: "delete module records without plugin identity",
             })?;
-            validate_record_owner_entity_type(
-                project,
-                &payload_string(&payload, "ownerEntityId")?,
-                method,
-                record_owner_entity_types.as_ref(),
+            let owner = record_owner_from_payload(&payload, record_owner_entity_types.as_ref())?;
+            let collection = payload_string(&payload, "collection")?;
+            let id = payload_string(&payload, "id")?;
+            let expected = required_payload_string(
+                &payload,
+                &["expectedRevision", "expected_revision", "revision"],
+                "expectedRevision",
             )?;
-            project.delete_module_record(
-                module_id,
-                &payload_string(&payload, "collection")?,
-                &payload_string(&payload, "id")?,
-                &payload_string(&payload, "ownerEntityId")?,
-                &required_payload_string(
-                    &payload,
-                    &["expectedRevision", "expected_revision", "revision"],
-                    "expectedRevision",
-                )?,
-                request_id,
-            )?;
+            if let Some(owner) = owner {
+                validate_record_owner_entity_type(
+                    project,
+                    &owner,
+                    method,
+                    record_owner_entity_types.as_ref(),
+                )?;
+                project.delete_module_record(
+                    module_id,
+                    &collection,
+                    &id,
+                    &owner,
+                    &expected,
+                    request_id,
+                )?;
+            } else {
+                project.delete_project_module_record(
+                    module_id,
+                    &collection,
+                    &id,
+                    &expected,
+                    request_id,
+                )?;
+            }
             Ok(serde_json::Value::Null)
         }
         "relationship.list" => {
@@ -1055,7 +1170,11 @@ pub(super) async fn project_open(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        core.open_without_flush(trusted_shell(), path)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let records = project_record_collections(&host);
+        core.open_directory_without_flush_with_project_records(trusted_shell(), path, &records)?;
         Ok(())
     })
     .await;
@@ -1097,7 +1216,15 @@ pub(super) async fn project_open_directory(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        let info = core.open_directory_without_flush(trusted_shell(), path)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let records = project_record_collections(&host);
+        let info = core.open_directory_without_flush_with_project_records(
+            trusted_shell(),
+            path,
+            &records,
+        )?;
         Ok(info)
     })
     .await;
@@ -1139,7 +1266,15 @@ pub(super) async fn project_new(
                 .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?
                 .deactivate_project(&previous_project);
         }
-        let info = core.open_directory_without_flush(trusted_shell(), path)?;
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+        let records = project_record_collections(&host);
+        let info = core.open_directory_without_flush_with_project_records(
+            trusted_shell(),
+            path,
+            &records,
+        )?;
         Ok(info)
     })
     .await;

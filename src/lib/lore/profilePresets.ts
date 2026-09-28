@@ -1,6 +1,8 @@
-import type { ModuleContext, UUID } from "../../../packages/module-api/src/index";
+import type { ModuleContext, ProjectModuleRecord, UUID } from "../../../packages/module-api/src/index";
 import {
+  cloneProfileData,
   emptyProfile,
+  emptyValue,
   PROFILE_COLLECTION,
   PROFILE_SCHEMA_VERSION,
   type ProfileComponent,
@@ -28,8 +30,16 @@ export type ProfilePresetDocument = {
   genre?: string;
   builtin?: boolean;
   hidden?: boolean;
+  customized?: boolean;
   allocation?: ProfileDocument["allocation"];
   components: ProfileDocument["components"];
+};
+
+export type ProfilePresetFields = {
+  name: string;
+  description?: string;
+  entityTypes?: string[];
+  genre?: string;
 };
 
 export type LoadedProfilePreset = {
@@ -82,22 +92,45 @@ export function profileForPresetSelection(
   return {
     schemaVersion: PROFILE_SCHEMA_VERSION,
     presetOrigin: selected.id,
-    ...(selected.document.allocation ? { allocation: structuredClone(selected.document.allocation) } : {}),
-    components: structuredClone(selected.document.components ?? []),
+    ...(selected.document.allocation ? { allocation: cloneProfileData(selected.document.allocation) } : {}),
+    components: cloneProfileData(selected.document.components ?? []),
   };
 }
 
-export function profilePresetLabel(id: string | undefined): string {
+export function profilePresetLabel(id: string | undefined, presets?: readonly LoadedProfilePreset[]): string {
+  const loaded = id ? presets?.find((preset) => preset.id === id) : undefined;
+  if (loaded) return loaded.document.name;
   if (!id || isCustomPresetOrigin(id)) return "Custom";
   const seed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === id || preset.legacyKey === id);
-  return seed?.name ?? "Custom";
+  if (seed) return seed.name;
+  return presets ? "" : "Custom";
+}
+
+async function listPresetRecords(context: ModuleContext) {
+  const records: ProjectModuleRecord<ProfilePresetDocument>[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION, {
+      limit: 200,
+      offset,
+    });
+    records.push(...page);
+    if (page.length < 200) break;
+    offset += page.length;
+  }
+  return records;
+}
+
+export async function loadAllProfilePresets(context: ModuleContext): Promise<LoadedProfilePreset[]> {
+  const records = await listPresetRecords(context);
+  return records
+    .filter((record) => record.value)
+    .map((record) => ({ id: record.id, revision: record.revision, document: record.value }));
 }
 
 export async function loadProfilePresets(context: ModuleContext): Promise<LoadedProfilePreset[]> {
-  const records = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION, { limit: 200 });
-  return records
-    .filter((record) => record.value && record.value.hidden !== true)
-    .map((record) => ({ id: record.id, revision: record.revision, document: record.value }));
+  const records = await loadAllProfilePresets(context);
+  return records.filter((record) => record.document.hidden !== true);
 }
 
 export async function migrateLegacyPresetOrigins(context: ModuleContext, entityIds: readonly string[]): Promise<void> {
@@ -151,7 +184,7 @@ export function presetDocumentMatchesSeed(stored: ProfilePresetDocument, seed: P
 }
 
 export async function ensureBundledProfilePresets(context: ModuleContext): Promise<void> {
-  const existing = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION, { limit: 200 });
+  const existing = await listPresetRecords(context);
   const byId = new Map(existing.map((record) => [record.id, record]));
   const failures: string[] = [];
   for (const seed of BUNDLED_PROFILE_PRESET_SEEDS) {
@@ -162,8 +195,11 @@ export async function ensureBundledProfilePresets(context: ModuleContext): Promi
         await context.projectRecords.create(PROFILE_PRESET_COLLECTION, document, { id: seed.id });
         continue;
       }
+      if (stored.value?.customized) continue;
       if (stored.value && presetDocumentMatchesSeed(stored.value, document)) continue;
-      await context.projectRecords.update(PROFILE_PRESET_COLLECTION, stored.id, document, {
+      if (stored.value && !bundledPresetNeedsMigration(stored.value, seed)) continue;
+      const next = stored.value?.hidden ? { ...document, hidden: true } : document;
+      await context.projectRecords.update(PROFILE_PRESET_COLLECTION, stored.id, next, {
         expectedRevision: stored.revision,
       });
     } catch (cause) {
@@ -171,6 +207,167 @@ export async function ensureBundledProfilePresets(context: ModuleContext): Promi
     }
   }
   if (failures.length) throw new Error(failures[0]);
+}
+
+const LEGACY_BUNDLED_NAMES: Partial<Record<LegacyPresetOrigin, string>> = {
+  dnd: "D&D",
+  fantasy: "Fantasy",
+  scifi: "Sci-Fi",
+};
+
+export function bundledPresetNeedsMigration(stored: ProfilePresetDocument, seed: BundledProfilePresetSeed): boolean {
+  const legacyName = seed.legacyKey ? LEGACY_BUNDLED_NAMES[seed.legacyKey] : undefined;
+  return Boolean(legacyName) && stored.name === legacyName && !stored.entityTypes?.length && !stored.genre;
+}
+
+export function normalizePresetFields(fields: ProfilePresetFields): ProfilePresetFields {
+  const name = fields.name.trim();
+  if (!name) throw new Error("Preset name is required");
+  const description = fields.description?.trim() ?? "";
+  const genre = fields.genre?.trim() ?? "";
+  const entityTypes = [
+    ...new Set(fields.entityTypes?.map((id) => qualifiedProfileEntityType(id)).filter(Boolean) ?? []),
+  ];
+  return {
+    name,
+    ...(description ? { description } : {}),
+    ...(entityTypes.length ? { entityTypes } : {}),
+    ...(genre ? { genre } : {}),
+  };
+}
+
+function withoutPresetValueProgress(
+  component: ProfileComponent,
+  origin: ProfileComponent | undefined,
+): ProfileComponent {
+  const value = origin ? cloneProfileData(origin.value) : startingPresetValue(component);
+  if (value.type === "resource" && component.value.type === "resource") {
+    value.unit = component.unit ?? component.value.unit ?? value.unit;
+  }
+  const next: ProfileComponent = {
+    id: component.id,
+    kind: component.kind,
+    name: component.name,
+    value,
+  };
+  if (component.scale) next.scale = [...component.scale];
+  if (component.min !== undefined) next.min = component.min;
+  if (component.max !== undefined) next.max = component.max;
+  if (component.unit) next.unit = component.unit;
+  if (component.formula) next.formula = component.formula;
+  if (component.dependencies) next.dependencies = [...component.dependencies];
+  if (component.decimals !== undefined) next.decimals = component.decimals;
+  return next;
+}
+
+function startingPresetValue(component: ProfileComponent): ProfileComponent["value"] {
+  if (component.value.type === "resource") {
+    return { type: "resource", current: null, max: null, unit: component.unit ?? component.value.unit ?? null };
+  }
+  if (component.value.type === "number" && component.min !== undefined) return { type: "number", value: component.min };
+  return emptyValue(component.value.type);
+}
+
+export function presetFromProfile(
+  profile: ProfileDocument,
+  fields: ProfilePresetFields,
+  origin?: ProfilePresetDocument | null,
+): ProfilePresetDocument {
+  const meta = normalizePresetFields(fields);
+  const originById = new Map((origin?.components ?? []).map((component) => [component.id, component]));
+  return {
+    schemaVersion: PROFILE_PRESET_SCHEMA_VERSION,
+    ...meta,
+    ...(profile.allocation ? { allocation: { ...profile.allocation } } : {}),
+    components: profile.components.map((component) =>
+      withoutPresetValueProgress(component, originById.get(component.id)),
+    ),
+  };
+}
+
+export function blankProfilePreset(fields: ProfilePresetFields): ProfilePresetDocument {
+  return { schemaVersion: PROFILE_PRESET_SCHEMA_VERSION, ...normalizePresetFields(fields), components: [] };
+}
+
+export function applyPresetFields(preset: ProfilePresetDocument, fields: ProfilePresetFields): ProfilePresetDocument {
+  const meta = normalizePresetFields(fields);
+  return {
+    schemaVersion: preset.schemaVersion || PROFILE_PRESET_SCHEMA_VERSION,
+    ...meta,
+    ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(preset.builtin ? { builtin: true, customized: true } : {}),
+    ...(preset.hidden ? { hidden: true } : {}),
+    ...(preset.allocation ? { allocation: cloneProfileData(preset.allocation) } : {}),
+    components: cloneProfileData(preset.components ?? []),
+  };
+}
+
+export function duplicatedProfilePreset(preset: ProfilePresetDocument, name?: string): ProfilePresetDocument {
+  const copy = cloneProfileData(preset);
+  delete copy.builtin;
+  delete copy.hidden;
+  delete copy.customized;
+  return {
+    ...copy,
+    schemaVersion: PROFILE_PRESET_SCHEMA_VERSION,
+    name: name?.trim() || `${preset.name} copy`,
+  };
+}
+
+function loadedPreset(record: { id: UUID; revision: string; value: ProfilePresetDocument }): LoadedProfilePreset {
+  return { id: record.id, revision: record.revision, document: record.value };
+}
+
+export async function createProfilePreset(
+  context: ModuleContext,
+  document: ProfilePresetDocument,
+): Promise<LoadedProfilePreset> {
+  const record = await context.projectRecords.create(PROFILE_PRESET_COLLECTION, document);
+  return loadedPreset(record);
+}
+
+export async function updateProfilePreset(
+  context: ModuleContext,
+  preset: LoadedProfilePreset,
+  document: ProfilePresetDocument,
+): Promise<LoadedProfilePreset> {
+  const record = await context.projectRecords.update(PROFILE_PRESET_COLLECTION, preset.id, document, {
+    expectedRevision: preset.revision,
+  });
+  return loadedPreset(record);
+}
+
+export async function duplicateProfilePreset(
+  context: ModuleContext,
+  preset: LoadedProfilePreset,
+  name?: string,
+): Promise<LoadedProfilePreset> {
+  return createProfilePreset(context, duplicatedProfilePreset(preset.document, name));
+}
+
+export async function setProfilePresetHidden(
+  context: ModuleContext,
+  preset: LoadedProfilePreset,
+  hidden: boolean,
+): Promise<LoadedProfilePreset> {
+  const document = { ...preset.document };
+  if (hidden) document.hidden = true;
+  else delete document.hidden;
+  return updateProfilePreset(context, preset, document);
+}
+
+export async function deleteProfilePreset(context: ModuleContext, preset: LoadedProfilePreset): Promise<void> {
+  if (preset.document.builtin) throw new Error("Bundled presets cannot be deleted");
+  await context.projectRecords.delete(PROFILE_PRESET_COLLECTION, preset.id, { expectedRevision: preset.revision });
+}
+
+export async function resetBundledProfilePreset(
+  context: ModuleContext,
+  preset: LoadedProfilePreset,
+): Promise<LoadedProfilePreset> {
+  const seed = BUNDLED_PROFILE_PRESET_SEEDS.find((candidate) => candidate.id === preset.id);
+  if (!seed) throw new Error("Only bundled presets can be reset");
+  return updateProfilePreset(context, preset, bundledPresetDocument(seed));
 }
 
 const PRESET_GENRE_ORDER = ["D&D", "Fantasy", "Sci-Fi"];

@@ -1030,6 +1030,17 @@ function loreProfileOwnerTypes() {
   const lore = modules.find((module) => module.id === "daena.lore" && module.enabled);
   return lore?.schemas.flatMap((schema) => schema.entityTypes.map((type) => type.id)) ?? [];
 }
+function loreProfileEntityTypeOptions() {
+  const lore = modules.find((module) => module.id === "daena.lore" && module.enabled);
+  return (
+    lore?.schemas.flatMap((schema) =>
+      schema.entityTypes.map((type) => ({
+        id: type.id.includes(":") ? type.id : `daena.lore:${type.id}`,
+        label: type.name,
+      })),
+    ) ?? []
+  );
+}
 function canEditLoreProfile(entityType: string | null | undefined) {
   return entityTypeCanHaveProfile(entityType, loreProfileOwnerTypes());
 }
@@ -9182,6 +9193,7 @@ onMount(() => {
                   entityId={selected.id}
                   entityName={selected.name}
                   entityType={selected.entity_type}
+                  entityTypeOptions={loreProfileEntityTypeOptions()}
                   bind:open={profileEditorOpen} />
               {/if}
               {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}

@@ -1,9 +1,17 @@
 <script lang="ts">
 import { evaluateProfile, formatProfileValue, profileCardShows, type ProfileDocument } from "./profile.ts";
-import { profilePresetLabel } from "./profilePresets.ts";
+import { profilePresetLabel, type LoadedProfilePreset } from "./profilePresets.ts";
 import { isCustomPresetOrigin } from "./profilePresetSeed.ts";
 
-let { profile, asOfLabel = "" }: { profile: ProfileDocument; asOfLabel?: string } = $props();
+let {
+  profile,
+  asOfLabel = "",
+  presets = [],
+}: {
+  profile: ProfileDocument;
+  asOfLabel?: string;
+  presets?: LoadedProfilePreset[];
+} = $props();
 
 const evaluated = $derived(evaluateProfile(profile));
 const rows = $derived(
@@ -16,7 +24,9 @@ const rows = $derived(
     })),
 );
 const origin = $derived(
-  profile.presetOrigin && !isCustomPresetOrigin(profile.presetOrigin) ? profilePresetLabel(profile.presetOrigin) : "",
+  profile.presetOrigin && !isCustomPresetOrigin(profile.presetOrigin)
+    ? profilePresetLabel(profile.presetOrigin, presets)
+    : "",
 );
 </script>
 

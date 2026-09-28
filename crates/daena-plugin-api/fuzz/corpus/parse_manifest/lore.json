@@ -392,6 +392,7 @@
           "genre": { "type": "string" },
           "builtin": { "type": "boolean" },
           "hidden": { "type": "boolean" },
+          "customized": { "type": "boolean" },
           "allocation": { "type": "object" },
           "components": { "type": "array" }
         },

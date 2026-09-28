@@ -32,6 +32,7 @@ import type { ModuleManifest as PluginModuleManifest } from "../../../packages/m
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
 import ProfileCard from "./ProfileCard.svelte";
 import { loadFoldedProfile, PROFILE_CHANGED_EVENT, PROFILE_TIMELINE_EVENT } from "./profileStore";
+import { loadAllProfilePresets, type LoadedProfilePreset } from "./profilePresets";
 import * as calendarCache from "$lib/chronology/calendarCache";
 import type { ProfileDocument } from "./profile";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
@@ -88,6 +89,7 @@ let relationships = $state<any[]>([]);
 let assets = $state<Asset[]>([]);
 let profileMediaUrl = $state("");
 let profile = $state<ProfileDocument | null>(null);
+let profilePresets = $state<LoadedProfilePreset[]>([]);
 let profileError = $state("");
 let profileAsOf = $state<unknown>(null);
 let profileAsOfOpen = $state(false);
@@ -523,10 +525,24 @@ async function reloadFoldedProfile(id: string, request = entityLoadRequest) {
 }
 
 onMount(() => {
+  void loadAllProfilePresets(buildModuleContext(loreManifestJson as unknown as PluginModuleManifest, projectId))
+    .then((loaded) => {
+      profilePresets = loaded;
+    })
+    .catch(() => {
+      profilePresets = [];
+    });
   void loadAll();
   const onProfileChanged = (event: Event) => {
     const entityId = (event as CustomEvent<{ entityId?: string }>).detail?.entityId;
-    if (entityId && entityId === currentId) void reloadFoldedProfile(entityId);
+    if (entityId && entityId === currentId) {
+      void reloadFoldedProfile(entityId);
+      void loadAllProfilePresets(buildModuleContext(loreManifestJson as unknown as PluginModuleManifest, projectId))
+        .then((loaded) => {
+          profilePresets = loaded;
+        })
+        .catch(() => undefined);
+    }
   };
   const onTimeline = () => {
     if (currentId) void reloadFoldedProfile(currentId);
@@ -864,6 +880,7 @@ function handleEdit() {
                 </div>
                 <ProfileCard
                   {profile}
+                  presets={profilePresets}
                   asOfLabel={parseCalendarDate(profileAsOf) ? formatCalendarDate(profileAsOf) : ""} />
               {/if}
               {#if visibleFields.length === 0 && groupedWikiRelationships.length === 0 && !profile && !profileError}<p

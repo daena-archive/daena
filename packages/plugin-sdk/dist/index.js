@@ -461,7 +461,12 @@ export function validatePluginManifest(manifest) {
         if (!knownManifestKeys.has(key))
             errors.push(`unknown manifest key: ${key}`);
     for (const key of knownManifestKeys)
-        if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && key !== "importers" && !(key in value))
+        if (key !== "enabledByDefault" &&
+            key !== "stability" &&
+            key !== "records" &&
+            key !== "themes" &&
+            key !== "importers" &&
+            !(key in value))
             errors.push(`missing manifest key: ${key}`);
     if (value.manifestVersion !== 1)
         errors.push("manifestVersion must be 1");
@@ -935,7 +940,9 @@ export function validatePluginManifest(manifest) {
                 importer.description.trim().length === 0 ||
                 importer.description.length > 512)
                 errors.push(`importer ${id} description is invalid`);
-            if (!Array.isArray(importer.sourceKinds) || importer.sourceKinds.length !== 1 || importer.sourceKinds[0] !== "file")
+            if (!Array.isArray(importer.sourceKinds) ||
+                importer.sourceKinds.length !== 1 ||
+                importer.sourceKinds[0] !== "file")
                 errors.push(`importer ${id} must declare file sources only`);
             if (!Array.isArray(importer.extensions) ||
                 importer.extensions.length === 0 ||

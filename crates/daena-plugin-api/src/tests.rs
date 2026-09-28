@@ -47,6 +47,40 @@ fn canonical_bundled_manifests_validate() {
 }
 
 #[test]
+fn lore_profile_preset_schema_accepts_customized_edits() {
+    let manifest =
+        parse_manifest(include_str!("../../../packages/modules/lore/manifest.json")).unwrap();
+    let preset = manifest
+        .records
+        .iter()
+        .find(|collection| collection.id == "profile-preset")
+        .expect("profile-preset");
+    assert!(!preset.schema.additional_properties);
+    assert!(preset.schema.properties.contains_key("customized"));
+    validate_command_value(
+        &preset.schema,
+        &serde_json::json!({
+            "schemaVersion": 1,
+            "name": "House rules",
+            "builtin": true,
+            "customized": true,
+            "components": []
+        }),
+    )
+    .expect("edited bundled preset");
+    assert!(validate_command_value(
+        &preset.schema,
+        &serde_json::json!({
+            "schemaVersion": 1,
+            "name": "House rules",
+            "unknown": true,
+            "components": []
+        }),
+    )
+    .is_err());
+}
+
+#[test]
 fn host_surface_renderer_requires_a_valid_versioned_id() {
     let json = include_str!("../../../packages/modules/maps/manifest.json");
     let mut manifest = parse_manifest(json).unwrap();

@@ -63,6 +63,15 @@ export function canEditLoreProfile(entityType: string | null | undefined, ownerT
   return typeof entityType === "string" && ownerTypeIds.includes(entityType);
 }
 
+export function cloneProfileData<T>(value: T): T {
+  try {
+    return structuredClone(value);
+  } catch (cause) {
+    if (cause instanceof Error && cause.name === "DataCloneError") return JSON.parse(JSON.stringify(value)) as T;
+    throw cause;
+  }
+}
+
 export function emptyProfile(): ProfileDocument {
   return { schemaVersion: PROFILE_SCHEMA_VERSION, components: [] };
 }
@@ -477,11 +486,18 @@ export function profileCardShows(component: ProfileComponent, evaluated: number 
   return componentHasValue(component);
 }
 
+function formatUnboundedNumber(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  const rounded = Math.round(value * 100) / 100;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
 export function formatProfileValue(component: ProfileComponent, evaluated: number | null = null): string {
   if (component.kind === "derived") {
     const value = component.override ?? evaluated;
     if (value == null) return "";
-    const formatted = component.decimals !== undefined ? value.toFixed(component.decimals) : String(value);
+    const formatted =
+      component.decimals !== undefined ? value.toFixed(component.decimals) : formatUnboundedNumber(value);
     const unit = component.unit?.trim() ? ` ${component.unit.trim()}` : "";
     return `${formatted}${unit}`.trim();
   }

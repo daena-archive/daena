@@ -12,7 +12,7 @@ import {
   profileValidationErrors,
   withDerivedDependencies,
 } from "../src/lib/lore/profile.ts";
-import { parseFormula } from "../src/lib/lore/profileFormula.ts";
+import { evaluateFormula, parseFormula } from "../src/lib/lore/profileFormula.ts";
 import {
   applyPatches,
   changesForEvent,
@@ -39,7 +39,14 @@ import {
   applyDndAncestry,
   bundledPresetDocument,
   defaultProfilePresetId,
+  applyPresetFields,
+  blankProfilePreset,
+  bundledPresetNeedsMigration,
+  deleteProfilePreset,
+  duplicatedProfilePreset,
+  loadProfilePresets,
   presetDocumentMatchesSeed,
+  presetFromProfile,
   ensureBundledProfilePresets,
   groupProfilePresets,
   matchingDndAncestry,
@@ -331,6 +338,12 @@ const emptySelection = profileForPresetSelection([], CUSTOM_PRESET_ID);
 assert.equal(emptySelection.presetOrigin, undefined);
 assert.deepEqual(emptySelection.components, []);
 assert.equal(profileForPresetSelection(loadedPresets, "missing").presetOrigin, undefined);
+const proxiedPresets = loadedPresets.map((preset) => new Proxy(preset, {}));
+const fromProxy = profileForPresetSelection(proxiedPresets, DND_PRESET_ID);
+assert.equal(fromProxy.presetOrigin, DND_PRESET_ID);
+assert.equal(fromProxy.components[0]?.name, "Strength");
+fromProxy.components[0].name = "Changed";
+assert.equal(proxiedPresets.find((preset) => preset.id === DND_PRESET_ID).document.components[0].name, "Strength");
 
 const seeded = [];
 const updated = [];
@@ -468,6 +481,162 @@ assert.equal(
 );
 assert.equal(defaultProfilePresetId(loadedPresetsForGroups, "daena.lore:faction") === CUSTOM_PRESET_ID, false);
 
+const editedBundled = bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID));
+editedBundled.name = "House rules";
+assert.equal(
+  bundledPresetNeedsMigration(
+    editedBundled,
+    BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID),
+  ),
+  false,
+);
+const editedUpdates = [];
+await ensureBundledProfilePresets({
+  projectRecords: {
+    async list() {
+      return [{ id: DND_PRESET_ID, revision: "9", value: editedBundled }];
+    },
+    async create() {
+      return { id: "created", revision: "1", value: {} };
+    },
+    async update(_collection, id) {
+      editedUpdates.push(id);
+    },
+  },
+});
+assert.equal(editedUpdates.includes(DND_PRESET_ID), false);
+
+const customizedLegacy = bundledPresetDocument(
+  BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID),
+);
+delete customizedLegacy.entityTypes;
+delete customizedLegacy.genre;
+customizedLegacy.name = "D&D";
+customizedLegacy.customized = true;
+const customizedUpdates = [];
+await ensureBundledProfilePresets({
+  projectRecords: {
+    async list() {
+      return BUNDLED_PROFILE_PRESET_SEEDS.map((seed) => ({
+        id: seed.id,
+        revision: "1",
+        value: seed.id === DND_PRESET_ID ? customizedLegacy : bundledPresetDocument(seed),
+      }));
+    },
+    async create() {
+      throw new Error("should not create");
+    },
+    async update(_collection, id) {
+      customizedUpdates.push(id);
+    },
+  },
+});
+assert.equal(customizedUpdates.length, 0);
+
+const withUnit = profileFromPreset(DND_PRESET_ID);
+const hitPoints = withUnit.components.find((component) => component.name === "Hit Points");
+hitPoints.value = { type: "resource", current: 3, max: 9, unit: "points" };
+const savedUnit = presetFromProfile(
+  withUnit,
+  { name: "Kept unit" },
+  bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID)),
+);
+assert.equal(savedUnit.components.find((component) => component.name === "Hit Points").value.unit, "points");
+assert.equal(savedUnit.components.find((component) => component.name === "Hit Points").value.current, null);
+
+const progressed = profileFromPreset(DND_PRESET_ID);
+const progressedStrength = progressed.components.find((component) => component.id === "attribute-strength");
+progressedStrength.value = { type: "number", value: 18 };
+progressed.components.push({
+  id: "attribute-guild-rank",
+  kind: "attribute",
+  name: "Guild Rank",
+  min: 0,
+  max: 5,
+  value: { type: "number", value: 4 },
+});
+const tradeGuild = presetFromProfile(
+  progressed,
+  { name: "Trade Guild", description: "A faction sheet", entityTypes: ["faction"], genre: "Local" },
+  bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID)),
+);
+assert.equal(tradeGuild.name, "Trade Guild");
+assert.deepEqual(tradeGuild.entityTypes, ["daena.lore:faction"]);
+assert.equal(tradeGuild.genre, "Local");
+assert.equal(tradeGuild.builtin, undefined);
+assert.equal(tradeGuild.components.find((component) => component.id === "attribute-strength").value.value, 10);
+assert.equal(tradeGuild.components.find((component) => component.id === "attribute-guild-rank").value.value, 0);
+assert.equal(
+  "override" in (tradeGuild.components.find((component) => component.id === "attribute-strength") ?? {}),
+  false,
+);
+
+const hiddenBundled = { ...editedBundled, hidden: true };
+const visible = await loadProfilePresets({
+  projectRecords: {
+    async list() {
+      return [
+        { id: DND_PRESET_ID, revision: "1", value: hiddenBundled },
+        { id: "user-1", revision: "1", value: tradeGuild },
+      ];
+    },
+  },
+});
+assert.equal(
+  visible.some((preset) => preset.id === DND_PRESET_ID),
+  false,
+);
+assert.equal(
+  visible.some((preset) => preset.document.name === "Trade Guild"),
+  true,
+);
+const withUser = groupProfilePresets(
+  [
+    ...loadedPresetsForGroups.filter((preset) => preset.id !== DND_PRESET_ID),
+    { id: "user-1", revision: "1", document: tradeGuild },
+  ],
+  "daena.lore:faction",
+);
+assert.ok(withUser.suggested.some((preset) => preset.document.name === "Trade Guild"));
+
+const profileBeforeDelete = profileForPresetSelection(
+  [{ id: "user-1", revision: "1", document: tradeGuild }],
+  "user-1",
+);
+const deleted = [];
+await deleteProfilePreset(
+  {
+    projectRecords: {
+      async delete(_collection, id) {
+        deleted.push(id);
+      },
+    },
+  },
+  { id: "user-1", revision: "1", document: tradeGuild },
+);
+assert.deepEqual(deleted, ["user-1"]);
+assert.equal(profileBeforeDelete.presetOrigin, "user-1");
+assert.equal(profileBeforeDelete.components.length, tradeGuild.components.length);
+await assert.rejects(
+  () =>
+    deleteProfilePreset(
+      { projectRecords: { async delete() {} } },
+      { id: DND_PRESET_ID, revision: "1", document: editedBundled },
+    ),
+  /cannot be deleted/,
+);
+const reset = duplicatedProfilePreset({ ...editedBundled, builtin: true, hidden: true });
+assert.equal(reset.builtin, undefined);
+assert.equal(reset.hidden, undefined);
+assert.equal(reset.name, "House rules copy");
+const blank = blankProfilePreset({ name: "Blank", entityTypes: ["daena.lore:place"] });
+assert.deepEqual(blank.components, []);
+assert.deepEqual(blank.entityTypes, ["daena.lore:place"]);
+const renamed = applyPresetFields(tradeGuild, { name: "Noble House", entityTypes: ["daena.lore:faction"], genre: "" });
+assert.equal(renamed.name, "Noble House");
+assert.equal(renamed.genre, undefined);
+assert.equal(renamed.components.length, tradeGuild.components.length);
+
 const listedOrigins = [];
 const rewritten = [];
 await assert.rejects(
@@ -546,6 +715,28 @@ assert.equal(
 
 const parsedFormula = parseFormula("floor(({attribute-strength} - 10) / 2)");
 assert.equal("error" in parsedFormula, false);
+const averaged = parseFormula("avg({military}, {political}, {economic})");
+assert.equal("error" in averaged, false);
+if (!("error" in averaged)) {
+  assert.deepEqual(averaged.dependencies, ["military", "political", "economic"]);
+  assert.equal(
+    evaluateFormula(averaged.ast, (id) => ({ military: 10, political: 10, economic: 11 })[id] ?? null),
+    (10 + 10 + 11) / 3,
+  );
+  assert.equal(
+    formatProfileValue(
+      {
+        id: "derived-overall-power",
+        kind: "derived",
+        name: "Overall Power",
+        formula: "avg({military}, {political}, {economic})",
+        value: { type: "number", value: null },
+      },
+      (10 + 10 + 11) / 3,
+    ),
+    "10.33",
+  );
+}
 if (!("error" in parsedFormula)) {
   assert.deepEqual(parsedFormula.dependencies, ["attribute-strength"]);
 }

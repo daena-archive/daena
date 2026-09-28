@@ -40,6 +40,7 @@ type ProfilePresetDocument = {
   genre?: string;
   builtin?: boolean;
   hidden?: boolean;
+  customized?: boolean;
   allocation?: ProfileAllocation;
   components: ProfileComponent[];
 };
@@ -50,7 +51,9 @@ id such as `daena.lore:knightly-order`). Omit the field for a universal
 preset. Do not store bare ids (`person`) and do not list every builtin type
 to mean "all". `genre` is `D&D`, `Fantasy`, `Sci-Fi`, or a user label. Omit
 it for ungenred presets. `hidden` applies to bundled presets; user presets
-are deleted instead of hidden.
+are deleted instead of hidden. `customized` is set only when an author edits
+a bundled preset, so later seed updates do not overwrite that copy. Omit it
+on shipped seeds and user presets.
 
 ### Profile document change
 

@@ -11,6 +11,7 @@ import timelineManifestJson from "../../../packages/modules/timeline/manifest.js
 import {
   allocationRemaining,
   allocationSpent,
+  cloneProfileData,
   emptyProfile,
   evaluateProfile,
   formatProfileValue,
@@ -32,6 +33,7 @@ import {
   type LoadedProfilePreset,
 } from "./profilePresets.ts";
 import { CUSTOM_PRESET_ID, isDndPresetOrigin, type LegacyPresetOrigin } from "./profilePresetSeed.ts";
+import ProfilePresetManager, { type ProfileEntityTypeOption } from "./ProfilePresetManager.svelte";
 import { compareCalendarDates, formatCalendarDate, GREGORIAN_CALENDAR_ID, parseCalendarDate } from "$lib/date";
 import * as calendarCache from "$lib/chronology/calendarCache";
 import DateEditor from "$lib/date/DateEditor.svelte";
@@ -84,12 +86,14 @@ let {
   entityId,
   entityName,
   entityType = null,
+  entityTypeOptions = [],
   open = $bindable(false),
 }: {
   projectId: string;
   entityId: string;
   entityName: string;
   entityType?: string | null;
+  entityTypeOptions?: ProfileEntityTypeOption[];
   open?: boolean;
 } = $props();
 
@@ -109,6 +113,7 @@ let creating = $state(false);
 let removing = $state(false);
 let error = $state("");
 let presets = $state<LoadedProfilePreset[]>([]);
+let presetManager = $state<"manage" | "save" | null>(null);
 let selectedPreset = $state(CUSTOM_PRESET_ID);
 let presetChosen = false;
 const presetGroups = $derived(groupProfilePresets(presets, entityType));
@@ -341,7 +346,7 @@ async function persist(next: ProfileDocument) {
       const saved = await saveProfile(context, ownerId, current, next);
       if (generation !== persistGeneration) return;
       stored = saved;
-      draft = structuredClone(saved.value);
+      draft = cloneProfileData(saved.value);
       error = "";
     } catch (cause) {
       if (generation !== persistGeneration) return;
@@ -351,7 +356,7 @@ async function persist(next: ProfileDocument) {
           const reloaded = await loadProfile(context, ownerId);
           if (generation !== persistGeneration) return;
           stored = reloaded;
-          draft = reloaded ? structuredClone(reloaded.value) : emptyProfile();
+          draft = reloaded ? cloneProfileData(reloaded.value) : emptyProfile();
           error = reloaded?.error ?? "Profile changed elsewhere. Reloaded.";
           return;
         } catch (reloadCause) {
@@ -426,7 +431,7 @@ async function addProfile() {
     stored = created;
     changes = [];
     eventDates = new Map();
-    draft = structuredClone(created.value);
+    draft = cloneProfileData(created.value);
     activeTab = "scores";
     await tick();
     const first = sheetEl?.querySelector<HTMLElement>("input, select, button.nudge");
@@ -599,7 +604,6 @@ async function removeHistoryRow(change: StoredProfileChange) {
     class="num {size}"
     type="text"
     inputmode="numeric"
-    placeholder="—"
     aria-label={component.name}
     value={component.value.type === "number" ? displayNumber(component.value.value) : ""}
     onchange={(event) => void setNumber(component, event.currentTarget.value)} />
@@ -608,7 +612,6 @@ async function removeHistoryRow(change: StoredProfileChange) {
 {#snippet textInput(component: ProfileComponent)}
   <input
     type="text"
-    placeholder="—"
     aria-label={component.name}
     value={component.value.type === "text" ? (component.value.value ?? "") : ""}
     onchange={(event) => {
@@ -626,7 +629,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
         value: { type: component.value.type, value: event.currentTarget.value || null },
       });
     }}>
-    <option value="">—</option>
+    <option value=""></option>
     {#each component.scale ?? [] as option}
       <option value={option}>{option}</option>
     {/each}
@@ -643,7 +646,6 @@ async function removeHistoryRow(change: StoredProfileChange) {
           class="num stat"
           type="text"
           inputmode="numeric"
-          placeholder="—"
           aria-label="{component.name} current"
           value={component.value.type === "resource" ? displayNumber(component.value.current) : ""}
           onchange={(event) => {
@@ -656,7 +658,6 @@ async function removeHistoryRow(change: StoredProfileChange) {
           class="num stat"
           type="text"
           inputmode="numeric"
-          placeholder="—"
           aria-label="{component.name} max"
           value={component.value.type === "resource" ? displayNumber(component.value.max) : ""}
           onchange={(event) => {
@@ -683,7 +684,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
   <p class="inspector-copy">Loading Profile…</p>
 {:else if stored}
   <p class="inspector-copy">
-    {profilePresetLabel(draft.presetOrigin)}
+    {profilePresetLabel(draft.presetOrigin, presets)}
     {#if remaining !== null}
       · {overBudget ? "Over budget" : `${remaining} pts left`}
     {/if}
@@ -795,6 +796,8 @@ async function removeHistoryRow(change: StoredProfileChange) {
           {/snippet}
         </div>
         <footer class="dialog-footer">
+          <button class="quiet-button" type="button" disabled={creating} onclick={() => (presetManager = "manage")}
+            >Presets</button>
           <button class="quiet-button" type="button" disabled={creating} onclick={close}>Cancel</button>
           <button class="primary-button" type="button" disabled={creating} onclick={() => void addProfile()}>
             {creating ? "Creating…" : "Create Profile"}
@@ -802,7 +805,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
         </footer>
       {:else}
         <div class="meta">
-          <span class="chip">{profilePresetLabel(draft.presetOrigin)}</span>
+          <span class="chip">{profilePresetLabel(draft.presetOrigin, presets)}</span>
           {#if remaining !== null && pool !== undefined}
             <div class="pool" class:over={overBudget}>
               <div
@@ -1059,11 +1062,32 @@ async function removeHistoryRow(change: StoredProfileChange) {
         <footer class="dialog-footer">
           <button class="danger-button" type="button" disabled={removing} onclick={() => void removeProfile()}
             >{removing ? "Removing…" : "Remove"}</button>
+          <button class="quiet-button" type="button" onclick={() => (presetManager = "manage")}>Presets</button>
+          <button class="quiet-button" type="button" onclick={() => (presetManager = "save")}>Save as Preset</button>
           <button class="primary-button" type="button" onclick={close}>Done</button>
         </footer>
       {/if}
     </div>
   </div>
+{/if}
+
+{#if presetManager}
+  <ProfilePresetManager
+    {projectId}
+    mode={presetManager}
+    {entityType}
+    {entityTypeOptions}
+    profile={stored?.value ?? null}
+    originId={stored?.value.presetOrigin}
+    onClose={() => (presetManager = null)}
+    onChanged={() => {
+      void loadProfilePresets(context).then((loaded) => {
+        presets = loaded;
+        if (!presetChosen || !loaded.some((preset) => preset.id === selectedPreset)) {
+          selectedPreset = defaultProfilePresetId(loaded, entityType);
+        }
+      });
+    }} />
 {/if}
 
 <style>

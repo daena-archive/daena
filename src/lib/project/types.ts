@@ -849,9 +849,7 @@ export interface SyncSummary {
   export_error: string | null;
 }
 export type ProjectThemePack =
-  | { mode: "follow" }
-  | { mode: "builtin" }
-  | { mode: "pack"; pluginId: string; themeId: string };
+  { mode: "follow" } | { mode: "builtin" } | { mode: "pack"; pluginId: string; themeId: string };
 export interface ProjectInfo {
   name: string;
   root: string;

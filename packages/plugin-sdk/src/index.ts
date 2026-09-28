@@ -643,7 +643,14 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
   const value = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(value)) if (!knownManifestKeys.has(key)) errors.push(`unknown manifest key: ${key}`);
   for (const key of knownManifestKeys)
-    if (key !== "enabledByDefault" && key !== "stability" && key !== "records" && key !== "themes" && key !== "importers" && !(key in value))
+    if (
+      key !== "enabledByDefault" &&
+      key !== "stability" &&
+      key !== "records" &&
+      key !== "themes" &&
+      key !== "importers" &&
+      !(key in value)
+    )
       errors.push(`missing manifest key: ${key}`);
   if (value.manifestVersion !== 1) errors.push("manifestVersion must be 1");
   if (typeof value.id !== "string" || !isPluginIdentifier(value.id)) errors.push("id is invalid");
@@ -1118,7 +1125,11 @@ export function validatePluginManifest(manifest: PluginManifest): string[] {
         importer.description.length > 512
       )
         errors.push(`importer ${id} description is invalid`);
-      if (!Array.isArray(importer.sourceKinds) || importer.sourceKinds.length !== 1 || importer.sourceKinds[0] !== "file")
+      if (
+        !Array.isArray(importer.sourceKinds) ||
+        importer.sourceKinds.length !== 1 ||
+        importer.sourceKinds[0] !== "file"
+      )
         errors.push(`importer ${id} must declare file sources only`);
       if (
         !Array.isArray(importer.extensions) ||

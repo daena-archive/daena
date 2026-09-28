@@ -9,6 +9,7 @@ import {
 } from "./profile.ts";
 import {
   BUNDLED_PROFILE_PRESET_SEEDS,
+  CUSTOM_PRESET_ID,
   canonicalPresetOrigin,
   isCustomPresetOrigin,
   type BundledProfilePresetSeed,
@@ -43,6 +44,8 @@ export function bundledPresetDocument(seed: BundledProfilePresetSeed): ProfilePr
     name: seed.name,
     description: seed.description,
     icon: seed.icon,
+    ...(seed.entityTypes?.length ? { entityTypes: [...seed.entityTypes] } : {}),
+    ...(seed.genre ? { genre: seed.genre } : {}),
     builtin: true,
     ...(seed.allocation ? { allocation: { ...seed.allocation } } : {}),
     components: seed.components.map((component) => ({
@@ -91,16 +94,13 @@ export function profilePresetLabel(id: string | undefined): string {
 }
 
 export async function loadProfilePresets(context: ModuleContext): Promise<LoadedProfilePreset[]> {
-  const records = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION);
+  const records = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION, { limit: 200 });
   return records
     .filter((record) => record.value && record.value.hidden !== true)
     .map((record) => ({ id: record.id, revision: record.revision, document: record.value }));
 }
 
-export async function migrateLegacyPresetOrigins(
-  context: ModuleContext,
-  entityIds: readonly string[],
-): Promise<void> {
+export async function migrateLegacyPresetOrigins(context: ModuleContext, entityIds: readonly string[]): Promise<void> {
   const failures: string[] = [];
   for (const entityId of entityIds) {
     try {
@@ -124,13 +124,111 @@ export async function migrateLegacyPresetOrigins(
   if (failures.length) throw new Error(failures[0]);
 }
 
-export async function ensureBundledProfilePresets(context: ModuleContext): Promise<void> {
-  const existing = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION);
-  const ids = new Set(existing.map((record) => record.id));
-  for (const seed of BUNDLED_PROFILE_PRESET_SEEDS) {
-    if (ids.has(seed.id as UUID)) continue;
-    await context.projectRecords.create(PROFILE_PRESET_COLLECTION, bundledPresetDocument(seed), { id: seed.id });
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
   }
+  return JSON.stringify(value) ?? "null";
+}
+
+export function presetDocumentMatchesSeed(stored: ProfilePresetDocument, seed: ProfilePresetDocument): boolean {
+  return (
+    stored.schemaVersion === seed.schemaVersion &&
+    stored.name === seed.name &&
+    stored.description === seed.description &&
+    stored.icon === seed.icon &&
+    stored.builtin === true &&
+    (stored.genre ?? null) === (seed.genre ?? null) &&
+    stableJson(stored.entityTypes ?? null) === stableJson(seed.entityTypes ?? null) &&
+    stableJson(stored.allocation ?? null) === stableJson(seed.allocation ?? null) &&
+    stableJson(stored.components) === stableJson(seed.components)
+  );
+}
+
+export async function ensureBundledProfilePresets(context: ModuleContext): Promise<void> {
+  const existing = await context.projectRecords.list<ProfilePresetDocument>(PROFILE_PRESET_COLLECTION, { limit: 200 });
+  const byId = new Map(existing.map((record) => [record.id, record]));
+  const failures: string[] = [];
+  for (const seed of BUNDLED_PROFILE_PRESET_SEEDS) {
+    const document = bundledPresetDocument(seed);
+    const stored = byId.get(seed.id as UUID);
+    try {
+      if (!stored) {
+        await context.projectRecords.create(PROFILE_PRESET_COLLECTION, document, { id: seed.id });
+        continue;
+      }
+      if (stored.value && presetDocumentMatchesSeed(stored.value, document)) continue;
+      await context.projectRecords.update(PROFILE_PRESET_COLLECTION, stored.id, document, {
+        expectedRevision: stored.revision,
+      });
+    } catch (cause) {
+      failures.push(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+  if (failures.length) throw new Error(failures[0]);
+}
+
+const PRESET_GENRE_ORDER = ["D&D", "Fantasy", "Sci-Fi"];
+
+export function qualifiedProfileEntityType(entityType: string | null | undefined): string {
+  const value = entityType?.trim() ?? "";
+  if (!value || value.includes(":")) return value;
+  return `daena.lore:${value}`;
+}
+
+export type ProfilePresetGroup = {
+  genre: string | null;
+  presets: LoadedProfilePreset[];
+};
+
+export function groupProfilePresets(
+  presets: readonly LoadedProfilePreset[],
+  entityType: string | null | undefined,
+): { suggested: LoadedProfilePreset[]; others: ProfilePresetGroup[] } {
+  const qualified = qualifiedProfileEntityType(entityType);
+  const suggested: LoadedProfilePreset[] = [];
+  const rest: LoadedProfilePreset[] = [];
+  for (const preset of presets) {
+    if (preset.document.hidden) continue;
+    const types = preset.document.entityTypes;
+    if (!types?.length || types.includes(qualified)) suggested.push(preset);
+    else rest.push(preset);
+  }
+  const grouped = new Map<string | null, LoadedProfilePreset[]>();
+  for (const preset of rest) {
+    const genre = preset.document.genre ?? null;
+    const list = grouped.get(genre) ?? [];
+    list.push(preset);
+    grouped.set(genre, list);
+  }
+  const others = [...grouped.entries()]
+    .sort(([left], [right]) => genreRank(left) - genreRank(right) || (left ?? "").localeCompare(right ?? ""))
+    .map(([genre, items]) => ({ genre, presets: items }));
+  return { suggested, others };
+}
+
+function genreRank(genre: string | null): number {
+  if (!genre) return PRESET_GENRE_ORDER.length;
+  const index = PRESET_GENRE_ORDER.indexOf(genre);
+  return index === -1 ? PRESET_GENRE_ORDER.length + 1 : index;
+}
+
+export function defaultProfilePresetId(
+  presets: readonly LoadedProfilePreset[],
+  entityType: string | null | undefined,
+): string {
+  const { suggested } = groupProfilePresets(presets, entityType);
+  return (
+    suggested.find((preset) => preset.id !== CUSTOM_PRESET_ID)?.id ??
+    suggested.find((preset) => preset.id === CUSTOM_PRESET_ID)?.id ??
+    presets[0]?.id ??
+    ""
+  );
 }
 
 export function legacyPresetOrigin(value: string | undefined): LegacyPresetOrigin | undefined {

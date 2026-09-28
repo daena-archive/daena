@@ -2012,20 +2012,22 @@ The shipped Profile capability includes:
 Shipped presets are project-scoped `profile-preset` records, seeded from
 bundled definitions. Portable rows omit `ownerEntityId`.
 
-- D&D (person-oriented)
-- Fantasy (person-oriented)
-- Sci-Fi (person-oriented)
-- Custom (empty)
+- D&D Character, D&D Faction, and D&D Location
+- Fantasy Character, Fantasy Faction, Fantasy Kingdom, Fantasy Place, and Fantasy Artifact
+- Sci-Fi Character, Sci-Fi Faction, Starship, and Colony / Station
+- Custom, Culture, and Concept
+
+Custom is the only universal preset. The others declare qualified entity
+types. Genre presets declare `genre`; Custom, Culture, and Concept omit it.
+The picker suggests presets whose types include the current entity, plus
+Custom, and groups the rest by genre.
 
 Presets are copy-on-create. The picker reads stored records, not seed
 constants. Preset updates do not rewrite instances. If no preset records
 exist, creating a Profile starts empty and leaves `presetOrigin` unset.
 `presetOrigin` stores the preset record ID. Legacy `"custom"`, `"dnd"`,
-`"fantasy"`, and `"scifi"` values are accepted on read and rewritten to those
-IDs.
-
-Shipped presets are person-centric. Non-person entities must use Custom when
-that record is present.
+`"fantasy"`, and `"scifi"` values are accepted on read and rewritten to the
+Character and Custom record IDs.
 
 ### Timeline
 

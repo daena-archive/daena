@@ -9181,6 +9181,7 @@ onMount(() => {
                   projectId={projectInfo.root}
                   entityId={selected.id}
                   entityName={selected.name}
+                  entityType={selected.entity_type}
                   bind:open={profileEditorOpen} />
               {/if}
               {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}

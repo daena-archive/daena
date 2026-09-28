@@ -38,7 +38,10 @@ import {
 import {
   applyDndAncestry,
   bundledPresetDocument,
+  defaultProfilePresetId,
+  presetDocumentMatchesSeed,
   ensureBundledProfilePresets,
+  groupProfilePresets,
   matchingDndAncestry,
   migrateLegacyPresetOrigins,
   profileForPresetSelection,
@@ -259,7 +262,7 @@ assert.ok(profileValidationErrors({ schemaVersion: 1, presetOrigin: "modern", co
 assert.ok(profileValidationErrors({ schemaVersion: 1, allocation: { pool: -1 }, components: [] }).length);
 
 assert.deepEqual(
-  BUNDLED_PROFILE_PRESET_SEEDS.map((preset) => preset.id),
+  BUNDLED_PROFILE_PRESET_SEEDS.slice(0, 4).map((preset) => preset.id),
   [
     "ef2bce76-ca39-59f5-ab9d-28a0b665eb15",
     "9771b70b-04c4-506e-949b-b26ea5b61235",
@@ -267,16 +270,31 @@ assert.deepEqual(
     "d9ff8d59-1cd3-52ae-8adb-5700fbff6ba1",
   ],
 );
+assert.equal(BUNDLED_PROFILE_PRESET_SEEDS.length, 15);
+assert.equal(new Set(BUNDLED_PROFILE_PRESET_SEEDS.map((preset) => preset.id)).size, 15);
 for (const preset of BUNDLED_PROFILE_PRESET_SEEDS) {
-  const copied = profileFromPreset(preset.legacyKey);
+  const copied = profileFromPreset(preset.id);
   const ids = copied.components.map((component) => component.id);
-  assert.equal(new Set(ids).size, ids.length, preset.legacyKey);
-  assert.deepEqual(profileValidationErrors(copied), []);
+  assert.equal(new Set(ids).size, ids.length, preset.name);
+  assert.deepEqual(profileValidationErrors(copied), [], preset.name);
   assert.equal(copied.presetOrigin, preset.id);
-  assert.equal(canonicalPresetOrigin(preset.legacyKey), preset.id);
-  assert.equal("entityTypes" in preset, false);
-  assert.equal("genre" in preset, false);
+  assert.equal(
+    copied.components.some((component) => component.kind === "trait"),
+    false,
+    preset.name,
+  );
+  if (preset.legacyKey) assert.equal(canonicalPresetOrigin(preset.legacyKey), preset.id);
 }
+const customSeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === CUSTOM_PRESET_ID);
+assert.equal(customSeed.entityTypes, undefined);
+assert.equal(customSeed.genre, undefined);
+assert.equal(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID).name, "D&D Character");
+assert.equal(
+  profileFromPreset("scifi").components.some(
+    (component) => component.name === "Population" || component.name === "Fleet Strength",
+  ),
+  false,
+);
 
 const mutated = profileFromPreset("dnd");
 mutated.components[0].name = "Renamed";
@@ -304,7 +322,10 @@ for (const preset of loadedPresets) {
     name: "Extra",
     value: { type: "text", value: null },
   });
-  assert.equal(profileForPresetSelection(loadedPresets, preset.id).components.length, profileFromPreset(preset.id).components.length);
+  assert.equal(
+    profileForPresetSelection(loadedPresets, preset.id).components.length,
+    profileFromPreset(preset.id).components.length,
+  );
 }
 const emptySelection = profileForPresetSelection([], CUSTOM_PRESET_ID);
 assert.equal(emptySelection.presetOrigin, undefined);
@@ -312,20 +333,140 @@ assert.deepEqual(emptySelection.components, []);
 assert.equal(profileForPresetSelection(loadedPresets, "missing").presetOrigin, undefined);
 
 const seeded = [];
+const updated = [];
+const phase1Dnd = bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.legacyKey === "dnd"));
+delete phase1Dnd.entityTypes;
+delete phase1Dnd.genre;
+phase1Dnd.name = "D&D";
 await ensureBundledProfilePresets({
   projectRecords: {
     async list() {
-      return [{ id: CUSTOM_PRESET_ID }];
+      return [
+        { id: CUSTOM_PRESET_ID, revision: "c1", value: bundledPresetDocument(customSeed) },
+        { id: DND_PRESET_ID, revision: "d1", value: phase1Dnd },
+      ];
     },
     async create(_collection, value, options) {
       seeded.push({ id: options.id, value });
       return { id: options.id, revision: "1", value };
     },
+    async update(_collection, id, value, options) {
+      updated.push({ id, value, options });
+      return { id, revision: "2", value };
+    },
   },
 });
-assert.equal(seeded.length, 3);
-assert.equal(seeded.some((row) => row.id === CUSTOM_PRESET_ID), false);
-assert.equal(seeded.every((row) => row.value.builtin === true && !("entityTypes" in row.value) && !("genre" in row.value)), true);
+assert.equal(seeded.length, 13);
+assert.equal(
+  seeded.some((row) => row.id === CUSTOM_PRESET_ID || row.id === DND_PRESET_ID),
+  false,
+);
+assert.equal(updated.length, 1);
+assert.equal(updated[0].id, DND_PRESET_ID);
+assert.equal(updated[0].options.expectedRevision, "d1");
+assert.equal(updated[0].value.name, "D&D Character");
+assert.deepEqual(updated[0].value.entityTypes, ["daena.lore:person"]);
+assert.equal(
+  seeded.every((row) => row.value.builtin === true),
+  true,
+);
+
+function reorderKeys(value) {
+  if (Array.isArray(value)) return value.map(reorderKeys);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .reverse()
+        .map((key) => [key, reorderKeys(value[key])]),
+    );
+  }
+  return value;
+}
+const currentDnd = bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID));
+assert.equal(presetDocumentMatchesSeed(reorderKeys(currentDnd), currentDnd), true);
+const reorderedUpdates = [];
+await ensureBundledProfilePresets({
+  projectRecords: {
+    async list() {
+      return BUNDLED_PROFILE_PRESET_SEEDS.map((seed) => ({
+        id: seed.id,
+        revision: "1",
+        value: reorderKeys(bundledPresetDocument(seed)),
+      }));
+    },
+    async create() {
+      throw new Error("should not create");
+    },
+    async update(_collection, id) {
+      reorderedUpdates.push(id);
+    },
+  },
+});
+assert.equal(reorderedUpdates.length, 0);
+
+const createdAfterFailure = [];
+await assert.rejects(
+  () =>
+    ensureBundledProfilePresets({
+      projectRecords: {
+        async list() {
+          return [{ id: DND_PRESET_ID, revision: "d1", value: phase1Dnd }];
+        },
+        async create(_collection, _value, options) {
+          createdAfterFailure.push(options.id);
+          return { id: options.id, revision: "1", value: {} };
+        },
+        async update() {
+          throw new Error("revision conflict");
+        },
+      },
+    }),
+  /revision conflict/,
+);
+assert.ok(createdAfterFailure.includes(CUSTOM_PRESET_ID));
+assert.equal(createdAfterFailure.includes(DND_PRESET_ID), false);
+
+const loadedPresetsForGroups = BUNDLED_PROFILE_PRESET_SEEDS.map((seed) => ({
+  id: seed.id,
+  revision: "1",
+  document: bundledPresetDocument(seed),
+}));
+const factionGroups = groupProfilePresets(loadedPresetsForGroups, "daena.lore:faction");
+const factionSuggested = factionGroups.suggested.map((preset) => preset.document.name);
+assert.ok(factionSuggested.includes("Custom"));
+assert.ok(factionSuggested.includes("D&D Faction"));
+assert.ok(factionSuggested.includes("Fantasy Kingdom"));
+assert.equal(factionSuggested.includes("D&D Character"), false);
+const placeSuggested = groupProfilePresets(loadedPresetsForGroups, "place").suggested.map(
+  (preset) => preset.document.name,
+);
+assert.ok(placeSuggested.includes("Fantasy Kingdom"));
+assert.ok(placeSuggested.includes("Fantasy Place"));
+assert.equal(placeSuggested.includes("D&D Character"), false);
+for (const type of ["person", "faction", "place", "artifact", "culture", "concept"]) {
+  const names = groupProfilePresets(loadedPresetsForGroups, `daena.lore:${type}`).suggested.map(
+    (preset) => preset.document.name,
+  );
+  assert.ok(names.includes("Custom"), type);
+  assert.ok(
+    names.some((name) => name !== "Custom"),
+    type,
+  );
+}
+const overlaySuggested = groupProfilePresets(loadedPresetsForGroups, "daena.lore:knightly-order").suggested.map(
+  (preset) => preset.document.name,
+);
+assert.deepEqual(overlaySuggested, ["Custom"]);
+assert.equal(
+  factionGroups.others.some((group) => group.genre === "Other"),
+  false,
+);
+assert.equal(
+  factionGroups.others.some((group) => group.presets.some((preset) => preset.document.name === "Culture")),
+  true,
+);
+assert.equal(defaultProfilePresetId(loadedPresetsForGroups, "daena.lore:faction") === CUSTOM_PRESET_ID, false);
 
 const listedOrigins = [];
 const rewritten = [];
@@ -338,10 +479,14 @@ await assert.rejects(
             listedOrigins.push(entityId);
             if (entityId === "bad") throw new Error("list failed");
             if (entityId === "legacy") {
-              return [{ id: "p1", revision: "r1", value: { schemaVersion: 1, presetOrigin: "fantasy", components: [] } }];
+              return [
+                { id: "p1", revision: "r1", value: { schemaVersion: 1, presetOrigin: "fantasy", components: [] } },
+              ];
             }
             if (entityId === "current") {
-              return [{ id: "p2", revision: "r2", value: { schemaVersion: 1, presetOrigin: DND_PRESET_ID, components: [] } }];
+              return [
+                { id: "p2", revision: "r2", value: { schemaVersion: 1, presetOrigin: DND_PRESET_ID, components: [] } },
+              ];
             }
             return [];
           },

@@ -125,8 +125,7 @@ export const project = {
   close: () => invoke<void>("project_close"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   setAiEnabled: (enabled: boolean) => invoke<ProjectInfo>("project_set_ai_enabled", { enabled }),
-  setThemePack: (themePack: ProjectThemePack) =>
-    invoke<ProjectInfo>("project_set_theme_pack", { themePack }),
+  setThemePack: (themePack: ProjectThemePack) => invoke<ProjectInfo>("project_set_theme_pack", { themePack }),
   aiPromptsGet: () => invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_get"),
   aiPromptsSet: (overlay: { templates?: Array<Record<string, unknown>> }) =>
     invoke<{ templates?: Array<Record<string, unknown>> }>("project_ai_prompts_set", { overlay }),

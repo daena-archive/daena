@@ -23,7 +23,9 @@ import {
   applyDndAncestry,
   dndAncestriesByLineage,
   matchingDndAncestry,
+  defaultProfilePresetId,
   ensureBundledProfilePresets,
+  groupProfilePresets,
   loadProfilePresets,
   profileForPresetSelection,
   profilePresetLabel,
@@ -81,11 +83,13 @@ let {
   projectId,
   entityId,
   entityName,
+  entityType = null,
   open = $bindable(false),
 }: {
   projectId: string;
   entityId: string;
   entityName: string;
+  entityType?: string | null;
   open?: boolean;
 } = $props();
 
@@ -106,6 +110,8 @@ let removing = $state(false);
 let error = $state("");
 let presets = $state<LoadedProfilePreset[]>([]);
 let selectedPreset = $state(CUSTOM_PRESET_ID);
+let presetChosen = false;
+const presetGroups = $derived(groupProfilePresets(presets, entityType));
 let activeTab = $state("scores");
 let writeChain = Promise.resolve();
 let persistGeneration = 0;
@@ -198,6 +204,7 @@ const preview = $derived(
 $effect(() => {
   const id = entityId;
   const project = projectId;
+  presetChosen = false;
   let cancelled = false;
   persistGeneration += 1;
   writeChain = Promise.resolve();
@@ -287,8 +294,8 @@ $effect(() => {
 async function loadEditorState(moduleContext: ReturnType<typeof buildModuleContext>, id: string) {
   await ensureBundledProfilePresets(moduleContext);
   presets = await loadProfilePresets(moduleContext);
-  if (!presets.some((preset) => preset.id === selectedPreset)) {
-    selectedPreset = presets.find((preset) => preset.id === CUSTOM_PRESET_ID)?.id ?? presets[0]?.id ?? "";
+  if (!presetChosen || !presets.some((preset) => preset.id === selectedPreset)) {
+    selectedPreset = defaultProfilePresetId(presets, entityType);
   }
   const profile = await loadProfile(moduleContext, id);
   if (!profile || profile.invalid) {
@@ -729,26 +736,63 @@ async function removeHistoryRow(change: StoredProfileChange) {
               No presets are stored. Creating a Profile starts empty.
             {/if}
           </p>
-          <div class="preset-grid" role="group" aria-label="Profile presets">
-            {#each presets as preset (preset.id)}
-              {@const iconKey = preset.document.icon === "dnd" || preset.document.icon === "fantasy" || preset.document.icon === "scifi" || preset.document.icon === "custom" ? preset.document.icon : "custom"}
-              {@const Icon = PRESET_ICONS[iconKey]}
-              <button
-                type="button"
-                class="preset-card"
-                class:selected={selectedPreset === preset.id}
-                aria-pressed={selectedPreset === preset.id}
-                disabled={creating}
-                onclick={() => (selectedPreset = preset.id)}>
-                <span class="preset-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
-                <strong>{preset.document.name}</strong>
-                <span>{preset.document.description ?? ""}</span>
-                {#if selectedPreset === preset.id}
-                  <span class="preset-check" aria-hidden="true"><Check size={14} strokeWidth={2.2} /></span>
-                {/if}
-              </button>
-            {/each}
+          <div class="preset-groups">
+            {#if presetGroups.suggested.length}
+              <section class="preset-group">
+                <h3>Suggested</h3>
+                <div class="preset-grid" role="group" aria-label="Suggested presets">
+                  {#each presetGroups.suggested as preset (preset.id)}
+                    {@render presetCard(preset)}
+                  {/each}
+                </div>
+              </section>
+            {/if}
+            {#if presetGroups.others.length}
+              <section class="preset-group">
+                <h3>All Presets</h3>
+                {#each presetGroups.others as group (group.genre ?? "")}
+                  <div class="preset-genre">
+                    {#if group.genre}<h4>{group.genre}</h4>{/if}
+                    <div
+                      class="preset-grid"
+                      role="group"
+                      aria-label={group.genre ? `${group.genre} presets` : "Presets"}>
+                      {#each group.presets as preset (preset.id)}
+                        {@render presetCard(preset)}
+                      {/each}
+                    </div>
+                  </div>
+                {/each}
+              </section>
+            {/if}
           </div>
+          {#snippet presetCard(preset: LoadedProfilePreset)}
+            {@const iconKey =
+              preset.document.icon === "dnd" ||
+              preset.document.icon === "fantasy" ||
+              preset.document.icon === "scifi" ||
+              preset.document.icon === "custom"
+                ? preset.document.icon
+                : "custom"}
+            {@const Icon = PRESET_ICONS[iconKey]}
+            <button
+              type="button"
+              class="preset-card"
+              class:selected={selectedPreset === preset.id}
+              aria-pressed={selectedPreset === preset.id}
+              disabled={creating}
+              onclick={() => {
+                presetChosen = true;
+                selectedPreset = preset.id;
+              }}>
+              <span class="preset-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
+              <strong>{preset.document.name}</strong>
+              <span>{preset.document.description ?? ""}</span>
+              {#if selectedPreset === preset.id}
+                <span class="preset-check" aria-hidden="true"><Check size={14} strokeWidth={2.2} /></span>
+              {/if}
+            </button>
+          {/snippet}
         </div>
         <footer class="dialog-footer">
           <button class="quiet-button" type="button" disabled={creating} onclick={close}>Cancel</button>
@@ -1068,7 +1112,7 @@ async function removeHistoryRow(change: StoredProfileChange) {
   outline: none;
 }
 .dialog.create {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
 }
 .dialog-heading,
 .dialog-footer,
@@ -1585,6 +1629,21 @@ async function removeHistoryRow(change: StoredProfileChange) {
 @media (max-width: 760px) {
   .ability-grid.six,
   .skill-grid,
+  .preset-groups,
+  .preset-group,
+  .preset-genre {
+    display: grid;
+    gap: 10px;
+  }
+  .preset-group h3,
+  .preset-genre h4 {
+    margin: 0;
+    color: var(--ink-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
   .preset-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

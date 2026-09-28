@@ -35,9 +35,7 @@ export function normalizeThemePreference(value: unknown): ThemePreference {
 }
 
 export type ProjectThemePack =
-  | { mode: "follow" }
-  | { mode: "builtin" }
-  | { mode: "pack"; pluginId: string; themeId: string };
+  { mode: "follow" } | { mode: "builtin" } | { mode: "pack"; pluginId: string; themeId: string };
 
 export function normalizeProjectThemePack(value: unknown): ProjectThemePack {
   if (!value || typeof value !== "object") return { mode: "follow" };

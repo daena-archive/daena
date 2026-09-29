@@ -1294,6 +1294,7 @@ impl ServiceRegistry {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dispatch(
         &self,
         stack: &[String],
@@ -1614,6 +1615,16 @@ impl MethodRateLimiter {
     }
 }
 
+#[derive(Clone)]
+struct PendingAiRequest {
+    project_id: String,
+    plugin_id: String,
+    session_id: String,
+    operation: String,
+    output_contract: Option<serde_json::Value>,
+    seq: u64,
+}
+
 fn expensive_rpc_limit(
     method: &str,
     config: RateLimitConfig,
@@ -1651,17 +1662,7 @@ pub struct PluginHost {
     legacy_grants: GrantStore,
     /// Open-project grant file paths keyed by project id (directory root).
     project_grant_paths: BTreeMap<String, PathBuf>,
-    ai_requests: BTreeMap<
-        String,
-        (
-            String,
-            String,
-            String,
-            String,
-            Option<serde_json::Value>,
-            u64,
-        ),
-    >,
+    ai_requests: BTreeMap<String, PendingAiRequest>,
     ai_request_seq: u64,
     rate_limits: Arc<Mutex<MethodRateLimiter>>,
     pub(crate) rate_limit_config: RateLimitConfig,
@@ -2788,6 +2789,7 @@ impl PluginHost {
             .ok_or_else(|| HostError("importer detect result is malformed".into()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn call_importer(
         &mut self,
         project_id: &str,
@@ -3116,7 +3118,7 @@ impl PluginHost {
             if let Some(oldest) = self
                 .ai_requests
                 .iter()
-                .min_by_key(|(_, entry)| entry.5)
+                .min_by_key(|(_, entry)| entry.seq)
                 .map(|(id, _)| id.clone())
             {
                 self.ai_requests.remove(&oldest);
@@ -3125,14 +3127,14 @@ impl PluginHost {
         self.ai_request_seq = self.ai_request_seq.wrapping_add(1);
         self.ai_requests.insert(
             request_id.to_string(),
-            (
-                project_id.to_string(),
-                plugin_id.to_string(),
-                session_id.to_string(),
-                operation.to_string(),
+            PendingAiRequest {
+                project_id: project_id.to_string(),
+                plugin_id: plugin_id.to_string(),
+                session_id: session_id.to_string(),
+                operation: operation.to_string(),
                 output_contract,
-                self.ai_request_seq,
-            ),
+                seq: self.ai_request_seq,
+            },
         );
     }
 
@@ -3143,30 +3145,32 @@ impl PluginHost {
         plugin_id: &str,
         session_id: &str,
     ) -> Result<String, HostError> {
-        let Some((bound_project, bound_plugin, bound_session, operation, _contract, _seq)) =
-            self.ai_requests.get(request_id)
-        else {
+        let Some(request) = self.ai_requests.get(request_id) else {
             return Err(HostError("AI request does not exist".into()));
         };
-        if bound_project != project_id || bound_plugin != plugin_id || bound_session != session_id {
+        if request.project_id != project_id
+            || request.plugin_id != plugin_id
+            || request.session_id != session_id
+        {
             return Err(HostError(
                 "AI request is not bound to this plugin session".into(),
             ));
         }
-        Ok(operation.clone())
+        Ok(request.operation.clone())
     }
 
     pub fn ai_contract(&self, request_id: &str) -> Option<serde_json::Value> {
         self.ai_requests
             .get(request_id)
-            .and_then(|entry| entry.4.clone())
+            .and_then(|entry| entry.output_contract.clone())
     }
 
     pub fn ai_request_ids_for(&self, project_id: &str, plugin_id: Option<&str>) -> Vec<String> {
         self.ai_requests
             .iter()
-            .filter(|(_, (project, plugin, ..))| {
-                project == project_id && plugin_id.is_none_or(|expected| expected == plugin)
+            .filter(|(_, request)| {
+                request.project_id == project_id
+                    && plugin_id.is_none_or(|expected| expected == request.plugin_id)
             })
             .map(|(id, _)| id.clone())
             .collect()

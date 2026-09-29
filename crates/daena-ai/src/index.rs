@@ -771,14 +771,16 @@ fn encode_vector(vector: &[f32]) -> Vec<u8> {
 }
 
 fn decode_vector(bytes: &[u8]) -> Result<Vec<f32>, IndexError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(IndexError::Serialization(
             "embedding blob length is not a multiple of 4".into(),
         ));
     }
     Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect())
 }
 

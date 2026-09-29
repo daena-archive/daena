@@ -2824,15 +2824,17 @@ fn service_dispatch_enforces_in_flight_cap() {
         MAX_IN_FLIGHT_CALLS_PER_PROVIDER + 1,
     ));
     let barrier_clone = barrier.clone();
-    registry.register(
-        "com.provider",
-        "service.test",
-        1,
-        std::sync::Arc::new(move |_| {
-            barrier_clone.wait();
-            Ok(serde_json::json!({"ok": true}))
-        }),
-    );
+    registry
+        .register(
+            "com.provider",
+            "service.test",
+            1,
+            std::sync::Arc::new(move |_| {
+                barrier_clone.wait();
+                Ok(serde_json::json!({"ok": true}))
+            }),
+        )
+        .expect("register service");
 
     let mut handles = Vec::new();
     for _ in 0..MAX_IN_FLIGHT_CALLS_PER_PROVIDER {

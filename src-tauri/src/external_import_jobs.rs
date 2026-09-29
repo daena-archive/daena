@@ -1192,7 +1192,7 @@ fn analyze_plugin_source(
             .map_err(|_| CoreError::Validation("plugin host is unavailable".into()))?;
         host.analyze_import(
             project_id,
-            &plugin_id,
+            plugin_id,
             importer_id,
             display_name,
             &bytes,

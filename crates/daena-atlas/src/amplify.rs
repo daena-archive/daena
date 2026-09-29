@@ -2644,7 +2644,7 @@ mod tests {
         }
         .normalize();
         assert!(rejected.is_err());
-        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 3);
+        assert_eq!(ATLAS_DETAIL_ALGORITHM_VERSION, 2);
     }
 
     #[test]

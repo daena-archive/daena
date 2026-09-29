@@ -520,14 +520,7 @@ fn lock_is_stale(path: &Path) -> bool {
         if ret == 0 {
             false
         } else {
-            let err = std::io::Error::last_os_error().raw_os_error();
-            if err == Some(libc::EPERM) {
-                false
-            } else if err == Some(libc::ESRCH) {
-                true
-            } else {
-                false
-            }
+            std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
         }
     }
     #[cfg(not(unix))]

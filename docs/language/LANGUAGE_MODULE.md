@@ -6,7 +6,7 @@ lexicon, sounds, writing, grammar, forms, and samples.
 This document is the Language module product spec. It is subordinate to
 [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`STORAGE.md`](../storage/STORAGE.md), and the
 public module-record contract. Grammar product and record contracts are in
-the Grammar section. Work that is not shipped is under Record families.
+the Grammar section. Unfinished work is in [`plans/language.md`](../plans/language.md).
 
 ## 1. Purpose and scope
 
@@ -446,17 +446,7 @@ An author can collect example sentences and short passages, gloss them interline
 
 Samples do not add corpus statistics, audio, automatic aligners, or specialist interchange formats.
 
-### Not shipped
-
-- sound changes and historical development;
-- language-family and dialect comparison;
-- corpus statistics;
-- audio and pronunciation assets;
-- custom scripts, glyphs, and font previews;
-- specialist interchange formats;
-- provider-neutral AI suggestions that require explicit user acceptance.
-
-Temporal modeling remains deferred until explicitly planned.
+Unfinished Language work is in [`plans/language.md`](../plans/language.md).
 
 ## 7. Decisions that must remain true
 

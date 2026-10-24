@@ -9,7 +9,8 @@
 [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md) specifies optional structured
 attributes, skills, traits, resources, and related values on any Lore entity,
 with Timeline as the author-facing history. The current product in that
-document is section 27. Planned preset scope is section 28 and
+document is section 27. Sections 8 and 14 specify preset behavior. Open
+management gaps are
 [`plans/profile-presets.md`](../plans/profile-presets.md).
 
 Current storage cannot host it as ordinary fields: `entity_fields` is a
@@ -105,15 +106,17 @@ and not an RPG engine.
   namespaces can own a Profile. That change begins in the Rust plugin API and
   must compare qualified runtime type ids.
 - Current product is the bundled `profile-preset` records from sections 9–12:
-  the three character presets keep the Phase 1 record IDs, Custom stays
+  the three character presets keep the stable record IDs in
+  [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md) section 8.1, Custom stays
   universal, and the other presets declare qualified entity types. Trusted-shell
   wiki and editor surfaces, copy-on-create, an optional point pool, read-time
   formulas, and `profile-change` history folded against Timeline remain.
   Search indexes, if added, are disposable projections over stable component
   ids. Preset rows are project-scoped and seeded from bundled definitions.
   `presetOrigin` stores the preset record ID. Legacy string ids are accepted
-  on read and rewritten to the Phase 1 IDs. The picker copies the stored
+  on read and rewritten to those record IDs. The picker copies the stored
   record and suggests by qualified type. If no preset records exist, a new
   Profile is empty and `presetOrigin` is unset.
-- Product behavior remains [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md).
-  Preset delivery is [`plans/profile-presets.md`](../plans/profile-presets.md).
+- Product behavior remains [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md)
+  sections 8, 14, and 27. Open management gaps are
+  [`plans/profile-presets.md`](../plans/profile-presets.md).

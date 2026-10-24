@@ -1,7 +1,7 @@
 # Lore Profiles
 
 This document is the Lore Profile product spec. The current product is section
-27. Section 28 is planned scope; the delivery plan is
+27. Sections 8 and 14 specify preset behavior. Open management gaps are
 [`plans/profile-presets.md`](../plans/profile-presets.md). Architectural
 constraints are [ADR 0006](../adr/0006-lore-profiles.md).
 
@@ -580,8 +580,25 @@ owner string. Preset rows are portable records in `plugins/daena.lore.json`.
 They omit `ownerEntityId`. A checkpoint must accept that omission only for a
 collection the module manifest declares as project-scoped. `profile` and
 `profile-change` stay entity-owned and still require an owner entity. Portrait
-assets (`role: profile`) are not Profile records. Record ids are stable UUIDs;
-the delivery plan lists them.
+assets (`role: profile`) are not Profile records. Record ids are stable UUIDs:
+
+| Preset | Record ID |
+| --- | --- |
+| Custom | `ef2bce76-ca39-59f5-ab9d-28a0b665eb15` |
+| D&D Character | `9771b70b-04c4-506e-949b-b26ea5b61235` |
+| Fantasy Character | `1b2c999f-65b5-57b6-9d02-6ce2c40cc977` |
+| Sci-Fi Character | `d9ff8d59-1cd3-52ae-8adb-5700fbff6ba1` |
+| D&D Faction | `e4baa36f-9591-5eb3-aa6c-96728fe77e61` |
+| D&D Location | `f7f1d532-b04f-5ef6-b440-eb4e21ab6283` |
+| Fantasy Faction | `b324c23c-aba7-5734-9a21-84894ffa93c5` |
+| Fantasy Kingdom | `c1b642b3-f218-53e7-a8c5-db41c327ec51` |
+| Fantasy Place | `a8d73270-c9a6-5e5a-8ed7-3bd22704b725` |
+| Fantasy Artifact | `e9757343-bf50-5326-ae6f-915cd6894ab6` |
+| Sci-Fi Faction | `25dae462-323c-5e93-8322-d7d42d2a9733` |
+| Starship | `6f753e3f-342c-583d-88dc-9cdc55cb42ef` |
+| Colony / Station | `3aa17fe2-dd28-50ba-b54a-2e7da9c4a65d` |
+| Culture | `6fefd437-d376-5772-a5c4-7ebf00da0a69` |
+| Concept | `26bf13cb-1970-5bfc-a728-69cabc9b47f0` |
 
 A preset defines:
 
@@ -2043,54 +2060,7 @@ Character and Custom record IDs.
 
 ---
 
-# 28. Planned Scope
-
-The next delivery priority is data-driven and entity-oriented presets.
-The delivery plan is [`plans/profile-presets.md`](../plans/profile-presets.md).
-
-### Data-Driven Presets
-
-Project-scoped preset storage, bundled seeding, and record-backed
-copy-on-create are shipped. See section 27. Still planned:
-
-- User-created presets via "Save as Preset" and a preset management surface.
-
-### Entity-Oriented Presets
-
-- D&D: Character, Faction, Location.
-- Fantasy: Character, Faction, Kingdom, Place, Artifact.
-- Sci-Fi: Character, Faction, Starship, Colony/Station.
-- Ungenred: Custom, Culture, Concept. Only Custom is universal.
-- Each non-universal preset declares qualified entity type ids.
-- Preset picker suggests matching presets. Suggestions are hints.
-- Bundled presets may be hidden. They may not be deleted.
-
-### Preset Management
-
-- Browse, create, edit, duplicate, delete, reset presets.
-- Entity-type scoping and genre grouping.
-
-### Remaining Future Scope
-
-Potential extensions not part of the current or planned product:
-
-- Advanced formula language
-- Conditional modifiers
-- Automatic progression systems
-- Dependency graphs
-- Skill trees
-- Perks
-- Classes / archetypes
-- Equipment modifiers
-- Reputation systems
-- Faction relationship modifiers
-- Encounters and combat
-- Dice integration
-- AI-assisted Profile generation
-- Profile comparison
-- Profile charts and analytics
-- Cross-entity statistics
-- Historical statistical analysis
+Open management gaps are [`plans/profile-presets.md`](../plans/profile-presets.md).
 
 ---
 

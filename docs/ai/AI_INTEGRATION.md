@@ -4,8 +4,8 @@
 
 This document is the architecture for AI in Daena Archive. It governs provider
 integration, prompting, context assembly, retrieval-augmented generation (RAG),
-plugin access, privacy, and user experience. Phased delivery is in
-[`plans/ai.md`](../plans/ai.md).
+plugin access, privacy, and user experience. Unfinished evidence and later
+gated slices are in [`plans/ai.md`](../plans/ai.md).
 
 It supplements, and does not override, these authorities:
 
@@ -20,7 +20,7 @@ If this document conflicts with those boundaries, the stricter authority and
 storage rule wins. AI must not become an alternative data model, plugin bridge,
 filesystem API, network capability, or mutation authority.
 
-Delivery phases are in [`plans/ai.md`](../plans/ai.md). The provider, consent, capability, indexing, and verification rules in this document are authoritative.
+Unfinished evidence is in [`plans/ai.md`](../plans/ai.md). The provider, consent, capability, indexing, and verification rules in this document are authoritative.
 
 ### Current provider architecture
 
@@ -882,19 +882,16 @@ ai.request.cancel -> terminal cancellation
 ai.request.result -> final normalized result
 ```
 
-The exact transport is decided in Phase 0 after testing Tauri and isolated
-webview behavior. Requirements are fixed: origin/session binding, sequence
-numbers, bounded queues, backpressure, one terminal state, project/plugin
-revocation, and no cross-session polling.
-
-Phase 0 transport decision: use short-lived `ai.request.start`, status/delta
-events or bounded polling, explicit cancel, and final result operations for
-plugin requests; trusted-shell requests use the same normalized events through
-host-owned application events. The broker never holds an unbounded provider
-stream open. `daena-ai::BoundedEventStream` and `FakeProvider` provide the
-contract-level evidence for sequence ordering, queue bounds, one terminal
-state, cancellation, and deadlines. Running Tauri/webview validation remains
-part of Phases 1 and 2.
+The transport is short-lived `ai.request.start`, status/delta events or bounded
+polling, explicit cancel, and a final result. Trusted-shell requests use the
+same normalized events through host-owned application events. Requirements are
+fixed: origin/session binding, sequence numbers, bounded queues, backpressure,
+one terminal state, project/plugin revocation, and no cross-session polling.
+The broker never holds an unbounded provider stream open.
+`daena-ai::BoundedEventStream` and `FakeProvider` provide the contract-level
+evidence for sequence ordering, queue bounds, one terminal state, cancellation,
+and deadlines. Rendered Tauri and live local-provider checks remain in
+[`plans/ai.md`](../plans/ai.md).
 
 ---
 

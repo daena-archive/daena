@@ -158,7 +158,6 @@ docker run --rm \
 - [Architecture](docs/ARCHITECTURE.md)
 - [Storage and recovery](./docs/storage/STORAGE.md)
 - [AI integration](./docs/ai/AI_INTEGRATION.md)
-- [AI delivery plan](docs/plans/ai.md)
 - [Language module](./docs/language/LANGUAGE_MODULE.md)
 - [Plugin SDK](./docs/plugins/PLUGIN_SDK.md)
 - [Plugin platform](docs/plugins/PLUGIN_PLATFORM.md)

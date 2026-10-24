@@ -12,7 +12,7 @@ The public platform is provided by:
 - `@daena-archive/plugin-test-host` — an in-memory broker and lifecycle test
   host.
 
-The normative contract is in [`schemas/plugin-manifest-v1.json`](../../schemas/plugin-manifest-v1.json), [`schemas/plugin-rpc-v1.json`](../../schemas/plugin-rpc-v1.json), and [`schemas/capability-registry-v1.json`](../../schemas/capability-registry-v1.json). The architecture and security decisions are in [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md).
+The normative contract is in [`schemas/plugin-manifest-v1.json`](../../schemas/plugin-manifest-v1.json), [`schemas/plugin-rpc-v1.json`](../../schemas/plugin-rpc-v1.json), and [`schemas/capability-registry-v1.json`](../../schemas/capability-registry-v1.json). The architecture and security decisions are in [`PLUGIN_PLATFORM.md`](./PLUGIN_PLATFORM.md).
 
 ## 1. Platform model
 
@@ -649,7 +649,7 @@ machine-readable or architectural contract it summarizes:
   (`npm run test:plugin-conformance`).
 - [`schemas/fixtures/manifest/`](../../schemas/fixtures/manifest/) — the shared
   fixture battery the conformance and structural checks run against.
-- [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md)
+- [`PLUGIN_PLATFORM.md`](./PLUGIN_PLATFORM.md)
 - [`adr/0002-rust-owned-public-contracts.md`](../adr/0002-rust-owned-public-contracts.md)
   — the decision that Rust owns the contract and schemas/TS are generated
   artifacts.

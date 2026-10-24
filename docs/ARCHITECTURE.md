@@ -13,7 +13,7 @@ in [`plans/`](./plans/).
 
 - [`STORAGE.md`](./storage/STORAGE.md) defines the authoritative runtime database,
   portable project format, checkpoint, recovery, and rebuild contracts.
-- [`plans/PLUGIN_PLATFORM_PLAN.md`](./plans/PLUGIN_PLATFORM_PLAN.md) defines plugin
+- [`PLUGIN_PLATFORM.md`](./plugins/PLUGIN_PLATFORM.md) defines plugin
   isolation, package trust, broker authorization, lifecycle, and compatibility.
 - [`PLUGIN_SDK.md`](./plugins/PLUGIN_SDK.md) is the definitive plugin authoring guide.
 - [`GIT_INTEGRATION.md`](./git/GIT_INTEGRATION.md) defines the optional built-in Git

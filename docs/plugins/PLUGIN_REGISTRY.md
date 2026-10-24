@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-Phase 9. Host refresh, catalog install, and `daena-plugin keygen` / `sign`
+Host refresh, catalog install, and `daena-plugin keygen` / `sign`
 live in this repository. The identity index is
 [daena-archive/plugin-registry](https://github.com/daena-archive/plugin-registry).
 Local `.daenaplugin` installation does not depend on GitHub. The default fetch
@@ -11,10 +11,10 @@ URLs are `https://daena-archive.github.io/plugin-registry/trust.json` and
 
 Standing policy is [ADR 0001](../adr/0001-plugin-platform-boundary.md): a registry
 or publisher signature may inform installation trust and cannot become an
-authorization dependency. Phase 8 in
-[`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) already ships host-owned
+authorization dependency.
+[`PLUGIN_PLATFORM.md`](./PLUGIN_PLATFORM.md) already ships host-owned
 `TrustSnapshot` (`plugins/trust.json`), signature rotation, revocation, and
-source-independent verify. Phase 9 is this document: a GitHub-hosted index
+source-independent verify. This document is the GitHub-hosted index
 that feeds that snapshot without a Daena server.
 
 Authoring remains [`PLUGIN_SDK.md`](./PLUGIN_SDK.md). This file does not change

@@ -161,7 +161,7 @@ docker run --rm \
 - [AI delivery plan](docs/plans/ai.md)
 - [Language module](./docs/language/LANGUAGE_MODULE.md)
 - [Plugin SDK](./docs/plugins/PLUGIN_SDK.md)
-- [Plugin platform plan](docs/plans/PLUGIN_PLATFORM_PLAN.md)
+- [Plugin platform](docs/plugins/PLUGIN_PLATFORM.md)
 - [Maps, physical worlds, and Atlas](./docs/maps/MAPS.md)
 - [Git integration](./docs/git/GIT_INTEGRATION.md)
 

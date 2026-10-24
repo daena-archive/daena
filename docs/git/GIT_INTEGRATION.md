@@ -15,7 +15,7 @@ It supplements, and does not override, these authorities:
   indexes, and the Git checkpoint boundary.
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) defines shell-owned helpers vs plugin
   isolation.
-- [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) forbids raw Git/Tauri
+- [`PLUGIN_PLATFORM.md`](../plugins/PLUGIN_PLATFORM.md) forbids raw Git/Tauri
   commands in plugin webviews.
 
 If this document conflicts with those boundaries, the stricter authority and

@@ -1,32 +1,27 @@
-# Third-party plugin platform architecture and implementation plan
+# Plugin platform architecture
 
-## Status and purpose
+This document is the plugin-platform architecture and acceptance-criteria
+authority. It refines the runtime-extension architecture in
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) where this document is more specific.
+It does not change the canonical project data model in
+[`STORAGE.md`](../storage/STORAGE.md).
 
-This document is the architecture decision and delivery plan for evolving
-Daena Archive's build-time module system into a third-party plugin platform. It
-refines the runtime-extension architecture in `ARCHITECTURE.md` where this
-document is more specific. It does not change the canonical
-project data model described there.
-
-Plugin authors should use the [definitive plugin authoring guide](../plugins/PLUGIN_SDK.md)
+Plugin authors should use the [definitive plugin authoring guide](./PLUGIN_SDK.md)
 for the current manifest, SDK, testing, packaging, installation, and lifecycle
-workflow. This plan remains the architectural record and phase authority.
-
-The canonical-storage Phase 5 contract is now reflected across this platform:
-broker reads carry opaque revisions, mutable calls require `expectedRevision`,
-the RPC envelope owns retry `requestId`s, and the host administration view
-reports lifecycle, selection, grants, installed versions, rollback state, and
-dependency resolution from Rust-owned state.
+workflow. Registry distribution is [`PLUGIN_REGISTRY.md`](./PLUGIN_REGISTRY.md).
+Standing decisions are [ADR 0001](../adr/0001-plugin-platform-boundary.md),
+[ADR 0002](../adr/0002-rust-owned-public-contracts.md), and
+[ADR 0007](../adr/0007-plugin-theme-packs.md). Unfinished bundled-webview
+isolation is [`plans/plugin-isolation.md`](../plans/plugin-isolation.md).
 
 The current implementation uses Rust-owned broker authority for plugin
 identity, capabilities, sessions, revisions, request IDs, and project data.
 Isolated plugin webviews communicate through the versioned RPC contract over
 same-origin `/__rpc`; they have no Tauri IPC. Frontend checks remain advisory;
 the Rust broker is the enforcement boundary. Remaining bundled-UI isolation
-is recorded under **Remaining work** below; it does not change the isolation
-rule.
+does not change the isolation rule.
 
-For the future AI broker surface, see [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md).
+For the AI broker surface, see [`AI_INTEGRATION.md`](../ai/AI_INTEGRATION.md).
 AI grants do not imply project-data grants, provider access, or network access.
 
 The target platform has one non-negotiable rule:
@@ -486,10 +481,14 @@ cannot draw or auto-apply that choice.
 ### 13. Theme packs
 
 Theme packs are host-painted JSON overlays. See
-[ADR 0007](../adr/0007-plugin-theme-packs.md).
+[ADR 0007](../adr/0007-plugin-theme-packs.md). Authoring examples live in
+[`PLUGIN_SDK.md`](./PLUGIN_SDK.md).
 
 - A pack is presentation, not project data. It needs no namespace, capability
   grant, or project enablement. Availability follows **installation**.
+  Installation catalogs the pack; it does not auto-apply. Selecting a pack in
+  Settings is the consent to apply it. A plugin cannot draw or phrase that
+  choice.
 - Mode stays `appearance.theme`. The active pack is `appearance.themePack`.
   Builtin Warm paper / Forest night is host chrome, not a plugin.
 - A project may store `themePack` in `project.json`: omit the field to follow
@@ -498,14 +497,22 @@ Theme packs are host-painted JSON overlays. See
   screen. This is not stacking and does not require project enablement.
 - Exactly one pack is active. Token maps may be sparse; the host fills from
   the builtin map for the resolved mode and contrast-checks the merge.
+  Contrast floors: `ink`/`surface` 4.5, `ink`/`canvas` 4.5, `rail-text`/`rail-bg`
+  3.0. Eight-digit hex with alpha other than `ff` fails contrast.
 - Rust owns `THEME_TOKEN_IDS` and the builtin maps. Values are parsed colors
   (`#rgb`, `#rrggbb`, `#rrggbbaa`) only. Adding a token is minor; removing or
-  renaming one is major.
+  renaming one is major. `themes` is an optional defaulted manifest v1 field.
+  A pack-only plugin may be `kind: "declarative"` with empty entrypoints.
+- Pack `id` is unique within the package; the globally addressable id is
+  `pluginId/themeId`. `name` is 1–128 characters. When `themes` is non-empty,
+  `tokens.light` and `tokens.dark` are both required; each map may omit keys.
 - Sandboxed sessions read appearance without a grant: bootstrap `appearance`,
   RPC `appearance.get` (`Static([])`), and a host-owned push into `plugin:`
   webviews. Wasm sessions poll `appearance.get`. This is not `event.subscribe`.
 - Failures fail closed: the package does not install, or builtin tokens stay
-  applied. Plugin CSS never enters the host document.
+  applied. If the selected pack's plugin is uninstalled or fails validation,
+  the host falls back to builtin. Plugin CSS, fonts, images, and JavaScript
+  never enter the host document.
 
 ## Required code structure
 
@@ -560,157 +567,6 @@ authority contexts.
 Bundled modules must not import the trusted `project` Tauri client. Frontend
 module lists are host UI state fed by `PluginHost`, not a source of truth.
 
-## Delivery plan
-
-### Phase 0: Specify and lock the public contract
-
-Create the manifest and RPC contract types in Rust, generate the JSON Schemas
-and TypeScript declarations from them, and define the capability registry,
-lifecycle state machine, and error model. Confirm that
-[ADR 0001](../adr/0001-plugin-platform-boundary.md) captures isolation, package
-trust, plugin-to-plugin communication, and data ownership. Update
-`ARCHITECTURE.md` to link to this document.
-
-**Exit gate:** One canonical Lore manifest validates identically in Rust and
-TypeScript; JSON Schemas and TypeScript declarations are generated from the
-Rust contract types, and there are no handwritten duplicate contract types.
-
-### Phase 1: Extract the Rust core
-
-Move project behavior out of Tauri command handlers into `daena-core`.
-Introduce an authority context on operations that require resource ownership,
-without yet changing trusted-shell behavior. Move blocking work off event-loop
-threads and establish typed core errors.
-
-**Exit gate:** Existing behavior and all current tests pass through the core
-service; `daena-core` has no Tauri dependency.
-
-### Phase 2: Add catalog, identity, and authorization
-
-Implement the plugin catalog, manifest validator, package digests, grants,
-sessions, namespace ownership, and Rust authorization. Plugin webviews get an
-empty Tauri capability (`plugin-runtime`) and reach the broker only through
-same-origin `/__rpc`. Development-directory install is the Phase 2 input;
-ZIP packages arrive in Phase 6.
-
-**Exit gate:** An adversarial test plugin cannot read/write another namespace,
-call undeclared operations, forge identity, call trusted Tauri commands, or use
-a revoked session.
-
-### Phase 3: Convert bundled modules
-
-Generate canonical manifests for the bundled plugins (Lore, Timeline, Maps,
-Writing, Houses, Language), remove hardcoded Rust manifests and enable
-branches, and run them through broker-backed SDK contexts. Treat any required
-private API as a platform design defect.
-
-**Exit gate:** Bundled plugins contain no imports of the trusted Tauri client,
-are enabled and disabled by `PluginHost`, and pass existing cross-module,
-export/import, migration, and disablement scenarios.
-
-Current: no `@tauri-apps` / `$lib/project` inside `packages/modules/*`. Lore
-graph uses the public SDK in an isolated webview. Timeline date/era helpers
-live in the timeline package (host `$lib/date` and chronology re-export them).
-Language is a host-surface. Timeline chronology and Language still mount in
-the main webview (see Remaining work). `trusted_module_rpc` is bundled-only
-and always runs `authorize_bundled`.
-
-This is the minimum point at which the platform is on solid architectural
-ground. Do not ship third-party installation before this gate.
-
-### Phase 4: Lifecycle, events, and services
-
-Implement activation rollback, cancellation, health/quarantine, dependency
-resolution, typed events, typed services, cycle detection, deadlines,
-backpressure, and post-commit core events. Add an optional Timeline service and
-a small consumer test plugin to prove plugin-to-plugin interaction.
-
-**Exit gate:** Required/optional dependencies, provider loss, slow subscribers,
-service timeouts, re-entrant calls, disablement, and project shutdown have
-deterministic tested behavior.
-
-### Phase 5: Sandboxed runtimes
-
-Add isolated plugin webviews, restrictive CSPs, validated `/__rpc` bridging,
-and the WASM runtime with resource limits (deny-all imports, fuel, memory,
-timeout). Remove any development path that loads third-party code into the
-main webview.
-
-**Exit gate:** Browser/runtime tests demonstrate that plugin code cannot access
-the host DOM, Tauri APIs, local files, environment, processes, or undeclared
-network origins, while normal SDK calls succeed.
-
-Current: the isolated path exists (`SandboxView` → `plugin_webview.rs`, CSP in
-`webview_policy`, assets on `plugin://`). Lore graph uses it. Timeline and
-Language still run in the trusted webview. Packaged Tauri webview isolation
-tests on every desktop platform are not done. See Remaining work.
-
-### Phase 6: Installer, upgrades, and recovery
-
-Implement `.daenaplugin` verification, atomic installation, publisher signatures,
-capability consent, retained versions, upgrade planning, migration selection,
-rollback, uninstall-code, and explicit delete-data flows.
-
-**Exit gate:** Corrupt, oversized, path-traversing, symlinked, incompatible,
-tampered, and unauthorized packages fail before execution. Upgrade failure
-restores the previous active code and a usable project state.
-
-### Phase 7: Public SDK and author tooling
-
-Publish compiled SDK artifacts and declarations. The in-repo
-`plugin-sdk`, `plugin-cli`, `plugin-test-host`, `examples/plugins`, and
-`PLUGIN_SDK.md` already exist; this phase closes the public-author gate:
-packages published outside the monorepo, and a plugin authored with only
-those tools.
-
-**Exit gate:** A plugin can be authored outside the monorepo, validated, tested,
-packaged, installed, enabled, upgraded, rolled back, and uninstalled using only
-public documentation and tools.
-
-Current: `@daena-archive/plugin-{sdk,cli,test-host}` are on npm. `PLUGIN_SDK.md`
-documents `npm install`. The CLI ships `plugin-manifest-v1.json` in the tarball.
-Search and asset RPCs are rate-limited in `PluginHost::authorize`. Malformed
-`.daenaplugin` archives fail closed. Seed corpora for `parse_manifest`,
-`parse_rpc_request`, and `verify_archive` live under
-`crates/daena-plugin-api/fuzz/corpus` and `crates/daena-plugin-host/fuzz/corpus`;
-`cargo test` replays them, and `cargo fuzz run` is the nightly mutation path.
-
-### Phase 8: Registry readiness, not registry dependency
-
-Define publisher identity, signature rotation, revocation metadata, transparency
-and review requirements, but keep local package installation functional. A
-registry or marketplace is a distribution layer, never an authorization layer.
-
-**Exit gate:** The same verified package behaves identically whether installed
-locally or obtained from a registry.
-
-Current: `TrustSnapshot` (`plugins/trust.json`) is the host-owned publisher
-directory and revocation list. Packages verify from bytes plus that snapshot;
-there is no distribution-source input. Publisher identities pin one or more
-Ed25519 keys (`keyId`) so rotation keeps previous keys valid until revoked.
-Key revocation matches the signing public key (not `keyId` alone). Revoked
-keys, digests, and plugin identities fail closed for local files and registry
-bytes alike. `review_manifest` is the install disclosure (publisher, digest,
-signature, trust status, capabilities). Unsigned local install still requires
-explicit consent. A marketplace is not an authorization layer.
-
-### Phase 9: Serverless GitHub registry
-
-Implement [`PLUGIN_REGISTRY.md`](../plugins/PLUGIN_REGISTRY.md): identity-index repo,
-Pages `trust.json` / `catalog.json`, host snapshot refresh, catalog browse
-install (same verify as a local file), `daena-plugin keygen` / `sign`, and
-pre-install `review_manifest`. Local unsigned install with consent stays.
-
-**Exit gate:** A plugin registered and released per that document installs in
-Daena Archive with the same digest, signature, and grants path as a sideloaded
-copy of the same bytes. GitHub down does not block local install.
-
-Current: the identity index lives in `daena-archive/plugin-registry`. The host
-fetches default Pages `trust.json` / `catalog.json` into `plugins/`, reviews
-with `review_manifest` before install, and verifies catalog downloads as the
-same bytes as a local `.daenaplugin`. `daena-plugin keygen` and `sign` write
-Ed25519 `signature.json`. Release crawl remains follow-up.
-
 ## Test and release requirements
 
 The plugin platform is not release-ready until automated tests cover:
@@ -742,8 +598,8 @@ isolation on every supported desktop platform.
 
 The following features are deferred, with their default behavior decided now:
 
-- **Marketplace as authorization:** disallowed. Distribution is Phase 9
-  ([`PLUGIN_REGISTRY.md`](../plugins/PLUGIN_REGISTRY.md)). Local verified packages work
+- **Marketplace as authorization:** disallowed. Distribution is
+  [`PLUGIN_REGISTRY.md`](./PLUGIN_REGISTRY.md). Local verified packages work
   without GitHub.
 - **Cloud execution or sync:** deferred; plugins are local and project-scoped.
 - **Arbitrary internet access:** deferred; denied. Later access is the
@@ -764,69 +620,22 @@ The following features are deferred, with their default behavior decided now:
 - **Theme fonts, images, radii, spacing, or motion tokens:** deferred; v1 packs
   are parsed colors on the closed catalog only.
 - **Stacked theme packs:** deferred. One pack is active. A project may overlay
-  that choice while open; see §13.
+  that choice while open; see Decision 13.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
 - **Bundled Timeline / Language / remaining UIs in isolated webviews:**
-  deferred. The isolation rule is unchanged. Lore graph is already isolated.
-  Maps editor and Language workspace are host-surfaces in the main webview.
-  Houses is declarative host chrome. Writing, wiki, and profile editors remain
-  trusted shell. Resume Timeline chronology isolation next, then Language.
-  Calendar date and era-scope helpers already live in the timeline package so
-  they are not private host imports when Timeline moves.
+  deferred. The isolation rule is unchanged. Resume order and current surfaces
+  are in [`plugin-isolation.md`](../plans/plugin-isolation.md).
 
-No unresolved architectural choice above is required to begin implementation.
 Any future change to identity, isolation, authority, package integrity, data
 ownership, or interaction semantics requires a new ADR and compatibility plan.
-
-## Remaining work
-
-This is the implementation remainder against the phases above, not a second
-architecture. Delete nothing here that still disagrees with Decisions.
-
-### Bundled sandboxed UIs still run in the trusted webview (Phase 3 / 5)
-
-The plan: bundled and third-party plugin UIs run in isolated webviews; no
-plugin JavaScript in the main application webview. Host-surfaces are the
-exception: the host owns the implementation.
-
-What exists:
-
-- Isolated path: `src/lib/plugins/SandboxView.svelte` →
-  `src-tauri/src/plugin_webview.rs`, CSP in
-  `crates/daena-plugin-host/src/runtime.rs` `webview_policy`, assets on
-  `plugin://`.
-- Lore graph mounts through `SandboxView` → `plugin://daena.lore` (Cytoscape
-  in the plugin webview, public SDK). Timeline chronology and Language still
-  mount in the main webview via `src/lib/modules/projections.ts`.
-- Isolated HTML under `src-tauri/plugin-assets/{timeline,writing}/` is still a
-  stub projection, not vis-timeline / Writing UIs. There is no
-  `plugin-assets/language/`.
-- Maps editor is `host.surface:daena.maps/editor@1`. Language workspace is
-  `host.surface:daena.language/workspace@1`. Both match the host-surface rule.
-- Houses / Writing / Wiki / profile editors under `src/lib/` use the trusted
-  shell. Houses is declarative; that is consistent.
-- `scripts/check-plugin-isolation.mjs` fails if any host file other than
-  `src/lib/modules/projections.ts` imports a bundled plugin runtime
-  entrypoint (`packages/modules/*/src/index`). Timeline and Language remain
-  on that allowlist. Isolation proof is still static, not packaged Tauri
-  webview tests on every desktop platform.
-- Main-webview modules use `trusted_module_rpc` (caller plugin id, then
-  `authorize_bundled`: bundled-only, grants, schema, rate limits). Isolated
-  webviews use session-bound `plugin_rpc`. `packages/module-api` re-exports
-  plugin-sdk types and keeps `ModuleContext` until those UIs leave the main
-  webview.
-
-Incremental order: Lore graph (done), Timeline chronology, Language
-host-surface chrome last.
 
 ## Contract reconciliation and generation record
 
 This appendix is the implementation record of the contract-reconciliation
-effort. It supersedes the interim `plan/` documents and preserves their
-load-bearing decisions and current state. The overall decision — Rust owns the
-contract, schemas and TypeScript are generated artifacts — is [ADR 0002]
-(adr/0002-rust-owned-public-contracts.md).
+effort. The overall decision — Rust owns the
+contract, schemas and TypeScript are generated artifacts — is
+[ADR 0002](../adr/0002-rust-owned-public-contracts.md).
 
 ### Representations are unified under Rust
 
@@ -949,7 +758,7 @@ check:manifest-fixtures`, and the dual-validator conformance test
   non-standard `uint32` format registered) at startup and prepends
   `schema:<instancePath>` errors to the TS validator's output in both validate
   paths, so shape-only rejections are caught too.
-- The Phase 0–5 _contract_ exit gates (all representations agree on the frozen
-  contract, generated types reviewed and tests green, full suites green, drift
-  guard fails on an intentional Rust change without regen, docs match code)
-  are all **met**. Bundled UI isolation in Phase 5 is not; see Remaining work.
+- The contract representations agree: generated types are reviewed, tests are
+  green, full suites are green, the drift guard fails on an intentional Rust
+  change without regen, and docs match code. Bundled UI isolation is not; see
+  [`plugin-isolation.md`](../plans/plugin-isolation.md).

@@ -8,7 +8,7 @@ Houses module (`daena.houses`) and its host-owned Tree view.
 It is subordinate to:
 
 1. [`ARCHITECTURE.md`](../ARCHITECTURE.md) for product and trust boundaries.
-2. [`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) and
+2. [`PLUGIN_PLATFORM.md`](../plugins/PLUGIN_PLATFORM.md) and
    [`PLUGIN_SDK.md`](../plugins/PLUGIN_SDK.md) for plugin contracts and lifecycle.
 3. [`STORAGE.md`](../storage/STORAGE.md) for durable and portable project data.
 4. [`UI_UX.md`](../ui/UI_UX.md) for author-facing Houses/Tree vocabulary and chrome.

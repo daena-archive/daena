@@ -6,7 +6,7 @@ This document is the product and architecture spec for migrating external
 material into an open project. It is subordinate to
 [`ARCHITECTURE.md`](../ARCHITECTURE.md),
 [`STORAGE.md`](../storage/STORAGE.md), and
-[`plans/PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) where their ownership,
+[`PLUGIN_PLATFORM.md`](../plugins/PLUGIN_PLATFORM.md) where their ownership,
 storage, security, or plugin boundaries apply.
 
 Import is an explicit, user-reviewed migration operation. It is not live file

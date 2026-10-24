@@ -11,7 +11,7 @@ It supplements, and does not override, these authorities:
 
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) defines the product and shared
   entity/document model.
-- [`PLUGIN_PLATFORM_PLAN.md`](../plans/PLUGIN_PLATFORM_PLAN.md) defines plugin identity,
+- [`PLUGIN_PLATFORM.md`](../plugins/PLUGIN_PLATFORM.md) defines plugin identity,
   isolation, capabilities, broker authorization, and public-contract rules.
 - [`STORAGE.md`](../storage/STORAGE.md) defines the database-first runtime, portable
   checkpoints, revisions, explicit import, and derived views.

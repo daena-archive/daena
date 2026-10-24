@@ -298,10 +298,10 @@ and parser work off the Tauri event loop.
 The trusted Svelte shell owns the shared import workflow and renders only typed
 core results. It derives selectable mappings from enabled contributions.
 
-`daena-plugin-api` eventually declares versioned importer contributions and
-bounded analyze/progress messages. `daena-plugin-host` discovers an enabled
-provider, authorizes it, supplies a bounded opaque source reader, validates all
-output, and revokes the job with plugin lifecycle. A plugin cannot receive an
+`daena-plugin-api` declares versioned `ImporterContribution` entries.
+`daena-plugin-host` discovers an enabled provider, authorizes it, supplies a
+bounded opaque source reader, validates all output, and revokes the job with
+plugin lifecycle. A plugin cannot receive an
 ambient path, filesystem capability, database handle, project mutation method,
 or commit callback.
 
@@ -351,7 +351,15 @@ transaction is open.
 `create`, `skip`, and `map to existing` are enabled. `replace` and `merge` are
 not.
 
-Plugin importers are discovered from enabled packages and analyzed through the broker. See [`plans/external-import.md`](../plans/external-import.md) for the contract limits.
+Plugin importers are discovered from enabled packages. `ImporterContribution`
+is on the Rust manifest and the generated schema and SDK. The host discovers
+enabled file importers and calls them with opaque bytes and a display name,
+never a path. Availability requires an active session, that importer's
+`service.provide:<importer-id>@1` grant, and an active provider owned by that
+plugin. Output is accepted only through `StagedImport::validate`. Reserved
+built-in ids cannot be claimed. Malformed, oversized, timed-out, disabled, and
+revoked providers fail closed. Host `detect` exists; the shell selects an
+importer explicitly. ODT and RTF are not part of the product.
 
 ## Non-goals
 

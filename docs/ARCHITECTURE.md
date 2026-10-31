@@ -157,8 +157,6 @@ as well. Portable plugin interpretation state, including module records,
 belongs in `plugins/<plugin-id>.json`. Entity-owned record owners are entity
 UUIDs. Project-scoped records omit `ownerEntityId` and are not deleted with an
 entity. Lore `profile-preset` is the shipped project-scoped collection.
-Open management gaps are
-[`plans/profile-presets.md`](./plans/profile-presets.md).
 
 ## Storage and consistency
 

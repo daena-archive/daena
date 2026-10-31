@@ -4,21 +4,28 @@ import { X } from "@lucide/svelte";
 import { buildModuleContext } from "$lib/modules/context";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import loreManifestJson from "../../../packages/modules/lore/manifest.json";
-import type { ProfileDocument } from "./profile.ts";
+import type { ProfileComponent, ProfileComponentKind, ProfileDocument } from "./profile.ts";
+import { PROFILE_COMPONENT_KINDS } from "./profile.ts";
 import {
   applyPresetFields,
   blankProfilePreset,
   createProfilePreset,
   deleteProfilePreset,
   duplicateProfilePreset,
+  groupManagerProfilePresets,
   loadAllProfilePresets,
   presetFromProfile,
+  PROFILE_PRESET_ICON_KEYS,
+  profilePresetComponentPreview,
+  profilePresetIconKey,
   qualifiedProfileEntityType,
   resetBundledProfilePreset,
   setProfilePresetHidden,
   updateProfilePreset,
   type LoadedProfilePreset,
+  type ProfilePresetComponentDraft,
   type ProfilePresetDocument,
+  type ProfilePresetIconKey,
 } from "./profilePresets.ts";
 
 export type ProfileEntityTypeOption = { id: string; label: string };
@@ -54,7 +61,9 @@ const saving = $derived(mode === "save");
 let name = $state("");
 let description = $state("");
 let genre = $state("");
+let icon = $state<ProfilePresetIconKey>("custom");
 let selectedTypes = $state<string[]>([]);
+let componentDrafts = $state<ComponentDraft[]>([]);
 let dialogEl = $state<HTMLElement | null>(null);
 let seededSave = false;
 let pending = $state<{ title: string; message: string; confirmLabel: string; run: () => Promise<void> } | null>(null);
@@ -74,6 +83,34 @@ const typeOptions = $derived.by(() => {
   return options;
 });
 const formOpen = $derived(saving || creating || editing !== null);
+const managerGroups = $derived(groupManagerProfilePresets(presets));
+const previewItems = $derived(
+  saving
+    ? profilePresetComponentPreview({ components: profile?.components ?? [] })
+    : componentDrafts
+        .filter((component) => component.name.trim())
+        .map((component) => ({ id: component.key, name: component.name.trim(), kind: component.kind })),
+);
+const iconLabels: Record<ProfilePresetIconKey, string> = {
+  custom: "Custom",
+  dnd: "D&D",
+  fantasy: "Fantasy",
+  scifi: "Sci-Fi",
+};
+
+type ComponentDraft = {
+  key: string;
+  id: string;
+  kind: ProfileComponentKind;
+  name: string;
+  scale: string;
+  min: string;
+  max: string;
+  unit: string;
+  formula: string;
+};
+
+let componentKey = 0;
 
 $effect(() => {
   const moduleContext = context;
@@ -101,7 +138,9 @@ $effect(() => {
   name = "";
   description = "";
   genre = "";
+  icon = "custom";
   selectedTypes = current ? [current] : [];
+  componentDrafts = [];
 });
 
 $effect(() => {
@@ -109,7 +148,66 @@ $effect(() => {
 });
 
 function fields() {
-  return { name, description, entityTypes: selectedTypes, genre };
+  return {
+    name,
+    description,
+    entityTypes: selectedTypes,
+    genre,
+    icon,
+    ...(saving ? {} : { components: componentFields() }),
+  };
+}
+
+function draftFromComponent(component: ProfileComponent): ComponentDraft {
+  componentKey += 1;
+  const unit = component.unit ?? (component.value.type === "resource" ? (component.value.unit ?? "") : "");
+  return {
+    key: component.id || `draft-${componentKey}`,
+    id: component.id,
+    kind: component.kind,
+    name: component.name,
+    scale: component.scale?.join(", ") ?? "",
+    min: component.min === undefined ? "" : String(component.min),
+    max: component.max === undefined ? "" : String(component.max),
+    unit,
+    formula: component.formula ?? "",
+  };
+}
+
+function numericField(value: string, label: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const number = Number(trimmed);
+  if (!Number.isFinite(number)) throw new Error(`Component ${label} must be a number`);
+  return number;
+}
+
+function componentFields(): ProfilePresetComponentDraft[] {
+  return componentDrafts.map((draft) => {
+    const min = numericField(draft.min, "min");
+    const max = numericField(draft.max, "max");
+    const unit = draft.unit.trim();
+    const formula = draft.formula.trim();
+    return {
+      ...(draft.id ? { id: draft.id } : {}),
+      kind: draft.kind,
+      name: draft.name,
+      scale: draft.scale
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      ...(min !== undefined ? { min } : {}),
+      ...(max !== undefined ? { max } : {}),
+      unit,
+      ...(formula ? { formula } : {}),
+    };
+  });
+}
+
+function entityBadge(preset: LoadedProfilePreset): string {
+  const types = preset.document.entityTypes ?? [];
+  if (!types.length) return "Universal";
+  return types.map((id) => entityTypeOptions.find((option) => option.id === id)?.label ?? id).join(", ");
 }
 
 function openCreate() {
@@ -118,7 +216,9 @@ function openCreate() {
   name = "";
   description = "";
   genre = "";
+  icon = "custom";
   selectedTypes = qualifiedProfileEntityType(entityType) ? [qualifiedProfileEntityType(entityType)] : [];
+  componentDrafts = [];
   error = "";
 }
 
@@ -128,8 +228,22 @@ function openEdit(preset: LoadedProfilePreset) {
   name = preset.document.name;
   description = preset.document.description ?? "";
   genre = preset.document.genre ?? "";
+  icon = profilePresetIconKey(preset.document.icon);
   selectedTypes = [...(preset.document.entityTypes ?? [])];
+  componentDrafts = preset.document.components.map(draftFromComponent);
   error = "";
+}
+
+function addComponent() {
+  componentKey += 1;
+  componentDrafts = [
+    ...componentDrafts,
+    { key: `new-${componentKey}`, id: "", kind: "attribute", name: "", scale: "", min: "", max: "", unit: "", formula: "" },
+  ];
+}
+
+function removeComponent(key: string) {
+  componentDrafts = componentDrafts.filter((component) => component.key !== key);
 }
 
 function closeForm() {
@@ -309,6 +423,14 @@ function onKeydown(event: KeyboardEvent) {
           Genre
           <input bind:value={genre} list="preset-genres" placeholder="Optional" />
         </label>
+        <label>
+          Icon
+          <select bind:value={icon}>
+            {#each PROFILE_PRESET_ICON_KEYS as key (key)}
+              <option value={key}>{iconLabels[key]}</option>
+            {/each}
+          </select>
+        </label>
         <datalist id="preset-genres">
           {#each genres as item (item)}<option value={item}></option>{/each}
         </datalist>
@@ -325,6 +447,64 @@ function onKeydown(event: KeyboardEvent) {
             </label>
           {/each}
         </fieldset>
+        {#if !saving}
+          <fieldset>
+            <legend>Components</legend>
+            {#each componentDrafts as draft (draft.key)}
+              <div class="component">
+                <label>
+                  Name
+                  <input bind:value={draft.name} maxlength="80" />
+                </label>
+                <label>
+                  Kind
+                  <select bind:value={draft.kind}>
+                    {#each PROFILE_COMPONENT_KINDS as kind (kind)}
+                      <option value={kind}>{kind}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label>
+                  Scale
+                  <input bind:value={draft.scale} placeholder="Comma-separated" />
+                </label>
+                <label>
+                  Min
+                  <input bind:value={draft.min} inputmode="decimal" />
+                </label>
+                <label>
+                  Max
+                  <input bind:value={draft.max} inputmode="decimal" />
+                </label>
+                <label>
+                  Unit
+                  <input bind:value={draft.unit} maxlength="40" />
+                </label>
+                <label class="formula">
+                  Formula
+                  <input bind:value={draft.formula} />
+                </label>
+                <button class="quiet-button" type="button" onclick={() => removeComponent(draft.key)}>Remove</button>
+              </div>
+            {/each}
+            <button class="quiet-button" type="button" onclick={addComponent}>Add component</button>
+          </fieldset>
+        {/if}
+        <section class="preview" aria-label="Preset preview">
+          <h3>Preview</h3>
+          {#if previewItems.length}
+            <ul>
+              {#each previewItems as item (item.id)}
+                <li>
+                  <strong>{item.name}</strong>
+                  <span>{item.kind}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p>No components.</p>
+          {/if}
+        </section>
         <footer>
           <button class="quiet-button" type="button" disabled={busy} onclick={closeForm}>Cancel</button>
           <button class="primary-button" type="submit" disabled={busy || (saving && loading)}
@@ -335,16 +515,18 @@ function onKeydown(event: KeyboardEvent) {
       <p class="body">Loading presets…</p>
     {:else}
       <div class="body">
-        <ul>
-          {#each presets as preset (preset.id)}
+        {#each managerGroups as group (group.genre ?? "")}
+          <section class="genre" aria-label={group.genre ? `${group.genre} presets` : "Presets"}>
+            {#if group.genre}<h3>{group.genre}</h3>{/if}
+            <ul>
+          {#each group.presets as preset (preset.id)}
             <li>
               <div>
                 <strong>{preset.document.name}</strong>
                 <span>
                   {preset.document.builtin ? "Bundled" : "Yours"}
                   {#if preset.document.hidden}· Hidden{/if}
-                  {#if preset.document.genre}· {preset.document.genre}{/if}
-                  · {preset.document.entityTypes?.length ? preset.document.entityTypes.join(", ") : "Universal"}
+                  <span class="badge">{entityBadge(preset)}</span>
                 </span>
               </div>
               <div class="actions">
@@ -365,7 +547,9 @@ function onKeydown(event: KeyboardEvent) {
               </div>
             </li>
           {/each}
-        </ul>
+            </ul>
+          </section>
+        {/each}
       </div>
       <footer>
         <button class="quiet-button" type="button" onclick={onClose}>Done</button>
@@ -458,12 +642,44 @@ fieldset {
   color: var(--ink-soft);
   font-size: 12px;
 }
-input {
+input,
+select {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
   padding: 8px 10px;
+}
+h3 {
+  margin: 12px 0 0;
+  color: var(--ink-soft);
+  font: 600 13px/1.2 var(--font-ui, inherit);
+}
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+.component {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 1fr 0.5fr 0.5fr 0.6fr;
+  gap: 8px;
+  align-items: end;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.component .formula {
+  grid-column: 1 / -2;
+}
+.preview h3 {
+  margin-top: 0;
+}
+.preview p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
 }
 fieldset {
   border: 1px solid var(--line);

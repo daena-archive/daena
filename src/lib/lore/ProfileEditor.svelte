@@ -29,6 +29,7 @@ import {
   groupProfilePresets,
   loadProfilePresets,
   profileForPresetSelection,
+  profilePresetComponentPreview,
   profilePresetLabel,
   type LoadedProfilePreset,
 } from "./profilePresets.ts";
@@ -117,6 +118,10 @@ let presetManager = $state<"manage" | "save" | null>(null);
 let selectedPreset = $state(CUSTOM_PRESET_ID);
 let presetChosen = false;
 const presetGroups = $derived(groupProfilePresets(presets, entityType));
+const selectedPresetPreview = $derived.by(() => {
+  const document = presets.find((preset) => preset.id === selectedPreset)?.document;
+  return document ? profilePresetComponentPreview(document) : [];
+});
 let activeTab = $state("scores");
 let writeChain = Promise.resolve();
 let persistGeneration = 0;
@@ -794,6 +799,21 @@ async function removeHistoryRow(change: StoredProfileChange) {
               {/if}
             </button>
           {/snippet}
+          <section class="preset-preview" aria-label="Preset preview">
+            <h3>Preview</h3>
+            {#if selectedPresetPreview.length}
+              <ul>
+                {#each selectedPresetPreview as component (component.id)}
+                  <li>
+                    <strong>{component.name}</strong>
+                    <span>{component.kind}</span>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p>No components. Create Profile starts an empty sheet.</p>
+            {/if}
+          </section>
         </div>
         <footer class="dialog-footer">
           <button class="quiet-button" type="button" disabled={creating} onclick={() => (presetManager = "manage")}
@@ -1216,6 +1236,29 @@ async function removeHistoryRow(change: StoredProfileChange) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+.preset-preview {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+.preset-preview h3,
+.preset-preview p {
+  margin: 0;
+}
+.preset-preview ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.preset-preview li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
 }
 .preset-card {
   position: relative;

@@ -9,9 +9,7 @@
 [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md) specifies optional structured
 attributes, skills, traits, resources, and related values on any Lore entity,
 with Timeline as the author-facing history. The current product in that
-document is section 27. Sections 8 and 14 specify preset behavior. Open
-management gaps are
-[`plans/profile-presets.md`](../plans/profile-presets.md).
+document is section 27. Sections 8 and 14 specify preset behavior.
 
 Current storage cannot host it as ordinary fields: `entity_fields` is a
 current-value UPSERT, Timeline only projects shared dates, and Fields & Types
@@ -118,5 +116,4 @@ and not an RPG engine.
   record and suggests by qualified type. If no preset records exist, a new
   Profile is empty and `presetOrigin` is unset.
 - Product behavior remains [`LORE_PROFILES.md`](../lore/LORE_PROFILES.md)
-  sections 8, 14, and 27. Open management gaps are
-  [`plans/profile-presets.md`](../plans/profile-presets.md).
+  sections 8, 14, and 27.

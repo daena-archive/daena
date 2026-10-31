@@ -1,9 +1,8 @@
 # Lore Profiles
 
 This document is the Lore Profile product spec. The current product is section
-27. Sections 8 and 14 specify preset behavior. Open management gaps are
-[`plans/profile-presets.md`](../plans/profile-presets.md). Architectural
-constraints are [ADR 0006](../adr/0006-lore-profiles.md).
+27. Sections 8 and 14 specify preset behavior. Architectural constraints are
+[ADR 0006](../adr/0006-lore-profiles.md).
 
 ## 1. Overview
 
@@ -2040,7 +2039,15 @@ The picker suggests presets whose types include the current entity, plus
 Custom, and groups the rest by genre.
 
 Presets are copy-on-create. The picker reads stored records, not seed
-constants. Preset updates do not rewrite instances. If no preset records
+constants. Preset updates do not rewrite instances. The picker shows a
+read-only component preview before Create Profile copies the selected preset.
+The manager lists every preset, including hidden ones, grouped by genre.
+D&D, Fantasy, and Sci-Fi come first, then other genre labels, then presets
+with no genre. That last group has no invented genre name. Each row shows an
+entity-type badge, or Universal when the preset declares no types. The manager
+edits name, description, icon (`custom`, `dnd`, `fantasy`, or `scifi`), genre,
+entity types, and components. An unknown stored icon displays as `custom`
+until a known icon is saved. If no preset records
 exist, creating a Profile starts empty and leaves `presetOrigin` unset.
 `presetOrigin` stores the preset record ID. Legacy `"custom"`, `"dnd"`,
 `"fantasy"`, and `"scifi"` values are accepted on read and rewritten to the
@@ -2057,10 +2064,6 @@ Character and Custom record IDs.
 
 - All Lore entity types
 - No person-specific assumptions in the core model
-
----
-
-Open management gaps are [`plans/profile-presets.md`](../plans/profile-presets.md).
 
 ---
 

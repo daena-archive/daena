@@ -51,11 +51,15 @@ import {
   presetDocumentMatchesSeed,
   presetFromProfile,
   ensureBundledProfilePresets,
+  groupManagerProfilePresets,
   groupProfilePresets,
   matchingDndAncestry,
   migrateLegacyPresetOrigins,
   profileForPresetSelection,
   profileFromPreset,
+  profilePresetComponentPreview,
+  profilePresetIconKey,
+  updateProfilePreset,
 } from "../src/lib/lore/profilePresets.ts";
 
 const liveLoreTypes = ["daena.lore:person", "daena.lore:faction", "daena.lore:species"];
@@ -649,6 +653,121 @@ const renamed = applyPresetFields(tradeGuild, { name: "Noble House", entityTypes
 assert.equal(renamed.name, "Noble House");
 assert.equal(renamed.genre, undefined);
 assert.equal(renamed.components.length, tradeGuild.components.length);
+
+const dndSeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === DND_PRESET_ID);
+const fantasySeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === FANTASY_PRESET_ID);
+const scifiSeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.document?.genre === "Sci-Fi" || preset.genre === "Sci-Fi");
+const cultureSeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.name === "Culture");
+const hiddenDnd = { ...bundledPresetDocument(dndSeed), hidden: true };
+const localPreset = {
+  schemaVersion: 1,
+  name: "Local Guild",
+  genre: "Local",
+  entityTypes: ["daena.lore:faction"],
+  components: [],
+};
+const managerGroups = groupManagerProfilePresets([
+  { id: "local", revision: "1", document: localPreset },
+  { id: cultureSeed.id, revision: "1", document: bundledPresetDocument(cultureSeed) },
+  { id: CUSTOM_PRESET_ID, revision: "1", document: bundledPresetDocument(BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.id === CUSTOM_PRESET_ID)) },
+  { id: FANTASY_PRESET_ID, revision: "1", document: bundledPresetDocument(fantasySeed) },
+  { id: scifiSeed.id, revision: "1", document: bundledPresetDocument(scifiSeed) },
+  { id: DND_PRESET_ID, revision: "1", document: hiddenDnd },
+]);
+assert.deepEqual(
+  managerGroups.map((group) => group.genre),
+  ["D&D", "Fantasy", "Sci-Fi", "Local", null],
+);
+assert.equal(
+  managerGroups.find((group) => group.genre === "D&D").presets.some((preset) => preset.document.hidden),
+  true,
+);
+assert.deepEqual(
+  managerGroups.find((group) => group.genre === null).presets.map((preset) => preset.document.name),
+  ["Culture", "Custom"],
+);
+assert.equal(
+  managerGroups.some((group) => group.genre === "Other"),
+  false,
+);
+
+const played = bundledPresetDocument(dndSeed);
+played.icon = "seal";
+const editedTemplate = applyPresetFields(played, {
+  name: played.name,
+  description: played.description,
+  genre: played.genre,
+  entityTypes: played.entityTypes,
+  icon: "dnd",
+  components: [
+    {
+      id: "attribute-strength",
+      kind: "attribute",
+      name: "Might",
+      min: 1,
+      max: 20,
+      value: { type: "number", value: 18 },
+    },
+    { id: "tag-omen", kind: "tag", name: "Omen", value: { type: "text", value: "blood" } },
+  ],
+});
+assert.equal(editedTemplate.icon, "dnd");
+assert.equal(editedTemplate.components.find((component) => component.id === "attribute-strength").name, "Might");
+assert.equal(editedTemplate.components.find((component) => component.id === "attribute-strength").value.value, 10);
+assert.equal(editedTemplate.components.find((component) => component.id === "tag-omen").value.value, null);
+const clamped = applyPresetFields(played, {
+  name: played.name,
+  components: [
+    { id: "attribute-strength", kind: "attribute", name: "Strength", min: 12, max: 15 },
+  ],
+});
+assert.equal(clamped.components[0].value.value, 12);
+const locationSeed = BUNDLED_PROFILE_PRESET_SEEDS.find((preset) => preset.name === "D&D Location");
+const location = bundledPresetDocument(locationSeed);
+const treasure = location.components.find((component) => component.name === "Treasure");
+const locationRoundTrip = applyPresetFields(location, {
+  name: location.name,
+  description: location.description,
+  genre: location.genre,
+  entityTypes: location.entityTypes,
+  icon: location.icon,
+  components: location.components.map((component) => ({
+    id: component.id,
+    kind: component.kind,
+    name: component.name,
+    ...(component.scale ? { scale: [...component.scale] } : {}),
+    ...(component.min !== undefined ? { min: component.min } : {}),
+    ...(component.max !== undefined ? { max: component.max } : {}),
+    ...(component.formula ? { formula: component.formula } : {}),
+    unit: component.unit ?? (component.value.type === "resource" ? (component.value.unit ?? "") : ""),
+  })),
+});
+const treasureAfter = locationRoundTrip.components.find((component) => component.id === treasure.id);
+assert.equal(treasureAfter.unit, undefined);
+assert.equal(treasureAfter.value.unit, "gold");
+assert.equal(profilePresetIconKey("seal"), "custom");
+assert.equal(profilePresetIconKey(undefined), "custom");
+const keptIcon = applyPresetFields(played, { name: played.name });
+assert.equal(keptIcon.icon, "seal");
+assert.deepEqual(profilePresetComponentPreview(editedTemplate), [
+  { id: "attribute-strength", name: "Might", kind: "attribute" },
+  { id: "tag-omen", name: "Omen", kind: "tag" },
+]);
+const storedPreset = [];
+await updateProfilePreset(
+  {
+    projectRecords: {
+      async update(_collection, id, value) {
+        storedPreset.push(value);
+        return { id, revision: "2", value };
+      },
+    },
+  },
+  { id: DND_PRESET_ID, revision: "1", document: played },
+  editedTemplate,
+);
+assert.equal(storedPreset[0].icon, "dnd");
+assert.equal(storedPreset[0].components.find((component) => component.id === "tag-omen").name, "Omen");
 
 const listedOrigins = [];
 const rewritten = [];

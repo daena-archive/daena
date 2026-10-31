@@ -1,10 +1,13 @@
 import type { ModuleContext, ProjectModuleRecord, UUID } from "../../../packages/module-api/src/index";
 import {
   cloneProfileData,
+  defaultValueForKind,
   emptyProfile,
   emptyValue,
   PROFILE_COLLECTION,
+  PROFILE_COMPONENT_KINDS,
   PROFILE_SCHEMA_VERSION,
+  withDerivedDependencies,
   type ProfileComponent,
   type ProfileComponentKind,
   type ProfileDocument,
@@ -35,12 +38,33 @@ export type ProfilePresetDocument = {
   components: ProfileDocument["components"];
 };
 
+export const PROFILE_PRESET_ICON_KEYS = ["custom", "dnd", "fantasy", "scifi"] as const;
+
+export type ProfilePresetIconKey = (typeof PROFILE_PRESET_ICON_KEYS)[number];
+
+export type ProfilePresetComponentDraft = {
+  id?: string;
+  kind: ProfileComponentKind;
+  name: string;
+  scale?: string[];
+  min?: number;
+  max?: number;
+  unit?: string;
+  formula?: string;
+};
+
 export type ProfilePresetFields = {
   name: string;
   description?: string;
   entityTypes?: string[];
   genre?: string;
+  icon?: string;
+  components?: readonly ProfilePresetComponentDraft[];
 };
+
+export function profilePresetIconKey(icon: string | null | undefined): ProfilePresetIconKey {
+  return PROFILE_PRESET_ICON_KEYS.includes(icon as ProfilePresetIconKey) ? (icon as ProfilePresetIconKey) : "custom";
+}
 
 export type LoadedProfilePreset = {
   id: UUID;
@@ -268,6 +292,79 @@ function startingPresetValue(component: ProfileComponent): ProfileComponent["val
   return emptyValue(component.value.type);
 }
 
+function storedPresetIcon(icon: string | undefined): ProfilePresetIconKey | undefined {
+  const trimmed = icon?.trim() ?? "";
+  return PROFILE_PRESET_ICON_KEYS.includes(trimmed as ProfilePresetIconKey)
+    ? (trimmed as ProfilePresetIconKey)
+    : undefined;
+}
+
+function resolvedPresetIcon(current: string | undefined, fields: ProfilePresetFields): string | undefined {
+  if (fields.icon === undefined) return current || undefined;
+  return storedPresetIcon(fields.icon) ?? (current || undefined);
+}
+
+function presetComponentId(kind: string, name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `${kind}-${slug || "component"}`;
+}
+
+function templateComponentValue(
+  draft: ProfilePresetComponentDraft,
+  previous: ProfileComponent | undefined,
+): ProfileComponent["value"] {
+  if (previous && previous.kind === draft.kind) {
+    const value = cloneProfileData(previous.value);
+    if (value.type === "resource" && draft.unit !== undefined) value.unit = draft.unit.trim() || null;
+    if (value.type === "number" && typeof value.value === "number") {
+      if (typeof draft.min === "number" && value.value < draft.min) value.value = draft.min;
+      if (typeof draft.max === "number" && value.value > draft.max) value.value = draft.max;
+    }
+    return value;
+  }
+  const scale = draft.scale?.some((item) => item.trim()) ?? false;
+  if (draft.kind === "proficiency" || (scale && draft.kind === "skill")) return { type: "rank", value: null };
+  const value = defaultValueForKind(draft.kind);
+  if (value.type === "number" && typeof draft.min === "number") return { type: "number", value: draft.min };
+  if (value.type === "resource") return { type: "resource", current: null, max: null, unit: draft.unit?.trim() || null };
+  return value;
+}
+
+function normalizePresetComponents(
+  drafts: readonly ProfilePresetComponentDraft[],
+  existing: readonly ProfileComponent[],
+): ProfileComponent[] {
+  const byId = new Map(existing.map((component) => [component.id, component]));
+  const ids = new Set<string>();
+  return drafts.map((draft) => {
+    const name = draft.name?.trim() ?? "";
+    if (!name) throw new Error("Component name is required");
+    if (!PROFILE_COMPONENT_KINDS.includes(draft.kind)) throw new Error("Unknown component kind");
+    const id = draft.id?.trim() || presetComponentId(draft.kind, name);
+    if (ids.has(id)) throw new Error(`Duplicate component id: ${id}`);
+    ids.add(id);
+    const previous = byId.get(id);
+    const scale = draft.scale?.map((item) => item.trim()).filter(Boolean);
+    if (draft.min !== undefined && draft.max !== undefined && draft.min > draft.max) {
+      throw new Error(`${name} min cannot exceed max`);
+    }
+    const next: ProfileComponent = { id, kind: draft.kind, name, value: templateComponentValue(draft, previous) };
+    if (scale?.length) next.scale = scale;
+    if (draft.min !== undefined) next.min = draft.min;
+    if (draft.max !== undefined) next.max = draft.max;
+    if (draft.unit !== undefined) {
+      const unit = draft.unit.trim();
+      if (unit && (next.value.type !== "resource" || previous?.unit)) next.unit = unit;
+    } else if (previous?.unit) next.unit = previous.unit;
+    const formula = draft.formula?.trim();
+    if (draft.kind === "derived" && formula) next.formula = formula;
+    return withDerivedDependencies(next);
+  });
+}
+
 export function presetFromProfile(
   profile: ProfileDocument,
   fields: ProfilePresetFields,
@@ -275,9 +372,11 @@ export function presetFromProfile(
 ): ProfilePresetDocument {
   const meta = normalizePresetFields(fields);
   const originById = new Map((origin?.components ?? []).map((component) => [component.id, component]));
+  const icon = resolvedPresetIcon(origin?.icon, fields);
   return {
     schemaVersion: PROFILE_PRESET_SCHEMA_VERSION,
     ...meta,
+    ...(icon ? { icon } : {}),
     ...(profile.allocation ? { allocation: { ...profile.allocation } } : {}),
     components: profile.components.map((component) =>
       withoutPresetValueProgress(component, originById.get(component.id)),
@@ -286,20 +385,40 @@ export function presetFromProfile(
 }
 
 export function blankProfilePreset(fields: ProfilePresetFields): ProfilePresetDocument {
-  return { schemaVersion: PROFILE_PRESET_SCHEMA_VERSION, ...normalizePresetFields(fields), components: [] };
+  const icon = resolvedPresetIcon(undefined, fields);
+  return {
+    schemaVersion: PROFILE_PRESET_SCHEMA_VERSION,
+    ...normalizePresetFields(fields),
+    ...(icon ? { icon } : {}),
+    components: fields.components === undefined ? [] : normalizePresetComponents(fields.components, []),
+  };
 }
 
 export function applyPresetFields(preset: ProfilePresetDocument, fields: ProfilePresetFields): ProfilePresetDocument {
   const meta = normalizePresetFields(fields);
+  const icon = resolvedPresetIcon(preset.icon, fields);
   return {
     schemaVersion: preset.schemaVersion || PROFILE_PRESET_SCHEMA_VERSION,
     ...meta,
-    ...(preset.icon ? { icon: preset.icon } : {}),
+    ...(icon ? { icon } : {}),
     ...(preset.builtin ? { builtin: true, customized: true } : {}),
     ...(preset.hidden ? { hidden: true } : {}),
     ...(preset.allocation ? { allocation: cloneProfileData(preset.allocation) } : {}),
-    components: cloneProfileData(preset.components ?? []),
+    components:
+      fields.components === undefined
+        ? cloneProfileData(preset.components ?? [])
+        : normalizePresetComponents(fields.components, preset.components ?? []),
   };
+}
+
+export function profilePresetComponentPreview(
+  document: Pick<ProfilePresetDocument, "components">,
+): { id: string; name: string; kind: ProfileComponentKind }[] {
+  return (document.components ?? []).map((component) => ({
+    id: component.id,
+    name: component.name,
+    kind: component.kind,
+  }));
 }
 
 export function duplicatedProfilePreset(preset: ProfilePresetDocument, name?: string): ProfilePresetDocument {
@@ -413,6 +532,28 @@ function genreRank(genre: string | null): number {
   if (!genre) return PRESET_GENRE_ORDER.length;
   const index = PRESET_GENRE_ORDER.indexOf(genre);
   return index === -1 ? PRESET_GENRE_ORDER.length + 1 : index;
+}
+
+export function groupManagerProfilePresets(presets: readonly LoadedProfilePreset[]): ProfilePresetGroup[] {
+  const grouped = new Map<string | null, LoadedProfilePreset[]>();
+  for (const preset of presets) {
+    const genre = preset.document.genre?.trim() || null;
+    const list = grouped.get(genre) ?? [];
+    list.push(preset);
+    grouped.set(genre, list);
+  }
+  for (const list of grouped.values()) {
+    list.sort((left, right) => left.document.name.localeCompare(right.document.name) || left.id.localeCompare(right.id));
+  }
+  return [...grouped.entries()]
+    .sort(([left], [right]) => managerGenreRank(left) - managerGenreRank(right) || (left ?? "").localeCompare(right ?? ""))
+    .map(([genre, items]) => ({ genre, presets: items }));
+}
+
+function managerGenreRank(genre: string | null): number {
+  if (!genre) return PRESET_GENRE_ORDER.length + 1;
+  const index = PRESET_GENRE_ORDER.indexOf(genre);
+  return index === -1 ? PRESET_GENRE_ORDER.length : index;
 }
 
 export function defaultProfilePresetId(

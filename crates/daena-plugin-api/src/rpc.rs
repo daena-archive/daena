@@ -868,6 +868,11 @@ pub struct AppVersionPayload {}
 #[serde(deny_unknown_fields)]
 pub struct AppearanceGetPayload {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SchemaListPayload {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

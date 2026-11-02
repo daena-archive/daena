@@ -623,9 +623,10 @@ The following features are deferred, with their default behavior decided now:
   that choice while open; see Decision 13.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
-- **Bundled Timeline / Language / remaining UIs in isolated webviews:**
-  deferred. The isolation rule is unchanged. Resume order and current surfaces
-  are in [`plugin-isolation.md`](../plans/plugin-isolation.md).
+- **Bundled Language / remaining UIs in isolated webviews:** deferred.
+  Chronology already runs in the `daena.timeline` webview. The isolation rule
+  is unchanged. Resume order and current surfaces are in
+  [`plugin-isolation.md`](../plans/plugin-isolation.md).
 
 Any future change to identity, isolation, authority, package integrity, data
 ownership, or interaction semantics requires a new ADR and compatibility plan.
@@ -675,7 +676,7 @@ maps.recovery.list  maps.recovery.restore
 maps.locations.list  maps.reconcile.links
 event.publish  event.subscribe  event.poll
 service.call
-appearance.get
+appearance.get  schema.list
 ```
 
 ### Resolved contract decisions
@@ -698,6 +699,11 @@ appearance.get
   then fail with "unknown plugin RPC method". They are excluded from the
   catalog and return `method.unknown`; the host `required_capabilities` is now
   a catalog lookup.
+- **`schema.list` returns enabled effective manifests.** It requires
+  `entity.read` and returns each enabled package manifest with the project's
+  schema overlay merged, so isolated UIs such as Chronology can discover shared
+  timeline fields and providers without the trusted `module_list_manifests`
+  command. Disabled packages are omitted, and no `enabled` flag is added.
 - **`service.provide` is vestigial as a method.** Providers register at
   activation; the manifest `services.provides` is the mechanism.
 - **Wire-name fidelity.** Payloads mix snake_case and camelCase by design

@@ -1,3 +1,16 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timeline</title><link rel="stylesheet" href="./plugin.css"></head>
-<body data-plugin="daena.timeline"><main><p class="eyebrow">DAENA ARCHIVE PLUGIN</p><h1>Timeline</h1><p id="status">Connecting to the host…</p><section id="projection" aria-live="polite"></section></main><script type="module" src="./plugin.js"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chronology</title>
+    <link rel="stylesheet" href="./timeline.css" />
+  </head>
+  <body data-plugin="daena.timeline">
+    <main class="chronology-page">
+      <p id="chronology-status" role="status" aria-live="polite"></p>
+      <div id="chronology"></div>
+    </main>
+    <script type="module" src="./timeline.js"></script>
+  </body>
+</html>

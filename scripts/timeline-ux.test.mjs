@@ -22,7 +22,7 @@ assert.match(
 );
 assert.match(
   source,
-  /buildTypeLabelMap\(\[context\.module, \.\.\.enabledManifests\]\)/,
+  /buildTypeLabelMap\(\[source\.module, \.\.\.enabledManifests\]\)/,
   "timeline labels types from effective manifests",
 );
 assert.match(source, /resolveEntityTypeLabel\(type, typeLabels\)/, "timeline resolves schema names for type filters");
@@ -34,11 +34,11 @@ assert.match(source, /timeline-lifeline \.vis-item-content::before/, "lifeline r
 assert.match(
   source,
   /reportSurfaceMeta\?\.\(\{[\s\S]*calendarName/,
-  "the active display calendar remains visible in the workspace topbar",
+  "the chronology surface still publishes the active calendar name",
 );
 assert.match(
   source,
-  /listLocations\(\{ entityId \}\)[\s\S]*Show on map/,
+  /source\.listLocations\(entityId\)[\s\S]*locations\.length === 0[\s\S]*Show on map/,
   "Show on map appears only when the event has map locations",
 );
 

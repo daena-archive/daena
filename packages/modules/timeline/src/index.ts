@@ -1,17 +1,10 @@
 import type { Timeline, DataGroup, DataItem, TimelineOptions } from "vis-timeline";
-import {
-  buildTypeLabelMap,
-  resolveEntityTypeLabel,
-  type FieldRecord,
-  type ModuleContext,
-  type DaenaModule,
-  type ModuleManifest,
-} from "../../../module-api/src/index";
+import { buildTypeLabelMap, resolveEntityTypeLabel, type FieldRecord } from "../../../module-api/src/index";
+import { type TimelineProjectionSource } from "./projection-source";
 import { parseCalendarDate } from "./calendar-date";
 import { type CalendarDefinition } from "./calendar";
 import { buildFieldContributions, discoverTimelineFieldSpecs, timelineDateAnchor } from "./projection";
 import { belongsToEraScope, resolveChronologyCalendarDefinition } from "./era-scope";
-import manifestJson from "../manifest.json";
 import {
   type CalendarOption,
   type LoadedTimelineEntry,
@@ -33,8 +26,6 @@ import {
   rangeLabel,
   relativeOffsetLabel,
 } from "./event-utils";
-
-const manifest = manifestJson as unknown as ModuleManifest;
 
 function createTimelineStyles(): HTMLStyleElement {
   const style = document.createElement("style");
@@ -177,12 +168,12 @@ function createLegend() {
   return legend;
 }
 
-async function showOnMap(context: ModuleContext, entityId: string) {
+async function showOnMap(source: TimelineProjectionSource, entityId: string) {
   try {
-    const result = await context.maps.focusEntity({ entityId });
+    const result = await source.focusEntity(entityId);
     if (result.status === "multiple-links" && result.locations.length > 0) {
       const location = result.locations[0];
-      await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+      await source.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
     }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
@@ -200,19 +191,19 @@ async function showOnMap(context: ModuleContext, entityId: string) {
 
 async function appendShowOnMapButton(
   details: HTMLElement,
-  context: ModuleContext,
+  source: TimelineProjectionSource,
   entityId: string,
   selectionKey: string,
 ) {
-  if (!context.services.isAvailable("daena.maps/navigation", 1)) return;
+  if (!source.mapsNavigationEnabled()) return;
   try {
-    const locations = await context.maps.listLocations({ entityId });
+    const locations = await source.listLocations(entityId);
     if (locations.length === 0 || details.dataset.selectionKey !== selectionKey) return;
     const mapButton = document.createElement("button");
     mapButton.type = "button";
     mapButton.className = "timeline-map-button";
     mapButton.textContent = "Show on map";
-    mapButton.onclick = () => void showOnMap(context, entityId);
+    mapButton.onclick = () => void showOnMap(source, entityId);
     details.append(mapButton);
   } catch {
     // A project without map locations still shows the inspector without the action.
@@ -222,7 +213,7 @@ async function appendShowOnMapButton(
 function renderSelection(
   details: HTMLElement,
   event: TimelineEvent,
-  context: ModuleContext,
+  source: TimelineProjectionSource,
   definitions: ReadonlyMap<string, CalendarDefinition>,
   displayCalendarName: string,
   typeLabels: ReadonlyMap<string, string>,
@@ -251,10 +242,10 @@ function renderSelection(
     contextLine.textContent = contextText;
     details.append(contextLine);
   }
-  void appendShowOnMapButton(details, context, event.entity.id, selectionKey);
+  void appendShowOnMapButton(details, source, event.entity.id, selectionKey);
 }
 
-function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, context: ModuleContext) {
+function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, source: TimelineProjectionSource) {
   const selectionKey = event.entity.id;
   details.dataset.selectionKey = selectionKey;
   details.replaceChildren();
@@ -275,7 +266,7 @@ function renderUndatedSelection(details: HTMLElement, event: UndatedEvent, conte
     contextLine.textContent = contextText;
     details.append(contextLine);
   }
-  void appendShowOnMapButton(details, context, event.entity.id, selectionKey);
+  void appendShowOnMapButton(details, source, event.entity.id, selectionKey);
 }
 
 function renderOutline(
@@ -383,13 +374,7 @@ function showError(shell: HTMLElement, cause: unknown) {
   shell.append(error);
 }
 
-export const timeline: DaenaModule = {
-  manifest,
-  views: [
-    {
-      id: "timeline-events",
-      title: "Timeline Events",
-      mount: (element: HTMLElement, context: ModuleContext) => {
+export function mountTimeline(element: HTMLElement, source: TimelineProjectionSource) {
         let cancelled = false;
         let chart: Timeline | null = null;
         let resizeObserver: ResizeObserver | null = null;
@@ -418,22 +403,25 @@ export const timeline: DaenaModule = {
             chart = null;
             let snapshot = sourceSnapshot;
             if (!snapshot) {
-              const [entities, enabledManifests] = await Promise.all([context.entities.list(), context.modules.list()]);
-              const calendarOptions = await loadCalendarOptions(context, entities);
+              const [entities, enabledManifests] = await Promise.all([
+                source.listEntities(),
+                source.listEnabledManifests(),
+              ]);
+              const calendarOptions = await loadCalendarOptions(source.listCalendarDefinition, entities);
               const entityTypes = new Set(
-                context.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
+                source.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
               );
-              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, context.module.id);
+              const contributionSpecs = discoverTimelineFieldSpecs(enabledManifests, source.module.id);
               const contributionNamespaces = [...new Set(contributionSpecs.map((spec) => spec.namespace))];
               const loaded: LoadedTimelineEntry[] = await Promise.all(
                 entities.map(async (entity) => {
                   const isTimelineEntity = entityTypes.has(entity.type ?? "");
-                  const fields = isTimelineEntity ? await context.fields.list(entity.id) : {};
+                  const fields = isTimelineEntity ? await source.listOwnFields(entity.id) : {};
                   const contributedRecords = (
                     await Promise.all(
                       contributionNamespaces.map(async (namespace) => {
                         try {
-                          return await context.fields.listShared(entity.id, namespace);
+                          return await source.listSharedFields(entity.id, namespace);
                         } catch {
                           return [] as FieldRecord[];
                         }
@@ -444,7 +432,7 @@ export const timeline: DaenaModule = {
                   try {
                     // Shared chronology remains readable when Maps is disabled;
                     // only the navigation service should disappear with it.
-                    if (isTimelineEntity) sharedMapsFields = await context.fields.listShared(entity.id, "maps");
+                    if (isTimelineEntity) sharedMapsFields = await source.listSharedFields(entity.id, "maps");
                   } catch {
                     // A project without the optional Maps contract still renders
                     // ordinary Timeline items instead of failing the projection.
@@ -452,12 +440,12 @@ export const timeline: DaenaModule = {
                   const relativeYear = physicalOffset(
                     sharedMapsFields.find((field) => field.key === "physicalChronology")?.value,
                   );
-                  const relationships = isTimelineEntity ? await context.relationships.list(entity.id) : [];
+                  const relationships = isTimelineEntity ? await source.listRelationships(entity.id) : [];
                   const contextRels = relationships.filter(
                     (relationship) => relationship.type === "occurred_at" || relationship.type === "involves",
                   );
                   const targets = await Promise.all(
-                    contextRels.map((relationship) => context.entities.get(relationship.targetId)),
+                    contextRels.map((relationship) => source.getEntity(relationship.targetId)),
                   );
                   return {
                     entity,
@@ -486,7 +474,7 @@ export const timeline: DaenaModule = {
               snapshot = {
                 calendarOptions,
                 loaded,
-                typeLabels: buildTypeLabelMap([context.module, ...enabledManifests]),
+                typeLabels: buildTypeLabelMap([source.module, ...enabledManifests]),
               };
               sourceSnapshot = snapshot;
             }
@@ -504,7 +492,7 @@ export const timeline: DaenaModule = {
                 .map((option) => [option.id, option.definition]),
             );
             const entityTypes = new Set(
-              context.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
+              source.module.schemas.flatMap((schema) => schema.entityTypes.map((entityType) => entityType.id)),
             );
             const dated: TimelineEvent[] = [];
             const contributed: TimelineEvent[] = [];
@@ -651,7 +639,7 @@ export const timeline: DaenaModule = {
             const shell = document.createElement("div");
             shell.className = "timeline-shell";
             const calendarName = selectedCalendarOption?.name ?? "Gregorian";
-            context.reportSurfaceMeta?.({
+            source.reportSurfaceMeta?.({
               subtitle:
                 scopedUndated.length > 0
                   ? `${plotted.length} placed · ${scopedUndated.length} unplaced or relative · ${calendarName}`
@@ -873,7 +861,7 @@ export const timeline: DaenaModule = {
                 renderSelection(
                   detailPanel,
                   event,
-                  context,
+                  source,
                   calendarDefinitions,
                   selectedCalendarOption?.name ?? "Gregorian",
                   typeLabels,
@@ -948,7 +936,7 @@ export const timeline: DaenaModule = {
                 renderSelection(
                   detailPanel,
                   selectedEvent,
-                  context,
+                  source,
                   calendarDefinitions,
                   selectedCalendarOption?.name ?? "Gregorian",
                   typeLabels,
@@ -956,7 +944,6 @@ export const timeline: DaenaModule = {
               shell.append(toolbar, layerbar, workspace);
               element.append(shell);
 
-              await import("vis-timeline/styles/vis-timeline-graph2d.min.css");
               const { Timeline: TimelineCtor } = await import("vis-timeline/standalone");
               if (cancelled) return;
 
@@ -1063,7 +1050,7 @@ export const timeline: DaenaModule = {
                     ? entry.entity.name
                     : `${entry.entity.name} · ${relativeOffsetLabel(entry.relativeYear)}`;
                 button.onclick = () => {
-                  if (details) renderUndatedSelection(details, entry, context);
+                  if (details) renderUndatedSelection(details, entry, source);
                 };
                 list.append(button);
               }
@@ -1096,7 +1083,4 @@ export const timeline: DaenaModule = {
           chart = null;
           element.replaceChildren();
         };
-      },
-    },
-  ],
-};
+}

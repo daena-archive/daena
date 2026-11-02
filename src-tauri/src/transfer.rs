@@ -639,6 +639,14 @@ pub(super) fn plugin_asset_response(
                 include_bytes!("../plugin-assets/timeline/index.html"),
                 "text/html",
             ),
+            ("daena.timeline", "/dist/ui/timeline.js") => (
+                include_bytes!("../plugin-assets/timeline/timeline.js"),
+                "text/javascript",
+            ),
+            ("daena.timeline", "/dist/ui/timeline.css") => (
+                include_bytes!("../plugin-assets/timeline/timeline.css"),
+                "text/css",
+            ),
             ("daena.writing", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/writing/index.html"),
                 "text/html",
@@ -1125,6 +1133,23 @@ pub(super) fn plugin_protocol_response(
                 } else if request.method == "appearance.get" {
                     serde_json::to_value(current_plugin_appearance())
                         .map_err(|error| error.to_string())?
+                } else if request.method == "schema.list" {
+                    // Core before plugin host, matching module_list_manifests.
+                    let core_session = current_session(core)?;
+                    let core = core_session
+                        .core
+                        .lock()
+                        .map_err(|_| "core lock poisoned".to_string())?;
+                    let host = plugins
+                        .lock()
+                        .map_err(|_| "plugin host lock poisoned".to_string())?;
+                    let project = core
+                        .project(AuthorityContext::plugin())
+                        .map_err(|error| error.to_string())?;
+                    serde_json::Value::Array(
+                        enabled_schema_manifests(project, &host)
+                            .map_err(|error| error.to_string())?,
+                    )
                 } else if matches!(
                     request.method.as_str(),
                     "asset.read.begin"

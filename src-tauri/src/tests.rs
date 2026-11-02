@@ -1767,6 +1767,170 @@ fn timeline_shared_field_list_returns_lore_birth_and_death() {
 }
 
 #[test]
+fn schema_list_returns_enabled_effective_manifests() {
+    let mut core = CoreService::new();
+    core.open_memory(AuthorityContext::trusted_shell()).unwrap();
+    core.project_mut(AuthorityContext::trusted_shell())
+        .unwrap()
+        .set_module_schema_overlay(
+            "daena.lore".into(),
+            Some(serde_json::json!({
+                "version": daena_plugin_api::schema_overlay::SCHEMA_OVERLAY_VERSION,
+                "customFields": [{
+                    "key": "overlayDate",
+                    "label": "Overlay date",
+                    "type": "date",
+                    "entityTypes": ["daena.lore:person"],
+                    "shared": true,
+                    "timeline": { "role": "point", "label": "Overlay", "layer": "dates" }
+                }]
+            })),
+        )
+        .unwrap();
+    core.project_mut(AuthorityContext::trusted_shell())
+        .unwrap()
+        .set_module_enabled("daena.writing".into(), false)
+        .unwrap();
+    let host = bundled_plugin_host(new_shared_core()).unwrap();
+    let listed = enabled_schema_manifests(
+        core.project(AuthorityContext::trusted_shell()).unwrap(),
+        &host,
+    )
+    .unwrap();
+    let lore = listed
+        .iter()
+        .find(|manifest| manifest["id"] == "daena.lore")
+        .expect("enabled lore manifest");
+    let overlay_date = lore["schemas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|schema| schema["fields"].as_array().into_iter().flatten())
+        .find(|field| field["key"] == "overlayDate")
+        .expect("overlay date field");
+    assert_eq!(overlay_date["shared"], true);
+    assert_eq!(overlay_date["timeline"]["role"], "point");
+    assert_eq!(overlay_date["timeline"]["label"], "Overlay");
+    assert_eq!(overlay_date["timeline"]["layer"], "dates");
+    assert!(listed
+        .iter()
+        .all(|manifest| manifest["id"] != "daena.writing"));
+    assert!(listed
+        .iter()
+        .all(|manifest| manifest.get("enabled").is_none()));
+
+    let root = std::env::temp_dir().join(format!("daena-schema-list-{}", uuid::Uuid::new_v4()));
+    let project = ProjectStore::open_directory(&root).unwrap();
+    let project_id = root.to_string_lossy().to_string();
+    let mut manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../examples/plugins/timeline-consumer/manifest.json"
+    ))
+    .unwrap();
+    manifest["publisher"] = serde_json::Value::String("daena-archive".into());
+    manifest["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|capability| capability != "entity.read");
+    let mut denied_host = PluginHost::new();
+    denied_host
+        .register_bundled_json(&serde_json::to_string(&manifest).unwrap())
+        .unwrap();
+    sync_project_usage(&project, &mut denied_host).unwrap();
+    let denied = denied_host
+        .authorize_bundled(
+            "com.example.timeline-consumer",
+            &project_id,
+            "schema.list",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+    assert!(denied.to_string().contains("capability.denied"), "{denied}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn schema_list_is_served_over_the_plugin_protocol_bridge() {
+    // Plugin webviews reach the broker through `/__rpc`, not the `plugin_rpc`
+    // Tauri command, so Chronology's first call must succeed on this path.
+    let root = std::env::temp_dir().join(format!("daena-schema-bridge-{}", uuid::Uuid::new_v4()));
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_directory(trusted_shell(), &root)
+        .unwrap();
+    let project_id = current_info(&core).unwrap().unwrap().root;
+    let mut host = bundled_plugin_host(core.clone()).unwrap();
+    {
+        let session = current_session(&core).unwrap();
+        let core = session.core.lock().unwrap();
+        sync_project_usage(core.project(trusted_shell()).unwrap(), &mut host).unwrap();
+    }
+    let plugins: SharedPluginHost = Arc::new(Mutex::new(host));
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let ai_runtime: ai::SharedAiRuntime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let label = plugin_window_label("daena.timeline");
+    let post = |body: serde_json::Value| {
+        let request = tauri::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "{}://daena.timeline/__rpc",
+                daena_plugin_host::runtime::plugin_protocol("daena.timeline")
+            ))
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let response =
+            plugin_protocol_response(&label, &request, &core, &plugins, &transfers, &ai_runtime);
+        assert_eq!(response.status(), 200);
+        serde_json::from_slice::<serde_json::Value>(response.body()).unwrap()
+    };
+    let bootstrap = post(serde_json::json!({
+        "op": "bootstrap",
+        "pluginId": "daena.timeline",
+        "projectId": project_id,
+    }));
+    let session_id = bootstrap["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let listed = post(serde_json::json!({
+        "op": "rpc",
+        "request": {
+            "rpcVersion": 1,
+            "sessionId": session_id,
+            "requestId": "schema-1",
+            "method": "schema.list",
+            "payload": {},
+        },
+    }));
+    assert_eq!(listed["ok"], true, "{listed}");
+    let manifests = listed["result"].as_array().expect("manifest array");
+    assert!(manifests
+        .iter()
+        .any(|manifest| manifest["id"] == "daena.timeline"));
+    assert!(manifests
+        .iter()
+        .all(|manifest| manifest.get("enabled").is_none()));
+    // The Chronology source pages entities by `items` / `hasMore` / `entityType`.
+    let page = post(serde_json::json!({
+        "op": "rpc",
+        "request": {
+            "rpcVersion": 1,
+            "sessionId": session_id,
+            "requestId": "entities-1",
+            "method": "entity.query",
+            "payload": { "offset": 0, "limit": 200 },
+        },
+    }));
+    assert_eq!(page["ok"], true, "{page}");
+    assert!(page["result"]["items"].is_array());
+    assert!(page["result"]["hasMore"].is_boolean());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn broker_asset_metadata_update_matches_the_owned_namespace() {
     let mut core = CoreService::new();
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();

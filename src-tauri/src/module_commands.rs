@@ -130,6 +130,19 @@ pub(crate) fn effective_module_manifests(
     Ok(unpacked.into_iter().zip(enabled).collect())
 }
 
+pub(super) fn enabled_schema_manifests(
+    project: &ProjectStore,
+    host: &PluginHost,
+) -> Result<Vec<serde_json::Value>, CoreError> {
+    effective_module_manifests(project, host)?
+        .into_iter()
+        .filter(|(_, enabled)| *enabled)
+        .map(|(manifest, _)| {
+            serde_json::to_value(manifest).map_err(|error| CoreError::Validation(error.to_string()))
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(super) async fn module_list_manifests(
     state: tauri::State<'_, SharedCore>,

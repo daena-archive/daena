@@ -124,6 +124,32 @@ pub(super) async fn plugin_rpc(
         serde_json::to_value(current_plugin_appearance()).map_err(|error| error.to_string())
     } else if current_project.as_deref() != Some(session.project_id.as_str()) {
         Err("plugin session is not bound to the open project".to_string())
+    } else if method == "schema.list" {
+        match validate_broker_payload(&method, &payload) {
+            Err(error) => Err(error.to_string()),
+            Ok(()) => {
+                let project_id = session.project_id.clone();
+                let plugins = state.inner().clone();
+                with_core(core, move |core| {
+                    let current = core
+                        .info()
+                        .map(|info| info.root)
+                        .ok_or(CoreError::ProjectNotOpen)?;
+                    if current != project_id {
+                        return Err(CoreError::Unauthorized {
+                            operation: "access another project".into(),
+                        });
+                    }
+                    let host = plugins
+                        .lock()
+                        .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
+                    let manifests =
+                        enabled_schema_manifests(core.project(AuthorityContext::plugin())?, &host)?;
+                    Ok(serde_json::Value::Array(manifests))
+                })
+                .await
+            }
+        }
     } else if matches!(
         method.as_str(),
         "event.subscribe"

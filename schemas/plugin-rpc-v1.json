@@ -1664,6 +1664,10 @@
       ],
       "type": "object"
     },
+    "SchemaListPayload": {
+      "additionalProperties": false,
+      "type": "object"
+    },
     "SearchQueryPayload": {
       "additionalProperties": false,
       "properties": {
@@ -2706,6 +2710,22 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "schema.list"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/SchemaListPayload"
+              }
+            }
+          }
         }
       ],
       "properties": {
@@ -2771,7 +2791,8 @@
             "ai.request.result",
             "ai.request.citations",
             "app.version",
-            "appearance.get"
+            "appearance.get",
+            "schema.list"
           ]
         },
         "payload": {},
@@ -3205,6 +3226,10 @@
         "expectedRevision",
         "id"
       ]
+    },
+    "schema.list": {
+      "payload": "SchemaListPayload",
+      "requestId": "envelope"
     },
     "search.query": {
       "payload": "SearchQueryPayload",

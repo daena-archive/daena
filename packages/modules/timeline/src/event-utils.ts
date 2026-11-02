@@ -1,7 +1,5 @@
-import { type EntitySummary, type ModuleContext } from "../../../module-api/src/index";
 import { parseCalendarDate, type CalendarDate } from "./calendar-date";
 import {
-  CALENDAR_DEFINITION_COLLECTION,
   calendarDateToParts,
   formatCalendarParts,
   formatWithCalendar,
@@ -32,7 +30,7 @@ export type TimelineEvent = {
 export type TimelineGroupId = "events" | "lifelines" | "dates";
 
 export type LoadedTimelineEntry = {
-  entity: EntitySummary;
+  entity: { id: string; name: string; type?: string | null };
   fields: Record<string, unknown>;
   locationName?: string;
   participantNames: string[];
@@ -271,18 +269,18 @@ export function eventYear(event: TimelineEvent, definition: CalendarDefinition |
 }
 
 export async function loadCalendarOptions(
-  context: ModuleContext,
-  entities: readonly EntitySummary[],
+  listDefinition: (ownerEntityId: string) => Promise<unknown | null>,
+  entities: readonly { id: string; name: string; type?: string | null }[],
 ): Promise<CalendarOption[]> {
   const calendars = entities.filter((entity) => entity.type === "daena.timeline:calendar");
   const custom: Array<CalendarOption | null> = await Promise.all(
     calendars.map(async (entity): Promise<CalendarOption | null> => {
       try {
-        const records = await context.records.list(CALENDAR_DEFINITION_COLLECTION, entity.id, { limit: 1 });
+        const value = await listDefinition(entity.id);
         return {
           id: entity.id,
           name: entity.name,
-          definition: normalizeCalendarDefinition(records[0]?.value ?? {}),
+          definition: normalizeCalendarDefinition(value ?? {}),
         };
       } catch {
         return null;

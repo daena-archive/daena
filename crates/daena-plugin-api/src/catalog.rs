@@ -595,6 +595,12 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         requires_revision: false,
         capability: RpcCapability::Static(&[]),
     },
+    RpcMethodDef {
+        name: "schema.list",
+        payload_schema: "SchemaListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["entity.read"]),
+    },
 ];
 
 pub fn rpc_method(name: &str) -> Option<&'static RpcMethodDef> {
@@ -746,7 +752,7 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
         "ai.request.poll" | "ai.request.cancel" | "ai.request.result" | "ai.request.citations" => {
             (&["requestId"], &[])
         }
-        "app.version" | "appearance.get" => (&[], &[]),
+        "app.version" | "appearance.get" | "schema.list" => (&[], &[]),
         _ => {
             return Err(ContractError(format!(
                 "unknown plugin RPC method: {method}"
@@ -791,7 +797,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 61);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 62);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

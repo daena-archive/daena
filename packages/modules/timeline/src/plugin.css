@@ -1,0 +1,52 @@
+/* Document chrome for the isolated Chronology webview. The host pushes theme
+   tokens (--ink, --canvas, ...) onto :root; the shell-level --theme-* aliases
+   and display font that the trusted webview used to provide are mapped here. */
+:root {
+  --theme-neutral-text: var(--ink);
+  --theme-neutral-text-soft: var(--ink-soft);
+  --theme-danger-text: var(--danger);
+  --theme-success-bg: var(--success-bg);
+  --theme-success-border: var(--success-line);
+  --theme-warning-bg: var(--warning-bg);
+  --theme-warning-border: var(--warning-line);
+  --theme-warning-text: var(--warning);
+  --font-display: Georgia, serif;
+}
+html,
+body {
+  min-height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+.chronology-page {
+  display: flex;
+  min-width: 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding: 24px 40px 40px;
+}
+/* mountTimeline replaces this root's children, so the status line lives
+   outside it. */
+#chronology {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+#chronology-status {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+#chronology-status:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  .chronology-page {
+    padding: 20px 17px 28px;
+  }
+}

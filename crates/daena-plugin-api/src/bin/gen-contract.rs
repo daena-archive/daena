@@ -30,7 +30,7 @@ use daena_plugin_api::rpc::{
     MapsVectorReplaceBeginPayload, MapsVectorReplaceCommitPayload, PluginBootstrap,
     RecordCreatePayload, RecordDeletePayload, RecordListPayload, RecordUpdatePayload,
     RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
-    RelationshipPageRecord, RelationshipQueryPayload, RelationshipUpdatePayload,
+    RelationshipPageRecord, RelationshipQueryPayload, RelationshipUpdatePayload, SchemaListPayload,
     SearchQueryPayload, ServiceCallPayload,
 };
 use daena_plugin_api::{
@@ -596,6 +596,7 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "AiRequestIdPayload" => gen.subschema_for::<AiRequestIdPayload>(),
         "AppVersionPayload" => gen.subschema_for::<AppVersionPayload>(),
         "AppearanceGetPayload" => gen.subschema_for::<AppearanceGetPayload>(),
+        "SchemaListPayload" => gen.subschema_for::<SchemaListPayload>(),
         other => panic!("catalog references unknown payload schema {other}"),
     };
 }

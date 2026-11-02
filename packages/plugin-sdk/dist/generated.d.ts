@@ -777,6 +777,7 @@ export interface RelationshipUpdatePayload {
     metadata?: string | null;
     target_id?: string | null;
 }
+export type SchemaListPayload = Record<string, unknown>;
 export interface SearchQueryPayload {
     query: string;
 }
@@ -846,6 +847,7 @@ export interface BrokerMethodPayloads {
     "relationship.list": RelationshipListPayload;
     "relationship.query": RelationshipQueryPayload;
     "relationship.update": RelationshipUpdatePayload;
+    "schema.list": SchemaListPayload;
     "search.query": SearchQueryPayload;
     "service.call": ServiceCallPayload;
 }

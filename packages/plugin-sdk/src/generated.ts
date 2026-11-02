@@ -132,6 +132,7 @@ export interface RelationshipDeletePayload { expectedRevision: string; id: strin
 export interface RelationshipListPayload { entityId: string }
 export interface RelationshipQueryPayload { direction: RelationshipQueryDirection; entityIds: string[]; limit?: number | null; offset?: number | null; relationshipTypes?: string[] }
 export interface RelationshipUpdatePayload { expectedRevision: string; id: string; metadata?: string | null; target_id?: string | null }
+export type SchemaListPayload = Record<string, unknown>;
 export interface SearchQueryPayload { query: string }
 export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
 export interface BrokerMethodPayloads {
@@ -194,6 +195,7 @@ export interface BrokerMethodPayloads {
   "relationship.list": RelationshipListPayload;
   "relationship.query": RelationshipQueryPayload;
   "relationship.update": RelationshipUpdatePayload;
+  "schema.list": SchemaListPayload;
   "search.query": SearchQueryPayload;
   "service.call": ServiceCallPayload;
 }

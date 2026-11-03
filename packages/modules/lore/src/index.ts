@@ -1,15 +1,6 @@
 import type { Core, ElementDefinition, NodeSingular } from "cytoscape";
-import {
-  type EntitySummary,
-  type ModuleContext,
-  type DaenaModule,
-  type Relationship,
-} from "../../../module-api/src/index";
-import type { ModuleManifest } from "../../../module-api/src/index";
-import manifestJson from "../manifest.json";
 import { defaultHiddenGraphRelations, relationTypeLabel } from "./graphFilters.ts";
-
-const manifest = manifestJson as unknown as ModuleManifest;
+import type { LoreEntityRef, LoreGraphSource, LoreRelationshipRef } from "./projection-source.ts";
 
 type NodeColors = { fill: string; border: string; text: string };
 
@@ -97,11 +88,11 @@ function createGraphStyles(): HTMLStyleElement {
   return style;
 }
 
-function compareEntities(left: EntitySummary, right: EntitySummary) {
+function compareEntities(left: LoreEntityRef, right: LoreEntityRef) {
   return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 }
 
-function stablePositions(entities: EntitySummary[]): Map<string, { x: number; y: number }> {
+function stablePositions(entities: LoreEntityRef[]): Map<string, { x: number; y: number }> {
   const columns = Math.max(3, Math.ceil(Math.sqrt(entities.length)));
   const columnWidth = 360;
   const rowHeight = 270;
@@ -164,8 +155,8 @@ function separateOverlappingNodes(graph: Core) {
 }
 
 function graphElements(
-  entities: EntitySummary[],
-  relationships: Relationship[],
+  entities: LoreEntityRef[],
+  relationships: LoreRelationshipRef[],
   positions: Map<string, { x: number; y: number }>,
   colorsByType: Map<string, NodeColors>,
 ): ElementDefinition[] {
@@ -197,16 +188,16 @@ function graphElements(
   ];
 }
 
-function isGraphNode(value: NodeSingular | EntitySummary): value is NodeSingular {
+function isGraphNode(value: NodeSingular | LoreEntityRef): value is NodeSingular {
   return typeof (value as NodeSingular).id === "function";
 }
 
 function renderSelection(
   details: HTMLElement,
-  nodeOrEntity: NodeSingular | EntitySummary,
-  entities: Map<string, EntitySummary>,
-  relationships: Relationship[],
-  context: ModuleContext,
+  nodeOrEntity: NodeSingular | LoreEntityRef,
+  entities: Map<string, LoreEntityRef>,
+  relationships: LoreRelationshipRef[],
+  source: LoreGraphSource,
   hiddenRelationTypes: Set<string>,
 ) {
   const entity = isGraphNode(nodeOrEntity) ? entities.get(nodeOrEntity.id()) : nodeOrEntity;
@@ -230,12 +221,12 @@ function renderSelection(
   type.textContent = `${displayType(entity.type)} · ${connected.length} connection${connected.length === 1 ? "" : "s"}`;
   const actionRow = document.createElement("div");
   actionRow.className = "lore-graph-toolbar-actions";
-  if (context.services.isAvailable("daena.maps/navigation", 1)) {
+  if (source.mapsNavigationEnabled()) {
     const mapButton = document.createElement("button");
     mapButton.type = "button";
     mapButton.className = "lore-graph-map-button";
     mapButton.textContent = "Show on map";
-    mapButton.onclick = () => void showOnMap(context, entity.id);
+    mapButton.onclick = () => void showOnMap(source, entity.id);
     actionRow.append(mapButton);
   }
   details.append(name, type, actionRow);
@@ -275,15 +266,15 @@ function applyGraphVisibility(graph: Core, hiddenTypes: Set<string>, hiddenRelat
   });
 }
 
-async function showOnMap(context: ModuleContext, entityId: string) {
+async function showOnMap(source: LoreGraphSource, entityId: string) {
   try {
-    const result = await context.maps.focusEntity({ entityId });
+    const result = await source.focusEntity(entityId);
     // focusEntity emits shell navigation for a single resolved link. Multiple links
     // return choices without emitting; open the first so Lore still jumps to a map.
     if (result?.status === "multiple-links" && Array.isArray(result.locations) && result.locations.length > 0) {
       const location = result.locations[0] as { mapEntityId?: string; id?: string };
       if (location.mapEntityId && location.id) {
-        await context.maps.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
+        await source.openMap({ mapEntityId: location.mapEntityId, linkId: location.id });
       }
     }
   } catch (cause) {
@@ -300,357 +291,378 @@ async function showOnMap(context: ModuleContext, entityId: string) {
   }
 }
 
-export const lore: DaenaModule = {
-  manifest,
-  views: [
-    {
-      id: "lore-entities",
-      title: "Lore Entries",
-      mount: (element: HTMLElement, context: ModuleContext) => {
-        let cancelled = false;
-        let graph: Core | null = null;
-        const listeners = new AbortController();
-        const style = createGraphStyles();
-        const render = async () => {
-          const entityTypes = context.module.schemas.flatMap((schema) =>
-            schema.entityTypes.map((entityType) => entityType.id),
-          );
-          const typeNameMap = new Map(
-            context.module.schemas.flatMap((schema) =>
-              schema.entityTypes.map((entityType) => [entityType.id, entityType.name]),
-            ),
-          );
-          const entities = await context.entities.list({ types: entityTypes });
-          const relationships = (await Promise.all(entities.map((entity) => context.relationships.list(entity.id))))
-            .flat()
-            .filter(
-              (relationship, index, all) => all.findIndex((candidate) => candidate.id === relationship.id) === index,
-            )
-            .filter(
-              (relationship) =>
-                entities.some((entity) => entity.id === relationship.sourceId) &&
-                entities.some((entity) => entity.id === relationship.targetId),
-            )
-            .sort((left, right) => left.id.localeCompare(right.id));
-          if (cancelled) return;
+export function mountLoreGraph(element: HTMLElement, source: LoreGraphSource) {
+  let cancelled = false;
+  let graph: Core | null = null;
+  const listeners = new AbortController();
+  const style = createGraphStyles();
+  const render = async () => {
+    const entityTypes = source.module.schemas.flatMap((schema) =>
+      schema.entityTypes.map((entityType) => entityType.id),
+    );
+    const typeNameMap = new Map(
+      source.module.schemas.flatMap((schema) =>
+        schema.entityTypes.map((entityType) => [entityType.id, entityType.name]),
+      ),
+    );
+    const entities = await source.listEntities(entityTypes);
+    const relationships = (await Promise.all(entities.map((entity) => source.listRelationships(entity.id))))
+      .flat()
+      .filter((relationship, index, all) => all.findIndex((candidate) => candidate.id === relationship.id) === index)
+      .filter(
+        (relationship) =>
+          entities.some((entity) => entity.id === relationship.sourceId) &&
+          entities.some((entity) => entity.id === relationship.targetId),
+      )
+      .sort((left, right) => left.id.localeCompare(right.id));
+    if (cancelled) return;
 
-          element.replaceChildren();
-          element.className = "projection-graph";
-          const shell = document.createElement("div");
-          shell.className = "lore-graph-shell";
-          context.reportSurfaceMeta?.({
-            subtitle: `${entities.length} entities · ${relationships.length} links`,
-          });
-          shell.append(style);
+    element.replaceChildren();
+    element.className = "projection-graph";
+    const shell = document.createElement("div");
+    shell.className = "lore-graph-shell";
+    source.reportSurfaceMeta?.({
+      subtitle: `${entities.length} entities · ${relationships.length} links`,
+    });
+    shell.append(style);
 
-          if (entities.length === 0) {
-            const empty = document.createElement("p");
-            empty.className = "lore-graph-empty";
-            empty.textContent = "No entities yet.";
-            shell.append(empty);
-            element.append(shell);
-            return;
-          }
+    if (entities.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "lore-graph-empty";
+      empty.textContent = "No entities yet.";
+      shell.append(empty);
+      element.append(shell);
+      return;
+    }
 
-          const toolbar = document.createElement("div");
-          toolbar.className = "lore-graph-toolbar";
-          const legend = document.createElement("div");
-          legend.className = "lore-graph-legend";
-          const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
-          const colorsByType = colorsForTypes(typeNames);
-          const hiddenTypes = new Set<string>();
-          const relationTypes = [...new Set(relationships.map((relationship) => relationship.type))].sort();
-          const hiddenRelationTypes = defaultHiddenGraphRelations(relationTypes);
-          const legendButtons = new Map<string, HTMLButtonElement>();
-          for (const type of typeNames) {
-            const legendItem = document.createElement("button");
-            legendItem.type = "button";
-            legendItem.className = "lore-graph-legend-item";
-            legendItem.setAttribute("aria-pressed", "true");
-            legendItem.title = type;
-            const swatch = document.createElement("span");
-            swatch.className = "lore-graph-legend-swatch";
-            const colors = colorsByType.get(type)!;
-            swatch.style.color = colors.border;
-            swatch.style.background = colors.fill;
-            const label = document.createElement("span");
-            label.textContent = typeNameMap.get(type) ?? type;
-            legendItem.append(swatch, label);
-            legendButtons.set(type, legendItem);
-            legend.append(legendItem);
-          }
-          const actions = document.createElement("div");
-          actions.className = "lore-graph-toolbar-actions";
-          const relationInputs = new Map<string, HTMLInputElement>();
-          const relationsMenu = document.createElement("details");
-          const relationsSummary = document.createElement("summary");
-          const syncRelationsSummary = () => {
-            const hiddenCount = hiddenRelationTypes.size;
-            relationsSummary.textContent = hiddenCount > 0 ? `Relations · ${hiddenCount} hidden` : "Relations";
-          };
-          if (relationTypes.length > 0) {
-            relationsMenu.className = "lore-graph-relations";
-            relationsSummary.textContent = "Relations";
-            const menu = document.createElement("div");
-            menu.className = "lore-graph-relations-menu";
-            menu.setAttribute("role", "group");
-            menu.setAttribute("aria-label", "Relations");
-            for (const type of relationTypes) {
-              const option = document.createElement("label");
-              option.className = "lore-graph-relations-option";
-              option.title = type;
-              const input = document.createElement("input");
-              input.type = "checkbox";
-              input.checked = !hiddenRelationTypes.has(type);
-              const label = document.createElement("span");
-              label.textContent = relationTypeLabel(type);
-              option.append(input, label);
-              relationInputs.set(type, input);
-              menu.append(option);
-            }
-            relationsMenu.append(relationsSummary, menu);
-            syncRelationsSummary();
-            document.addEventListener(
-              "pointerdown",
-              (event) => {
-                if (!relationsMenu.open) return;
-                if (event.target instanceof Node && relationsMenu.contains(event.target)) return;
-                relationsMenu.open = false;
-              },
-              { signal: listeners.signal },
-            );
-            actions.append(relationsMenu);
-          }
-          const zoomOutButton = document.createElement("button");
-          zoomOutButton.type = "button";
-          zoomOutButton.textContent = "−";
-          zoomOutButton.setAttribute("aria-label", "Zoom out");
-          zoomOutButton.title = "Zoom out";
-          const zoomInButton = document.createElement("button");
-          zoomInButton.type = "button";
-          zoomInButton.textContent = "+";
-          zoomInButton.setAttribute("aria-label", "Zoom in");
-          zoomInButton.title = "Zoom in";
-          const fitButton = document.createElement("button");
-          fitButton.type = "button";
-          fitButton.textContent = "Fit graph";
-          const layoutButton = document.createElement("button");
-          layoutButton.type = "button";
-          layoutButton.textContent = "Rearrange";
-          actions.append(zoomOutButton, zoomInButton, fitButton, layoutButton);
-          toolbar.append(legend, actions);
-          shell.append(toolbar);
+    const toolbar = document.createElement("div");
+    toolbar.className = "lore-graph-toolbar";
+    const legend = document.createElement("div");
+    legend.className = "lore-graph-legend";
+    const typeNames = [...new Set(entities.map((entity) => displayType(entity.type)))].sort();
+    const colorsByType = colorsForTypes(typeNames);
+    const hiddenTypes = new Set<string>();
+    const relationTypes = [...new Set(relationships.map((relationship) => relationship.type))].sort();
+    const hiddenRelationTypes = defaultHiddenGraphRelations(relationTypes);
+    const legendButtons = new Map<string, HTMLButtonElement>();
+    for (const type of typeNames) {
+      const legendItem = document.createElement("button");
+      legendItem.type = "button";
+      legendItem.className = "lore-graph-legend-item";
+      legendItem.setAttribute("aria-pressed", "true");
+      legendItem.title = type;
+      const swatch = document.createElement("span");
+      swatch.className = "lore-graph-legend-swatch";
+      const colors = colorsByType.get(type)!;
+      swatch.style.color = colors.border;
+      swatch.style.background = colors.fill;
+      const label = document.createElement("span");
+      label.textContent = typeNameMap.get(type) ?? type;
+      legendItem.append(swatch, label);
+      legendButtons.set(type, legendItem);
+      legend.append(legendItem);
+    }
+    const actions = document.createElement("div");
+    actions.className = "lore-graph-toolbar-actions";
+    const relationInputs = new Map<string, HTMLInputElement>();
+    const relationsMenu = document.createElement("details");
+    const relationsSummary = document.createElement("summary");
+    const syncRelationsSummary = () => {
+      const hiddenCount = hiddenRelationTypes.size;
+      relationsSummary.textContent = hiddenCount > 0 ? `Relations · ${hiddenCount} hidden` : "Relations";
+    };
+    if (relationTypes.length > 0) {
+      relationsMenu.className = "lore-graph-relations";
+      relationsSummary.textContent = "Relations";
+      const menu = document.createElement("div");
+      menu.className = "lore-graph-relations-menu";
+      menu.setAttribute("role", "group");
+      menu.setAttribute("aria-label", "Relations");
+      for (const type of relationTypes) {
+        const option = document.createElement("label");
+        option.className = "lore-graph-relations-option";
+        option.title = type;
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !hiddenRelationTypes.has(type);
+        const label = document.createElement("span");
+        label.textContent = relationTypeLabel(type);
+        option.append(input, label);
+        relationInputs.set(type, input);
+        menu.append(option);
+      }
+      relationsMenu.append(relationsSummary, menu);
+      syncRelationsSummary();
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          if (!relationsMenu.open) return;
+          if (event.target instanceof Node && relationsMenu.contains(event.target)) return;
+          relationsMenu.open = false;
+        },
+        { signal: listeners.signal },
+      );
+      actions.append(relationsMenu);
+    }
+    const zoomOutButton = document.createElement("button");
+    zoomOutButton.type = "button";
+    zoomOutButton.textContent = "−";
+    zoomOutButton.setAttribute("aria-label", "Zoom out");
+    zoomOutButton.title = "Zoom out";
+    const zoomInButton = document.createElement("button");
+    zoomInButton.type = "button";
+    zoomInButton.textContent = "+";
+    zoomInButton.setAttribute("aria-label", "Zoom in");
+    zoomInButton.title = "Zoom in";
+    const fitButton = document.createElement("button");
+    fitButton.type = "button";
+    fitButton.textContent = "Fit graph";
+    const layoutButton = document.createElement("button");
+    layoutButton.type = "button";
+    layoutButton.textContent = "Rearrange";
+    actions.append(zoomOutButton, zoomInButton, fitButton, layoutButton);
+    toolbar.append(legend, actions);
+    shell.append(toolbar);
 
-          const canvas = document.createElement("div");
-          canvas.className = "lore-graph-canvas";
-          shell.append(canvas);
-          const details = document.createElement("div");
-          details.className = "lore-graph-details";
-          const hint = document.createElement("small");
-          hint.textContent =
-            "Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.";
-          details.append(hint);
-          shell.append(details);
-          element.append(shell);
+    const canvas = document.createElement("div");
+    canvas.className = "lore-graph-canvas";
+    shell.append(canvas);
+    const details = document.createElement("div");
+    details.className = "lore-graph-details";
+    const hint = document.createElement("small");
+    hint.textContent =
+      "Hover or select an entity to inspect its connections. Click a type to show or hide it. Use Relations to filter connection types.";
+    details.append(hint);
+    shell.append(details);
+    element.append(shell);
 
-          const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
-          const positions = stablePositions(entities);
-          const { default: createCytoscape } = await import("cytoscape");
-          if (cancelled) return;
-          const layoutOptions = {
-            animate: false,
-            fit: false,
-            padding: 72,
-            randomize: false,
-            avoidOverlap: true,
-            nodeDimensionsIncludeLabels: true,
-            componentSpacing: 88,
-            nodeRepulsion: 18000,
-            nodeOverlap: 56,
-            idealEdgeLength: 340,
-            edgeElasticity: 0.18,
-            gravity: 0.55,
-            numIter: 3000,
-          };
-          graph = createCytoscape({
-            container: canvas,
-            elements: graphElements(entities, relationships, positions, colorsByType),
-            minZoom: 0.25,
-            maxZoom: 3,
-            wheelSensitivity: 0.18,
-            style: [
-              {
-                selector: "node",
-                style: {
-                  "background-color": "data(fill)",
-                  "border-color": "data(border)",
-                  "border-width": 2,
-                  color: "data(text)",
-                  label: "data(label)",
-                  "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-                  "font-size": 11,
-                  "font-weight": 600,
-                  "text-wrap": "ellipsis",
-                  "text-max-width": "112px",
-                  "text-valign": "center",
-                  "text-halign": "center",
-                  width: "label",
-                  height: 34,
-                  padding: "10px",
-                  shape: "round-rectangle",
-                  "overlay-opacity": 0,
-                },
-              },
-              {
-                selector: "edge",
-                style: {
-                  width: 1.6,
-                  "line-color": "#c6b9a7",
-                  "target-arrow-color": "#c6b9a7",
-                  "target-arrow-shape": "triangle",
-                  "curve-style": "bezier",
-                  label: "",
-                  color: "#8d8273",
-                  "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-                  "font-size": 10,
-                  "text-wrap": "ellipsis",
-                  "text-max-width": "130px",
-                  "text-background-color": "#fffefa",
-                  "text-background-opacity": 0.9,
-                  "text-background-padding": "2px",
-                  "text-rotation": "autorotate",
-                  "overlay-opacity": 0,
-                },
-              },
-              {
-                selector: "edge.related, edge.selected",
-                style: {
-                  label: "",
-                  width: 2.4,
-                  "line-color": "#a87945",
-                  "target-arrow-color": "#a87945",
-                  color: "#6f4d2f",
-                },
-              },
-              {
-                selector: "edge.hover-related",
-                style: { label: "data(label)" },
-              },
-              { selector: ".faded", style: { opacity: 0.16 } },
-              { selector: ".hovered", style: { "border-width": 3, "border-color": "#8b5c2e" } },
-              { selector: "node.selected", style: { "border-width": 4, "border-color": "#8b5c2e" } },
-              { selector: ".type-hidden", style: { display: "none" } },
-            ],
-          });
-          const visibleElements = () => graph!.elements().not(".type-hidden");
-          const arrangeGraph = () => {
-            if (!graph) return;
-            const hasVisibleEdges = graph.edges().not(".type-hidden").length > 0;
-            graph.layout({ ...layoutOptions, name: hasVisibleEdges ? "cose" : "grid" }).run();
-            separateOverlappingNodes(graph);
-            const visible = visibleElements();
-            if (visible.length > 0) graph.fit(visible, 72);
-          };
+    const entityMap = new Map(entities.map((entity) => [entity.id, entity]));
+    const positions = stablePositions(entities);
+    const { default: createCytoscape } = await import("cytoscape");
+    if (cancelled) return;
+    const layoutOptions = {
+      animate: false,
+      fit: false,
+      padding: 72,
+      randomize: false,
+      avoidOverlap: true,
+      nodeDimensionsIncludeLabels: true,
+      componentSpacing: 88,
+      nodeRepulsion: 18000,
+      nodeOverlap: 56,
+      idealEdgeLength: 340,
+      edgeElasticity: 0.18,
+      gravity: 0.55,
+      numIter: 3000,
+    };
+    graph = createCytoscape({
+      container: canvas,
+      elements: graphElements(entities, relationships, positions, colorsByType),
+      minZoom: 0.25,
+      maxZoom: 3,
+      wheelSensitivity: 0.18,
+      style: [
+        {
+          selector: "node",
+          style: {
+            "background-color": "data(fill)",
+            "border-color": "data(border)",
+            "border-width": 2,
+            color: "data(text)",
+            label: "data(label)",
+            "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+            "font-size": 11,
+            "font-weight": 600,
+            "text-wrap": "ellipsis",
+            "text-max-width": "112px",
+            "text-valign": "center",
+            "text-halign": "center",
+            width: "label",
+            height: 34,
+            padding: "10px",
+            shape: "round-rectangle",
+            "overlay-opacity": 0,
+          },
+        },
+        {
+          selector: "edge",
+          style: {
+            width: 1.6,
+            "line-color": "#c6b9a7",
+            "target-arrow-color": "#c6b9a7",
+            "target-arrow-shape": "triangle",
+            "curve-style": "bezier",
+            label: "",
+            color: "#8d8273",
+            "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+            "font-size": 10,
+            "text-wrap": "ellipsis",
+            "text-max-width": "130px",
+            "text-background-color": "#fffefa",
+            "text-background-opacity": 0.9,
+            "text-background-padding": "2px",
+            "text-rotation": "autorotate",
+            "overlay-opacity": 0,
+          },
+        },
+        {
+          selector: "edge.related, edge.selected",
+          style: {
+            label: "",
+            width: 2.4,
+            "line-color": "#a87945",
+            "target-arrow-color": "#a87945",
+            color: "#6f4d2f",
+          },
+        },
+        {
+          selector: "edge.hover-related",
+          style: { label: "data(label)" },
+        },
+        { selector: ".faded", style: { opacity: 0.16 } },
+        { selector: ".hovered", style: { "border-width": 3, "border-color": "#8b5c2e" } },
+        { selector: "node.selected", style: { "border-width": 4, "border-color": "#8b5c2e" } },
+        { selector: ".type-hidden", style: { display: "none" } },
+      ],
+    });
+    const visibleElements = () => graph!.elements().not(".type-hidden");
+    const arrangeGraph = () => {
+      if (!graph) return;
+      const hasVisibleEdges = graph.edges().not(".type-hidden").length > 0;
+      graph.layout({ ...layoutOptions, name: hasVisibleEdges ? "cose" : "grid" }).run();
+      separateOverlappingNodes(graph);
+      const visible = visibleElements();
+      if (visible.length > 0) graph.fit(visible, 72);
+    };
 
-          const syncGraphVisibility = (relayout = false) => {
-            if (!graph) return;
-            applyGraphVisibility(graph, hiddenTypes, hiddenRelationTypes);
-            const selected = graph.nodes("node.selected").not(".type-hidden");
-            if (selected.length === 0) {
-              graph.elements().removeClass("selected");
-              applyNeighborhoodHighlight(graph, null);
-              details.replaceChildren(hint);
-            } else {
-              applyNeighborhoodHighlight(graph, selected[0]);
-              renderSelection(details, selected[0], entityMap, relationships, context, hiddenRelationTypes);
-            }
-            if (relayout) arrangeGraph();
-          };
-          syncGraphVisibility(true);
-
-          for (const [type, legendItem] of legendButtons) {
-            legendItem.onclick = () => {
-              if (hiddenTypes.has(type)) {
-                hiddenTypes.delete(type);
-                legendItem.classList.remove("is-hidden");
-                legendItem.setAttribute("aria-pressed", "true");
-                legendItem.title = type;
-              } else {
-                hiddenTypes.add(type);
-                legendItem.classList.add("is-hidden");
-                legendItem.setAttribute("aria-pressed", "false");
-                legendItem.title = type;
-              }
-              syncGraphVisibility();
-            };
-          }
-          for (const [type, input] of relationInputs) {
-            input.onchange = () => {
-              if (input.checked) hiddenRelationTypes.delete(type);
-              else hiddenRelationTypes.add(type);
-              syncRelationsSummary();
-              syncGraphVisibility(true);
-            };
-          }
-
-          const zoomGraph = (factor: number) => {
-            if (!graph) return;
-            graph.zoom({
-              level: Math.min(graph.maxZoom(), Math.max(graph.minZoom(), graph.zoom() * factor)),
-              renderedPosition: { x: graph.width() / 2, y: graph.height() / 2 },
-            });
-          };
-          zoomInButton.onclick = () => zoomGraph(1.4);
-          zoomOutButton.onclick = () => zoomGraph(1 / 1.4);
-          fitButton.onclick = () => {
-            if (!graph) return;
-            const visible = visibleElements();
-            if (visible.length > 0) graph.fit(visible, 72);
-          };
-          layoutButton.onclick = () => {
-            if (!graph) return;
-            graph.nodes().forEach((node) => {
-              const position = positions.get(node.id());
-              if (position) node.position(position);
-            });
-            arrangeGraph();
-          };
-          graph.on("mouseover", "node", (event) => {
-            const node = event.target;
-            if (node.hasClass("type-hidden")) return;
-            node.addClass("hovered");
-            applyNeighborhoodHighlight(graph!, node, true);
-          });
-          graph.on("mouseout", "node", (event) => {
-            event.target.removeClass("hovered");
-            const selected = graph!.nodes("node.selected").not(".type-hidden");
-            applyNeighborhoodHighlight(graph!, selected.length > 0 ? selected[0] : null);
-          });
-          graph.on("tap", "node", (event) => {
-            const node = event.target;
-            if (node.hasClass("type-hidden")) return;
-            graph!.elements().removeClass("selected");
-            node.addClass("selected");
-            node.connectedEdges().not(".type-hidden").addClass("selected");
-            renderSelection(details, node, entityMap, relationships, context, hiddenRelationTypes);
-            applyNeighborhoodHighlight(graph!, node);
-          });
-          graph.on("tap", (event) => {
-            if (event.target !== graph) return;
-            graph!.elements().removeClass("selected");
-            applyNeighborhoodHighlight(graph!, null);
-            details.replaceChildren(hint);
-          });
-        };
-        void render();
-        return () => {
-          cancelled = true;
-          listeners.abort();
-          graph?.destroy();
-          graph = null;
-          element.replaceChildren();
-        };
+    const syncGraphVisibility = (relayout = false) => {
+      if (!graph) return;
+      applyGraphVisibility(graph, hiddenTypes, hiddenRelationTypes);
+      const selected = graph.nodes("node.selected").not(".type-hidden");
+      if (selected.length === 0) {
+        graph.elements().removeClass("selected");
+        applyNeighborhoodHighlight(graph, null);
+        details.replaceChildren(hint);
+      } else {
+        applyNeighborhoodHighlight(graph, selected[0]);
+        renderSelection(details, selected[0], entityMap, relationships, source, hiddenRelationTypes);
+      }
+      if (relayout) arrangeGraph();
+    };
+    syncGraphVisibility(true);
+    // Cytoscape sizes itself to the container when it is created and again on resize,
+    // but its resize never refits the viewport. The graph can be mounted while the
+    // webview is still settling, so keep refitting to the container's final size until
+    // the user pans or zooms.
+    let viewportTouched = false;
+    const touchViewport = () => {
+      viewportTouched = true;
+    };
+    const fitVisible = () => {
+      if (!graph) return;
+      const visible = visibleElements();
+      if (visible.length > 0) graph.fit(visible, 72);
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      if (!graph) return;
+      graph.resize();
+      if (!viewportTouched && graph.width() > 0 && graph.height() > 0) fitVisible();
+    });
+    resizeObserver.observe(canvas);
+    listeners.signal.addEventListener("abort", () => resizeObserver.disconnect());
+    canvas.addEventListener(
+      "pointermove",
+      (event) => {
+        if (event.buttons !== 0) touchViewport();
       },
-    },
-  ],
-};
+      { signal: listeners.signal },
+    );
+    canvas.addEventListener("wheel", touchViewport, { passive: true, signal: listeners.signal });
+
+    for (const [type, legendItem] of legendButtons) {
+      legendItem.onclick = () => {
+        if (hiddenTypes.has(type)) {
+          hiddenTypes.delete(type);
+          legendItem.classList.remove("is-hidden");
+          legendItem.setAttribute("aria-pressed", "true");
+          legendItem.title = type;
+        } else {
+          hiddenTypes.add(type);
+          legendItem.classList.add("is-hidden");
+          legendItem.setAttribute("aria-pressed", "false");
+          legendItem.title = type;
+        }
+        syncGraphVisibility();
+      };
+    }
+    for (const [type, input] of relationInputs) {
+      input.onchange = () => {
+        if (input.checked) hiddenRelationTypes.delete(type);
+        else hiddenRelationTypes.add(type);
+        syncRelationsSummary();
+        syncGraphVisibility(true);
+      };
+    }
+
+    const zoomGraph = (factor: number) => {
+      if (!graph) return;
+      touchViewport();
+      graph.zoom({
+        level: Math.min(graph.maxZoom(), Math.max(graph.minZoom(), graph.zoom() * factor)),
+        renderedPosition: { x: graph.width() / 2, y: graph.height() / 2 },
+      });
+    };
+    zoomInButton.onclick = () => zoomGraph(1.4);
+    zoomOutButton.onclick = () => zoomGraph(1 / 1.4);
+    fitButton.onclick = fitVisible;
+    layoutButton.onclick = () => {
+      if (!graph) return;
+      graph.nodes().forEach((node) => {
+        const position = positions.get(node.id());
+        if (position) node.position(position);
+      });
+      arrangeGraph();
+    };
+    graph.on("mouseover", "node", (event) => {
+      const node = event.target;
+      if (node.hasClass("type-hidden")) return;
+      node.addClass("hovered");
+      applyNeighborhoodHighlight(graph!, node, true);
+    });
+    graph.on("mouseout", "node", (event) => {
+      event.target.removeClass("hovered");
+      const selected = graph!.nodes("node.selected").not(".type-hidden");
+      applyNeighborhoodHighlight(graph!, selected.length > 0 ? selected[0] : null);
+    });
+    graph.on("tap", "node", (event) => {
+      const node = event.target;
+      if (node.hasClass("type-hidden")) return;
+      graph!.elements().removeClass("selected");
+      node.addClass("selected");
+      node.connectedEdges().not(".type-hidden").addClass("selected");
+      renderSelection(details, node, entityMap, relationships, source, hiddenRelationTypes);
+      applyNeighborhoodHighlight(graph!, node);
+    });
+    graph.on("tap", (event) => {
+      if (event.target !== graph) return;
+      graph!.elements().removeClass("selected");
+      applyNeighborhoodHighlight(graph!, null);
+      details.replaceChildren(hint);
+    });
+  };
+  render().catch((cause) => {
+    if (cancelled) return;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const error = document.createElement("p");
+    error.className = "lore-graph-empty";
+    error.textContent = message;
+    element.replaceChildren(style, error);
+  });
+  return () => {
+    cancelled = true;
+    listeners.abort();
+    graph?.destroy();
+    graph = null;
+    element.replaceChildren();
+  };
+}

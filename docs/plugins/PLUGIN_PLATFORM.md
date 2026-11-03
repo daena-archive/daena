@@ -627,8 +627,8 @@ The following features are deferred, with their default behavior decided now:
   that choice while open; see Decision 13.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
-- **Remaining bundled UIs in isolated webviews:** deferred. Chronology and
-  Language already run in their plugin webviews. The isolation rule is
+- **Remaining bundled UIs in isolated webviews:** deferred. Chronology, the
+  Lore World graph, and Language already run in their plugin webviews. The isolation rule is
   unchanged. Current surfaces are in
   [`plugin-isolation.md`](../plans/plugin-isolation.md).
 

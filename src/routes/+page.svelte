@@ -38,7 +38,6 @@ import type {
   ModuleId,
   UUID,
   ModuleManifest,
-  DaenaModule,
 } from "../../packages/module-api/src/index";
 import { buildModuleContext } from "$lib/modules/context";
 import { fieldAppliesToEntity as fieldAppliesToEnabledTypes } from "$lib/modules/fields";
@@ -148,7 +147,6 @@ import {
 import NativeVectorMapEditor from "$lib/maps/native-vector/NativeVectorMapEditor.svelte";
 import PhysicalMapEditor from "$lib/maps/physical/PhysicalMapEditor.svelte";
 import { nativeVectorSession } from "$lib/maps/native-vector/session";
-import ProjectionView from "$lib/ProjectionView.svelte";
 import WikiView from "$lib/lore/WikiView.svelte";
 import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
@@ -270,8 +268,8 @@ import {
   Sword,
   TreePine,
   CalendarRange,
+  Network,
 } from "@lucide/svelte";
-import { projectionModule, type ProjectionKind } from "$lib/modules/projections";
 import {
   LANGUAGE_PLUGIN_ID,
   LanguageLeaveTracker,
@@ -749,13 +747,6 @@ let sandboxView = $state<{
 let treeRootId = $state<string | null>(null);
 let treeSession = $state<TreeSession | null>(null);
 let treeRestoreNonce = $state(0);
-let projectionView = $state<{
-  title: string;
-  subtitle: string;
-  kind: ProjectionKind;
-  module: DaenaModule;
-  manifest: ModuleManifest;
-} | null>(null);
 let loreWikiOpen = $state(false);
 let loreWikiEntityId = $state<string | null>(null);
 let adminBusy = $state(false);
@@ -1416,17 +1407,67 @@ async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promi
   editorFullscreen = false;
   hostView = null;
   sandboxView = null;
-  projectionView = null;
   if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
   return true;
 }
 
-function chronologySandboxOpen(): boolean {
+type ProjectionSandboxKey = "lore" | "timeline";
+
+/**
+ * Projections drawn as isolated plugin webviews in the content column: the Lore World graph and
+ * Chronology. Each webview mounts its package entrypoint, so `viewId` is a shell-only id that the
+ * manifests do not declare (validate_plugin_view rejects unlisted ids). That is why SandboxView is
+ * mounted without a viewId for these surfaces.
+ */
+const PROJECTION_SANDBOXES: Record<
+  ProjectionSandboxKey,
+  {
+    moduleName: string;
+    pluginId: string;
+    viewId: string;
+    title: string;
+    subtitle: string;
+    icon: typeof Network;
+    surfaceKey: string;
+  }
+> = {
+  lore: {
+    moduleName: "Lore",
+    pluginId: "daena.lore",
+    viewId: "graph",
+    title: "World graph",
+    subtitle: "Explore entities and their connections",
+    icon: Network,
+    surfaceKey: "workspace:lore:graph",
+  },
+  timeline: {
+    moduleName: "Timeline",
+    pluginId: "daena.timeline",
+    viewId: "chronology",
+    title: "Chronology",
+    subtitle: "Explore your world across time",
+    icon: CalendarRange,
+    surfaceKey: "workspace:timeline:timeline",
+  },
+};
+
+/** The projection whose sandbox webview is the open full surface, if any. */
+function projectionSandboxKey(): ProjectionSandboxKey | null {
+  if (!sandboxView || sandboxView.renderer !== "webview" || !sandboxView.view) return null;
+  const pluginId = sandboxView.plugin.id;
+  const viewId = sandboxView.view.id;
+  const keys = Object.keys(PROJECTION_SANDBOXES) as ProjectionSandboxKey[];
   return (
-    sandboxView?.plugin.id === "daena.timeline" &&
-    sandboxView.view?.id === "chronology" &&
-    sandboxView.renderer === "webview"
+    keys.find(
+      (key) => PROJECTION_SANDBOXES[key].pluginId === pluginId && PROJECTION_SANDBOXES[key].viewId === viewId,
+    ) ?? null
   );
+}
+
+/** True while the given projection is open, or any projection when `key` is omitted. */
+function projectionSandboxOpen(key?: ProjectionSandboxKey): boolean {
+  const open = projectionSandboxKey();
+  return open !== null && (key === undefined || open === key);
 }
 
 /** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
@@ -1438,7 +1479,6 @@ const languagePaneShown = $derived(
     !showSettings &&
     !hostView &&
     !sandboxView &&
-    !projectionView &&
     !loreWikiOpen &&
     enabledWorkspaceSections().includes("language"),
 );
@@ -1477,7 +1517,7 @@ const shellOverlayOpen = $derived(
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
   if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
-  const sandboxShown = ready && !showSettings && !projectHomeOpen && !projectionView && !hostView && !loreWikiOpen;
+  const sandboxShown = ready && !showSettings && !projectHomeOpen && !hostView && !loreWikiOpen;
   if (sandboxShown && sandboxView?.renderer === "webview") ids.add(sandboxView.plugin.id);
   return [...ids];
 });
@@ -1602,14 +1642,9 @@ function pluginViewLabel(item: PluginNavigationItem) {
 function workspaceNavigationActive(target: WorkspaceSection) {
   if (projectHomeOpen) return false;
   if (target === "maps") {
-    return (
-      section === "maps" &&
-      !hostView &&
-      !projectionView &&
-      (!sandboxView || sandboxView.plugin.id === workspaceModuleId(target))
-    );
+    return section === "maps" && !hostView && (!sandboxView || sandboxView.plugin.id === workspaceModuleId(target));
   }
-  return !hostView && !sandboxView && !projectionView && section === target;
+  return !hostView && !sandboxView && section === target;
 }
 
 function pluginNavigationActive(item: PluginNavigationItem) {
@@ -1626,11 +1661,11 @@ function navigationActive(item: NavigationItem) {
 function currentWorkspaceLocationView(): WorkspaceLocationView {
   if (section === "lore") {
     if (loreWikiOpen) return "wiki";
-    if (projectionView?.kind === "graph") return "graph";
+    if (projectionSandboxOpen("lore")) return "graph";
     return "library";
   }
   if (section === "timeline") {
-    if (projectionView?.kind === "timeline" || chronologySandboxOpen()) return "timeline";
+    if (projectionSandboxOpen("timeline")) return "timeline";
     return timelineView;
   }
   if (section === "writing") return writingView;
@@ -1795,13 +1830,12 @@ async function applyWorkspaceCollectionLocation(location: WorkspaceCollectionLoc
 
 function specializedSurfaceKey(): string | null {
   if (hostView) return `plugin:${hostView.plugin.id}:${hostView.view.id}`;
-  if (chronologySandboxOpen()) return "workspace:timeline:timeline";
+  const projection = projectionSandboxKey();
+  if (projection) return PROJECTION_SANDBOXES[projection].surfaceKey;
   if (sandboxView?.view && sandboxView.renderer !== "maps") {
     return `plugin:${sandboxView.plugin.id}:${sandboxView.view.id}`;
   }
   if (loreWikiOpen) return "workspace:lore:wiki";
-  if (projectionView?.kind === "graph") return "workspace:lore:graph";
-  if (projectionView?.kind === "timeline") return "workspace:timeline:timeline";
   if (section === "houses" && housesView === "tree") return "workspace:houses:tree";
   return null;
 }
@@ -1862,7 +1896,7 @@ function currentShellLocation(): ShellLocation {
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
     };
   }
-  if (sandboxView?.view && !chronologySandboxOpen()) {
+  if (sandboxView?.view && !projectionSandboxOpen()) {
     return {
       kind: "plugin",
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
@@ -2612,7 +2646,6 @@ $effect(() => {
     showSettings ||
     hostView ||
     sandboxView ||
-    projectionView ||
     loreWikiOpen
   )
     return;
@@ -2748,7 +2781,7 @@ async function switchSection(next: WorkspaceSection) {
 }
 
 async function openProjectHome() {
-  if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView && !projectionView)) return;
+  if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView)) return;
   if (!(await flushAutoSave())) return;
   if (section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
@@ -2787,7 +2820,7 @@ async function switchTimelineView(next: TimelineView) {
   const tabs = collectionTabsFor("timeline");
   const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
   if (!(await flushAutoSave())) return;
-  if (timelineView === resolved && !projectHomeOpen && !projectionView && !chronologySandboxOpen()) return;
+  if (timelineView === resolved && !projectHomeOpen && !projectionSandboxOpen()) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
@@ -2822,7 +2855,7 @@ async function switchLanguagePane(next: LanguagePane) {
   if (languagePane === next && !projectHomeOpen && section === "language") return;
   const departure = currentShellLocation();
   // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
-  if (hostView || sandboxView || projectionView) {
+  if (hostView || sandboxView) {
     if (!(await leavePluginView())) return;
   }
   recordShellDeparture(departure);
@@ -2889,7 +2922,6 @@ async function activateBreadcrumb(action: "section" | "view") {
     !sandboxView &&
     !selected &&
     !loreWikiOpen &&
-    !projectionView &&
     (!resetView || section !== "houses" || housesView === "houses");
   if (alreadyCollection) return;
   const departure = currentShellLocation();
@@ -2899,7 +2931,6 @@ async function activateBreadcrumb(action: "section" | "view") {
   projectHomeOpen = false;
   loreWikiOpen = false;
   loreWikiEntityId = null;
-  projectionView = null;
   if (resetView && section === "houses") housesView = "houses";
   if (selected) clearSelection();
 }
@@ -2911,7 +2942,7 @@ function breadcrumbItems() {
   const entityBelongs = Boolean(selected) && (!owner || owner === section);
   const plugin =
     hostView ??
-    (sandboxView?.view && sandboxView.renderer !== "maps" && !chronologySandboxOpen()
+    (sandboxView?.view && sandboxView.renderer !== "maps" && !projectionSandboxOpen()
       ? { plugin: sandboxView.plugin, view: sandboxView.view }
       : null);
   const specs = shellBreadcrumbs({
@@ -3024,52 +3055,36 @@ function entityTypeLabel(entityType: string | null) {
   return entityTypePresentation(entityType)?.definition.name ?? entityType;
 }
 
+/** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
 async function openProjection() {
   if (!(await flushAutoSave())) return;
-  if (section === "timeline") {
-    if (!projectHomeOpen && !showSettings && chronologySandboxOpen()) return;
-    const departure = currentShellLocation();
-    if (!(await leavePluginView())) return;
-    recordShellDeparture(departure);
-    projectHomeOpen = false;
-    loreWikiOpen = false;
-    loreWikiEntityId = null;
-    projectionView = null;
-    if (!adminPlugins) await refreshAdmin();
-    const plugin = adminPlugins?.find((entry) => entry.id === "daena.timeline" && entry.enabled) ?? null;
-    if (!plugin) {
-      error = "Timeline is disabled, so Chronology cannot open.";
-      return;
-    }
-    sandboxView = {
-      plugin,
-      // Shell-only id. The webview mounts the package entrypoint with no view
-      // id: validate_plugin_view rejects ids that manifest.views does not list.
-      view: { id: "chronology", title: "Chronology", renderer: { type: "sandboxed" } },
-      renderer: "webview",
-    };
-    return;
-  }
-  if (!projectHomeOpen && !showSettings && projectionView?.kind === "graph") return;
+  const key: ProjectionSandboxKey = section === "timeline" ? "timeline" : "lore";
+  const surface = PROJECTION_SANDBOXES[key];
+  if (!projectHomeOpen && !showSettings && projectionSandboxOpen(key)) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
   loreWikiOpen = false;
   loreWikiEntityId = null;
-  const projection = projectionModule("lore");
-  projectionView = {
-    title: projection.title,
-    subtitle: projection.subtitle,
-    kind: projection.kind,
-    module: projection.module,
-    manifest: (manifestForWorkspaceSection(section) ?? projection.module.manifest) as ModuleManifest,
+  if (!adminPlugins) await refreshAdmin();
+  const plugin = adminPlugins?.find((entry) => entry.id === surface.pluginId && entry.enabled) ?? null;
+  if (!plugin) {
+    error = `${surface.moduleName} is disabled, so ${surface.title} cannot open.`;
+    return;
+  }
+  sandboxView = {
+    plugin,
+    // Shell-only id. The webview mounts the package entrypoint with no view
+    // id: validate_plugin_view rejects ids that manifest.views does not list.
+    view: { id: surface.viewId, title: surface.title, renderer: { type: "sandboxed" } },
+    renderer: "webview",
   };
 }
 
 async function openLoreLibrary() {
   if (!(await flushAutoSave())) return;
-  if (!projectHomeOpen && !showSettings && !loreWikiOpen && !projectionView && !hostView && !sandboxView) return;
+  if (!projectHomeOpen && !showSettings && !loreWikiOpen && !hostView && !sandboxView) return;
   const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
   if (!(await leavePluginView())) return;
@@ -3089,7 +3104,6 @@ async function openLoreWiki() {
   loreWikiEntityId =
     selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
   loreWikiOpen = true;
-  projectionView = null;
 }
 
 function allEntityTypesForSection(target: WorkspaceSection) {
@@ -3108,8 +3122,7 @@ async function closeProjectionView() {
   if (!(await flushAutoSave())) return;
   const departure = currentShellLocation();
   recordShellDeparture(departure);
-  projectionView = null;
-  if (chronologySandboxOpen()) sandboxView = null;
+  if (projectionSandboxOpen()) sandboxView = null;
 }
 
 async function closePluginView() {
@@ -6344,7 +6357,6 @@ async function openSettings(nextSection: SettingsSection = "general") {
   showSettings = true;
   settingsSurface = "application";
   settingsSection = nextSection;
-  projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
@@ -6362,7 +6374,6 @@ async function openProjectCenter(nextSection: ProjectSection = "overview") {
   showSettings = true;
   settingsSurface = "project";
   projectSection = nextSection;
-  projectionView = null;
   installSummary = null;
   deleteBackupPath = "";
   showProjectMenu = false;
@@ -6920,7 +6931,6 @@ function resetProjectSessionState() {
   adminPlugins = null;
   hostView = null;
   sandboxView = null;
-  projectionView = null;
   gitStatus = null;
   mapSaveStates = {};
   mapsEditorKey = "welcome";
@@ -7709,7 +7719,7 @@ onMount(() => {
         </div>
       </div>
     {/if}
-    {#if ready && !showSettings && !projectHomeOpen && !hostView && (!sandboxView || chronologySandboxOpen()) && (section === "lore" || section === "timeline" || section === "writing" || section === "houses")}
+    {#if ready && !showSettings && !projectHomeOpen && !hostView && (!sandboxView || projectionSandboxOpen()) && (section === "lore" || section === "timeline" || section === "writing" || section === "houses")}
       <WorkspaceViewNav
         label={`${section} views`}
         views={workspaceViewNavItems()}
@@ -8155,25 +8165,6 @@ onMount(() => {
         onExtensions={() => void openProjectCenter("extensions")}
         onOpenWorkspace={(target) => void switchSection(target)}
         onOpenEntity={(entity) => void selectSearchResult(entity)} />
-    {:else if projectionView}
-      <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "projection"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
-        {#key projectionView.title}
-          <ProjectionView
-            title={projectionView.title}
-            subtitle={projectionView.subtitle}
-            kind={projectionView.kind}
-            view={projectionView.module.views[0]}
-            context={buildModuleContext(projectionView.manifest, projectInfo?.root ?? "", {
-              focusEntityId: selected?.id as UUID | undefined,
-              availableServices: enabledServices(),
-            })}
-            onClose={() => void closeProjectionView()} />
-        {/key}
-      </SpecializedSurface>
     {:else if hostView}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? "host"}
@@ -8301,20 +8292,21 @@ onMount(() => {
             treeRestoreNonce += 1;
           }} />
       </SpecializedSurface>
-    {:else if chronologySandboxOpen()}
+    {:else if projectionSandboxKey()}
+      {@const projection = PROJECTION_SANDBOXES[projectionSandboxKey()!]}
       <SpecializedSurface
-        restoreKey={specializedSurfaceKey() ?? "workspace:timeline:timeline"}
+        restoreKey={specializedSurfaceKey() ?? projection.surfaceKey}
         restoreScrollTop={currentSpecializedSurfaceScrollTop()}
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
-        <section class="chronology-shell" aria-label="Chronology">
+        <section class="projection-sandbox-shell" aria-label={projection.title}>
           <WorkspaceTopbar
-            title="Chronology"
-            subtitle="Explore your world across time"
-            icon={CalendarRange}
+            title={projection.title}
+            subtitle={projection.subtitle}
+            icon={projection.icon}
             onBack={() => void closeProjectionView()} />
-          {#key "daena.timeline:chronology"}
-            <SandboxView pluginId="daena.timeline" title="Chronology" />
+          {#key `${projection.pluginId}:${projection.viewId}`}
+            <SandboxView pluginId={projection.pluginId} title={projection.title} />
           {/key}
         </section>
       </SpecializedSurface>
@@ -9758,7 +9750,7 @@ onMount(() => {
   flex-direction: column;
   overflow: hidden;
 }
-.chronology-shell {
+.projection-sandbox-shell {
   display: flex;
   min-width: 0;
   min-height: 0;

@@ -1,0 +1,60 @@
+/* Document chrome for the isolated World graph webview. The host pushes theme
+   tokens (--ink, --canvas, ...) onto :root; the shell-level --theme-* aliases,
+   display font and projection frame that the trusted webview used to provide
+   are mapped here. */
+:root {
+  --theme-neutral-text: var(--ink);
+  --theme-warning-bg: var(--warning-bg);
+  --theme-warning-border: var(--warning-line);
+  --theme-warning-text: var(--warning);
+  --font-display: Georgia, serif;
+  --shadow-sm: 0 2px 8px rgba(38, 42, 33, 0.05);
+}
+:root[data-theme="dark"] {
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.22);
+}
+html,
+body {
+  min-height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+.lore-page {
+  display: flex;
+  min-width: 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  padding: 24px 40px 40px;
+}
+/* mountLoreGraph replaces this root's children, so the status line lives
+   outside it. The graph's own canvas sets the height from the viewport. */
+#lore-graph-root {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.projection-graph {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+#lore-status {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+#lore-status:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  .lore-page {
+    padding: 20px 17px 28px;
+  }
+}

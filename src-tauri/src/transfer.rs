@@ -636,6 +636,13 @@ pub(super) fn plugin_asset_response(
                 include_bytes!("../plugin-assets/lore/index.html"),
                 "text/html",
             ),
+            ("daena.lore", "/dist/ui/lore.js") => (
+                include_bytes!("../plugin-assets/lore/lore.js"),
+                "text/javascript",
+            ),
+            ("daena.lore", "/dist/ui/lore.css") => {
+                (include_bytes!("../plugin-assets/lore/lore.css"), "text/css")
+            }
             ("daena.timeline", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/timeline/index.html"),
                 "text/html",

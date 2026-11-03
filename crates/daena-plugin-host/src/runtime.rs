@@ -88,12 +88,14 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
         url: format!("{origin}/{entrypoint}"),
         origin,
         // Permit local inline styles and data-backed fonts for maps, chronology,
-        // and language while keeping scripts, network, frames, objects, forms, and
-        // parent access denied. vis-timeline writes item colors as element style
-        // attributes. All source I/O remains brokered.
+        // language, and the world graph while keeping scripts, network, frames,
+        // objects, forms, and parent access denied. vis-timeline writes item colors
+        // as element style attributes, and the cytoscape graph injects a style
+        // element. All source I/O remains brokered.
         csp: if manifest.id == "daena.maps"
             || manifest.id == "daena.timeline"
             || manifest.id == "daena.language"
+            || manifest.id == "daena.lore"
         {
             "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
         } else {

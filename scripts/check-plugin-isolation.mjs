@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-const runtimeImport = /packages\/modules\/(?:index\.ts|[^"'/]+\/src\/index(?:\.ts)?)/;
-const allowedRuntimeImports = new Set(["src/lib/modules/projections.ts"]);
+// Matches a quoted import of packages/modules/index or packages/modules/*/src/index.
+const runtimeImport = /packages\/modules\/(?:index(?:\.ts)?|[^"'/]+\/src\/index(?:\.ts)?)["']/;
+// The host imports no bundled plugin runtime: Lore and Chronology both run in isolated webviews.
+const allowedRuntimeImports = new Set();
 
 function listSourceFiles(directory) {
   const files = [];
@@ -28,7 +30,7 @@ assert.deepEqual(leakedHostImports, [], `timeline plugin must not import host $l
 assert.deepEqual(
   leakedRuntimeImports,
   [],
-  `host must not import bundled plugin runtime entrypoints (remaining allowlist: ${[...allowedRuntimeImports].join(", ")}): ${leakedRuntimeImports.join(", ")}`,
+  `host must not import bundled plugin runtime entrypoints (packages/modules/index or packages/modules/*/src/index): ${leakedRuntimeImports.join(", ")}`,
 );
 
 const route = fs.readFileSync("src/routes/+page.svelte", "utf8");
@@ -61,7 +63,17 @@ assert.doesNotMatch(
   "plugin bundle must use the broker protocol, not Tauri APIs",
 );
 assert.match(plugin, /createBrowserPluginRpcTransport/);
-assert.match(loreHtml, /plugin\.js/, "lore stub stays on the shared plugin document");
+assert.match(loreHtml, /lore\.js/, "lore document must load lore.js");
+assert.match(loreHtml, /lore\.css/, "lore document must load lore.css");
+assert.doesNotMatch(loreHtml, /plugin\.js/, "lore document must not load the shared plugin.js stub");
+const loreBundlePath = "src-tauri/plugin-assets/lore/lore.js";
+if (fs.existsSync(loreBundlePath) && fs.statSync(loreBundlePath).size > 512) {
+  assert.doesNotMatch(
+    fs.readFileSync(loreBundlePath, "utf8"),
+    /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,
+    "the lore bundle must use the broker protocol, not Tauri APIs or the trusted module RPC",
+  );
+}
 assert.match(writingHtml, /plugin\.js/, "writing stub stays on the shared plugin document");
 assert.match(timelineHtml, /id="chronology"/, "timeline document must mount the chronology root");
 assert.match(
@@ -88,20 +100,25 @@ assert.match(timelineBundle, /Chronological outline/);
 const policyStart = webviewPolicy.indexOf("pub fn webview_policy");
 const policyEnd = webviewPolicy.indexOf("pub fn validate_bridge_request");
 const policy = webviewPolicy.slice(policyStart, policyEnd);
-assert.match(
-  policy,
-  /manifest\.id == "daena\.maps"\s*\|\|\s*manifest\.id == "daena\.timeline"\s*\|\|\s*manifest\.id == "daena\.language"/,
-);
+// The inline-style CSP is chosen by the condition between `csp: if` and the first `{`.
+const inlineStyleCondition = policy.match(/csp: if ([^{]+)\{/)?.[1] ?? "";
+for (const pluginId of ["daena.maps", "daena.timeline", "daena.language", "daena.lore"]) {
+  assert.ok(
+    inlineStyleCondition.includes(`manifest.id == "${pluginId}"`),
+    `${pluginId} must share the inline-style CSP for its vis or graph styling`,
+  );
+}
+assert.equal(inlineStyleCondition.includes("daena.writing"), false, "writing keeps the stricter CSP");
 const cspStrings = [...policy.matchAll(/"(default-src[^"]*)"/g)].map((match) => match[1]);
-assert.deepEqual(
+assert.equal(
   cspStrings.filter((csp) => csp.includes("style-src-attr 'unsafe-inline'")).length,
   1,
-  "chronology must share the maps inline-style CSP and no other plugin may",
+  "maps, chronology, language and lore must share one inline-style CSP",
 );
 assert.equal(
   cspStrings.filter((csp) => !csp.includes("unsafe-inline")).length,
   1,
-  "lore and writing keep the stricter CSP",
+  "writing and every other plugin keep the stricter CSP",
 );
 assert.match(tauriSource, /\("daena\.timeline", "\/dist\/ui\/timeline\.js"\)/);
 assert.match(tauriSource, /\("daena\.timeline", "\/dist\/ui\/timeline\.css"\)/);
@@ -131,13 +148,13 @@ assert.match(tauri, /connect-src 'self'/);
 assert.match(tauri, /frame-src 'none'/);
 assert.equal(/core:default/.test(capability), false, "plugin webviews must not receive the core API");
 
-const projections = fs.readFileSync("src/lib/modules/projections.ts", "utf8");
-assert.deepEqual([...allowedRuntimeImports], ["src/lib/modules/projections.ts"]);
-assert.doesNotMatch(
-  projections,
-  /packages\/modules\/timeline\/src\/index/,
-  "projections allowlist must not import the timeline runtime",
-);
+assert.equal(allowedRuntimeImports.size, 0, "the host runtime-import allowlist must stay empty");
+for (const retired of ["src/lib/modules/projections.ts", "src/lib/ProjectionView.svelte"]) {
+  assert.equal(fs.existsSync(retired), false, `${retired} is retired: Lore and Chronology are sandboxed webviews`);
+}
+const transfer = fs.readFileSync("src-tauri/src/transfer.rs", "utf8");
+assert.match(transfer, /\("daena\.lore", "\/dist\/ui\/lore\.js"\)/);
+assert.match(transfer, /\("daena\.lore", "\/dist\/ui\/lore\.css"\)/);
 assert.match(fs.readFileSync("src/routes/+page.svelte", "utf8"), /CalendarEditor\.svelte/);
 assert.match(fs.readFileSync("src/lib/date.ts", "utf8"), /calendar-date\.ts/);
 assert.match(fs.readFileSync("src/lib/date.ts", "utf8"), /calendar\.ts/);
@@ -152,37 +169,64 @@ function sourceSlice(start, end) {
   return route.slice(from, to);
 }
 
-assert.match(route, /function chronologySandboxOpen\(\)/);
+// The World graph and Chronology share one sandbox path: a table of plugin, shell view id, and surface.
+assert.match(route, /function projectionSandboxKey\(\): ProjectionSandboxKey \| null/);
+assert.match(route, /function projectionSandboxOpen\(key\?: ProjectionSandboxKey\): boolean/);
+const projectionTable = sourceSlice("const PROJECTION_SANDBOXES", "/** The projection whose sandbox");
+assert.match(
+  projectionTable,
+  /lore: \{[^}]*pluginId: "daena\.lore"[^}]*viewId: "graph"[^}]*title: "World graph"[^}]*subtitle: "Explore entities and their connections"[^}]*icon: Network[^}]*surfaceKey: "workspace:lore:graph"/,
+  "the World graph must open the daena.lore sandbox as the graph view",
+);
+assert.match(
+  projectionTable,
+  /timeline: \{[^}]*pluginId: "daena\.timeline"[^}]*viewId: "chronology"[^}]*title: "Chronology"[^}]*subtitle: "Explore your world across time"[^}]*surfaceKey: "workspace:timeline:timeline"/,
+  "Chronology must keep its daena.timeline sandbox",
+);
 const openProjection = sourceSlice("async function openProjection", "async function openLoreLibrary");
-assert.match(openProjection, /chronologySandboxOpen\(\)/);
-assert.match(openProjection, /id === "daena\.timeline"/);
-assert.match(openProjection, /id: "chronology"/);
-assert.match(openProjection, /title: "Chronology"/);
+assert.match(openProjection, /section === "timeline" \? "timeline" : "lore"/);
+assert.match(openProjection, /projectionSandboxOpen\(key\)/);
+assert.match(openProjection, /entry\.id === surface\.pluginId && entry\.enabled/);
+assert.match(openProjection, /is disabled, so \$\{surface\.title\} cannot open/);
 assert.match(openProjection, /renderer: \{ type: "sandboxed" \}/);
 assert.match(openProjection, /renderer: "webview"/);
-assert.match(openProjection, /projectionView = null/);
-assert.match(openProjection, /projectionModule\("lore"\)/);
-assert.doesNotMatch(openProjection, /projectionModule\(\s*(?:section|"timeline")/);
+assert.doesNotMatch(openProjection, /projectionView|projectionModule/);
 const workspaceView = sourceSlice("function currentWorkspaceLocationView", "function currentModuleState");
-assert.match(workspaceView, /chronologySandboxOpen\(\)\) return "timeline"/);
+assert.match(workspaceView, /projectionSandboxOpen\("lore"\)\) return "graph"/);
+assert.match(workspaceView, /projectionSandboxOpen\("timeline"\)\) return "timeline"/);
 const surfaceKey = sourceSlice("function specializedSurfaceKey()", "function specializedSurfaceKeyForLocation");
-assert.match(surfaceKey, /if \(chronologySandboxOpen\(\)\) return "workspace:timeline:timeline"/);
+assert.match(
+  surfaceKey,
+  /const projection = projectionSandboxKey\(\);\s*if \(projection\) return PROJECTION_SANDBOXES\[projection\]\.surfaceKey/,
+);
+assert.ok(
+  surfaceKey.indexOf("projectionSandboxKey()") < surfaceKey.indexOf("sandboxView?.view"),
+  "projection surfaces must be matched before the generic sandbox branch",
+);
 const shellLocation = sourceSlice("function currentShellLocation()", "function recordCurrentShellLocation");
-assert.match(shellLocation, /sandboxView\?\.view && !chronologySandboxOpen\(\)/);
+assert.match(shellLocation, /sandboxView\?\.view && !projectionSandboxOpen\(\)/);
 const breadcrumbs = sourceSlice("function breadcrumbItems()", "function workspaceHeadingKicker");
-assert.match(breadcrumbs, /!chronologySandboxOpen\(\)/);
+assert.match(breadcrumbs, /!projectionSandboxOpen\(\)/);
 const closeProjection = sourceSlice("async function closeProjectionView", "async function closePluginView");
 assert.match(closeProjection, /recordShellDeparture\(departure\)/);
-assert.match(closeProjection, /if \(chronologySandboxOpen\(\)\) sandboxView = null/);
+assert.match(closeProjection, /if \(projectionSandboxOpen\(\)\) sandboxView = null/);
 assert.doesNotMatch(closeProjection, /shellHistoryBack|navigateShellHistory/);
-assert.match(route, /title="Chronology"/);
-assert.match(route, /subtitle="Explore your world across time"/);
 assert.match(route, /<WorkspaceTopbar/);
-assert.match(route, /<SandboxView pluginId="daena\.timeline" title="Chronology" \/>/);
+assert.match(route, /\{:else if projectionSandboxKey\(\)\}/);
 assert.match(
   route,
-  /!hostView && \(!sandboxView \|\| chronologySandboxOpen\(\)\) && \(section === "lore"/,
-  "workspace view tabs stay visible while Chronology is open",
+  /<SandboxView pluginId=\{projection\.pluginId\} title=\{projection\.title\} \/>/,
+  "the World graph and Chronology mount one SandboxView with their table entry",
+);
+assert.match(
+  route,
+  /!hostView && \(!sandboxView \|\| projectionSandboxOpen\(\)\) && \(section === "lore"/,
+  "workspace view tabs stay visible while the World graph or Chronology is open",
+);
+assert.doesNotMatch(
+  route,
+  /\bprojectionView\b|projectionModule|\bProjectionView\b|ProjectionKind|lib\/modules\/projections|chronologySandboxOpen/,
+  "the shell must not carry the trusted projection path",
 );
 assert.match(
   fs.readFileSync("packages/modules/timeline/src/plugin-main.ts", "utf8"),
@@ -196,8 +240,8 @@ assert.match(
 );
 assert.doesNotMatch(
   route,
-  /pluginId="daena\.timeline"[^>]*viewId=/,
-  "chronology webview must omit viewId; the manifest declares no views",
+  /pluginId="daena\.(?:timeline|lore)"[^>]*viewId=|<SandboxView[^>]*pluginId=\{projection\.pluginId\}[^>]*viewId=/,
+  "projection webviews must omit viewId; the manifests declare no views",
 );
 
 // Language workspace: the content pane is the isolated daena.language webview, and the trusted
@@ -209,11 +253,6 @@ assert.match(
 );
 assert.doesNotMatch(route, /<ModuleMount\b/, "the shell must not mount Language through the trusted ModuleMount");
 assert.doesNotMatch(route, /projectionModule\("language"\)/, "Language must not be a trusted projection");
-assert.doesNotMatch(
-  projections,
-  /modules\/language/,
-  "the projections registry must not import the Language runtime (Lore remains the only trusted projection)",
-);
 assert.match(route, /listen<unknown>\(\s*"language-state"/, "the shell must listen for the Language webview state");
 const canLeaveGlobal = [...listSourceFiles("src"), ...listSourceFiles("packages")].filter((file) =>
   fs.readFileSync(file, "utf8").includes("__daena_canLeaveLanguage"),

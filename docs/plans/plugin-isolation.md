@@ -8,6 +8,12 @@ unfinished remainder.
 
 - Chronology runs in the `daena.timeline` plugin webview
   (`src-tauri/plugin-assets/timeline/`, built by `npm run build:timeline-ui`).
+- The Lore World graph runs in the `daena.lore` plugin webview
+  (`src-tauri/plugin-assets/lore/`, built by `npm run build:lore-ui`). The
+  shell opens Chronology and the graph through one `PROJECTION_SANDBOXES`
+  table; the trusted projection path (`projections.ts`, `ProjectionView`) is
+  gone, and `scripts/check-plugin-isolation.mjs` has no runtime-import
+  allowlist left.
 - Language runs in the `daena.language` plugin webview inside the workbench
   content pane (`src-tauri/plugin-assets/language/`, built by
   `npm run build:language-ui`). The shell and the webview talk through mount
@@ -26,9 +32,6 @@ unfinished remainder.
 
 ## Still open
 
-- The Lore graph projection still mounts in the main webview through
-  `src/lib/modules/projections.ts`, which stays on the
-  `scripts/check-plugin-isolation.mjs` allowlist.
 - `src-tauri/plugin-assets/writing/` is still a stub.
 - Language's rich-text editor cannot insert or upload assets: there is no
   brokered file-picker upload. It shows images only for project-shared assets
@@ -39,12 +42,13 @@ unfinished remainder.
 - The plugin bundles are unminified (Language is about 2.8 MB).
 - Isolation proof is still static and fake-broker rendering, not packaged
   Tauri webview tests on every desktop platform. The Language content-pane
-  layout, overlay hiding, and toast placement need a run in the real app.
+  layout, the projection webviews, overlay hiding, and toast placement need a
+  run in the real app, windowed and fullscreen.
 
 ## Resume order
 
-1. Run the desktop app and verify Language in the content pane: layout at
-   narrow and short windows, pane switching from history, leave guards,
-   overlays, toasts, link opening, and shared images.
-2. Decide whether the Lore graph projection moves to a plugin webview.
-3. Brokered asset upload for plugin editors, if Language should insert assets.
+1. Run the desktop app, windowed and fullscreen, and verify Language in the
+   content pane (layout at narrow and short windows, pane switching from
+   history, leave guards, overlays, toasts, link opening, shared images) and
+   the Chronology and World graph webviews (layout, Back, Show on map).
+2. Brokered asset upload for plugin editors, if Language should insert assets.

@@ -77,7 +77,6 @@ function handleKeydown(event: KeyboardEvent, index: number) {
   background: var(--accent-dark);
   color: var(--on-accent);
 }
-.workspace-view-nav + :global(.projection-view-shell),
 .workspace-view-nav + :global(.kb-shell),
 .workspace-view-nav + :global(.specialized-surface) {
   height: calc(100vh - 104px);

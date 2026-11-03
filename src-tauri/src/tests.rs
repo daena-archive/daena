@@ -2993,7 +2993,10 @@ fn bundled_plugin_protocol_serves_only_embedded_assets() {
     let response = plugin_asset_response("daena.lore", &request, None, None);
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("Content-Type").unwrap(), "text/html");
-    assert!(String::from_utf8_lossy(response.body()).contains("plugin.js"));
+    let page = String::from_utf8_lossy(response.body());
+    assert!(page.contains("./lore.js"));
+    assert!(page.contains("id=\"lore-graph-root\""));
+    assert!(!page.contains("plugin.js"));
 
     let traversal = tauri::http::Request::builder()
         .uri("plugin://daena.lore/../manifest.json")
@@ -3030,6 +3033,49 @@ fn language_webview_routes_are_served_with_document_content_types() {
         .unwrap();
     assert_eq!(
         plugin_asset_response("daena.language", &unknown, None, None).status(),
+        404
+    );
+}
+
+#[test]
+fn lore_webview_routes_are_served_with_document_content_types() {
+    for (path, content_type) in [
+        ("/dist/ui/index.html", "text/html"),
+        ("/dist/ui/lore.js", "text/javascript"),
+        ("/dist/ui/lore.css", "text/css"),
+    ] {
+        let request = tauri::http::Request::builder()
+            .uri(format!("plugin://daena.lore{path}"))
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response("daena.lore", &request, None, None);
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            content_type,
+            "{path}"
+        );
+        // The graph injects a <style> element, so the lore webview must allow
+        // inline styles while keeping scripts and network access locked down.
+        let csp = response
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("style-src-elem 'self' 'unsafe-inline'"),
+            "{path}"
+        );
+        assert!(csp.contains("script-src 'self';"), "{path}");
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"), "{path}");
+    }
+    let unknown = tauri::http::Request::builder()
+        .uri("plugin://daena.lore/dist/ui/missing.js")
+        .body(Vec::new())
+        .unwrap();
+    assert_eq!(
+        plugin_asset_response("daena.lore", &unknown, None, None).status(),
         404
     );
 }

@@ -353,6 +353,29 @@ const hostWithNames = (resolveEntityNames) => ({
 });
 const referenceLabel = (container, entityId) => container.querySelector(`a[data-entity-id="${entityId}"]`)?.textContent;
 
+await scenario("editor HTML export creates no image in the live document", async () => {
+  harness.setDefaultEditorHost(hostWithNames(async () => ({})));
+  const { editor } = mountReferenceEditor({ initialValue: "Before ![map](assets/images/map.png) after.\n" });
+  const created = [];
+  const createElement = document.createElement;
+  document.createElement = function (tagName, options) {
+    created.push(String(tagName).toLowerCase());
+    return createElement.call(this, tagName, options);
+  };
+  let exported;
+  let viaGetHtml;
+  try {
+    exported = harness.editorHtml(editor);
+    assert.ok(!created.includes("img"), "no <img> is created in the live document, so nothing is fetched");
+    viaGetHtml = editor.getHTML();
+    assert.ok(created.includes("img"), "getHTML() does create one there, which is what fetched assets/... paths");
+  } finally {
+    document.createElement = createElement;
+  }
+  assert.equal(exported, viaGetHtml, "the export matches getHTML");
+  assert.ok(exported.includes('src="assets/images/map.png"'), "the asset path is kept for saving");
+});
+
 await scenario("unlabelled entity reference: with no entities prop the host supplies the name", async () => {
   resolvedBatches.length = 0;
   harness.setDefaultEditorHost(

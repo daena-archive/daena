@@ -2,7 +2,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { insideReactiveUpdate } from "$lib/editor/reactive-context.svelte.ts";
 import type { AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 import { setDefaultEditorHost } from "$lib/editor/host";
-import { markdownFromEditorHtml } from "$lib/editor/html-convert";
+import { editorHtml, markdownFromEditorHtml } from "$lib/editor/html-convert";
 import EntitySearchParent from "./EntitySearchParent.svelte";
 import LegacyParent from "./LegacyParent.svelte";
 import RunesParent from "./RunesParent.svelte";
@@ -35,4 +35,4 @@ export function mountEntitySearchParent(
   return mount(EntitySearchParent, { target, props });
 }
 
-export { flushSync, insideReactiveUpdate, markdownFromEditorHtml, setDefaultEditorHost, unmount };
+export { editorHtml, flushSync, insideReactiveUpdate, markdownFromEditorHtml, setDefaultEditorHost, unmount };

@@ -1,4 +1,5 @@
 import type { Editor } from "@tiptap/core";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { denormalizeAssetHtml } from "$lib/assets/resolve";
 import { htmlToMarkdown } from "$lib/markdown";
 import { sanitizeInlineStyle } from "$lib/markdown/color.ts";
@@ -23,6 +24,21 @@ export function sanitizeHtml(value: string): string {
     }
   }
   return template.innerHTML;
+}
+
+/**
+ * The editor's content as HTML, like `editor.getHTML()`, but serialized into an inert document.
+ * `getHTML()` builds the nodes in the live document first, and a browser starts fetching an `<img>`
+ * as soon as it is created there, so every export requested `assets/...` paths from the page origin.
+ */
+export function editorHtml(editor: Editor): string {
+  const inert = document.implementation.createHTMLDocument("");
+  const fragment = DOMSerializer.fromSchema(editor.schema).serializeFragment(editor.state.doc.content, {
+    document: inert,
+  });
+  const container = inert.createElement("div");
+  container.appendChild(fragment);
+  return container.innerHTML;
 }
 
 export function markdownFromEditorHtml(html: string) {

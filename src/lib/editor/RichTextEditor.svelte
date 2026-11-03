@@ -84,7 +84,7 @@ import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { DEFAULT_TEXT_COLOR, TextColor } from "$lib/editor/textColor";
 import { normalizeHexColor } from "$lib/markdown/color.ts";
 import { clampDim } from "$lib/editor/image-attrs";
-import { editorPlainText, markdownFromEditorHtml, sanitizeHtml } from "./html-convert";
+import { editorHtml, editorPlainText, markdownFromEditorHtml, sanitizeHtml } from "./html-convert";
 import { getExternalLinkAnchor, getSpoilerEl } from "./event-targets";
 import { buildSearchRegex, SearchAndReplace, searchPluginKey } from "./search-plugin";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
@@ -275,7 +275,7 @@ function editorHtmlFromMarkdown(markdown: string) {
 function emitChange() {
   if (!editor) return;
   editorText = editorPlainText(editor);
-  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  currentMarkdown = markdownFromEditorHtml(editorHtml(editor));
   onChange(currentMarkdown);
 }
 
@@ -531,7 +531,7 @@ export function replaceAiTextWithMarkdown(value: string): string | null {
     const ok = editor.chain().focus().insertContentAt({ from, to }, aiMarkdownToInsertHtml(value)).run();
     if (!ok) return null;
     clearAiRequest();
-    currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+    currentMarkdown = markdownFromEditorHtml(editorHtml(editor));
     editorText = editorPlainText(editor);
     return currentMarkdown;
   } catch {
@@ -2149,7 +2149,7 @@ onMount(() => {
     },
   });
   editorState = editor;
-  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  currentMarkdown = markdownFromEditorHtml(editorHtml(editor));
   editorText = editorPlainText(editor);
   resolveMissingEntityNames();
   const preventLinkNavigationCapture = (event: MouseEvent) => {
@@ -2196,8 +2196,8 @@ onMount(() => {
 $: if (editor && !editor.isFocused && !aiRequestRange && value !== currentMarkdown) {
   cancelPendingChange();
   const nextHtml = editorHtmlFromMarkdown(value);
-  if (nextHtml !== editor.getHTML()) editor.commands.setContent(nextHtml, { emitUpdate: false });
-  currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+  if (nextHtml !== editorHtml(editor)) editor.commands.setContent(nextHtml, { emitUpdate: false });
+  currentMarkdown = markdownFromEditorHtml(editorHtml(editor));
   editorText = editorPlainText(editor);
 }
 $: if (editor && entities) {
@@ -2207,9 +2207,9 @@ $: if (editor && entities) {
     if (editor.isFocused) updateAutoEntityReferences();
     else {
       const hydrated = editorHtmlFromMarkdown(value);
-      if (hydrated !== editor.getHTML()) {
+      if (hydrated !== editorHtml(editor)) {
         editor.commands.setContent(hydrated, { emitUpdate: false });
-        currentMarkdown = markdownFromEditorHtml(editor.getHTML());
+        currentMarkdown = markdownFromEditorHtml(editorHtml(editor));
         editorText = editorPlainText(editor);
       } else updateAutoEntityReferences();
     }

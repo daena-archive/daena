@@ -1,0 +1,5 @@
+# Generated plugin webview bundles (rebuilt by npm run build:*-ui; drift-checked).
+src-tauri/plugin-assets/timeline/timeline.js linguist-generated=true -diff
+src-tauri/plugin-assets/timeline/timeline.css linguist-generated=true -diff
+src-tauri/plugin-assets/language/language.js linguist-generated=true -diff
+src-tauri/plugin-assets/language/language.css linguist-generated=true -diff

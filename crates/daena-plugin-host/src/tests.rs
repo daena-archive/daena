@@ -2421,6 +2421,62 @@ fn search_query_is_rate_limited() {
     );
 }
 
+#[test]
+fn shared_asset_read_is_rate_limited_like_asset_reads() {
+    // Shared reads load project bytes just like owned reads, so they must
+    // share the owned-asset bucket rather than run unthrottled.
+    let config = RateLimitConfig::default();
+    assert_eq!(
+        super::expensive_rpc_limit("asset.shared.read.begin", config),
+        super::expensive_rpc_limit("asset.read.begin", config),
+    );
+    assert_eq!(
+        super::expensive_rpc_limit("asset.shared.read.begin", config).map(|(class, _, _)| class),
+        Some("asset")
+    );
+
+    let mut host = PluginHost::new();
+    let mut plugin = manifest("com.example.one", "one");
+    plugin.capabilities.push("asset.read:shared".into());
+    let entry = CatalogEntry {
+        manifest: plugin.clone(),
+        package_root: PathBuf::new(),
+        digest: "a".repeat(64),
+        embedded_wasm: None,
+    };
+    host.catalog.insert_for_test(entry.clone()).unwrap();
+    host.namespaces.register_manifest(&entry.manifest).unwrap();
+    host.grants
+        .set(
+            "project",
+            "com.example.one",
+            &plugin.capabilities,
+            plugin.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    host.rate_limit_config = RateLimitConfig {
+        asset_max: 2,
+        asset_window: Duration::from_secs(60),
+        ..RateLimitConfig::default()
+    };
+    let session = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    let request = RpcRequest {
+        rpc_version: RPC_VERSION,
+        session_id: session.id,
+        request_id: "shared-read".into(),
+        method: "asset.shared.read.begin".into(),
+        payload: serde_json::json!({"path": "assets/files/shared.txt"}),
+    };
+    assert!(host.rpc("plugin://one", &request).error.is_none());
+    assert!(host.rpc("plugin://one", &request).error.is_none());
+    assert_eq!(
+        host.rpc("plugin://one", &request).error.unwrap().code,
+        "rate.limited"
+    );
+}
+
 fn grant_bundled(host: &mut PluginHost, plugin_id: &str) {
     let manifest = host.catalog.get(plugin_id).unwrap().manifest.clone();
     host.grants

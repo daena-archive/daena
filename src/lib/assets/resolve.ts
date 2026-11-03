@@ -1,4 +1,4 @@
-import { project } from "$lib/project/client";
+import { defaultEditorHost } from "$lib/editor/host";
 
 const cache = new Map<string, string>(); // path -> blob (LRU, bounded)
 const reverse = new Map<string, string>(); // blob -> path (persistent for denormalize)
@@ -86,19 +86,21 @@ export async function resolveAssetSrc(path: string): Promise<string | null> {
   if (pending.has(key)) return pending.get(key)!;
 
   const p = (async () => {
+    const host = defaultEditorHost();
+    if (!host) return null;
     // try decoded and original
     const candidates = [decoded, trimmed];
     // dedupe
     const uniq = [...new Set(candidates)];
     for (const cand of uniq) {
       try {
-        const bytes = await project.readAssetBytesByPath(cand);
+        const bytes = await host.readAssetBytesByPath(cand);
         if (!bytes || bytes.length === 0) continue;
         // need mime for blob — fetch asset meta first to get mime
         // but we can infer or fetch via getAssetByPath
         let mime = "application/octet-stream";
         try {
-          const meta = await project.getAssetByPath(cand);
+          const meta = await host.getAssetByPath(cand);
           if (meta?.mime_type) mime = meta.mime_type;
         } catch {}
         const blob = new Blob([Uint8Array.from(bytes)], { type: mime });

@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
+import { installShellEditorHost, shellEditorHost } from "$lib/editor/shell-host";
 import { mimeTypeFor } from "$lib/assets/mime";
 import {
   project,
@@ -193,7 +194,6 @@ import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
 import { FALLBACK_ICON } from "$lib/entity-icons/catalog";
 import { trapModalTab } from "$lib/shell/modalFocus";
 import { rankQuickOpenItems, type QuickOpenItem } from "$lib/quick-open/model";
-import ModuleMount from "$lib/ModuleMount.svelte";
 import SettingsView from "$lib/SettingsView.svelte";
 import SchemaSettingsPanel from "$lib/SchemaSettingsPanel.svelte";
 import SchemaFieldInput from "$lib/schema-workbench/SchemaFieldInput.svelte";
@@ -213,7 +213,7 @@ import ExternalImportDialog from "$lib/ExternalImportDialog.svelte";
 import CalendarPicker from "$lib/CalendarPicker.svelte";
 import InspectorDateField from "$lib/date/InspectorDateField.svelte";
 import EntityHoverCard from "$lib/EntityHoverCard.svelte";
-import { confirmDialog, promptDialog } from "$lib/dialogs.svelte";
+import { confirmDialog, dialogState, promptDialog } from "$lib/dialogs.svelte";
 import DialogHost from "$lib/DialogHost.svelte";
 import loreManifestJson from "../../packages/modules/lore/manifest.json";
 import timelineManifestJson from "../../packages/modules/timeline/manifest.json";
@@ -272,6 +272,14 @@ import {
   CalendarRange,
 } from "@lucide/svelte";
 import { projectionModule, type ProjectionKind } from "$lib/modules/projections";
+import {
+  LANGUAGE_PLUGIN_ID,
+  LanguageLeaveTracker,
+  isLanguagePane,
+  openableLinkHref,
+  parseLanguageStateEvent,
+  type LanguageStateEvent,
+} from "$lib/modules/language-bridge";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
@@ -328,6 +336,7 @@ import {
 import { defaultCreateFieldValue, isCreateDropdownField, isCreateValuePopulated } from "$lib/shell/create-form-values";
 import { friendlyError } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
+installShellEditorHost();
 
 type InstalledModule = ProjectModuleManifest;
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
@@ -388,6 +397,12 @@ let timelineView = $state<TimelineView>("events");
 let loreGuideHint = $state(0);
 let timelineGuideHint = $state(0);
 let languagePane = $state<LanguagePane>("overview");
+/** Mount state of the Language webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
+let languageWebview = $state({ mounted: false, ready: false });
+/** Can-leave requests to the Language webview, resolved by its leave-pending/leave-reply/ready messages. */
+const languageLeave = new LanguageLeaveTracker();
+/** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
+let languagePaneRequest: LanguagePane | null = null;
 let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
@@ -1389,13 +1404,20 @@ async function resolveDirtyMapSession(): Promise<boolean> {
   });
 }
 
-async function leavePluginView(): Promise<boolean> {
+/**
+ * Leaves whatever plugin surface is open. Native plugin webviews are only closed when a
+ * full-surface plugin view (host or sandbox) was open, or when the caller asks for it.
+ * The Language content pane is not one of those: its SandboxView owns its webview and
+ * closes it when it unmounts, so closing every webview here would blank a pane that stays.
+ */
+async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
   if (!(await resolveDirtyMapSession())) return false;
+  const fullSurfaceOpen = hostView !== null || sandboxView !== null;
   editorFullscreen = false;
   hostView = null;
   sandboxView = null;
   projectionView = null;
-  await closeNativePluginWebviews();
+  if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
   return true;
 }
 
@@ -1405,6 +1427,172 @@ function chronologySandboxOpen(): boolean {
     sandboxView.view?.id === "chronology" &&
     sandboxView.renderer === "webview"
   );
+}
+
+/** The Language workspace is an isolated webview drawn in the content column of the Languages section. */
+const languagePaneShown = $derived(
+  ready &&
+    section === "language" &&
+    workbenchPaneVisibility.content &&
+    !projectHomeOpen &&
+    !showSettings &&
+    !hostView &&
+    !sandboxView &&
+    !projectionView &&
+    !loreWikiOpen &&
+    enabledWorkspaceSections().includes("language"),
+);
+
+/**
+ * Shell overlays that cover the content area. Plugin webviews are native children drawn above
+ * the main webview, so while one of these is open every embedded plugin webview is hidden.
+ * Toasts are not here: they are anchored clear of the content column instead (see `.toast-left`).
+ * The collection filter popover and the rail tooltip are left out: they never overlap the content column.
+ */
+const shellOverlayOpen = $derived(
+  quickOpenOpen ||
+    showCreateForm ||
+    showProjectMenu ||
+    statusCenterOpen ||
+    showDiscardPrompt ||
+    projectTransitionBusy ||
+    editorFullscreen ||
+    aiRewriteOpen ||
+    upgradePreview !== null ||
+    confirmAction !== null ||
+    deleteTarget !== null ||
+    deleteBackupPath !== "" ||
+    installConsent !== null ||
+    installReview !== null ||
+    metadataDialog !== null ||
+    assetDialog !== null ||
+    showExternalImport ||
+    entityEditDialog !== null ||
+    profileEditorOpen ||
+    fieldsDialogOpen ||
+    dialogState.open,
+);
+
+/** Embedded plugin webviews the shell is currently drawing (the Language pane, or a webview sandbox view). */
+const embeddedPluginWebviewIds = $derived.by(() => {
+  const ids = new Set<string>();
+  if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
+  const sandboxShown = ready && !showSettings && !projectHomeOpen && !projectionView && !hostView && !loreWikiOpen;
+  if (sandboxShown && sandboxView?.renderer === "webview") ids.add(sandboxView.plugin.id);
+  return [...ids];
+});
+
+async function setPluginWebviewVisibleQuietly(pluginId: string, visible: boolean) {
+  try {
+    await project.setPluginWebviewVisible(pluginId, visible);
+  } catch {
+    // Visibility is best effort; a webview that is not mounted yet has nothing to hide.
+  }
+}
+
+$effect(() => {
+  // Re-applied when the Language webview reports ready, in case an overlay opened during its mount.
+  void languageWebview.ready;
+  const visible = !shellOverlayOpen;
+  for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
+});
+
+/** Attachment for the Language content pane: tracks whether the pane element is in the document. */
+function trackLanguageMount() {
+  languageWebview.mounted = true;
+  return () => {
+    languageWebview.mounted = false;
+    languageWebview.ready = false;
+    languagePaneRequest = null;
+    languageLeave.releaseAll();
+  };
+}
+
+async function postLanguageMessage(message: unknown): Promise<boolean> {
+  try {
+    await project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, message);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Moves the Language workspace to a pane. A mounted, ready webview is told through the host so
+ * its leave guards run; the webview may answer with a different pane. Otherwise the next mount
+ * reads `languagePane`.
+ */
+function requestLanguagePane(next: LanguagePane) {
+  if (languagePane === next) return;
+  languagePane = next;
+  if (!languageWebview.mounted || !languageWebview.ready) {
+    languagePaneRequest = null;
+    return;
+  }
+  languagePaneRequest = next;
+  void postLanguageMessage({ type: "language.pane", pane: next }).then((sent) => {
+    if (!sent && languagePaneRequest === next) languagePaneRequest = null;
+  });
+}
+
+/** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
+async function canLeaveLanguageSection(): Promise<boolean> {
+  if (section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
+  const requestId = crypto.randomUUID();
+  const decision = languageLeave.begin(requestId);
+  const sent = await postLanguageMessage({ type: "language.can-leave", requestId });
+  if (!sent) languageLeave.reply(requestId, true);
+  return decision;
+}
+
+function handleLanguageStateEvent(event: LanguageStateEvent) {
+  switch (event.kind) {
+    case "ready": {
+      if (!languageWebview.mounted) return;
+      languageWebview.ready = true;
+      languagePaneRequest = null;
+      languageLeave.releaseAll();
+      // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
+      if (event.pane !== null && event.pane !== languagePane)
+        void postLanguageMessage({ type: "language.pane", pane: languagePane });
+      return;
+    }
+    case "pane": {
+      if (!languageWebview.mounted) return;
+      if (event.pane === languagePane) {
+        languagePaneRequest = null;
+        return;
+      }
+      if (languagePaneRequest !== null) {
+        // Answer to a shell request that the webview refused: revert without a history entry.
+        languagePaneRequest = null;
+        languagePane = event.pane;
+        return;
+      }
+      recordShellDeparture(currentShellLocation());
+      languagePane = event.pane;
+      return;
+    }
+    case "leave-pending":
+      languageLeave.pending(event.requestId);
+      return;
+    case "leave-reply":
+      languageLeave.reply(event.requestId, event.allowed);
+      return;
+    case "entity-changed":
+      if (event.deleted) {
+        if (selected?.id === event.entityId) clearSelection();
+        void refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
+      } else {
+        void refreshAfterEntityMutation({ entityId: event.entityId });
+      }
+      return;
+    case "open-link": {
+      const href = openableLinkHref(event.href);
+      if (href) void shellEditorHost.openExternal(href);
+      return;
+    }
+  }
 }
 
 function pluginViewLabel(item: PluginNavigationItem) {
@@ -1458,14 +1646,8 @@ function currentModuleState(): Record<string, unknown> | null {
 
 function restoreModuleState(section: WorkspaceSection, state: Record<string, unknown> | null | undefined) {
   if (section === "language") {
-    if (state && typeof state.pane === "string") {
-      const pane = state.pane as LanguagePane;
-      if (["overview", "lexicon", "sounds", "writing", "grammar", "forms", "samples"].includes(pane)) {
-        languagePane = pane;
-        return;
-      }
-    }
-    languagePane = "overview";
+    requestLanguagePane(state && isLanguagePane(state.pane) ? state.pane : "overview");
+    return;
   }
   if (section === "houses") {
     treeSession = (state as TreeSession | null) ?? null;
@@ -1557,7 +1739,11 @@ function resetWorkbenchPane(pane: "collection" | "inspector") {
   persistWorkbenchLayout();
 }
 
-function toggleWorkbenchPane(pane: WorkbenchPane) {
+async function toggleWorkbenchPane(pane: WorkbenchPane) {
+  // Hiding the content column tears down the Language webview, so ask it first while it is mounted.
+  if (pane === "content" && workbenchPaneVisibility.content && languageWebview.mounted) {
+    if (!(await canLeaveLanguageSection())) return;
+  }
   const visible = !workbenchPaneVisibility[pane];
   workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
   persistWorkbenchLayout();
@@ -1812,6 +1998,7 @@ function updateRailCollapsed(collapsed: boolean) {
 
 async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
   if (!(await flushAutoSave())) return;
+  if (section === "language" && !(await canLeaveLanguageSection())) return;
   if (item.renderer === "maps") {
     if (!(await dismissSettings())) return;
     const mapId = currentMapId();
@@ -2523,15 +2710,17 @@ function toggleManuscriptOutlineNode(id: string) {
 
 async function selectSearchResult(entity: Entity) {
   if (!(await flushAutoSave())) return;
-  const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
   const owner = workspaceSectionOrder.find((target) =>
     manifestForWorkspaceSection(target)?.schemas.some((schema) =>
       schemaEntityTypeIds(schema).includes(entity.entity_type ?? ""),
     ),
   );
-  section = owner && owner !== "maps" ? owner : "lore";
+  const nextSection: WorkspaceSection = owner && owner !== "maps" ? owner : "lore";
+  if (section === "language" && nextSection !== "language" && !(await canLeaveLanguageSection())) return;
+  const departure = currentShellLocation();
+  if (!(await leavePluginView())) return;
+  recordShellDeparture(departure);
+  section = nextSection;
   applyCollectionTabForEntityType(entity.entity_type);
   projectHomeOpen = false;
   globalQuery = "";
@@ -2632,20 +2821,13 @@ async function switchLanguagePane(next: LanguagePane) {
   if (!(await flushAutoSave())) return;
   if (languagePane === next && !projectHomeOpen && section === "language") return;
   const departure = currentShellLocation();
-  if (!(await leavePluginView())) return;
+  // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
+  if (hostView || sandboxView || projectionView) {
+    if (!(await leavePluginView())) return;
+  }
   recordShellDeparture(departure);
   projectHomeOpen = false;
-  languagePane = next;
-}
-
-async function canLeaveLanguageSection(): Promise<boolean> {
-  if (section !== "language") return true;
-  try {
-    const fn = (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage as
-      (() => Promise<boolean> | boolean) | undefined;
-    if (typeof fn === "function") return await fn();
-  } catch {}
-  return true;
+  requestLanguagePane(next);
 }
 
 function dismissTransientMenus(): boolean {
@@ -2957,7 +3139,7 @@ async function handleLoreGuidePrimary(step: GuideStep) {
   if (step.action === "graph") await openProjection();
   if (step.action === "inspector") {
     await openLoreLibrary();
-    if (!workbenchPaneVisibility.inspector) toggleWorkbenchPane("inspector");
+    if (!workbenchPaneVisibility.inspector) void toggleWorkbenchPane("inspector");
   }
 }
 
@@ -4434,9 +4616,11 @@ async function pickAndOpenProject(intent: "create" | "open") {
     );
     const path = typeof selection === "string" ? selection : null;
     if (!path) return;
+    // Asked before the transition overlay opens, because the overlay hides the Language webview.
+    if (!(await canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await flushAutoSave())) return;
-      if (!(await leavePluginView())) return;
+      if (!(await leavePluginView({ closeWebviews: true }))) return;
       resetProjectSessionState();
       await project.close();
       await finishOpening(intent === "create" ? await project.create(path) : await project.openDirectory(path));
@@ -4457,9 +4641,10 @@ async function openProjectDirectory() {
 async function openRecentProject(path: string) {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
+  if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
     if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await leavePluginView({ closeWebviews: true }))) return;
     resetProjectSessionState();
     await project.close();
     await finishOpening(await project.openDirectory(path));
@@ -4469,9 +4654,10 @@ async function openRecentProject(path: string) {
 async function closeProject() {
   if (projectTransitionBusy) return;
   showProjectMenu = false;
+  if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
     if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await leavePluginView({ closeWebviews: true }))) return;
     resetProjectSessionState();
     await project.close();
   });
@@ -6807,9 +6993,10 @@ async function rebuildSearchIndex() {
   }
 }
 async function importPortableCheckpoint() {
+  if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
     if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
     resetProjectSessionState();
     await finishOpening();
@@ -6842,9 +7029,10 @@ async function createRecoveryBackup() {
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
+  if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
     if (!(await flushAutoSave())) return;
-    if (!(await leavePluginView())) return;
+    if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
     resetProjectSessionState();
     await finishOpening();
@@ -6928,7 +7116,8 @@ onMount(() => {
         error = "The window stayed open because the current draft could not be saved.";
         return;
       }
-      if (!(await leavePluginView())) return;
+      if (!(await canLeaveLanguageSection())) return;
+      if (!(await leavePluginView({ closeWebviews: true }))) return;
       await getCurrentWindow().destroy();
     })
     .then((cleanup) => {
@@ -6964,6 +7153,7 @@ onMount(() => {
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
       if (!(await flushAutoSave())) return;
+      if (!(await canLeaveLanguageSection())) return;
       const departure = currentShellLocation();
       if (!(await leavePluginView())) return;
       selected = map;
@@ -7058,6 +7248,15 @@ onMount(() => {
       unlistenMapsSelection = cleanup;
     })
     .catch(() => {});
+  let unlistenLanguageState: (() => void) | undefined;
+  void listen<unknown>("language-state", (event) => {
+    const message = parseLanguageStateEvent(event.payload);
+    if (message) handleLanguageStateEvent(message);
+  })
+    .then((cleanup) => {
+      unlistenLanguageState = cleanup;
+    })
+    .catch(() => {});
   return () => {
     themeMedia.removeEventListener("change", handleSystemThemeChange);
     closeListenerDisposed = true;
@@ -7077,6 +7276,7 @@ onMount(() => {
     unlistenMaps?.();
     unlistenMapsState?.();
     unlistenMapsSelection?.();
+    unlistenLanguageState?.();
   };
 });
 </script>
@@ -7134,7 +7334,11 @@ onMount(() => {
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
-  <section class:sandbox-active={Boolean(sandboxView)} class:map-surface-open={mapSurfaceOpen} class="app-main">
+  <section
+    class:sandbox-active={Boolean(sandboxView)}
+    class:map-surface-open={mapSurfaceOpen}
+    class:language-surface={languagePaneShown}
+    class="app-main">
     {#snippet projectStatusControl()}
       <StatusCenter
         bind:open={statusCenterOpen}
@@ -8235,15 +8439,15 @@ onMount(() => {
           <span>Layout</span><button
             type="button"
             aria-pressed={workbenchPaneVisibility.collection}
-            onclick={() => toggleWorkbenchPane("collection")}>Collection</button
+            onclick={() => void toggleWorkbenchPane("collection")}>Collection</button
           ><button
             type="button"
             aria-pressed={workbenchPaneVisibility.content}
-            onclick={() => toggleWorkbenchPane("content")}>Content</button
+            onclick={() => void toggleWorkbenchPane("content")}>Content</button
           >{#if workbenchSupportsInspector()}<button
               type="button"
               aria-pressed={workbenchPaneVisibility.inspector}
-              onclick={() => toggleWorkbenchPane("inspector")}>Inspector</button
+              onclick={() => void toggleWorkbenchPane("inspector")}>Inspector</button
             >{/if}
         </nav>
       {/if}
@@ -8251,6 +8455,7 @@ onMount(() => {
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
         class:map-surface-expanded={mapSurfaceOpen}
         class:workspace-grid-no-inspector={section === "language"}
+        class:language-surface={languagePaneShown}
         class="workspace-grid"
         style={workspaceGridStyle()}>
         {#snippet collectionControls()}
@@ -8572,24 +8777,16 @@ onMount(() => {
             onResize={(delta) => resizeWorkbenchPane("collection", delta)}
             onReset={() => resetWorkbenchPane("collection")} />{/if}
 
-        {#if workbenchPaneVisibility.content && section === "language"}
-          {@const languageProjection = projectionModule("language")}
+        {#if languagePaneShown}
           {#key selected?.id ?? "language"}
-            <ModuleMount
-              view={languageProjection.module.views[0]}
-              context={buildModuleContext(languageProjection.module.manifest, projectInfo?.root ?? "", {
-                focusEntityId: selected?.id as UUID | undefined,
-                availableServices: enabledServices(),
-                onEntityDeleted: () => {
-                  void refreshAfterEntityMutation();
-                },
-                moduleState: { pane: languagePane },
-                onModuleStateChange: (state: Record<string, unknown> | null) => {
-                  const next = (state as { pane?: LanguagePane } | null)?.pane;
-                  if (next && next !== languagePane) void switchLanguagePane(next);
-                },
-              })}
-              className="language-mount" />
+            <div class="language-mount" {@attach trackLanguageMount}>
+              <SandboxView
+                pluginId="daena.language"
+                viewId="language-workspace"
+                title="Language"
+                entityId={selected?.id}
+                moduleState={{ pane: languagePane }} />
+            </div>
           {/key}
         {:else if workbenchPaneVisibility.content}
           {#snippet contentPaneBody()}
@@ -9376,11 +9573,19 @@ onMount(() => {
         {/if}
       </section>
     {/if}
-    {#if error}<div class="toast" role="alert" aria-live="assertive">
+    {#if error}<div
+        class="toast"
+        class:toast-left={embeddedPluginWebviewIds.length > 0}
+        role="alert"
+        aria-live="assertive">
         {error}<button aria-label="Dismiss" onclick={() => (error = "")}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
-    {#if lifecycleToast}<div class="toast lifecycle-toast" role="status" aria-live="polite">
+    {#if lifecycleToast}<div
+        class="toast lifecycle-toast"
+        class:toast-left={embeddedPluginWebviewIds.length > 0}
+        role="status"
+        aria-live="polite">
         <span>{lifecycleToast.message}</span>
         {#if lifecycleToast.actionLabel && lifecycleToast.onAction}
           <button type="button" class="toast-action" onclick={() => lifecycleToast?.onAction?.()}
@@ -9774,20 +9979,29 @@ onMount(() => {
   box-shadow: none;
   transform: none;
 }
-:global(.module-mount.language-mount) {
+/* Language is a native webview, which the page cannot scroll under: the Languages section fills the
+   viewport, and the collection list and the Language webview each scroll inside their own column. */
+.app-main.language-surface {
   display: flex;
+  min-height: 0;
+  height: 100vh;
   flex-direction: column;
-  min-height: 650px;
-  border: none;
-  background: transparent;
-  box-shadow: none;
+  overflow: hidden;
 }
-:global(.module-mount.language-mount .language-workspace) {
+.workspace-grid.language-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+.workspace-grid.language-surface :global(.collection-panel) {
+  min-height: 0;
+}
+.language-mount {
   display: flex;
-  flex-direction: column;
-  height: 100%;
+  min-width: 0;
   min-height: 0;
   flex: 1;
+  flex-direction: column;
 }
 .projection-bar {
   min-height: 42px;
@@ -10817,6 +11031,11 @@ onMount(() => {
   background: var(--success-bg);
   color: var(--success);
 }
+/* While a plugin webview is drawn over the content column, toasts move to the rail side of the window. */
+.toast.toast-left {
+  right: auto;
+  left: 24px;
+}
 .toast button {
   margin-left: 0;
   border: 0;
@@ -10893,9 +11112,13 @@ onMount(() => {
     flex-direction: column;
     padding: 0 17px 25px;
   }
-  :global(.module-mount.language-mount) {
-    width: 100%;
-    min-height: auto;
+  .workspace-grid.language-surface {
+    display: flex;
+    flex-direction: column;
+  }
+  .workspace-grid.language-surface :global(.collection-panel) {
+    flex: 0 0 auto;
+    max-height: 40vh;
   }
   .editor-header h2 {
     font-size: 24px;
@@ -11504,6 +11727,13 @@ onMount(() => {
     bottom: 12px;
     left: 12px;
     max-width: none;
+  }
+  /* Narrow windows have no uncovered column, so a webview-side toast sits under the toolbar instead. */
+  .toast.toast-left {
+    top: 12px;
+    right: 12px;
+    bottom: auto;
+    left: 12px;
   }
 }
 

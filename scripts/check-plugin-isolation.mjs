@@ -9,8 +9,9 @@ function listSourceFiles(directory) {
   const files = [];
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const next = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...listSourceFiles(next));
-    else if (/\.(?:ts|svelte|js)$/.test(entry.name)) files.push(next);
+    if (entry.isDirectory()) {
+      if (entry.name !== "node_modules") files.push(...listSourceFiles(next));
+    } else if (/\.(?:ts|svelte|js)$/.test(entry.name)) files.push(next);
   }
   return files;
 }
@@ -82,12 +83,15 @@ assert.doesNotMatch(
   /(?:from|import\()\s*["']vis-timeline/,
   "timeline bundle must include vis-timeline instead of importing it at runtime",
 );
-assert.match(timelineBundle, /createBrowserPluginRpcTransport/);
+assert.match(timelineBundle, /"\/__rpc"/, "timeline bundle must talk to the broker endpoint");
 assert.match(timelineBundle, /Chronological outline/);
 const policyStart = webviewPolicy.indexOf("pub fn webview_policy");
 const policyEnd = webviewPolicy.indexOf("pub fn validate_bridge_request");
 const policy = webviewPolicy.slice(policyStart, policyEnd);
-assert.match(policy, /manifest\.id == "daena\.maps" \|\| manifest\.id == "daena\.timeline"/);
+assert.match(
+  policy,
+  /manifest\.id == "daena\.maps"\s*\|\|\s*manifest\.id == "daena\.timeline"\s*\|\|\s*manifest\.id == "daena\.language"/,
+);
 const cspStrings = [...policy.matchAll(/"(default-src[^"]*)"/g)].map((match) => match[1]);
 assert.deepEqual(
   cspStrings.filter((csp) => csp.includes("style-src-attr 'unsafe-inline'")).length,
@@ -195,5 +199,40 @@ assert.doesNotMatch(
   /pluginId="daena\.timeline"[^>]*viewId=/,
   "chronology webview must omit viewId; the manifest declares no views",
 );
+
+// Language workspace: the content pane is the isolated daena.language webview, and the trusted
+// shell no longer carries a Language projection or a window-global leave guard.
+assert.match(
+  route,
+  /<SandboxView\s+pluginId="daena\.language"\s+viewId="language-workspace"/,
+  "the Languages content pane must mount the isolated daena.language webview",
+);
+assert.doesNotMatch(route, /<ModuleMount\b/, "the shell must not mount Language through the trusted ModuleMount");
+assert.doesNotMatch(route, /projectionModule\("language"\)/, "Language must not be a trusted projection");
+assert.doesNotMatch(
+  projections,
+  /modules\/language/,
+  "the projections registry must not import the Language runtime (Lore remains the only trusted projection)",
+);
+assert.match(route, /listen<unknown>\(\s*"language-state"/, "the shell must listen for the Language webview state");
+const canLeaveGlobal = [...listSourceFiles("src"), ...listSourceFiles("packages")].filter((file) =>
+  fs.readFileSync(file, "utf8").includes("__daena_canLeaveLanguage"),
+);
+assert.deepEqual(canLeaveGlobal, [], "the __daena_canLeaveLanguage window global is replaced by the host message");
+const languageDocument = fs.readFileSync("src-tauri/plugin-assets/language/index.html", "utf8");
+assert.match(languageDocument, /language\.js/, "the Language document must load language.js");
+assert.match(languageDocument, /language\.css/, "the Language document must load language.css");
+assert.doesNotMatch(languageDocument, /plugin\.js/, "the Language document must not load the shared plugin.js stub");
+const languageBundlePath = "src-tauri/plugin-assets/language/language.js";
+if (fs.existsSync(languageBundlePath) && fs.statSync(languageBundlePath).size > 512) {
+  const languageBundle = fs.readFileSync(languageBundlePath, "utf8");
+  assert.doesNotMatch(
+    languageBundle,
+    /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,
+    "the Language bundle must use the broker protocol, not Tauri APIs or the trusted module RPC",
+  );
+}
+assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.js"\)/);
+assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.css"\)/);
 
 console.log("plugin webview isolation checks passed");

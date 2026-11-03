@@ -699,7 +699,15 @@ export const project = {
     bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },
     mapEntityId?: string,
     linkId?: string,
-  ) => invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, linkId, bounds }),
+    entityId?: string,
+    moduleState?: string,
+  ) => invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, linkId, entityId, moduleState, bounds }),
+  /** Delivers one shell message to the mounted plugin webview as a `daena:host-message` event. */
+  postPluginWebviewMessage: (pluginId: string, message: unknown) =>
+    invoke<void>("plugin_webview_post", { pluginId, message }),
+  /** Hides or shows the mounted plugin webview, e.g. under a shell overlay. */
+  setPluginWebviewVisible: (pluginId: string, visible: boolean) =>
+    invoke<void>("plugin_set_webview_visible", { pluginId, visible }),
   resizePluginWebview: (
     pluginId: string,
     bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },

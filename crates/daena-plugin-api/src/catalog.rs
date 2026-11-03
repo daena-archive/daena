@@ -362,6 +362,12 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::OwnedNamespace(&["asset.read:self"]),
     },
     RpcMethodDef {
+        name: "asset.shared.read.begin",
+        payload_schema: "AssetSharedReadBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.read:shared"]),
+    },
+    RpcMethodDef {
         name: "asset.replace.begin",
         payload_schema: "AssetReplaceBeginPayload",
         requires_revision: true,
@@ -696,6 +702,7 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
         ),
         "asset.delete" => (&["assetId", "namespace", "expectedRevision"], &[]),
         "asset.read.begin" => (&["assetId", "namespace"], &[]),
+        "asset.shared.read.begin" => (&["path"], &[]),
         "asset.replace.begin" => (
             &[
                 "assetId",
@@ -797,7 +804,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 62);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 63);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

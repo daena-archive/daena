@@ -71,6 +71,7 @@ export interface PluginRpcClient {
   getAppVersion(): Promise<{ version: string }>;
   getAppearance(): Promise<PluginAppearance>;
   beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+  beginSharedAssetRead(path: string): Promise<AssetReadHandle>;
   updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
   deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
   beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
@@ -179,6 +180,22 @@ function bindAppearancePush(): void {
     if (!isRecord(detail) || !isRecord(detail.tokens) || typeof document === "undefined") return;
     applyPluginAppearance(detail as unknown as PluginAppearance, document.documentElement);
   });
+}
+
+/**
+ * Subscribe to messages the shell posts into this plugin webview. The shell
+ * dispatches each message as a `daena:host-message` CustomEvent on `window`.
+ * Returns an unsubscribe function.
+ */
+export function onHostMessage(handler: (message: unknown) => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  // `Event` here is the plugin wire type from ./generated.js, so the listener
+  // parameter is left to inference (the DOM event) rather than annotated.
+  const listener = (event: unknown) => {
+    handler((event as { detail?: unknown }).detail);
+  };
+  window.addEventListener("daena:host-message", listener);
+  return () => window.removeEventListener("daena:host-message", listener);
 }
 
 function responseError(value: unknown, fallback: string): PluginRpcError {
@@ -475,6 +492,8 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     getAppearance: () => callTransport<PluginAppearance>(transport, "appearance.get", {}),
     beginAssetRead: (assetId, namespace) =>
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
+    beginSharedAssetRead: (path) =>
+      callTransport<AssetReadHandle>(transport, "asset.shared.read.begin", { path }),
     updateAssetMetadata: (input, options) =>
       callTransport<unknown>(transport, "asset.update", input, options?.requestId),
     deleteAsset: (input, options) => callTransport<void>(transport, "asset.delete", input, options?.requestId),

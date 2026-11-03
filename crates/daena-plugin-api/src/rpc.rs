@@ -531,6 +531,13 @@ pub struct AssetReadBeginPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct AssetSharedReadBeginPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct AssetReplaceBeginPayload {
     #[serde(rename = "assetId")]
     pub asset_id: String,

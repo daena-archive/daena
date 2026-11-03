@@ -87,7 +87,7 @@ import { editorPlainText, markdownFromEditorHtml, sanitizeHtml } from "./html-co
 import { getExternalLinkAnchor, getSpoilerEl } from "./event-targets";
 import { buildSearchRegex, SearchAndReplace, searchPluginKey } from "./search-plugin";
 import { denormalizeAssetHtml, resolveAssetSrc } from "$lib/assets/resolve";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { defaultEditorHost, type EditorHost } from "$lib/editor/host";
 const EntityReference = Mark.create({
   name: "entityReference",
   inclusive: false,
@@ -170,6 +170,11 @@ export let entities: Entity[] = [];
 export let searchEntities: AsyncEntitySearchFn | null = null;
 export let entityId: string | null = null;
 export let defaultNamespace: string | null = null;
+/** Host services for external links and project assets; defaults to the installed host. */
+export let host: EditorHost | null = null;
+$: effectiveHost = host ?? defaultEditorHost();
+/** Null when the effective host offers no assets: the insert/replace UI is hidden. */
+$: effectiveAssets = effectiveHost?.assets ?? null;
 
 let editorElement: HTMLDivElement;
 let editor: Editor | null = null;
@@ -678,44 +683,14 @@ async function openLinkExternal() {
       ? rawHref
       : `https://${rawHref}`;
   hideLinkPopover();
-  const isTauri = typeof window !== "undefined" && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
-  if (isTauri) {
-    try {
-      await openUrl(href);
-      return;
-    } catch (e) {
-      console.warn("openUrl failed, fallback to window.open", e);
-    }
-    try {
+  try {
+    if (effectiveHost) {
+      await effectiveHost.openExternal(href);
+    } else {
       window.open(href, "_blank", "noopener,noreferrer");
-      return;
-    } catch (e) {
-      console.warn("window.open fallback failed", e);
     }
-  } else {
-    try {
-      const w = window.open(href, "_blank", "noopener,noreferrer");
-      if (w) return;
-    } catch (e) {
-      console.warn("window.open failed", e);
-    }
-    try {
-      await openUrl(href);
-      return;
-    } catch (e) {
-      console.warn("openUrl fallback failed", e);
-    }
-    try {
-      const a = document.createElement("a");
-      a.href = href;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } catch (e) {
-      console.warn("anchor fallback failed", e);
-    }
+  } catch (e) {
+    console.warn("openExternal failed", e);
   }
 }
 
@@ -1178,7 +1153,7 @@ function removeImage() {
 }
 
 function replaceImage() {
-  if (!editorState || !imagePopover) return;
+  if (!editorState || !imagePopover || !effectiveAssets) return;
   imageReplaceMode = true;
   const from = imagePopover.from;
   insertAssetRange = { from, to: from + 1 };
@@ -1575,7 +1550,7 @@ function handleSearchKeydown(event: KeyboardEvent) {
 }
 
 function openInsertAsset() {
-  if (!editor || !editable) return;
+  if (!editor || !editable || !effectiveAssets) return;
   imageReplaceMode = false;
   const { from, to } = editor.state.selection;
   insertAssetRange = { from, to };
@@ -2219,12 +2194,14 @@ $: inTable = editorState?.isActive("table") ?? false;
             }
             editorState.chain().focus().insertContent("@").run();
           }}><AtSign size={14} strokeWidth={1.8} /></button>
-        <button
-          type="button"
-          title="Insert image or file"
-          aria-label="Insert image or file"
-          disabled={!editable}
-          onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
+        {#if effectiveAssets}
+          <button
+            type="button"
+            title="Insert image or file"
+            aria-label="Insert image or file"
+            disabled={!editable}
+            onclick={openInsertAsset}><ImageIcon size={14} strokeWidth={1.8} /></button>
+        {/if}
       </div>
       <div class="toolbar-group" aria-label="Text direction">
         <button
@@ -2606,11 +2583,13 @@ $: inTable = editorState?.isActive("table") ?? false;
         <div class="image-popover-alt" title={imageDraftAlt}>{imageDraftAlt}</div>
       {/if}
       <div class="image-compact-actions">
-        <button
-          type="button"
-          class="image-compact-btn primary"
-          onmousedown={(event) => event.preventDefault()}
-          onclick={replaceImage}>Edit…</button>
+        {#if effectiveAssets}
+          <button
+            type="button"
+            class="image-compact-btn primary"
+            onmousedown={(event) => event.preventDefault()}
+            onclick={replaceImage}>Edit…</button>
+        {/if}
         <button
           type="button"
           class="image-compact-btn danger"
@@ -2677,20 +2656,23 @@ $: inTable = editorState?.isActive("table") ?? false;
     onConfirm={confirmLink}
     onCancel={cancelLink}
     onRemove={linkDialogInitialUrl ? removeLink : null} />
-  <InsertAssetDialog
-    open={insertAssetOpen}
-    {entityId}
-    {entities}
-    {defaultNamespace}
-    mode={imageReplaceMode ? "replace" : "insert"}
-    initialAlt={imageReplaceMode && imagePopover ? imageDraftAlt : ""}
-    initialTitle={imageReplaceMode && imagePopover ? imageDraftTitle : ""}
-    initialWidth={imageReplaceMode && imagePopover ? imageDraftWidth : ""}
-    initialHeight={imageReplaceMode && imagePopover ? imageDraftHeight : ""}
-    initialSrc={imageReplaceMode && imagePopover ? imagePopover.src : ""}
-    initialAlign={insertAssetInitialAlign}
-    onInsert={handleInsertAsset}
-    onCancel={cancelInsertAsset} />
+  {#if effectiveAssets}
+    <InsertAssetDialog
+      assets={effectiveAssets}
+      open={insertAssetOpen}
+      {entityId}
+      {entities}
+      {defaultNamespace}
+      mode={imageReplaceMode ? "replace" : "insert"}
+      initialAlt={imageReplaceMode && imagePopover ? imageDraftAlt : ""}
+      initialTitle={imageReplaceMode && imagePopover ? imageDraftTitle : ""}
+      initialWidth={imageReplaceMode && imagePopover ? imageDraftWidth : ""}
+      initialHeight={imageReplaceMode && imagePopover ? imageDraftHeight : ""}
+      initialSrc={imageReplaceMode && imagePopover ? imagePopover.src : ""}
+      initialAlign={insertAssetInitialAlign}
+      onInsert={handleInsertAsset}
+      onCancel={cancelInsertAsset} />
+  {/if}
   <TableInsertDialog open={tableInsertOpen} onConfirm={confirmInsertTable} onCancel={cancelInsertTable} />
 </div>
 

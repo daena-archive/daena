@@ -1603,6 +1603,8 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
         Some(("daena.maps/editor", 1)),
         None,
         None,
+        None,
+        None,
         PluginWebviewBounds {
             x: 0.0,
             y: 0.0,
@@ -1629,6 +1631,8 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
         Some(("daena.maps/editor", 1)),
         Some("018f89df-b93e-7ad0-a07f-08b1441d1550"),
         Some("f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"),
+        None,
+        None,
         PluginWebviewBounds {
             x: 0.0,
             y: 0.0,
@@ -1647,6 +1651,133 @@ fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
     assert!(map_query.contains("mapEntityId=018f89df-b93e-7ad0-a07f-08b1441d1550"));
     assert!(map_query.contains("linkId=f4c4f6b9-7c1e-4b8a-9d2e-0a3b5c7d9e11"));
     assert!(!map_query.contains("mapMode="));
+}
+
+#[test]
+fn language_webview_url_carries_entity_id_and_module_state() {
+    let manifest: PluginManifest = serde_json::from_str(include_str!(
+        "../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    let policy = webview_policy(&manifest).unwrap();
+    let bounds = PluginWebviewBounds {
+        x: 0.0,
+        y: 0.0,
+        width: 800.0,
+        height: 600.0,
+        viewport_width: 800.0,
+        viewport_height: 600.0,
+    };
+    let url = plugin_webview_url(
+        &policy,
+        "project",
+        Some("language-workspace"),
+        Some(("daena.language/workspace", 1)),
+        None,
+        None,
+        Some("018f89df-b93e-7ad0-a07f-08b1441d1550"),
+        Some(r#"{"pane":"lexemes","q":"a b"}"#),
+        bounds,
+    )
+    .unwrap();
+    let tauri::WebviewUrl::External(url) = url else {
+        panic!("plugin webview must use an external custom-protocol URL");
+    };
+    let query = url.query().unwrap();
+    assert!(query.contains("&entityId=018f89df-b93e-7ad0-a07f-08b1441d1550"));
+    assert!(query.contains("&state=%7B%22pane%22%3A%22lexemes%22%2C%22q%22%3A%22a%20b%22%7D"));
+    assert!(!query.contains("mapEntityId="));
+
+    let rejected = plugin_webview_url(
+        &policy,
+        "project",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("{not json"),
+        bounds,
+    );
+    assert!(rejected
+        .err()
+        .is_some_and(|error| error.contains("not valid JSON")));
+}
+
+#[test]
+fn module_state_must_be_bounded_json() {
+    assert!(validate_module_state(r#"{"pane":"lexemes"}"#).is_ok());
+    assert!(validate_module_state("{not json")
+        .unwrap_err()
+        .contains("not valid JSON"));
+    // Exactly at the limit is accepted; one byte over is rejected.
+    let at_limit = format!("\"{}\"", "x".repeat(MAX_MODULE_STATE_BYTES - 2));
+    assert_eq!(at_limit.len(), MAX_MODULE_STATE_BYTES);
+    assert!(validate_module_state(&at_limit).is_ok());
+    let over_limit = format!("\"{}\"", "x".repeat(MAX_MODULE_STATE_BYTES - 1));
+    assert!(validate_module_state(&over_limit)
+        .unwrap_err()
+        .contains("exceeds"));
+}
+
+#[test]
+fn host_message_script_serialises_message_and_bounds_size() {
+    let message = serde_json::json!({ "kind": "probe", "text": "a\"); alert(1); (\"" });
+    let json = serde_json::to_string(&message).unwrap();
+    let script = host_message_script(&message).unwrap();
+    assert!(script.starts_with(
+        "try { window.dispatchEvent(new CustomEvent(\"daena:host-message\", { detail: "
+    ));
+    assert!(script.contains(&format!("detail: {json} }}")));
+    assert!(script.contains("} catch (error) {"));
+
+    let oversized = serde_json::json!({ "text": "x".repeat(MAX_HOST_MESSAGE_BYTES) });
+    assert!(host_message_script(&oversized)
+        .unwrap_err()
+        .contains("64 KiB"));
+}
+
+#[test]
+fn plugin_state_events_forward_only_for_their_owner() {
+    // The owning publisher forwards its own state to the matching shell event.
+    assert_eq!(
+        shell_event_for_plugin_event("daena.maps", "daena.maps/state@1"),
+        Some("maps-state")
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.maps", "daena.maps/selection@1"),
+        Some("maps-selection")
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.language", "daena.language/state@1"),
+        Some("language-state")
+    );
+    // A different publisher cannot make the shell receive another plugin's state.
+    assert_eq!(
+        shell_event_for_plugin_event("com.example.x", "daena.language/state@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.timeline", "daena.maps/state@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena", "daena.maps/state@1"),
+        None
+    );
+    // Unknown or unversioned event names are never forwarded.
+    assert_eq!(
+        shell_event_for_plugin_event("daena.language", "daena.language/selection@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.language", "daena.language/state"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.lore", "daena.lore/state@1"),
+        None
+    );
 }
 
 #[test]
@@ -1927,6 +2058,211 @@ fn schema_list_is_served_over_the_plugin_protocol_bridge() {
     assert_eq!(page["ok"], true, "{page}");
     assert!(page["result"]["items"].is_array());
     assert!(page["result"]["hasMore"].is_boolean());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn shared_asset_reads_are_served_over_the_plugin_protocol_bridge() {
+    // Language reads project-scoped assets by portable path over `/__rpc`.
+    // Entity-scoped assets, missing assets and malformed paths are refused
+    // with messages that do not reveal which assets exist.
+    let root = std::env::temp_dir().join(format!("daena-shared-read-{}", uuid::Uuid::new_v4()));
+    let source =
+        std::env::temp_dir().join(format!("daena-shared-source-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&source, b"shared bytes").unwrap();
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_directory(trusted_shell(), &root)
+        .unwrap();
+    let project_id = current_info(&core).unwrap().unwrap().root;
+    let (shared_path, private_path) = {
+        let session = current_session(&core).unwrap();
+        let guard = session.core.lock().unwrap();
+        let project = guard.project(trusted_shell()).unwrap();
+        let entity = project
+            .create_entity(CreateEntity {
+                name: "Shared owner".into(),
+                entity_type: None,
+            })
+            .unwrap();
+        let register = |filename: &str| {
+            project
+                .register_asset_file(AssetFileInput {
+                    entity_id: entity.id.clone(),
+                    namespace: "language".into(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    filename: filename.into(),
+                    mime_type: "text/plain".into(),
+                    provenance: None,
+                })
+                .unwrap()
+        };
+        let shared = register("shared.txt");
+        let shared = project
+            .update_asset_metadata_with_request(
+                AssetMetadataUpdate {
+                    asset_id: shared.id.clone(),
+                    filename: None,
+                    role: None,
+                    reference_scope: Some("project".into()),
+                },
+                &shared.revision,
+                Some(&uuid::Uuid::new_v4().to_string()),
+            )
+            .unwrap();
+        assert_eq!(shared.reference_scope, "project");
+        let private = register("private.txt");
+        assert_eq!(private.reference_scope, "entity");
+        (shared.path, private.path)
+    };
+    let mut host = bundled_plugin_host(core.clone()).unwrap();
+    {
+        let session = current_session(&core).unwrap();
+        let core = session.core.lock().unwrap();
+        sync_project_usage(core.project(trusted_shell()).unwrap(), &mut host).unwrap();
+    }
+    let plugins: SharedPluginHost = Arc::new(Mutex::new(host));
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let ai_runtime: ai::SharedAiRuntime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let label = plugin_window_label("daena.language");
+    let post = |body: serde_json::Value| {
+        let request = tauri::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "{}://daena.language/__rpc",
+                daena_plugin_host::runtime::plugin_protocol("daena.language")
+            ))
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let response =
+            plugin_protocol_response(&label, &request, &core, &plugins, &transfers, &ai_runtime);
+        assert_eq!(response.status(), 200);
+        serde_json::from_slice::<serde_json::Value>(response.body()).unwrap()
+    };
+    let bootstrap = post(serde_json::json!({
+        "op": "bootstrap",
+        "pluginId": "daena.language",
+        "projectId": project_id,
+    }));
+    let session_id = bootstrap["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let shared_read = |request_id: &str, path: &str| {
+        post(serde_json::json!({
+            "op": "rpc",
+            "request": {
+                "rpcVersion": 1,
+                "sessionId": session_id,
+                "requestId": request_id,
+                "method": "asset.shared.read.begin",
+                "payload": { "path": path },
+            },
+        }))
+    };
+
+    let shared = shared_read("shared-1", &shared_path);
+    assert_eq!(shared["ok"], true, "{shared}");
+    let result = &shared["result"];
+    assert_eq!(result["size"], 12);
+    assert_eq!(result["mimeType"], "text/plain");
+    assert!(result["handle"].is_string(), "{shared}");
+    assert!(result["revision"].is_string(), "{shared}");
+    assert!(result["contentHash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    let url = result["url"].as_str().expect("read url").to_string();
+    // Plugin webviews fetch the bytes with a GET on the returned URL.
+    let fetch = tauri::http::Request::builder()
+        .method("GET")
+        .uri(format!(
+            "{}://daena.language{url}",
+            daena_plugin_host::runtime::plugin_protocol("daena.language")
+        ))
+        .body(Vec::new())
+        .unwrap();
+    let response =
+        plugin_protocol_response(&label, &fetch, &core, &plugins, &transfers, &ai_runtime);
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("Content-Type").unwrap(),
+        "text/plain"
+    );
+    assert_eq!(response.body(), b"shared bytes");
+    // The read token is one use.
+    let replay = plugin_protocol_response(&label, &fetch, &core, &plugins, &transfers, &ai_runtime);
+    assert_eq!(replay.status(), 404);
+
+    let private = shared_read("private-1", &private_path);
+    assert_eq!(private["ok"], false, "{private}");
+    assert_eq!(private["error"]["message"], "shared asset not found");
+    let missing = shared_read("missing-1", "assets/files/does-not-exist.txt");
+    assert_eq!(missing["ok"], false, "{missing}");
+    assert_eq!(missing["error"]["message"], "shared asset not found");
+    for (request_id, path) in [
+        ("traversal-1", "assets/../x"),
+        ("outside-1", "private/x.txt"),
+        ("nul-1", "assets/x\u{0}.txt"),
+    ] {
+        let refused = shared_read(request_id, path);
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(
+            refused["error"]["message"], "invalid shared asset path",
+            "{path}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_file(&source);
+}
+
+#[test]
+fn shared_asset_read_requires_the_asset_read_shared_capability() {
+    let root =
+        std::env::temp_dir().join(format!("daena-shared-capability-{}", uuid::Uuid::new_v4()));
+    let project = ProjectStore::open_directory(&root).unwrap();
+    let project_id = root.to_string_lossy().to_string();
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    let mut granted_host = PluginHost::new();
+    granted_host
+        .register_bundled_json(&manifest.to_string())
+        .unwrap();
+    sync_project_usage(&project, &mut granted_host).unwrap();
+    granted_host
+        .authorize_bundled(
+            "daena.language",
+            &project_id,
+            "asset.shared.read.begin",
+            serde_json::json!({ "path": "assets/files/shared.txt" }),
+        )
+        .unwrap();
+
+    let mut denied_manifest = manifest.clone();
+    denied_manifest["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|capability| capability != "asset.read:shared");
+    let mut denied_host = PluginHost::new();
+    denied_host
+        .register_bundled_json(&denied_manifest.to_string())
+        .unwrap();
+    sync_project_usage(&project, &mut denied_host).unwrap();
+    let denied = denied_host
+        .authorize_bundled(
+            "daena.language",
+            &project_id,
+            "asset.shared.read.begin",
+            serde_json::json!({ "path": "assets/files/shared.txt" }),
+        )
+        .unwrap_err();
+    assert!(denied.to_string().contains("capability.denied"), "{denied}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -2665,6 +3001,35 @@ fn bundled_plugin_protocol_serves_only_embedded_assets() {
         .unwrap();
     assert_eq!(
         plugin_asset_response("daena.lore", &traversal, None, None).status(),
+        404
+    );
+}
+
+#[test]
+fn language_webview_routes_are_served_with_document_content_types() {
+    for (path, content_type) in [
+        ("/dist/ui/index.html", "text/html"),
+        ("/dist/ui/language.js", "text/javascript"),
+        ("/dist/ui/language.css", "text/css"),
+    ] {
+        let request = tauri::http::Request::builder()
+            .uri(format!("plugin://daena.language{path}"))
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response("daena.language", &request, None, None);
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            content_type,
+            "{path}"
+        );
+    }
+    let unknown = tauri::http::Request::builder()
+        .uri("plugin://daena.language/dist/ui/missing.js")
+        .body(Vec::new())
+        .unwrap();
+    assert_eq!(
+        plugin_asset_response("daena.language", &unknown, None, None).status(),
         404
     );
 }

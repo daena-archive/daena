@@ -209,7 +209,7 @@ assert.doesNotMatch(shell, /status === "linked"[\s\S]{0,200}listEntities\(\)/);
 assert.doesNotMatch(shell, /maps-navigation[\s\S]{0,250}loadEntities\(\)/);
 assert.doesNotMatch(shell, /section !== "language"[\s\S]{0,200}listEntities\(\)/);
 assert.doesNotMatch(shell, /onEntityDeleted:\s*loadEntities/);
-assert.match(shell, /onEntityDeleted:\s*\(\)\s*=>\s*\{[\s\S]*refreshAfterEntityMutation/);
+assert.match(shell, /function handleLanguageStateEvent[\s\S]*refreshAfterEntityMutation/);
 
 // searchEntitiesPaged forwards sort + excluded types into queryEntities.
 const searchFn = shell.slice(

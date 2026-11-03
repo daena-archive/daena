@@ -231,9 +231,13 @@ Rules:
   `registerMapsHostSurfaceProvider`; the host invokes that browser-side bridge
   for save, pick, overlay, date, and focus actions and routes them to the
   active plugin's webview, not to a bundled-plugin ID. Language declares
-  `host.surface:daena.language/workspace@1` the same way: host chrome (guides,
-  rich text, dialogs), not a sandboxed plugin UI. A plugin still cannot
-  register arbitrary native commands or create an unregistered host surface.
+  `host.surface:daena.language/workspace@1`; its workspace runs in the
+  `daena.language` plugin webview inside the workbench content pane. The host
+  owns the surface placement, mount parameters (`entityId`, `state`), and the
+  `daena.language/state@1` protocol (pane, leave guard, entity changes, link
+  opening); Language owns its guides, rich text, and dialogs. A plugin still
+  cannot register arbitrary native commands or create an unregistered host
+  surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
 - Enabled state and granted capabilities are not stored in the package
@@ -531,7 +535,7 @@ packages/
   plugin-sdk/                 # Generated types and framework-neutral client
   plugin-test-host/           # Fake broker and conformance helpers
   plugin-cli/                 # daena-plugin authoring CLI
-  module-api/                 # ModuleContext adapter for remaining main-webview bundled UIs
+  module-api/                 # ModuleContext and the broker-backed context used by plugin webviews
   modules/                    # Bundled plugins: lore, timeline, maps, writing, houses, language
 schemas/
   plugin-manifest-v1.json
@@ -623,9 +627,9 @@ The following features are deferred, with their default behavior decided now:
   that choice while open; see Decision 13.
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
-- **Bundled Language / remaining UIs in isolated webviews:** deferred.
-  Chronology already runs in the `daena.timeline` webview. The isolation rule
-  is unchanged. Resume order and current surfaces are in
+- **Remaining bundled UIs in isolated webviews:** deferred. Chronology and
+  Language already run in their plugin webviews. The isolation rule is
+  unchanged. Current surfaces are in
   [`plugin-isolation.md`](../plans/plugin-isolation.md).
 
 Any future change to identity, isolation, authority, package integrity, data
@@ -667,7 +671,7 @@ entity.list  entity.query  entity.get  entity.create  entity.update  entity.dele
 document.list  document.save
 field.read  field.list  field.set
 relationship.list  relationship.create  relationship.delete
-asset.list  asset.register  asset.read.begin
+asset.list  asset.register  asset.read.begin  asset.shared.read.begin
 asset.replace.begin  asset.replace.commit  asset.transfer.cancel
 search.query
 maps.asset.create.begin  maps.asset.create.commit
@@ -704,6 +708,17 @@ appearance.get  schema.list
   schema overlay merged, so isolated UIs such as Chronology can discover shared
   timeline fields and providers without the trusted `module_list_manifests`
   command. Disabled packages are omitted, and no `enabled` flag is added.
+- **`asset.shared.read.begin` reads project-shared assets by path.** It
+  requires `asset.read:shared` and opens the same one-use binary transfer as
+  `asset.read.begin`, but only for assets whose `reference_scope` is
+  `project`. Missing and entity-scoped paths return the same error, so the
+  method cannot probe for private assets. It shares the asset rate-limit
+  bucket.
+- **Shell-forwarded plugin events are bound to their publisher.** The host
+  forwards `daena.maps/state@1`, `daena.maps/selection@1`, and
+  `daena.language/state@1` to the shell only when the event name's namespace
+  equals the publishing plugin's ID. Declaring another plugin's event name in
+  a manifest is not enough to reach the shell.
 - **`service.provide` is vestigial as a method.** Providers register at
   activation; the manifest `services.provides` is the mechanism.
 - **Wire-name fidelity.** Payloads mix snake_case and camelCase by design

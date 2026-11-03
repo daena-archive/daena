@@ -1,0 +1,67 @@
+/* Document chrome for the isolated Language webview. The host pushes theme tokens
+   (--ink, --canvas, ...) onto :root; the shell-level --theme-* aliases, shadows
+   and display font that the trusted main webview provided are mapped here so the
+   Language components and the rich-text editor render as they did in the shell. */
+:root {
+  --theme-surface-bg: var(--surface);
+  --theme-muted-bg: var(--surface-muted);
+  --theme-neutral-border: var(--line);
+  --theme-neutral-border-strong: var(--line-strong);
+  --theme-neutral-text: var(--ink);
+  --theme-neutral-text-soft: var(--ink-soft);
+  --theme-neutral-text-muted: var(--ink-faint);
+  --theme-danger-bg: var(--danger-bg);
+  --theme-danger-border: var(--danger-line);
+  --theme-danger-text: var(--danger);
+  --theme-success-bg: var(--success-bg);
+  --theme-success-border: var(--success-line);
+  --theme-success-text: var(--success);
+  --theme-warning-bg: var(--warning-bg);
+  --theme-warning-border: var(--warning-line);
+  --theme-warning-text: var(--warning);
+  --theme-info-bg: var(--info-bg);
+  --theme-info-border: var(--info-line);
+  --theme-info-text: var(--info);
+  --focus-ring: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  --focus-ring-strong: var(--accent-soft);
+  --control-min-height: 36px;
+  --touch-target-min: 44px;
+  --shadow-sm: 0 2px 8px rgba(38, 42, 33, 0.05);
+  --shadow-md: 0 8px 24px rgba(38, 42, 33, 0.12);
+  --shadow-lg: 0 18px 50px rgba(38, 42, 33, 0.08);
+  --font-display: Georgia, serif;
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 22px 70px rgba(0, 0, 0, 0.34);
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+#language-root {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+}

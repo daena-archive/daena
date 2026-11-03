@@ -327,6 +327,18 @@
       ],
       "type": "object"
     },
+    "AssetSharedReadBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "AssetTransferCancelPayload": {
       "additionalProperties": false,
       "properties": {
@@ -2155,6 +2167,22 @@
           "if": {
             "properties": {
               "method": {
+                "const": "asset.shared.read.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetSharedReadBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "asset.replace.begin"
               }
             }
@@ -2757,6 +2785,7 @@
             "asset.update",
             "asset.delete",
             "asset.read.begin",
+            "asset.shared.read.begin",
             "asset.replace.begin",
             "asset.replace.commit",
             "asset.transfer.cancel",
@@ -2970,6 +2999,10 @@
     },
     "asset.replace.commit": {
       "payload": "AssetReplaceCommitPayload",
+      "requestId": "envelope"
+    },
+    "asset.shared.read.begin": {
+      "payload": "AssetSharedReadBeginPayload",
       "requestId": "envelope"
     },
     "asset.transfer.cancel": {

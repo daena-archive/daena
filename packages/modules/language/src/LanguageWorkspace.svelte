@@ -6,6 +6,7 @@ import WorkspaceGuide from "../../../../src/lib/guides/WorkspaceGuide.svelte";
 import { dismissGuide, isGuideDismissed } from "../../../../src/lib/guides/persist.ts";
 import type { GuideMode } from "../../../../src/lib/guides/types.ts";
 import { LANGUAGE_GUIDE_ID, languageGuideSteps } from "./guide.ts";
+import { DEFAULT_LANGUAGE_PANE, isLanguagePane, type LanguageWorkspaceBridge } from "./plugin-protocol.ts";
 import Overview from "./panes/Overview.svelte";
 import Lexicon from "./panes/Lexicon.svelte";
 import Sounds from "./panes/Sounds.svelte";
@@ -26,12 +27,19 @@ const PANES: [Pane, string][] = [
   ["samples", "Samples"],
 ];
 
-let { context }: { context: ModuleContext } = $props();
+/**
+ * `bridge` connects the workspace to its host (the plugin webview's message
+ * channel). Without it the workspace runs standalone and ignores host messages.
+ */
+let { context, bridge }: { context: ModuleContext; bridge?: LanguageWorkspaceBridge } = $props();
 
 let cancelled = false;
 let selectedLanguage: EntitySummary | null = $state(null);
 let incompatibleFocus = $state(false);
-let pane: Pane = $state("overview");
+// The pane the host asked for at mount; later changes arrive through the bridge.
+// svelte-ignore state_referenced_locally
+const mountedPane = context.moduleState?.pane;
+let pane: Pane = $state(isLanguagePane(mountedPane) ? mountedPane : DEFAULT_LANGUAGE_PANE);
 let pendingLexemeId: string | null = $state(null);
 // svelte-ignore state_referenced_locally
 let languageLoading = $state(Boolean(context.focusEntityId));
@@ -51,22 +59,6 @@ let breadcrumbExtra: BreadcrumbItem[] = $state([]);
 function setBreadcrumbExtra(items: BreadcrumbItem[]) {
   breadcrumbExtra = items;
 }
-
-$effect(() => {
-  const externalPane = (context.moduleState?.pane as Pane) ?? "overview";
-  if (externalPane !== pane) {
-    // History restoration: update local pane without recording new history.
-    // Respect leave guards by attempting to leave; if blocked, revert shell state.
-    void (async () => {
-      if (!(await canLeave())) {
-        // Revert shell to local pane
-        context.onModuleStateChange?.({ pane });
-        return;
-      }
-      pane = externalPane;
-    })();
-  }
-});
 
 $effect(() => {
   void pane;
@@ -97,13 +89,27 @@ async function canLeave() {
   return true;
 }
 
-$effect(() => {
-  // Expose guard to shell for history navigation (Back/Forward leaving language)
-  (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage = canLeave;
-  return () => {
-    delete (window as unknown as Record<string, unknown>).__daena_canLeaveLanguage;
-  };
-});
+/** The host asked to show a pane: run the leave guards, then report the pane actually showing. */
+async function showHostPane(next: Pane) {
+  if (next !== pane && (await canLeave())) pane = next;
+  context.onModuleStateChange?.({ pane });
+}
+
+/**
+ * The host asks whether Language may be torn down. Pending is reported before
+ * any guard runs, so the host knows a reply is coming. A throwing guard blocks
+ * the teardown rather than leaving the host waiting for a reply forever.
+ */
+async function answerLeaveRequest(requestId: string) {
+  bridge?.reportLeave({ kind: "leave-pending", requestId });
+  let allowed = false;
+  try {
+    allowed = await canLeave();
+  } catch (cause) {
+    console.error("Language leave guard failed", cause);
+  }
+  bridge?.reportLeave({ kind: "leave-reply", requestId, allowed });
+}
 
 let mutationCounter = 0;
 
@@ -116,6 +122,9 @@ function isMutating() {
 }
 
 onMount(() => {
+  const unsubscribePane = bridge?.onPaneRequest((next) => void showHostPane(next));
+  const unsubscribeLeave = bridge?.onLeaveRequest((requestId) => void answerLeaveRequest(requestId));
+
   // Load language entity if focusEntityId is provided
   if (context.focusEntityId) {
     void loadLanguage(context.focusEntityId);
@@ -123,6 +132,8 @@ onMount(() => {
 
   return () => {
     cancelled = true;
+    unsubscribePane?.();
+    unsubscribeLeave?.();
   };
 });
 
@@ -161,11 +172,8 @@ async function openLinkedLexeme(lexemeId: string) {
     pendingLexemeId = null;
     return;
   }
-  if (context.onModuleStateChange) {
-    context.onModuleStateChange({ pane: "lexicon" });
-  } else {
-    pane = "lexicon";
-  }
+  pane = "lexicon";
+  context.onModuleStateChange?.({ pane: "lexicon" });
 }
 
 function clearPendingLexeme() {

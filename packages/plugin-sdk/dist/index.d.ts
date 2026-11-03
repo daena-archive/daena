@@ -40,6 +40,7 @@ export interface PluginRpcClient {
     }>;
     getAppearance(): Promise<PluginAppearance>;
     beginAssetRead(assetId: string, namespace: string): Promise<AssetReadHandle>;
+    beginSharedAssetRead(path: string): Promise<AssetReadHandle>;
     updateAssetMetadata(input: AssetMetadataUpdatePayload, options?: MutationOptions): Promise<unknown>;
     deleteAsset(input: AssetDeletePayload, options?: MutationOptions): Promise<void>;
     beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
@@ -78,6 +79,12 @@ export declare class PluginRpcException extends Error {
     readonly details: unknown;
     constructor(error: PluginRpcError);
 }
+/**
+ * Subscribe to messages the shell posts into this plugin webview. The shell
+ * dispatches each message as a `daena:host-message` CustomEvent on `window`.
+ * Returns an unsubscribe function.
+ */
+export declare function onHostMessage(handler: (message: unknown) => void): () => void;
 /**
  * Create the production browser transport for an isolated plugin webview.
  *

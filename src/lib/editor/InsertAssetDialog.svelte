@@ -18,10 +18,11 @@ import {
   TextAlignEnd as AlignRightIcon,
 } from "@lucide/svelte";
 import type { Asset, Entity } from "$lib/project/client";
-import { project } from "$lib/project/client";
+import type { EditorAssetServices } from "$lib/editor/host";
 import { clampDim, formatSize, isImage, isVideo, mimeTypeFor } from "$lib/editor/image-attrs";
 
 let {
+  assets,
   open = false,
   entityId = null as string | null,
   entities = [] as Entity[],
@@ -36,6 +37,7 @@ let {
   initialSrc = "",
   initialAlign = "" as "" | "left" | "center" | "right",
 }: {
+  assets: EditorAssetServices;
   open: boolean;
   entityId?: string | null;
   entities?: Entity[];
@@ -243,7 +245,7 @@ async function loadMy() {
   loadingMy = true;
   myError = "";
   try {
-    const all = await project.listAssets(entityId);
+    const all = await assets.listAssets(entityId);
     // If defaultNamespace provided, prefer that namespace but show all for completeness?
     // Show all for editor insertion, but sort: own namespace first
     myAssets = all.sort((a, b) => {
@@ -262,7 +264,7 @@ async function loadShared() {
   loadingShared = true;
   sharedError = "";
   try {
-    const all = await project.listSharedAssets();
+    const all = await assets.listSharedAssets();
     sharedAssets = all.sort((a, b) => b.created_at.localeCompare(a.created_at));
   } catch (e) {
     sharedError = e instanceof Error ? e.message : String(e);
@@ -369,7 +371,7 @@ $effect(() => {
   if (!a) return;
   const shouldPreview = isImage(a.mime_type) || isVideo(a.mime_type);
   if (!shouldPreview) return;
-  void project
+  void assets
     .readAssetBytes(a.id)
     .then((bytes) => {
       if (disposed) return;
@@ -405,7 +407,7 @@ $effect(() => {
   if (activeTab !== "upload") return;
   const shouldPreview = isImage(a.mime_type) || isVideo(a.mime_type);
   if (!shouldPreview) return;
-  void project
+  void assets
     .readAssetBytes(a.id)
     .then((bytes) => {
       if (disposed) return;
@@ -475,7 +477,7 @@ async function confirmUploadInsert() {
   let finalAsset: Asset = asset;
   if (shareNew && asset.reference_scope !== "project") {
     try {
-      finalAsset = await project.updateAssetMetadata(asset.id, { referenceScope: "project" }, asset.revision);
+      finalAsset = await assets.updateAssetMetadata(asset.id, { referenceScope: "project" }, asset.revision);
       // keep local lists in sync
       myAssets = myAssets.map((a) => (a.id === asset.id ? finalAsset : a));
       sharedAssets = [finalAsset, ...sharedAssets.filter((a) => a.id !== finalAsset.id)];
@@ -527,7 +529,7 @@ async function handlePickAndStageUpload() {
   uploading = true;
   uploadError = "";
   try {
-    const selection = await project.pickFile();
+    const selection = await assets.pickFile();
     const source = typeof selection === "string" ? selection : null;
     if (!source) {
       uploading = false;
@@ -537,7 +539,7 @@ async function handlePickAndStageUpload() {
     const filename = pickedFileLabel;
     const namespace = defaultNamespace ?? "lore";
     const mime = mimeTypeFor(filename);
-    const asset = await project.registerAssetFile({
+    const asset = await assets.registerAssetFile({
       entity_id: entityId,
       namespace,
       source_path: source,

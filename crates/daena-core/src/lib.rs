@@ -44,8 +44,9 @@ pub use project::{
     RasterLayerUpdate, Relationship, RelationshipInput, RelationshipPage, RelationshipQuery,
     RelationshipQueryDirection, RelationshipUpdate, SaveDocument, SaveEntry, SearchPassage,
     SyncSummary, VectorLayerDelete, VectorSourceReplace, WikiPageExportFormat,
-    DEFAULT_ENTITY_QUERY_LIMIT, DEFAULT_RELATIONSHIP_QUERY_LIMIT, MAX_ENTITY_GET_MANY,
-    MAX_ENTITY_QUERY_LIMIT, MAX_RELATIONSHIP_QUERY_ENTITIES, MAX_RELATIONSHIP_QUERY_LIMIT,
+    ASSET_REFERENCE_SCOPE_PROJECT, DEFAULT_ENTITY_QUERY_LIMIT, DEFAULT_RELATIONSHIP_QUERY_LIMIT,
+    MAX_ENTITY_GET_MANY, MAX_ENTITY_QUERY_LIMIT, MAX_RELATIONSHIP_QUERY_ENTITIES,
+    MAX_RELATIONSHIP_QUERY_LIMIT,
 };
 pub use storage::{
     build_checkpoint_manifest, canonical_json_bytes, canonical_markdown, canonical_markdown_bytes,

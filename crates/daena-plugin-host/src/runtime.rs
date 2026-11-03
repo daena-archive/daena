@@ -87,11 +87,14 @@ pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> 
         protocol,
         url: format!("{origin}/{entrypoint}"),
         origin,
-        // Permit local inline styles and data-backed fonts for maps and chronology
-        // while keeping scripts, network, frames, objects, forms, and parent access
-        // denied. vis-timeline writes item colors as element style attributes.
-        // All source I/O remains brokered.
-        csp: if manifest.id == "daena.maps" || manifest.id == "daena.timeline" {
+        // Permit local inline styles and data-backed fonts for maps, chronology,
+        // and language while keeping scripts, network, frames, objects, forms, and
+        // parent access denied. vis-timeline writes item colors as element style
+        // attributes. All source I/O remains brokered.
+        csp: if manifest.id == "daena.maps"
+            || manifest.id == "daena.timeline"
+            || manifest.id == "daena.language"
+        {
             "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"
         } else {
             "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"

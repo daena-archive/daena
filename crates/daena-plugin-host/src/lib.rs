@@ -1635,6 +1635,7 @@ fn expensive_rpc_limit(
         | "asset.update"
         | "asset.delete"
         | "asset.read.begin"
+        | "asset.shared.read.begin"
         | "asset.replace.begin" => Some(("asset", config.asset_max, config.asset_window)),
         _ => None,
     }

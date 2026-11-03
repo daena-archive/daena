@@ -175,6 +175,23 @@ pub(super) fn native_plugin_bounds(
     Ok(native_bounds)
 }
 
+/// Largest mount-time `state` JSON the shell may hand a plugin webview.
+pub(super) const MAX_MODULE_STATE_BYTES: usize = 4096;
+
+/// Largest shell-to-plugin message `plugin_webview_post` will dispatch.
+pub(super) const MAX_HOST_MESSAGE_BYTES: usize = 64 * 1024;
+
+pub(super) fn validate_module_state(module_state: &str) -> Result<(), String> {
+    if module_state.len() > MAX_MODULE_STATE_BYTES {
+        return Err(format!(
+            "plugin module state exceeds {MAX_MODULE_STATE_BYTES} bytes"
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(module_state)
+        .map(|_| ())
+        .map_err(|error| format!("plugin module state is not valid JSON: {error}"))
+}
+
 pub(super) fn plugin_webview_url(
     policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
@@ -182,6 +199,8 @@ pub(super) fn plugin_webview_url(
     host_surface: Option<(&str, u32)>,
     map_entity_id: Option<&str>,
     link_id: Option<&str>,
+    entity_id: Option<&str>,
+    module_state: Option<&str>,
     bounds: PluginWebviewBounds,
 ) -> Result<tauri::WebviewUrl, String> {
     let mut url = format!(
@@ -204,6 +223,15 @@ pub(super) fn plugin_webview_url(
         url.push_str("&linkId=");
         url.push_str(&percent_encode(link_id));
     }
+    if let Some(entity_id) = entity_id {
+        url.push_str("&entityId=");
+        url.push_str(&percent_encode(entity_id));
+    }
+    if let Some(module_state) = module_state {
+        validate_module_state(module_state)?;
+        url.push_str("&state=");
+        url.push_str(&percent_encode(module_state));
+    }
     Ok(tauri::WebviewUrl::External(
         url.parse()
             .map_err(|error| format!("invalid plugin URL: {error}"))?,
@@ -220,6 +248,8 @@ pub(super) async fn plugin_mount_webview(
     view_id: Option<String>,
     map_entity_id: Option<String>,
     link_id: Option<String>,
+    entity_id: Option<String>,
+    module_state: Option<String>,
     bounds: PluginWebviewBounds,
 ) -> Result<(), String> {
     let bounds = native_plugin_bounds(&app, bounds)?;
@@ -252,6 +282,8 @@ pub(super) async fn plugin_mount_webview(
             host_surface,
             map_entity_id.as_deref(),
             link_id.as_deref(),
+            entity_id.as_deref(),
+            module_state.as_deref(),
             bounds,
         )?;
         (policy, url)
@@ -388,6 +420,53 @@ pub(super) fn plugin_unmount_webview(
         }
     }
     Ok(())
+}
+
+/// Builds the script that delivers one shell message to a plugin webview.
+/// The message is serialised with serde_json so no user text is spliced into
+/// JS source as raw code.
+pub(super) fn host_message_script(message: &serde_json::Value) -> Result<String, String> {
+    let json = serde_json::to_string(message).map_err(|error| error.to_string())?;
+    if json.len() > MAX_HOST_MESSAGE_BYTES {
+        return Err("plugin host message exceeds 64 KiB".into());
+    }
+    Ok(format!(
+        "try {{ window.dispatchEvent(new CustomEvent(\"daena:host-message\", {{ detail: {json} }})); }} catch (error) {{ console.error(\"daena:host-message dispatch failed\", error); }}"
+    ))
+}
+
+#[tauri::command]
+pub(super) fn plugin_webview_post(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    message: serde_json::Value,
+) -> Result<(), String> {
+    let script = host_message_script(&message)?;
+    let label = plugin_window_label(&plugin_id);
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "embedded plugin webview is not mounted".to_string())?;
+    webview.eval(&script).map_err(|error| error.to_string())
+}
+
+/// Hides or shows the embedded plugin webview so shell overlays can cover it.
+/// A webview that is not mounted is not an error.
+#[tauri::command]
+pub(super) fn plugin_set_webview_visible(
+    app: tauri::AppHandle,
+    plugin_id: String,
+    visible: bool,
+) -> Result<(), String> {
+    let label = plugin_window_label(&plugin_id);
+    let Some(webview) = app.get_webview(&label) else {
+        return Ok(());
+    };
+    if visible {
+        webview.show()
+    } else {
+        webview.hide()
+    }
+    .map_err(|error| error.to_string())
 }
 
 pub(super) fn validate_plugin_view(

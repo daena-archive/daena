@@ -87,6 +87,7 @@ export interface AssetReadBeginPayload { assetId: string; namespace: string }
 export interface AssetRegisterPayload { content_hash: string; entity_id: string; expectedRevision: string; filename: string; mime_type: string; namespace: string; path: string; size: number }
 export interface AssetReplaceBeginPayload { assetId: string; expectedRevision: string; mimeType: string; namespace: string; size: number }
 export interface AssetReplaceCommitPayload { contentHash: string; handle: string }
+export interface AssetSharedReadBeginPayload { path: string }
 export interface AssetTransferCancelPayload { handle: string }
 export interface AssetMetadataUpdatePayload { assetId: string; expectedRevision: string; filename?: string | null; namespace: string; referenceScope?: string | null; role?: string | null }
 export interface DocumentListPayload { entityId: string }
@@ -149,6 +150,7 @@ export interface BrokerMethodPayloads {
   "asset.register": AssetRegisterPayload;
   "asset.replace.begin": AssetReplaceBeginPayload;
   "asset.replace.commit": AssetReplaceCommitPayload;
+  "asset.shared.read.begin": AssetSharedReadBeginPayload;
   "asset.transfer.cancel": AssetTransferCancelPayload;
   "asset.update": AssetMetadataUpdatePayload;
   "document.list": DocumentListPayload;

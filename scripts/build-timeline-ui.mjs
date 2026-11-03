@@ -20,7 +20,7 @@ await build({
     emptyOutDir: false,
     sourcemap: false,
     cssCodeSplit: false,
-    minify: false,
+    minify: true,
     chunkSizeWarningLimit: 5000,
     lib: {
       entry: resolve(root, "packages/modules/timeline/src/plugin-main.ts"),

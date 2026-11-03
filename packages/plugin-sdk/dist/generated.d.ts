@@ -545,6 +545,9 @@ export interface AssetReplaceCommitPayload {
     contentHash: string;
     handle: string;
 }
+export interface AssetSharedReadBeginPayload {
+    path: string;
+}
 export interface AssetTransferCancelPayload {
     handle: string;
 }
@@ -801,6 +804,7 @@ export interface BrokerMethodPayloads {
     "asset.register": AssetRegisterPayload;
     "asset.replace.begin": AssetReplaceBeginPayload;
     "asset.replace.commit": AssetReplaceCommitPayload;
+    "asset.shared.read.begin": AssetSharedReadBeginPayload;
     "asset.transfer.cancel": AssetTransferCancelPayload;
     "asset.update": AssetMetadataUpdatePayload;
     "document.list": DocumentListPayload;

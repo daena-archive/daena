@@ -1,6 +1,7 @@
 // Binary asset transfers and plugin protocol responses.
 use super::APP_HANDLE;
 use super::*;
+use daena_core::ASSET_REFERENCE_SCOPE_PROJECT;
 
 const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
 pub(super) const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
@@ -647,6 +648,18 @@ pub(super) fn plugin_asset_response(
                 include_bytes!("../plugin-assets/timeline/timeline.css"),
                 "text/css",
             ),
+            ("daena.language", "/dist/ui/index.html") => (
+                include_bytes!("../plugin-assets/language/index.html"),
+                "text/html",
+            ),
+            ("daena.language", "/dist/ui/language.js") => (
+                include_bytes!("../plugin-assets/language/language.js"),
+                "text/javascript",
+            ),
+            ("daena.language", "/dist/ui/language.css") => (
+                include_bytes!("../plugin-assets/language/language.css"),
+                "text/css",
+            ),
             ("daena.writing", "/dist/ui/index.html") => (
                 include_bytes!("../plugin-assets/writing/index.html"),
                 "text/html",
@@ -1153,6 +1166,7 @@ pub(super) fn plugin_protocol_response(
                 } else if matches!(
                     request.method.as_str(),
                     "asset.read.begin"
+                        | "asset.shared.read.begin"
                         | "asset.replace.begin"
                         | "asset.replace.commit"
                         | "asset.transfer.cancel"
@@ -1270,7 +1284,7 @@ pub(super) fn plugin_protocol_response(
                     .map_err(|error| error.to_string())?
                 };
                 if let Some(payload) = publish_payload {
-                    forward_maps_state_event(&payload);
+                    forward_plugin_state_event(&session.plugin_id, &payload);
                 }
                 Ok(
                     serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": true, "result": value}),
@@ -1293,37 +1307,63 @@ pub(super) fn plugin_protocol_response(
     }
 }
 
-/// Forwards plugin-published `daena.maps/state@1` and `daena.maps/selection@1`
-/// events to the shell as `maps-state` / `maps-selection` Tauri events. The
-/// shell owns the wrapper chrome (save chip, conflict banner, capture tool)
-/// around the child webview, which has no other way to reach it. Forwarding
-/// is a hint only; the shell re-queries canonical records before acting.
-pub(super) fn forward_maps_state_event(payload: &serde_json::Value) {
+/// Maps a plugin event type (`name@version`) to the shell Tauri event that
+/// carries it. The event namespace (the part before the first `/`) must be the
+/// publisher's own plugin id, so a plugin cannot make the shell receive another
+/// plugin's state by declaring its event name. Event types without a shell
+/// listener return `None` and are not forwarded.
+pub(super) fn shell_event_for_plugin_event(
+    publisher_plugin_id: &str,
+    event_type: &str,
+) -> Option<&'static str> {
+    let namespace = event_type.split_once('/').map(|(namespace, _)| namespace);
+    if namespace != Some(publisher_plugin_id) {
+        return None;
+    }
+    if event_type.starts_with("daena.maps/state@") {
+        Some("maps-state")
+    } else if event_type.starts_with("daena.maps/selection@") {
+        Some("maps-selection")
+    } else if event_type.starts_with("daena.language/state@") {
+        Some("language-state")
+    } else {
+        None
+    }
+}
+
+/// Forwards plugin-published state events to the shell as Tauri events (see
+/// `shell_event_for_plugin_event`). The shell owns the wrapper chrome around
+/// the child webview (maps save chip, conflict banner, capture tool; language
+/// workspace status), which has no other way to reach it. Forwarding is a
+/// hint only; the shell re-queries canonical records before acting.
+/// `publisher_plugin_id` is the authorized session's plugin, never a value
+/// taken from the event payload.
+pub(super) fn forward_plugin_state_event(publisher_plugin_id: &str, payload: &serde_json::Value) {
     let Some(event_type) = payload.get("type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let Some(shell_event) = shell_event_for_plugin_event(publisher_plugin_id, event_type) else {
         return;
     };
     let Some(app) = APP_HANDLE.get() else {
         return;
     };
     let state = payload.get("payload").cloned().unwrap_or_default();
-    if event_type.starts_with("daena.maps/state@") {
-        let _ = app.emit(
-            "maps-state",
-            serde_json::json!({
-                "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
-                "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
-                "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
-            }),
-        );
-    } else if event_type.starts_with("daena.maps/selection@") {
-        let _ = app.emit(
-            "maps-selection",
-            serde_json::json!({
-                "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
-                "anchor": state.get("anchor").cloned().unwrap_or(serde_json::Value::Null),
-            }),
-        );
-    }
+    let body = match shell_event {
+        "maps-state" => serde_json::json!({
+            "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
+            "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
+            "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        "maps-selection" => serde_json::json!({
+            "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
+            "anchor": state.get("anchor").cloned().unwrap_or(serde_json::Value::Null),
+        }),
+        // The language payload is passed through unchanged.
+        "language-state" => state,
+        _ => return,
+    };
+    let _ = app.emit(shell_event, body);
 }
 
 pub(super) fn plugin_asset_url(token: &str, session_id: &str, chunk: Option<u64>) -> String {
@@ -1331,6 +1371,32 @@ pub(super) fn plugin_asset_url(token: &str, session_id: &str, chunk: Option<u64>
         Some(index) => format!("/__asset/{token}/{index}?sessionId={session_id}"),
         None => format!("/__asset/{token}?sessionId={session_id}"),
     }
+}
+
+/// Issues a one-use read token for `bytes` after checking them against the
+/// asset metadata. Shared by the owned and shared read methods.
+fn issue_asset_read(
+    manager: &mut BinaryTransferManager,
+    session: &Session,
+    asset: &Asset,
+    bytes: Vec<u8>,
+) -> Result<serde_json::Value, String> {
+    if bytes.len() > MAX_ASSET_TRANSFER_BYTES {
+        return Err("asset exceeds host transfer limit".into());
+    }
+    if asset.size < 0 || asset.size as usize != bytes.len() {
+        return Err("asset metadata size does not match its bytes".into());
+    }
+    let token = manager.token(BinaryTransfer::Read {
+        plugin_id: session.plugin_id.clone(),
+        session_id: session.id.clone(),
+        bytes,
+        mime_type: asset.mime_type.clone(),
+        expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+    });
+    Ok(
+        serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, None),"size":asset.size,"contentHash":asset.content_hash,"mimeType":asset.mime_type,"revision":asset.revision}),
+    )
 }
 
 pub(super) fn dispatch_binary_asset_rpc(
@@ -1369,22 +1435,34 @@ pub(super) fn dispatch_binary_asset_rpc(
             let bytes = project
                 .asset_bytes(asset.id.clone())
                 .map_err(|e| e.to_string())?;
-            if bytes.len() > MAX_ASSET_TRANSFER_BYTES {
-                return Err("asset exceeds host transfer limit".into());
+            issue_asset_read(&mut manager, session, &asset, bytes)
+        }
+        "asset.shared.read.begin" => {
+            let path = payload
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "path is required".to_string())?;
+            // A malformed path names no asset, so this message reveals nothing.
+            if !path.starts_with("assets/")
+                || path.contains("..")
+                || path.contains('\0')
+                || path.len() > 1024
+            {
+                return Err("invalid shared asset path".into());
             }
-            if asset.size < 0 || asset.size as usize != bytes.len() {
-                return Err("asset metadata size does not match its bytes".into());
-            }
-            let token = manager.token(BinaryTransfer::Read {
-                plugin_id: session.plugin_id.clone(),
-                session_id: session.id.clone(),
-                bytes,
-                mime_type: asset.mime_type.clone(),
-                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
-            });
-            Ok(
-                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, None),"size":asset.size,"contentHash":asset.content_hash,"mimeType":asset.mime_type,"revision":asset.revision}),
-            )
+            // Missing and entity-scoped assets share one message so the path
+            // cannot be used to probe for non-shared assets.
+            let asset = match project.asset_by_path(path.to_string()) {
+                Ok(asset) if asset.reference_scope == ASSET_REFERENCE_SCOPE_PROJECT => asset,
+                Ok(_) | Err(CoreError::NotFound(_)) => {
+                    return Err("shared asset not found".into());
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            let bytes = project
+                .asset_bytes(asset.id.clone())
+                .map_err(|e| e.to_string())?;
+            issue_asset_read(&mut manager, session, &asset, bytes)
         }
         "asset.replace.begin" => {
             let asset = project

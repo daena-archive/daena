@@ -719,6 +719,8 @@ pub fn run() {
             plugin_rpc,
             plugin_open_webview,
             plugin_mount_webview,
+            plugin_webview_post,
+            plugin_set_webview_visible,
             plugin_resize_webview,
             plugin_unmount_webview,
             plugin_host_view_data,

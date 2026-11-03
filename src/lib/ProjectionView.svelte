@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import { CalendarRange, Languages, Network } from "@lucide/svelte";
+import { CalendarRange, Network } from "@lucide/svelte";
 import type { ModuleContext, ModuleView } from "../../packages/module-api/src/index";
 import type { ProjectionKind } from "$lib/modules/projections";
 import WorkspaceTopbar from "$lib/layout/WorkspaceTopbar.svelte";
@@ -25,7 +25,7 @@ let container = $state<HTMLElement | null>(null);
 let error = $state("");
 let surfaceSubtitle = $state<string | null>(null);
 let liveSubtitle = $derived(surfaceSubtitle ?? subtitle);
-const topbarIcon = $derived(kind === "graph" ? Network : kind === "timeline" ? CalendarRange : Languages);
+const topbarIcon = $derived(kind === "graph" ? Network : CalendarRange);
 
 $effect(() => {
   void subtitle;

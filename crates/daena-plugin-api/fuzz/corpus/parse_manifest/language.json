@@ -17,7 +17,9 @@
     "field.write:self",
     "record.read:self",
     "record.write:self",
-    "host.surface:daena.language/workspace@1"
+    "asset.read:shared",
+    "host.surface:daena.language/workspace@1",
+    "event.publish:daena.language/state@1"
   ],
   "dependencies": {},
   "namespaces": ["language"],
@@ -208,7 +210,7 @@
   ],
   "commands": [],
   "services": { "provides": [], "consumes": [] },
-  "events": { "publishes": [], "subscribes": [] },
+  "events": { "publishes": [{ "name": "daena.language/state", "version": 1 }], "subscribes": [] },
   "migrations": [
     {
       "id": "language-v1",

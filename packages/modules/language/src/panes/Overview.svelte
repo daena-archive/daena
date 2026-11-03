@@ -2,7 +2,6 @@
 import type { EntityRecord, EntitySummary, ModuleContext, ModuleManifest } from "../../../../module-api/src/index";
 import type { FieldDefinition } from "../../../../plugin-sdk/src/generated";
 import RichTextEditor from "../../../../../src/lib/editor/RichTextEditor.svelte";
-import { confirmDialog } from "../../../../../src/lib/dialogs.svelte";
 import { archiveConfirmOptions, archivePendingLabel } from "../../../../../src/lib/entity-lifecycle/archive.ts";
 import { MUTATION_STATUS } from "../../../../../src/lib/entity-lifecycle/vocabulary.ts";
 import { confirm } from "../confirm.svelte";
@@ -286,7 +285,9 @@ async function archiveOverviewLanguage() {
   if (!selectedLanguage || !overviewEntity || overviewDeleting) return;
   const name = selectedLanguage.name;
   const dirtyNote = overviewDirty ? "Unsaved language details will be discarded." : undefined;
-  if (!(await confirmDialog(archiveConfirmOptions(name, { dirtyNote })))) return;
+  const archive = archiveConfirmOptions(name, { dirtyNote });
+  if (!(await confirm(archive.title, archive.message, { confirmLabel: archive.confirmLabel, danger: archive.danger })))
+    return;
   clearOverviewAutosave();
   overviewDeleting = true;
   overviewError = "";

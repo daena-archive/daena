@@ -50,9 +50,9 @@ function settle(value: boolean) {
         <button type="button" class="language-button secondary" onclick={() => settle(false)}>Cancel</button>
         <button
           type="button"
-          class="language-button secondary language-danger"
+          class={confirmState.danger ? "language-button secondary language-danger" : "language-button"}
           bind:this={confirmButton}
-          onclick={() => settle(true)}>Confirm</button>
+          onclick={() => settle(true)}>{confirmState.confirmLabel}</button>
       </div>
     </div>
   </div>

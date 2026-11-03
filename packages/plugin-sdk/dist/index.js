@@ -67,6 +67,22 @@ function bindAppearancePush() {
         applyPluginAppearance(detail, document.documentElement);
     });
 }
+/**
+ * Subscribe to messages the shell posts into this plugin webview. The shell
+ * dispatches each message as a `daena:host-message` CustomEvent on `window`.
+ * Returns an unsubscribe function.
+ */
+export function onHostMessage(handler) {
+    if (typeof window === "undefined")
+        return () => undefined;
+    // `Event` here is the plugin wire type from ./generated.js, so the listener
+    // parameter is left to inference (the DOM event) rather than annotated.
+    const listener = (event) => {
+        handler(event.detail);
+    };
+    window.addEventListener("daena:host-message", listener);
+    return () => window.removeEventListener("daena:host-message", listener);
+}
 function responseError(value, fallback) {
     if (isRecord(value) && isRpcError(value.error))
         return value.error;
@@ -316,6 +332,7 @@ export function createPluginRpcClient(transport) {
         getAppVersion: () => callTransport(transport, "app.version", {}),
         getAppearance: () => callTransport(transport, "appearance.get", {}),
         beginAssetRead: (assetId, namespace) => callTransport(transport, "asset.read.begin", { assetId, namespace }),
+        beginSharedAssetRead: (path) => callTransport(transport, "asset.shared.read.begin", { path }),
         updateAssetMetadata: (input, options) => callTransport(transport, "asset.update", input, options?.requestId),
         deleteAsset: (input, options) => callTransport(transport, "asset.delete", input, options?.requestId),
         beginAssetReplace: (input, options) => callTransport(transport, "asset.replace.begin", input, options?.requestId),

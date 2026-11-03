@@ -589,6 +589,24 @@ pub struct AssetUploadCommitPayload {
     pub content_hash: String,
 }
 
+/// Begins a chunked hand-off of UTF-8 text too large for one event. The bytes
+/// are PUT like `asset.upload` chunks; `text.transfer.commit` validates them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TextTransferBeginPayload {
+    /// Total UTF-8 byte length that will be sent.
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TextTransferCommitPayload {
+    #[serde(rename = "transferId")]
+    pub transfer_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

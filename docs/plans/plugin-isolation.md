@@ -60,11 +60,10 @@ unfinished remainder.
 
 ## Still open
 
-- Writing editing and saving still run in the main webview. Slice 1 of [`writing-isolation.md`](writing-isolation.md)
-  ships the webview (`src-tauri/plugin-assets/writing/`, `npm run build:writing-ui`) with a read-only view of the
-  selected entry behind `localStorage["daena:writing-webview"] = "1"`.
-- Asset upload transfers expire 60 s after `asset.upload.begin` and are not
-  refreshed per chunk; the SDK caps uploads at 64 MiB.
+- Writing editing and saving still run in the main webview by default. Slices 1 and 2 of
+  [`writing-isolation.md`](writing-isolation.md) ship the webview (`src-tauri/plugin-assets/writing/`,
+  `npm run build:writing-ui`) with editing and shell-side saving behind `localStorage["daena:writing-webview"] = "1"`.
+- The SDK caps uploads at 64 MiB.
 - `RichTextEditor` is safe to destroy while focused: blur during a reactive
   update never calls `onChange`, and destroying the editor drops edits still in
   its 120 ms debounce. Parents must call `flushPendingChanges()` before they
@@ -89,6 +88,4 @@ unfinished remainder.
 
 1. Isolate Writing Studio into `src-tauri/plugin-assets/writing/`, the last
    major module still in the main webview.
-2. Refresh the asset upload deadline per committed chunk so large uploads
-   cannot expire mid-transfer.
-3. Clear the two pre-existing clippy warnings.
+2. Clear the two pre-existing clippy warnings.

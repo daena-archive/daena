@@ -16,7 +16,11 @@ export const DEFAULT_WRITING_MODE: WritingMode = "read";
 export const WRITING_SHORTCUTS = ["quick-open", "create", "history-back", "history-forward"] as const;
 export type WritingShortcut = (typeof WRITING_SHORTCUTS)[number];
 
-/** Longest id or request id either side accepts. */
+/** What the user chose in the conflict banner; the shell runs the matching action it already has. */
+export const WRITING_CONFLICT_ACTIONS = ["reload", "overwrite", "recovery"] as const;
+export type WritingConflictAction = (typeof WRITING_CONFLICT_ACTIONS)[number];
+
+/** Longest id, token or request id either side accepts. */
 export const MAX_WRITING_ID_LENGTH = 128;
 /** Draft text up to this many UTF-8 bytes travels inline in a state event (events are capped at 256 KiB). */
 export const WRITING_DRAFT_INLINE_LIMIT_BYTES = 128 * 1024;
@@ -28,6 +32,10 @@ export function isWritingMode(value: unknown): value is WritingMode {
 
 export function isWritingShortcut(value: unknown): value is WritingShortcut {
   return typeof value === "string" && (WRITING_SHORTCUTS as readonly string[]).includes(value);
+}
+
+export function isWritingConflictAction(value: unknown): value is WritingConflictAction {
+  return typeof value === "string" && (WRITING_CONFLICT_ACTIONS as readonly string[]).includes(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,28 +71,30 @@ export function parseWritingMountParams(search: string): WritingMountParams {
 
 /**
  * Text the webview hands to the shell for one entity: inline for ordinary documents, or a reference to a
- * chunked transfer for text too large for one event. `baseRevision` is the document revision the text was
- * edited from, so the shell can tell a stale draft from a current one.
+ * chunked transfer (`text.transfer.*`) for text too large for one event. `token` is the opaque value the
+ * shell sent in the `writing.load` the text was edited under; the shell drops a draft whose entity or token
+ * is no longer current. Saving does not change the token.
  */
 export type WritingDraft =
-  | { entityId: string; baseRevision: string; text: string }
-  | { entityId: string; baseRevision: string; transfer: string };
+  | { entityId: string; token: string; text: string }
+  | { entityId: string; token: string; transfer: string };
 
 /** Validates a draft. Text over the inline limit and malformed fields return null. */
 export function parseWritingDraft(value: unknown): WritingDraft | null {
   if (!isRecord(value)) return null;
   const entityId = boundedId(value.entityId);
-  if (entityId === null || typeof value.baseRevision !== "string") return null;
+  const token = boundedId(value.token);
+  if (entityId === null || token === null) return null;
   const inline = typeof value.text === "string";
   // Exactly one of `text` and `transfer`.
   if (inline === (value.transfer !== undefined)) return null;
   if (inline) {
     const text = value.text as string;
     if (utf8Length(text) > WRITING_DRAFT_INLINE_LIMIT_BYTES) return null;
-    return { entityId, baseRevision: value.baseRevision, text };
+    return { entityId, token, text };
   }
   const transfer = boundedId(value.transfer);
-  return transfer === null ? null : { entityId, baseRevision: value.baseRevision, transfer };
+  return transfer === null ? null : { entityId, token, transfer };
 }
 
 /** Messages the shell posts into the webview (`plugin_webview_post`, capped at 64 KiB). */
@@ -92,6 +102,8 @@ export type WritingHostMessage =
   | {
       type: "writing.load";
       entityId: string;
+      /** Opaque value the shell issues per load; the webview echoes it on every draft. */
+      token: string;
       revision: string;
       editable: boolean;
       placeholder: string;
@@ -99,7 +111,8 @@ export type WritingHostMessage =
     }
   | { type: "writing.flush"; requestId: string }
   | { type: "writing.saved"; entityId: string; revision: string }
-  | { type: "writing.conflict"; entityId: string; message: string }
+  | { type: "writing.conflict"; entityId: string; message: string; canOverwrite: boolean }
+  | { type: "writing.save-error"; entityId: string; message: string }
   | { type: "writing.editable"; editable: boolean }
   | { type: "writing.ai-state"; enabled: boolean };
 
@@ -107,21 +120,24 @@ const MAX_PLACEHOLDER_LENGTH = 200;
 const MAX_CONFLICT_MESSAGE_LENGTH = 2000;
 
 /**
- * Validates a host message. `revision` is required (an entity with no document yet has the empty revision);
- * `editable`, `placeholder` and `mode` fall back to a read-only, read-mode view when the shell omits them.
+ * Validates a host message. `token` and `revision` are required (an entity with no document yet has the empty
+ * revision); `editable`, `placeholder` and `mode` fall back to a read-only, read-mode view when the shell
+ * omits them.
  */
 export function parseWritingHostMessage(value: unknown): WritingHostMessage | null {
   if (!isRecord(value)) return null;
   switch (value.type) {
     case "writing.load": {
       const entityId = boundedId(value.entityId);
-      if (entityId === null || typeof value.revision !== "string") return null;
+      const token = boundedId(value.token);
+      if (entityId === null || token === null || typeof value.revision !== "string") return null;
       if (value.editable !== undefined && typeof value.editable !== "boolean") return null;
       if (value.placeholder !== undefined && typeof value.placeholder !== "string") return null;
       if (value.mode !== undefined && !isWritingMode(value.mode)) return null;
       return {
         type: "writing.load",
         entityId,
+        token,
         revision: value.revision,
         editable: value.editable ?? false,
         placeholder: (value.placeholder ?? "").slice(0, MAX_PLACEHOLDER_LENGTH),
@@ -141,11 +157,18 @@ export function parseWritingHostMessage(value: unknown): WritingHostMessage | nu
       const entityId = boundedId(value.entityId);
       if (entityId === null) return null;
       if (value.message !== undefined && typeof value.message !== "string") return null;
+      if (value.canOverwrite !== undefined && typeof value.canOverwrite !== "boolean") return null;
       return {
         type: "writing.conflict",
         entityId,
         message: (value.message ?? "").slice(0, MAX_CONFLICT_MESSAGE_LENGTH),
+        canOverwrite: value.canOverwrite ?? true,
       };
+    }
+    case "writing.save-error": {
+      const entityId = boundedId(value.entityId);
+      if (entityId === null || typeof value.message !== "string") return null;
+      return { type: "writing.save-error", entityId, message: value.message.slice(0, MAX_CONFLICT_MESSAGE_LENGTH) };
     }
     case "writing.editable":
       return typeof value.editable === "boolean" ? { type: "writing.editable", editable: value.editable } : null;
@@ -162,6 +185,8 @@ export type WritingStatePayload =
   | { kind: "draft"; draft: WritingDraft }
   /** Answer to `writing.flush`; `draft` is null when the webview holds no unsaved text. */
   | { kind: "flush-reply"; requestId: string; draft: WritingDraft | null }
+  /** The user's choice in the conflict banner; the shell checks entity and token like it does for a draft. */
+  | { kind: "conflict-action"; entityId: string; token: string; action: WritingConflictAction }
   | { kind: "open-link"; href: string }
   | { kind: "open-entity"; entityId: string }
   | { kind: "fullscreen"; enabled: boolean }
@@ -189,6 +214,12 @@ export function parseWritingStatePayload(value: unknown): WritingStatePayload | 
       const draft = parseWritingDraft(value.draft);
       return draft === null ? null : { kind: "flush-reply", requestId, draft };
     }
+    case "conflict-action": {
+      const entityId = boundedId(value.entityId);
+      const token = boundedId(value.token);
+      if (entityId === null || token === null || !isWritingConflictAction(value.action)) return null;
+      return { kind: "conflict-action", entityId, token, action: value.action };
+    }
     case "open-link":
       return typeof value.href === "string" && value.href.length <= MAX_HREF_LENGTH
         ? { kind: "open-link", href: value.href }
@@ -210,12 +241,14 @@ export function parseWritingStatePayload(value: unknown): WritingStatePayload | 
   }
 }
 
-/** What the workspace needs from its host; the plugin entry wires it to the host message channel. */
+/** What the workspace needs from its host; the plugin entry wires it to the host message channel and the broker. */
 export interface WritingWorkspaceBridge {
   /** Subscribes to host messages. Returns an unsubscribe function. */
   onHostMessage(handler: (message: WritingHostMessage) => void): () => void;
-  /** Publishes state to the shell. */
-  publish(payload: WritingStatePayload): void;
+  /** Publishes state to the shell, in call order. Resolves false when the payload did not reach it. */
+  publish(payload: WritingStatePayload): Promise<boolean>;
+  /** Hands text too large for one event to the shell through `text.transfer.*`; resolves to the transfer id. */
+  transferText(text: string): Promise<string>;
 }
 
 export interface WritingRpcPublisher {
@@ -224,18 +257,27 @@ export interface WritingRpcPublisher {
 
 /**
  * Builds the function that publishes Writing state to the shell. Publishing
- * never throws into the caller: errors are reported to `onError` instead.
+ * never throws into the caller: errors are reported to `onError` and the
+ * result is false instead. Payloads go out one at a time, in call order, so a
+ * flush reply can never overtake the draft published before it.
  */
 export function createWritingStatePublisher(
   rpc: WritingRpcPublisher,
   onError: (cause: unknown) => void = () => undefined,
-): (payload: WritingStatePayload) => Promise<void> {
-  return async (payload) => {
-    try {
-      await rpc.call("event.publish", { type: WRITING_STATE_EVENT_TYPE, payload });
-    } catch (cause) {
-      onError(cause);
-    }
+): (payload: WritingStatePayload) => Promise<boolean> {
+  let tail: Promise<boolean> = Promise.resolve(true);
+  return (payload) => {
+    const sent = tail.then(async () => {
+      try {
+        await rpc.call("event.publish", { type: WRITING_STATE_EVENT_TYPE, payload });
+        return true;
+      } catch (cause) {
+        onError(cause);
+        return false;
+      }
+    });
+    tail = sent;
+    return sent;
   };
 }
 

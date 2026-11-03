@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   DEFAULT_WRITING_MODE,
+  WRITING_CONFLICT_ACTIONS,
   WRITING_DRAFT_INLINE_LIMIT_BYTES,
   WRITING_STATE_EVENT_TYPE,
   createWritingStatePublisher,
+  isWritingConflictAction,
   isWritingMode,
   isWritingShortcut,
   parseWritingDraft,
@@ -14,7 +16,18 @@ import {
   pickWritingManifest,
 } from "../packages/modules/writing/src/plugin-protocol.ts";
 import { entityIdsInMarkdown, loadWritingDocument } from "../packages/modules/writing/src/document-source.ts";
-import { parseWritingStateEvent } from "../src/lib/modules/writing-bridge.ts";
+import {
+  WRITING_DRAFT_IDLE_MS,
+  WRITING_DRAFT_INLINE_JSON_LIMIT_BYTES,
+  WRITING_DRAFT_RETRY_MS,
+  createDraftSync,
+  draftNeedsTransfer,
+} from "../packages/modules/writing/src/draft-sync.ts";
+import {
+  parseWritingStateEvent,
+  writingConflictMessage,
+  writingLoadMessage,
+} from "../src/lib/modules/writing-bridge.ts";
 
 // Mount parameters: the shell mounts without a selection and posts writing.load afterwards.
 {
@@ -34,9 +47,10 @@ assert.equal(isWritingShortcut("create"), true);
 assert.equal(isWritingShortcut("Cmd+N"), false);
 
 // Host messages: only the documented shapes are accepted.
-assert.deepEqual(parseWritingHostMessage({ type: "writing.load", entityId: "e1", revision: "r1" }), {
+assert.deepEqual(parseWritingHostMessage({ type: "writing.load", entityId: "e1", token: "t1", revision: "r1" }), {
   type: "writing.load",
   entityId: "e1",
+  token: "t1",
   revision: "r1",
   editable: false,
   placeholder: "",
@@ -46,29 +60,47 @@ assert.deepEqual(
   parseWritingHostMessage({
     type: "writing.load",
     entityId: "e1",
+    token: "t2",
     revision: "",
     editable: true,
     placeholder: "Write…",
     mode: "edit",
   }),
-  { type: "writing.load", entityId: "e1", revision: "", editable: true, placeholder: "Write…", mode: "edit" },
+  {
+    type: "writing.load",
+    entityId: "e1",
+    token: "t2",
+    revision: "",
+    editable: true,
+    placeholder: "Write…",
+    mode: "edit",
+  },
   "a new entity has the empty revision",
 );
 for (const bad of [
-  { type: "writing.load", revision: "r1" },
-  { type: "writing.load", entityId: "", revision: "r1" },
-  { type: "writing.load", entityId: "x".repeat(129), revision: "r1" },
-  { type: "writing.load", entityId: "e1" },
-  { type: "writing.load", entityId: "e1", revision: 4 },
-  { type: "writing.load", entityId: "e1", revision: "r1", editable: "yes" },
-  { type: "writing.load", entityId: "e1", revision: "r1", placeholder: 3 },
-  { type: "writing.load", entityId: "e1", revision: "r1", mode: "preview" },
+  { type: "writing.load", token: "t", revision: "r1" },
+  { type: "writing.load", entityId: "", token: "t", revision: "r1" },
+  { type: "writing.load", entityId: "x".repeat(129), token: "t", revision: "r1" },
+  { type: "writing.load", entityId: "e1", token: "t" },
+  { type: "writing.load", entityId: "e1", token: "t", revision: 4 },
+  { type: "writing.load", entityId: "e1", token: "t", revision: "r1", editable: "yes" },
+  { type: "writing.load", entityId: "e1", token: "t", revision: "r1", placeholder: 3 },
+  { type: "writing.load", entityId: "e1", token: "t", revision: "r1", mode: "preview" },
+  { type: "writing.load", entityId: "e1", revision: "r1" },
+  { type: "writing.load", entityId: "e1", token: "", revision: "r1" },
+  { type: "writing.load", entityId: "e1", token: 7, revision: "r1" },
+  { type: "writing.load", entityId: "e1", token: "t".repeat(129), revision: "r1" },
 ]) {
   assert.equal(parseWritingHostMessage(bad), null, JSON.stringify(bad));
 }
 assert.equal(
-  parseWritingHostMessage({ type: "writing.load", entityId: "e1", revision: "r", placeholder: "p".repeat(500) })
-    .placeholder.length,
+  parseWritingHostMessage({
+    type: "writing.load",
+    entityId: "e1",
+    token: "t",
+    revision: "r",
+    placeholder: "p".repeat(500),
+  }).placeholder.length,
   200,
   "placeholders are bounded",
 );
@@ -88,9 +120,22 @@ assert.deepEqual(parseWritingHostMessage({ type: "writing.conflict", entityId: "
   type: "writing.conflict",
   entityId: "e1",
   message: "",
+  canOverwrite: true,
 });
+assert.deepEqual(
+  parseWritingHostMessage({ type: "writing.conflict", entityId: "e1", message: "Changed", canOverwrite: false }),
+  { type: "writing.conflict", entityId: "e1", message: "Changed", canOverwrite: false },
+);
 assert.equal(parseWritingHostMessage({ type: "writing.conflict", entityId: "e1", message: 5 }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.conflict", entityId: "e1", canOverwrite: "no" }), null);
 assert.equal(parseWritingHostMessage({ type: "writing.conflict" }), null);
+assert.deepEqual(parseWritingHostMessage({ type: "writing.save-error", entityId: "e1", message: "Disk full" }), {
+  type: "writing.save-error",
+  entityId: "e1",
+  message: "Disk full",
+});
+assert.equal(parseWritingHostMessage({ type: "writing.save-error", entityId: "e1" }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.save-error", message: "x" }), null);
 assert.deepEqual(parseWritingHostMessage({ type: "writing.editable", editable: false }), {
   type: "writing.editable",
   editable: false,
@@ -106,16 +151,37 @@ assert.equal(parseWritingHostMessage("writing.load"), null);
 assert.equal(parseWritingHostMessage(null), null);
 assert.equal(parseWritingHostMessage([]), null);
 
+// What the shell builds, the webview accepts unchanged.
+{
+  const load = writingLoadMessage("e1", "t1", "r1", { editable: true, placeholder: "Write…", mode: "edit" });
+  assert.deepEqual(parseWritingHostMessage(load), load);
+  const conflict = writingConflictMessage("e1", { diagnostics: [] });
+  assert.deepEqual(parseWritingHostMessage(conflict), conflict);
+  const attention = writingConflictMessage("e1", { diagnostics: ["Needs attention"] });
+  assert.deepEqual(parseWritingHostMessage(attention), attention);
+  for (const message of [
+    { type: "writing.flush", requestId: "f-1" },
+    { type: "writing.saved", entityId: "e1", revision: "r2" },
+    { type: "writing.save-error", entityId: "e1", message: "Disk full" },
+    { type: "writing.editable", editable: true },
+  ]) {
+    assert.deepEqual(parseWritingHostMessage(message), message);
+  }
+}
+
 // State payloads: the webview parser and the shell bridge accept and reject the same things.
 {
-  const inline = { entityId: "e1", baseRevision: "r1", text: "Hello" };
+  const inline = { entityId: "e1", token: "t1", text: "Hello" };
   const accepted = [
     { kind: "ready", entityId: null },
     { kind: "ready", entityId: "e1" },
     { kind: "draft", draft: inline },
-    { kind: "draft", draft: { entityId: "e1", baseRevision: "r1", transfer: "t-1" } },
+    { kind: "draft", draft: { entityId: "e1", token: "t1", transfer: "tr-1" } },
     { kind: "flush-reply", requestId: "f-1", draft: null },
     { kind: "flush-reply", requestId: "f-1", draft: inline },
+    { kind: "conflict-action", entityId: "e1", token: "t1", action: "reload" },
+    { kind: "conflict-action", entityId: "e1", token: "t1", action: "overwrite" },
+    { kind: "conflict-action", entityId: "e1", token: "t1", action: "recovery" },
     { kind: "open-link", href: "https://example.com" },
     { kind: "open-entity", entityId: "e2" },
     { kind: "fullscreen", enabled: false },
@@ -135,8 +201,17 @@ assert.equal(parseWritingHostMessage([]), null);
     { kind: "unknown" },
     { kind: "ready", entityId: 1 },
     { kind: "draft", draft: { ...inline, text: undefined } },
-    { kind: "draft", draft: { ...inline, transfer: "t-1" } },
+    { kind: "draft", draft: { ...inline, transfer: "tr-1" } },
+    { kind: "draft", draft: { entityId: "e1", text: "Hello" } },
+    { kind: "draft", draft: { ...inline, token: "" } },
+    { kind: "draft", draft: { ...inline, token: 9 } },
+    { kind: "draft", draft: { entityId: "e1", baseRevision: "r1", text: "Hello" } },
     { kind: "draft", draft: { ...inline, text: "a".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES + 1) } },
+    { kind: "conflict-action", entityId: "e1", token: "t1" },
+    { kind: "conflict-action", entityId: "e1", token: "t1", action: "merge" },
+    { kind: "conflict-action", entityId: "e1", action: "reload" },
+    { kind: "conflict-action", token: "t1", action: "reload" },
+    { kind: "conflict-action", entityId: "", token: "t1", action: "reload" },
     { kind: "flush-reply", draft: null },
     { kind: "flush-reply", requestId: "f-1" },
     { kind: "open-link", href: 1 },
@@ -152,6 +227,10 @@ assert.equal(parseWritingHostMessage([]), null);
   assert.equal(parseWritingDraft({ ...inline, text: "é".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES) }), null);
 }
 
+assert.deepEqual([...WRITING_CONFLICT_ACTIONS], ["reload", "overwrite", "recovery"]);
+assert.equal(isWritingConflictAction("overwrite"), true);
+assert.equal(isWritingConflictAction("merge"), false);
+
 // Publishing: one event type, payload passed through unchanged.
 {
   const calls = [];
@@ -161,7 +240,7 @@ assert.equal(parseWritingHostMessage([]), null);
       return null;
     },
   });
-  await publish({ kind: "ready", entityId: null });
+  assert.equal(await publish({ kind: "ready", entityId: null }), true);
   await publish({ kind: "open-entity", entityId: "e-1" });
   assert.deepEqual(calls, [
     { method: "event.publish", payload: { type: "daena.writing/state@1", payload: { kind: "ready", entityId: null } } },
@@ -183,9 +262,221 @@ assert.equal(parseWritingHostMessage([]), null);
     },
     (cause) => errors.push(cause),
   );
-  await publish({ kind: "open-link", href: "https://example.com" });
+  assert.equal(await publish({ kind: "open-link", href: "https://example.com" }), false);
   assert.equal(errors.length, 1);
   assert.equal(errors[0].message, "broker offline");
+}
+
+// Payloads go out in call order even when an earlier one is slow, and one failure does not stall the next.
+{
+  const order = [];
+  const release = [];
+  const publish = createWritingStatePublisher(
+    {
+      async call(_method, { payload }) {
+        order.push(`start:${payload.kind}`);
+        if (payload.kind === "draft") await new Promise((resolve) => release.push(resolve));
+        if (payload.kind === "open-link") throw new Error("offline");
+        order.push(`end:${payload.kind}`);
+      },
+    },
+    () => undefined,
+  );
+  const draft = publish({ kind: "draft", draft: { entityId: "e", token: "t", text: "x" } });
+  const reply = publish({ kind: "flush-reply", requestId: "f", draft: null });
+  const failed = publish({ kind: "open-link", href: "https://example.com" });
+  const after = publish({ kind: "shortcut", shortcut: "create" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ["start:draft"], "the flush reply waits for the draft before it");
+  release[0]();
+  assert.deepEqual(await Promise.all([draft, reply, failed, after]), [true, true, false, true]);
+  assert.deepEqual(order, [
+    "start:draft",
+    "end:draft",
+    "start:flush-reply",
+    "end:flush-reply",
+    "start:open-link",
+    "start:shortcut",
+    "end:shortcut",
+  ]);
+}
+
+// Draft sync: coalescing, inline versus chunked, the unsent flag and flush replies, on fake timers.
+{
+  const fakeTimers = () => {
+    const timers = new Map();
+    let next = 1;
+    return {
+      setTimer(callback, ms) {
+        timers.set(next, { callback, ms });
+        return next++;
+      },
+      clearTimer(handle) {
+        timers.delete(handle);
+      },
+      count: () => timers.size,
+      pendingDelays: () => [...timers.values()].map((timer) => timer.ms),
+      async fire() {
+        const due = [...timers.entries()];
+        timers.clear();
+        for (const [, timer] of due) timer.callback();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    };
+  };
+  const make = (overrides = {}) => {
+    const clock = fakeTimers();
+    const sent = [];
+    const transfers = [];
+    const pending = [];
+    const sync = createDraftSync({
+      publish: async (payload) => {
+        sent.push(payload);
+        return overrides.publishResult ? overrides.publishResult(payload) : true;
+      },
+      transfer: async (text) => {
+        if (overrides.transfer) return overrides.transfer(text);
+        transfers.push(text);
+        return `transfer-${transfers.length}`;
+      },
+      onError: (cause) => (overrides.errors ?? []).push(cause),
+      onPending: (waiting) => pending.push(waiting),
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    });
+    return { sync, clock, sent, transfers, pending };
+  };
+
+  assert.equal(WRITING_DRAFT_IDLE_MS, 500);
+  // Changes coalesce: the idle timer restarts and only the last text is published, tagged with its load.
+  {
+    const { sync, clock, sent, pending } = make();
+    sync.change("e1", "t1", "H");
+    sync.change("e1", "t1", "He");
+    sync.change("e1", "t1", "Hel");
+    assert.equal(clock.count(), 1, "one idle timer, restarted by each change");
+    assert.deepEqual(clock.pendingDelays(), [WRITING_DRAFT_IDLE_MS]);
+    assert.equal(sync.hasUnsent(), true);
+    assert.deepEqual(sent, [], "nothing is published while the user is typing");
+    await clock.fire();
+    assert.deepEqual(sent, [{ kind: "draft", draft: { entityId: "e1", token: "t1", text: "Hel" } }]);
+    assert.equal(sync.hasUnsent(), false);
+    assert.deepEqual(pending, [true, false]);
+    await clock.fire();
+    assert.equal(sent.length, 1, "a published draft is not sent twice");
+  }
+  // The text keeps the load it was edited under even when a newer load starts before the timer fires.
+  {
+    const { sync, clock, sent } = make();
+    sync.change("e1", "t1", "Old entry");
+    sync.reset();
+    assert.equal(sync.hasUnsent(), false, "a new load drops what the shell chose to replace");
+    await clock.fire();
+    assert.deepEqual(sent, []);
+    sync.change("e2", "t2", "New entry");
+    await clock.fire();
+    assert.deepEqual(sent, [{ kind: "draft", draft: { entityId: "e2", token: "t2", text: "New entry" } }]);
+  }
+  // Large text goes through a transfer and the draft names it.
+  {
+    const { sync, clock, sent, transfers } = make();
+    const big = "a".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES + 1);
+    sync.change("e1", "t1", big);
+    await clock.fire();
+    assert.deepEqual(transfers, [big]);
+    assert.deepEqual(sent, [{ kind: "draft", draft: { entityId: "e1", token: "t1", transfer: "transfer-1" } }]);
+    const atLimit = "a".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES);
+    assert.equal(draftNeedsTransfer(atLimit), false);
+    assert.equal(draftNeedsTransfer(`${atLimit}a`), true);
+    assert.equal(draftNeedsTransfer("é".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES / 2 + 1)), true, "bytes, not characters");
+    // Escaping can push small text over the event cap: every quote becomes two bytes.
+    const quotes = '"'.repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES);
+    assert.equal(draftNeedsTransfer(quotes), true);
+    assert.ok(WRITING_DRAFT_INLINE_JSON_LIMIT_BYTES < 256 * 1024);
+  }
+  // Flush: the unsent text rides in the reply and the idle timer is cancelled.
+  {
+    const { sync, clock, sent } = make();
+    sync.change("e1", "t1", "Unsent");
+    await sync.flush("f-1");
+    assert.deepEqual(sent, [
+      { kind: "flush-reply", requestId: "f-1", draft: { entityId: "e1", token: "t1", text: "Unsent" } },
+    ]);
+    assert.equal(clock.count(), 0, "the idle timer is cancelled");
+    assert.equal(sync.hasUnsent(), false);
+    // Nothing unsent since the last draft: the reply says so.
+    await sync.flush("f-2");
+    assert.deepEqual(sent[1], { kind: "flush-reply", requestId: "f-2", draft: null });
+    // A draft published by the idle timer counts as sent.
+    sync.change("e1", "t1", "Later");
+    await clock.fire();
+    await sync.flush("f-3");
+    assert.deepEqual(sent[3], { kind: "flush-reply", requestId: "f-3", draft: null });
+  }
+  // A flush asked while a chunked draft is still being handed over waits for it, so the reply comes second.
+  {
+    let finish;
+    const { sync, clock, sent } = make({
+      transfer: () => new Promise((resolve) => (finish = resolve)),
+    });
+    sync.change("e1", "t1", "b".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES + 1));
+    await clock.fire();
+    const flushed = sync.flush("f-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(sent, [], "neither the draft nor the reply is published yet");
+    finish("transfer-late");
+    await flushed;
+    assert.deepEqual(sent, [
+      { kind: "draft", draft: { entityId: "e1", token: "t1", transfer: "transfer-late" } },
+      { kind: "flush-reply", requestId: "f-1", draft: null },
+    ]);
+  }
+  // A publish that does not arrive leaves the text unsent and retries later; newer text supersedes it.
+  {
+    let ok = false;
+    const { sync, clock, sent } = make({ publishResult: () => ok });
+    sync.change("e1", "t1", "Retry me");
+    await clock.fire();
+    assert.equal(sync.hasUnsent(), true, "a draft that did not arrive is still unsent");
+    assert.deepEqual(clock.pendingDelays(), [WRITING_DRAFT_RETRY_MS]);
+    ok = true;
+    await clock.fire();
+    assert.equal(sent.length, 2);
+    assert.equal(sync.hasUnsent(), false);
+
+    ok = false;
+    sync.change("e1", "t1", "First");
+    await clock.fire();
+    sync.change("e1", "t1", "Second");
+    ok = true;
+    await clock.fire();
+    assert.deepEqual(sent.at(-1), { kind: "draft", draft: { entityId: "e1", token: "t1", text: "Second" } });
+  }
+  // A failed hand-off is not answered with "nothing unsent": the shell times out instead of losing text.
+  {
+    const errors = [];
+    const { sync, sent } = make({
+      errors,
+      transfer: async () => {
+        throw new Error("transfer refused");
+      },
+    });
+    sync.change("e1", "t1", "c".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES + 1));
+    await sync.flush("f-1");
+    assert.deepEqual(sent, [], "no reply is sent");
+    assert.equal(sync.hasUnsent(), true);
+    assert.equal(errors[0].message, "transfer refused");
+  }
+  // Text typed before any load is still tagged by the caller; reset during a failed send drops the retry.
+  {
+    let ok = false;
+    const { sync, clock } = make({ publishResult: () => ok });
+    sync.change("e1", "t1", "Gone after reload");
+    await clock.fire();
+    sync.reset();
+    await clock.fire();
+    assert.equal(sync.hasUnsent(), false);
+  }
 }
 
 // Manifest: the qualified effective manifest wins over the bundled one.
@@ -300,8 +591,15 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
 
   const workspace = fs.readFileSync("packages/modules/writing/src/WritingWorkspace.svelte", "utf8");
   assert.match(workspace, /border-bottom: 0;/, "the panel runs flush to the window's bottom edge");
-  assert.match(workspace, /message\.type === "writing\.load"/);
-  assert.doesNotMatch(workspace, /document\.save|documents\.save|entity\.update/, "slice 1 never writes");
+  assert.match(workspace, /case "writing\.load"/);
+  assert.match(workspace, /<RichTextEditor/, "the webview edits with the shared rich-text editor");
+  assert.match(workspace, /case "writing\.flush"/);
+  assert.match(workspace, /chooseConflict\("reload"\)/);
+  assert.match(workspace, /chooseConflict\("overwrite"\)/);
+  assert.match(workspace, /chooseConflict\("recovery"\)/);
+  assert.doesNotMatch(workspace, /document\.save|documents\.save|entity\.update/, "the webview never saves");
+  assert.doesNotMatch(main, /document\.save|documents\.save|entity\.update|field\.set/, "no write calls in the entry");
+  assert.match(main, /transferText: \(text\) => transferText\(client, text\)/, "large drafts use the chunked hand-off");
 }
 
 // Bundle markers: the committed bundle is the broker-only build of this entry.
@@ -312,6 +610,8 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.match(bundle, /daena\.writing\/state@1/, "the bundle publishes the Writing state event");
   assert.match(bundle, /writing-root/, "the bundle mounts the Writing root");
   assert.match(bundle, /asset\.shared\.read\.begin/, "the bundle reads images through the broker host");
+  assert.match(bundle, /text\.transfer\.begin/, "the bundle hands large drafts over through text.transfer");
+  assert.match(bundle, /Document editor/, "the bundle carries the shared rich-text editor");
   assert.doesNotMatch(
     bundle,
     /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,

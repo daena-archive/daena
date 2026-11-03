@@ -51,6 +51,12 @@ export interface PluginRpcClient {
     commitAssetUpload(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
     /** Project-scoped assets from every namespace, as `asset.list` records. */
     listSharedAssets(): Promise<unknown[]>;
+    /** Begins a chunked hand-off of `size` UTF-8 bytes. Prefer `transferText`, which runs the whole sequence. */
+    beginTextTransfer(size: number): Promise<TextTransferHandle>;
+    commitTextTransfer(transferId: string): Promise<{
+        transferId: string;
+        size: number;
+    }>;
     startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
     pollAiRequest(requestId: string): Promise<unknown[]>;
     cancelAiRequest(requestId: string): Promise<void>;
@@ -78,6 +84,14 @@ export interface AssetReplaceHandle {
     maxChunkBytes: number;
     expiresInMs: number;
 }
+export interface TextTransferHandle {
+    transferId: string;
+    url: string;
+    maxChunkBytes: number;
+    expiresInMs: number;
+}
+/** The part of a begun transfer that `uploadAssetChunks` needs. */
+export type ChunkUploadTarget = Pick<AssetReplaceHandle, "url" | "maxChunkBytes">;
 export declare class PluginRpcException extends Error {
     readonly code: string;
     readonly retryable: boolean;
@@ -100,7 +114,15 @@ export declare function onHostMessage(handler: (message: unknown) => void): () =
 export declare function createBrowserPluginRpcTransport(options?: BrowserPluginRpcTransportOptions): PluginRpcTransport;
 /** Framework-neutral SDK boundary. The host owns identity and authorization. */
 export declare function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcClient;
-export declare function uploadAssetChunks(transfer: AssetReplaceHandle, bytes: Uint8Array, fetcher?: typeof globalThis.fetch): Promise<void>;
+export declare function uploadAssetChunks(transfer: ChunkUploadTarget, bytes: Uint8Array, fetcher?: typeof globalThis.fetch): Promise<void>;
+/** Largest text `transferText` sends; the host enforces the same cap. */
+export declare const MAX_TEXT_TRANSFER_BYTES: number;
+/**
+ * Hands UTF-8 text that is too large for one event to the host: begin, PUT the chunks, commit. Resolves to
+ * the transfer id to name in an event; the shell claims the text once. A failed transfer is cancelled before
+ * the error is rethrown. Needs the `text.transfer` capability.
+ */
+export declare function transferText(client: Pick<PluginRpcClient, "beginTextTransfer" | "commitTextTransfer" | "cancelAssetTransfer">, text: string, fetcher?: typeof globalThis.fetch): Promise<string>;
 export declare function isPluginIdentifier(value: string): boolean;
 export declare function isHostSurfaceId(value: string): boolean;
 export declare function isSemanticVersion(value: string): boolean;

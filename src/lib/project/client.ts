@@ -705,6 +705,9 @@ export const project = {
   /** Delivers one shell message to the mounted plugin webview as a `daena:host-message` event. */
   postPluginWebviewMessage: (pluginId: string, message: unknown) =>
     invoke<void>("plugin_webview_post", { pluginId, message }),
+  /** Claims text a plugin committed with `text.transfer.commit`. Works once per transfer, for the plugin that made it. */
+  takePluginTextTransfer: (pluginId: string, transferId: string) =>
+    invoke<string>("plugin_take_text_transfer", { pluginId, transferId }),
   /** Hides or shows the mounted plugin webview, e.g. under a shell overlay. */
   setPluginWebviewVisible: (pluginId: string, visible: boolean) =>
     invoke<void>("plugin_set_webview_visible", { pluginId, visible }),

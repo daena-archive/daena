@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount, tick } from "svelte";
+import { onMount, tick, untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
@@ -282,9 +282,14 @@ import {
 } from "$lib/modules/language-bridge";
 import {
   WRITING_PLUGIN_ID,
+  createWritingFlushBroker,
   parseWritingStateEvent,
+  writingConflictMessage,
   writingLoadMessage,
+  writingMessageCurrent,
   writingWebviewHandles,
+  type WritingBridgeDraft,
+  type WritingLoad,
   type WritingStateEvent,
 } from "$lib/modules/writing-bridge";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
@@ -424,8 +429,24 @@ const writingWebviewEnabled = (() => {
 })();
 /** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let writingWebview = $state({ mounted: false, ready: false });
-/** The `writing.load` the shell last posted (entity id and document revision), so an unchanged selection is not reposted. */
+/**
+ * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
+ * not reposted. Saving does not change it; a new entity or a reload from disk does.
+ */
 let writingLoadKey: string | null = null;
+/** The `writing.load` the shell last posted. Only its entity and token are accepted on drafts and conflict actions. */
+let writingLoad: WritingLoad | null = null;
+/** Asks the mounted Writing webview for text it has not published yet. */
+const writingFlush = createWritingFlushBroker({
+  post: (message) => postWritingMessage(message),
+  newRequestId: () => crypto.randomUUID(),
+  onTimeout: (requestId) =>
+    console.warn(`The Writing webview did not answer flush ${requestId}; continuing without its unsent text.`),
+});
+/** Drafts are applied one at a time, in arrival order, so a slow chunked draft cannot land after a newer one. */
+let writingDraftQueue: Promise<unknown> = Promise.resolve();
+/** The last `writing.editable` value the webview was told, so only changes are posted. */
+let writingEditablePosted: boolean | null = null;
 let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
@@ -1729,6 +1750,9 @@ function trackWritingMount() {
     writingWebview.mounted = false;
     writingWebview.ready = false;
     writingLoadKey = null;
+    writingLoad = null;
+    writingEditablePosted = null;
+    writingFlush.releaseAll();
   };
 }
 
@@ -1741,24 +1765,143 @@ async function postWritingMessage(message: unknown): Promise<boolean> {
   }
 }
 
+/** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
+const writingEditable = $derived(
+  !selectedLoading &&
+    !selectedLoadError &&
+    projectDiagnostics.length === 0 &&
+    !aiBusy &&
+    !aiRewriteOpen &&
+    !documentConflict,
+);
+
+function writingPlaceholder() {
+  return selected?.entity_type === "daena.writing:reference-page" ? "Write this reference page…" : "Write your manuscript…";
+}
+
+/**
+ * Applies a draft the way typing in the shell editor would: `updateDocumentBody` marks the entry dirty, the
+ * autosave timer saves the document and field edits in one `saveEntry`, and conflicts stay in the shell. The
+ * webview cannot write anything itself. Resolves true when the text was taken.
+ */
+async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
+  // A transfer is claimed first so a rejected draft does not leave its text waiting.
+  const text =
+    "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
+  if (!writingMessageCurrent(draft, selected?.id, writingLoad)) return false;
+  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return false;
+  if (text === documentBody) return false;
+  updateDocumentBody(text);
+  return true;
+}
+
+function enqueueWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
+  const applied = writingDraftQueue
+    .then(() => applyWritingDraft(draft))
+    .catch((cause) => {
+      console.warn("A Writing draft could not be applied", cause);
+      return false;
+    });
+  writingDraftQueue = applied;
+  return applied;
+}
+
+/**
+ * Collects the Writing webview's unsent text before the shell saves, leaves or reloads: asks for it, waits
+ * (a little) for the answer and applies it. Anything published before the answer is applied first. Resolves
+ * true when it handed the shell text that changed the document.
+ */
+async function flushWritingWebview(): Promise<boolean> {
+  if (!writingWebview.mounted || !writingWebview.ready || writingLoad === null) return false;
+  const draft = await writingFlush.request();
+  const applied = draft ? await enqueueWritingDraft(draft) : false;
+  await writingDraftQueue;
+  return applied;
+}
+
+async function postWritingLoad(entityId: string, key: string) {
+  // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
+  // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
+  if (writingLoad?.entityId === entityId && (await flushWritingWebview())) return;
+  if (writingLoadKey !== key) return;
+  const load: WritingLoad = { entityId, token: crypto.randomUUID() };
+  writingLoad = load;
+  writingEditablePosted = writingEditable;
+  const sent = await postWritingMessage(
+    writingLoadMessage(entityId, load.token, loadedDocumentRevision, {
+      editable: writingEditable,
+      placeholder: writingPlaceholder(),
+      mode: documentMode,
+    }),
+  );
+  if (sent) return;
+  if (writingLoadKey === key) writingLoadKey = null;
+  if (writingLoad === load) writingLoad = null;
+}
+
 $effect(() => {
   // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
-  // again whenever the selection (or its reloaded document) changes.
+  // again whenever the selection or a reload from disk replaces what the shell holds.
   if (!writingWebviewShown || !writingWebview.ready) return;
   const entityId = selected?.id;
   if (!entityId || selectedLoading) return;
-  const key = `${entityId}:${loadedDocumentRevision}`;
+  const key = `${entityId}:${selectedLoadToken}`;
   if (key === writingLoadKey) return;
   writingLoadKey = key;
-  void postWritingMessage(writingLoadMessage(entityId, loadedDocumentRevision)).then((sent) => {
-    if (!sent && writingLoadKey === key) writingLoadKey = null;
-  });
+  // Only the selection and the load counter decide when to post; what the message reads is not tracked.
+  void untrack(() => postWritingLoad(entityId, key));
 });
 
+$effect(() => {
+  // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
+  // posting time; this posts the changes after it.
+  const editable = writingEditable;
+  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  if (editable === writingEditablePosted) return;
+  writingEditablePosted = editable;
+  void postWritingMessage({ type: "writing.editable", editable });
+});
+
+$effect(() => {
+  // A revision conflict found by the shell's own save path is shown in the webview's banner.
+  const conflict = documentConflict;
+  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  void postWritingMessage(writingConflictMessage(writingLoad.entityId, conflict));
+});
+
+$effect(() => {
+  // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
+  const message = saveError;
+  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  void postWritingMessage({ type: "writing.save-error", entityId: writingLoad.entityId, message });
+});
+
+/** Tells the webview its entry was saved; the revision is informational and does not change its token. */
+function notifyWritingSaved(entityId: string) {
+  if (!writingWebview.ready || writingLoad?.entityId !== entityId) return;
+  void postWritingMessage({ type: "writing.saved", entityId, revision: loadedDocumentRevision });
+}
+
+/** Runs the shell's own conflict action the user picked in the webview banner. */
+function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
+  if (!writingMessageCurrent(event, selected?.id, writingLoad) || !documentConflict) return;
+  switch (event.action) {
+    case "reload":
+      void reloadConflict();
+      return;
+    case "overwrite":
+      // The shell's own button is disabled while the canonical source needs attention.
+      if (documentConflict.diagnostics.length === 0) void overwriteConflict();
+      return;
+    case "recovery":
+      void saveConflictRecoveryCopy();
+      return;
+  }
+}
+
 /**
- * Writing state from the webview. While it only renders the entry read-only there is nothing to save or guard,
- * so drafts, flush replies, fullscreen, rename, archive and shortcut messages are ignored until the shell takes
- * them over.
+ * Writing state from the webview. Fullscreen, rename, archive and shortcut messages are still ignored until
+ * the shell integration takes them over.
  */
 function handleWritingStateEvent(event: WritingStateEvent) {
   switch (event.kind) {
@@ -1766,7 +1909,22 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       if (!writingWebview.mounted) return;
       // A webview that (re)started has shown nothing yet, so the effect above posts the selection again.
       writingLoadKey = null;
+      writingLoad = null;
+      writingEditablePosted = null;
+      writingFlush.releaseAll();
       writingWebview.ready = true;
+      return;
+    case "draft":
+      if (writingWebview.mounted) void enqueueWritingDraft(event.draft);
+      return;
+    case "flush-reply":
+      // A reply nobody waits for any more (it came after the timeout) still carries text, which goes
+      // through the same checks as any other draft.
+      if (!writingFlush.reply(event.requestId, event.draft) && event.draft && writingWebview.mounted)
+        void enqueueWritingDraft(event.draft);
+      return;
+    case "conflict-action":
+      if (writingWebview.mounted) handleWritingConflictAction(event);
       return;
     case "open-link": {
       const href = openableLinkHref(event.href);
@@ -4823,6 +4981,8 @@ async function closeProject() {
 }
 
 async function flushAutoSave() {
+  // The Writing webview holds the editor while it is shown, so its unsent text comes first.
+  await flushWritingWebview();
   editorRef?.flushPendingChanges();
   flushDateFieldDirty();
   cancelAutoSave();
@@ -5770,6 +5930,7 @@ async function persistDocumentSnapshot(): Promise<boolean> {
       autoSaveFailureCount = 0;
       saveError = "";
       savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      notifyWritingSaved(entityId);
       void loadProjectStatus(false);
       try {
         const loaded = await project.getEntity(entityId);

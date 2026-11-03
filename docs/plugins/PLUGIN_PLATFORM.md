@@ -142,6 +142,7 @@ The initial capability vocabulary is:
 | `asset.read:shared`                  | Read project-visible assets (`referenceScope = project`) from another entity/namespace when the owning asset allows it. |
 | `asset.write:self`                   | Update metadata or replace bytes for caller-owned assets.                                                               |
 | `asset.register`                     | Register a plugin-supplied asset into a caller-owned namespace.                                                         |
+| `text.transfer`                      | Hand UTF-8 text too large for one event to the app in chunks. The app decides whether to save it.                       |
 | `search.query`                       | Query the core search service.                                                                                          |
 | `schema.overlay`                     | Contribute a project-owned schema overlay for the caller's namespaces.                                                  |
 | `record.read:self`                   | Read plugin-owned record collections in caller namespaces.                                                              |
@@ -683,6 +684,7 @@ relationship.list  relationship.create  relationship.delete
 asset.list  asset.register  asset.read.begin  asset.shared.read.begin  asset.shared.list
 asset.replace.begin  asset.replace.commit  asset.transfer.cancel
 asset.upload.begin  asset.upload.commit
+text.transfer.begin  text.transfer.commit
 search.query
 maps.asset.create.begin  maps.asset.create.commit
 maps.recovery.export.begin  maps.recovery.export.commit
@@ -737,6 +739,22 @@ appearance.get  schema.list
   MIME type, entity-scoped by default) and the commit flushes the checkpoint.
   `asset.transfer.cancel` drops a handle. Begin and commit share the asset
   rate-limit bucket.
+- **Large text reaches the shell through `text.transfer.*`, never through the
+  document API.** Events are capped at 256 KiB, so a sandboxed editor that hands
+  its text to the shell (Writing) sends big drafts in chunks. `text.transfer.begin
+  {size}` requires `text.transfer`, takes a positive size of at most 32 MiB and
+  returns `{transferId, url, maxChunkBytes, expiresInMs}`; the chunks are PUT
+  like `asset.upload` chunks. `text.transfer.commit {transferId}` checks the
+  plugin session and project, that every declared byte arrived and that the
+  bytes are UTF-8, then freezes the text. Nothing in the broker can read it
+  back. The shell claims it once with the Tauri command
+  `plugin_take_text_transfer(plugin_id, transfer_id)`, which works only for a
+  committed transfer of that plugin in the open project and drops it. A session
+  holds at most four open text transfers; `asset.transfer.cancel` drops one.
+  Every accepted chunk and the commit move the 60 s deadline forward. The
+  capability is separate from `asset.register` and `document.write` so a
+  plugin can offer text to the shell without being able to write documents or
+  files.
 - **`asset.shared.list` lists project-scoped assets from every namespace.** It
   requires `asset.read:shared` and returns the same records as `asset.list`.
   Entity-scoped assets never appear, so a plugin shares a file by promoting it

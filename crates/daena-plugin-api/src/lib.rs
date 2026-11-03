@@ -37,6 +37,7 @@ pub const KNOWN_CAPABILITIES: &[&str] = &[
     "asset.read:shared",
     "asset.write:self",
     "asset.register",
+    "text.transfer",
     "search.query",
     "schema.overlay",
     "event.publish:<type>",
@@ -163,6 +164,12 @@ pub const CAPABILITY_REGISTRY: &[CapabilityEntry] = &[
         id: "asset.register",
         resource: "plugin.assets",
         operations: &["register"],
+        confirmation: None,
+    },
+    CapabilityEntry {
+        id: "text.transfer",
+        resource: "plugin.text",
+        operations: &["hand-off"],
         confirmation: None,
     },
     CapabilityEntry {

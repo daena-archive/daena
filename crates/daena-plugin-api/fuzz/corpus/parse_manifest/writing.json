@@ -21,6 +21,7 @@
     "asset.read:shared",
     "asset.write:self",
     "asset.register",
+    "text.transfer",
     "search.query",
     "schema.overlay",
     "ai.text.generate",

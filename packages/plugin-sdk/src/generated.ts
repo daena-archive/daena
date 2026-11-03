@@ -139,6 +139,8 @@ export interface RelationshipUpdatePayload { expectedRevision: string; id: strin
 export type SchemaListPayload = Record<string, unknown>;
 export interface SearchQueryPayload { query: string }
 export interface ServiceCallPayload { deadlineMs?: number | null; major: number; name: string; payload: unknown }
+export interface TextTransferBeginPayload { size: number }
+export interface TextTransferCommitPayload { transferId: string }
 export interface BrokerMethodPayloads {
   "ai.request.cancel": AiRequestIdPayload;
   "ai.request.citations": AiRequestIdPayload;
@@ -206,6 +208,8 @@ export interface BrokerMethodPayloads {
   "schema.list": SchemaListPayload;
   "search.query": SearchQueryPayload;
   "service.call": ServiceCallPayload;
+  "text.transfer.begin": TextTransferBeginPayload;
+  "text.transfer.commit": TextTransferCommitPayload;
 }
 export type BrokerMethod = keyof BrokerMethodPayloads;
 export interface MigrationAuthoringOptions {

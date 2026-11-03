@@ -404,6 +404,18 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&["asset.read:shared"]),
     },
     RpcMethodDef {
+        name: "text.transfer.begin",
+        payload_schema: "TextTransferBeginPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["text.transfer"]),
+    },
+    RpcMethodDef {
+        name: "text.transfer.commit",
+        payload_schema: "TextTransferCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["text.transfer"]),
+    },
+    RpcMethodDef {
         name: "search.query",
         payload_schema: "SearchQueryPayload",
         requires_revision: false,
@@ -746,6 +758,8 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
         ),
         "asset.upload.commit" => (&["handle", "contentHash"], &[]),
         "asset.shared.list" => (&[], &[]),
+        "text.transfer.begin" => (&["size"], &[]),
+        "text.transfer.commit" => (&["transferId"], &[]),
         "maps.image.import.begin" => (&["name", "size", "mimeType", "filename"], &[]),
         "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
         "maps.vector.create.begin" => (&["name", "size", "generation"], &[]),
@@ -835,7 +849,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 66);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 68);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)

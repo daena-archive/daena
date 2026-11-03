@@ -2047,6 +2047,8 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("asset.transfer.cancel", &empty, &[]),
         ("asset.upload.commit", &empty, &["asset.register"]),
         ("asset.shared.list", &empty, &["asset.read:shared"]),
+        ("text.transfer.begin", &empty, &["text.transfer"]),
+        ("text.transfer.commit", &empty, &["text.transfer"]),
         (
             "maps.image.import.begin",
             &empty,

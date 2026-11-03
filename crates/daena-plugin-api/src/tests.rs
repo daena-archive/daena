@@ -543,6 +543,7 @@ fn writing_manifest_declares_the_workspace_host_surface() {
         "asset.read:shared",
         "asset.write:self",
         "ai.text.generate",
+        "text.transfer",
     ] {
         assert!(
             manifest
@@ -564,6 +565,40 @@ fn writing_manifest_declares_the_workspace_host_surface() {
         .publishes
         .iter()
         .any(|event| event.name == "daena.writing/state" && event.version == 1));
+}
+
+#[test]
+fn text_transfer_payloads_are_strict() {
+    validate_rpc_payload("text.transfer.begin", &serde_json::json!({ "size": 10 })).unwrap();
+    validate_rpc_payload(
+        "text.transfer.commit",
+        &serde_json::json!({ "transferId": "t" }),
+    )
+    .unwrap();
+    for (method, payload) in [
+        ("text.transfer.begin", serde_json::json!({})),
+        (
+            "text.transfer.begin",
+            serde_json::json!({ "size": 1, "mimeType": "text/plain" }),
+        ),
+        ("text.transfer.commit", serde_json::json!({})),
+        (
+            "text.transfer.commit",
+            serde_json::json!({ "transferId": "t", "contentHash": "h" }),
+        ),
+    ] {
+        assert!(
+            validate_rpc_payload(method, &payload).is_err(),
+            "{method} {payload}"
+        );
+    }
+    let begin: TextTransferBeginPayload =
+        serde_json::from_value(serde_json::json!({ "size": 3 })).unwrap();
+    assert_eq!(begin.size, 3);
+    assert!(serde_json::from_value::<TextTransferCommitPayload>(
+        serde_json::json!({ "transferId": "t", "extra": true })
+    )
+    .is_err());
 }
 
 #[test]

@@ -2312,6 +2312,7 @@ struct LanguageBridge {
     plugins: SharedPluginHost,
     transfers: SharedBinaryTransfers,
     ai_runtime: ai::SharedAiRuntime,
+    plugin_id: &'static str,
     label: String,
 }
 
@@ -2343,6 +2344,11 @@ fn entity_revision(core: &SharedCore, entity_id: &str) -> String {
 
 impl LanguageBridge {
     fn open(root: &std::path::Path) -> Self {
+        Self::open_as(root, "daena.language")
+    }
+
+    /// The same bridge speaking as another bundled sandboxed plugin.
+    fn open_as(root: &std::path::Path, plugin_id: &'static str) -> Self {
         let core: SharedCore = new_shared_core();
         current_session(&core)
             .unwrap()
@@ -2362,14 +2368,16 @@ impl LanguageBridge {
             plugins: Arc::new(Mutex::new(host)),
             transfers: Arc::new(Mutex::new(BinaryTransferManager::default())),
             ai_runtime: Arc::new(Mutex::new(ai::AiRuntime::default())),
-            label: plugin_window_label("daena.language"),
+            plugin_id,
+            label: plugin_window_label(plugin_id),
         }
     }
 
     fn protocol_uri(&self, path: &str) -> String {
         format!(
-            "{}://daena.language{path}",
-            daena_plugin_host::runtime::plugin_protocol("daena.language")
+            "{}://{}{path}",
+            daena_plugin_host::runtime::plugin_protocol(self.plugin_id),
+            self.plugin_id
         )
     }
 
@@ -2398,7 +2406,7 @@ impl LanguageBridge {
     fn bootstrap(&self, project_id: &str) -> String {
         let reply = self.post(serde_json::json!({
             "op": "bootstrap",
-            "pluginId": "daena.language",
+            "pluginId": self.plugin_id,
             "projectId": project_id,
         }));
         reply["sessionId"].as_str().expect("session id").to_string()
@@ -3496,6 +3504,352 @@ fn binary_transfer_handles_are_bound_one_use_and_chunk_ordered() {
         .is_err());
     assert!(manager.complete_upload(&upload, "maps", "session").is_ok());
     assert!(manager.complete_upload(&upload, "maps", "session").is_err());
+}
+
+fn text_transfer(declared_size: usize, expires_at: Instant) -> BinaryTransfer {
+    BinaryTransfer::TextTransfer {
+        plugin_id: "daena.writing".into(),
+        session_id: "session".into(),
+        project_id: "project".into(),
+        declared_size,
+        next_chunk: 0,
+        bytes: Vec::new(),
+        committed: false,
+        expires_at,
+    }
+}
+
+#[test]
+fn text_transfers_round_trip_and_are_claimed_once_by_their_plugin() {
+    let mut manager = BinaryTransferManager::default();
+    let text = "Chapter one\nCafé, 日本語, 🙂";
+    let bytes = text.as_bytes();
+    let token = manager.token(text_transfer(
+        bytes.len(),
+        Instant::now() + ASSET_TRANSFER_TTL,
+    ));
+    // A chunk boundary may fall inside a multi-byte character.
+    let (first, second) = bytes.split_at(14);
+    assert!(manager
+        .append_upload(&token, "daena.language", "session", 0, first)
+        .is_err());
+    assert!(manager
+        .append_upload(&token, "daena.writing", "other-session", 0, first)
+        .is_err());
+    assert_eq!(
+        manager
+            .append_upload(&token, "daena.writing", "session", 0, first)
+            .unwrap(),
+        first.len()
+    );
+    // Nothing is claimable before the commit, and an incomplete commit fails.
+    assert!(manager
+        .take_text(&token, "daena.writing", "project")
+        .is_err());
+    assert!(manager
+        .commit_text(&token, "daena.writing", "session", "project")
+        .unwrap_err()
+        .contains("incomplete"));
+    assert_eq!(
+        manager
+            .append_upload(&token, "daena.writing", "session", 1, second)
+            .unwrap(),
+        bytes.len()
+    );
+    assert!(manager
+        .commit_text(&token, "daena.language", "session", "project")
+        .is_err());
+    assert!(manager
+        .commit_text(&token, "daena.writing", "other-session", "project")
+        .is_err());
+    assert!(manager
+        .commit_text(&token, "daena.writing", "session", "other-project")
+        .is_err());
+    assert_eq!(
+        manager
+            .commit_text(&token, "daena.writing", "session", "project")
+            .unwrap(),
+        bytes.len()
+    );
+    // A committed transfer is frozen and cannot be committed again.
+    assert!(manager
+        .append_upload(&token, "daena.writing", "session", 2, b"x")
+        .unwrap_err()
+        .contains("already committed"));
+    assert!(manager
+        .commit_text(&token, "daena.writing", "session", "project")
+        .is_err());
+
+    // Another plugin or project cannot claim it, and failed claims leave it.
+    assert!(manager
+        .take_text(&token, "daena.language", "project")
+        .is_err());
+    assert!(manager
+        .take_text(&token, "daena.writing", "other-project")
+        .is_err());
+    assert_eq!(
+        manager
+            .take_text(&token, "daena.writing", "project")
+            .unwrap(),
+        text
+    );
+    assert!(manager
+        .take_text(&token, "daena.writing", "project")
+        .is_err());
+    assert!(manager.transfers.is_empty());
+}
+
+#[test]
+fn text_transfers_reject_invalid_utf8_and_oversized_chunks() {
+    let mut manager = BinaryTransferManager::default();
+    let token = manager.token(text_transfer(3, Instant::now() + ASSET_TRANSFER_TTL));
+    manager
+        .append_upload(&token, "daena.writing", "session", 0, &[0x61, 0xff, 0xfe])
+        .unwrap();
+    assert!(manager
+        .commit_text(&token, "daena.writing", "session", "project")
+        .unwrap_err()
+        .contains("UTF-8"));
+    assert!(manager
+        .take_text(&token, "daena.writing", "project")
+        .is_err());
+    // The plugin can still cancel what it started; nobody else can.
+    assert!(manager.cancel(&token, "daena.language").is_err());
+    manager.cancel(&token, "daena.writing").unwrap();
+    assert!(manager.transfers.is_empty());
+
+    // More bytes than declared are refused.
+    let token = manager.token(text_transfer(2, Instant::now() + ASSET_TRANSFER_TTL));
+    assert!(manager
+        .append_upload(&token, "daena.writing", "session", 0, b"abc")
+        .is_err());
+}
+
+#[test]
+fn text_transfers_expire_and_chunks_keep_them_alive() {
+    let mut manager = BinaryTransferManager::default();
+    let expired = manager.token(text_transfer(1, Instant::now() - Duration::from_secs(1)));
+    assert!(manager
+        .append_upload(&expired, "daena.writing", "session", 0, b"a")
+        .is_err());
+    let committed_then_expired = manager.token(BinaryTransfer::TextTransfer {
+        plugin_id: "daena.writing".into(),
+        session_id: "session".into(),
+        project_id: "project".into(),
+        declared_size: 1,
+        next_chunk: 1,
+        bytes: b"a".to_vec(),
+        committed: true,
+        expires_at: Instant::now() - Duration::from_secs(1),
+    });
+    assert!(manager
+        .take_text(&committed_then_expired, "daena.writing", "project")
+        .is_err());
+
+    // An accepted chunk pushes the deadline out, which a failed one does not.
+    let soon = Instant::now() + Duration::from_millis(500);
+    let token = manager.token(text_transfer(2, soon));
+    assert!(manager
+        .append_upload(&token, "daena.writing", "session", 3, b"a")
+        .is_err());
+    assert_eq!(
+        manager.transfers.get_mut(&token).unwrap().expires_at_mut(),
+        &soon
+    );
+    manager
+        .append_upload(&token, "daena.writing", "session", 0, b"a")
+        .unwrap();
+    assert!(
+        *manager.transfers.get_mut(&token).unwrap().expires_at_mut()
+            > soon + Duration::from_secs(30)
+    );
+    // Commit gives the shell a fresh window to claim the text.
+    manager
+        .append_upload(&token, "daena.writing", "session", 1, b"b")
+        .unwrap();
+    *manager.transfers.get_mut(&token).unwrap().expires_at_mut() = soon;
+    manager
+        .commit_text(&token, "daena.writing", "session", "project")
+        .unwrap();
+    assert!(
+        *manager.transfers.get_mut(&token).unwrap().expires_at_mut()
+            > soon + Duration::from_secs(30)
+    );
+    assert_eq!(manager.open_text_transfers("daena.writing", "session"), 1);
+    assert_eq!(manager.open_text_transfers("daena.writing", "other"), 0);
+}
+
+#[test]
+fn text_transfers_round_trip_over_the_plugin_protocol_bridge() {
+    let root = std::env::temp_dir().join(format!("daena-text-transfer-{}", uuid::Uuid::new_v4()));
+    let bridge = LanguageBridge::open_as(&root, "daena.writing");
+    let project_id = current_info(&bridge.core).unwrap().unwrap().root;
+    let session_id = bridge.bootstrap(&project_id);
+
+    // Larger than one RPC frame, with multi-byte characters across chunk edges.
+    let text = "Prologue — café 日本語 🙂\n".repeat(20_000);
+    let begin = bridge.rpc(
+        &session_id,
+        "text-begin",
+        "text.transfer.begin",
+        serde_json::json!({ "size": text.len() }),
+    );
+    assert_eq!(begin["ok"], true, "{begin}");
+    assert!(text.len() > begin["result"]["maxChunkBytes"].as_u64().unwrap() as usize);
+    let transfer_id = begin["result"]["transferId"].as_str().unwrap().to_string();
+    bridge.send_chunks(&begin["result"], text.as_bytes());
+
+    // The shell cannot claim text the plugin has not committed.
+    assert!(bridge
+        .transfers
+        .lock()
+        .unwrap()
+        .take_text(&transfer_id, "daena.writing", &project_id)
+        .is_err());
+    let commit = bridge.rpc(
+        &session_id,
+        "text-commit",
+        "text.transfer.commit",
+        serde_json::json!({ "transferId": transfer_id }),
+    );
+    assert_eq!(commit["ok"], true, "{commit}");
+    assert_eq!(commit["result"]["size"].as_u64(), Some(text.len() as u64));
+    // The webview cannot read the text back through the asset GET route.
+    let fetch = tauri::http::Request::builder()
+        .method("GET")
+        .uri(bridge.protocol_uri(&format!("/__asset/{transfer_id}?sessionId={session_id}")))
+        .body(Vec::new())
+        .unwrap();
+    assert_eq!(bridge.respond(&fetch).status(), 404);
+    assert_eq!(
+        bridge
+            .transfers
+            .lock()
+            .unwrap()
+            .take_text(&transfer_id, "daena.writing", &project_id)
+            .unwrap(),
+        text
+    );
+    assert!(bridge
+        .transfers
+        .lock()
+        .unwrap()
+        .take_text(&transfer_id, "daena.writing", &project_id)
+        .is_err());
+
+    // Refusals at begin: zero, over the cap, malformed and unknown fields.
+    for (request_id, payload, expected) in [
+        (
+            "zero",
+            serde_json::json!({ "size": 0 }),
+            "text transfer size must be a positive integer",
+        ),
+        (
+            "over",
+            serde_json::json!({ "size": MAX_TEXT_TRANSFER_BYTES + 1 }),
+            "text transfer exceeds the host limit",
+        ),
+        (
+            "negative",
+            serde_json::json!({ "size": -1 }),
+            "text transfer size must be a positive integer",
+        ),
+        ("missing", serde_json::json!({}), "requires size"),
+        (
+            "extra",
+            serde_json::json!({ "size": 1, "mimeType": "text/plain" }),
+            "unknown key",
+        ),
+    ] {
+        let reply = bridge.rpc(&session_id, request_id, "text.transfer.begin", payload);
+        assert_eq!(reply["ok"], false, "{request_id}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains(expected), "{request_id}: {message}");
+    }
+    // The cap is exactly the documented 32 MiB.
+    let at_cap = bridge.rpc(
+        &session_id,
+        "at-cap",
+        "text.transfer.begin",
+        serde_json::json!({ "size": MAX_TEXT_TRANSFER_BYTES }),
+    );
+    assert_eq!(at_cap["ok"], true, "{at_cap}");
+    assert_eq!(MAX_TEXT_TRANSFER_BYTES, 32 * 1024 * 1024);
+
+    // A session holds a bounded number of open transfers; cancelling frees one.
+    let mut open = vec![at_cap["result"]["transferId"].as_str().unwrap().to_string()];
+    loop {
+        let reply = bridge.rpc(
+            &session_id,
+            &format!("open-{}", open.len()),
+            "text.transfer.begin",
+            serde_json::json!({ "size": 8 }),
+        );
+        if reply["ok"] != true {
+            assert!(reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("too many text transfers"));
+            break;
+        }
+        open.push(reply["result"]["transferId"].as_str().unwrap().to_string());
+        assert!(open.len() <= 8, "the open-transfer cap never applied");
+    }
+    let cancel = bridge.rpc(
+        &session_id,
+        "cancel-1",
+        "asset.transfer.cancel",
+        serde_json::json!({ "handle": open[0] }),
+    );
+    assert_eq!(cancel["ok"], true, "{cancel}");
+    let again = bridge.rpc(
+        &session_id,
+        "again-1",
+        "text.transfer.begin",
+        serde_json::json!({ "size": 8 }),
+    );
+    assert_eq!(again["ok"], true, "{again}");
+
+    // Committing something that is not a text transfer, or a stranger's, fails.
+    let bogus = bridge.rpc(
+        &session_id,
+        "bogus",
+        "text.transfer.commit",
+        serde_json::json!({ "transferId": "not-a-transfer" }),
+    );
+    assert_eq!(bogus["ok"], false, "{bogus}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn text_transfer_methods_require_the_text_transfer_capability() {
+    let root = std::env::temp_dir().join(format!("daena-text-denied-{}", uuid::Uuid::new_v4()));
+    // Language does not declare `text.transfer`, so the broker refuses it.
+    let bridge = LanguageBridge::open(&root);
+    let project_id = current_info(&bridge.core).unwrap().unwrap().root;
+    let session_id = bridge.bootstrap(&project_id);
+    for (request_id, method, payload) in [
+        (
+            "begin",
+            "text.transfer.begin",
+            serde_json::json!({ "size": 8 }),
+        ),
+        (
+            "commit",
+            "text.transfer.commit",
+            serde_json::json!({ "transferId": "t" }),
+        ),
+    ] {
+        let reply = bridge.rpc(&session_id, request_id, method, payload);
+        assert_eq!(reply["ok"], false, "{method}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("operation is not granted: text.transfer"),
+            "{method}: {message}"
+        );
+    }
+    assert!(bridge.transfers.lock().unwrap().transfers.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

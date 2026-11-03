@@ -32,7 +32,7 @@ use daena_plugin_api::rpc::{
     RecordCreatePayload, RecordDeletePayload, RecordListPayload, RecordUpdatePayload,
     RelationshipCreatePayload, RelationshipDeletePayload, RelationshipListPayload,
     RelationshipPageRecord, RelationshipQueryPayload, RelationshipUpdatePayload, SchemaListPayload,
-    SearchQueryPayload, ServiceCallPayload,
+    SearchQueryPayload, ServiceCallPayload, TextTransferBeginPayload, TextTransferCommitPayload,
 };
 use daena_plugin_api::{
     builtin_theme_tokens, PluginManifest, RpcError, ThemeMode, CAPABILITY_REGISTRY,
@@ -571,6 +571,8 @@ fn register_payload(gen: &mut SchemaGenerator, payload_schema: &str) {
         "AssetReplaceBeginPayload" => gen.subschema_for::<AssetReplaceBeginPayload>(),
         "AssetReplaceCommitPayload" => gen.subschema_for::<AssetReplaceCommitPayload>(),
         "AssetTransferCancelPayload" => gen.subschema_for::<AssetTransferCancelPayload>(),
+        "TextTransferBeginPayload" => gen.subschema_for::<TextTransferBeginPayload>(),
+        "TextTransferCommitPayload" => gen.subschema_for::<TextTransferCommitPayload>(),
         "SearchQueryPayload" => gen.subschema_for::<SearchQueryPayload>(),
         "MapsImageImportBeginPayload" => gen.subschema_for::<MapsImageImportBeginPayload>(),
         "MapsImageImportCommitPayload" => gen.subschema_for::<MapsImageImportCommitPayload>(),

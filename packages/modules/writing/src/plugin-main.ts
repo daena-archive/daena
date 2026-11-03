@@ -5,6 +5,7 @@ import {
   createBrowserPluginRpcTransport,
   createPluginRpcClient,
   onHostMessage,
+  transferText,
   uploadAssetChunks,
 } from "../../../plugin-sdk/src/index";
 import { applyPluginAppearance } from "../../../plugin-sdk/src/theme";
@@ -65,7 +66,8 @@ async function start(target: HTMLElement): Promise<void> {
         if (parsed.type === "writing.load") shownEntityId = parsed.entityId;
         handler(parsed);
       }),
-    publish: (payload) => void publish(payload),
+    publish,
+    transferText: (text) => transferText(client, text),
   };
 
   mount(WritingWorkspace, { target, props: { rpc: client, bridge, initialEntityId: launch.entityId } });

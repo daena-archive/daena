@@ -83,6 +83,9 @@ export interface PluginRpcClient {
   commitAssetUpload(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
   /** Project-scoped assets from every namespace, as `asset.list` records. */
   listSharedAssets(): Promise<unknown[]>;
+  /** Begins a chunked hand-off of `size` UTF-8 bytes. Prefer `transferText`, which runs the whole sequence. */
+  beginTextTransfer(size: number): Promise<TextTransferHandle>;
+  commitTextTransfer(transferId: string): Promise<{ transferId: string; size: number }>;
   startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
   pollAiRequest(requestId: string): Promise<unknown[]>;
   cancelAiRequest(requestId: string): Promise<void>;
@@ -113,6 +116,16 @@ export interface AssetReplaceHandle {
   maxChunkBytes: number;
   expiresInMs: number;
 }
+
+export interface TextTransferHandle {
+  transferId: string;
+  url: string;
+  maxChunkBytes: number;
+  expiresInMs: number;
+}
+
+/** The part of a begun transfer that `uploadAssetChunks` needs. */
+export type ChunkUploadTarget = Pick<AssetReplaceHandle, "url" | "maxChunkBytes">;
 
 export class PluginRpcException extends Error {
   readonly code: string;
@@ -513,6 +526,9 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     commitAssetUpload: (handle, contentHash, options) =>
       callTransport<unknown>(transport, "asset.upload.commit", { handle, contentHash }, options?.requestId),
     listSharedAssets: () => callTransport<unknown[]>(transport, "asset.shared.list", {}),
+    beginTextTransfer: (size) => callTransport<TextTransferHandle>(transport, "text.transfer.begin", { size }),
+    commitTextTransfer: (transferId) =>
+      callTransport<{ transferId: string; size: number }>(transport, "text.transfer.commit", { transferId }),
     startAiRequest: (request) => callTransport<AiRequestIdPayload>(transport, "ai.request.start", request),
     pollAiRequest: (requestId) => callTransport<unknown[]>(transport, "ai.request.poll", { requestId }),
     cancelAiRequest: (requestId) => callTransport<void>(transport, "ai.request.cancel", { requestId }),
@@ -522,7 +538,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
 }
 
 export async function uploadAssetChunks(
-  transfer: AssetReplaceHandle,
+  transfer: ChunkUploadTarget,
   bytes: Uint8Array,
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<void> {
@@ -539,6 +555,34 @@ export async function uploadAssetChunks(
     if (!response.ok) throw new Error(`asset upload failed: ${response.status}`);
     if (bytes.length === 0) break;
   }
+}
+
+/** Largest text `transferText` sends; the host enforces the same cap. */
+export const MAX_TEXT_TRANSFER_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Hands UTF-8 text that is too large for one event to the host: begin, PUT the chunks, commit. Resolves to
+ * the transfer id to name in an event; the shell claims the text once. A failed transfer is cancelled before
+ * the error is rethrown. Needs the `text.transfer` capability.
+ */
+export async function transferText(
+  client: Pick<PluginRpcClient, "beginTextTransfer" | "commitTextTransfer" | "cancelAssetTransfer">,
+  text: string,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length === 0) throw new Error("text transfer needs text");
+  if (bytes.length > MAX_TEXT_TRANSFER_BYTES) throw new Error("text exceeds SDK transfer limit");
+  const transfer = await client.beginTextTransfer(bytes.length);
+  try {
+    await uploadAssetChunks(transfer, bytes, fetcher);
+    await client.commitTextTransfer(transfer.transferId);
+  } catch (cause) {
+    // Best effort: the host drops an abandoned transfer when it expires.
+    await client.cancelAssetTransfer(transfer.transferId).catch(() => undefined);
+    throw cause;
+  }
+  return transfer.transferId;
 }
 
 const knownCapabilities = new Set([
@@ -560,6 +604,7 @@ const knownCapabilities = new Set([
   "asset.read:shared",
   "asset.write:self",
   "asset.register",
+  "text.transfer",
   "search.query",
   "schema.overlay",
   "event.publish:<type>",

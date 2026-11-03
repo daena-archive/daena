@@ -137,6 +137,13 @@
       "resource": "plugin.assets"
     },
     {
+      "id": "text.transfer",
+      "operations": [
+        "hand-off"
+      ],
+      "resource": "plugin.text"
+    },
+    {
       "id": "search.query",
       "operations": [
         "query"

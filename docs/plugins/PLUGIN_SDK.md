@@ -354,6 +354,7 @@ the broker permits the operation.
 | `asset.read:shared`                               | Read project-visible assets (`referenceScope = project`) owned by another entity/namespace when authorized. |
 | `asset.write:self`                                | Update metadata or replace bytes for plugin-owned assets.                                                   |
 | `asset.register`                                  | Register a plugin-supplied asset into a caller-owned namespace.                                             |
+| `text.transfer`                                   | Hand text too large for one event to the app (`transferText`); the app decides whether to save it.          |
 | `search.query`                                    | Query the project search service.                                                                           |
 | `event.publish:<type>` / `event.subscribe:<type>` | Publish or subscribe to declared events.                                                                    |
 | `service.provide:<name>` / `service.call:<name>`  | Provide or call declared services.                                                                          |

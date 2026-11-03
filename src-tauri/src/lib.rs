@@ -720,6 +720,7 @@ pub fn run() {
             plugin_open_webview,
             plugin_mount_webview,
             plugin_webview_post,
+            plugin_take_text_transfer,
             plugin_set_webview_visible,
             plugin_resize_webview,
             plugin_unmount_webview,

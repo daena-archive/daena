@@ -4,6 +4,11 @@ use super::*;
 use daena_core::{AssetBytesInput, ASSET_REFERENCE_SCOPE_PROJECT};
 
 const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
+/// Largest text a plugin may hand to the shell through `text.transfer.*`.
+pub(super) const MAX_TEXT_TRANSFER_BYTES: usize = 32 * 1024 * 1024;
+/// Text transfers a plugin session may hold open at once. A draft that never
+/// reached the shell leaves its transfer behind until it expires.
+const MAX_OPEN_TEXT_TRANSFERS: usize = 4;
 pub(super) const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
 #[derive(Default)]
 pub(super) struct BinaryTransferManager {
@@ -102,6 +107,34 @@ pub(super) enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    /// UTF-8 text a plugin hands to the shell in chunks. Commit validates the
+    /// bytes and freezes them; only the shell's `take_text` removes them.
+    TextTransfer {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        committed: bool,
+        expires_at: Instant,
+    },
+}
+
+impl BinaryTransfer {
+    pub(super) fn expires_at_mut(&mut self) -> &mut Instant {
+        match self {
+            BinaryTransfer::Read { expires_at, .. }
+            | BinaryTransfer::Upload { expires_at, .. }
+            | BinaryTransfer::RecoveryUpload { expires_at, .. }
+            | BinaryTransfer::ImageImport { expires_at, .. }
+            | BinaryTransfer::VectorCreate { expires_at, .. }
+            | BinaryTransfer::PhysicalCreate { expires_at, .. }
+            | BinaryTransfer::VectorReplace { expires_at, .. }
+            | BinaryTransfer::AssetUpload { expires_at, .. }
+            | BinaryTransfer::TextTransfer { expires_at, .. } => expires_at,
+        }
+    }
 }
 
 impl BinaryTransferManager {
@@ -115,7 +148,8 @@ impl BinaryTransferManager {
             | BinaryTransfer::VectorCreate { expires_at, .. }
             | BinaryTransfer::PhysicalCreate { expires_at, .. }
             | BinaryTransfer::VectorReplace { expires_at, .. }
-            | BinaryTransfer::AssetUpload { expires_at, .. } => *expires_at > now,
+            | BinaryTransfer::AssetUpload { expires_at, .. }
+            | BinaryTransfer::TextTransfer { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -164,6 +198,15 @@ impl BinaryTransferManager {
             .transfers
             .get_mut(token)
             .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        if matches!(
+            transfer,
+            BinaryTransfer::TextTransfer {
+                committed: true,
+                ..
+            }
+        ) {
+            return Err("text transfer is already committed".into());
+        }
         let (owner, expected_session, next_chunk, declared_size, bytes) = match transfer {
             BinaryTransfer::Upload {
                 plugin_id,
@@ -220,6 +263,14 @@ impl BinaryTransferManager {
                 declared_size,
                 bytes,
                 ..
+            }
+            | BinaryTransfer::TextTransfer {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
             } => (plugin_id, session_id, next_chunk, declared_size, bytes),
             _ => return Err("asset handle is not an upload handle".into()),
         };
@@ -237,7 +288,104 @@ impl BinaryTransferManager {
         }
         bytes.extend_from_slice(body);
         *next_chunk += 1;
-        Ok(bytes.len())
+        let received = bytes.len();
+        // Each accepted chunk keeps a slow but progressing upload alive.
+        *transfer.expires_at_mut() = Instant::now() + ASSET_TRANSFER_TTL;
+        Ok(received)
+    }
+
+    /// Text transfers a plugin session holds open, committed or not.
+    pub(super) fn open_text_transfers(&mut self, plugin_id: &str, session_id: &str) -> usize {
+        self.cleanup();
+        self.transfers
+            .values()
+            .filter(|transfer| {
+                matches!(
+                    transfer,
+                    BinaryTransfer::TextTransfer {
+                        plugin_id: owner,
+                        session_id: owner_session,
+                        ..
+                    } if owner == plugin_id && owner_session == session_id
+                )
+            })
+            .count()
+    }
+
+    /// Freezes a finished text transfer after checking that it belongs to this
+    /// plugin session and project, that every declared byte arrived and that
+    /// the bytes are UTF-8. The handle stays live on failure; the plugin can
+    /// cancel it. The shell then has a fresh TTL to take the text.
+    pub(super) fn commit_text(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+    ) -> Result<usize, String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get_mut(token)
+            .ok_or_else(|| "text transfer is invalid or expired".to_string())?;
+        let BinaryTransfer::TextTransfer {
+            plugin_id: owner,
+            session_id: expected_session,
+            project_id: expected_project,
+            declared_size,
+            bytes,
+            committed,
+            ..
+        } = &mut *transfer
+        else {
+            return Err("text transfer is invalid or expired".into());
+        };
+        if owner != plugin_id || expected_session != session_id || expected_project != project_id {
+            return Err("text transfer is not valid for this session or project".into());
+        }
+        if *committed {
+            return Err("text transfer is already committed".into());
+        }
+        if bytes.len() != *declared_size {
+            return Err("text transfer is incomplete".into());
+        }
+        if std::str::from_utf8(bytes).is_err() {
+            return Err("text transfer is not valid UTF-8".into());
+        }
+        *committed = true;
+        let size = bytes.len();
+        *transfer.expires_at_mut() = Instant::now() + ASSET_TRANSFER_TTL;
+        Ok(size)
+    }
+
+    /// Hands a committed text transfer to the shell, once. A transfer that is
+    /// uncommitted, belongs to another plugin or another project stays where
+    /// it is.
+    pub(super) fn take_text(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        project_id: &str,
+    ) -> Result<String, String> {
+        self.cleanup();
+        let Some(transfer) = self.transfers.remove(token) else {
+            return Err("text transfer is invalid or expired".into());
+        };
+        match transfer {
+            BinaryTransfer::TextTransfer {
+                plugin_id: owner,
+                project_id: expected_project,
+                bytes,
+                committed: true,
+                ..
+            } if owner == plugin_id && expected_project == project_id => {
+                String::from_utf8(bytes).map_err(|_| "text transfer is not valid UTF-8".to_string())
+            }
+            other => {
+                self.transfers.insert(token.into(), other);
+                Err("text transfer is not available to this plugin".into())
+            }
+        }
     }
 
     pub(super) fn prepare_upload(
@@ -613,7 +761,8 @@ impl BinaryTransferManager {
             | BinaryTransfer::VectorCreate { plugin_id, .. }
             | BinaryTransfer::PhysicalCreate { plugin_id, .. }
             | BinaryTransfer::VectorReplace { plugin_id, .. }
-            | BinaryTransfer::AssetUpload { plugin_id, .. } => plugin_id,
+            | BinaryTransfer::AssetUpload { plugin_id, .. }
+            | BinaryTransfer::TextTransfer { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -1276,6 +1425,8 @@ pub(super) fn plugin_protocol_response(
                         | "asset.transfer.cancel"
                         | "asset.upload.begin"
                         | "asset.upload.commit"
+                        | "text.transfer.begin"
+                        | "text.transfer.commit"
                         | "maps.image.import.begin"
                         | "maps.image.import.commit"
                         | "maps.vector.create.begin"
@@ -1475,6 +1626,25 @@ pub(super) fn forward_plugin_state_event(publisher_plugin_id: &str, payload: &se
         _ => return,
     };
     let _ = app.emit(shell_event, body);
+}
+
+/// Claims the text a plugin committed with `text.transfer.commit`, once. The
+/// shell calls this after a plugin event names the transfer; the transfer must
+/// belong to `plugin_id` and the open project, and is dropped by the claim.
+#[tauri::command]
+pub(super) fn plugin_take_text_transfer(
+    state: tauri::State<'_, SharedCore>,
+    transfers: tauri::State<'_, SharedBinaryTransfers>,
+    plugin_id: String,
+    transfer_id: String,
+) -> Result<String, String> {
+    let project_id = current_info(state.inner())?
+        .map(|info| info.root)
+        .ok_or_else(|| "project is not open".to_string())?;
+    let mut manager = transfers
+        .lock()
+        .map_err(|_| "asset transfer state is unavailable".to_string())?;
+    manager.take_text(&transfer_id, &plugin_id, &project_id)
 }
 
 pub(super) fn plugin_asset_url(token: &str, session_id: &str, chunk: Option<u64>) -> String {
@@ -1749,6 +1919,46 @@ pub(super) fn dispatch_binary_asset_rpc(
                 .map_err(|_| "asset transfer state is unavailable".to_string())?;
             manager.complete_upload(token, &session.plugin_id, &session.id)?;
             serde_json::to_value(asset).map_err(|e| e.to_string())
+        }
+        "text.transfer.begin" => {
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|size| *size > 0)
+                .ok_or_else(|| "text transfer size must be a positive integer".to_string())?;
+            if size_value > MAX_TEXT_TRANSFER_BYTES as u64 {
+                return Err("text transfer exceeds the host limit".into());
+            }
+            if manager.open_text_transfers(&session.plugin_id, &session.id)
+                >= MAX_OPEN_TEXT_TRANSFERS
+            {
+                return Err("too many text transfers are open".into());
+            }
+            let size = size_value as usize;
+            let token = manager.token(BinaryTransfer::TextTransfer {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                declared_size: size,
+                next_chunk: 0,
+                // Grown by the chunks that arrive, so a refused or abandoned
+                // transfer does not hold its full declared size.
+                bytes: Vec::with_capacity(size.min(daena_plugin_host::runtime::MAX_RPC_BYTES)),
+                committed: false,
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"transferId":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "text.transfer.commit" => {
+            let token = payload
+                .get("transferId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "transferId is required".to_string())?;
+            let size =
+                manager.commit_text(token, &session.plugin_id, &session.id, &session.project_id)?;
+            Ok(serde_json::json!({"transferId":token,"size":size}))
         }
         "maps.image.import.begin" => {
             let name = payload

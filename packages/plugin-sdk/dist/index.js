@@ -341,6 +341,8 @@ export function createPluginRpcClient(transport) {
         beginAssetUpload: (input, options) => callTransport(transport, "asset.upload.begin", input, options?.requestId),
         commitAssetUpload: (handle, contentHash, options) => callTransport(transport, "asset.upload.commit", { handle, contentHash }, options?.requestId),
         listSharedAssets: () => callTransport(transport, "asset.shared.list", {}),
+        beginTextTransfer: (size) => callTransport(transport, "text.transfer.begin", { size }),
+        commitTextTransfer: (transferId) => callTransport(transport, "text.transfer.commit", { transferId }),
         startAiRequest: (request) => callTransport(transport, "ai.request.start", request),
         pollAiRequest: (requestId) => callTransport(transport, "ai.request.poll", { requestId }),
         cancelAiRequest: (requestId) => callTransport(transport, "ai.request.cancel", { requestId }),
@@ -362,6 +364,31 @@ export async function uploadAssetChunks(transfer, bytes, fetcher = globalThis.fe
             break;
     }
 }
+/** Largest text `transferText` sends; the host enforces the same cap. */
+export const MAX_TEXT_TRANSFER_BYTES = 32 * 1024 * 1024;
+/**
+ * Hands UTF-8 text that is too large for one event to the host: begin, PUT the chunks, commit. Resolves to
+ * the transfer id to name in an event; the shell claims the text once. A failed transfer is cancelled before
+ * the error is rethrown. Needs the `text.transfer` capability.
+ */
+export async function transferText(client, text, fetcher = globalThis.fetch) {
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length === 0)
+        throw new Error("text transfer needs text");
+    if (bytes.length > MAX_TEXT_TRANSFER_BYTES)
+        throw new Error("text exceeds SDK transfer limit");
+    const transfer = await client.beginTextTransfer(bytes.length);
+    try {
+        await uploadAssetChunks(transfer, bytes, fetcher);
+        await client.commitTextTransfer(transfer.transferId);
+    }
+    catch (cause) {
+        // Best effort: the host drops an abandoned transfer when it expires.
+        await client.cancelAssetTransfer(transfer.transferId).catch(() => undefined);
+        throw cause;
+    }
+    return transfer.transferId;
+}
 const knownCapabilities = new Set([
     "ai.text.generate",
     "ai.text.generate-structured",
@@ -381,6 +408,7 @@ const knownCapabilities = new Set([
     "asset.read:shared",
     "asset.write:self",
     "asset.register",
+    "text.transfer",
     "search.query",
     "schema.overlay",
     "event.publish:<type>",

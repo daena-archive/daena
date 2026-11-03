@@ -235,9 +235,9 @@ Rules:
   `daena.language` plugin webview inside the workbench content pane. The host
   owns the surface placement, mount parameters (`entityId`, `state`), and the
   `daena.language/state@1` protocol (pane, leave guard, entity changes, link
-  opening); Language owns its guides, rich text, and dialogs. A plugin still
-  cannot register arbitrary native commands or create an unregistered host
-  surface.
+  opening via `open-link`, entity opening via `open-entity`); Language owns
+  its guides, rich text, and dialogs. A plugin still cannot register arbitrary
+  native commands or create an unregistered host surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
 - Enabled state and granted capabilities are not stored in the package

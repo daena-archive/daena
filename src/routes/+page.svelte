@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
-import { installShellEditorHost, shellEditorHost } from "$lib/editor/shell-host";
+import { installShellEditorHost, setShellEntityOpener, shellEditorHost } from "$lib/editor/shell-host";
 import { mimeTypeFor } from "$lib/assets/mime";
 import {
   project,
@@ -336,6 +336,7 @@ import { defaultCreateFieldValue, isCreateDropdownField, isCreateValuePopulated 
 import { friendlyError } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 installShellEditorHost();
+setShellEntityOpener((entityId) => void openEntityById(entityId));
 
 type InstalledModule = ProjectModuleManifest;
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
@@ -1670,6 +1671,9 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
       if (href) void shellEditorHost.openExternal(href);
       return;
     }
+    case "open-entity":
+      void openEntityById(event.entityId);
+      return;
   }
 }
 
@@ -5028,6 +5032,31 @@ async function selectEntity(entity: Entity, recordHistory = true) {
   } catch (cause) {
     error = friendlyError(cause);
   }
+}
+
+/**
+ * Opens an entity named by an editor link. Missing and deleted entities are ignored. From the Language
+ * section the switch goes through selectSearchResult, which runs the Language leave guard and moves a
+ * non-language entity into its own section; everywhere else it is the same selectEntity path as the hover card.
+ */
+async function openEntityById(entityId: string) {
+  let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
+  if (!entity) {
+    try {
+      entity = await project.getEntity(entityId);
+    } catch (cause) {
+      error = friendlyError(cause);
+      return;
+    }
+  }
+  if (!entity || entity.deleted) return;
+  const target: Entity = entity;
+  if (!entities.some((candidate) => candidate.id === target.id)) entities = [...entities, target];
+  if (section === "language") {
+    await selectSearchResult(target);
+    return;
+  }
+  await selectEntity(target);
 }
 
 async function openSelectedMapEditor() {

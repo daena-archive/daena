@@ -35,6 +35,17 @@ export interface EditorHost {
   getAssetByPath(path: string): Promise<{ mime_type?: string } | null>;
   /** Opens an already-normalised http(s)/mailto/ftp URL outside the app. */
   openExternal(href: string): Promise<void>;
+  /**
+   * Opens the entity with this id in the host's surface. Null when the host cannot open entities, which
+   * hides the Open action on entity references.
+   */
+  openEntity: ((entityId: string) => void) | null;
+  /**
+   * Current names for entity ids, keyed by id, for references whose entity the editor's `entities` prop does
+   * not list. Deleted, missing and unreadable ids are left out of the result. Null when the host cannot look
+   * names up, and the references keep the label they have.
+   */
+  resolveEntityNames: ((ids: string[]) => Promise<Record<string, string>>) | null;
   /** Asset services, or null when the host offers no assets. */
   assets: EditorAssetServices | null;
   /** Backend-paged entity search for entity links and mentions, or null when the host cannot search entities. */

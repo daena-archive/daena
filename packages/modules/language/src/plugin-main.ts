@@ -47,6 +47,7 @@ async function start(target: HTMLElement): Promise<void> {
       rpc: client,
       fetch: (url) => window.fetch(url),
       openLink: (href) => void publish({ kind: "open-link", href }),
+      openEntity: (entityId) => void publish({ kind: "open-entity", entityId }),
       namespace: "language",
       launchEntityId: entityId,
       uploadChunks: (transfer, bytes) => uploadAssetChunks(transfer, bytes),

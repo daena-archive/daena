@@ -79,7 +79,8 @@ export type LanguageStatePayload =
   | { kind: "leave-pending"; requestId: string }
   | { kind: "leave-reply"; requestId: string; allowed: boolean }
   | { kind: "entity-changed"; entityId: string; deleted: boolean }
-  | { kind: "open-link"; href: string };
+  | { kind: "open-link"; href: string }
+  | { kind: "open-entity"; entityId: string };
 
 export type LeaveStatePayload = Extract<LanguageStatePayload, { kind: "leave-pending" | "leave-reply" }>;
 

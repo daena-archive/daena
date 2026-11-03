@@ -127,6 +127,25 @@ assert.deepEqual(parseLanguageStateEvent({ kind: "open-link", href: "https://exa
   href: "https://example.com",
 });
 
+// open-entity: the id must be a non-empty string no longer than the shared id limit (128).
+assert.equal(parseLanguageStateEvent({ kind: "open-entity" }), null);
+assert.equal(parseLanguageStateEvent({ kind: "open-entity", entityId: "" }), null, "empty ids are dropped");
+assert.equal(parseLanguageStateEvent({ kind: "open-entity", entityId: 42 }), null, "ids must be strings");
+assert.equal(parseLanguageStateEvent({ kind: "open-entity", id: "e-1" }), null, "the field is entityId");
+assert.equal(
+  parseLanguageStateEvent({ kind: "open-entity", entityId: "x".repeat(129) }),
+  null,
+  "overlong ids are dropped",
+);
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "e-1" }), {
+  kind: "open-entity",
+  entityId: "e-1",
+});
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "x".repeat(128) }), {
+  kind: "open-entity",
+  entityId: "x".repeat(128),
+});
+
 assert.equal(LANGUAGE_LEAVE_PENDING_TIMEOUT_MS, 1500);
 
 // Can-leave: no leave-pending within the timeout means the webview is gone, so allow.

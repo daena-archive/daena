@@ -72,6 +72,7 @@ function makeHost({
     rpc,
     fetch,
     openLink() {},
+    openEntity() {},
     namespace: "language",
     launchEntityId,
     uploadChunks,
@@ -710,6 +711,34 @@ function assertBrokerPayloads(calls) {
   const rpc = fakeRpc({ "entity.query": () => null });
   const host = makeHost({ rpc });
   await assert.rejects(host.searchEntities({ text: "x", offset: 0, limit: 8 }), /invalid page/);
+}
+
+// Names for unlabelled references: one entity.get per id, each payload holding only the id. Deleted and failed lookups are left out.
+{
+  const stored = {
+    "lang-1": { ...ENTITY, id: "lang-1", name: "Aven" },
+    "e-2": { ...ENTITY, id: "e-2", name: "Kalen", deleted: false },
+    "e-3": { ...ENTITY, id: "e-3", name: "Gone", deleted: true },
+  };
+  const rpc = fakeRpc({
+    "entity.get": (payload) => {
+      if (payload.id === "broken") throw new Error("entity read failed");
+      return stored[payload.id] ?? null;
+    },
+  });
+  const host = makeHost({ rpc });
+  assert.deepEqual(
+    await host.resolveEntityNames(["lang-1", "e-2", "e-3", "missing", "broken"]),
+    { "lang-1": "Aven", "e-2": "Kalen" },
+    "live entities are named; deleted, missing and failed lookups are left out",
+  );
+  assert.deepEqual(
+    rpc.calls.map((call) => [call.method, call.payload]),
+    ["lang-1", "e-2", "e-3", "missing", "broken"].map((id) => ["entity.get", { id }]),
+    "one entity.get per id, each with only the id",
+  );
+  assert.deepEqual(await host.resolveEntityNames([]), {}, "no ids asks the broker nothing");
+  assert.equal(rpc.calls.length, 5, "an empty request adds no calls");
 }
 
 console.log("language asset upload tests passed");

@@ -35,6 +35,28 @@ unfinished remainder.
   `<input type="file">`, one upload at a time per entity.
 - The plugin bundles are fully minified after the Vite build
   (`scripts/minify-plugin-bundle.mjs`).
+- Verified in the real macOS app, windowed and fullscreen: Language in the
+  content pane (layout, pane switching from history, leave guards, toasts,
+  link opening, shared images, the native file chooser), the Chronology and
+  World graph webviews (layout, Back, Show on map), image insert in a
+  main-window editor, and switching entities right after typing. That run
+  found and fixed:
+  - Show on map: activating Maps replaced the native
+    `daena.maps/navigation@1` handler with a failing WASM stub.
+  - Placement: in windowed mode the main webview spans the title bar and
+    WebKit starts the page 32pt down, so the content view is taller than the
+    CSS viewport. `scale_plugin_bounds` takes zoom from the width ratio and
+    applies the extra height as a top inset. `SandboxView` also re-syncs when
+    its placeholder moves or an ancestor scrolls, not only when it resizes.
+  - The Languages layout runs flush to the window's bottom edge, since a
+    native webview cannot scroll with the page.
+  - Anchored popovers (project switcher, status center) hide a plugin
+    webview only when they overlap it; modal dialogs still hide all of them.
+  - Plugin editors get entity search through `EditorHost.searchEntities`.
+- Entity links open from any rich-text editor through `EditorHost.openEntity`
+  (an Open button beside Edit reference, or Cmd/Ctrl+click). The Language
+  webview asks the shell with an `open-entity` state message, which goes
+  through the Language leave guard.
 
 ## Still open
 
@@ -49,17 +71,22 @@ unfinished remainder.
 - Guide dismissals for Language now live in the plugin webview's own
   `localStorage`, so earlier dismissals made in the main webview do not carry
   over.
-- Isolation proof is still static and fake-broker rendering, not packaged
-  Tauri webview tests on every desktop platform. The Language content-pane
-  layout, the projection webviews, overlay hiding, and toast placement need a
-  run in the real app, windowed and fullscreen.
+- Automated isolation proof is still static and fake-broker rendering. The
+  real-app check above was manual and macOS only; Windows and Linux webview
+  placement is unverified.
+- Do not call Tauri dispatcher methods (`set_position`, `set_size`, `show`,
+  `run_on_main_thread`) inside `Webview::with_webview`. In tauri-runtime-wry
+  2.11.4 the runtime holds the webview's `window_id` mutex while the closure
+  runs, and on the main thread the closure runs synchronously, so such a call
+  deadlocks the app.
+- Two clippy warnings predate this work (`host.rs` useless conversion,
+  `plugin_webview_url` argument count), so workspace clippy with
+  `-D warnings` fails.
 
 ## Resume order
 
-1. Run the desktop app, windowed and fullscreen, and verify Language in the
-   content pane (layout at narrow and short windows, pane switching from
-   history, leave guards, overlays, toasts, link opening, shared images, the
-   native file chooser for asset upload) and the Chronology and World graph
-   webviews (layout, Back, Show on map). Also insert an image in a main-window
-   editor, which is unverified since the editor host change, and switch entities
-   right after typing to confirm no text is lost or moved.
+1. Isolate Writing Studio into `src-tauri/plugin-assets/writing/`, the last
+   major module still in the main webview.
+2. Refresh the asset upload deadline per committed chunk so large uploads
+   cannot expire mid-transfer.
+3. Clear the two pre-existing clippy warnings.

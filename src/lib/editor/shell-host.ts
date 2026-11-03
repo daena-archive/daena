@@ -46,6 +46,16 @@ const shellSearchEntities: AsyncEntitySearchFn = async (query) => {
   return toAsyncEntityPage(page, { excludeIds: query.excludeIds });
 };
 
+/** Names of the entities with these ids. A lookup that fails is left out rather than failing the others. */
+async function shellResolveEntityNames(ids: string[]): Promise<Record<string, string>> {
+  const found = await Promise.all(ids.map((id) => project.getEntity(id).catch(() => null)));
+  const names: Record<string, string> = {};
+  for (const entity of found) {
+    if (entity && !entity.deleted) names[entity.id] = entity.name;
+  }
+  return names;
+}
+
 async function openExternal(href: string): Promise<void> {
   const isTauri = typeof window !== "undefined" && ((window as any).__TAURI__ || (window as any).__TAURI_INTERNALS__);
   if (isTauri) {
@@ -95,9 +105,19 @@ export const shellEditorHost: EditorHost = {
   },
   getAssetByPath: (path) => project.getAssetByPath(path),
   openExternal,
+  openEntity: null,
+  resolveEntityNames: shellResolveEntityNames,
   assets: shellAssets,
   searchEntities: shellSearchEntities,
 };
+
+/**
+ * Sets the function that opens an entity for editor links, or clears it with null. The route calls
+ * this once its selection state exists; until then editors in the main webview offer no Open action.
+ */
+export function setShellEntityOpener(opener: ((entityId: string) => void) | null): void {
+  shellEditorHost.openEntity = opener;
+}
 
 /** Makes the shell host the default for every editor surface in the main webview. Call once at startup. */
 export function installShellEditorHost(): void {

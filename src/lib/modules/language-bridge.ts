@@ -29,7 +29,8 @@ export type LanguageStateEvent =
   | { kind: "leave-pending"; requestId: string }
   | { kind: "leave-reply"; requestId: string; allowed: boolean }
   | { kind: "entity-changed"; entityId: string; deleted: boolean }
-  | { kind: "open-link"; href: string };
+  | { kind: "open-link"; href: string }
+  | { kind: "open-entity"; entityId: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -73,6 +74,10 @@ export function parseLanguageStateEvent(payload: unknown): LanguageStateEvent | 
     }
     case "open-link":
       return typeof payload.href === "string" ? { kind: "open-link", href: payload.href } : null;
+    case "open-entity": {
+      const entityId = idOf(payload.entityId);
+      return entityId === null ? null : { kind: "open-entity", entityId };
+    }
     default:
       return null;
   }

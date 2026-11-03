@@ -120,6 +120,7 @@ assert.equal(paneStatePayload(null), null);
   const calls = [];
   const fetched = [];
   const opened = [];
+  const openedEntities = [];
   const bytes = new Uint8Array([1, 2, 3, 4]);
   const host = createBrokerEditorHost({
     rpc: {
@@ -135,6 +136,7 @@ assert.equal(paneStatePayload(null), null);
       return new Response(bytes, { status: 200 });
     },
     openLink: (href) => opened.push(href),
+    openEntity: (entityId) => openedEntities.push(entityId),
   });
 
   assert.equal(typeof host.assets?.pickAndRegisterAsset, "function", "the broker host offers asset management");
@@ -153,6 +155,9 @@ assert.equal(paneStatePayload(null), null);
 
   await host.openExternal("https://example.com/a");
   assert.deepEqual(opened, ["https://example.com/a"]);
+
+  host.openEntity("lang-7");
+  assert.deepEqual(openedEntities, ["lang-7"], "the broker host hands entity opens to the shell");
 }
 
 {
@@ -166,6 +171,7 @@ assert.equal(paneStatePayload(null), null);
       return new Response("nope", { status: 404 });
     },
     openLink() {},
+    openEntity() {},
   });
   assert.equal(await host.readAssetBytesByPath("assets/x.png"), null, "non-OK responses resolve to null");
   assert.deepEqual(await host.getAssetByPath("assets/x.png"), { mime_type: undefined });
@@ -182,6 +188,7 @@ assert.equal(paneStatePayload(null), null);
       throw new Error("never reached");
     },
     openLink() {},
+    openEntity() {},
   });
   assert.equal(await host.readAssetBytesByPath("assets/x.png"), null);
   assert.equal(await host.getAssetByPath("assets/x.png"), null);

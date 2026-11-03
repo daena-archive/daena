@@ -205,6 +205,11 @@ let entityReferenceEdit: {
   top: number;
   left: number;
 } | null = null;
+/** Grace period before an unhovered reference popover closes, so the pointer can cross the gap into it. */
+const ENTITY_REFERENCE_HIDE_DELAY_MS = 200;
+let entityReferenceHideTimer: number | null = null;
+let entityReferencePopoverEl: HTMLDivElement | null = null;
+let entityReferenceDismissOff: (() => void) | null = null;
 let aiRequestRange: { from: number; to: number } | null = null;
 let aiRequestText = "";
 let linkDialogOpen = false;
@@ -1171,34 +1176,79 @@ function isImageActive(): boolean {
   return !!editorState?.isActive("image");
 }
 
+/** Names the host resolved for references that the `entities` prop does not list. */
+const hostEntityNames = new Map<string, string>();
+/** Entity ids already asked of the host, so each one is requested once per editor. */
+const askedEntityIds = new Set<string>();
+
+/** Names by entity id: the host's names, with the `entities` prop winning for each live entity it lists. */
+function entityNameMap(): Map<string, string> {
+  const names = new Map(hostEntityNames);
+  for (const entity of entities) if (!entity.deleted) names.set(entity.id, entity.name);
+  return names;
+}
+
+/**
+ * Sets each reference's label from the name map. A non-custom reference with no known name keeps its own
+ * text, or shows its id until the name arrives, so the reference is not emptied and dropped from the document.
+ */
 function hydrateEntityReferences(html: string): string {
   if (typeof document === "undefined") return html;
-  if (!entities || entities.length === 0) return html;
+  const names = entityNameMap();
   const template = document.createElement("template");
   template.innerHTML = html;
-  const map = new Map(entities.filter((e) => !e.deleted).map((e) => [e.id, e.name]));
   for (const el of template.content.querySelectorAll("a[data-entity-id]")) {
     const a = el as HTMLElement;
     const id = a.getAttribute("data-entity-id") ?? "";
-    const name = map.get(id);
-    if (!name) continue;
+    const name = names.get(id);
     const isCustomAttr = a.getAttribute("data-is-custom");
     const text = (a.textContent ?? "").trim();
     const isCustom = isCustomAttr != null ? isCustomAttr === "true" : !!text;
     if (!isCustom) {
-      if (text !== name) a.textContent = name;
+      const label = name ?? (text || id);
+      if (text !== label) a.textContent = label;
       a.setAttribute("data-is-custom", "false");
     } else {
       a.setAttribute("data-is-custom", "true");
-      if (!text) a.textContent = name;
+      if (!text && name) a.textContent = name;
     }
   }
   return template.innerHTML;
 }
 
+/**
+ * Asks the host for the names of referenced entities that the `entities` prop does not list. Each id is asked
+ * once. A failed request is ignored, and its references keep the label they have.
+ */
+function resolveMissingEntityNames() {
+  const host = effectiveHost;
+  if (!editor || !host?.resolveEntityNames) return;
+  const listed = new Set(entities.map((entity) => entity.id));
+  const missing = new Set<string>();
+  editor.state.doc.descendants((node) => {
+    for (const mark of node.marks) {
+      if (mark.type.name !== "entityReference") continue;
+      const id = String(mark.attrs.entityId ?? "");
+      if (id && !listed.has(id) && !askedEntityIds.has(id)) missing.add(id);
+    }
+  });
+  if (missing.size === 0) return;
+  for (const id of missing) askedEntityIds.add(id);
+  host
+    .resolveEntityNames([...missing])
+    .then((names) => {
+      if (!editor) return;
+      for (const [id, name] of Object.entries(names)) {
+        if (name) hostEntityNames.set(id, name);
+      }
+      updateAutoEntityReferences();
+    })
+    .catch(() => {});
+}
+
 function updateAutoEntityReferences() {
   if (!editor || !editorState || !entities) return;
-  const map = new Map(entities.filter((e) => !e.deleted).map((e) => [e.id, e.name]));
+  const names = entityNameMap();
   const doc = editor.state.doc;
   const replacements: Array<{ from: number; to: number; text: string; mark: any }> = [];
   doc.descendants((node, pos) => {
@@ -1207,7 +1257,7 @@ function updateAutoEntityReferences() {
     if (!erMark) return;
     if (!!erMark.attrs.isCustom) return;
     const id = erMark.attrs.entityId;
-    const expected = map.get(id);
+    const expected = names.get(id);
     if (!expected) return;
     if (node.text !== expected)
       replacements.push({ from: pos, to: pos + node.text.length, text: expected, mark: erMark });
@@ -1306,6 +1356,65 @@ function openEntityReferenceEditor() {
   entityReferenceDialogMode = "edit";
   entityReferenceDialogOpen = true;
 }
+
+/** Opens the entity through the host and closes the reference popover. False when the host cannot open entities. */
+function openEntityReference(entityId: string): boolean {
+  if (!effectiveHost?.openEntity) return false;
+  entityReferenceEdit = null;
+  effectiveHost.openEntity(entityId);
+  return true;
+}
+
+function openEntityReferenceFromPopover() {
+  if (entityReferenceEdit) openEntityReference(entityReferenceEdit.entityId);
+}
+
+/** Closes the reference popover. An open dialog still reads the reference it edits, so the popover stays for it. */
+function hideEntityReferenceEditor() {
+  cancelEntityReferenceHide();
+  if (entityReferenceDialogOpen) return;
+  entityReferenceEdit = null;
+}
+
+function cancelEntityReferenceHide() {
+  if (entityReferenceHideTimer === null) return;
+  window.clearTimeout(entityReferenceHideTimer);
+  entityReferenceHideTimer = null;
+}
+
+function scheduleEntityReferenceHide() {
+  cancelEntityReferenceHide();
+  entityReferenceHideTimer = window.setTimeout(() => {
+    entityReferenceHideTimer = null;
+    // Keyboard focus inside the popover keeps it open; focus leaving it closes it (see below).
+    if (entityReferencePopoverEl?.contains(document.activeElement)) return;
+    hideEntityReferenceEditor();
+  }, ENTITY_REFERENCE_HIDE_DELAY_MS);
+}
+
+/** Closes the popover when focus leaves both the editor and the popover, so Tab into its buttons keeps it open. */
+function handleEntityReferenceFocusOut(event: FocusEvent) {
+  const next = event.relatedTarget as Node | null;
+  if (next && (editorElement?.contains(next) || entityReferencePopoverEl?.contains(next))) return;
+  // Removing the editor can dispatch this inside a reactive update, so the state write runs untracked.
+  untrack(hideEntityReferenceEditor);
+}
+
+/** Closes the popover on any scroll (captured, since scroll does not bubble) or window resize while it is shown. */
+function attachEntityReferenceDismiss() {
+  if (entityReferenceDismissOff) return;
+  const dismiss = () => hideEntityReferenceEditor();
+  window.addEventListener("scroll", dismiss, { capture: true, passive: true });
+  window.addEventListener("resize", dismiss);
+  entityReferenceDismissOff = () => {
+    window.removeEventListener("scroll", dismiss, { capture: true });
+    window.removeEventListener("resize", dismiss);
+    entityReferenceDismissOff = null;
+  };
+}
+
+$: if (entityReferenceEdit) attachEntityReferenceDismiss();
+else entityReferenceDismissOff?.();
 
 function saveEntityReference(
   entity: Pick<Entity, "id" | "name"> | AsyncEntityOption,
@@ -1411,6 +1520,8 @@ function updateEntityReferenceTrigger(nextEditor: Editor) {
 }
 
 function syncEntityReferenceEditor(nextEditor: Editor) {
+  // The blur transaction also arrives here with the selection still on the reference; it must not reopen the popover.
+  if (!nextEditor.isFocused) return;
   const { from, to } = nextEditor.state.selection;
   if (from !== to || entityReferenceDialogOpen) return;
   const dom = nextEditor.view.domAtPos(from).node;
@@ -1783,6 +1894,7 @@ function syncEditorTransaction({ editor: nextEditor, transaction }: { editor: Ed
   }
   editorState = nextEditor;
   emitSelection();
+  if (transaction.docChanged) resolveMissingEntityNames();
   updateEntityReferenceTrigger(nextEditor);
   syncEntityReferenceEditor(nextEditor);
   syncSearchState(nextEditor);
@@ -1912,6 +2024,7 @@ onMount(() => {
         const entityId = anchor?.dataset.entityId;
         if (!entityId) return false;
         event.preventDefault();
+        if ((event.metaKey || event.ctrlKey) && openEntityReference(entityId)) return true;
         showEntityReferenceEditor(entityId, anchor.textContent ?? "", _position, anchor.getBoundingClientRect());
         return true;
       },
@@ -1920,6 +2033,7 @@ onMount(() => {
           const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>("a[data-entity-id]");
           const entityId = anchor?.dataset.entityId;
           if (anchor && entityId) {
+            cancelEntityReferenceHide();
             showEntityReferenceEditor(
               entityId,
               anchor.textContent ?? "",
@@ -1927,6 +2041,12 @@ onMount(() => {
               anchor.getBoundingClientRect(),
             );
           }
+          return false;
+        },
+        mouseout: (_view, event) => {
+          const anchor = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>("a[data-entity-id]");
+          // Moving between the link's own children is not leaving it.
+          if (anchor && !anchor.contains(event.relatedTarget as Node | null)) scheduleEntityReferenceHide();
           return false;
         },
         click: (_view, event) => {
@@ -2031,6 +2151,7 @@ onMount(() => {
   editorState = editor;
   currentMarkdown = markdownFromEditorHtml(editor.getHTML());
   editorText = editorPlainText(editor);
+  resolveMissingEntityNames();
   const preventLinkNavigationCapture = (event: MouseEvent) => {
     const anchor = getExternalLinkAnchor(event.target);
     if (anchor) event.preventDefault();
@@ -2063,6 +2184,8 @@ onMount(() => {
     editorElement.removeEventListener("click", preventLinkNavigationCapture, true);
     editorElement.removeEventListener("auxclick", preventLinkNavigationCapture, true);
     cancelAnimationFrame(initialTextFrame);
+    cancelEntityReferenceHide();
+    entityReferenceDismissOff?.();
     editor?.destroy();
     // Deferred callbacks (tick().then, handlers) read these; they must not reach a destroyed editor.
     editor = null;
@@ -2532,7 +2655,8 @@ $: inTable = editorState?.isActive("table") ?? false;
     data-placeholder={placeholder}
     role="presentation"
     bind:this={editorElement}
-    onmousedown={focusEditorSurface}>
+    onmousedown={focusEditorSurface}
+    onfocusout={handleEntityReferenceFocusOut}>
   </div>
   <EntityMentionMenu
     bind:this={entityMentionMenu}
@@ -2547,12 +2671,28 @@ $: inTable = editorState?.isActive("table") ?? false;
     onBrowse={openEntityReferenceDialog}
     onWebUrl={openWebUrlFromMention} />
   {#if entityReferenceEdit && !entityReferenceDialogOpen}
-    <button
-      type="button"
-      class="entity-reference-edit"
+    <div
+      class="entity-reference-popover"
+      role="group"
+      aria-label="Entity reference actions"
+      bind:this={entityReferencePopoverEl}
       style={`top: ${entityReferenceEdit.top}px; left: ${entityReferenceEdit.left}px;`}
-      onmousedown={(event) => event.preventDefault()}
-      onclick={openEntityReferenceEditor}>Edit reference</button>
+      onmouseenter={cancelEntityReferenceHide}
+      onmouseleave={scheduleEntityReferenceHide}
+      onfocusout={handleEntityReferenceFocusOut}>
+      {#if effectiveHost?.openEntity}
+        <button
+          type="button"
+          class="entity-reference-open"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={openEntityReferenceFromPopover}>Open</button>
+      {/if}
+      <button
+        type="button"
+        class="entity-reference-edit"
+        onmousedown={(event) => event.preventDefault()}
+        onclick={openEntityReferenceEditor}>Edit reference</button>
+    </div>
   {/if}
   {#if linkPopover && !linkDialogOpen}
     <div
@@ -2790,9 +2930,15 @@ $: inTable = editorState?.isActive("table") ?? false;
   border-color: transparent;
   background: transparent;
 }
-.entity-reference-edit {
+.entity-reference-popover {
   position: fixed;
   z-index: 75;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.entity-reference-open,
+.entity-reference-edit {
   min-height: 28px;
   padding: 0 8px;
   border: 1px solid var(--theme-warning-border, #d3c0a9);
@@ -2803,6 +2949,8 @@ $: inTable = editorState?.isActive("table") ?? false;
   font: 700 11px/1 var(--font-body, system-ui, sans-serif);
   cursor: pointer;
 }
+.entity-reference-open:hover,
+.entity-reference-open:focus-visible,
 .entity-reference-edit:hover,
 .entity-reference-edit:focus-visible {
   border-color: var(--accent);

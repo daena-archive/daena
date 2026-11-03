@@ -178,8 +178,10 @@ const hostWithSearch = (searchEntities) => ({
   readAssetBytesByPath: async () => null,
   getAssetByPath: async () => null,
   openExternal: async () => {},
+  openEntity: null,
   assets: null,
   searchEntities,
+  resolveEntityNames: null,
 });
 const mentionMenuText = () => document.querySelector(".entity-mention-menu")?.textContent ?? "";
 
@@ -246,6 +248,284 @@ await scenario("entity search: with no host and no prop a mention lists nothing 
   await wait(200);
   assert.match(mentionMenuText(), /No matching entities/, "the empty fallback answers the search");
 });
+
+// Entity references: the popover offers Open when the host can open entities, and Cmd/Ctrl+click opens directly.
+const openedEntities = [];
+const referenceValue = "See [[Ardashir]](e-9) here.";
+const hostWithOpen = (openEntity) => ({
+  readAssetBytesByPath: async () => null,
+  getAssetByPath: async () => null,
+  openExternal: async () => {},
+  openEntity,
+  assets: null,
+  searchEntities: null,
+  resolveEntityNames: null,
+});
+
+function mountReferenceEditor(props = {}) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const app = harness.mountEntitySearchParent(container, { initialValue: referenceValue, ...props });
+  hosts.push({
+    setShown(next) {
+      if (!next) harness.unmount(app);
+    },
+  });
+  harness.flushSync();
+  const pm = container.querySelector(".ProseMirror");
+  assert.ok(pm?.editor, "RichTextEditor mounts with an entity reference");
+  return { container, editor: pm.editor, anchor: pm.querySelector("a[data-entity-id]") };
+}
+
+function hoverReference(anchor) {
+  anchor.dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+  harness.flushSync();
+}
+
+await scenario("entity reference: hovering offers Open before Edit, and Open opens the referenced id", async () => {
+  openedEntities.length = 0;
+  harness.setDefaultEditorHost(hostWithOpen((entityId) => openedEntities.push(entityId)));
+  const { container, anchor } = mountReferenceEditor();
+  assert.equal(anchor?.dataset.entityId, "e-9", "the reference renders with its entity id");
+  hoverReference(anchor);
+  const open = container.querySelector(".entity-reference-open");
+  const edit = container.querySelector(".entity-reference-edit");
+  assert.equal(open?.textContent, "Open", "the popover offers Open");
+  assert.equal(edit?.textContent, "Edit reference", "Edit reference stays in the popover");
+  assert.equal(open.nextElementSibling, edit, "Open sits before Edit");
+  open.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  assert.deepEqual(openedEntities, ["e-9"], "the host opens the referenced entity once");
+  harness.flushSync();
+  assert.equal(container.querySelector(".entity-reference-edit"), null, "the popover closes after Open");
+});
+
+await scenario("entity reference: without openEntity on the host the popover keeps only Edit", async () => {
+  harness.setDefaultEditorHost(hostWithOpen(null));
+  const { container, anchor } = mountReferenceEditor();
+  hoverReference(anchor);
+  assert.equal(container.querySelector(".entity-reference-open"), null, "no Open action without openEntity");
+  assert.equal(container.querySelector(".entity-reference-edit")?.textContent, "Edit reference");
+});
+
+await scenario("entity reference: Cmd or Ctrl+click opens the entity without showing the popover", async () => {
+  openedEntities.length = 0;
+  harness.setDefaultEditorHost(hostWithOpen((entityId) => openedEntities.push(entityId)));
+  const { container, editor, anchor } = mountReferenceEditor();
+  for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
+    const click = new window.MouseEvent("click", { bubbles: true, ...modifiers });
+    anchor.dispatchEvent(click);
+    const handled = editor.view.someProp("handleClick", (handleClick) =>
+      handleClick(editor.view, editor.view.posAtDOM(anchor, 0), click),
+    );
+    assert.equal(handled, true, "the editor handles the modified click");
+  }
+  assert.deepEqual(openedEntities, ["e-9", "e-9"], "each modified click opens the entity");
+  assert.equal(container.querySelector(".entity-reference-edit"), null, "no popover after a modified click");
+});
+
+await scenario("entity reference: a plain click shows the popover and does not open the entity", async () => {
+  openedEntities.length = 0;
+  harness.setDefaultEditorHost(hostWithOpen((entityId) => openedEntities.push(entityId)));
+  const { container, editor, anchor } = mountReferenceEditor();
+  const click = new window.MouseEvent("click", { bubbles: true });
+  anchor.dispatchEvent(click);
+  const handled = editor.view.someProp("handleClick", (handleClick) =>
+    handleClick(editor.view, editor.view.posAtDOM(anchor, 0), click),
+  );
+  harness.flushSync();
+  assert.equal(handled, true, "the editor handles the click");
+  assert.deepEqual(openedEntities, [], "a plain click does not open the entity");
+  assert.equal(container.querySelector(".entity-reference-edit")?.textContent, "Edit reference");
+  assert.equal(container.querySelector(".entity-reference-open")?.textContent, "Open");
+});
+// Unlabelled references ([[]](id)) take their name from the host when the entities prop does not list the entity.
+const POPOVER_GRACE_WAIT_MS = 300; // longer than the popover's grace period, so a scheduled close has run
+const resolvedBatches = [];
+const unlabelledValue = "Meet [[]](e-7) here.";
+const hostWithNames = (resolveEntityNames) => ({
+  readAssetBytesByPath: async () => null,
+  getAssetByPath: async () => null,
+  openExternal: async () => {},
+  openEntity: null,
+  assets: null,
+  searchEntities: null,
+  resolveEntityNames,
+});
+const referenceLabel = (container, entityId) => container.querySelector(`a[data-entity-id="${entityId}"]`)?.textContent;
+
+await scenario("unlabelled entity reference: with no entities prop the host supplies the name", async () => {
+  resolvedBatches.length = 0;
+  harness.setDefaultEditorHost(
+    hostWithNames(async (ids) => {
+      resolvedBatches.push(ids);
+      return { "e-7": "Ardashir" };
+    }),
+  );
+  const { container, editor } = mountReferenceEditor({ initialValue: unlabelledValue });
+  assert.ok(container.querySelector('a[data-entity-id="e-7"]'), "the reference is kept while its name is pending");
+  await wait(20);
+  assert.equal(referenceLabel(container, "e-7"), "Ardashir", "the host's name is the label");
+  assert.deepEqual(resolvedBatches, [["e-7"]], "the host is asked once for the id");
+  assert.equal(
+    harness.markdownFromEditorHtml(editor.getHTML()),
+    "Meet [[]](e-7) here.\n",
+    "the reference saves back unlabelled",
+  );
+  editor.commands.insertContent("x");
+  await wait(20);
+  assert.deepEqual(resolvedBatches, [["e-7"]], "later edits do not ask the host again");
+});
+
+await scenario("unlabelled entity reference: a name in the entities prop wins and the host is not asked", async () => {
+  resolvedBatches.length = 0;
+  harness.setDefaultEditorHost(
+    hostWithNames(async (ids) => {
+      resolvedBatches.push(ids);
+      return { "e-7": "Host name" };
+    }),
+  );
+  const { container } = mountReferenceEditor({
+    initialValue: unlabelledValue,
+    entities: [{ id: "e-7", name: "Listed name", entity_type: null, deleted: false, revision: "r7" }],
+  });
+  await wait(20);
+  assert.equal(referenceLabel(container, "e-7"), "Listed name", "the entities prop names the reference");
+  assert.deepEqual(resolvedBatches, [], "ids the entities prop lists are not asked of the host");
+});
+
+await scenario(
+  "unlabelled entity reference: a failed host lookup keeps the reference with its id as the label",
+  async () => {
+    harness.setDefaultEditorHost(
+      hostWithNames(async () => {
+        throw new Error("broker unavailable");
+      }),
+    );
+    const { container, editor } = mountReferenceEditor({ initialValue: unlabelledValue });
+    await wait(20);
+    assert.equal(referenceLabel(container, "e-7"), "e-7", "the id stands in until a name is known");
+    assert.equal(
+      harness.markdownFromEditorHtml(editor.getHTML()),
+      "Meet [[]](e-7) here.\n",
+      "the reference is not dropped from the document",
+    );
+  },
+);
+
+// The reference popover closes on scroll and resize, when the pointer leaves the link and the popover, and when
+// focus leaves the editor and the popover. Keyboard focus inside the popover keeps it open.
+const popoverOf = (container) => container.querySelector(".entity-reference-popover");
+function leaveReference(anchor, relatedTarget = null) {
+  anchor.dispatchEvent(new window.MouseEvent("mouseout", { bubbles: true, relatedTarget }));
+  harness.flushSync();
+}
+
+await scenario("entity reference popover: a scroll inside the page closes it", async () => {
+  harness.setDefaultEditorHost(hostWithOpen(() => {}));
+  const { container, anchor } = mountReferenceEditor();
+  hoverReference(anchor);
+  assert.ok(popoverOf(container), "hovering shows the popover");
+  container.querySelector(".editor-content").dispatchEvent(new window.Event("scroll"));
+  harness.flushSync();
+  assert.ok(!popoverOf(container), "a scroll of an ancestor closes it");
+});
+
+await scenario("entity reference popover: a window scroll or resize closes it", async () => {
+  harness.setDefaultEditorHost(hostWithOpen(() => {}));
+  const { container, anchor } = mountReferenceEditor();
+  hoverReference(anchor);
+  window.dispatchEvent(new window.Event("scroll"));
+  harness.flushSync();
+  assert.ok(!popoverOf(container), "a window scroll closes it");
+  hoverReference(anchor);
+  window.dispatchEvent(new window.Event("resize"));
+  harness.flushSync();
+  assert.ok(!popoverOf(container), "a window resize closes it");
+});
+
+await scenario(
+  "entity reference popover: it closes after the pointer leaves the link, once the grace period ends",
+  async () => {
+    harness.setDefaultEditorHost(hostWithOpen(() => {}));
+    const { container, anchor } = mountReferenceEditor();
+    hoverReference(anchor);
+    leaveReference(anchor);
+    await wait(50);
+    harness.flushSync();
+    assert.ok(popoverOf(container), "the grace period keeps it open at first");
+    await wait(POPOVER_GRACE_WAIT_MS);
+    harness.flushSync();
+    assert.ok(!popoverOf(container), "it closes after the grace period");
+  },
+);
+
+await scenario(
+  "entity reference popover: the pointer can cross into the popover and closes when it leaves",
+  async () => {
+    harness.setDefaultEditorHost(hostWithOpen(() => {}));
+    const { container, anchor } = mountReferenceEditor();
+    hoverReference(anchor);
+    const popover = popoverOf(container);
+    leaveReference(anchor, popover);
+    await wait(50);
+    popover.dispatchEvent(new window.MouseEvent("mouseenter"));
+    await wait(POPOVER_GRACE_WAIT_MS);
+    harness.flushSync();
+    assert.ok(popoverOf(container) === popover, "it stays open while the pointer is on it");
+    popover.dispatchEvent(new window.MouseEvent("mouseleave"));
+    await wait(POPOVER_GRACE_WAIT_MS);
+    harness.flushSync();
+    assert.ok(!popoverOf(container), "it closes once the pointer leaves it");
+  },
+);
+
+await scenario("entity reference popover: returning to the link inside the grace period keeps it open", async () => {
+  harness.setDefaultEditorHost(hostWithOpen(() => {}));
+  const { container, anchor } = mountReferenceEditor();
+  hoverReference(anchor);
+  leaveReference(anchor);
+  hoverReference(anchor);
+  await wait(POPOVER_GRACE_WAIT_MS);
+  harness.flushSync();
+  assert.ok(popoverOf(container), "the pending close is cancelled by the return");
+});
+
+await scenario(
+  "entity reference popover: Tab from the editor into its buttons keeps it open, focus leaving closes it",
+  async () => {
+    harness.setDefaultEditorHost(hostWithOpen(() => {}));
+    const { container, editor, anchor } = mountReferenceEditor();
+    const pm = container.querySelector(".ProseMirror");
+    pm.focus();
+    editor.commands.setTextSelection(editor.view.posAtDOM(anchor, 0) + 1);
+    harness.flushSync();
+    const open = container.querySelector(".entity-reference-open");
+    assert.ok(open, "a focused caret on the reference shows the popover");
+    open.focus();
+    harness.flushSync();
+    assert.ok(popoverOf(container), "moving focus into the popover keeps it open");
+    open.blur();
+    harness.flushSync();
+    assert.ok(!popoverOf(container), "focus leaving the popover closes it");
+  },
+);
+
+await scenario(
+  "entity reference popover: the editor losing focus closes it and the blur does not reopen it",
+  async () => {
+    harness.setDefaultEditorHost(hostWithOpen(() => {}));
+    const { container, editor, anchor } = mountReferenceEditor();
+    const pm = container.querySelector(".ProseMirror");
+    pm.focus();
+    editor.commands.setTextSelection(editor.view.posAtDOM(anchor, 0) + 1);
+    harness.flushSync();
+    assert.ok(popoverOf(container), "a focused caret on the reference shows the popover");
+    pm.blur();
+    harness.flushSync();
+    assert.ok(!popoverOf(container), "the editor blurring closes the popover");
+  },
+);
+
 harness.setDefaultEditorHost(null);
 
 console.log(

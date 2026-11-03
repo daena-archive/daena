@@ -209,7 +209,7 @@ The Language template must have:
 - no required fields beyond the common entity name;
 - empty field/document values so opening the template does not create authored content.
 
-The workspace runs in the isolated `daena.language` plugin webview inside the workbench content pane. It uses the SDK/broker client; it must not import the trusted project client or call Tauri directly. The shell passes the selected language and pane as mount parameters and coordinates pane changes, leave guards, entity refreshes, and link opening through the `daena.language/state@1` protocol.
+The workspace runs in the isolated `daena.language` plugin webview inside the workbench content pane. It uses the SDK/broker client; it must not import the trusted project client or call Tauri directly. The shell passes the selected language and pane as mount parameters and coordinates pane changes, leave guards, entity refreshes, link opening (`open-link`), and entity opening (`open-entity`) through the `daena.language/state@1` protocol.
 
 ### 5.2 Overview storage
 

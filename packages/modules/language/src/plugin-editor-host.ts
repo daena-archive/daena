@@ -34,6 +34,8 @@ export interface BrokerEditorHostOptions {
   fetch: (url: string) => Promise<Response>;
   /** Asks the shell to open an external link (the shell checks the scheme). */
   openLink: (href: string) => void;
+  /** Asks the shell to open an entity (the shell checks that it still exists). */
+  openEntity: (entityId: string) => void;
   /** The asset namespace this host owns. The Language plugin passes `language`. */
   namespace: string;
   /** The entity the webview was launched for. Its own assets back the image fallback in `readAssetBytesByPath`. */
@@ -306,6 +308,24 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
     },
     async openExternal(href) {
       options.openLink(href);
+    },
+    openEntity(entityId) {
+      options.openEntity(entityId);
+    },
+    async resolveEntityNames(ids) {
+      const names: Record<string, string> = {};
+      // One `entity.get` per id; the payload carries only the id, which is all the broker accepts.
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const entity = await rpc.call<{ name?: unknown; deleted?: unknown } | null>(ENTITY_GET_METHOD, { id });
+            if (entity && typeof entity.name === "string" && entity.deleted !== true) names[id] = entity.name;
+          } catch {
+            // A missing or unreadable entity keeps the label its reference already has.
+          }
+        }),
+      );
+      return names;
     },
     assets,
     async searchEntities(query) {

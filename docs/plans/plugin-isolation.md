@@ -41,10 +41,11 @@ unfinished remainder.
 - `src-tauri/plugin-assets/writing/` is still a stub.
 - Asset upload transfers expire 60 s after `asset.upload.begin` and are not
   refreshed per chunk; the SDK caps uploads at 64 MiB.
-- `RichTextEditor` writes Svelte state from ProseMirror blur, so destroying a
-  focused editor inside a runes flush throws `state_unsafe_mutation`. Language's
-  Overview no longer reloads into a loading state after autosave, which was the
-  known trigger; other surfaces that unmount a focused editor would hit it.
+- `RichTextEditor` is safe to destroy while focused: blur during a reactive
+  update never calls `onChange`, and destroying the editor drops edits still in
+  its 120 ms debounce. Parents must call `flushPendingChanges()` before they
+  unmount or navigate (the shell does this in `flushAutoSave`). Focused inputs
+  inside the editor's own dialogs are not covered.
 - Guide dismissals for Language now live in the plugin webview's own
   `localStorage`, so earlier dismissals made in the main webview do not carry
   over.
@@ -60,5 +61,5 @@ unfinished remainder.
    history, leave guards, overlays, toasts, link opening, shared images, the
    native file chooser for asset upload) and the Chronology and World graph
    webviews (layout, Back, Show on map). Also insert an image in a main-window
-   editor, which is unverified since the editor host change.
-2. Make `RichTextEditor` safe to destroy while focused.
+   editor, which is unverified since the editor host change, and switch entities
+   right after typing to confirm no text is lost or moved.

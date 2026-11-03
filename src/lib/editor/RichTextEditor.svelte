@@ -60,7 +60,8 @@ import {
   BetweenVerticalStart,
   Trash2,
 } from "@lucide/svelte";
-import { onMount, tick } from "svelte";
+import { onMount, tick, untrack } from "svelte";
+import { insideReactiveUpdate } from "$lib/editor/reactive-context.svelte.ts";
 import { htmlToMarkdown, markdownToHtml } from "$lib/markdown";
 import type { Asset, Entity } from "$lib/project/client";
 import type { AsyncEntityOption, AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
@@ -1756,6 +1757,37 @@ function runTableCommand(command: (currentEditor: Editor) => boolean) {
   command(editorState);
 }
 
+/**
+ * Syncs component state from a ProseMirror transaction. Focus and blur transactions
+ * can be dispatched synchronously while Svelte removes this editor's DOM, which is
+ * inside a block update; `onTransaction` runs those through `untrack`.
+ */
+function syncEditorTransaction({ editor: nextEditor, transaction }: { editor: Editor; transaction: Transaction }) {
+  if (entityReferenceSuppressedRange && transaction) {
+    const newFrom = transaction.mapping.map(entityReferenceSuppressedRange.from, -1);
+    const newTo = transaction.mapping.map(entityReferenceSuppressedRange.to, -1);
+    entityReferenceSuppressedRange = { from: newFrom, to: newTo };
+    try {
+      const check = nextEditor.state.doc.textBetween(newFrom, newFrom + 1, "\n");
+      if (check !== "@") entityReferenceSuppressedRange = null;
+    } catch {
+      entityReferenceSuppressedRange = null;
+    }
+    if (entityReferenceSuppressedRange) {
+      const fromResult = transaction.mapping.mapResult(entityReferenceSuppressedRange.from, -1);
+      const toResult = transaction.mapping.mapResult(entityReferenceSuppressedRange.to, -1);
+      if (fromResult.deleted || toResult.deleted) entityReferenceSuppressedRange = null;
+    }
+  }
+  editorState = nextEditor;
+  emitSelection();
+  updateEntityReferenceTrigger(nextEditor);
+  syncEntityReferenceEditor(nextEditor);
+  syncSearchState(nextEditor);
+  syncLinkPopover(nextEditor);
+  syncImagePopover(nextEditor, transaction);
+}
+
 onMount(() => {
   try {
     const savedAspect = localStorage.getItem("daena:imagePreserveAspect");
@@ -1980,31 +2012,18 @@ onMount(() => {
       },
     },
     onUpdate: () => scheduleChange(),
-    onBlur: () => flushPendingChanges(),
-    onTransaction: ({ editor: nextEditor, transaction }) => {
-      if (entityReferenceSuppressedRange && transaction) {
-        const newFrom = transaction.mapping.map(entityReferenceSuppressedRange.from, -1);
-        const newTo = transaction.mapping.map(entityReferenceSuppressedRange.to, -1);
-        entityReferenceSuppressedRange = { from: newFrom, to: newTo };
-        try {
-          const check = nextEditor.state.doc.textBetween(newFrom, newFrom + 1, "\n");
-          if (check !== "@") entityReferenceSuppressedRange = null;
-        } catch {
-          entityReferenceSuppressedRange = null;
-        }
-        if (entityReferenceSuppressedRange) {
-          const fromResult = transaction.mapping.mapResult(entityReferenceSuppressedRange.from, -1);
-          const toResult = transaction.mapping.mapResult(entityReferenceSuppressedRange.to, -1);
-          if (fromResult.deleted || toResult.deleted) entityReferenceSuppressedRange = null;
-        }
+    onBlur: () => {
+      // A blur that Svelte's DOM removal dispatches inside a reactive update must not call
+      // onChange: the parent may already show another entity. The debounce timer keeps running,
+      // and cleanup cancels it when the editor is destroyed.
+      if (!insideReactiveUpdate()) flushPendingChanges();
+    },
+    onTransaction: (props) => {
+      if (props.transaction.getMeta("focus") || props.transaction.getMeta("blur")) {
+        untrack(() => syncEditorTransaction(props));
+      } else {
+        syncEditorTransaction(props);
       }
-      editorState = nextEditor;
-      emitSelection();
-      updateEntityReferenceTrigger(nextEditor);
-      syncEntityReferenceEditor(nextEditor);
-      syncSearchState(nextEditor);
-      syncLinkPopover(nextEditor);
-      syncImagePopover(nextEditor, transaction);
     },
   });
   editorState = editor;
@@ -2027,6 +2046,9 @@ onMount(() => {
   });
 
   return () => {
+    // Parents flush explicitly before unmounting or navigating (the shell does this in
+    // flushAutoSave). A destroy-time flush could deliver into a parent whose context has
+    // already moved on, so a pending debounced edit is dropped here.
     cancelPendingChange();
     window.removeEventListener("keydown", handleFullscreenKeydown);
     window.removeEventListener("mousedown", handleLinkPopoverOutside);
@@ -2040,6 +2062,9 @@ onMount(() => {
     editorElement.removeEventListener("auxclick", preventLinkNavigationCapture, true);
     cancelAnimationFrame(initialTextFrame);
     editor?.destroy();
+    // Deferred callbacks (tick().then, handlers) read these; they must not reach a destroyed editor.
+    editor = null;
+    editorState = null;
   };
 });
 

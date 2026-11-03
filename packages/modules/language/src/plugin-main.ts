@@ -1,7 +1,12 @@
 import "./plugin.css";
 import { flushSync, mount } from "svelte";
 import manifestJson from "../manifest.json";
-import { createBrowserPluginRpcTransport, createPluginRpcClient, onHostMessage } from "../../../plugin-sdk/src/index";
+import {
+  createBrowserPluginRpcTransport,
+  createPluginRpcClient,
+  onHostMessage,
+  uploadAssetChunks,
+} from "../../../plugin-sdk/src/index";
 import { applyPluginAppearance } from "../../../plugin-sdk/src/theme";
 import { createBrokerModuleContext, type ModuleContext, type ModuleManifest, type UUID } from "../../../module-api/src/index";
 import { setDefaultEditorHost } from "../../../../src/lib/editor/host";
@@ -42,6 +47,14 @@ async function start(target: HTMLElement): Promise<void> {
       rpc: client,
       fetch: (url) => window.fetch(url),
       openLink: (href) => void publish({ kind: "open-link", href }),
+      namespace: "language",
+      launchEntityId: entityId,
+      uploadChunks: (transfer, bytes) => uploadAssetChunks(transfer, bytes),
+      onEntityChanged: (entityId) => {
+        void publish({ kind: "entity-changed", entityId, deleted: false });
+      },
+      document,
+      crypto,
     }),
   );
 

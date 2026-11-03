@@ -6,6 +6,8 @@ import path from "node:path";
 const runtimeImport = /packages\/modules\/(?:index(?:\.ts)?|[^"'/]+\/src\/index(?:\.ts)?)["']/;
 // The host imports no bundled plugin runtime: Lore and Chronology both run in isolated webviews.
 const allowedRuntimeImports = new Set();
+// Bundles are minified, so identifiers are mangled; the broker endpoint is a string literal and survives.
+const brokerEndpoint = /(["'`])\/__rpc\1/;
 
 function listSourceFiles(directory) {
   const files = [];
@@ -68,11 +70,13 @@ assert.match(loreHtml, /lore\.css/, "lore document must load lore.css");
 assert.doesNotMatch(loreHtml, /plugin\.js/, "lore document must not load the shared plugin.js stub");
 const loreBundlePath = "src-tauri/plugin-assets/lore/lore.js";
 if (fs.existsSync(loreBundlePath) && fs.statSync(loreBundlePath).size > 512) {
+  const loreBundle = fs.readFileSync(loreBundlePath, "utf8");
   assert.doesNotMatch(
-    fs.readFileSync(loreBundlePath, "utf8"),
+    loreBundle,
     /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,
     "the lore bundle must use the broker protocol, not Tauri APIs or the trusted module RPC",
   );
+  assert.match(loreBundle, brokerEndpoint, "the lore bundle must talk to the broker endpoint");
 }
 assert.match(writingHtml, /plugin\.js/, "writing stub stays on the shared plugin document");
 assert.match(timelineHtml, /id="chronology"/, "timeline document must mount the chronology root");
@@ -95,8 +99,8 @@ assert.doesNotMatch(
   /(?:from|import\()\s*["']vis-timeline/,
   "timeline bundle must include vis-timeline instead of importing it at runtime",
 );
-assert.match(timelineBundle, /"\/__rpc"/, "timeline bundle must talk to the broker endpoint");
-assert.match(timelineBundle, /Chronological outline/);
+assert.match(timelineBundle, brokerEndpoint, "timeline bundle must talk to the broker endpoint");
+assert.match(timelineBundle, /Chronological outline/, "timeline bundle must render the chronology outline heading");
 const policyStart = webviewPolicy.indexOf("pub fn webview_policy");
 const policyEnd = webviewPolicy.indexOf("pub fn validate_bridge_request");
 const policy = webviewPolicy.slice(policyStart, policyEnd);
@@ -270,6 +274,7 @@ if (fs.existsSync(languageBundlePath) && fs.statSync(languageBundlePath).size > 
     /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,
     "the Language bundle must use the broker protocol, not Tauri APIs or the trusted module RPC",
   );
+  assert.match(languageBundle, brokerEndpoint, "the Language bundle must talk to the broker endpoint");
 }
 assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.js"\)/);
 assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.css"\)/);

@@ -386,6 +386,24 @@ pub const RPC_METHOD_CATALOG: &[RpcMethodDef] = &[
         capability: RpcCapability::Static(&[]),
     },
     RpcMethodDef {
+        name: "asset.upload.begin",
+        payload_schema: "AssetUploadBeginPayload",
+        requires_revision: true,
+        capability: RpcCapability::OwnedNamespace(&["asset.register"]),
+    },
+    RpcMethodDef {
+        name: "asset.upload.commit",
+        payload_schema: "AssetUploadCommitPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.register"]),
+    },
+    RpcMethodDef {
+        name: "asset.shared.list",
+        payload_schema: "AssetSharedListPayload",
+        requires_revision: false,
+        capability: RpcCapability::Static(&["asset.read:shared"]),
+    },
+    RpcMethodDef {
         name: "search.query",
         payload_schema: "SearchQueryPayload",
         requires_revision: false,
@@ -715,6 +733,19 @@ pub fn validate_rpc_payload(method: &str, payload: &Value) -> Result<(), Contrac
         ),
         "asset.replace.commit" => (&["handle", "contentHash"], &[]),
         "asset.transfer.cancel" => (&["handle"], &[]),
+        "asset.upload.begin" => (
+            &[
+                "entityId",
+                "namespace",
+                "filename",
+                "mimeType",
+                "size",
+                "expectedRevision",
+            ],
+            &[],
+        ),
+        "asset.upload.commit" => (&["handle", "contentHash"], &[]),
+        "asset.shared.list" => (&[], &[]),
         "maps.image.import.begin" => (&["name", "size", "mimeType", "filename"], &[]),
         "maps.image.import.commit" => (&["handle", "contentHash"], &[]),
         "maps.vector.create.begin" => (&["name", "size", "generation"], &[]),
@@ -804,7 +835,7 @@ mod tests {
             assert!(!entry.payload_schema.is_empty());
             assert!(!entry.name.is_empty());
         }
-        assert_eq!(RPC_METHOD_CATALOG.len(), 63);
+        assert_eq!(RPC_METHOD_CATALOG.len(), 66);
         let revision_methods = RPC_METHOD_CATALOG
             .iter()
             .filter(|entry| entry.requires_revision)
@@ -826,6 +857,7 @@ mod tests {
                 "asset.update",
                 "asset.delete",
                 "asset.replace.begin",
+                "asset.upload.begin",
                 "maps.vector.replace.begin",
                 "maps.layer.create",
                 "maps.layer.delete",

@@ -1934,6 +1934,8 @@ fn capability_mappings_are_stable_for_static_methods() {
         ("search.query", &empty, &["search.query"]),
         ("asset.replace.commit", &empty, &["asset.write:self"]),
         ("asset.transfer.cancel", &empty, &[]),
+        ("asset.upload.commit", &empty, &["asset.register"]),
+        ("asset.shared.list", &empty, &["asset.read:shared"]),
         (
             "maps.image.import.begin",
             &empty,
@@ -2210,6 +2212,24 @@ fn field_and_asset_capability_rules_are_stable() {
         .unwrap(),
         vec!["asset.write:self".to_string()]
     );
+    assert_eq!(
+        required_capabilities(
+            "asset.upload.begin",
+            &serde_json::json!({ "namespace": "owner" }),
+            &owner_session,
+            &host.namespaces,
+        )
+        .unwrap(),
+        vec!["asset.register".to_string()]
+    );
+    let foreign_upload = required_capabilities(
+        "asset.upload.begin",
+        &serde_json::json!({ "namespace": "reader" }),
+        &owner_session,
+        &host.namespaces,
+    )
+    .unwrap_err();
+    assert_eq!(foreign_upload.code, "namespace.denied");
     let foreign_asset = required_capabilities(
         "asset.list",
         &serde_json::json!({ "namespace": "reader" }),
@@ -2434,6 +2454,14 @@ fn shared_asset_read_is_rate_limited_like_asset_reads() {
         super::expensive_rpc_limit("asset.shared.read.begin", config).map(|(class, _, _)| class),
         Some("asset")
     );
+    // Upload begin and commit meter the same bucket as the other asset writes.
+    for method in ["asset.upload.begin", "asset.upload.commit"] {
+        assert_eq!(
+            super::expensive_rpc_limit(method, config).map(|(class, _, _)| class),
+            Some("asset"),
+            "{method} must share the asset bucket"
+        );
+    }
 
     let mut host = PluginHost::new();
     let mut plugin = manifest("com.example.one", "one");

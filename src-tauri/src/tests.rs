@@ -2266,6 +2266,560 @@ fn shared_asset_read_requires_the_asset_read_shared_capability() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A Language webview bridge over `/__rpc` for one open project: the bundled
+/// host, the binary transfer table, and the plugin protocol handler.
+struct LanguageBridge {
+    core: SharedCore,
+    plugins: SharedPluginHost,
+    transfers: SharedBinaryTransfers,
+    ai_runtime: ai::SharedAiRuntime,
+    label: String,
+}
+
+fn create_upload_target(core: &SharedCore, name: &str) -> String {
+    let session = current_session(core).unwrap();
+    let guard = session.core.lock().unwrap();
+    let project = guard.project(trusted_shell()).unwrap();
+    project
+        .create_entity(CreateEntity {
+            name: name.into(),
+            entity_type: None,
+        })
+        .unwrap()
+        .id
+}
+
+fn entity_revision(core: &SharedCore, entity_id: &str) -> String {
+    let session = current_session(core).unwrap();
+    let guard = session.core.lock().unwrap();
+    let project = guard.project(trusted_shell()).unwrap();
+    project
+        .list_entities()
+        .unwrap()
+        .into_iter()
+        .find(|entity| entity.id == entity_id)
+        .expect("upload target entity")
+        .revision
+}
+
+impl LanguageBridge {
+    fn open(root: &std::path::Path) -> Self {
+        let core: SharedCore = new_shared_core();
+        current_session(&core)
+            .unwrap()
+            .core
+            .lock()
+            .unwrap()
+            .open_directory(trusted_shell(), root)
+            .unwrap();
+        let mut host = bundled_plugin_host(core.clone()).unwrap();
+        {
+            let session = current_session(&core).unwrap();
+            let guard = session.core.lock().unwrap();
+            sync_project_usage(guard.project(trusted_shell()).unwrap(), &mut host).unwrap();
+        }
+        Self {
+            core,
+            plugins: Arc::new(Mutex::new(host)),
+            transfers: Arc::new(Mutex::new(BinaryTransferManager::default())),
+            ai_runtime: Arc::new(Mutex::new(ai::AiRuntime::default())),
+            label: plugin_window_label("daena.language"),
+        }
+    }
+
+    fn protocol_uri(&self, path: &str) -> String {
+        format!(
+            "{}://daena.language{path}",
+            daena_plugin_host::runtime::plugin_protocol("daena.language")
+        )
+    }
+
+    fn respond(&self, request: &tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+        plugin_protocol_response(
+            &self.label,
+            request,
+            &self.core,
+            &self.plugins,
+            &self.transfers,
+            &self.ai_runtime,
+        )
+    }
+
+    fn post(&self, body: serde_json::Value) -> serde_json::Value {
+        let request = tauri::http::Request::builder()
+            .method("POST")
+            .uri(self.protocol_uri("/__rpc"))
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let response = self.respond(&request);
+        assert_eq!(response.status(), 200);
+        serde_json::from_slice(response.body()).unwrap()
+    }
+
+    fn bootstrap(&self, project_id: &str) -> String {
+        let reply = self.post(serde_json::json!({
+            "op": "bootstrap",
+            "pluginId": "daena.language",
+            "projectId": project_id,
+        }));
+        reply["sessionId"].as_str().expect("session id").to_string()
+    }
+
+    fn rpc(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> serde_json::Value {
+        self.post(serde_json::json!({
+            "op": "rpc",
+            "request": {
+                "rpcVersion": 1,
+                "sessionId": session_id,
+                "requestId": request_id,
+                "method": method,
+                "payload": payload,
+            },
+        }))
+    }
+
+    fn put_chunk(&self, url: &str, chunk: u64, body: &[u8]) -> tauri::http::Response<Vec<u8>> {
+        let path = url.replacen("/0?", &format!("/{chunk}?"), 1);
+        let request = tauri::http::Request::builder()
+            .method("PUT")
+            .uri(self.protocol_uri(&path))
+            .body(body.to_vec())
+            .unwrap();
+        self.respond(&request)
+    }
+
+    fn send_chunks(&self, transfer: &serde_json::Value, bytes: &[u8]) {
+        let max_chunk = transfer["maxChunkBytes"].as_u64().unwrap() as usize;
+        let url = transfer["url"].as_str().unwrap();
+        for (index, chunk) in bytes.chunks(max_chunk).enumerate() {
+            let response = self.put_chunk(url, index as u64, chunk);
+            assert_eq!(response.status(), 200, "chunk {index}");
+        }
+    }
+
+    /// Begins an upload into `entity_id`, sends every chunk, and commits with
+    /// the matching digest. Returns the commit reply.
+    fn upload_file(
+        &self,
+        session_id: &str,
+        entity_id: &str,
+        filename: &str,
+        mime_type: &str,
+        bytes: &[u8],
+    ) -> serde_json::Value {
+        let begin = self.rpc(
+            session_id,
+            &format!("begin-{filename}"),
+            "asset.upload.begin",
+            serde_json::json!({
+                "entityId": entity_id,
+                "namespace": "language",
+                "filename": filename,
+                "mimeType": mime_type,
+                "size": bytes.len(),
+                "expectedRevision": entity_revision(&self.core, entity_id),
+            }),
+        );
+        assert_eq!(begin["ok"], true, "{begin}");
+        self.send_chunks(&begin["result"], bytes);
+        self.rpc(
+            session_id,
+            &format!("commit-{filename}"),
+            "asset.upload.commit",
+            serde_json::json!({
+                "handle": begin["result"]["handle"],
+                "contentHash": format!("sha256:{:x}", Sha256::digest(bytes)),
+            }),
+        )
+    }
+
+    fn listed_count(&self, session_id: &str, entity_id: &str) -> usize {
+        let listed = self.rpc(
+            session_id,
+            "list-count",
+            "asset.list",
+            serde_json::json!({"entityId": entity_id, "namespace": "language"}),
+        );
+        assert_eq!(listed["ok"], true, "{listed}");
+        listed["result"].as_array().unwrap().len()
+    }
+}
+
+#[test]
+fn asset_uploads_round_trip_over_the_plugin_protocol_bridge() {
+    let root = std::env::temp_dir().join(format!("daena-upload-rpc-{}", uuid::Uuid::new_v4()));
+    let bridge = LanguageBridge::open(&root);
+    let project_id = current_info(&bridge.core).unwrap().unwrap().root;
+    let entity_id = create_upload_target(&bridge.core, "Upload target");
+    let session_id = bridge.bootstrap(&project_id);
+
+    // A file larger than one RPC frame goes up in several PUTs.
+    let bytes: Vec<u8> = (0..300_000).map(|index| (index % 251) as u8).collect();
+    let commit = bridge.upload_file(
+        &session_id,
+        &entity_id,
+        "figure.bin",
+        "application/octet-stream",
+        &bytes,
+    );
+    assert_eq!(commit["ok"], true, "{commit}");
+    let asset = commit["result"].clone();
+    assert_eq!(asset["namespace"], "language");
+    assert_eq!(asset["entity_id"], entity_id);
+    assert_eq!(asset["size"].as_u64(), Some(bytes.len() as u64));
+    assert_eq!(
+        asset["content_hash"],
+        format!("sha256:{:x}", Sha256::digest(&bytes))
+    );
+    assert_eq!(asset["reference_scope"], "entity");
+    let asset_id = asset["id"].as_str().unwrap().to_string();
+    // The commit flushes the checkpoint, so the portable copy holds the bytes.
+    let portable = asset["path"].as_str().unwrap();
+    assert_eq!(std::fs::read(root.join(portable)).unwrap(), bytes);
+
+    let listed = bridge.rpc(
+        &session_id,
+        "list-1",
+        "asset.list",
+        serde_json::json!({"entityId": entity_id, "namespace": "language"}),
+    );
+    assert_eq!(listed["result"][0]["id"], asset_id, "{listed}");
+    let read = bridge.rpc(
+        &session_id,
+        "read-1",
+        "asset.read.begin",
+        serde_json::json!({"assetId": asset_id, "namespace": "language"}),
+    );
+    assert_eq!(read["ok"], true, "{read}");
+    let fetch = tauri::http::Request::builder()
+        .method("GET")
+        .uri(bridge.protocol_uri(read["result"]["url"].as_str().unwrap()))
+        .body(Vec::new())
+        .unwrap();
+    let response = bridge.respond(&fetch);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.body(), &bytes);
+
+    // Entity-scoped uploads stay out of the shared list until promoted.
+    let shared = bridge.rpc(
+        &session_id,
+        "shared-1",
+        "asset.shared.list",
+        serde_json::json!({}),
+    );
+    assert_eq!(shared["ok"], true, "{shared}");
+    assert_eq!(shared["result"], serde_json::json!([]));
+    let promoted = bridge.rpc(
+        &session_id,
+        "promote-1",
+        "asset.update",
+        serde_json::json!({
+            "assetId": asset_id,
+            "namespace": "language",
+            "referenceScope": "project",
+            "expectedRevision": asset["revision"],
+        }),
+    );
+    assert_eq!(promoted["ok"], true, "{promoted}");
+    let private = bridge.upload_file(
+        &session_id,
+        &entity_id,
+        "note.txt",
+        "text/plain",
+        b"private",
+    );
+    assert_eq!(private["ok"], true, "{private}");
+    let shared = bridge.rpc(
+        &session_id,
+        "shared-2",
+        "asset.shared.list",
+        serde_json::json!({}),
+    );
+    assert_eq!(shared["result"].as_array().unwrap().len(), 1, "{shared}");
+    assert_eq!(shared["result"][0]["id"], asset_id);
+    assert_eq!(bridge.listed_count(&session_id, &entity_id), 2);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn asset_upload_refusals_leave_nothing_registered() {
+    let root = std::env::temp_dir().join(format!("daena-upload-refuse-{}", uuid::Uuid::new_v4()));
+    let bridge = LanguageBridge::open(&root);
+    let project_id = current_info(&bridge.core).unwrap().unwrap().root;
+    let entity_id = create_upload_target(&bridge.core, "Refusals");
+    let session_id = bridge.bootstrap(&project_id);
+    let revision = entity_revision(&bridge.core, &entity_id);
+    let begin_payload = |namespace: &str, filename: &str, mime: &str, size: u64, expected: &str| {
+        serde_json::json!({
+            "entityId": entity_id,
+            "namespace": namespace,
+            "filename": filename,
+            "mimeType": mime,
+            "size": size,
+            "expectedRevision": expected,
+        })
+    };
+
+    // Refused at begin, before any bytes are accepted.
+    for (request_id, payload, expected) in [
+        (
+            "foreign-1",
+            begin_payload("lore", "a.txt", "text/plain", 3, &revision),
+            "plugin does not own namespace",
+        ),
+        (
+            "stale-1",
+            begin_payload("language", "a.txt", "text/plain", 3, "stale"),
+            "revision conflict",
+        ),
+        (
+            "zero-1",
+            begin_payload("language", "a.txt", "text/plain", 0, &revision),
+            "asset upload size must be a positive integer",
+        ),
+        (
+            "mime-1",
+            begin_payload("language", "a.txt", " ", 3, &revision),
+            "asset MIME type is required",
+        ),
+        (
+            "name-1",
+            begin_payload("language", "nested/a.txt", "text/plain", 3, &revision),
+            "asset filename is invalid",
+        ),
+    ] {
+        let reply = bridge.rpc(&session_id, request_id, "asset.upload.begin", payload);
+        assert_eq!(reply["ok"], false, "{request_id}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains(expected), "{request_id}: {message}");
+    }
+    let missing = bridge.rpc(
+        &session_id,
+        "missing-1",
+        "asset.upload.begin",
+        serde_json::json!({
+            "entityId": "no-such-entity",
+            "namespace": "language",
+            "filename": "a.txt",
+            "mimeType": "text/plain",
+            "size": 3,
+            "expectedRevision": revision,
+        }),
+    );
+    assert_eq!(missing["error"]["message"], "entity not found", "{missing}");
+
+    // A commit before the last chunk is refused and registers nothing.
+    let bytes = vec![7_u8; 300_000];
+    let begin = bridge.rpc(
+        &session_id,
+        "partial-begin",
+        "asset.upload.begin",
+        begin_payload(
+            "language",
+            "partial.bin",
+            "application/octet-stream",
+            bytes.len() as u64,
+            &revision,
+        ),
+    );
+    assert_eq!(begin["ok"], true, "{begin}");
+    let max_chunk = begin["result"]["maxChunkBytes"].as_u64().unwrap() as usize;
+    let first = bridge.put_chunk(
+        begin["result"]["url"].as_str().unwrap(),
+        0,
+        &bytes[..max_chunk],
+    );
+    assert_eq!(first.status(), 200);
+    let partial = bridge.rpc(
+        &session_id,
+        "partial-commit",
+        "asset.upload.commit",
+        serde_json::json!({
+            "handle": begin["result"]["handle"],
+            "contentHash": format!("sha256:{:x}", Sha256::digest(&bytes)),
+        }),
+    );
+    assert_eq!(
+        partial["error"]["message"], "asset upload is incomplete",
+        "{partial}"
+    );
+    assert_eq!(bridge.listed_count(&session_id, &entity_id), 0);
+
+    // A wrong digest is refused, and the handle still commits with the right one.
+    let begin = bridge.rpc(
+        &session_id,
+        "digest-begin",
+        "asset.upload.begin",
+        begin_payload("language", "digest.txt", "text/plain", 19, &revision),
+    );
+    assert_eq!(begin["ok"], true, "{begin}");
+    bridge.send_chunks(&begin["result"], b"digest checked text");
+    let wrong = bridge.rpc(
+        &session_id,
+        "digest-wrong",
+        "asset.upload.commit",
+        serde_json::json!({
+            "handle": begin["result"]["handle"],
+            "contentHash": format!("sha256:{:x}", Sha256::digest(b"other text")),
+        }),
+    );
+    assert_eq!(
+        wrong["error"]["message"], "asset upload content hash does not match bytes",
+        "{wrong}"
+    );
+    assert_eq!(bridge.listed_count(&session_id, &entity_id), 0);
+    let right = bridge.rpc(
+        &session_id,
+        "digest-right",
+        "asset.upload.commit",
+        serde_json::json!({
+            "handle": begin["result"]["handle"],
+            "contentHash": format!("sha256:{:x}", Sha256::digest(b"digest checked text")),
+        }),
+    );
+    assert_eq!(right["ok"], true, "{right}");
+    assert_eq!(bridge.listed_count(&session_id, &entity_id), 1);
+
+    // A handle belongs to the session that began it. Bootstrapping again
+    // revokes the first session, so the new session must not commit its handle.
+    let begin = bridge.rpc(
+        &session_id,
+        "session-begin",
+        "asset.upload.begin",
+        begin_payload(
+            "language",
+            "owned.txt",
+            "text/plain",
+            5,
+            &entity_revision(&bridge.core, &entity_id),
+        ),
+    );
+    assert_eq!(begin["ok"], true, "{begin}");
+    bridge.send_chunks(&begin["result"], b"owned");
+    let active = bridge.bootstrap(&project_id);
+    let stolen = bridge.rpc(
+        &active,
+        "session-steal",
+        "asset.upload.commit",
+        serde_json::json!({
+            "handle": begin["result"]["handle"],
+            "contentHash": format!("sha256:{:x}", Sha256::digest(b"owned")),
+        }),
+    );
+    assert_eq!(
+        stolen["error"]["message"], "asset upload handle is not valid for this session or project",
+        "{stolen}"
+    );
+    assert_eq!(bridge.listed_count(&active, &entity_id), 1);
+
+    // A cancelled handle cannot commit.
+    let cancelled = bridge.rpc(
+        &active,
+        "cancel-begin",
+        "asset.upload.begin",
+        begin_payload(
+            "language",
+            "cancelled.txt",
+            "text/plain",
+            3,
+            &entity_revision(&bridge.core, &entity_id),
+        ),
+    );
+    assert_eq!(cancelled["ok"], true, "{cancelled}");
+    let handle = cancelled["result"]["handle"].clone();
+    let cancel = bridge.rpc(
+        &active,
+        "cancel-1",
+        "asset.transfer.cancel",
+        serde_json::json!({"handle": handle}),
+    );
+    assert_eq!(cancel["ok"], true, "{cancel}");
+    let after_cancel = bridge.rpc(
+        &active,
+        "cancel-commit",
+        "asset.upload.commit",
+        serde_json::json!({
+            "handle": handle,
+            "contentHash": format!("sha256:{:x}", Sha256::digest(b"nop")),
+        }),
+    );
+    assert_eq!(
+        after_cancel["error"]["message"], "asset upload handle is invalid or expired",
+        "{after_cancel}"
+    );
+    assert_eq!(bridge.listed_count(&active, &entity_id), 1);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn asset_upload_and_shared_list_require_their_capabilities() {
+    let root = std::env::temp_dir().join(format!("daena-upload-caps-{}", uuid::Uuid::new_v4()));
+    let project = ProjectStore::open_directory(&root).unwrap();
+    let project_id = root.to_string_lossy().to_string();
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../packages/modules/language/manifest.json"
+    ))
+    .unwrap();
+    let begin = serde_json::json!({
+        "entityId": "entity",
+        "namespace": "language",
+        "filename": "a.txt",
+        "mimeType": "text/plain",
+        "size": 1,
+        "expectedRevision": "rev",
+    });
+    let commit = serde_json::json!({"handle": "h", "contentHash": "sha256:x"});
+
+    let mut granted_host = PluginHost::new();
+    granted_host
+        .register_bundled_json(&manifest.to_string())
+        .unwrap();
+    sync_project_usage(&project, &mut granted_host).unwrap();
+    for (method, payload) in [
+        ("asset.upload.begin", &begin),
+        ("asset.upload.commit", &commit),
+        ("asset.shared.list", &serde_json::json!({})),
+    ] {
+        granted_host
+            .authorize_bundled("daena.language", &project_id, method, payload.clone())
+            .unwrap_or_else(|error| panic!("{method} should be granted: {error}"));
+    }
+
+    let mut denied_manifest = manifest.clone();
+    denied_manifest["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|capability| capability != "asset.register" && capability != "asset.read:shared");
+    let mut denied_host = PluginHost::new();
+    denied_host
+        .register_bundled_json(&denied_manifest.to_string())
+        .unwrap();
+    sync_project_usage(&project, &mut denied_host).unwrap();
+    for (method, payload) in [
+        ("asset.upload.begin", &begin),
+        ("asset.upload.commit", &commit),
+        ("asset.shared.list", &serde_json::json!({})),
+    ] {
+        let denied = denied_host
+            .authorize_bundled("daena.language", &project_id, method, payload.clone())
+            .unwrap_err();
+        assert!(
+            denied.to_string().contains("capability.denied"),
+            "{method}: {denied}"
+        );
+    }
+    drop(project);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn broker_asset_metadata_update_matches_the_owned_namespace() {
     let mut core = CoreService::new();

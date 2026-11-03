@@ -185,28 +185,12 @@ impl ProjectStore {
             return Err(CoreError::NotFound("asset source is not a file".into()));
         }
         let filename = validated_asset_filename(&input.filename)?;
-        let category = if input.mime_type.starts_with("image/") {
-            "images"
-        } else if input.mime_type.starts_with("video/") {
-            "videos"
-        } else if input.mime_type.contains("map")
-            || matches!(
-                Path::new(&filename)
-                    .extension()
-                    .and_then(|value| value.to_str()),
-                Some("geojson" | "tmx" | "mbtiles")
-            )
-        {
-            "maps"
-        } else {
-            "files"
-        };
         let (content_hash, size) = if let Some(root) = self.root.as_deref() {
             store_runtime_asset_file(root, source, None)?
         } else {
             streamed_file_digest(source)?
         };
-        let relative_path = format!("assets/{category}/{}-{filename}", Uuid::new_v4());
+        let relative_path = new_asset_portable_path(&filename, &input.mime_type);
         let request_id = self.request_id(request_id)?;
         self.register_asset_with_options(
             AssetInput {
@@ -216,11 +200,75 @@ impl ProjectStore {
                 content_hash,
                 size,
                 mime_type: input.mime_type,
-                path: relative_path.clone(),
+                path: relative_path,
                 provenance: input.provenance,
             },
             expected_revision,
             Some(&request_id),
+        )
+    }
+
+    /// Registers bytes a plugin uploaded through the brokered transfer. The
+    /// bytes enter the runtime store under their SHA-256 digest and the asset
+    /// gets the same category path, checkpoint export, and revision rules as a
+    /// copied file (see `register_asset_file_with_options`).
+    pub fn register_asset_bytes_with_options(
+        &self,
+        input: AssetBytesInput,
+        bytes: Vec<u8>,
+        expected_revision: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<Asset, CoreError> {
+        encode_asset_provenance(&input.provenance)?;
+        let filename = validated_upload_filename(&input.filename, &input.mime_type)?;
+        let size = i64::try_from(bytes.len())
+            .map_err(|_| CoreError::Validation("asset is too large".into()))?;
+        let content_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if let Some(root) = self.root.as_deref() {
+            store_runtime_asset(root, bytes.as_slice(), Some(&content_hash))?;
+        }
+        let relative_path = new_asset_portable_path(&filename, &input.mime_type);
+        let request_id = self.request_id(request_id)?;
+        self.register_asset_with_options(
+            AssetInput {
+                entity_id: input.entity_id,
+                namespace: input.namespace,
+                filename,
+                content_hash,
+                size,
+                mime_type: input.mime_type,
+                path: relative_path,
+                provenance: input.provenance,
+            },
+            expected_revision,
+            Some(&request_id),
+        )
+    }
+
+    /// Checks an upload's target before the broker accepts any of its bytes:
+    /// the filename and MIME type are well formed, the entity is live, and the
+    /// caller's revision still matches that entity.
+    pub fn validate_asset_upload(
+        &self,
+        input: &AssetBytesInput,
+        expected_revision: &str,
+    ) -> Result<(), CoreError> {
+        validated_upload_filename(&input.filename, &input.mime_type)?;
+        let exists: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT id FROM entities WHERE id=?1 AND deleted=0",
+                params![input.entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(CoreError::NotFound("entity not found".into()));
+        }
+        Self::ensure_expected_revision(
+            Some(expected_revision),
+            self.revision_for_entity(&input.entity_id)?,
+            "asset entity",
         )
     }
 

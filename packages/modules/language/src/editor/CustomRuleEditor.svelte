@@ -6,7 +6,11 @@ import CheckRow from "./parts/CheckRow.svelte";
 import Field from "./parts/Field.svelte";
 import Group from "./parts/Group.svelte";
 
-let { draft, locked = false }: { draft: GrammarCustomRuleRecord; locked?: boolean } = $props();
+let {
+  draft,
+  locked = false,
+  entityId = null,
+}: { draft: GrammarCustomRuleRecord; locked?: boolean; entityId?: string | null } = $props();
 
 function initialExtras() {
   return extraCustomRuleTags(draft);
@@ -45,6 +49,11 @@ function updateTags(next: string[]) {
       oninput={(event) => updateTags(setCustomRuleExtraTags(draft, event.currentTarget.value).tags)} />
   </Field>
   <Field label="Description">
-    <RichTextEditor value={draft.body} onChange={(v) => (draft.body = v)} editable={!locked} />
+    <RichTextEditor
+      value={draft.body}
+      onChange={(v) => (draft.body = v)}
+      editable={!locked}
+      {entityId}
+      defaultNamespace="language" />
   </Field>
 </Group>

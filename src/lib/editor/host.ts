@@ -8,20 +8,19 @@ import type { Asset } from "$lib/project/types";
 export interface EditorAssetServices {
   listAssets(entityId: string): Promise<Asset[]>;
   listSharedAssets(): Promise<Asset[]>;
-  readAssetBytes(assetId: string): Promise<Uint8Array>;
+  /** Bytes of an asset the dialog listed (own or shared). */
+  readAssetBytes(asset: Asset): Promise<Uint8Array>;
   updateAssetMetadata(
     assetId: string,
     update: { referenceScope?: "entity" | "project" },
     expectedRevision: string,
   ): Promise<Asset>;
-  pickFile(): Promise<string | string[] | null>;
-  registerAssetFile(input: {
-    entity_id: string;
+  /** Lets the user choose a file and registers it on `entityId` in `namespace`.
+   *  Resolves null when the user cancels. */
+  pickAndRegisterAsset(input: {
+    entityId: string;
     namespace: string;
-    source_path: string;
-    filename: string;
-    mime_type: string;
-  }): Promise<Asset>;
+  }): Promise<{ asset: Asset; filename: string } | null>;
 }
 
 /**

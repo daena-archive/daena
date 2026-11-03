@@ -1871,6 +1871,170 @@ fn generated_asset_provenance_survives_checkpoint_and_runtime_rebuild() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+fn upload_input(entity_id: &str, filename: &str, mime_type: &str) -> AssetBytesInput {
+    AssetBytesInput {
+        entity_id: entity_id.into(),
+        namespace: "language".into(),
+        filename: filename.into(),
+        mime_type: mime_type.into(),
+        provenance: None,
+    }
+}
+
+#[test]
+fn asset_bytes_upload_is_stored_and_registered_like_a_copied_file() {
+    let root = std::env::temp_dir().join(format!("daena-asset-upload-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Upload owner".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let bytes = b"uploaded bytes".to_vec();
+    let asset = store
+        .register_asset_bytes_with_options(
+            upload_input(&entity.id, "notes.txt", "text/plain"),
+            bytes.clone(),
+            Some(&entity.revision),
+            None,
+        )
+        .unwrap();
+    assert_eq!(asset.size, bytes.len() as i64);
+    assert_eq!(
+        asset.content_hash,
+        format!("sha256:{:x}", Sha256::digest(&bytes))
+    );
+    assert!(asset.path.starts_with("assets/files/"), "{}", asset.path);
+    assert!(asset.path.ends_with("-notes.txt"), "{}", asset.path);
+    assert_eq!(asset.namespace, "language");
+    assert_eq!(asset.role, ASSET_ROLE_ATTACHMENT);
+    assert_eq!(asset.reference_scope, ASSET_REFERENCE_SCOPE_ENTITY);
+    assert_eq!(store.asset_bytes(asset.id.clone()).unwrap(), bytes);
+    assert_eq!(
+        store.list_assets(entity.id.clone()).unwrap()[0].revision,
+        asset.revision
+    );
+
+    let picture = store
+        .register_asset_bytes_with_options(
+            upload_input(&entity.id, "figure.png", "image/png"),
+            b"\x89PNG bytes".to_vec(),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(
+        picture.path.starts_with("assets/images/"),
+        "{}",
+        picture.path
+    );
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn asset_bytes_upload_validates_filename_mime_entity_and_revision() {
+    let root = std::env::temp_dir().join(format!("daena-asset-upload-check-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Upload checks".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let revision = store.revision_for_entity(&entity.id).unwrap();
+
+    for filename in ["", "   ", ".", "..", "nested/name.txt", "back\\slash.txt"] {
+        assert!(
+            matches!(
+                store.validate_asset_upload(
+                    &upload_input(&entity.id, filename, "text/plain"),
+                    &revision
+                ),
+                Err(CoreError::Validation(_))
+            ),
+            "filename {filename:?} must be rejected"
+        );
+    }
+    assert!(matches!(
+        store.validate_asset_upload(&upload_input(&entity.id, "a.txt", "  "), &revision),
+        Err(CoreError::Validation(_))
+    ));
+    let long_mime = "x".repeat(256);
+    assert!(matches!(
+        store.validate_asset_upload(&upload_input(&entity.id, "a.txt", &long_mime), &revision),
+        Err(CoreError::Validation(_))
+    ));
+    assert!(matches!(
+        store.validate_asset_upload(
+            &upload_input("missing-entity", "a.txt", "text/plain"),
+            &revision
+        ),
+        Err(CoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        store.validate_asset_upload(&upload_input(&entity.id, "a.txt", "text/plain"), "stale"),
+        Err(CoreError::Conflict(_))
+    ));
+    store
+        .validate_asset_upload(&upload_input(&entity.id, "a.txt", "text/plain"), &revision)
+        .unwrap();
+
+    store.delete_entity(entity.id.clone()).unwrap();
+    assert!(matches!(
+        store.validate_asset_upload(&upload_input(&entity.id, "a.txt", "text/plain"), &revision),
+        Err(CoreError::NotFound(_))
+    ));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn asset_bytes_upload_replays_by_request_and_survives_checkpoint_and_rebuild() {
+    let root = std::env::temp_dir().join(format!("daena-asset-upload-rebuild-{}", Uuid::new_v4()));
+    let store = ProjectStore::open_directory(&root).unwrap();
+    let entity = store
+        .create_entity(CreateEntity {
+            name: "Upload rebuild".into(),
+            entity_type: None,
+        })
+        .unwrap();
+    let bytes = b"rebuild upload bytes".to_vec();
+    let request_id = Uuid::new_v4().to_string();
+    let asset = store
+        .register_asset_bytes_with_options(
+            upload_input(&entity.id, "rebuild.txt", "text/plain"),
+            bytes.clone(),
+            Some(&entity.revision),
+            Some(&request_id),
+        )
+        .unwrap();
+    let replayed = store
+        .register_asset_bytes_with_options(
+            upload_input(&entity.id, "rebuild.txt", "text/plain"),
+            bytes.clone(),
+            Some(&entity.revision),
+            Some(&request_id),
+        )
+        .unwrap();
+    assert_eq!(replayed.id, asset.id);
+    assert_eq!(store.list_assets(entity.id.clone()).unwrap().len(), 1);
+
+    store.flush_checkpoint("asset upload checkpoint").unwrap();
+    assert_eq!(std::fs::read(root.join(&asset.path)).unwrap(), bytes);
+    drop(store);
+
+    std::fs::remove_dir_all(root.join(".daena")).unwrap();
+    let rebuilt = ProjectStore::open_directory(&root).unwrap();
+    let recovered = rebuilt.list_assets(entity.id.clone()).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, asset.id);
+    assert_eq!(rebuilt.asset_bytes(asset.id.clone()).unwrap(), bytes);
+    drop(rebuilt);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn asset_metadata_survives_checkpoint_and_runtime_rebuild() {
     let root = std::env::temp_dir().join(format!("daena-asset-metadata-{}", Uuid::new_v4()));

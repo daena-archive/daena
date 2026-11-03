@@ -671,8 +671,9 @@ entity.list  entity.query  entity.get  entity.create  entity.update  entity.dele
 document.list  document.save
 field.read  field.list  field.set
 relationship.list  relationship.create  relationship.delete
-asset.list  asset.register  asset.read.begin  asset.shared.read.begin
+asset.list  asset.register  asset.read.begin  asset.shared.read.begin  asset.shared.list
 asset.replace.begin  asset.replace.commit  asset.transfer.cancel
+asset.upload.begin  asset.upload.commit
 search.query
 maps.asset.create.begin  maps.asset.create.commit
 maps.recovery.export.begin  maps.recovery.export.commit
@@ -714,6 +715,23 @@ appearance.get  schema.list
   `project`. Missing and entity-scoped paths return the same error, so the
   method cannot probe for private assets. It shares the asset rate-limit
   bucket.
+- **Brokered uploads register a plugin-supplied file from bytes, never from a
+  host path.** `asset.upload.begin` requires `asset.register` on the owned
+  namespace, checks that the entity is live and that `expectedRevision` matches
+  it, and opens a one-use transfer bound to the plugin session and project. The
+  chunk size is `maxChunkBytes` (256 KiB), the declared size must be positive
+  and at most 128 MiB, and the transfer expires 60 seconds after begin.
+  `asset.upload.commit` requires `asset.register` and the same session and
+  project, every declared byte, and a `sha256:` digest that matches. A failed
+  commit keeps the handle live so the plugin can retry; a successful commit
+  consumes it. The asset is stored like a copied file (category folder from the
+  MIME type, entity-scoped by default) and the commit flushes the checkpoint.
+  `asset.transfer.cancel` drops a handle. Begin and commit share the asset
+  rate-limit bucket.
+- **`asset.shared.list` lists project-scoped assets from every namespace.** It
+  requires `asset.read:shared` and returns the same records as `asset.list`.
+  Entity-scoped assets never appear, so a plugin shares a file by promoting it
+  with `asset.update` and `referenceScope: "project"`.
 - **Shell-forwarded plugin events are bound to their publisher.** The host
   forwards `daena.maps/state@1`, `daena.maps/selection@1`, and
   `daena.language/state@1` to the shell only when the event name's namespace

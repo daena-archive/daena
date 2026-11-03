@@ -245,6 +245,19 @@ pub struct AssetFileInput {
     pub provenance: Option<serde_json::Value>,
 }
 
+/// Metadata for an asset whose bytes arrive in memory (a brokered upload)
+/// rather than from a source file. The bytes are passed separately so the
+/// size and content hash are always derived from what is stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetBytesInput {
+    pub entity_id: String,
+    pub namespace: String,
+    pub filename: String,
+    pub mime_type: String,
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetReplaceInput {
     pub asset_id: String,

@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { build } from "vite";
+import { finalizePluginBundle } from "./minify-plugin-bundle.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const outDir = process.env.TIMELINE_UI_OUT ?? resolve(root, "src-tauri/plugin-assets/timeline");
@@ -37,5 +37,4 @@ await build({
   },
 });
 
-const cssPath = resolve(outDir, "timeline.css");
-writeFileSync(cssPath, readFileSync(cssPath, "utf8").replace(/\/\*# sourceMappingURL=[\s\S]*?\*\//g, ""));
+await finalizePluginBundle(outDir, "timeline");

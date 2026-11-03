@@ -29,17 +29,25 @@ unfinished remainder.
   transport, plugin webviews with the browser transport.
 - Embedded plugin webviews are hidden while a shell overlay covers them, and
   toasts move clear of them.
+- Plugin editors can upload assets: `asset.upload.begin` / `asset.upload.commit`
+  (chunked, hash-checked, own namespace only) and `asset.shared.list`. The
+  Language editor attaches uploads to the selected language through a hidden
+  `<input type="file">`, one upload at a time per entity.
+- The plugin bundles are fully minified after the Vite build
+  (`scripts/minify-plugin-bundle.mjs`).
 
 ## Still open
 
 - `src-tauri/plugin-assets/writing/` is still a stub.
-- Language's rich-text editor cannot insert or upload assets: there is no
-  brokered file-picker upload. It shows images only for project-shared assets
-  (`reference_scope: "project"`).
+- Asset upload transfers expire 60 s after `asset.upload.begin` and are not
+  refreshed per chunk; the SDK caps uploads at 64 MiB.
+- `RichTextEditor` writes Svelte state from ProseMirror blur, so destroying a
+  focused editor inside a runes flush throws `state_unsafe_mutation`. Language's
+  Overview no longer reloads into a loading state after autosave, which was the
+  known trigger; other surfaces that unmount a focused editor would hit it.
 - Guide dismissals for Language now live in the plugin webview's own
   `localStorage`, so earlier dismissals made in the main webview do not carry
   over.
-- The plugin bundles are unminified (Language is about 2.8 MB).
 - Isolation proof is still static and fake-broker rendering, not packaged
   Tauri webview tests on every desktop platform. The Language content-pane
   layout, the projection webviews, overlay hiding, and toast placement need a
@@ -49,6 +57,8 @@ unfinished remainder.
 
 1. Run the desktop app, windowed and fullscreen, and verify Language in the
    content pane (layout at narrow and short windows, pane switching from
-   history, leave guards, overlays, toasts, link opening, shared images) and
-   the Chronology and World graph webviews (layout, Back, Show on map).
-2. Brokered asset upload for plugin editors, if Language should insert assets.
+   history, leave guards, overlays, toasts, link opening, shared images, the
+   native file chooser for asset upload) and the Chronology and World graph
+   webviews (layout, Back, Show on map). Also insert an image in a main-window
+   editor, which is unverified since the editor host change.
+2. Make `RichTextEditor` safe to destroy while focused.

@@ -137,7 +137,7 @@ assert.equal(paneStatePayload(null), null);
     openLink: (href) => opened.push(href),
   });
 
-  assert.equal(host.assets, null, "the broker host offers no asset management");
+  assert.equal(typeof host.assets?.pickAndRegisterAsset, "function", "the broker host offers asset management");
   const read = await host.readAssetBytesByPath("assets/a.png");
   assert.deepEqual([...read], [1, 2, 3, 4]);
   assert.deepEqual(fetched, ["/__asset/assets/a.png"]);

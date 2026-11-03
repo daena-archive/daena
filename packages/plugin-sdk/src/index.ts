@@ -15,6 +15,7 @@ import type {
   AiRequestIdPayload,
   AssetMetadataUpdatePayload,
   AssetDeletePayload,
+  AssetUploadBeginPayload,
   EntityPageRecord,
   EntityQueryPayload,
 } from "./generated.js";
@@ -77,6 +78,11 @@ export interface PluginRpcClient {
   beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
   commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
   cancelAssetTransfer(handle: string): Promise<void>;
+  /** Begins a plugin-supplied file upload into the caller's own namespace. Send the bytes with `uploadAssetChunks`, then call `commitAssetUpload`. */
+  beginAssetUpload(input: AssetUploadBeginPayload, options?: MutationOptions): Promise<AssetReplaceHandle>;
+  commitAssetUpload(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
+  /** Project-scoped assets from every namespace, as `asset.list` records. */
+  listSharedAssets(): Promise<unknown[]>;
   startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
   pollAiRequest(requestId: string): Promise<unknown[]>;
   cancelAiRequest(requestId: string): Promise<void>;
@@ -502,6 +508,11 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     commitAssetReplace: (handle, contentHash, options) =>
       callTransport<unknown>(transport, "asset.replace.commit", { handle, contentHash }, options?.requestId),
     cancelAssetTransfer: (handle) => callTransport<void>(transport, "asset.transfer.cancel", { handle }),
+    beginAssetUpload: (input, options) =>
+      callTransport<AssetReplaceHandle>(transport, "asset.upload.begin", input, options?.requestId),
+    commitAssetUpload: (handle, contentHash, options) =>
+      callTransport<unknown>(transport, "asset.upload.commit", { handle, contentHash }, options?.requestId),
+    listSharedAssets: () => callTransport<unknown[]>(transport, "asset.shared.list", {}),
     startAiRequest: (request) => callTransport<AiRequestIdPayload>(transport, "ai.request.start", request),
     pollAiRequest: (requestId) => callTransport<unknown[]>(transport, "ai.request.poll", { requestId }),
     cancelAiRequest: (requestId) => callTransport<void>(transport, "ai.request.cancel", { requestId }),

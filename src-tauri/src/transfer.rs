@@ -1,7 +1,7 @@
 // Binary asset transfers and plugin protocol responses.
 use super::APP_HANDLE;
 use super::*;
-use daena_core::ASSET_REFERENCE_SCOPE_PROJECT;
+use daena_core::{AssetBytesInput, ASSET_REFERENCE_SCOPE_PROJECT};
 
 const MAX_ASSET_TRANSFER_BYTES: usize = daena_core::maps::PHYSICAL_MAX_SOURCE_BYTES;
 pub(super) const ASSET_TRANSFER_TTL: Duration = Duration::from_secs(60);
@@ -85,6 +85,23 @@ pub(super) enum BinaryTransfer {
         bytes: Vec<u8>,
         expires_at: Instant,
     },
+    /// A plugin-supplied file that will be registered as a new asset on
+    /// commit. The target entity and namespace are fixed at begin, so commit
+    /// cannot move the bytes to another entity or namespace.
+    AssetUpload {
+        plugin_id: String,
+        session_id: String,
+        project_id: String,
+        entity_id: String,
+        namespace: String,
+        filename: String,
+        mime_type: String,
+        expected_revision: String,
+        declared_size: usize,
+        next_chunk: u64,
+        bytes: Vec<u8>,
+        expires_at: Instant,
+    },
 }
 
 impl BinaryTransferManager {
@@ -97,7 +114,8 @@ impl BinaryTransferManager {
             | BinaryTransfer::ImageImport { expires_at, .. }
             | BinaryTransfer::VectorCreate { expires_at, .. }
             | BinaryTransfer::PhysicalCreate { expires_at, .. }
-            | BinaryTransfer::VectorReplace { expires_at, .. } => *expires_at > now,
+            | BinaryTransfer::VectorReplace { expires_at, .. }
+            | BinaryTransfer::AssetUpload { expires_at, .. } => *expires_at > now,
         });
     }
 
@@ -188,6 +206,14 @@ impl BinaryTransferManager {
                 ..
             }
             | BinaryTransfer::VectorReplace {
+                plugin_id,
+                session_id,
+                next_chunk,
+                declared_size,
+                bytes,
+                ..
+            }
+            | BinaryTransfer::AssetUpload {
                 plugin_id,
                 session_id,
                 next_chunk,
@@ -465,6 +491,63 @@ impl BinaryTransferManager {
         }
     }
 
+    /// Verifies a brokered asset upload before registration: the handle belongs
+    /// to this plugin session and project, every declared byte arrived, and the
+    /// bytes hash to the committed digest. The handle stays live on failure so
+    /// the plugin can retry with the right hash.
+    pub(super) fn prepare_asset_upload(
+        &mut self,
+        token: &str,
+        plugin_id: &str,
+        session_id: &str,
+        project_id: &str,
+        content_hash: &str,
+    ) -> Result<(AssetBytesInput, Vec<u8>, String), String> {
+        self.cleanup();
+        let transfer = self
+            .transfers
+            .get(token)
+            .ok_or_else(|| "asset upload handle is invalid or expired".to_string())?;
+        match transfer {
+            BinaryTransfer::AssetUpload {
+                plugin_id: owner,
+                session_id: expected_session,
+                project_id: expected_project,
+                entity_id,
+                namespace,
+                filename,
+                mime_type,
+                expected_revision,
+                declared_size,
+                bytes,
+                ..
+            } if owner == plugin_id
+                && expected_session == session_id
+                && expected_project == project_id =>
+            {
+                if bytes.len() != *declared_size {
+                    return Err("asset upload is incomplete".into());
+                }
+                let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+                if digest != content_hash {
+                    return Err("asset upload content hash does not match bytes".into());
+                }
+                Ok((
+                    AssetBytesInput {
+                        entity_id: entity_id.clone(),
+                        namespace: namespace.clone(),
+                        filename: filename.clone(),
+                        mime_type: mime_type.clone(),
+                        provenance: None,
+                    },
+                    bytes.clone(),
+                    expected_revision.clone(),
+                ))
+            }
+            _ => Err("asset upload handle is not valid for this session or project".into()),
+        }
+    }
+
     pub(super) fn complete_upload(
         &mut self,
         token: &str,
@@ -504,6 +587,11 @@ impl BinaryTransferManager {
                 plugin_id: owner,
                 session_id: expected_session,
                 ..
+            }
+            | BinaryTransfer::AssetUpload {
+                plugin_id: owner,
+                session_id: expected_session,
+                ..
             } if owner == plugin_id && expected_session == session_id => Ok(()),
             other => {
                 self.transfers.insert(token.into(), other);
@@ -524,7 +612,8 @@ impl BinaryTransferManager {
             | BinaryTransfer::ImageImport { plugin_id, .. }
             | BinaryTransfer::VectorCreate { plugin_id, .. }
             | BinaryTransfer::PhysicalCreate { plugin_id, .. }
-            | BinaryTransfer::VectorReplace { plugin_id, .. } => plugin_id,
+            | BinaryTransfer::VectorReplace { plugin_id, .. }
+            | BinaryTransfer::AssetUpload { plugin_id, .. } => plugin_id,
         };
         if owner != plugin_id {
             return Err("asset handle is not valid for this plugin".into());
@@ -1177,6 +1266,8 @@ pub(super) fn plugin_protocol_response(
                         | "asset.replace.begin"
                         | "asset.replace.commit"
                         | "asset.transfer.cancel"
+                        | "asset.upload.begin"
+                        | "asset.upload.commit"
                         | "maps.image.import.begin"
                         | "maps.image.import.commit"
                         | "maps.vector.create.begin"
@@ -1199,6 +1290,9 @@ pub(super) fn plugin_protocol_response(
                     match request.method.as_str() {
                         "asset.replace.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps asset replace")?;
+                        }
+                        "asset.upload.commit" => {
+                            flush_checkpoint_for_shared_core(core, "asset upload")?;
                         }
                         "maps.image.import.commit" => {
                             flush_checkpoint_for_shared_core(core, "maps image import")?;
@@ -1550,6 +1644,101 @@ pub(super) fn dispatch_binary_asset_rpc(
                 .ok_or_else(|| "handle is required".to_string())?;
             manager.cancel(token, &session.plugin_id)?;
             Ok(serde_json::Value::Null)
+        }
+        "asset.upload.begin" => {
+            let entity_id = payload
+                .get("entityId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "entityId is required".to_string())?;
+            let namespace = payload
+                .get("namespace")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "namespace is required".to_string())?;
+            let filename = payload
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "filename is required".to_string())?;
+            let mime_type = payload
+                .get("mimeType")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "mimeType is required".to_string())?;
+            let expected_revision = payload
+                .get("expectedRevision")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "expectedRevision is required".to_string())?;
+            let size_value = payload
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|size| *size > 0)
+                .ok_or_else(|| "asset upload size must be a positive integer".to_string())?;
+            if size_value > MAX_ASSET_TRANSFER_BYTES as u64 {
+                return Err("asset exceeds host transfer limit".into());
+            }
+            let size = size_value as usize;
+            // The namespace is owned by this plugin: the capability layer
+            // resolves `asset.register` against the owned namespace before this
+            // dispatch runs. Entity existence and the revision are checked here
+            // so a refused upload never reaches the byte stream.
+            project
+                .validate_asset_upload(
+                    &AssetBytesInput {
+                        entity_id: entity_id.into(),
+                        namespace: namespace.into(),
+                        filename: filename.into(),
+                        mime_type: mime_type.into(),
+                        provenance: None,
+                    },
+                    expected_revision,
+                )
+                .map_err(|e| e.to_string())?;
+            let token = manager.token(BinaryTransfer::AssetUpload {
+                plugin_id: session.plugin_id.clone(),
+                session_id: session.id.clone(),
+                project_id: session.project_id.clone(),
+                entity_id: entity_id.into(),
+                namespace: namespace.into(),
+                filename: filename.into(),
+                mime_type: mime_type.into(),
+                expected_revision: expected_revision.into(),
+                declared_size: size,
+                next_chunk: 0,
+                bytes: Vec::with_capacity(size.min(MAX_ASSET_TRANSFER_BYTES)),
+                expires_at: Instant::now() + ASSET_TRANSFER_TTL,
+            });
+            Ok(
+                serde_json::json!({"handle":token,"url":plugin_asset_url(&token, &session.id, Some(0)),"maxChunkBytes":daena_plugin_host::runtime::MAX_RPC_BYTES,"expiresInMs":ASSET_TRANSFER_TTL.as_millis()}),
+            )
+        }
+        "asset.upload.commit" => {
+            let token = payload
+                .get("handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "handle is required".to_string())?;
+            let content_hash = payload
+                .get("contentHash")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "contentHash is required".to_string())?;
+            let (input, bytes, expected_revision) = manager.prepare_asset_upload(
+                token,
+                &session.plugin_id,
+                &session.id,
+                &session.project_id,
+                content_hash,
+            )?;
+            drop(manager);
+            let asset = project
+                .register_asset_bytes_with_options(
+                    input,
+                    bytes,
+                    Some(&expected_revision),
+                    request_id,
+                )
+                .map_err(|e| e.to_string())?;
+            let mut manager = transfers
+                .lock()
+                .map_err(|_| "asset transfer state is unavailable".to_string())?;
+            manager.complete_upload(token, &session.plugin_id, &session.id)?;
+            serde_json::to_value(asset).map_err(|e| e.to_string())
         }
         "maps.image.import.begin" => {
             let name = payload

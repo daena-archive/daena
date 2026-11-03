@@ -1,4 +1,4 @@
-import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginAppearance, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload, EntityPageRecord, EntityQueryPayload } from "./generated.js";
+import type { EntityRecord, Event, Migration, MigrationAuthoringOptions, MigrationOperation, PluginManifest, PluginRpcError, PluginAppearance, PluginBootstrap, Service, MutationOptions, AiRequestStartPayload, AiRequestIdPayload, AssetMetadataUpdatePayload, AssetDeletePayload, AssetUploadBeginPayload, EntityPageRecord, EntityQueryPayload } from "./generated.js";
 export * from "./generated.js";
 export type { MetadataFieldDefinition } from "./generated.js";
 export * from "./maps.js";
@@ -46,6 +46,11 @@ export interface PluginRpcClient {
     beginAssetReplace(input: AssetReplaceRequest, options?: MutationOptions): Promise<AssetReplaceHandle>;
     commitAssetReplace(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
     cancelAssetTransfer(handle: string): Promise<void>;
+    /** Begins a plugin-supplied file upload into the caller's own namespace. Send the bytes with `uploadAssetChunks`, then call `commitAssetUpload`. */
+    beginAssetUpload(input: AssetUploadBeginPayload, options?: MutationOptions): Promise<AssetReplaceHandle>;
+    commitAssetUpload(handle: string, contentHash: string, options?: MutationOptions): Promise<unknown>;
+    /** Project-scoped assets from every namespace, as `asset.list` records. */
+    listSharedAssets(): Promise<unknown[]>;
     startAiRequest(request: AiRequestStartPayload): Promise<AiRequestIdPayload>;
     pollAiRequest(requestId: string): Promise<unknown[]>;
     cancelAiRequest(requestId: string): Promise<void>;

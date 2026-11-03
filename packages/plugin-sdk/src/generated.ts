@@ -87,9 +87,12 @@ export interface AssetReadBeginPayload { assetId: string; namespace: string }
 export interface AssetRegisterPayload { content_hash: string; entity_id: string; expectedRevision: string; filename: string; mime_type: string; namespace: string; path: string; size: number }
 export interface AssetReplaceBeginPayload { assetId: string; expectedRevision: string; mimeType: string; namespace: string; size: number }
 export interface AssetReplaceCommitPayload { contentHash: string; handle: string }
+export type AssetSharedListPayload = Record<string, unknown>;
 export interface AssetSharedReadBeginPayload { path: string }
 export interface AssetTransferCancelPayload { handle: string }
 export interface AssetMetadataUpdatePayload { assetId: string; expectedRevision: string; filename?: string | null; namespace: string; referenceScope?: string | null; role?: string | null }
+export interface AssetUploadBeginPayload { entityId: string; expectedRevision: string; filename: string; mimeType: string; namespace: string; size: number }
+export interface AssetUploadCommitPayload { contentHash: string; handle: string }
 export interface DocumentListPayload { entityId: string }
 export interface DocumentSavePayload { body: string; entityId: string; expectedRevision: string; format?: string | null }
 export interface EntityCreatePayload { document?: EntityCreateDocument | null; fields?: EntityCreateField[]; name: string; relationships?: EntityCreateRelationship[]; type?: string | null }
@@ -150,9 +153,12 @@ export interface BrokerMethodPayloads {
   "asset.register": AssetRegisterPayload;
   "asset.replace.begin": AssetReplaceBeginPayload;
   "asset.replace.commit": AssetReplaceCommitPayload;
+  "asset.shared.list": AssetSharedListPayload;
   "asset.shared.read.begin": AssetSharedReadBeginPayload;
   "asset.transfer.cancel": AssetTransferCancelPayload;
   "asset.update": AssetMetadataUpdatePayload;
+  "asset.upload.begin": AssetUploadBeginPayload;
+  "asset.upload.commit": AssetUploadCommitPayload;
   "document.list": DocumentListPayload;
   "document.save": DocumentSavePayload;
   "entity.create": EntityCreatePayload;

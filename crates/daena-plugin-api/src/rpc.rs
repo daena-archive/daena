@@ -568,6 +568,35 @@ pub struct AssetTransferCancelPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct AssetUploadBeginPayload {
+    #[serde(rename = "entityId")]
+    pub entity_id: String,
+    pub namespace: String,
+    pub filename: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub size: i64,
+    #[serde(rename = "expectedRevision")]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetUploadCommitPayload {
+    pub handle: String,
+    #[serde(rename = "contentHash")]
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AssetSharedListPayload {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct SearchQueryPayload {
     pub query: String,
 }

@@ -1,7 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { build } from "vite";
 import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+import { finalizePluginBundle } from "./minify-plugin-bundle.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const outDir = process.env.LANGUAGE_UI_OUT ?? resolve(root, "src-tauri/plugin-assets/language");
@@ -42,8 +42,4 @@ await build({
   },
 });
 
-const stripSourceMap = (text) => text.replace(/\/[*/][#@] sourceMappingURL=[\s\S]*?(?:\*\/|$)/gm, "");
-for (const name of ["language.js", "language.css"]) {
-  const path = resolve(outDir, name);
-  writeFileSync(path, stripSourceMap(readFileSync(path, "utf8")));
-}
+await finalizePluginBundle(outDir, "language");

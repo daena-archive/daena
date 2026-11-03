@@ -17,7 +17,10 @@
     "field.write:self",
     "record.read:self",
     "record.write:self",
+    "asset.read:self",
     "asset.read:shared",
+    "asset.write:self",
+    "asset.register",
     "host.surface:daena.language/workspace@1",
     "event.publish:daena.language/state@1"
   ],

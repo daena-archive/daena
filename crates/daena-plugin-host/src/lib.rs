@@ -1636,7 +1636,9 @@ fn expensive_rpc_limit(
         | "asset.delete"
         | "asset.read.begin"
         | "asset.shared.read.begin"
-        | "asset.replace.begin" => Some(("asset", config.asset_max, config.asset_window)),
+        | "asset.replace.begin"
+        | "asset.upload.begin"
+        | "asset.upload.commit" => Some(("asset", config.asset_max, config.asset_window)),
         _ => None,
     }
 }
@@ -3503,7 +3505,8 @@ fn validate_schema_resource(
         | "asset.update"
         | "asset.delete"
         | "asset.read.begin"
-        | "asset.replace.begin" => {
+        | "asset.replace.begin"
+        | "asset.upload.begin" => {
             let namespace = payload
                 .get("namespace")
                 .and_then(serde_json::Value::as_str)

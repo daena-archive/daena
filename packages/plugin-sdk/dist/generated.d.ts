@@ -545,6 +545,7 @@ export interface AssetReplaceCommitPayload {
     contentHash: string;
     handle: string;
 }
+export type AssetSharedListPayload = Record<string, unknown>;
 export interface AssetSharedReadBeginPayload {
     path: string;
 }
@@ -558,6 +559,18 @@ export interface AssetMetadataUpdatePayload {
     namespace: string;
     referenceScope?: string | null;
     role?: string | null;
+}
+export interface AssetUploadBeginPayload {
+    entityId: string;
+    expectedRevision: string;
+    filename: string;
+    mimeType: string;
+    namespace: string;
+    size: number;
+}
+export interface AssetUploadCommitPayload {
+    contentHash: string;
+    handle: string;
 }
 export interface DocumentListPayload {
     entityId: string;
@@ -804,9 +817,12 @@ export interface BrokerMethodPayloads {
     "asset.register": AssetRegisterPayload;
     "asset.replace.begin": AssetReplaceBeginPayload;
     "asset.replace.commit": AssetReplaceCommitPayload;
+    "asset.shared.list": AssetSharedListPayload;
     "asset.shared.read.begin": AssetSharedReadBeginPayload;
     "asset.transfer.cancel": AssetTransferCancelPayload;
     "asset.update": AssetMetadataUpdatePayload;
+    "asset.upload.begin": AssetUploadBeginPayload;
+    "asset.upload.commit": AssetUploadCommitPayload;
     "document.list": DocumentListPayload;
     "document.save": DocumentSavePayload;
     "entity.create": EntityCreatePayload;

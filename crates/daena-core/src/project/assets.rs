@@ -5,6 +5,10 @@ use super::{
 };
 use crate::error::CoreError;
 use std::path::Path;
+use uuid::Uuid;
+
+/// Longest MIME type an asset may carry, in characters.
+pub(super) const ASSET_MIME_TYPE_MAX_CHARS: usize = 255;
 
 pub(super) fn validated_asset_filename(filename: &str) -> Result<String, CoreError> {
     let filename = filename.trim();
@@ -35,6 +39,33 @@ pub(super) fn imported_asset_category(filename: &str, mime_type: &str) -> &'stat
     } else {
         "files"
     }
+}
+
+/// Filename and MIME type checks shared by upload begin and commit.
+pub(super) fn validated_upload_filename(
+    filename: &str,
+    mime_type: &str,
+) -> Result<String, CoreError> {
+    let filename = validated_asset_filename(filename)?;
+    if mime_type.trim().is_empty() {
+        return Err(CoreError::Validation("asset MIME type is required".into()));
+    }
+    if mime_type.chars().count() > ASSET_MIME_TYPE_MAX_CHARS {
+        return Err(CoreError::Validation(format!(
+            "asset MIME type must be at most {ASSET_MIME_TYPE_MAX_CHARS} characters"
+        )));
+    }
+    Ok(filename)
+}
+
+/// Portable checkpoint path for a newly registered asset: a category folder
+/// chosen from its MIME type, then a unique prefix so names never collide.
+pub(super) fn new_asset_portable_path(filename: &str, mime_type: &str) -> String {
+    format!(
+        "assets/{}/{}-{filename}",
+        imported_asset_category(filename, mime_type),
+        Uuid::new_v4()
+    )
 }
 
 pub(super) fn validate_asset_role(role: &str) -> Result<(), CoreError> {

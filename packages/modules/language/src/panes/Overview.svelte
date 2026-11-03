@@ -158,7 +158,12 @@ function onOverviewDocumentInput(value: string) {
   scheduleOverviewAutosave();
 }
 
-async function loadOverview() {
+/**
+ * `quiet` reloads after a save without swapping the form out. Swapping it out
+ * destroys the notes editor, which can still hold focus; the blur then writes
+ * editor state from inside Svelte's flush and the write is rejected.
+ */
+async function loadOverview({ quiet = false }: { quiet?: boolean } = {}) {
   clearOverviewAutosave();
   if (!selectedLanguage) {
     overviewEntity = null;
@@ -166,7 +171,7 @@ async function loadOverview() {
     return;
   }
   const token = ++overviewRequest;
-  overviewLoading = true;
+  if (!quiet) overviewLoading = true;
   overviewError = "";
   try {
     const [entity, fieldRecords] = await Promise.all([
@@ -247,7 +252,7 @@ async function saveOverview(automatic = false): Promise<boolean> {
     const needsFollowUpSave = currentDraftChanged || overviewAutosaveQueued;
     overviewSaving = false;
     overviewSavingAutomatically = false;
-    await loadOverview();
+    await loadOverview({ quiet: true });
     if (selectedLanguage?.id !== entityId) return false;
     if (needsFollowUpSave) {
       overviewName = currentDraftName;
@@ -268,7 +273,7 @@ async function saveOverview(automatic = false): Promise<boolean> {
     const saveError = cause instanceof Error ? cause.message : String(cause);
     overviewSaving = false;
     overviewSavingAutomatically = false;
-    await loadOverview();
+    await loadOverview({ quiet: true });
     if (selectedLanguage?.id === entityId && overviewEntity?.id === entityId) {
       overviewName = currentDraftName;
       overviewFields = currentDraftFields;
@@ -415,7 +420,11 @@ let status = $derived.by(() => {
         </div>
       </div>
       <div class="language-overview-editor">
-        <RichTextEditor value={overviewDocument} onChange={onOverviewDocumentInput} />
+        <RichTextEditor
+          value={overviewDocument}
+          onChange={onOverviewDocumentInput}
+          entityId={selectedLanguage?.id ?? null}
+          defaultNamespace="language" />
       </div>
     </section>
 

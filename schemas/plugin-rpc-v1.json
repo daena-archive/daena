@@ -327,6 +327,10 @@
       ],
       "type": "object"
     },
+    "AssetSharedListPayload": {
+      "additionalProperties": false,
+      "type": "object"
+    },
     "AssetSharedReadBeginPayload": {
       "additionalProperties": false,
       "properties": {
@@ -347,6 +351,55 @@
         }
       },
       "required": [
+        "handle"
+      ],
+      "type": "object"
+    },
+    "AssetUploadBeginPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "entityId": {
+          "type": "string"
+        },
+        "expectedRevision": {
+          "type": "string"
+        },
+        "filename": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "size": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entityId",
+        "expectedRevision",
+        "filename",
+        "mimeType",
+        "namespace",
+        "size"
+      ],
+      "type": "object"
+    },
+    "AssetUploadCommitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "contentHash": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contentHash",
         "handle"
       ],
       "type": "object"
@@ -2231,6 +2284,54 @@
           "if": {
             "properties": {
               "method": {
+                "const": "asset.upload.begin"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetUploadBeginPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "asset.upload.commit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetUploadCommitPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "asset.shared.list"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/AssetSharedListPayload"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "method": {
                 "const": "search.query"
               }
             }
@@ -2789,6 +2890,9 @@
             "asset.replace.begin",
             "asset.replace.commit",
             "asset.transfer.cancel",
+            "asset.upload.begin",
+            "asset.upload.commit",
+            "asset.shared.list",
             "search.query",
             "maps.image.import.begin",
             "maps.image.import.commit",
@@ -3001,6 +3105,10 @@
       "payload": "AssetReplaceCommitPayload",
       "requestId": "envelope"
     },
+    "asset.shared.list": {
+      "payload": "AssetSharedListPayload",
+      "requestId": "envelope"
+    },
     "asset.shared.read.begin": {
       "payload": "AssetSharedReadBeginPayload",
       "requestId": "envelope"
@@ -3017,6 +3125,22 @@
         "expectedRevision",
         "namespace"
       ]
+    },
+    "asset.upload.begin": {
+      "payload": "AssetUploadBeginPayload",
+      "requestId": "envelope",
+      "requiredPayload": [
+        "entityId",
+        "expectedRevision",
+        "filename",
+        "mimeType",
+        "namespace",
+        "size"
+      ]
+    },
+    "asset.upload.commit": {
+      "payload": "AssetUploadCommitPayload",
+      "requestId": "envelope"
     },
     "document.list": {
       "payload": "DocumentListPayload",

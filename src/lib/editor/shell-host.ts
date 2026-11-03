@@ -1,16 +1,29 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { project } from "$lib/project/client";
 import { setDefaultEditorHost, type EditorAssetServices, type EditorHost } from "$lib/editor/host";
+import { mimeTypeFor } from "$lib/editor/image-attrs";
 
 /** Main-webview implementation of the editor host, backed by Tauri IPC and the project client. */
 const shellAssets: EditorAssetServices = {
   listAssets: (entityId) => project.listAssets(entityId),
   listSharedAssets: () => project.listSharedAssets(),
-  readAssetBytes: async (assetId) => Uint8Array.from(await project.readAssetBytes(assetId)),
+  readAssetBytes: async (asset) => Uint8Array.from(await project.readAssetBytes(asset.id)),
   updateAssetMetadata: (assetId, update, expectedRevision) =>
     project.updateAssetMetadata(assetId, update, expectedRevision),
-  pickFile: () => project.pickFile(),
-  registerAssetFile: (input) => project.registerAssetFile(input),
+  pickAndRegisterAsset: async ({ entityId, namespace }) => {
+    const selection = await project.pickFile();
+    const source = typeof selection === "string" ? selection : null;
+    if (!source) return null;
+    const filename = source.split(/[\\/]/).pop() ?? "asset";
+    const asset = await project.registerAssetFile({
+      entity_id: entityId,
+      namespace,
+      source_path: source,
+      filename,
+      mime_type: mimeTypeFor(filename),
+    });
+    return { asset, filename };
+  },
 };
 
 async function openExternal(href: string): Promise<void> {

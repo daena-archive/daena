@@ -19,7 +19,7 @@ import {
 } from "@lucide/svelte";
 import type { Asset, Entity } from "$lib/project/client";
 import type { EditorAssetServices } from "$lib/editor/host";
-import { clampDim, formatSize, isImage, isVideo, mimeTypeFor } from "$lib/editor/image-attrs";
+import { clampDim, formatSize, isImage, isVideo } from "$lib/editor/image-attrs";
 
 let {
   assets,
@@ -372,7 +372,7 @@ $effect(() => {
   const shouldPreview = isImage(a.mime_type) || isVideo(a.mime_type);
   if (!shouldPreview) return;
   void assets
-    .readAssetBytes(a.id)
+    .readAssetBytes(a)
     .then((bytes) => {
       if (disposed) return;
       try {
@@ -408,7 +408,7 @@ $effect(() => {
   const shouldPreview = isImage(a.mime_type) || isVideo(a.mime_type);
   if (!shouldPreview) return;
   void assets
-    .readAssetBytes(a.id)
+    .readAssetBytes(a)
     .then((bytes) => {
       if (disposed) return;
       try {
@@ -529,28 +529,16 @@ async function handlePickAndStageUpload() {
   uploading = true;
   uploadError = "";
   try {
-    const selection = await assets.pickFile();
-    const source = typeof selection === "string" ? selection : null;
-    if (!source) {
-      uploading = false;
-      return;
-    }
-    pickedFileLabel = source.split(/[\\/]/).pop() ?? "asset";
-    const filename = pickedFileLabel;
-    const namespace = defaultNamespace ?? "lore";
-    const mime = mimeTypeFor(filename);
-    const asset = await assets.registerAssetFile({
-      entity_id: entityId,
-      namespace,
-      source_path: source,
-      filename,
-      mime_type: mime,
-    });
+    // Cancelling the chooser resolves null; the finally block clears `uploading`.
+    const picked = await assets.pickAndRegisterAsset({ entityId, namespace: defaultNamespace ?? "lore" });
+    if (!picked) return;
+    const { asset, filename } = picked;
+    pickedFileLabel = filename;
     // stage for confirmation instead of immediate insert
     uploadedAsset = asset;
     uploadedPreviewError = false;
     // initialize image meta defaults for staged upload — always reset to new file's name/dims
-    if (isImage(mime)) {
+    if (isImage(asset.mime_type)) {
       draftAlt = filename;
       draftTitle = filename;
       draftTitleCustom = false;

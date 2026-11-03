@@ -769,6 +769,12 @@ pub(super) fn dispatch_module_rpc(
             let assets = project.list_assets(entity_id)?;
             serde_json::to_value(assets).map_err(|error| CoreError::Validation(error.to_string()))
         }
+        "asset.shared.list" => {
+            // Project-scoped assets from every namespace. Entity-scoped assets
+            // never appear here; the capability is `asset.read:shared`.
+            let assets = project.list_shared_assets()?;
+            serde_json::to_value(assets).map_err(|error| CoreError::Validation(error.to_string()))
+        }
         "asset.register" => {
             let expected_revision = required_payload_string(
                 &payload,

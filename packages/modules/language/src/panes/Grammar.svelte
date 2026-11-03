@@ -690,7 +690,7 @@ function removeLink(index: number) {
         </label>
       {:else if session.draft.recordKind === "custom-rule"}
         {@const customRuleDraft = session.draft}
-        <CustomRuleEditor draft={customRuleDraft} locked={session.locked} />
+        <CustomRuleEditor draft={customRuleDraft} locked={session.locked} entityId={selectedLanguage?.id ?? null} />
       {:else if session.draft.recordKind === "section-state"}
         {@const sectionDraft = session.draft}
         <p class="language-empty" role="status">

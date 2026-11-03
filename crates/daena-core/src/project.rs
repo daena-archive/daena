@@ -64,21 +64,21 @@ use self::fs_util::*;
 use self::markdown::*;
 use self::model::current_snapshot_version;
 pub use self::model::{
-    AcceptedPhysicalMap, AcceptedVectorMap, Asset, AssetFileInput, AssetFileReplaceInput,
-    AssetInput, AssetMetadataUpdate, AssetReplaceInput, AttachedMapRaster, CreateEntity,
-    CreateEntry, CreateEntryDocument, CreateEntryField, CreateEntryRelationship, Document, Entity,
-    EntityListQuery, EntityPage, EntitySortDirection, EntitySortField, EntityTypeCount,
-    ExternalChangeReport, FieldValue, Generation, GitChange, GitLogEntry, GitPreflight, GitRemote,
-    GitResetResult, GitStatus, GitToolInfo, GitUpstream, ImportedImageMap, MapEditApply,
-    MapFeatureSearchResult, MapLinkMutation, MigrationHistoryEntry, ModuleField, ModuleNamespace,
-    ModuleRecord, ModuleRecordListParams, ModuleState, PluginBackup, ProjectInfo, ProjectSnapshot,
-    RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput, RelationshipPage,
-    RelationshipQuery, RelationshipQueryDirection, RelationshipUpdate, SaveDocument, SaveEntry,
-    SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace, WikiPageExportFormat,
-    ASSET_REFERENCE_SCOPE_ENTITY, ASSET_REFERENCE_SCOPE_PROJECT, ASSET_ROLE_ATTACHMENT,
-    ASSET_ROLE_PROFILE, DEFAULT_ENTITY_QUERY_LIMIT, DEFAULT_RELATIONSHIP_QUERY_LIMIT,
-    MAX_ENTITY_GET_MANY, MAX_ENTITY_QUERY_LIMIT, MAX_RELATIONSHIP_QUERY_ENTITIES,
-    MAX_RELATIONSHIP_QUERY_LIMIT,
+    AcceptedPhysicalMap, AcceptedVectorMap, Asset, AssetBytesInput, AssetFileInput,
+    AssetFileReplaceInput, AssetInput, AssetMetadataUpdate, AssetReplaceInput, AttachedMapRaster,
+    CreateEntity, CreateEntry, CreateEntryDocument, CreateEntryField, CreateEntryRelationship,
+    Document, Entity, EntityListQuery, EntityPage, EntitySortDirection, EntitySortField,
+    EntityTypeCount, ExternalChangeReport, FieldValue, Generation, GitChange, GitLogEntry,
+    GitPreflight, GitRemote, GitResetResult, GitStatus, GitToolInfo, GitUpstream, ImportedImageMap,
+    MapEditApply, MapFeatureSearchResult, MapLinkMutation, MigrationHistoryEntry, ModuleField,
+    ModuleNamespace, ModuleRecord, ModuleRecordListParams, ModuleState, PluginBackup, ProjectInfo,
+    ProjectSnapshot, RasterLayerChange, RasterLayerUpdate, Relationship, RelationshipInput,
+    RelationshipPage, RelationshipQuery, RelationshipQueryDirection, RelationshipUpdate,
+    SaveDocument, SaveEntry, SearchPassage, SyncSummary, VectorLayerDelete, VectorSourceReplace,
+    WikiPageExportFormat, ASSET_REFERENCE_SCOPE_ENTITY, ASSET_REFERENCE_SCOPE_PROJECT,
+    ASSET_ROLE_ATTACHMENT, ASSET_ROLE_PROFILE, DEFAULT_ENTITY_QUERY_LIMIT,
+    DEFAULT_RELATIONSHIP_QUERY_LIMIT, MAX_ENTITY_GET_MANY, MAX_ENTITY_QUERY_LIMIT,
+    MAX_RELATIONSHIP_QUERY_ENTITIES, MAX_RELATIONSHIP_QUERY_LIMIT,
 };
 use self::module_records::*;
 use self::projection::*;

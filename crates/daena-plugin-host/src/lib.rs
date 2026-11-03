@@ -2569,6 +2569,17 @@ impl PluginHost {
             {
                 continue;
             }
+            // A plugin without a WASM runtime must not replace a native provider
+            // the host already registered for it; the stub would always fail.
+            if runtime.is_none()
+                && self
+                    .services
+                    .provider_plugin(&service.name, service.major)
+                    .as_deref()
+                    == Some(plugin_id)
+            {
+                continue;
+            }
             let runtime = runtime.clone();
             self.register_declared_service_provider(
                 plugin_id,

@@ -1665,6 +1665,75 @@ fn optional_timeline_service_supports_a_declared_consumer() {
 }
 
 #[test]
+fn activation_keeps_native_provider_for_wasm_less_plugin() {
+    let service_name = "com.example.maps/navigation";
+    let mut provider = manifest("com.example.maps", "maps");
+    provider
+        .capabilities
+        .push(format!("service.provide:{service_name}@1"));
+    provider.services.provides.push(daena_plugin_api::Service {
+        name: service_name.into(),
+        major: 1,
+    });
+    let mut host = PluginHost::new();
+    host.catalog
+        .insert_for_test(CatalogEntry {
+            manifest: provider.clone(),
+            package_root: PathBuf::new(),
+            digest: "a".repeat(64),
+            embedded_wasm: None,
+        })
+        .unwrap();
+    host.namespaces.register_manifest(&provider).unwrap();
+    host.grants
+        .set(
+            "project",
+            &provider.id,
+            &provider.capabilities,
+            provider.capabilities.iter().cloned().collect(),
+        )
+        .unwrap();
+    // The app registers the native provider before any project activates the
+    // plugin. A WASM-less manifest must not replace it on activation.
+    host.register_declared_service_provider(
+        &provider.id,
+        service_name,
+        1,
+        Arc::new(|_request| Ok(serde_json::json!({"provider": "native"}))),
+    )
+    .unwrap();
+
+    host.activate_bundled("project", &provider.id).unwrap();
+    assert_eq!(
+        host.services
+            .call(
+                "com.example.consumer",
+                service_name,
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .unwrap()["provider"],
+        "native"
+    );
+
+    host.deactivate_bundled("project", &provider.id);
+    host.activate_bundled("project", &provider.id).unwrap();
+    assert_eq!(
+        host.services
+            .call(
+                "com.example.consumer",
+                service_name,
+                1,
+                serde_json::json!({}),
+                Duration::from_millis(100),
+            )
+            .unwrap()["provider"],
+        "native"
+    );
+}
+
+#[test]
 fn activation_registers_and_deactivation_removes_manifest_declarations() {
     let mut host = host();
     host.activate_bundled("project", "com.example.one").unwrap();

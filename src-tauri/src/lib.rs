@@ -37,6 +37,8 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 mod ai;
+mod app_close;
+mod app_menu;
 mod app_update;
 mod atlas_jobs;
 mod atlas_studio;
@@ -142,7 +144,7 @@ impl Drop for CloseWorkerGuard {
     fn drop(&mut self) {
         ON_CLOSE_THREAD.with(|flag| flag.set(false));
         if !self.destroy_scheduled {
-            CLOSE_IN_PROGRESS.store(false, Ordering::Release);
+            app_close::abandon_close();
         }
     }
 }
@@ -543,13 +545,14 @@ pub fn run() {
     let startup_plugins = plugins.clone();
     let watcher = Arc::new(Mutex::new(ProjectWatcher::default()));
     let ai_runtime = protocol_ai_runtime.clone();
-    let close_core = core.clone();
-    let close_jobs = physical_jobs.clone();
-    let close_plugins = plugins.clone();
-    let close_watcher = watcher.clone();
-    let close_ai_runtime = ai_runtime.clone();
-    let close_image_jobs = image_jobs.clone();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS replaces tauri's default menu so that Quit runs the close handshake (see app_menu.rs).
+    // Other platforms have no menu, as before.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(app_menu::build_macos_menu)
+        .on_menu_event(app_menu::on_menu_event);
+    builder
         .setup(move |app| {
             let _ = APP_HANDLE.set(app.handle().clone());
             set_checkpoint_export_status_listener(Some(Arc::new(|| {
@@ -588,49 +591,15 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(move |window, event| {
+        .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Always held open here. The shell confirms or cancels through app_close_confirm and
+                // app_close_cancel; the fallback timer covers a shell that never answers (see app_close.rs).
                 api.prevent_close();
-                if CLOSE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-                    return;
-                }
-                let window = window.clone();
-                let close_core = close_core.clone();
-                let close_jobs = close_jobs.clone();
-                let close_plugins = close_plugins.clone();
-                let close_ai_runtime = close_ai_runtime.clone();
-                let close_watcher = close_watcher.clone();
-                let close_image_jobs = close_image_jobs.clone();
-                let app_handle = window.app_handle().clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    ON_CLOSE_THREAD.with(|flag| flag.set(true));
-                    let mut close_worker = CloseWorkerGuard {
-                        destroy_scheduled: false,
-                    };
-                    wait_for_project_commands();
-                    if let Err(error) = close_project_for_app(
-                        &app_handle,
-                        &close_core,
-                        &close_jobs,
-                        &close_plugins,
-                        &close_ai_runtime,
-                        &close_watcher,
-                        &close_image_jobs,
-                    ) {
-                        eprintln!("project cleanup during window close failed: {error}");
-                    }
-                    let window = window.clone();
-                    close_worker.destroy_scheduled = app_handle
-                        .run_on_main_thread(move || {
-                            if window.destroy().is_err() {
-                                CLOSE_IN_PROGRESS.store(false, Ordering::Release);
-                            }
-                        })
-                        .is_ok();
-                });
+                app_close::on_close_requested(window);
             }
         })
         .register_uri_scheme_protocol("plugin", move |ctx, request| {
@@ -754,6 +723,9 @@ pub fn run() {
             project_open_directory,
             project_new,
             project_close,
+            app_close::app_close_ack,
+            app_close::app_close_confirm,
+            app_close::app_close_cancel,
             project_info,
             project_import_checkpoint,
             external_import_jobs::project_external_importers,
@@ -884,8 +856,13 @@ pub fn run() {
             migration_validate,
             migration_apply,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                app_close::on_exit_requested(app_handle, &api);
+            }
+        });
 }
 
 #[cfg(test)]

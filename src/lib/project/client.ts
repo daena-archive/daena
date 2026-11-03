@@ -123,6 +123,10 @@ export const project = {
     }),
   create: (path: string) => invoke<ProjectInfo>("project_new", { path }),
   close: () => invoke<void>("project_close"),
+  // Answers the main window's held close request (src-tauri/src/app_close.rs).
+  appCloseAck: () => invoke<void>("app_close_ack"),
+  appCloseConfirm: () => invoke<void>("app_close_confirm"),
+  appCloseCancel: () => invoke<void>("app_close_cancel"),
   info: () => invoke<ProjectInfo | null>("project_info"),
   setAiEnabled: (enabled: boolean) => invoke<ProjectInfo>("project_set_ai_enabled", { enabled }),
   setThemePack: (themePack: ProjectThemePack) => invoke<ProjectInfo>("project_set_theme_pack", { themePack }),

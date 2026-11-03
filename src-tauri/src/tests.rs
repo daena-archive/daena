@@ -1,4 +1,9 @@
 use super::*;
+use crate::app_close::{
+    abandon_close, acknowledge_close, cancel_close, confirm_close, request_close,
+    should_intercept_exit, CloseHandshake,
+};
+use crate::app_menu::{quit_action, QuitAction};
 
 #[test]
 fn main_window_capability_allows_printing_wiki_pages() {
@@ -4617,4 +4622,220 @@ fn maps_vector_create_rpc_round_trips_and_cancel_leaves_no_entity() {
     assert!(created["asset"].is_null());
 
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn close_handshake_confirm_starts_the_close_once() {
+    let mut close = CloseHandshake::new();
+    assert!(close.request().is_some());
+    assert!(close.confirm());
+    assert!(
+        !close.confirm(),
+        "a second confirmation does not start another close"
+    );
+    assert!(close.is_in_progress());
+    assert!(
+        close.request().is_none(),
+        "a request during the close is held open without arming a timer"
+    );
+}
+
+#[test]
+fn close_handshake_ignores_repeated_requests_while_pending() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the first request is pending");
+    assert!(
+        close.request().is_none(),
+        "a second request while pending arms nothing"
+    );
+    assert!(close.is_pending());
+    assert!(
+        close.timed_out(generation),
+        "the one armed timer still closes the window"
+    );
+}
+
+#[test]
+fn close_handshake_cancel_keeps_the_window_and_disarms_the_fallback() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the request is pending");
+    close.cancel();
+    assert!(!close.is_pending());
+    assert!(
+        !close.timed_out(generation),
+        "the fallback does nothing after a cancel"
+    );
+    assert!(!close.confirm(), "nothing is left to confirm");
+    assert!(!close.is_in_progress());
+}
+
+#[test]
+fn close_handshake_stale_timer_cannot_close_a_later_request() {
+    let mut close = CloseHandshake::new();
+    let cancelled = close.request().expect("first request");
+    close.cancel();
+    let later = close.request().expect("second request after the cancel");
+    assert_ne!(cancelled, later);
+    assert!(
+        !close.timed_out(cancelled),
+        "the timer of the cancelled request is ignored"
+    );
+    assert!(
+        close.is_pending(),
+        "the later request still waits for the shell"
+    );
+    assert!(
+        close.confirm(),
+        "the later request is confirmed by the shell"
+    );
+}
+
+#[test]
+fn close_handshake_fallback_closes_when_the_shell_never_answers() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the request is pending");
+    assert!(close.timed_out(generation));
+    assert!(close.is_in_progress());
+    assert!(
+        !close.confirm(),
+        "a late confirmation does not start a second close"
+    );
+    close.cancel();
+    assert!(
+        close.is_in_progress(),
+        "a late cancel cannot hold a timed-out close open"
+    );
+}
+
+#[test]
+fn close_handshake_abandon_after_failed_destroy_accepts_requests_again() {
+    let mut close = CloseHandshake::new();
+    assert!(close.request().is_some());
+    assert!(close.confirm());
+    close.abandon();
+    assert!(!close.is_in_progress());
+    assert!(
+        close.request().is_some(),
+        "a later close request is held and armed again"
+    );
+}
+
+#[test]
+fn close_handshake_acknowledgement_disarms_the_fallback() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the request is pending");
+    assert!(close.acknowledge(generation));
+    assert!(close.is_acknowledged());
+    assert!(
+        !close.timed_out(generation),
+        "an acknowledged request has no fallback"
+    );
+    assert!(
+        close.is_pending(),
+        "the request waits for confirm or cancel"
+    );
+    assert!(close.confirm(), "the shell can still confirm the close");
+}
+
+#[test]
+fn close_handshake_stale_acknowledgement_is_ignored() {
+    let mut close = CloseHandshake::new();
+    let cancelled = close.request().expect("first request");
+    close.cancel();
+    let later = close.request().expect("second request after the cancel");
+    assert!(
+        !close.acknowledge(cancelled),
+        "an acknowledgement for the cancelled request is ignored"
+    );
+    assert!(!close.is_acknowledged());
+    assert!(
+        close.timed_out(later),
+        "the later request still falls back to the timer"
+    );
+}
+
+#[test]
+fn close_handshake_without_acknowledgement_the_fallback_still_closes() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the request is pending");
+    assert!(close.timed_out(generation));
+    assert!(close.is_in_progress());
+}
+
+#[test]
+fn close_handshake_acknowledgement_needs_a_pending_request() {
+    let mut close = CloseHandshake::new();
+    assert!(
+        !close.acknowledge(0),
+        "nothing is pending before the first request"
+    );
+    let generation = close.request().expect("the request is pending");
+    assert!(close.confirm());
+    assert!(
+        !close.acknowledge(generation),
+        "a closing request cannot be acknowledged"
+    );
+}
+
+#[test]
+fn close_handshake_acknowledged_request_ends_in_cancel_and_the_next_one_falls_back() {
+    let mut close = CloseHandshake::new();
+    let generation = close.request().expect("the request is pending");
+    assert!(close.acknowledge(generation));
+    close.cancel();
+    assert!(!close.is_pending());
+    assert!(!close.timed_out(generation));
+    let next = close.request().expect("a new request after the cancel");
+    assert!(
+        !close.is_acknowledged(),
+        "a new request starts unacknowledged"
+    );
+    assert!(close.timed_out(next), "and falls back to the timer");
+}
+
+#[test]
+fn exit_is_routed_through_the_close_while_the_main_window_is_open() {
+    assert!(should_intercept_exit(false, true));
+}
+
+#[test]
+fn exit_is_allowed_after_our_own_close_or_without_a_main_window() {
+    assert!(
+        !should_intercept_exit(true, true),
+        "our confirmed destroy exits"
+    );
+    assert!(
+        !should_intercept_exit(false, false),
+        "the last window went away"
+    );
+    assert!(!should_intercept_exit(true, false));
+}
+
+#[test]
+fn quit_closes_the_main_window_when_it_exists_and_exits_otherwise() {
+    assert_eq!(quit_action(true), QuitAction::CloseMainWindow);
+    assert_eq!(quit_action(false), QuitAction::ExitApp);
+}
+
+#[test]
+fn project_saves_run_while_a_close_is_pending_and_are_refused_once_confirmed() {
+    // The handshake is process-wide, so this is the only test that drives it.
+    cancel_close();
+    abandon_close();
+    assert!(request_close().is_some());
+    assert!(
+        acknowledge_close(),
+        "the shell acknowledges the pending request"
+    );
+    assert!(
+        begin_project_command().is_ok(),
+        "saves still run while the shell flushes its draft"
+    );
+    assert!(confirm_close());
+    assert!(
+        begin_project_command().is_err(),
+        "saves are refused once the close is confirmed"
+    );
+    abandon_close();
+    assert!(begin_project_command().is_ok());
 }

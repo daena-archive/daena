@@ -7450,17 +7450,54 @@ onMount(() => {
   window.addEventListener("resize", handleWorkbenchResize);
   let closeListenerDisposed = false;
   let unlistenWindowClose: (() => void) | undefined;
+  // Close handshake with the native side (src-tauri/src/app_close.rs). Checked against tauri 2.11.6 and
+  // @tauri-apps/api 2.11.1:
+  // - Rust holds every main-window close open with prevent_close(). Tauri's own window handler also prevents
+  //   the close when a JS listener exists, and it emits tauri://close-requested to the window either way, so
+  //   this listener always runs.
+  // - runtime-wry reads the prevent signal synchronously after the handlers return, so the decision is final
+  //   before this async handler runs. Nothing here can reach Rust later through the event.
+  // - The JS wrapper awaits this handler and then calls window.destroy() unless event.preventDefault() was
+  //   called. preventDefault therefore only stops that JS-side destroy, which would race the native teardown.
+  //   It does not reach Rust.
+  // So the handler always prevents the default. Its first await acknowledges the request (appCloseAck), which
+  // disarms the native fallback timer. The shell then answers with appCloseConfirm (close now) or appCloseCancel
+  // (keep open). A shell that never acknowledges is closed by the fallback after 8 s. Once acknowledged, a
+  // request waits for the shell's answer, so a leave dialog left open is never overtaken by the timer.
+  let closeDecisionPending = false;
   void getCurrentWindow()
     .onCloseRequested(async (event) => {
-      if (!ready) return;
       event.preventDefault();
-      if (!(await flushAutoSave())) {
-        error = "The window stayed open because the current draft could not be saved.";
-        return;
+      // A second request while one is being decided is already held open natively, so it needs no decision.
+      if (closeDecisionPending) return;
+      closeDecisionPending = true;
+      const keepWindowOpen = () => project.appCloseCancel().catch(() => {});
+      try {
+        await project.appCloseAck();
+        if (!ready) {
+          await project.appCloseConfirm();
+          return;
+        }
+        if (!(await flushAutoSave())) {
+          error = "The window stayed open because the current draft could not be saved.";
+          await keepWindowOpen();
+          return;
+        }
+        if (!(await canLeaveLanguageSection())) {
+          await keepWindowOpen();
+          return;
+        }
+        if (!(await leavePluginView({ closeWebviews: true }))) {
+          await keepWindowOpen();
+          return;
+        }
+        await project.appCloseConfirm();
+      } catch (cause) {
+        error = `The window stayed open because closing failed: ${friendlyError(cause)}`;
+        await keepWindowOpen();
+      } finally {
+        closeDecisionPending = false;
       }
-      if (!(await canLeaveLanguageSection())) return;
-      if (!(await leavePluginView({ closeWebviews: true }))) return;
-      await getCurrentWindow().destroy();
     })
     .then((cleanup) => {
       if (closeListenerDisposed) cleanup();

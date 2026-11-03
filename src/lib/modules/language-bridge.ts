@@ -5,6 +5,8 @@
  * IPC and state, and scripts/language-bridge.test.mjs exercises them directly.
  */
 
+import { PLUGIN_LEAVE_PENDING_TIMEOUT_MS, PluginLeaveTracker, type PluginLeaveTimers } from "./plugin-leave.ts";
+
 export const LANGUAGE_PLUGIN_ID = "daena.language";
 export const LANGUAGE_VIEW_ID = "language-workspace";
 export const LANGUAGE_STATE_EVENT = "language-state";
@@ -12,11 +14,9 @@ export const LANGUAGE_PANES = ["overview", "lexicon", "sounds", "writing", "gram
 export type LanguageBridgePane = (typeof LANGUAGE_PANES)[number];
 
 /** A can-leave request with no `leave-pending` after this long means the webview is gone. */
-export const LANGUAGE_LEAVE_PENDING_TIMEOUT_MS = 1500;
+export const LANGUAGE_LEAVE_PENDING_TIMEOUT_MS = PLUGIN_LEAVE_PENDING_TIMEOUT_MS;
 
 const MAX_ID_LENGTH = 128;
-const MAX_HREF_LENGTH = 4096;
-const OPENABLE_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:", "mailto:"]);
 
 export function isLanguagePane(value: unknown): value is LanguageBridgePane {
   return typeof value === "string" && (LANGUAGE_PANES as readonly string[]).includes(value);
@@ -83,91 +83,10 @@ export function parseLanguageStateEvent(payload: unknown): LanguageStateEvent | 
   }
 }
 
-/**
- * Returns the normalised href when the shell may open it outside the app
- * (http, https, mailto only), otherwise null.
- */
-export function openableLinkHref(href: unknown): string | null {
-  if (typeof href !== "string") return null;
-  const trimmed = href.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_HREF_LENGTH) return null;
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
-  }
-  return OPENABLE_PROTOCOLS.has(url.protocol) ? url.href : null;
-}
+export type LanguageLeaveTimers = PluginLeaveTimers;
 
-export interface LanguageLeaveTimers {
-  set(callback: () => void, ms: number): unknown;
-  clear(handle: unknown): void;
-}
+/** Tracks can-leave requests sent to the Language webview; see `PluginLeaveTracker`. */
+export const LanguageLeaveTracker = PluginLeaveTracker;
+export type LanguageLeaveTracker = PluginLeaveTracker;
 
-const browserTimers: LanguageLeaveTimers = {
-  set: (callback, ms) => setTimeout(callback, ms),
-  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
-
-interface LeaveEntry {
-  phase: "awaiting-pending" | "pending";
-  resolve: (allowed: boolean) => void;
-  timer: unknown;
-}
-
-/**
- * Tracks can-leave requests sent to the Language webview.
- *
- * - `begin` starts a request. If no `leave-pending` arrives within the timeout the
- *   webview is treated as gone and the request resolves true.
- * - After `leave-pending`, the request waits for `leave-reply` with no timeout.
- * - `releaseAll` (the webview re-sent `ready`, or unmounted) resolves every open
- *   request true.
- */
-export class LanguageLeaveTracker {
-  readonly #timers: LanguageLeaveTimers;
-  readonly #timeoutMs: number;
-  readonly #entries = new Map<string, LeaveEntry>();
-
-  constructor(options: { timers?: LanguageLeaveTimers; timeoutMs?: number } = {}) {
-    this.#timers = options.timers ?? browserTimers;
-    this.#timeoutMs = options.timeoutMs ?? LANGUAGE_LEAVE_PENDING_TIMEOUT_MS;
-  }
-
-  get outstanding(): number {
-    return this.#entries.size;
-  }
-
-  begin(requestId: string): Promise<boolean> {
-    this.#settle(requestId, true);
-    return new Promise<boolean>((resolve) => {
-      const timer = this.#timers.set(() => this.#settle(requestId, true), this.#timeoutMs);
-      this.#entries.set(requestId, { phase: "awaiting-pending", resolve, timer });
-    });
-  }
-
-  pending(requestId: string): void {
-    const entry = this.#entries.get(requestId);
-    if (!entry || entry.phase === "pending") return;
-    this.#timers.clear(entry.timer);
-    entry.timer = null;
-    entry.phase = "pending";
-  }
-
-  reply(requestId: string, allowed: boolean): void {
-    this.#settle(requestId, allowed);
-  }
-
-  releaseAll(): void {
-    for (const requestId of [...this.#entries.keys()]) this.#settle(requestId, true);
-  }
-
-  #settle(requestId: string, allowed: boolean): void {
-    const entry = this.#entries.get(requestId);
-    if (!entry) return;
-    this.#entries.delete(requestId);
-    this.#timers.clear(entry.timer);
-    entry.resolve(allowed);
-  }
-}
+export { openableLinkHref } from "./plugin-links.ts";

@@ -5,6 +5,7 @@ export type NavigationRenderer = "workspace" | "maps" | "host" | "webview";
 
 export const MAP_HOST_SURFACE = "daena.maps/editor";
 export const LANGUAGE_HOST_SURFACE = "daena.language/workspace";
+export const WRITING_HOST_SURFACE = "daena.writing/workspace";
 
 export function workspaceDescription(target: WorkspaceSection) {
   return workspaceSectionDescription(target);
@@ -35,6 +36,7 @@ export function viewRenderer(
   if (view.renderer?.type === "host-surface") {
     if (view.renderer.id === MAP_HOST_SURFACE && view.renderer.major === 1) return "maps";
     if (view.renderer.id === LANGUAGE_HOST_SURFACE && view.renderer.major === 1) return "host";
+    if (view.renderer.id === WRITING_HOST_SURFACE && view.renderer.major === 1) return "host";
     return "webview";
   }
   if (view.renderer?.type === "sandboxed") return "webview";

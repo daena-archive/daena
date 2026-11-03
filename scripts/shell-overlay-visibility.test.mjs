@@ -97,8 +97,9 @@ assert.match(projectSwitcher, /class="project-menu" role="menu" data-shell-popov
 assert.match(statusCenter, /class="status-popover"\s+data-shell-popover="status-center"/);
 
 // The overlap check treats every .sandbox-view-container as covering every embedded webview. That is only sound
-// while the Language pane and the sandbox views are exclusive branches; a new mount must re-check this assumption.
+// while the Language pane, the Writing pane and the sandbox views are exclusive branches; a new mount must re-check
+// this assumption. The Writing pane requires `!sandboxView` and sits in the same `{#if}` chain as the Language pane.
 const sandboxMounts = shell.match(/<SandboxView[\s>]/g) ?? [];
-assert.equal(sandboxMounts.length, 3, "three SandboxView mounts; re-check measureAnchoredPopovers if this changes");
+assert.equal(sandboxMounts.length, 4, "four SandboxView mounts; re-check measureAnchoredPopovers if this changes");
 
 console.log("shell overlay visibility: ok");

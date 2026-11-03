@@ -78,7 +78,19 @@ if (fs.existsSync(loreBundlePath) && fs.statSync(loreBundlePath).size > 512) {
   );
   assert.match(loreBundle, brokerEndpoint, "the lore bundle must talk to the broker endpoint");
 }
-assert.match(writingHtml, /plugin\.js/, "writing stub stays on the shared plugin document");
+assert.match(writingHtml, /writing\.js/, "writing document must load writing.js");
+assert.match(writingHtml, /writing\.css/, "writing document must load writing.css");
+assert.doesNotMatch(writingHtml, /plugin\.js/, "writing document must not load the shared plugin.js stub");
+const writingBundlePath = "src-tauri/plugin-assets/writing/writing.js";
+if (fs.existsSync(writingBundlePath) && fs.statSync(writingBundlePath).size > 512) {
+  const writingBundle = fs.readFileSync(writingBundlePath, "utf8");
+  assert.doesNotMatch(
+    writingBundle,
+    /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,
+    "the writing bundle must use the broker protocol, not Tauri APIs or the trusted module RPC",
+  );
+  assert.match(writingBundle, brokerEndpoint, "the writing bundle must talk to the broker endpoint");
+}
 assert.match(timelineHtml, /id="chronology"/, "timeline document must mount the chronology root");
 assert.match(
   timelineHtml,
@@ -106,23 +118,22 @@ const policyEnd = webviewPolicy.indexOf("pub fn validate_bridge_request");
 const policy = webviewPolicy.slice(policyStart, policyEnd);
 // The inline-style CSP is chosen by the condition between `csp: if` and the first `{`.
 const inlineStyleCondition = policy.match(/csp: if ([^{]+)\{/)?.[1] ?? "";
-for (const pluginId of ["daena.maps", "daena.timeline", "daena.language", "daena.lore"]) {
+for (const pluginId of ["daena.maps", "daena.timeline", "daena.language", "daena.writing", "daena.lore"]) {
   assert.ok(
     inlineStyleCondition.includes(`manifest.id == "${pluginId}"`),
     `${pluginId} must share the inline-style CSP for its vis or graph styling`,
   );
 }
-assert.equal(inlineStyleCondition.includes("daena.writing"), false, "writing keeps the stricter CSP");
 const cspStrings = [...policy.matchAll(/"(default-src[^"]*)"/g)].map((match) => match[1]);
 assert.equal(
   cspStrings.filter((csp) => csp.includes("style-src-attr 'unsafe-inline'")).length,
   1,
-  "maps, chronology, language and lore must share one inline-style CSP",
+  "maps, chronology, language, writing and lore must share one inline-style CSP",
 );
 assert.equal(
   cspStrings.filter((csp) => !csp.includes("unsafe-inline")).length,
   1,
-  "writing and every other plugin keep the stricter CSP",
+  "every other plugin keeps the stricter CSP",
 );
 assert.match(tauriSource, /\("daena\.timeline", "\/dist\/ui\/timeline\.js"\)/);
 assert.match(tauriSource, /\("daena\.timeline", "\/dist\/ui\/timeline\.css"\)/);
@@ -278,5 +289,36 @@ if (fs.existsSync(languageBundlePath) && fs.statSync(languageBundlePath).size > 
 }
 assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.js"\)/);
 assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.css"\)/);
+assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.js"\)/);
+assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
+
+// Writing workspace: behind a developer flag, the content pane for manuscripts and reference pages is the
+// isolated daena.writing webview, kept mounted across selections.
+assert.match(
+  route,
+  /<SandboxView pluginId="daena\.writing" viewId="writing-workspace" title="Writing" \/>/,
+  "the Writing content pane must mount the isolated daena.writing webview",
+);
+assert.doesNotMatch(
+  route,
+  /<SandboxView[^>]*pluginId="daena\.writing"[^>]*entityId=/,
+  "the Writing webview is told the entity with writing.load, not remounted per entity",
+);
+assert.doesNotMatch(
+  route,
+  /\{#key[^}]*\}\s*<div class="writing-mount"/,
+  "the Writing webview must not be keyed on the entity",
+);
+assert.match(
+  route,
+  /localStorage\.getItem\("daena:writing-webview"\) === "1"/,
+  "the Writing webview is behind a dev flag",
+);
+assert.match(route, /listen<unknown>\("writing-state"/, "the shell must listen for the Writing webview state");
+assert.match(
+  route,
+  /if \(writingWebview\.mounted\) ids\.add\(WRITING_PLUGIN_ID\)/,
+  "overlays must hide the Writing webview",
+);
 
 console.log("plugin webview isolation checks passed");

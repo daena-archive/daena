@@ -11,7 +11,7 @@ import { applyPluginAppearance } from "../../../plugin-sdk/src/theme";
 import { createBrokerModuleContext, type ModuleContext, type ModuleManifest, type UUID } from "../../../module-api/src/index";
 import { setDefaultEditorHost } from "../../../../src/lib/editor/host";
 import LanguageWorkspace from "./LanguageWorkspace.svelte";
-import { createBrokerEditorHost } from "./plugin-editor-host.ts";
+import { createBrokerEditorHost } from "../../../../src/lib/editor/broker-host.ts";
 import {
   createLanguageStatePublisher,
   paneStatePayload,

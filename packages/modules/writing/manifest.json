@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "publisher": "daena-archive",
   "hostApi": ">=1.0.0 <2.0.0",
-  "kind": "declarative",
+  "kind": "sandboxed",
   "entrypoints": { "ui": "dist/ui/index.html" },
   "capabilities": [
     "entity.read",
@@ -18,10 +18,15 @@
     "relationship.read",
     "relationship.write",
     "asset.read:self",
+    "asset.read:shared",
+    "asset.write:self",
     "asset.register",
     "search.query",
     "schema.overlay",
-    "service.call:daena.maps/navigation"
+    "ai.text.generate",
+    "service.call:daena.maps/navigation",
+    "host.surface:daena.writing/workspace@1",
+    "event.publish:daena.writing/state@1"
   ],
   "dependencies": {
     "daena.lore": {
@@ -202,7 +207,14 @@
       "document": ""
     }
   ],
-  "views": [],
+  "views": [
+    {
+      "id": "writing-workspace",
+      "title": "Writing",
+      "renderer": { "type": "host-surface", "id": "daena.writing/workspace", "major": 1 },
+      "components": []
+    }
+  ],
   "commands": [
     {
       "id": "show-on-map",
@@ -212,7 +224,7 @@
     }
   ],
   "services": { "provides": [], "consumes": [{ "name": "daena.maps/navigation", "major": 1 }] },
-  "events": { "publishes": [], "subscribes": [] },
+  "events": { "publishes": [{ "name": "daena.writing/state", "version": 1 }], "subscribes": [] },
   "migrations": [
     {
       "id": "writing-v1",

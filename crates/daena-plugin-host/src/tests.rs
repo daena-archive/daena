@@ -397,6 +397,48 @@ fn first_party_bundled_grants_pick_up_new_manifest_capabilities() {
 }
 
 #[test]
+fn existing_writing_grants_upgrade_to_the_isolated_manifest_without_consent() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_root = directory.path().join("project");
+    fs::create_dir_all(project_root.join(".daena/local")).unwrap();
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/writing/manifest.json"
+    ))
+    .unwrap();
+    host.bind_project_grants(&project_root, "project").unwrap();
+    // A project that last opened before Writing gained its webview surface holds only the old grants.
+    let added = [
+        "asset.read:shared",
+        "asset.write:self",
+        "ai.text.generate",
+        "host.surface:daena.writing/workspace@1",
+        "event.publish:daena.writing/state@1",
+    ];
+    let mut stale = host
+        .catalog
+        .get("daena.writing")
+        .unwrap()
+        .manifest
+        .capabilities
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for capability in added {
+        assert!(stale.remove(capability), "{capability} is declared");
+    }
+    host.grants.insert_loaded("project", "daena.writing", stale);
+
+    host.ensure_first_party_bundled_grants("project", "daena.writing")
+        .unwrap();
+    let grants = host.grants.get("project", "daena.writing");
+    for capability in added {
+        assert!(grants.contains(capability), "{capability} is granted");
+    }
+    assert!(grants.contains("document.write"));
+}
+
+#[test]
 fn legacy_global_grants_migrate_into_project_local_file() {
     let directory = tempfile::tempdir().unwrap();
     let project_root = directory.path().join("world");

@@ -1,12 +1,16 @@
-import type { EditorAssetServices, EditorHost } from "../../../../src/lib/editor/host.ts";
-import { mimeTypeFor } from "../../../../src/lib/editor/image-attrs.ts";
+import type { EditorAssetServices, EditorHost } from "./host.ts";
+import { mimeTypeFor } from "./image-attrs.ts";
 import {
   toAsyncEntityPage,
   type AsyncEntitySearchQuery,
   type AsyncEntitySortField,
-} from "../../../../src/lib/entity-lifecycle/asyncEntityQuery.ts";
-import type { Asset } from "../../../../src/lib/project/types.ts";
-import type { AssetReplaceHandle, EntityPageRecord, EntityQueryPayload } from "../../../plugin-sdk/src/index.ts";
+} from "../entity-lifecycle/asyncEntityQuery.ts";
+import type { Asset } from "../project/types.ts";
+import type {
+  AssetReplaceHandle,
+  EntityPageRecord,
+  EntityQueryPayload,
+} from "../../../packages/plugin-sdk/src/index.ts";
 
 /** Broker method that opens a read of a project-scoped (`reference_scope: "project"`) asset. */
 export const SHARED_ASSET_READ_METHOD = "asset.shared.read.begin";
@@ -36,10 +40,13 @@ export interface BrokerEditorHostOptions {
   openLink: (href: string) => void;
   /** Asks the shell to open an entity (the shell checks that it still exists). */
   openEntity: (entityId: string) => void;
-  /** The asset namespace this host owns. The Language plugin passes `language`. */
+  /** The asset namespace this host owns, such as `language` or `writing`. */
   namespace: string;
-  /** The entity the webview was launched for. Its own assets back the image fallback in `readAssetBytesByPath`. */
-  launchEntityId: string | null;
+  /**
+   * The entity the webview is showing, or a function that returns it for webviews that stay mounted across
+   * entities. Its own assets back the image fallback in `readAssetBytesByPath`.
+   */
+  launchEntityId: string | null | (() => string | null);
   /** Sends the bytes of a begun upload. The plugin webview passes the SDK's `uploadAssetChunks`. */
   uploadChunks: (transfer: AssetReplaceHandle, bytes: Uint8Array) => Promise<void>;
   /** Hosts the hidden file input. The plugin webview passes `document`. */
@@ -152,9 +159,9 @@ async function sha256Hex(subtle: Pick<SubtleCrypto, "digest">, bytes: Uint8Array
 }
 
 /**
- * The editor host for the isolated Language webview. Asset bytes come from the
- * broker's asset reads, never from Tauri IPC, and external links are handed to
- * the shell through the state channel.
+ * The editor host for an isolated plugin webview (Language, Writing). Asset
+ * bytes come from the broker's asset reads, never from Tauri IPC, and external
+ * links and entity opens are handed to the shell through the state channel.
  */
 export function createBrokerEditorHost(options: BrokerEditorHostOptions): EditorHost {
   const { rpc, namespace } = options;
@@ -176,6 +183,11 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
     return run;
   }
 
+  function currentEntityId(): string | null {
+    const { launchEntityId } = options;
+    return typeof launchEntityId === "function" ? launchEntityId() : launchEntityId;
+  }
+
   async function tryBegin(begin: () => Promise<SharedAssetReadBegin | null>): Promise<SharedAssetReadBegin | null> {
     try {
       const begun = await begin();
@@ -190,8 +202,8 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
   async function beginPathRead(path: string): Promise<SharedAssetReadBegin | null> {
     const shared = await tryBegin(() => rpc.call<SharedAssetReadBegin | null>(SHARED_ASSET_READ_METHOD, { path }));
     let begun = shared;
-    if (!begun && options.launchEntityId) {
-      const entityId = options.launchEntityId;
+    const entityId = currentEntityId();
+    if (!begun && entityId) {
       begun = await tryBegin(async () => {
         const own = await rpc.call<Asset[]>(ASSET_LIST_METHOD, { entityId, namespace });
         const match = own.find((asset) => asset.path === path);
@@ -213,7 +225,7 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
 
   async function entityRevision(entityId: string): Promise<string> {
     const entity = await rpc.call<{ revision?: unknown } | null>(ENTITY_GET_METHOD, { id: entityId });
-    if (!entity || typeof entity.revision !== "string") throw new Error("The language could not be found.");
+    if (!entity || typeof entity.revision !== "string") throw new Error("The entity could not be found.");
     return entity.revision;
   }
 

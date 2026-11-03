@@ -105,6 +105,7 @@ import {
 } from "$lib/modules/workspace";
 import {
   LANGUAGE_HOST_SURFACE,
+  WRITING_HOST_SURFACE,
   schemaEntityTypeIds,
   viewRenderer,
   workspaceDescription,
@@ -279,6 +280,13 @@ import {
   parseLanguageStateEvent,
   type LanguageStateEvent,
 } from "$lib/modules/language-bridge";
+import {
+  WRITING_PLUGIN_ID,
+  parseWritingStateEvent,
+  writingLoadMessage,
+  writingWebviewHandles,
+  type WritingStateEvent,
+} from "$lib/modules/writing-bridge";
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
@@ -403,6 +411,21 @@ let languageWebview = $state({ mounted: false, ready: false });
 const languageLeave = new LanguageLeaveTracker();
 /** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
 let languagePaneRequest: LanguagePane | null = null;
+/**
+ * Developer flag for the isolated Writing webview, read once. While the webview only renders the selected
+ * entry read-only it stays off by default, so the shell editor keeps working.
+ */
+const writingWebviewEnabled = (() => {
+  try {
+    return localStorage.getItem("daena:writing-webview") === "1";
+  } catch {
+    return false;
+  }
+})();
+/** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
+let writingWebview = $state({ mounted: false, ready: false });
+/** The `writing.load` the shell last posted (entity id and document revision), so an unchanged selection is not reposted. */
+let writingLoadKey: string | null = null;
 let housesView = $state<WorkspaceLocationView>("houses");
 let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
@@ -1011,10 +1034,11 @@ function workspaceNavigationItems(): WorkspaceNavigationItem[] {
         ? plugin.views.find(
             (candidate) => viewRenderer(plugin, candidate) === "maps" && candidate.renderer?.type === "host-surface",
           )
-        : target === "language"
+        : target === "language" || target === "writing"
           ? plugin.views.find(
               (candidate) =>
-                candidate.renderer?.type === "host-surface" && candidate.renderer.id === LANGUAGE_HOST_SURFACE,
+                candidate.renderer?.type === "host-surface" &&
+                candidate.renderer.id === (target === "language" ? LANGUAGE_HOST_SURFACE : WRITING_HOST_SURFACE),
             )
           : undefined;
     return [
@@ -1486,6 +1510,24 @@ const languagePaneShown = $derived(
 );
 
 /**
+ * The Writing webview replaces the shell editor in the content column for manuscripts and reference pages.
+ * It stays mounted while the selection moves between them.
+ */
+const writingWebviewShown = $derived(
+  writingWebviewEnabled &&
+    ready &&
+    section === "writing" &&
+    workbenchPaneVisibility.content &&
+    !projectHomeOpen &&
+    !showSettings &&
+    !hostView &&
+    !sandboxView &&
+    !loreWikiOpen &&
+    enabledWorkspaceSections().includes("writing") &&
+    writingWebviewHandles(selected?.entity_type),
+);
+
+/**
  * Modal shell overlays, which cover the whole window. Plugin webviews are native children drawn above
  * the main webview, so while one of these is open every embedded plugin webview is hidden.
  * Toasts are not here: they are anchored clear of the content column instead (see `.toast-left`).
@@ -1522,10 +1564,11 @@ const anchoredPopoverOpen = $derived(showProjectMenu || statusCenterOpen);
 /** True while an open anchored popover overlaps the placeholder of an embedded plugin webview. */
 let popoverOverlapsWebview = $state(false);
 
-/** Embedded plugin webviews the shell is currently drawing (the Language pane, or a webview sandbox view). */
+/** Embedded plugin webviews the shell is currently drawing (the Language or Writing pane, or a webview sandbox view). */
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
   if (languageWebview.mounted) ids.add(LANGUAGE_PLUGIN_ID);
+  if (writingWebview.mounted) ids.add(WRITING_PLUGIN_ID);
   const sandboxShown = ready && !showSettings && !projectHomeOpen && !hostView && !loreWikiOpen;
   if (sandboxShown && sandboxView?.renderer === "webview") ids.add(sandboxView.plugin.id);
   return [...ids];
@@ -1541,7 +1584,7 @@ async function setPluginWebviewVisibleQuietly(pluginId: string, visible: boolean
 
 /**
  * Measures the open anchored popovers against the plugin placeholders, after the DOM has rendered them.
- * Only one embedded webview is drawn at a time (the Language pane and each sandbox view are exclusive branches
+ * Only one embedded webview is drawn at a time (the Language and Writing panes and each sandbox view are exclusive branches
  * of the template), so one overlap with any `.sandbox-view-container` covers every embedded webview.
  */
 async function measureAnchoredPopovers() {
@@ -1557,6 +1600,7 @@ $effect(() => {
   void anchoredPopoverOpen;
   void railCollapsed;
   void languagePaneShown;
+  void writingWebviewShown;
   void embeddedPluginWebviewIds;
   void measureAnchoredPopovers();
 });
@@ -1570,8 +1614,9 @@ $effect(() => {
 });
 
 $effect(() => {
-  // Re-applied when the Language webview reports ready, in case an overlay opened during its mount.
+  // Re-applied when an embedded webview reports ready, in case an overlay opened during its mount.
   void languageWebview.ready;
+  void writingWebview.ready;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
 });
@@ -1673,6 +1718,65 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
     }
     case "open-entity":
       void openEntityById(event.entityId);
+      return;
+  }
+}
+
+/** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
+function trackWritingMount() {
+  writingWebview.mounted = true;
+  return () => {
+    writingWebview.mounted = false;
+    writingWebview.ready = false;
+    writingLoadKey = null;
+  };
+}
+
+async function postWritingMessage(message: unknown): Promise<boolean> {
+  try {
+    await project.postPluginWebviewMessage(WRITING_PLUGIN_ID, message);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+$effect(() => {
+  // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
+  // again whenever the selection (or its reloaded document) changes.
+  if (!writingWebviewShown || !writingWebview.ready) return;
+  const entityId = selected?.id;
+  if (!entityId || selectedLoading) return;
+  const key = `${entityId}:${loadedDocumentRevision}`;
+  if (key === writingLoadKey) return;
+  writingLoadKey = key;
+  void postWritingMessage(writingLoadMessage(entityId, loadedDocumentRevision)).then((sent) => {
+    if (!sent && writingLoadKey === key) writingLoadKey = null;
+  });
+});
+
+/**
+ * Writing state from the webview. While it only renders the entry read-only there is nothing to save or guard,
+ * so drafts, flush replies, fullscreen, rename, archive and shortcut messages are ignored until the shell takes
+ * them over.
+ */
+function handleWritingStateEvent(event: WritingStateEvent) {
+  switch (event.kind) {
+    case "ready":
+      if (!writingWebview.mounted) return;
+      // A webview that (re)started has shown nothing yet, so the effect above posts the selection again.
+      writingLoadKey = null;
+      writingWebview.ready = true;
+      return;
+    case "open-link": {
+      const href = openableLinkHref(event.href);
+      if (href) void shellEditorHost.openExternal(href);
+      return;
+    }
+    case "open-entity":
+      void openEntityById(event.entityId);
+      return;
+    default:
       return;
   }
 }
@@ -7334,6 +7438,15 @@ onMount(() => {
       unlistenLanguageState = cleanup;
     })
     .catch(() => {});
+  let unlistenWritingState: (() => void) | undefined;
+  void listen<unknown>("writing-state", (event) => {
+    const message = parseWritingStateEvent(event.payload);
+    if (message) handleWritingStateEvent(message);
+  })
+    .then((cleanup) => {
+      unlistenWritingState = cleanup;
+    })
+    .catch(() => {});
   return () => {
     themeMedia.removeEventListener("change", handleSystemThemeChange);
     closeListenerDisposed = true;
@@ -7354,6 +7467,7 @@ onMount(() => {
     unlistenMapsState?.();
     unlistenMapsSelection?.();
     unlistenLanguageState?.();
+    unlistenWritingState?.();
   };
 });
 </script>
@@ -7415,6 +7529,7 @@ onMount(() => {
     class:sandbox-active={Boolean(sandboxView)}
     class:map-surface-open={mapSurfaceOpen}
     class:language-surface={languagePaneShown}
+    class:writing-surface={writingWebviewShown}
     class="app-main">
     {#snippet projectStatusControl()}
       <StatusCenter
@@ -8515,6 +8630,7 @@ onMount(() => {
         class:map-surface-expanded={mapSurfaceOpen}
         class:workspace-grid-no-inspector={section === "language"}
         class:language-surface={languagePaneShown}
+        class:writing-surface={writingWebviewShown}
         class="workspace-grid"
         style={workspaceGridStyle()}>
         {#snippet collectionControls()}
@@ -8847,6 +8963,10 @@ onMount(() => {
                 moduleState={{ pane: languagePane }} />
             </div>
           {/key}
+        {:else if writingWebviewShown}
+          <div class="writing-mount" {@attach trackWritingMount}>
+            <SandboxView pluginId="daena.writing" viewId="writing-workspace" title="Writing" />
+          </div>
         {:else if workbenchPaneVisibility.content}
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
@@ -10038,30 +10158,35 @@ onMount(() => {
   box-shadow: none;
   transform: none;
 }
-/* Language is a native webview, which the page cannot scroll under: the Languages section fills the
-   viewport, and the collection list and the Language webview each scroll inside their own column.
-   Both columns run flush to the window's bottom edge, with no bottom border or corners, so they read
+/* Language and Writing are native webviews, which the page cannot scroll under: their sections fill the
+   viewport, and the collection list and the webview each scroll inside their own column.
+   Every column runs flush to the window's bottom edge, with no bottom border or corners, so they read
    like other workspaces mid-scroll instead of stopping above a strip of bottom padding. */
-.app-main.language-surface {
+.app-main.language-surface,
+.app-main.writing-surface {
   display: flex;
   min-height: 0;
   height: 100vh;
   flex-direction: column;
   overflow: hidden;
 }
-.workspace-grid.language-surface {
+.workspace-grid.language-surface,
+.workspace-grid.writing-surface {
   flex: 1 1 auto;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
   padding-bottom: 0;
 }
-.workspace-grid.language-surface :global(.collection-panel) {
+.workspace-grid.language-surface :global(.collection-panel),
+.workspace-grid.writing-surface :global(.collection-panel),
+.workspace-grid.writing-surface :global(.inspector-panel) {
   min-height: 0;
   border-bottom: 0;
   border-bottom-right-radius: 0;
   border-bottom-left-radius: 0;
 }
-.language-mount {
+.language-mount,
+.writing-mount {
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -11177,15 +11302,21 @@ onMount(() => {
     flex-direction: column;
     padding: 0 17px 25px;
   }
-  .workspace-grid.language-surface {
+  .workspace-grid.language-surface,
+  .workspace-grid.writing-surface {
     display: flex;
     flex-direction: column;
     padding-bottom: 0;
   }
-  /* Stacked, the list sits above the Language webview, so only the webview reaches the bottom edge. */
-  .workspace-grid.language-surface :global(.collection-panel) {
+  /* Stacked, the list sits above the webview, so only the webview reaches the bottom edge. */
+  .workspace-grid.language-surface :global(.collection-panel),
+  .workspace-grid.writing-surface :global(.collection-panel) {
     flex: 0 0 auto;
     max-height: 40vh;
+    border-bottom: 1px solid var(--line);
+    border-radius: 11px;
+  }
+  .workspace-grid.writing-surface :global(.inspector-panel) {
     border-bottom: 1px solid var(--line);
     border-radius: 11px;
   }

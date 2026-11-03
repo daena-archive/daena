@@ -9,7 +9,7 @@ import {
   parseLanguageMountParams,
   pickLanguageManifest,
 } from "../packages/modules/language/src/plugin-protocol.ts";
-import { createBrokerEditorHost, SHARED_ASSET_READ_METHOD } from "../packages/modules/language/src/plugin-editor-host.ts";
+import { createBrokerEditorHost, SHARED_ASSET_READ_METHOD } from "../src/lib/editor/broker-host.ts";
 
 // Mount parameters: entityId and the percent-encoded pane state from SandboxView.
 const launch = parseLanguageMountParams(

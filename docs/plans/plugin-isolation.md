@@ -60,7 +60,9 @@ unfinished remainder.
 
 ## Still open
 
-- `src-tauri/plugin-assets/writing/` is still a stub.
+- Writing editing and saving still run in the main webview. Slice 1 of [`writing-isolation.md`](writing-isolation.md)
+  ships the webview (`src-tauri/plugin-assets/writing/`, `npm run build:writing-ui`) with a read-only view of the
+  selected entry behind `localStorage["daena:writing-webview"] = "1"`.
 - Asset upload transfers expire 60 s after `asset.upload.begin` and are not
   refreshed per chunk; the SDK caps uploads at 64 MiB.
 - `RichTextEditor` is safe to destroy while focused: blur during a reactive

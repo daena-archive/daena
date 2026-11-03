@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createBrokerEditorHost, openFileChooser } from "../packages/modules/language/src/plugin-editor-host.ts";
+import { createBrokerEditorHost, openFileChooser } from "../src/lib/editor/broker-host.ts";
 
 // Fakes for the webview document, the broker RPC and the upload/read transports.
 

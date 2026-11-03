@@ -530,6 +530,43 @@ fn language_manifest_declares_the_workspace_host_surface() {
 }
 
 #[test]
+fn writing_manifest_declares_the_workspace_host_surface() {
+    let manifest = parse_manifest(include_str!(
+        "../../../packages/modules/writing/manifest.json"
+    ))
+    .unwrap();
+    validate_manifest(&manifest).expect("writing manifest must validate");
+    assert_eq!(manifest.kind, PluginKind::Sandboxed);
+    for capability in [
+        "host.surface:daena.writing/workspace@1",
+        "event.publish:daena.writing/state@1",
+        "asset.read:shared",
+        "asset.write:self",
+        "ai.text.generate",
+    ] {
+        assert!(
+            manifest
+                .capabilities
+                .iter()
+                .any(|granted| granted == capability),
+            "writing must declare {capability}"
+        );
+    }
+    assert!(manifest.views.iter().any(|view| {
+        view.id == "writing-workspace"
+            && matches!(
+                &view.renderer,
+                ViewRenderer::HostSurface { id, major } if id == "daena.writing/workspace" && *major == 1
+            )
+    }));
+    assert!(manifest
+        .events
+        .publishes
+        .iter()
+        .any(|event| event.name == "daena.writing/state" && event.version == 1));
+}
+
+#[test]
 fn houses_manifest_is_a_valid_declarative_workspace_plugin() {
     let manifest = parse_manifest(include_str!(
         "../../../packages/modules/houses/manifest.json"

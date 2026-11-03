@@ -236,8 +236,16 @@ Rules:
   owns the surface placement, mount parameters (`entityId`, `state`), and the
   `daena.language/state@1` protocol (pane, leave guard, entity changes, link
   opening via `open-link`, entity opening via `open-entity`); Language owns
-  its guides, rich text, and dialogs. A plugin still cannot register arbitrary
-  native commands or create an unregistered host surface.
+  its guides, rich text, and dialogs. Writing declares
+  `host.surface:daena.writing/workspace@1` the same way; its `writing-workspace`
+  view runs in the `daena.writing` plugin webview inside the content pane for
+  manuscripts and reference pages, and the shell talks to it through host
+  messages (`writing.load`, `writing.flush`, `writing.saved`, `writing.conflict`,
+  `writing.editable`, `writing.ai-state`) and the `daena.writing/state@1`
+  protocol (`ready`, `draft`, `flush-reply`, `open-link`, `open-entity`,
+  `fullscreen`, `request-rename`, `request-archive`, `shortcut`); see
+  [`writing-isolation.md`](../plans/writing-isolation.md). A plugin still cannot
+  register arbitrary native commands or create an unregistered host surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
 - Enabled state and granted capabilities are not stored in the package
@@ -628,8 +636,9 @@ The following features are deferred, with their default behavior decided now:
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
 - **Remaining bundled UIs in isolated webviews:** deferred. Chronology, the
-  Lore World graph, and Language already run in their plugin webviews. The isolation rule is
-  unchanged. Current surfaces are in
+  Lore World graph, and Language already run in their plugin webviews, and
+  Writing renders documents read-only in its webview behind a developer flag
+  while editing moves over. The isolation rule is unchanged. Current surfaces are in
   [`plugin-isolation.md`](../plans/plugin-isolation.md).
 
 Any future change to identity, isolation, authority, package integrity, data
@@ -733,8 +742,8 @@ appearance.get  schema.list
   Entity-scoped assets never appear, so a plugin shares a file by promoting it
   with `asset.update` and `referenceScope: "project"`.
 - **Shell-forwarded plugin events are bound to their publisher.** The host
-  forwards `daena.maps/state@1`, `daena.maps/selection@1`, and
-  `daena.language/state@1` to the shell only when the event name's namespace
+  forwards `daena.maps/state@1`, `daena.maps/selection@1`,
+  `daena.language/state@1`, and `daena.writing/state@1` to the shell only when the event name's namespace
   equals the publishing plugin's ID. Declaring another plugin's event name in
   a manifest is not enough to reach the shell.
 - **`service.provide` is vestigial as a method.** Providers register at

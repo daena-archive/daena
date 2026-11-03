@@ -5,3 +5,5 @@ src-tauri/plugin-assets/language/language.js linguist-generated=true -diff
 src-tauri/plugin-assets/language/language.css linguist-generated=true -diff
 src-tauri/plugin-assets/lore/lore.js linguist-generated=true -diff
 src-tauri/plugin-assets/lore/lore.css linguist-generated=true -diff
+src-tauri/plugin-assets/writing/writing.js linguist-generated=true -diff
+src-tauri/plugin-assets/writing/writing.css linguist-generated=true -diff

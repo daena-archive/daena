@@ -1438,12 +1438,7 @@ fn bundled_manifests_supply_generic_migrations() {
 #[test]
 fn bundled_workspace_manifests_do_not_declare_duplicate_sidebar_views() {
     let host = bundled_plugin_host(new_shared_core()).unwrap();
-    for plugin_id in [
-        "daena.lore",
-        "daena.timeline",
-        "daena.writing",
-        "daena.houses",
-    ] {
+    for plugin_id in ["daena.lore", "daena.timeline", "daena.houses"] {
         assert!(
             host.catalog
                 .get(plugin_id)
@@ -1776,6 +1771,10 @@ fn plugin_state_events_forward_only_for_their_owner() {
         shell_event_for_plugin_event("daena.language", "daena.language/state@1"),
         Some("language-state")
     );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.writing", "daena.writing/state@1"),
+        Some("writing-state")
+    );
     // A different publisher cannot make the shell receive another plugin's state.
     assert_eq!(
         shell_event_for_plugin_event("com.example.x", "daena.language/state@1"),
@@ -1783,6 +1782,14 @@ fn plugin_state_events_forward_only_for_their_owner() {
     );
     assert_eq!(
         shell_event_for_plugin_event("daena.timeline", "daena.maps/state@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.language", "daena.writing/state@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("com.example.x", "daena.writing/state@1"),
         None
     );
     assert_eq!(
@@ -1796,6 +1803,14 @@ fn plugin_state_events_forward_only_for_their_owner() {
     );
     assert_eq!(
         shell_event_for_plugin_event("daena.language", "daena.language/state"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.writing", "daena.writing/selection@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.writing", "daena.writing/state"),
         None
     );
     assert_eq!(
@@ -3611,6 +3626,60 @@ fn language_webview_routes_are_served_with_document_content_types() {
         .unwrap();
     assert_eq!(
         plugin_asset_response("daena.language", &unknown, None, None).status(),
+        404
+    );
+}
+
+#[test]
+fn writing_webview_routes_are_served_with_document_content_types() {
+    for (path, content_type) in [
+        ("/dist/ui/index.html", "text/html"),
+        ("/dist/ui/writing.js", "text/javascript"),
+        ("/dist/ui/writing.css", "text/css"),
+    ] {
+        let request = tauri::http::Request::builder()
+            .uri(format!("plugin://daena.writing{path}"))
+            .body(Vec::new())
+            .unwrap();
+        let response = plugin_asset_response("daena.writing", &request, None, None);
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(
+            response.headers().get("Content-Type").unwrap(),
+            content_type,
+            "{path}"
+        );
+        // The shared rich-text editor writes inline styles, so Writing shares the relaxed style policy.
+        let csp = response
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("style-src-elem 'self' 'unsafe-inline'"),
+            "{path}"
+        );
+        assert!(csp.contains("script-src 'self';"), "{path}");
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"), "{path}");
+    }
+    let page = plugin_asset_response(
+        "daena.writing",
+        &tauri::http::Request::builder()
+            .uri("plugin://daena.writing/dist/ui/index.html")
+            .body(Vec::new())
+            .unwrap(),
+        None,
+        None,
+    );
+    let page = String::from_utf8_lossy(page.body());
+    assert!(page.contains("./writing.js"));
+    assert!(!page.contains("plugin.js"));
+    let unknown = tauri::http::Request::builder()
+        .uri("plugin://daena.writing/dist/ui/missing.js")
+        .body(Vec::new())
+        .unwrap();
+    assert_eq!(
+        plugin_asset_response("daena.writing", &unknown, None, None).status(),
         404
     );
 }

@@ -760,6 +760,14 @@ pub(super) fn plugin_asset_response(
                 include_bytes!("../plugin-assets/writing/index.html"),
                 "text/html",
             ),
+            ("daena.writing", "/dist/ui/writing.js") => (
+                include_bytes!("../plugin-assets/writing/writing.js"),
+                "text/javascript",
+            ),
+            ("daena.writing", "/dist/ui/writing.css") => (
+                include_bytes!("../plugin-assets/writing/writing.css"),
+                "text/css",
+            ),
             (_, "/dist/ui/plugin.js") => (
                 include_bytes!("../plugin-assets/shared/plugin.js"),
                 "text/javascript",
@@ -1427,6 +1435,8 @@ pub(super) fn shell_event_for_plugin_event(
         Some("maps-selection")
     } else if event_type.starts_with("daena.language/state@") {
         Some("language-state")
+    } else if event_type.starts_with("daena.writing/state@") {
+        Some("writing-state")
     } else {
         None
     }
@@ -1435,7 +1445,7 @@ pub(super) fn shell_event_for_plugin_event(
 /// Forwards plugin-published state events to the shell as Tauri events (see
 /// `shell_event_for_plugin_event`). The shell owns the wrapper chrome around
 /// the child webview (maps save chip, conflict banner, capture tool; language
-/// workspace status), which has no other way to reach it. Forwarding is a
+/// and writing workspace status), which has no other way to reach it. Forwarding is a
 /// hint only; the shell re-queries canonical records before acting.
 /// `publisher_plugin_id` is the authorized session's plugin, never a value
 /// taken from the event payload.
@@ -1460,8 +1470,8 @@ pub(super) fn forward_plugin_state_event(publisher_plugin_id: &str, payload: &se
             "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
             "anchor": state.get("anchor").cloned().unwrap_or(serde_json::Value::Null),
         }),
-        // The language payload is passed through unchanged.
-        "language-state" => state,
+        // The language and writing payloads are passed through unchanged.
+        "language-state" | "writing-state" => state,
         _ => return,
     };
     let _ = app.emit(shell_event, body);

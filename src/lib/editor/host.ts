@@ -1,4 +1,5 @@
 import type { Asset } from "$lib/project/types";
+import type { AsyncEntitySearchFn } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 
 /**
  * Project asset operations the rich-text editor needs in order to browse,
@@ -36,6 +37,8 @@ export interface EditorHost {
   openExternal(href: string): Promise<void>;
   /** Asset services, or null when the host offers no assets. */
   assets: EditorAssetServices | null;
+  /** Backend-paged entity search for entity links and mentions, or null when the host cannot search entities. */
+  searchEntities: AsyncEntitySearchFn | null;
 }
 
 let defaultHost: EditorHost | null = null;

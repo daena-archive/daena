@@ -578,4 +578,138 @@ for (const failing of ["upload", "commit"]) {
   assert.deepEqual(changed, [], "a failed upload announces nothing");
 }
 
+// Entity search for links and mentions: one entity.query with only keys the broker accepts, mapped to the picker page.
+const ENTITY_QUERY_KEYS = new Set([
+  "query",
+  "entityTypes",
+  "excludedEntityTypes",
+  "sortField",
+  "sortDirection",
+  "offset",
+  "limit",
+]);
+
+function wireEntity(overrides = {}) {
+  return {
+    id: "e-x",
+    name: "Kal",
+    entityType: "daena.language:language",
+    deleted: false,
+    createdAt: "2026-11-02T00:00:00Z",
+    updatedAt: "2026-11-02T00:00:00Z",
+    revision: "rev-x",
+    ...overrides,
+  };
+}
+
+function wirePage(items, overrides = {}) {
+  return { items, total: 12, offset: 0, limit: 8, hasMore: true, typeCounts: [], ...overrides };
+}
+
+function assertBrokerPayloads(calls) {
+  for (const call of calls) {
+    assert.equal(call.method, "entity.query");
+    for (const key of Object.keys(call.payload)) {
+      assert.ok(ENTITY_QUERY_KEYS.has(key), `entity.query payload has no ${key} key`);
+    }
+  }
+}
+
+// Text search: the editing entity is excluded client-side, deleted entities are dropped, and the broker's paging is kept.
+{
+  const rpc = fakeRpc({
+    "entity.query": () =>
+      wirePage([
+        wireEntity({ id: "lang-1", name: "Aven", revision: "rev-1" }),
+        wireEntity({ id: "e-2", name: "Kalen", revision: "rev-2" }),
+        wireEntity({ id: "e-3", name: "Gone", deleted: true, revision: "rev-3" }),
+      ]),
+  });
+  const host = makeHost({ rpc });
+  const page = await host.searchEntities({ text: "Ka", offset: 0, limit: 8, excludeIds: ["lang-1"] });
+  assert.deepEqual(
+    rpc.calls,
+    [
+      {
+        method: "entity.query",
+        payload: { query: "Ka", sortField: "name", sortDirection: "asc", offset: 0, limit: 8 },
+      },
+    ],
+    "text search sends only the set keys; excludeIds stay on the client",
+  );
+  assertBrokerPayloads(rpc.calls);
+  assert.deepEqual(page, {
+    items: [{ id: "e-2", name: "Kalen", entityType: "daena.language:language", deleted: false, revision: "rev-2" }],
+    total: 12,
+    offset: 0,
+    limit: 8,
+    hasMore: true,
+  });
+}
+
+// Empty text, type filters, descending sort and paging: the empty query and empty lists are not sent.
+{
+  const rpc = fakeRpc({ "entity.query": () => wirePage([], { total: 0, offset: 16, hasMore: false }) });
+  const host = makeHost({ rpc });
+  const page = await host.searchEntities({
+    text: "",
+    offset: 16,
+    limit: 8,
+    entityTypes: ["daena.language:language"],
+    excludedEntityTypes: [],
+    sortField: "updatedAt",
+    sortDirection: "desc",
+    excludeIds: [],
+  });
+  assert.deepEqual(rpc.calls[0].payload, {
+    entityTypes: ["daena.language:language"],
+    sortField: "updatedAt",
+    sortDirection: "desc",
+    offset: 16,
+    limit: 8,
+  });
+  assertBrokerPayloads(rpc.calls);
+  assert.deepEqual(page, { items: [], total: 0, offset: 16, limit: 8, hasMore: false });
+
+  const withExcluded = fakeRpc({ "entity.query": () => wirePage([]) });
+  const other = makeHost({ rpc: withExcluded });
+  await other.searchEntities({ text: "", offset: 0, limit: 8, excludedEntityTypes: ["daena.lore:person"] });
+  assert.deepEqual(withExcluded.calls[0].payload, {
+    sortField: "name",
+    sortDirection: "asc",
+    excludedEntityTypes: ["daena.lore:person"],
+    offset: 0,
+    limit: 8,
+  });
+}
+
+// Picker sort fields map onto the broker's names; anything else sorts by name, ascending.
+{
+  const expected = [
+    [undefined, undefined, "name", "asc"],
+    ["name", "asc", "name", "asc"],
+    ["created_at", "desc", "createdAt", "desc"],
+    ["createdAt", "asc", "createdAt", "asc"],
+    ["updated_at", "asc", "updatedAt", "asc"],
+    ["relevance", "desc", "relevance", "desc"],
+  ];
+  const rpc = fakeRpc({ "entity.query": () => wirePage([]) });
+  const host = makeHost({ rpc });
+  for (const [sortField, sortDirection] of expected) {
+    await host.searchEntities({ text: "a", offset: 0, limit: 8, sortField, sortDirection });
+  }
+  assert.deepEqual(
+    rpc.calls.map((call) => [call.payload.sortField, call.payload.sortDirection]),
+    expected.map(([, , field, direction]) => [field, direction]),
+  );
+  assertBrokerPayloads(rpc.calls);
+}
+
+// A malformed page is an error, not an empty result.
+{
+  const rpc = fakeRpc({ "entity.query": () => null });
+  const host = makeHost({ rpc });
+  await assert.rejects(host.searchEntities({ text: "x", offset: 0, limit: 8 }), /invalid page/);
+}
+
 console.log("language asset upload tests passed");

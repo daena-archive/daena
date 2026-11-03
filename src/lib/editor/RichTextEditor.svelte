@@ -176,6 +176,8 @@ export let host: EditorHost | null = null;
 $: effectiveHost = host ?? defaultEditorHost();
 /** Null when the effective host offers no assets: the insert/replace UI is hidden. */
 $: effectiveAssets = effectiveHost?.assets ?? null;
+/** Explicit `searchEntities` prop first, then the host's search; null when neither offers one. */
+$: effectiveSearchEntities = searchEntities ?? effectiveHost?.searchEntities ?? null;
 
 let editorElement: HTMLDivElement;
 let editor: Editor | null = null;
@@ -2538,7 +2540,7 @@ $: inTable = editorState?.isActive("table") ?? false;
     query={entityReferenceQuery}
     top={entityReferenceMenuPosition.top}
     left={entityReferenceMenuPosition.left}
-    search={searchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 8, hasMore: false }))}
+    search={effectiveSearchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 8, hasMore: false }))}
     excludeIds={entityId ? [entityId] : []}
     keepLabel={entityReferenceKeepLabel}
     onSelect={(entity) => insertEntityReference(entity, entity.name)}
@@ -2659,7 +2661,7 @@ $: inTable = editorState?.isActive("table") ?? false;
   </div>
   <EntityReferenceDialog
     open={entityReferenceDialogOpen}
-    search={searchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 20, hasMore: false }))}
+    search={effectiveSearchEntities ?? (async () => ({ items: [], total: 0, offset: 0, limit: 20, hasMore: false }))}
     {entities}
     initialQuery={entityReferenceDialogMode === "insert" ? entityReferenceQuery : ""}
     initialSelectedId={entityReferenceDialogMode === "edit" ? (entityReferenceEdit?.entityId ?? "") : ""}

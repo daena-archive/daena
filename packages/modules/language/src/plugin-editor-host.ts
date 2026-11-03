@@ -1,7 +1,12 @@
 import type { EditorAssetServices, EditorHost } from "../../../../src/lib/editor/host.ts";
 import { mimeTypeFor } from "../../../../src/lib/editor/image-attrs.ts";
+import {
+  toAsyncEntityPage,
+  type AsyncEntitySearchQuery,
+  type AsyncEntitySortField,
+} from "../../../../src/lib/entity-lifecycle/asyncEntityQuery.ts";
 import type { Asset } from "../../../../src/lib/project/types.ts";
-import type { AssetReplaceHandle } from "../../../plugin-sdk/src/index.ts";
+import type { AssetReplaceHandle, EntityPageRecord, EntityQueryPayload } from "../../../plugin-sdk/src/index.ts";
 
 /** Broker method that opens a read of a project-scoped (`reference_scope: "project"`) asset. */
 export const SHARED_ASSET_READ_METHOD = "asset.shared.read.begin";
@@ -51,6 +56,36 @@ const ASSET_UPDATE_METHOD = "asset.update";
 const ASSET_UPLOAD_BEGIN_METHOD = "asset.upload.begin";
 const ASSET_UPLOAD_COMMIT_METHOD = "asset.upload.commit";
 const ASSET_TRANSFER_CANCEL_METHOD = "asset.transfer.cancel";
+const ENTITY_QUERY_METHOD = "entity.query";
+
+/** Sort fields that `entity.query` accepts for `sortField` (see `EntityQueryPayload` and the broker's match). */
+type BrokerEntitySortField = NonNullable<EntityQueryPayload["sortField"]>;
+
+/** Maps picker sort fields onto the broker vocabulary. Anything unknown sorts by name, as the shell does. */
+function brokerSortField(field?: AsyncEntitySortField): BrokerEntitySortField {
+  if (field === "createdAt" || field === "created_at") return "createdAt";
+  if (field === "updatedAt" || field === "updated_at") return "updatedAt";
+  if (field === "relevance") return "relevance";
+  return "name";
+}
+
+/**
+ * The `entity.query` payload for a picker search. The broker rejects unknown keys, so
+ * empty values are left out instead of being sent as null or []. `excludeIds` is not
+ * sent: it is applied to the returned page.
+ */
+function entityQueryPayload(query: AsyncEntitySearchQuery): EntityQueryPayload {
+  const payload: EntityQueryPayload = {
+    sortField: brokerSortField(query.sortField),
+    sortDirection: query.sortDirection === "desc" ? "desc" : "asc",
+    offset: query.offset,
+    limit: query.limit,
+  };
+  if (query.text) payload.query = query.text;
+  if (query.entityTypes?.length) payload.entityTypes = [...query.entityTypes];
+  if (query.excludedEntityTypes?.length) payload.excludedEntityTypes = [...query.excludedEntityTypes];
+  return payload;
+}
 
 /**
  * Some engines never fire `cancel` on a file input. They return focus to the page
@@ -273,5 +308,25 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
       options.openLink(href);
     },
     assets,
+    async searchEntities(query) {
+      const page = await rpc.call<EntityPageRecord>(ENTITY_QUERY_METHOD, entityQueryPayload(query));
+      if (!page || !Array.isArray(page.items)) throw new Error("The entity search returned an invalid page.");
+      return toAsyncEntityPage(
+        {
+          items: page.items.map((item) => ({
+            id: item.id,
+            name: item.name,
+            entity_type: item.entityType ?? null,
+            deleted: item.deleted,
+            revision: item.revision,
+          })),
+          total: page.total,
+          offset: page.offset,
+          limit: page.limit,
+          hasMore: page.hasMore,
+        },
+        { excludeIds: query.excludeIds },
+      );
+    },
   };
 }

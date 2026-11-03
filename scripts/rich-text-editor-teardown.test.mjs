@@ -164,6 +164,90 @@ for (const [parentKind, mountParent] of [
   );
 }
 
+// Entity search: an editor with no searchEntities prop searches through the installed host, as the Language panes do.
+const hostSearches = [];
+const explicitSearches = [];
+const searchPage = (name, limit) => ({
+  items: [{ id: "e-2", name, entityType: null, deleted: false, revision: "r2" }],
+  total: 1,
+  offset: 0,
+  limit,
+  hasMore: false,
+});
+const hostWithSearch = (searchEntities) => ({
+  readAssetBytesByPath: async () => null,
+  getAssetByPath: async () => null,
+  openExternal: async () => {},
+  assets: null,
+  searchEntities,
+});
+const mentionMenuText = () => document.querySelector(".entity-mention-menu")?.textContent ?? "";
+
+function mountSearchEditor(props) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const app = harness.mountEntitySearchParent(container, props);
+  hosts.push({
+    setShown(next) {
+      if (!next) harness.unmount(app);
+    },
+  });
+  harness.flushSync();
+  const pm = container.querySelector(".ProseMirror");
+  assert.ok(pm?.editor, "RichTextEditor mounts without a host or search prop");
+  // Focused, as a user typing is: an unfocused editor is re-synced from its value prop on every update.
+  pm.focus();
+  return { editor: pm.editor };
+}
+
+await scenario("entity search: without a searchEntities prop the installed host searches", async () => {
+  hostSearches.length = 0;
+  harness.setDefaultEditorHost(
+    hostWithSearch(async (query) => {
+      hostSearches.push(query);
+      return searchPage("Kalen", query.limit);
+    }),
+  );
+  const { editor } = mountSearchEditor({ entityId: "lang-1" });
+  editor.commands.insertContent("@Ka");
+  await wait(200);
+  assert.equal(hostSearches.length, 1, "the host's search runs once for the mention");
+  assert.equal(hostSearches[0].text, "Ka");
+  assert.deepEqual(hostSearches[0].excludeIds, ["lang-1"], "the editing entity is excluded");
+  assert.match(mentionMenuText(), /Kalen/, "the host's result is listed in the mention menu");
+});
+
+await scenario("entity search: an explicit searchEntities prop wins over the host's search", async () => {
+  hostSearches.length = 0;
+  explicitSearches.length = 0;
+  harness.setDefaultEditorHost(
+    hostWithSearch(async (query) => {
+      hostSearches.push(query);
+      return searchPage("Host", query.limit);
+    }),
+  );
+  const { editor } = mountSearchEditor({
+    explicitSearch: async (query) => {
+      explicitSearches.push(query);
+      return searchPage("Explicit", query.limit);
+    },
+  });
+  editor.commands.insertContent("@Ex");
+  await wait(200);
+  assert.equal(explicitSearches.length, 1, "the prop's search runs");
+  assert.deepEqual(hostSearches, [], "the host's search is not used while the prop is passed");
+  assert.match(mentionMenuText(), /Explicit/);
+});
+
+await scenario("entity search: with no host and no prop a mention lists nothing and does not throw", async () => {
+  harness.setDefaultEditorHost(null);
+  const { editor } = mountSearchEditor({});
+  editor.commands.insertContent("@Ka");
+  await wait(200);
+  assert.match(mentionMenuText(), /No matching entities/, "the empty fallback answers the search");
+});
+harness.setDefaultEditorHost(null);
+
 console.log(
   `insideReactiveUpdate(): removal blur -> ${contexts.removal}, plain event handler blur -> ${contexts.plainEvent}`,
 );

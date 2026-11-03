@@ -2,6 +2,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { project } from "$lib/project/client";
 import { setDefaultEditorHost, type EditorAssetServices, type EditorHost } from "$lib/editor/host";
 import { mimeTypeFor } from "$lib/editor/image-attrs";
+import {
+  toAsyncEntityPage,
+  toShellSortDirection,
+  toShellSortField,
+  type AsyncEntitySearchFn,
+} from "$lib/entity-lifecycle/asyncEntityQuery.ts";
 
 /** Main-webview implementation of the editor host, backed by Tauri IPC and the project client. */
 const shellAssets: EditorAssetServices = {
@@ -24,6 +30,20 @@ const shellAssets: EditorAssetServices = {
     });
     return { asset, filename };
   },
+};
+
+/** Same query and paging as the shell's entity pickers, without a field-specific entity type. */
+const shellSearchEntities: AsyncEntitySearchFn = async (query) => {
+  const page = await project.queryEntities({
+    query: query.text || undefined,
+    entityTypes: query.entityTypes,
+    excludedEntityTypes: query.excludedEntityTypes,
+    sortField: toShellSortField(query.sortField),
+    sortDirection: toShellSortDirection(query.sortDirection),
+    offset: query.offset,
+    limit: query.limit,
+  });
+  return toAsyncEntityPage(page, { excludeIds: query.excludeIds });
 };
 
 async function openExternal(href: string): Promise<void> {
@@ -76,6 +96,7 @@ export const shellEditorHost: EditorHost = {
   getAssetByPath: (path) => project.getAssetByPath(path),
   openExternal,
   assets: shellAssets,
+  searchEntities: shellSearchEntities,
 };
 
 /** Makes the shell host the default for every editor surface in the main webview. Call once at startup. */

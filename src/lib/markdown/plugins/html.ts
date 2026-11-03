@@ -1,5 +1,7 @@
 import type { Handle as ToMarkdownHandle } from "mdast-util-to-markdown";
 import { normalizeHexColor } from "../color.ts";
+import { persistedDirection } from "../direction.ts";
+import { nodeText } from "../text.ts";
 import type { AlignedParagraph, Spoiler, TextColor, Underline } from "../types.ts";
 
 export const underlineToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
@@ -197,9 +199,10 @@ export const imageToMarkdown: ToMarkdownHandle = (node, _parent, state, info) =>
 
 export const alignedParagraphToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
   const aligned = node as AlignedParagraph;
-  if (aligned.dir === "rtl" || aligned.dir === "ltr") {
+  const dir = persistedDirection(String(aligned.dir ?? ""), nodeText(aligned as never));
+  if (dir) {
     const content = phrasingToHtml((aligned as unknown as { children: unknown[] }).children ?? [], state, info);
-    return `<p dir="${aligned.dir}" style="text-align: ${aligned.align}">${content}</p>`;
+    return `<p dir="${dir}" style="text-align: ${aligned.align}">${content}</p>`;
   }
   const content = state.containerPhrasing(aligned as never, info);
   return `<div align="${aligned.align}">${content}</div>`;
@@ -212,6 +215,12 @@ function hPropertiesDir(node: unknown): string {
   const direct = (node as { dir?: unknown })?.dir;
   if (direct === "rtl" || direct === "ltr") return direct as string;
   return "";
+}
+
+// Direction worth writing out: the editor stamps every block with the direction its text already
+// implies, which would otherwise turn each plain paragraph into raw HTML.
+function blockDir(node: unknown): string {
+  return persistedDirection(hPropertiesDir(node), nodeText(node as never));
 }
 
 function hPropertiesStyle(node: unknown): string {
@@ -232,7 +241,7 @@ function isStructurallyEmptyParagraph(node: unknown): boolean {
 }
 
 export const paragraphToMarkdown: ToMarkdownHandle = (node, parent, state, info) => {
-  const dir = hPropertiesDir(node);
+  const dir = blockDir(node);
   const style = hPropertiesStyle(node);
   if (dir === "rtl" || dir === "ltr") {
     const children = (node as { children?: unknown[] }).children ?? [];
@@ -252,7 +261,7 @@ export const paragraphToMarkdown: ToMarkdownHandle = (node, parent, state, info)
 };
 
 export const headingToMarkdown: ToMarkdownHandle = (node, _parent, state, info) => {
-  const dir = hPropertiesDir(node);
+  const dir = blockDir(node);
   const style = hPropertiesStyle(node);
   const hasDir = dir === "rtl" || dir === "ltr";
   const hasStyle = style && /^text-align\s*:\s*(?:left|center|right)\s*;?$/i.test(style);

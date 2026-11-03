@@ -1,3 +1,5 @@
+import { detectTextDirection } from "../markdown/direction.ts";
+
 export function taskListsForEditor(html: string): string {
   if (typeof document === "undefined") return html;
   const template = document.createElement("template");
@@ -39,6 +41,23 @@ export function taskListsForMarkdown(html: string): string {
     checkbox.checked = checked;
     if (checked) checkbox.setAttribute("checked", "");
     item.prepend(checkbox);
+  }
+  return template.innerHTML;
+}
+
+/**
+ * Markdown stores a block's direction only when it overrides its text. The editor expects every
+ * paragraph and heading to carry the direction its text implies, so restore it on load.
+ */
+export function directionsForEditor(html: string): string {
+  if (typeof document === "undefined") return html;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const block of template.content.querySelectorAll<HTMLElement>(
+    "p:not([dir]), h1:not([dir]), h2:not([dir]), h3:not([dir]), h4:not([dir]), h5:not([dir]), h6:not([dir])",
+  )) {
+    const dir = detectTextDirection(block.textContent ?? "");
+    if (dir) block.setAttribute("dir", dir);
   }
   return template.innerHTML;
 }

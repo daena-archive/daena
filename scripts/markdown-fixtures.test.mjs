@@ -59,6 +59,14 @@ for (const fixture of MARKDOWN_FIXTURES) {
     contains(html, "café", fixture.name);
   }
 
+  if (fixture.name === "text-direction-mixed") {
+    assert.equal(htmlToMarkdown(html), fixture.markdown, "plain ltr and rtl blocks stay plain Markdown");
+  }
+  if (fixture.name === "text-direction-override") {
+    contains(html, 'dir="rtl"', fixture.name);
+    assert.equal(htmlToMarkdown(html), fixture.markdown, "an explicit direction override is kept");
+  }
+
   if (fixture.name === "empty") {
     assert.equal(html.trim(), "", fixture.name);
   }

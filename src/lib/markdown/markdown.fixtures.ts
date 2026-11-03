@@ -33,6 +33,14 @@ export const MARKDOWN_FIXTURES = [
     markdown: "اردشیر and naïve café.\n",
   },
   {
+    name: "text-direction-mixed",
+    markdown: "# Title\n\nA plain **LTR** paragraph.\n\nاردشیر و دوستان\n\n## فصل یکم\n",
+  },
+  {
+    name: "text-direction-override",
+    markdown: '<p dir="rtl">Mirrored English</p>\n',
+  },
+  {
     name: "empty",
     markdown: "",
   },

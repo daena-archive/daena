@@ -78,7 +78,7 @@ import {
 } from "$lib/editor/entity-mentions";
 import { looksLikeWebUrl, normalizeHref } from "$lib/editor/link-href";
 import { AssetImage } from "$lib/editor/AssetImageExtension";
-import { taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
+import { directionsForEditor, taskListsForEditor, taskListsForMarkdown } from "$lib/editor/markdownRoundTrip";
 import { AlignedTableCell, AlignedTableHeader } from "$lib/editor/editorTable";
 import { LanguageCodeBlock } from "$lib/editor/editorCodeBlock";
 import { DEFAULT_TEXT_COLOR, TextColor } from "$lib/editor/textColor";
@@ -262,7 +262,7 @@ $: if (typeof window !== "undefined") {
 }
 
 function editorHtmlFromMarkdown(markdown: string) {
-  return hydrateEntityReferences(taskListsForEditor(sanitizeHtml(markdownToHtml(markdown))));
+  return hydrateEntityReferences(directionsForEditor(taskListsForEditor(sanitizeHtml(markdownToHtml(markdown)))));
 }
 
 function emitChange() {

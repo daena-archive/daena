@@ -137,12 +137,12 @@ function openEntity(event: MouseEvent) {
   <svelte:element
     this={headingTag()}
     id={headingId()}
-    dir={(dir() as any) || undefined}
+    dir={(dir() as any) || "auto"}
     style={alignStyle() || (node.data?.hProperties?.style as string) || undefined}>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
   </svelte:element>
 {:else if node.type === "paragraph" || node.type === "alignedParagraph"}
-  <p style={alignStyle()} dir={(dir() as any) || undefined}>
+  <p style={alignStyle()} dir={(dir() as any) || "auto"}>
     {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
   </p>
 {:else if node.type === "blockquote"}

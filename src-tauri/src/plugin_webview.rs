@@ -135,18 +135,23 @@ impl PluginWebviewBounds {
     }
 }
 
+/// Maps a rectangle measured in the main webview's CSS viewport onto the
+/// window's content view. The width ratio is the page zoom. Any height the
+/// content view has beyond the zoomed viewport is a top inset, not zoom: on
+/// macOS in windowed mode the main webview spans the title bar and WebKit
+/// starts the page below it (content view 869pt tall, viewport 837pt).
 pub(super) fn scale_plugin_bounds(
     bounds: PluginWebviewBounds,
     native_viewport_width: f64,
     native_viewport_height: f64,
 ) -> PluginWebviewBounds {
-    let scale_x = native_viewport_width / bounds.viewport_width;
-    let scale_y = native_viewport_height / bounds.viewport_height;
+    let zoom = native_viewport_width / bounds.viewport_width;
+    let top_inset = (native_viewport_height - bounds.viewport_height * zoom).max(0.0);
     PluginWebviewBounds {
-        x: bounds.x * scale_x,
-        y: bounds.y * scale_y,
-        width: bounds.width * scale_x,
-        height: bounds.height * scale_y,
+        x: bounds.x * zoom,
+        y: top_inset + bounds.y * zoom,
+        width: bounds.width * zoom,
+        height: bounds.height * zoom,
         viewport_width: native_viewport_width,
         viewport_height: native_viewport_height,
     }
@@ -166,10 +171,8 @@ pub(super) fn native_plugin_bounds(
         .map_err(|error| error.to_string())?
         .to_logical::<f64>(scale_factor);
     // `add_child` attaches the plugin webview to the main window's content
-    // view. The browser rectangle is also measured from that content view,
-    // so adding the title-bar/frame inset here would shift the child down a
-    // second time. Keep the coordinates in content-view space and only
-    // normalize for a scale-factor/viewport change.
+    // view, so the bounds are converted into content-view space here; see
+    // `scale_plugin_bounds` for the title-bar inset WebKit applies to the page.
     let native_bounds = scale_plugin_bounds(bounds, native_size.width, native_size.height);
     native_bounds.validate()?;
     Ok(native_bounds)

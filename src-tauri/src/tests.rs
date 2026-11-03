@@ -1592,6 +1592,30 @@ fn plugin_webview_bounds_scale_with_native_viewport() {
 }
 
 #[test]
+fn plugin_webview_bounds_shift_below_the_title_bar_inset() {
+    // Measured on macOS in windowed mode: the content view is 869pt tall but
+    // WebKit starts the page 32pt down, below the title bar.
+    let bounds = PluginWebviewBounds {
+        x: 359.0,
+        y: 214.0,
+        width: 892.0,
+        height: 583.0,
+        viewport_width: 1291.0,
+        viewport_height: 837.0,
+    };
+    let native = scale_plugin_bounds(bounds, 1291.0, 869.0);
+    assert_eq!((native.x, native.y), (359.0, 246.0));
+    assert_eq!((native.width, native.height), (892.0, 583.0));
+    // Fullscreen: no inset, so the bounds pass through unchanged.
+    let fullscreen = PluginWebviewBounds {
+        viewport_height: 869.0,
+        ..bounds
+    };
+    let native = scale_plugin_bounds(fullscreen, 1291.0, 869.0);
+    assert_eq!((native.y, native.height), (214.0, 583.0));
+}
+
+#[test]
 fn maps_webview_url_overrides_hidden_bootstrap_dimensions() {
     let manifest: PluginManifest =
         serde_json::from_str(include_str!("../../packages/modules/maps/manifest.json")).unwrap();

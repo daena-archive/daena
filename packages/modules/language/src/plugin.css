@@ -43,9 +43,12 @@
 *::after {
   box-sizing: border-box;
 }
+/* The webview is sized to its slot in the shell. The panel scrolls inside itself;
+   a scrolling document would also draw the macOS scroll-edge effect at the bottom. */
 html,
 body {
   height: 100%;
+  overflow: hidden;
 }
 body {
   margin: 0;

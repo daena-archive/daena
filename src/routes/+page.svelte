@@ -10010,7 +10010,9 @@ onMount(() => {
   transform: none;
 }
 /* Language is a native webview, which the page cannot scroll under: the Languages section fills the
-   viewport, and the collection list and the Language webview each scroll inside their own column. */
+   viewport, and the collection list and the Language webview each scroll inside their own column.
+   Both columns run flush to the window's bottom edge, with no bottom border or corners, so they read
+   like other workspaces mid-scroll instead of stopping above a strip of bottom padding. */
 .app-main.language-surface {
   display: flex;
   min-height: 0;
@@ -10022,9 +10024,13 @@ onMount(() => {
   flex: 1 1 auto;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
+  padding-bottom: 0;
 }
 .workspace-grid.language-surface :global(.collection-panel) {
   min-height: 0;
+  border-bottom: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
 }
 .language-mount {
   display: flex;
@@ -11145,10 +11151,14 @@ onMount(() => {
   .workspace-grid.language-surface {
     display: flex;
     flex-direction: column;
+    padding-bottom: 0;
   }
+  /* Stacked, the list sits above the Language webview, so only the webview reaches the bottom edge. */
   .workspace-grid.language-surface :global(.collection-panel) {
     flex: 0 0 auto;
     max-height: 40vh;
+    border-bottom: 1px solid var(--line);
+    border-radius: 11px;
   }
   .editor-header h2 {
     font-size: 24px;

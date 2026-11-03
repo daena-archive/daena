@@ -410,12 +410,14 @@ $effect(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 650px;
+  min-height: 0;
   height: 100%;
   flex: 1;
   overflow: auto;
+  /* The shell runs this webview flush to the window's bottom edge, so the panel has no bottom edge. */
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
   background: var(--surface);
   padding: 22px 20px 24px;
   box-shadow: var(--shadow-sm, 0 2px 8px rgba(38, 42, 33, 0.05));

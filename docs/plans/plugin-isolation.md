@@ -86,6 +86,8 @@ unfinished remainder.
 
 ## Resume order
 
-1. Isolate Writing Studio into `src-tauri/plugin-assets/writing/`, the last
-   major module still in the main webview.
+1. Finish isolating Writing Studio, the last major module still in the main
+   webview. Progress and the next slice are tracked in
+   [`writing-isolation.md`](writing-isolation.md) (next: slice 3b, shell
+   integration).
 2. Clear the two pre-existing clippy warnings.

@@ -67,28 +67,98 @@ only after the ones that arrived before the reply are applied.
 (capability `text.transfer`, at most 32 MiB). The draft names the transfer id and
 the shell claims the text once with `plugin_take_text_transfer`.
 
-## Slices
+## Status
 
-1. **Platform plumbing.** Manifest becomes `sandboxed` with the
-   `writing-workspace` host-surface view, `event.publish:daena.writing/state@1`,
-   `asset.read:shared`, `asset.write:self`, `ai.text.generate`; drop
-   `document.write`. Rust asset routes, owner-bound event forwarding, relaxed
-   inline-style CSP for the editor, build script and drift check, fuzz corpus
-   and manifest tests. Move the reusable Language pieces (broker editor host,
-   leave tracker) into shared modules. The webview mounts in the Writing
-   content pane and renders the selected document read-only.
-2. **Editing and saving.** Done. Editor in the webview; `draft` events feed the
-   shell's existing autosave; chunked hand-off for large text; flush on leave
-   and close; conflict, saved and save-error states pushed back to the webview.
-   Window close and quit are not covered yet: the Rust close handler refuses
-   project commands (`begin_project_command`) as soon as the close request
-   arrives, before the main webview can flush anything.
-3. **Shell integration.** Keep the webview alive across entities; guard every
-   navigation path; rename, archive and recovery through shell messages;
-   keyboard forwarding; fullscreen owned by the webview.
-4. **AI.** Rewrite and generate through `ai.request.*`, retrieval mapped to
-   `retrievalPolicy`, prompt templates through a new read-only broker method,
-   AI-enabled state at bootstrap.
-5. **Clean-up.** Remove the old editor path from the main webview, update the
-   tests that inspect `+page.svelte`, update `ARCHITECTURE.md`, `UI_UX.md`,
-   `PLUGIN_SDK.md`, and run the real-app check.
+Everything below is behind the `daena:writing-webview` developer flag, off by
+default. To try it, run `localStorage.setItem("daena:writing-webview","1")` in
+the main window's dev console and reload. With the flag off, Writing Studio
+uses the old editor in the main webview.
+
+| Slice | State | Commit |
+|---|---|---|
+| 1. Platform plumbing | Done | `a228aad` |
+| 2. Editing and saving through the shell | Done, not yet tried in the real app | `bb34fc0` |
+| 3a. Save before the window closes or the app quits | Done, verified in the real app | `186d149` |
+| 3b. Shell integration | Next | |
+| 4. AI through the broker | Not started | |
+| 5. Clean-up and switch-over | Not started | |
+
+### Done
+
+1. **Platform plumbing.** `daena.writing` is `sandboxed` with the
+   `writing-workspace` host-surface view, an owner-bound
+   `daena.writing/state@1` event forwarded to the shell as `writing-state`, and
+   capabilities for shared assets, asset writes, AI and `text.transfer`. Rust
+   serves `writing.js`/`writing.css` with the relaxed inline-style CSP the
+   editor needs. Built by `npm run build:writing-ui`, drift-checked by
+   `check:writing-ui`. The broker editor host (`src/lib/editor/broker-host.ts`)
+   and leave tracker (`src/lib/modules/plugin-leave.ts`) are shared with
+   Language. Bundled grants follow the manifest automatically, so existing
+   projects get the new capabilities on their next open without a prompt.
+2. **Editing and saving.** The webview runs the shared `RichTextEditor` and
+   sends drafts; the shell checks entity and token and feeds
+   `updateDocumentBody`, so `persistDocumentSnapshot` still saves document and
+   fields together. `flushAutoSave` asks the webview first. Conflicts, saves and
+   save errors are pushed to the webview. Every transfer now refreshes its
+   deadline on each chunk.
+3. **Close and quit (3a).** Closing is a handshake (`src-tauri/src/app_close.rs`):
+   Rust holds the close, the shell acknowledges, saves and confirms or cancels;
+   an 8 s fallback closes only a shell that never acknowledged. On macOS the app
+   menu is built in `src-tauri/src/app_menu.rs` (Tauri's default, item for
+   item) with a custom Quit so Cmd+Q uses the same handshake. This also fixed
+   the old editor, which lost the last second of typing on quit.
+
+### Next: 3b. Shell integration
+
+- **Guard the navigation paths that skip `flushAutoSave`.** Settings, project
+  home, plugin views, collection tab changes and the workbench content toggle
+  unmount the webview and can drop up to 0.5 s of unsent text. Route each
+  through the flush (the Language guard call sites in `+page.svelte` are the
+  list to mirror).
+- **Notices.** The shell's `error` string and `projectDiagnostics` (for example
+  "Draft saved as …" after a recovery copy) have no surface while the webview is
+  shown. Add a host message or a shell-side strip above the webview.
+- **Rename and archive** from the webview header: `request-rename` and
+  `request-archive` open the shell's existing dialogs.
+- **Keyboard.** `shortcut` events (quick open, create, history back/forward)
+  call the shell's handlers, since window listeners do not see keys typed in
+  the webview.
+- **Fullscreen.** `editorFullscreen` is in `modalOverlayOpen`, which hides every
+  embedded webview. Let the webview own fullscreen: it publishes `fullscreen`,
+  the shell expands the webview's slot to the window and does not treat it as
+  an overlay.
+- **Decide:** whether `documentMode` (Article/Edit) should round-trip to the
+  shell; today the webview keeps its own after the first load.
+
+### Then: 4. AI
+
+Rewrite and generate through `ai.request.*` from the webview (Writing is the
+first plugin webview to call AI). Map the shell's `retrievalQuery`,
+`retrievalDepth` and `includeRetrieval` to `retrievalPolicy`. Add a read-only
+broker method for prompt templates and pass the project's AI-enabled state at
+bootstrap (`writing.ai-state` exists for updates). Field fill stays in the
+shell inspector.
+
+### Then: 5. Clean-up and switch-over
+
+- Turn the webview on by default and remove the flag.
+- Remove the old Writing editor path from `+page.svelte`, then drop
+  `document.write` from the Writing manifest (the shell's trusted Writing
+  context needs it until then) and update the fuzz corpus copy.
+- Update the tests that inspect `+page.svelte` for Writing code
+  (`scripts/writing-outline.test.mjs`, `async-entity-picker.test.mjs`,
+  `ui-ux.test.mjs`).
+- Update `ARCHITECTURE.md`, `UI_UX.md` and `PLUGIN_SDK.md`, which still
+  describe Writing as host-owned.
+- Real-app check, windowed and fullscreen: typing and autosave, switching
+  entries right after typing, a document over 128 KiB, a conflict (Reload, Keep
+  mine, recovery copy), images, mentions, links, overlays, quit right after
+  typing.
+
+### Known limits
+
+- Remounting is avoided, but a name looked up for an entity link is cached per
+  editor; renames show after reopening.
+- Non-macOS builds of the new menu and close code have not been compiled here.
+- Two clippy warnings predate this work (`host.rs` useless conversion,
+  `plugin_webview_url` argument count).

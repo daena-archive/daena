@@ -97,6 +97,7 @@ $effect(() => {
       bind:this={popoverEl}
       id="status-center-popover"
       class="status-popover"
+      data-shell-popover="status-center"
       role="dialog"
       aria-modal="false"
       aria-labelledby="status-center-title">

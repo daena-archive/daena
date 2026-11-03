@@ -97,7 +97,7 @@ $effect(() => {
     {#if menuOpen}
       {#if collapsed}<button class="rail-backdrop" aria-label="Close menu" onclick={() => onMenuChange(false)}></button
         >{/if}
-      <div class="project-menu" role="menu">
+      <div class="project-menu" role="menu" data-shell-popover="project-menu">
         <button class="rail-button" role="menuitem" onclick={onCreateProject}
           ><span class="rail-icon"><FolderPlus size={16} strokeWidth={1.8} /></span><span>New project</span></button>
         <button class="rail-button" role="menuitem" onclick={onOpenProject}

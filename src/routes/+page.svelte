@@ -137,6 +137,7 @@ import CalendarEditor from "../../packages/modules/timeline/src/CalendarEditor.s
 import { formatWithCalendar, type CalendarDefinition } from "../../packages/modules/timeline/src/calendar";
 import HostView from "$lib/plugins/HostView.svelte";
 import SandboxView from "$lib/plugins/SandboxView.svelte";
+import { anyRectOverlaps } from "$lib/plugins/popover-overlap";
 import {
   capabilityDescription,
   capabilityLabel,
@@ -1484,16 +1485,15 @@ const languagePaneShown = $derived(
 );
 
 /**
- * Shell overlays that cover the content area. Plugin webviews are native children drawn above
+ * Modal shell overlays, which cover the whole window. Plugin webviews are native children drawn above
  * the main webview, so while one of these is open every embedded plugin webview is hidden.
  * Toasts are not here: they are anchored clear of the content column instead (see `.toast-left`).
  * The collection filter popover and the rail tooltip are left out: they never overlap the content column.
+ * The anchored popovers (project switcher, status center) are in `anchoredPopoverOpen` instead.
  */
-const shellOverlayOpen = $derived(
+const modalOverlayOpen = $derived(
   quickOpenOpen ||
     showCreateForm ||
-    showProjectMenu ||
-    statusCenterOpen ||
     showDiscardPrompt ||
     projectTransitionBusy ||
     editorFullscreen ||
@@ -1513,6 +1513,14 @@ const shellOverlayOpen = $derived(
     dialogState.open,
 );
 
+/**
+ * Anchored popovers: the project switcher (inline in the sidebar, or a flyout when the rail is collapsed) and
+ * the status center. They hide an embedded plugin webview only when their rectangle overlaps its placeholder.
+ */
+const anchoredPopoverOpen = $derived(showProjectMenu || statusCenterOpen);
+/** True while an open anchored popover overlaps the placeholder of an embedded plugin webview. */
+let popoverOverlapsWebview = $state(false);
+
 /** Embedded plugin webviews the shell is currently drawing (the Language pane, or a webview sandbox view). */
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
@@ -1530,10 +1538,40 @@ async function setPluginWebviewVisibleQuietly(pluginId: string, visible: boolean
   }
 }
 
+/**
+ * Measures the open anchored popovers against the plugin placeholders, after the DOM has rendered them.
+ * Only one embedded webview is drawn at a time (the Language pane and each sandbox view are exclusive branches
+ * of the template), so one overlap with any `.sandbox-view-container` covers every embedded webview.
+ */
+async function measureAnchoredPopovers() {
+  await tick();
+  const rectsOf = (selector: string) =>
+    [...document.querySelectorAll(selector)].map((el) => el.getBoundingClientRect());
+  popoverOverlapsWebview =
+    anchoredPopoverOpen && anyRectOverlaps(rectsOf("[data-shell-popover]"), rectsOf(".sandbox-view-container"));
+}
+
+$effect(() => {
+  // Re-measured when a popover opens or closes, and when the layout around it changes.
+  void anchoredPopoverOpen;
+  void railCollapsed;
+  void languagePaneShown;
+  void embeddedPluginWebviewIds;
+  void measureAnchoredPopovers();
+});
+
+$effect(() => {
+  // The flyout and the status popover move with the window, so an open popover is measured again on resize.
+  if (!anchoredPopoverOpen) return;
+  const onResize = () => void measureAnchoredPopovers();
+  window.addEventListener("resize", onResize);
+  return () => window.removeEventListener("resize", onResize);
+});
+
 $effect(() => {
   // Re-applied when the Language webview reports ready, in case an overlay opened during its mount.
   void languageWebview.ready;
-  const visible = !shellOverlayOpen;
+  const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
 });
 

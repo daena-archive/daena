@@ -23,6 +23,8 @@ let {
 let container = $state<HTMLElement | null>(null);
 let hostMounted = $state(false);
 let resizeFrame: number | null = null;
+// Rounded bounds last sent to the host, so a re-sync that finds nothing moved skips the IPC call.
+let lastBoundsKey: string | null = null;
 let error = $state("");
 
 function currentBounds() {
@@ -38,31 +40,58 @@ function currentBounds() {
   };
 }
 
+function boundsKey(bounds: NonNullable<ReturnType<typeof currentBounds>>) {
+  return [bounds.x, bounds.y, bounds.width, bounds.height, bounds.viewportWidth, bounds.viewportHeight]
+    .map((value) => Math.round(value))
+    .join(",");
+}
+
 function scheduleResize() {
   if (!hostMounted || resizeFrame !== null) return;
   resizeFrame = window.requestAnimationFrame(() => {
     resizeFrame = null;
     const bounds = currentBounds();
-    if (bounds)
-      void project.resizePluginWebview(pluginId, bounds).catch((cause) => {
-        error = cause instanceof Error ? cause.message : String(cause);
-      });
+    if (!bounds) return;
+    const key = boundsKey(bounds);
+    if (key === lastBoundsKey) return;
+    lastBoundsKey = key;
+    void project.resizePluginWebview(pluginId, bounds).catch((cause) => {
+      lastBoundsKey = null;
+      error = cause instanceof Error ? cause.message : String(cause);
+    });
   });
+}
+
+/**
+ * The container moves when anything above it changes size, not only when it resizes itself.
+ * Observe the container, each ancestor up to document.body, and the preceding siblings of both.
+ */
+function observePositionSources(observer: ResizeObserver) {
+  for (let node: HTMLElement | null = container; node && node !== document.body; node = node.parentElement) {
+    observer.observe(node);
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling)
+      observer.observe(sibling);
+  }
 }
 
 onMount(() => {
   let alive = true;
   const observer = new ResizeObserver(scheduleResize);
-  if (container) observer.observe(container);
-  const topbar = document.querySelector<HTMLElement>(".topbar");
-  if (topbar) observer.observe(topbar);
+  observePositionSources(observer);
   window.addEventListener("resize", scheduleResize);
   window.visualViewport?.addEventListener("resize", scheduleResize);
+  // Scroll events do not bubble, so the capture listener on window sees scrolling in any ancestor.
+  window.addEventListener("scroll", scheduleResize, { capture: true, passive: true });
+  // Fonts that finish loading after mount can change the height of the content above the container.
+  void document.fonts?.ready.then(() => {
+    if (alive) scheduleResize();
+  });
 
   const mount = async () => {
     await tick();
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     if (!alive) return;
+    lastBoundsKey = null;
     // Close any leftover child before mounting so the mount query params
     // (mapEntityId, linkId, entityId, state) are applied on a fresh document
     // load rather than a reused view.
@@ -75,6 +104,7 @@ onMount(() => {
     await project.mountPluginWebview(pluginId, viewId, bounds, mapEntityId, linkId, entityId, serialisedState);
     if (alive) {
       hostMounted = true;
+      lastBoundsKey = boundsKey(bounds);
       scheduleResize();
     }
   };
@@ -88,6 +118,7 @@ onMount(() => {
     observer.disconnect();
     window.removeEventListener("resize", scheduleResize);
     window.visualViewport?.removeEventListener("resize", scheduleResize);
+    window.removeEventListener("scroll", scheduleResize, { capture: true });
     if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
     void project.unmountPluginWebview(pluginId);
     void project.closePluginWebview(pluginId);

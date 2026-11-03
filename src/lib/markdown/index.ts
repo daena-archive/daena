@@ -10,7 +10,7 @@ import remarkRehype from "remark-rehype";
 import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { visit } from "unist-util-visit";
-import { hastToMdastHandlers } from "./from-html.ts";
+import { hastToMdastHandlers, rehypeEntityReferenceGap } from "./from-html.ts";
 import { remarkDaenaAssets } from "./plugins/assets.ts";
 import { entityReferenceToMarkdown, remarkDaenaEntities } from "./plugins/entities.ts";
 import {
@@ -80,13 +80,16 @@ const htmlProcessor = unified()
   .use(rehypeEntityReferenceClass)
   .use(rehypeStringify);
 
-const fromHast = unified().use(rehypeRemark, { handlers: hastToMdastHandlers as never });
+const fromHast = unified()
+  .use(rehypeEntityReferenceGap)
+  .use(rehypeRemark, { handlers: hastToMdastHandlers as never });
 
 const markdownProcessor = unified()
   .use(rehypeParse, { fragment: true })
   .use(rehypeNormalizeCodeLanguage)
   .use(rehypeSanitize, daenaSanitizeSchema as never)
   .use(rehypeSafeInlineStyle)
+  .use(rehypeEntityReferenceGap)
   .use(rehypeRemark, { handlers: hastToMdastHandlers as never })
   .use(remarkGfm)
   .use(remarkStringify, {

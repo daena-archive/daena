@@ -21,6 +21,10 @@ export const MARKDOWN_FIXTURES = [
     markdown: "Meet [[Ardashir]](entity-ardashir) in the archive.\n",
   },
   {
+    name: "entity-reference-unlabelled",
+    markdown: "Meet [[]](entity-ardashir) in the archive.\n",
+  },
+  {
     name: "strike-hr-ordered-nested",
     markdown: "This is ~~gone~~.\n\n---\n\n1. one\n2. two\n\n- parent\n  - nested\n",
   },

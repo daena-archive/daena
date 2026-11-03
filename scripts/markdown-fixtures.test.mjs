@@ -95,6 +95,28 @@ assert.equal(tree.children[0].type, "paragraph");
 assert.equal(tree.children[0].children[0].type, "entityReference");
 assert.equal(tree.children[0].children[0].entityId, "abc");
 
+// An unlabelled reference is written as [[]](id); it must read back as an entity, not a plain link.
+const unlabelled = parseMarkdown("Meet [[]](entity-ardashir) here.\n").children[0].children[1];
+assert.equal(unlabelled.type, "entityReference", "an empty label is still an entity reference");
+assert.equal(unlabelled.entityId, "entity-ardashir");
+assert.equal(unlabelled.isCustom, false, "an unlabelled reference is not custom");
+assert.deepEqual(unlabelled.children, [], "an unlabelled reference has no label of its own");
+assert.equal(
+  htmlToMarkdown(markdownToHtml("Meet [[]](entity-ardashir) here.\n")),
+  "Meet [[]](entity-ardashir) here.\n",
+  "an unlabelled reference round-trips as [[]](id)",
+);
+assert.equal(
+  htmlToMarkdown(markdownToHtml("Meet [[Ardashir]](entity-ardashir) here.\n")),
+  "Meet [[Ardashir]](entity-ardashir) here.\n",
+  "a custom reference still round-trips",
+);
+assert.equal(
+  parseMarkdown("[[]](https://example.com)\n").children[0].children[0].type,
+  "link",
+  "an empty label with a web URL stays a normal link",
+);
+
 const xssHtml = markdownToHtml("<script>alert(1)</script>\n");
 assert.equal(xssHtml.toLowerCase().includes("<script"), false);
 assert.equal(xssHtml.toLowerCase().includes("javascript:"), false);

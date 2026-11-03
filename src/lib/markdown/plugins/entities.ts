@@ -20,7 +20,8 @@ function entityIdFromLink(node: Link): string | null {
   const fromProtocol = entityIdFromHref(node.url);
   if (fromProtocol) return fromProtocol;
   const label = nodeText(node);
-  if (label.startsWith("[") && label.endsWith("]") && label.length > 2 && !/^[a-z][a-z0-9+.-]*:/i.test(node.url)) {
+  // The link text of `[[]](id)` is "[]": an unlabelled reference, not a link.
+  if (label.startsWith("[") && label.endsWith("]") && !/^[a-z][a-z0-9+.-]*:/i.test(node.url)) {
     return node.url.trim() || null;
   }
   return null;

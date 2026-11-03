@@ -1,7 +1,8 @@
-import type { Element } from "hast";
+import type { Element, Root as HastRoot } from "hast";
 import type { Link, PhrasingContent } from "mdast";
 import { defaultHandlers } from "hast-util-to-mdast";
 import type { State as HastState } from "hast-util-to-mdast";
+import { visit } from "unist-util-visit";
 import { entityIdFromHref } from "./urls.ts";
 import { nodeText } from "./text.ts";
 import { colorFromStyle } from "./color.ts";
@@ -101,10 +102,30 @@ const alignedBlock = (state: HastState, node: Element) => {
   return fallback ? fallback(state, node) : undefined;
 };
 
+/**
+ * Stands in for the label of an unlabelled reference (`[[]](id)`). hast-util-to-mdast collapses the
+ * whitespace around an empty inline element, which would take the space after the reference with it.
+ * A character that is not whitespace keeps that space; entityOrLink drops it again.
+ */
+const REFERENCE_GAP = "\u2060";
+
+/** Gives every empty, unlabelled entity reference the gap so the text around it keeps its spaces. */
+export function rehypeEntityReferenceGap() {
+  return (tree: HastRoot) => {
+    visit(tree, "element", (node) => {
+      if (node.tagName !== "a" || node.children.length > 0 || node.properties?.dataEntityId == null) return;
+      if (String(node.properties.dataIsCustom ?? "") !== "false") return;
+      node.children.push({ type: "text", value: REFERENCE_GAP });
+    });
+  };
+}
+
 const entityOrLink = (state: HastState, node: Element) => {
   const entityId = propertyString(node, "dataEntityId") || entityIdFromHref(propertyString(node, "href"));
   if (entityId) {
-    const children = state.all(node) as PhrasingContent[];
+    const children = (state.all(node) as PhrasingContent[]).filter(
+      (child) => !(child.type === "text" && child.value === REFERENCE_GAP),
+    );
     const rawIsCustom =
       (node.properties as Record<string, unknown> | undefined)?.["dataIsCustom"] ??
       (node.properties as Record<string, unknown> | undefined)?.["data-is-custom"];

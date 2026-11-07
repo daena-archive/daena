@@ -344,6 +344,65 @@ pub async fn ai_generate_structured(
 pub fn start_ai_request_mode(
     app: Option<AppHandle>,
     runtime: SharedAiRuntime,
+    caller: daena_ai::AiCaller,
+    endpoint: String,
+    model: String,
+    instruction: String,
+    selection: String,
+    output_contract: Option<serde_json::Value>,
+    deadline: Duration,
+    citations: Vec<SourceRef>,
+    remote: bool,
+    api_key: Option<String>,
+) -> Result<String, String> {
+    start_ai_request_prepared(
+        app,
+        runtime,
+        caller,
+        endpoint,
+        model,
+        instruction,
+        selection,
+        output_contract,
+        deadline,
+        citations,
+        remote,
+        api_key,
+        None,
+    )
+}
+
+/// Replaces the context a request started with by the result of its `ContextPreparation`, when there is one that
+/// fits. The citations move with the context, so they always describe what the provider was given.
+fn apply_context_preparation(
+    runtime: &SharedAiRuntime,
+    request_id: &str,
+    instruction: &str,
+    selection: String,
+    prepared: Option<(String, Vec<SourceRef>)>,
+) -> String {
+    let Some((prepared_selection, citations)) = prepared else {
+        return selection;
+    };
+    // The request was admitted with the smaller context; if the richer one does not fit, keep the original.
+    if instruction.len() + prepared_selection.len() > DEFAULT_LIMITS.max_input_bytes {
+        return selection;
+    }
+    match runtime.lock() {
+        Ok(mut runtime) => {
+            runtime.citations.insert(request_id.to_string(), citations);
+            prepared_selection
+        }
+        Err(_) => selection,
+    }
+}
+
+/// `start_ai_request_mode` with an optional step the request's worker runs first (see `ContextPreparation`), for
+/// callers that cannot build their final context where they are, such as the plugin broker on the main thread.
+#[allow(clippy::too_many_arguments)]
+pub fn start_ai_request_prepared(
+    app: Option<AppHandle>,
+    runtime: SharedAiRuntime,
     mut caller: daena_ai::AiCaller,
     endpoint: String,
     model: String,
@@ -354,6 +413,7 @@ pub fn start_ai_request_mode(
     citations: Vec<SourceRef>,
     remote: bool,
     api_key: Option<String>,
+    prepare: Option<ContextPreparation>,
 ) -> Result<String, String> {
     if instruction.trim().is_empty() {
         return Err("An AI instruction is required".to_string());
@@ -409,6 +469,22 @@ pub fn start_ai_request_mode(
                 &_cleanup.runtime,
                 ai_event(&request_id_for_task, "started", None),
             );
+            let selection = match prepare {
+                Some(prepare) => {
+                    let prepared = tauri::async_runtime::spawn_blocking(prepare)
+                        .await
+                        .ok()
+                        .flatten();
+                    apply_context_preparation(
+                        &_cleanup.runtime,
+                        &request_id_for_task,
+                        &instruction,
+                        selection,
+                        prepared,
+                    )
+                }
+                None => selection,
+            };
             generate_remote_stream(
                 app.as_ref(),
                 &_cleanup.runtime,
@@ -443,6 +519,17 @@ pub fn start_ai_request_mode(
             output: None,
             error: None,
         });
+        // This closure already runs on a blocking worker, which is where a context preparation belongs.
+        let selection = match prepare {
+            Some(prepare) => apply_context_preparation(
+                &event_runtime,
+                &request_id_for_task,
+                &instruction,
+                selection,
+                prepare(),
+            ),
+            None => selection,
+        };
         let request_started = Instant::now();
         let deadline_exceeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let provider_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));

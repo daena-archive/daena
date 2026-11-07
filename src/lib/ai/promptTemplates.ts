@@ -200,3 +200,33 @@ export function overlayFromTemplates(templates: PromptTemplate[]): PromptOverlay
 export function instructionFor(templates: PromptTemplate[], id: string): string {
   return templates.find((template) => template.id === id && template.enabled !== false)?.instruction ?? "";
 }
+
+/** What an editor AI menu choice works on: the selection (rewrite) or the cursor position (generate). */
+export interface AiActionRequest {
+  mode: "rewrite" | "generate";
+  selectionMarkdown: string;
+  selectionPlain: string;
+  generationContext: string;
+}
+
+/**
+ * Turns an editor AI menu choice into a request. `generate` writes at the cursor and a template that requires a
+ * selection rewrites it. Any other template (Custom instruction, a user's own) rewrites the selection when there
+ * is one and writes at the cursor when there is none. Null when a template needs a selection and has none.
+ * `context` is the cursor context the editor sends for templates that do not require a selection.
+ */
+export function aiActionRequest(
+  templates: ReadonlyArray<{ id: string; requiresSelection?: boolean }>,
+  action: string,
+  markdown: string,
+  plainText: string,
+  context: string,
+): AiActionRequest | null {
+  const requiresSelection = templates.find((template) => template.id === action)?.requiresSelection === true;
+  const hasSelection = markdown.trim().length > 0;
+  if (requiresSelection && !hasSelection) return null;
+  if (action !== "generate" && (requiresSelection || hasSelection)) {
+    return { mode: "rewrite", selectionMarkdown: markdown, selectionPlain: plainText, generationContext: "" };
+  }
+  return { mode: "generate", selectionMarkdown: "", selectionPlain: "", generationContext: context };
+}

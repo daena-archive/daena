@@ -53,7 +53,7 @@ pub use self::orchestration::{
     ai_cancel_text, ai_generate_structured, ai_generate_text, ai_poll_text, ai_provider_connect,
     ai_provider_models, ai_provider_status, ai_request_citations, ai_request_result,
     cancel_ai_request, poll_ai_events, remove_ai_citations, start_ai_request_mode,
-    validate_structured_output, validate_structured_schema,
+    start_ai_request_prepared, validate_structured_output, validate_structured_schema,
 };
 use self::provider::*;
 pub use self::provider::{
@@ -68,13 +68,15 @@ pub use self::provider::{
     ai_provider_clear_credential, ai_provider_credential_status, ai_provider_import_credential,
     ai_provider_set_credential, ai_remote_set_consent, resolve_ai_provider,
 };
-pub use self::retrieval::build_retrieval_context;
 pub(crate) use self::retrieval::ensure_active_project;
 use self::retrieval::*;
+pub use self::retrieval::{build_retrieval_context, hybrid_context_preparation};
 #[cfg(test)]
 pub use self::runtime::FakeLoopbackProvider;
 use self::runtime::*;
-pub use self::runtime::{AiProvider, AiRuntime, ProviderRequest, SharedAiRuntime};
+pub use self::runtime::{
+    AiProvider, AiRuntime, ContextPreparation, ProviderRequest, SharedAiRuntime,
+};
 use self::transport::*;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -14,6 +14,8 @@ export const WRITING_MODES = ["read", "edit"] as const;
 export type WritingBridgeMode = (typeof WRITING_MODES)[number];
 export const WRITING_CONFLICT_ACTIONS = ["reload", "overwrite", "recovery"] as const;
 export type WritingBridgeConflictAction = (typeof WRITING_CONFLICT_ACTIONS)[number];
+/** Host messages are capped at 64 KiB (`MAX_HOST_MESSAGE_BYTES` in plugin_webview.rs); this leaves some margin. */
+export const WRITING_HOST_MESSAGE_BUDGET_BYTES = 60 * 1024;
 /** How long the shell waits for a flush reply before it carries on without the webview's text. */
 export const WRITING_FLUSH_TIMEOUT_MS = 1500;
 
@@ -35,8 +37,7 @@ export function isWritingConflictAction(value: unknown): value is WritingBridgeC
  * value the shell issued in the `writing.load` the text was edited under.
  */
 export type WritingBridgeDraft =
-  | { entityId: string; token: string; text: string }
-  | { entityId: string; token: string; transfer: string };
+  { entityId: string; token: string; text: string } | { entityId: string; token: string; transfer: string };
 
 /** Messages the webview publishes as `daena.writing/state@1`, after the host forwards them. */
 export type WritingStateEvent =
@@ -161,9 +162,76 @@ export type WritingHostMessage =
   | { type: "writing.conflict"; entityId: string; message: string; canOverwrite: boolean }
   | { type: "writing.save-error"; entityId: string; message: string }
   | { type: "writing.editable"; editable: boolean }
-  | { type: "writing.ai-state"; enabled: boolean }
+  | { type: "writing.ai-state"; enabled: boolean; providerName: string; templates: WritingBridgeAiTemplate[] }
   | { type: "writing.fullscreen"; on: boolean }
   | { type: "writing.title"; entityId: string; title: string };
+
+/** An editor prompt template as the webview receives it: only what the editor menu and the AI dialog read. */
+export interface WritingBridgeAiTemplate {
+  id: string;
+  label: string;
+  instruction: string;
+  requiresSelection: boolean;
+  enabled: boolean;
+  kind: "editor";
+}
+
+const MAX_AI_TEMPLATES = 64;
+const MAX_AI_LABEL_LENGTH = 200;
+const MAX_AI_PROVIDER_NAME_LENGTH = 200;
+
+/** The prompt templates the shell merged, in the shape the webview expects. Nothing else of a template travels. */
+export interface WritingAiStateSource {
+  enabled: boolean;
+  providerName: string;
+  templates: ReadonlyArray<{
+    id: string;
+    label: string;
+    instruction: string;
+    kind: string;
+    requiresSelection?: boolean;
+    enabled?: boolean;
+  }>;
+}
+
+function utf8Bytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+/**
+ * Builds the `writing.ai-state` message: whether AI is on, the provider's name and the editor templates (the git
+ * and image ones are the shell's). The message must fit in one host message, and posting must never fail on
+ * size, so when the templates do not fit the trailing ones are dropped (and with them the ones past
+ * `MAX_AI_TEMPLATES`). The bundled templates come first, so only custom templates at the end of a very large
+ * prompt library are ever lost.
+ */
+export function writingAiStateMessage(
+  source: WritingAiStateSource,
+  budgetBytes: number = WRITING_HOST_MESSAGE_BUDGET_BYTES,
+): Extract<WritingHostMessage, { type: "writing.ai-state" }> {
+  const templates: WritingBridgeAiTemplate[] = [];
+  for (const template of source.templates) {
+    if (template.kind !== "editor") continue;
+    const id = idOf(template.id);
+    if (id === null || !template.label.trim() || templates.some((existing) => existing.id === id)) continue;
+    templates.push({
+      id,
+      label: template.label.slice(0, MAX_AI_LABEL_LENGTH),
+      instruction: template.instruction,
+      requiresSelection: template.requiresSelection === true,
+      enabled: template.enabled !== false,
+      kind: "editor",
+    });
+  }
+  const message: Extract<WritingHostMessage, { type: "writing.ai-state" }> = {
+    type: "writing.ai-state",
+    enabled: source.enabled,
+    providerName: source.providerName.slice(0, MAX_AI_PROVIDER_NAME_LENGTH),
+    templates: templates.slice(0, MAX_AI_TEMPLATES),
+  };
+  while (message.templates.length > 0 && utf8Bytes(message) > budgetBytes) message.templates.pop();
+  return message;
+}
 
 /**
  * Turns the webview's full screen on or off. The shell only sends `false`; the webview starts its own full screens.

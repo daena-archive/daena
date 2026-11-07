@@ -154,6 +154,7 @@ import ProjectHome from "$lib/shell/ProjectHome.svelte";
 import ProjectCenter from "$lib/ProjectCenter.svelte";
 import ProjectAiSettingsPanel from "$lib/ai/ProjectAiSettingsPanel.svelte";
 import {
+  aiActionRequest,
   emptyAiProvider,
   instructionFor,
   mergePromptTemplates,
@@ -284,6 +285,7 @@ import {
   WRITING_PLUGIN_ID,
   createWritingFlushBroker,
   parseWritingStateEvent,
+  writingAiStateMessage,
   writingConflictMessage,
   writingFullscreenMessage,
   writingLoadMessage,
@@ -298,6 +300,7 @@ import {
 import RichTextEditor from "$lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
 import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
+import { validateAiProposal } from "$lib/ai/proposal";
 import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
 import { normalizeDocument } from "$lib/markdown/normalize";
@@ -432,6 +435,8 @@ const writingWebviewEnabled = (() => {
 })();
 /** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let writingWebview = $state({ mounted: false, ready: false });
+/** Counts the webview's `ready` reports, so the AI state is posted again to a webview that restarted. */
+let writingReadyCount = $state(0);
 /**
  * The Writing webview's full screen, as the webview reports it. Kept apart from `editorFullscreen`: that one hides
  * every embedded webview, and this one needs the webview visible so it can fill the window.
@@ -1869,6 +1874,20 @@ $effect(() => {
 });
 
 $effect(() => {
+  // The webview runs the AI rewrite flow itself, so it is told whether AI is on, the provider's name and the
+  // editor prompt templates: after it reports ready, and again whenever any of them changes. It asks the broker
+  // for nothing of this. The shell's own AI dialog stays off for it: the shell editor is not rendered here.
+  void writingReadyCount;
+  if (!writingWebview.mounted || !writingWebview.ready) return;
+  const message = writingAiStateMessage({
+    enabled: projectInfo?.aiEnabled ?? false,
+    providerName: aiProvider.name,
+    templates: aiPromptTemplates,
+  });
+  void untrack(() => postWritingMessage(message));
+});
+
+$effect(() => {
   // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
   // posting time; this posts the changes after it.
   const editable = writingEditable;
@@ -1973,6 +1992,7 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       writingFullscreen = false;
       writingFlush.releaseAll();
       writingWebview.ready = true;
+      writingReadyCount += 1;
       return;
     case "draft":
       if (writingWebview.mounted) void enqueueWritingDraft(event.draft);
@@ -4020,18 +4040,12 @@ function setAiSelection(markdown: string, plainText: string) {
 }
 function openAiAction(action: string, markdown: string, plainText: string, context: string) {
   if (!projectInfo?.aiEnabled) return;
-  const template = aiPromptTemplates.find((item) => item.id === action);
-  if (template?.requiresSelection && !markdown.trim()) return;
-  if (template?.requiresSelection) {
-    aiSourceSelection = markdown;
-    aiSourceSelectionPlain = plainText;
-    aiGenerationContext = "";
-  } else {
-    aiSourceSelection = "";
-    aiSourceSelectionPlain = "";
-    aiGenerationContext = context;
-  }
-  aiMode = action === "generate" ? "generate" : "rewrite";
+  const request = aiActionRequest(aiPromptTemplates, action, markdown, plainText, context);
+  if (!request) return;
+  aiSourceSelection = request.selectionMarkdown;
+  aiSourceSelectionPlain = request.selectionPlain;
+  aiGenerationContext = request.generationContext;
+  aiMode = request.mode;
   aiInstruction = instructionFor(aiPromptTemplates, action);
   aiRewriteOpen = true;
 }
@@ -4292,15 +4306,6 @@ async function cancelAiRewrite() {
     aiCancelPending = false;
     error = friendlyError(cause);
   }
-}
-function validateAiProposal(value: string): string | null {
-  if (!value.trim()) return "The AI provider returned an empty proposal.";
-  if (/(^|\n)\s*(#{1,6}\s|>\s|[-*+]\s|\d+\.\s|```|~~~)/.test(value)) {
-    return "The proposal contains block-level Markdown. Edit it to plain text before accepting.";
-  }
-  if (/<\/?[a-z][^>]*>/i.test(value))
-    return "The proposal contains HTML markup. Edit it to plain text before accepting.";
-  return null;
 }
 function handleAiEvent(payload: AiStreamEvent) {
   if (aiSourceEntityId !== null && selected?.id !== aiSourceEntityId) return;
@@ -9515,7 +9520,7 @@ onMount(() => {
                               rows="2"
                               bind:value={aiInstruction}
                               disabled={aiBusy}
-                              placeholder={`Tell ${aiProvider.name || "the AI provider"} how to rewrite the selection`}
+                              placeholder={`Tell ${aiProvider.name || "the AI provider"} ${aiMode === "generate" ? "what to write at the cursor" : "how to rewrite the selection"}`}
                             ></textarea
                             ></label
                           >{/if}

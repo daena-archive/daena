@@ -2,6 +2,11 @@
 use super::*;
 
 pub type SharedAiRuntime = Arc<Mutex<AiRuntime>>;
+/// Work a request does on its own worker, after `started` and before the provider call, to replace the context
+/// it was started with. Returns the full selection (the user's text plus retrieved context) and the citations
+/// that go with it, or `None` to keep what the request started with. It may block (network, project reads), so
+/// it only ever runs on a blocking worker.
+pub type ContextPreparation = Box<dyn FnOnce() -> Option<(String, Vec<SourceRef>)> + Send>;
 pub(super) const MAX_BUFFERED_REQUESTS: usize = 32;
 pub(super) const MAX_BUFFERED_EVENTS: usize = 64;
 pub(super) const AI_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);

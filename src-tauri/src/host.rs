@@ -347,6 +347,7 @@ pub(super) fn dispatch_host_rpc(
                 .map(serde_json::from_value::<daena_plugin_api::AiRetrievalPolicyPayload>)
                 .transpose()
                 .map_err(|error| format!("invalid retrieval policy: {error}"))?;
+            let policy_for_semantic = retrieval_policy.clone();
             let (retrieved_context, citations) = if let Some(policy) = retrieval_policy {
                 let core = context
                     .core
@@ -364,6 +365,7 @@ pub(super) fn dispatch_host_rpc(
             } else {
                 (String::new(), Vec::new())
             };
+            let plain_selection = selection.clone();
             let selection = if retrieved_context.is_empty() {
                 selection
             } else {
@@ -384,20 +386,45 @@ pub(super) fn dispatch_host_rpc(
             let provider =
                 ai::resolve_ai_provider(&settings, Some(&context.caller.project_id), true)?;
             let started = match operation {
-                "generate_text" => ai::start_ai_request_mode(
-                    context.app.clone(),
-                    context.ai_runtime.clone(),
-                    context.caller.clone(),
-                    provider.endpoint.clone(),
-                    provider.model.clone(),
-                    instruction.to_string(),
-                    selection,
-                    None,
-                    std::time::Duration::from_millis(deadline_ms),
-                    citations.clone(),
-                    provider.remote,
-                    provider.api_key.clone(),
-                )?,
+                "generate_text" => {
+                    // The retrieval above is lexical only. The semantic passages the shell's own requests get
+                    // need an embedding call, which must not run here: this broker call is served from the
+                    // plugin protocol handler, on the main thread. The request's worker adds them instead.
+                    let prepare = policy_for_semantic
+                        .filter(|policy| {
+                            matches!(
+                                policy.mode,
+                                daena_plugin_api::AiRetrievalMode::Related
+                                    | daena_plugin_api::AiRetrievalMode::Project
+                            )
+                        })
+                        .zip(context.core.clone())
+                        .and_then(|(policy, core)| {
+                            ai::hybrid_context_preparation(
+                                core,
+                                context.ai_runtime.clone(),
+                                context.caller.clone(),
+                                policy,
+                                provider.clone(),
+                                plain_selection,
+                            )
+                        });
+                    ai::start_ai_request_prepared(
+                        context.app.clone(),
+                        context.ai_runtime.clone(),
+                        context.caller.clone(),
+                        provider.endpoint.clone(),
+                        provider.model.clone(),
+                        instruction.to_string(),
+                        selection,
+                        None,
+                        std::time::Duration::from_millis(deadline_ms),
+                        citations.clone(),
+                        provider.remote,
+                        provider.api_key.clone(),
+                        prepare,
+                    )?
+                }
                 "generate_structured" => {
                     let contract = payload.get("outputContract").cloned().ok_or_else(|| {
                         "structured AI requests require outputContract".to_string()

@@ -1489,7 +1489,12 @@ pub(super) fn plugin_protocol_response(
                         AiBrokerContext {
                             app: APP_HANDLE.get().cloned(),
                             core: Some(core.clone()),
-                            settings: None,
+                            // AI requests resolve the project's provider from the settings store. Without it
+                            // `ai.request.start` fails with "Configure an AI provider" for every sandboxed plugin.
+                            settings: APP_HANDLE
+                                .get()
+                                .and_then(|app| app.try_state::<SharedSettings>())
+                                .map(|state| state.inner().clone()),
                             ai_runtime: ai_runtime.clone(),
                             session_id: session.id.clone(),
                             caller: daena_ai::AiCaller::authorized_plugin(

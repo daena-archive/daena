@@ -8,7 +8,9 @@ import {
   createWritingFlushBroker,
   isWritingConflictAction,
   isWritingShortcut,
+  WRITING_HOST_MESSAGE_BUDGET_BYTES,
   parseWritingStateEvent,
+  writingAiStateMessage,
   writingConflictMessage,
   writingFullscreenMessage,
   writingLoadMessage,
@@ -110,7 +112,11 @@ assert.equal(parseWritingStateEvent({ kind: "draft", draft: { ...inline, transfe
 assert.equal(parseWritingStateEvent({ kind: "draft", draft: { entityId: "e1", token: "t1" } }), null);
 assert.equal(parseWritingStateEvent({ kind: "draft", draft: { ...inline, entityId: "" } }), null);
 assert.equal(parseWritingStateEvent({ kind: "draft", draft: { ...inline, token: 3 } }), null);
-assert.equal(parseWritingStateEvent({ kind: "draft", draft: { ...inline, token: "" } }), null, "a draft needs its token");
+assert.equal(
+  parseWritingStateEvent({ kind: "draft", draft: { ...inline, token: "" } }),
+  null,
+  "a draft needs its token",
+);
 assert.equal(
   parseWritingStateEvent({ kind: "draft", draft: { entityId: "e1", baseRevision: "r1", text: "Chapter one" } }),
   null,
@@ -326,6 +332,145 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
   }
 }
 
+// AI state for the webview: the editor templates, the provider's name, and always a message that fits.
+{
+  const template = (id, extra = {}) => ({
+    id,
+    label: `Label ${id}`,
+    instruction: `Instruction ${id}`,
+    kind: "editor",
+    ...extra,
+  });
+  const bytes = (message) => new TextEncoder().encode(JSON.stringify(message)).byteLength;
+  const message = writingAiStateMessage({
+    enabled: true,
+    providerName: "LM Studio",
+    templates: [
+      template("rewrite", { requiresSelection: true, bundled: true }),
+      template("generate", { enabled: false }),
+      template("git-message", { kind: "git" }),
+      template("image-entity", { kind: "image" }),
+      template("custom"),
+    ],
+  });
+  assert.deepEqual(message, {
+    type: "writing.ai-state",
+    enabled: true,
+    providerName: "LM Studio",
+    templates: [
+      {
+        id: "rewrite",
+        label: "Label rewrite",
+        instruction: "Instruction rewrite",
+        requiresSelection: true,
+        enabled: true,
+        kind: "editor",
+      },
+      {
+        id: "generate",
+        label: "Label generate",
+        instruction: "Instruction generate",
+        requiresSelection: false,
+        enabled: false,
+        kind: "editor",
+      },
+      {
+        id: "custom",
+        label: "Label custom",
+        instruction: "Instruction custom",
+        requiresSelection: false,
+        enabled: true,
+        kind: "editor",
+      },
+    ],
+  });
+  assert.equal(WRITING_HOST_MESSAGE_BUDGET_BYTES < 64 * 1024, true, "keeps a margin under the host's 64 KiB cap");
+  assert.deepEqual(writingAiStateMessage({ enabled: false, providerName: "", templates: [] }), {
+    type: "writing.ai-state",
+    enabled: false,
+    providerName: "",
+    templates: [],
+  });
+  assert.equal(
+    writingAiStateMessage({ enabled: true, providerName: "p".repeat(500), templates: [] }).providerName.length,
+    200,
+  );
+  assert.equal(
+    writingAiStateMessage({ enabled: true, providerName: "", templates: [template("a", { label: "l".repeat(500) })] })
+      .templates[0].label.length,
+    200,
+  );
+  // Unusable templates are left out rather than failing the post.
+  assert.deepEqual(
+    writingAiStateMessage({
+      enabled: true,
+      providerName: "",
+      templates: [
+        template("", {}),
+        template("blank", { label: "  " }),
+        template("a"),
+        template("a"),
+        template("x".repeat(129)),
+      ],
+    }).templates.map((item) => item.id),
+    ["a"],
+  );
+  // At most 64 templates, even when they would fit.
+  assert.equal(
+    writingAiStateMessage({
+      enabled: true,
+      providerName: "",
+      templates: Array.from({ length: 100 }, (_, index) => template(`t${index}`)),
+    }).templates.length,
+    64,
+  );
+  // Over the budget, trailing templates are dropped until it fits; the leading ones are kept whole.
+  {
+    const big = "x".repeat(20 * 1024);
+    const templates = [
+      template("first"),
+      ...Array.from({ length: 6 }, (_, index) => template(`big${index}`, { instruction: big })),
+    ];
+    const trimmed = writingAiStateMessage({ enabled: true, providerName: "P", templates });
+    assert.ok(bytes(trimmed) <= WRITING_HOST_MESSAGE_BUDGET_BYTES, `${bytes(trimmed)} bytes fit the budget`);
+    assert.ok(trimmed.templates.length < templates.length, "some were dropped");
+    assert.deepEqual(
+      trimmed.templates.map((item) => item.id),
+      templates.slice(0, trimmed.templates.length).map((item) => item.id),
+      "from the end",
+    );
+    assert.equal(trimmed.templates[0].id, "first");
+    assert.equal(trimmed.templates[1].instruction, big, "kept templates are not altered");
+  }
+  // Text that JSON escapes (quotes, newlines, non-ASCII) counts at its encoded size.
+  {
+    const escaped = '"\n\u00e9'.repeat(8000);
+    const trimmed = writingAiStateMessage({
+      enabled: true,
+      providerName: "",
+      templates: [template("a", { instruction: escaped }), template("b", { instruction: escaped })],
+    });
+    assert.ok(bytes(trimmed) <= WRITING_HOST_MESSAGE_BUDGET_BYTES);
+    assert.equal(trimmed.templates.length, 1);
+  }
+  // A single template that cannot fit leaves an empty list rather than an oversized message.
+  {
+    const trimmed = writingAiStateMessage({
+      enabled: true,
+      providerName: "",
+      templates: [template("huge", { instruction: "x".repeat(200 * 1024) })],
+    });
+    assert.deepEqual(trimmed.templates, []);
+    assert.ok(bytes(trimmed) <= WRITING_HOST_MESSAGE_BUDGET_BYTES);
+  }
+  // A smaller budget is honoured.
+  assert.equal(
+    writingAiStateMessage({ enabled: true, providerName: "", templates: [template("a"), template("b")] }, 200).templates
+      .length,
+    1,
+  );
+}
+
 // Route wiring: the shell stays the only writer and every leave path goes through the one flush.
 {
   const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
@@ -337,7 +482,11 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
     return page.slice(start, end);
   };
   const flush = between("async function flushAutoSave()", "async function loadSelectedState");
-  assert.match(flush, /await flushWritingWebview\(\);\s*editorRef\?\.flushPendingChanges\(\)/, "the webview is asked first");
+  assert.match(
+    flush,
+    /await flushWritingWebview\(\);\s*editorRef\?\.flushPendingChanges\(\)/,
+    "the webview is asked first",
+  );
   const apply = between("async function applyWritingDraft", "function enqueueWritingDraft");
   assert.match(apply, /updateDocumentBody\(text\)/, "a draft is applied like typing in the shell editor");
   assert.match(apply, /project\.takePluginTextTransfer\(WRITING_PLUGIN_ID, draft\.transfer\)/);
@@ -357,6 +506,22 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
     /writingLoad\?\.entityId === entityId && \(await flushWritingWebview\(\)\)/,
     "a reload of the same entry flushes the webview first",
   );
+  // AI: the webview runs the flow, so the shell tells it the AI state instead of opening its own dialog.
+  const aiStateEffect = between(
+    "// The webview runs the AI rewrite flow itself",
+    "$effect(() => {\n  // Editability follows",
+  );
+  assert.match(aiStateEffect, /void writingReadyCount;/, "a restarted webview is told again");
+  assert.match(aiStateEffect, /if \(!writingWebview\.mounted \|\| !writingWebview\.ready\) return;/);
+  assert.match(aiStateEffect, /enabled: projectInfo\?\.aiEnabled \?\? false/);
+  assert.match(aiStateEffect, /providerName: aiProvider\.name/);
+  assert.match(aiStateEffect, /templates: aiPromptTemplates/);
+  assert.match(aiStateEffect, /postWritingMessage\(message\)/);
+  assert.match(page, /writingReadyCount \+= 1;/, "every ready report counts");
+  // The webview's dialog is its own: nothing in the overlay logic reads it, and the shell's dialog stays for the old editor.
+  const overlay = between("const modalOverlayOpen = $derived(", "const anchoredPopoverOpen");
+  assert.doesNotMatch(overlay, /writingAi|aiDialog|ai-state/);
+  assert.match(page, /\{#if aiRewriteOpen\}/, "the shell's own dialog is still there for the old editor");
   // Closing the window flushes through the same path.
   const closeRequested = between(".onCloseRequested(async (event) => {", ".then((cleanup) => {");
   assert.match(closeRequested, /await flushAutoSave\(\)/);

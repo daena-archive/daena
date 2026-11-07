@@ -481,3 +481,196 @@ fn structured_output_validation_is_strict_and_bounded() {
     .is_err());
     assert!(validate_structured_output(&schema, &serde_json::json!({})).is_err());
 }
+
+fn prepared_test_source(label: &str) -> SourceRef {
+    SourceRef {
+        source_kind: "document".into(),
+        summary: None,
+        entity_id: Some(label.into()),
+        document_id: None,
+        canonical_path: None,
+        revision: "r1".into(),
+        content_hash: format!("hash-{label}"),
+        byte_start: None,
+        byte_end: None,
+        excerpt_hash: format!("excerpt-{label}"),
+    }
+}
+
+/// Starts a request on the injected loopback provider (which answers `Rewritten: <context>`) and waits for it.
+fn run_prepared_request(
+    selection: &str,
+    citations: Vec<SourceRef>,
+    prepare: Option<ContextPreparation>,
+) -> (String, Vec<SourceRef>) {
+    let runtime = Arc::new(Mutex::new(AiRuntime::with_provider(Arc::new(
+        FakeLoopbackProvider,
+    ))));
+    let request_id = start_ai_request_prepared(
+        None,
+        runtime.clone(),
+        AiCaller::trusted_shell("trusted-shell", "/project"),
+        "http://127.0.0.1:1/v1".into(),
+        "model".into(),
+        "rewrite".into(),
+        selection.into(),
+        None,
+        Duration::from_secs(5),
+        citations,
+        false,
+        None,
+        prepare,
+    )
+    .unwrap();
+    let started = Instant::now();
+    let output = loop {
+        let events = poll_ai_events(&runtime, &request_id).unwrap();
+        if let Some(terminal) = events.iter().find(|event| is_terminal_phase(&event.phase)) {
+            assert_eq!(terminal.phase, "completed");
+            break terminal.output.clone().unwrap();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "request did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    (output, ai_request_citations(&runtime, &request_id).unwrap())
+}
+
+#[test]
+fn a_context_preparation_replaces_the_selection_and_citations_before_the_provider_runs() {
+    let (output, citations) = run_prepared_request(
+        "plain selection + lexical context",
+        vec![prepared_test_source("lexical")],
+        Some(Box::new(|| {
+            Some((
+                "plain selection + hybrid context".to_string(),
+                vec![prepared_test_source("hybrid")],
+            ))
+        })),
+    );
+    assert_eq!(output, "Rewritten: plain selection + hybrid context");
+    assert_eq!(citations, vec![prepared_test_source("hybrid")]);
+}
+
+#[test]
+fn a_context_preparation_that_yields_nothing_or_does_not_fit_keeps_the_original_context() {
+    let lexical = vec![prepared_test_source("lexical")];
+    let (output, citations) =
+        run_prepared_request("original", lexical.clone(), Some(Box::new(|| None)));
+    assert_eq!(output, "Rewritten: original");
+    assert_eq!(citations, lexical);
+
+    let oversized = "x".repeat(DEFAULT_LIMITS.max_input_bytes);
+    let (output, citations) = run_prepared_request(
+        "original",
+        lexical.clone(),
+        Some(Box::new(move || {
+            Some((oversized, vec![prepared_test_source("too-big")]))
+        })),
+    );
+    assert_eq!(
+        output, "Rewritten: original",
+        "a context that does not fit is dropped"
+    );
+    assert_eq!(citations, lexical, "and its citations with it");
+
+    let (output, citations) = run_prepared_request("original", lexical.clone(), None);
+    assert_eq!(output, "Rewritten: original");
+    assert_eq!(citations, lexical);
+}
+
+fn semantic_test_provider(embedding_available: bool) -> ResolvedAiProvider {
+    ResolvedAiProvider {
+        provider_id: "test".into(),
+        // Nothing listens here: a test that reached the embedding call would fail rather than hang.
+        endpoint: "http://127.0.0.1:1/v1".into(),
+        model: "model".into(),
+        embedding_model: "embed".into(),
+        remote: false,
+        api_key: None,
+        embedding_available,
+        capability_identity: String::new(),
+    }
+}
+
+fn related_policy(query: Option<&str>) -> AiRetrievalPolicyPayload {
+    AiRetrievalPolicyPayload {
+        mode: AiRetrievalMode::Related,
+        query: query.map(str::to_string),
+        seed_ids: vec!["entity".into()],
+        allowed_source_kinds: Vec::new(),
+        relationship_depth: 2,
+        passage_count: 8,
+        include_shared_fields: true,
+    }
+}
+
+#[test]
+fn semantic_retrieval_is_deferred_only_when_the_policy_and_provider_can_use_it() {
+    let core = crate::new_shared_core();
+    let runtime = Arc::new(Mutex::new(AiRuntime::default()));
+    let caller = AiCaller::authorized_plugin(
+        "daena.writing",
+        "/project",
+        vec!["document.read".into()],
+        vec!["project:/project".into()],
+        1,
+        "pending",
+    );
+    let prepare = |query: Option<&str>, embedding: bool| {
+        hybrid_context_preparation(
+            core.clone(),
+            runtime.clone(),
+            caller.clone(),
+            related_policy(query),
+            semantic_test_provider(embedding),
+            "selection".into(),
+        )
+    };
+    assert!(prepare(None, true).is_none(), "no query, nothing to embed");
+    assert!(
+        prepare(Some("  "), true).is_none(),
+        "a blank query is no query"
+    );
+    assert!(
+        prepare(Some("query"), false).is_none(),
+        "no embedding model"
+    );
+    // With a query and an embedding model the step exists, but without a project it falls back to lexical.
+    let step = prepare(Some("query"), true).expect("deferred");
+    assert!(step().is_none());
+}
+
+#[test]
+fn semantic_passages_need_an_index_and_never_reach_the_network_without_one() {
+    let runtime = Arc::new(Mutex::new(AiRuntime::default()));
+    let sources = || {
+        RetrievalSourceIds::from([(
+            "doc".to_string(),
+            RetrievalSource {
+                entity_id: Some("entity".into()),
+                canonical_path: None,
+                summary: None,
+            },
+        )])
+    };
+    for (embedding, sources) in [
+        (false, sources()),
+        (true, RetrievalSourceIds::new()),
+        // The provider is fine, but this runtime has no index; the endpoint would refuse the connection.
+        (true, sources()),
+    ] {
+        let passages = semantic_retrieval_passages_blocking(
+            &runtime,
+            semantic_test_provider(embedding),
+            "query".into(),
+            sources,
+            Vec::new(),
+            4,
+        )
+        .unwrap();
+        assert!(passages.is_empty());
+    }
+}

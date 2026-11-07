@@ -24,6 +24,12 @@ export type WritingConflictAction = (typeof WRITING_CONFLICT_ACTIONS)[number];
 export const MAX_WRITING_ID_LENGTH = 128;
 /** Draft text up to this many UTF-8 bytes travels inline in a state event (events are capped at 256 KiB). */
 export const WRITING_DRAFT_INLINE_LIMIT_BYTES = 128 * 1024;
+/**
+ * Largest broker response the webview accepts. The SDK's default is 256 KiB, which a long manuscript's
+ * `document.list` answer passes (about 40,000 words). Drafts can be 32 MiB (`text.transfer`); JSON escaping can
+ * roughly double that, so this leaves room for the largest document the webview can send back.
+ */
+export const WRITING_RPC_MAX_RESPONSE_BYTES = 96 * 1024 * 1024;
 const MAX_HREF_LENGTH = 4096;
 const MAX_TITLE_LENGTH = 512;
 
@@ -114,14 +120,69 @@ export type WritingHostMessage =
   | { type: "writing.conflict"; entityId: string; message: string; canOverwrite: boolean }
   | { type: "writing.save-error"; entityId: string; message: string }
   | { type: "writing.editable"; editable: boolean }
-  | { type: "writing.ai-state"; enabled: boolean }
+  /** The project's AI state: whether AI is on, the provider's name and the editor prompt templates. */
+  | { type: "writing.ai-state"; enabled: boolean; providerName: string; templates: WritingAiTemplate[] }
   /** The shell turns the webview's full screen off (selection change, navigation, Escape in the shell). */
   | { type: "writing.fullscreen"; on: boolean }
   /** The entry was renamed; the header updates without a reload, so the editor keeps its text and focus. */
   | { type: "writing.title"; entityId: string; title: string };
 
+/**
+ * An editor prompt template, as the shell sends it in `writing.ai-state`: the shell's merged templates, without
+ * the git and image ones. Disabled templates are kept (`enabled: false`), because the editor falls back to its
+ * built-in list when it gets none.
+ */
+export interface WritingAiTemplate {
+  id: string;
+  label: string;
+  instruction: string;
+  requiresSelection: boolean;
+  enabled: boolean;
+  kind: "editor";
+}
+
+export const MAX_WRITING_AI_TEMPLATES = 64;
+export const MAX_WRITING_AI_LABEL_LENGTH = 200;
+export const MAX_WRITING_AI_PROVIDER_NAME_LENGTH = 200;
+/** Longest instruction a template may carry; a host message is capped at 64 KiB in all. */
+export const MAX_WRITING_AI_INSTRUCTION_LENGTH = 60 * 1024;
 const MAX_PLACEHOLDER_LENGTH = 200;
 const MAX_CONFLICT_MESSAGE_LENGTH = 2000;
+
+/** Validates one prompt template of `writing.ai-state`. Anything malformed returns null. */
+export function parseWritingAiTemplate(value: unknown): WritingAiTemplate | null {
+  if (!isRecord(value)) return null;
+  const id = boundedId(value.id);
+  if (id === null || value.kind !== "editor") return null;
+  if (typeof value.label !== "string" || value.label.length === 0) return null;
+  if (value.label.length > MAX_WRITING_AI_LABEL_LENGTH) return null;
+  if (typeof value.instruction !== "string" || value.instruction.length > MAX_WRITING_AI_INSTRUCTION_LENGTH)
+    return null;
+  if (value.requiresSelection !== undefined && typeof value.requiresSelection !== "boolean") return null;
+  if (value.enabled !== undefined && typeof value.enabled !== "boolean") return null;
+  return {
+    id,
+    label: value.label,
+    instruction: value.instruction,
+    requiresSelection: value.requiresSelection ?? false,
+    enabled: value.enabled ?? true,
+    kind: "editor",
+  };
+}
+
+function parseWritingAiTemplates(value: unknown): WritingAiTemplate[] | null {
+  if (!Array.isArray(value) || value.length > MAX_WRITING_AI_TEMPLATES) return null;
+  const templates: WritingAiTemplate[] = [];
+  const ids = new Set<string>();
+  for (const item of value) {
+    const template = parseWritingAiTemplate(item);
+    // One bad template rejects the message; so does a repeated id, which would make the lookup ambiguous.
+    if (template === null || ids.has(template.id)) return null;
+    ids.add(template.id);
+    templates.push(template);
+  }
+  return templates;
+}
 
 /**
  * Validates a host message. `token` and `revision` are required (an entity with no document yet has the empty
@@ -176,8 +237,17 @@ export function parseWritingHostMessage(value: unknown): WritingHostMessage | nu
     }
     case "writing.editable":
       return typeof value.editable === "boolean" ? { type: "writing.editable", editable: value.editable } : null;
-    case "writing.ai-state":
-      return typeof value.enabled === "boolean" ? { type: "writing.ai-state", enabled: value.enabled } : null;
+    case "writing.ai-state": {
+      if (typeof value.enabled !== "boolean" || typeof value.providerName !== "string") return null;
+      const templates = parseWritingAiTemplates(value.templates);
+      if (templates === null) return null;
+      return {
+        type: "writing.ai-state",
+        enabled: value.enabled,
+        providerName: value.providerName.slice(0, MAX_WRITING_AI_PROVIDER_NAME_LENGTH),
+        templates,
+      };
+    }
     case "writing.fullscreen":
       return typeof value.on === "boolean" ? { type: "writing.fullscreen", on: value.on } : null;
     case "writing.title": {

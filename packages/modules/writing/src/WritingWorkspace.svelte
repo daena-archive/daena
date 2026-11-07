@@ -2,8 +2,18 @@
 import { onMount } from "svelte";
 import RichTextEditor from "../../../../src/lib/editor/RichTextEditor.svelte";
 import MarkdownArticle from "../../../../src/lib/markdown/MarkdownArticle.svelte";
+import { aiActionRequest, instructionFor } from "../../../../src/lib/ai/promptTemplates.ts";
+import { validateAiProposal } from "../../../../src/lib/ai/proposal.ts";
 import { normalizeDocument } from "../../../../src/lib/markdown/normalize.ts";
 import { defaultEditorHost } from "../../../../src/lib/editor/host.ts";
+import AiRewriteDialog from "./AiRewriteDialog.svelte";
+import {
+  WRITING_AI_GENERATE_POSITION_MESSAGE,
+  WRITING_AI_REWRITE_POSITION_MESSAGE,
+  WRITING_AI_STALE_MESSAGE,
+  aiAcceptGuard,
+  type WritingAiMode,
+} from "./ai-flow.ts";
 import { createDraftSync } from "./draft-sync.ts";
 import {
   entityIdsInMarkdown,
@@ -14,6 +24,7 @@ import {
 import {
   isEditableKeyTarget,
   writingShortcutForKey,
+  type WritingAiTemplate,
   type WritingConflictAction,
   type WritingHostMessage,
   type WritingMode,
@@ -24,7 +35,7 @@ import {
  * The Writing editor. The shell selects the entry and posts `writing.load`; this component stays mounted
  * across loads. It shows the entry with the shared rich-text editor and hands every change to the shell as a
  * draft. It never saves: the shell does, and answers with `writing.saved`, `writing.conflict` or
- * `writing.save-error`.
+ * `writing.save-error`. The AI rewrite and generate flow runs here, through the broker (see AiRewriteDialog).
  */
 let {
   rpc,
@@ -57,8 +68,32 @@ let saveError = $state("");
 let pending = $state(false);
 let awaitingSave = $state(false);
 let savedNote = $state(false);
-let editorRef = $state<{ flushPendingChanges: () => void } | null>(null);
+let editorRef = $state<{
+  flushPendingChanges: () => void;
+  insertAiTextAtRequest: (value: string) => string | null;
+  replaceAiTextWithMarkdown: (value: string) => string | null;
+} | null>(null);
 let loadSeq = 0;
+/** The project's AI state, as the shell last posted it (`writing.ai-state`). AI is off until it arrives. */
+let aiState = $state<{ enabled: boolean; providerName: string; templates: WritingAiTemplate[] }>({
+  enabled: false,
+  providerName: "",
+  templates: [],
+});
+/** The open AI dialog and what it was opened for. Any new load of an entry closes it. */
+type AiDialog = {
+  mode: WritingAiMode;
+  instruction: string;
+  selectionMarkdown: string;
+  selectionPlain: string;
+  generationContext: string;
+  entityId: string;
+  entityName: string;
+  token: string;
+};
+let aiDialog = $state<AiDialog | null>(null);
+/** The entry, load and text the current AI run started against; a proposal is applied only if all still hold. */
+let aiSnapshot: { entityId: string; token: string; markdown: string } | null = null;
 
 const sync = createDraftSync({
   publish: (payload) => bridge.publish(payload),
@@ -75,11 +110,13 @@ const sync = createDraftSync({
   },
 });
 
-const editable = $derived(shellEditable && !loading && !conflict && view !== null);
+const editable = $derived(shellEditable && !loading && !conflict && view !== null && aiDialog === null);
 const statusLabel = $derived(pending ? "Unsaved changes" : awaitingSave ? "Saving…" : savedNote ? "Saved" : "");
 
 function startLoad(message: Extract<WritingHostMessage, { type: "writing.load" }>) {
   const seq = ++loadSeq;
+  // A new load replaces the entry or its text, so a proposal made for the old one no longer fits.
+  closeAiDialog();
   // Whatever the shell had not received is the shell's to discard or have flushed first.
   sync.reset();
   awaitingSave = false;
@@ -153,6 +190,71 @@ function setMode(next: WritingMode) {
   if (next === "read" && view) void resolveMentions(loadSeq, view.markdown);
 }
 
+function closeAiDialog() {
+  aiDialog = null;
+  aiSnapshot = null;
+}
+
+/** The editor's AI menu: opens the dialog for the chosen template, with the selection or cursor context it sent. */
+function openAiAction(action: string, markdown: string, plainText: string, context: string) {
+  if (!aiState.enabled || !view || aiDialog) return;
+  const request = aiActionRequest(aiState.templates, action, markdown, plainText, context);
+  if (!request) return;
+  aiDialog = {
+    ...request,
+    instruction: instructionFor(aiState.templates, action),
+    entityId: view.entityId,
+    entityName: view.title,
+    token: view.token,
+  };
+}
+
+/**
+ * Before a run: the editor's pending changes reach the shell now, not after the idle pause, and the text they
+ * make is what the run starts against. Resolves to that text, or null when the dialog or the entry moved on.
+ */
+async function prepareAiRun(): Promise<string | null> {
+  const dialog = aiDialog;
+  if (!dialog || !view || view.entityId !== dialog.entityId || view.token !== dialog.token) return null;
+  editorRef?.flushPendingChanges();
+  await sync.publishNow();
+  if (aiDialog !== dialog || !view || view.token !== dialog.token) return null;
+  // The shell's own path stops when it cannot save first; a draft the shell did not get is still waiting here.
+  if (sync.hasUnsent()) throw new Error("Your latest changes could not be sent to be saved. Try again in a moment.");
+  aiSnapshot = { entityId: view.entityId, token: view.token, markdown: view.markdown };
+  return view.markdown;
+}
+
+/**
+ * Applies an accepted proposal to the editor, then hands the new text to the shell at once. Resolves to the
+ * message to show when it cannot be applied, else null; the dialog closes.
+ */
+async function acceptAiProposal(proposal: string): Promise<string | null> {
+  const dialog = aiDialog;
+  const snapshot = aiSnapshot;
+  if (!dialog || !snapshot || !view) return WRITING_AI_STALE_MESSAGE;
+  editorRef?.flushPendingChanges();
+  const stale = aiAcceptGuard({
+    source: snapshot,
+    current: { entityId: view.entityId, token: view.token, markdown: view.markdown },
+  });
+  if (stale) return stale;
+  const invalid = validateAiProposal(proposal);
+  if (invalid) return invalid;
+  const next =
+    dialog.mode === "generate"
+      ? editorRef?.insertAiTextAtRequest(proposal)
+      : editorRef?.replaceAiTextWithMarkdown(proposal);
+  if (next === null || next === undefined) {
+    return dialog.mode === "generate" ? WRITING_AI_GENERATE_POSITION_MESSAGE : WRITING_AI_REWRITE_POSITION_MESSAGE;
+  }
+  // The replace path does not report its change through the editor, so the text is recorded here.
+  handleChange(view, next);
+  closeAiDialog();
+  await sync.publishNow();
+  return null;
+}
+
 function chooseConflict(action: WritingConflictAction) {
   if (!view) return;
   void bridge.publish({ kind: "conflict-action", entityId: view.entityId, token: view.token, action });
@@ -217,7 +319,7 @@ function handleHostMessage(message: WritingHostMessage) {
       saveError = message.message;
       return;
     case "writing.ai-state":
-      // The AI flow arrives in a later slice.
+      aiState = { enabled: message.enabled, providerName: message.providerName, templates: message.templates };
       return;
     case "writing.fullscreen":
       // The shell ends the full screen (selection change, navigation, Escape in the shell). Nothing is sent back.
@@ -324,6 +426,9 @@ onMount(() => {
               {editable}
               {fullscreen}
               placeholder={source.placeholder}
+              aiEnabled={aiState.enabled}
+              aiTemplates={aiState.templates}
+              onAiRequest={openAiAction}
               onChange={(markdown) => handleChange(source, markdown)}
               onFullscreenChange={setFullscreen}
               onSaveRequest={publishNow} />
@@ -341,6 +446,21 @@ onMount(() => {
       </div>
     {/if}
   </div>
+  {#if aiDialog}
+    <AiRewriteDialog
+      {rpc}
+      providerName={aiState.providerName}
+      mode={aiDialog.mode}
+      instruction={aiDialog.instruction}
+      selectionMarkdown={aiDialog.selectionMarkdown}
+      selectionPlain={aiDialog.selectionPlain}
+      generationContext={aiDialog.generationContext}
+      entityId={aiDialog.entityId}
+      entityName={aiDialog.entityName}
+      prepare={prepareAiRun}
+      accept={acceptAiProposal}
+      onClose={closeAiDialog} />
+  {/if}
 </section>
 
 <style>

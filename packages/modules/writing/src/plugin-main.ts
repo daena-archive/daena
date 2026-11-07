@@ -18,6 +18,7 @@ import {
   parseWritingHostMessage,
   parseWritingMountParams,
   pickWritingManifest,
+  WRITING_RPC_MAX_RESPONSE_BYTES,
   type WritingWorkspaceBridge,
 } from "./plugin-protocol.ts";
 
@@ -26,7 +27,8 @@ const bundledManifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#writing-root");
 
 async function start(target: HTMLElement): Promise<void> {
-  const transport = createBrowserPluginRpcTransport();
+  // Long documents arrive in one `document.list` answer, past the SDK's 256 KiB default.
+  const transport = createBrowserPluginRpcTransport({ maxResponseBytes: WRITING_RPC_MAX_RESPONSE_BYTES });
   const client = createPluginRpcClient(transport);
   const bootstrap = await client.bootstrap();
   applyPluginAppearance(bootstrap.appearance, document.documentElement);

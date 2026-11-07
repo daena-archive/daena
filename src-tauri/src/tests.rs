@@ -1186,6 +1186,107 @@ fn broker_retrieval_attaches_citations_until_inspected() {
 }
 
 #[test]
+fn broker_writing_rewrite_policy_passes_the_capability_checks_and_cites_related_text() {
+    // The policy the Writing webview sends: the shell's `direct_retrieval_context` request for an entity.
+    let core = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_memory(trusted_shell())
+        .unwrap();
+    let entity_id = {
+        let session = current_session(&core).unwrap();
+        let service = session.core.lock().unwrap();
+        let project = service.project(trusted_shell()).unwrap();
+        let entity = project
+            .create_entity(CreateEntity {
+                name: "Chapter one".into(),
+                entity_type: Some("daena.writing:manuscript".into()),
+            })
+            .unwrap();
+        let neighbour = project
+            .create_entity(CreateEntity {
+                name: "Harbour".into(),
+                entity_type: Some("place".into()),
+            })
+            .unwrap();
+        project
+            .save_document(SaveDocument {
+                entity_id: neighbour.id.clone(),
+                body: "The harbour freezes every winter.".into(),
+                format: Some("markdown".into()),
+            })
+            .unwrap();
+        project
+            .create_relationship(RelationshipInput {
+                source_id: entity.id.clone(),
+                target_id: neighbour.id.clone(),
+                relationship_type: "set_in".into(),
+                metadata: None,
+            })
+            .unwrap();
+        entity.id
+    };
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        ai::FakeLoopbackProvider,
+    ))));
+    let plugins = ai_test_host();
+    let mut context = ai_test_context(runtime.clone());
+    context.core = Some(core);
+    // The Writing manifest's read grants, which the AI caller carries.
+    context.caller.capabilities = [
+        "document.read",
+        "relationship.read",
+        "field.read:self",
+        "search.query",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let started = dispatch_host_rpc(
+        &plugins,
+        "daena.lore",
+        "project",
+        "ai.request.start",
+        serde_json::json!({
+            "operation": "generate_text",
+            "taskId": "writing-rewrite",
+            "userInstruction": "Rewrite this to be more vivid.",
+            "immediateContext": {"selection": "The sea was cold."},
+            "retrievalPolicy": {
+                "mode": "related",
+                "query": "Chapter one Rewrite this harbour",
+                "seedIds": [entity_id],
+                "allowedSourceKinds": [],
+                "relationshipDepth": 2,
+                "passageCount": 8,
+                "includeSharedFields": true
+            }
+        }),
+        context,
+    )
+    .unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "completed"
+    );
+    let output = ai::ai_request_result(&runtime, request_id).unwrap();
+    assert!(output.contains("The sea was cold."), "{output}");
+    assert!(output.contains("[RETRIEVED_CONTEXT]"), "{output}");
+    assert!(
+        output.contains("The harbour freezes every winter."),
+        "{output}"
+    );
+    let citations = ai::ai_request_citations(&runtime, request_id).unwrap();
+    assert!(citations
+        .iter()
+        .any(|source| source.source_kind == "document"));
+}
+
+#[test]
 fn broker_structured_retrieval_passes_context_to_provider() {
     let core = new_shared_core();
     current_session(&core)

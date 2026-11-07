@@ -476,74 +476,104 @@ pub(super) async fn semantic_retrieval_passages(
     allowed_source_kinds: Vec<String>,
     limit: usize,
 ) -> Result<Vec<RetrievedPassage>, String> {
-    if query.trim().is_empty() || !provider.embedding_available || allowed_source_ids.is_empty() {
-        return Ok(Vec::new());
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        let runtime = runtime
-            .lock()
-            .map_err(|_| "AI runtime lock poisoned".to_string())?;
-        let Some(index) = runtime.index.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let embedding_model = provider.embedding_model_or_model();
-        let embedding_provider = LmStudioEmbeddingProvider {
-            endpoint: provider.endpoint,
-            model: embedding_model,
-            remote: provider.remote,
-            api_key: provider.api_key,
-        };
-        let query_vector = embedding_provider
-            .embed(&[query])
-            .map_err(|error| error.to_string())?
-            .pop()
-            .ok_or_else(|| "embedding provider returned no query vector".to_string())?;
-        let semantic = index
-            .search(&query_vector, limit)
-            .map_err(|error| error.to_string())?;
-        let chunk_ids = semantic
-            .iter()
-            .map(|matched| matched.chunk_id.clone())
-            .collect::<Vec<_>>();
-        let chunks = index
-            .chunks_for_ids(&chunk_ids)
-            .map_err(|error| error.to_string())?;
-        let allowed_kind = |kind: &str| {
-            allowed_source_kinds.is_empty()
-                || allowed_source_kinds.iter().any(|allowed| allowed == kind)
-        };
-        Ok(semantic
-            .into_iter()
-            .enumerate()
-            .filter_map(|(rank, matched)| {
-                let chunk = chunks.iter().find(|chunk| chunk.id == matched.chunk_id)?;
-                let source_metadata = allowed_source_ids.get(&chunk.source.source_id)?;
-                if !allowed_kind(&chunk.source.source_kind) {
-                    return None;
-                }
-                let source = SourceRef {
-                    source_kind: chunk.source.source_kind.clone(),
-                    summary: source_metadata.summary.clone(),
-                    entity_id: source_metadata.entity_id.clone(),
-                    document_id: (chunk.source.source_kind == "document")
-                        .then(|| chunk.source.source_id.clone()),
-                    canonical_path: source_metadata.canonical_path.clone(),
-                    revision: chunk.source.revision.clone(),
-                    content_hash: chunk.source.source_hash.clone(),
-                    byte_start: Some(chunk.byte_start),
-                    byte_end: Some(chunk.byte_end),
-                    excerpt_hash: chunk.text_hash.clone(),
-                };
-                Some(RetrievedPassage {
-                    source,
-                    text: chunk.text.clone(),
-                    lexical_rank: rank as u32,
-                })
-            })
-            .collect())
+        semantic_retrieval_passages_blocking(
+            &runtime,
+            provider,
+            query,
+            allowed_source_ids,
+            allowed_source_kinds,
+            limit,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// Embeds `query` with the provider and looks it up in the project's index. It blocks on the provider's HTTP
+/// call, so it belongs on a blocking worker, never on the main thread or an async-runtime worker. The AI runtime
+/// lock is held only to read the index, not across the embedding call: `ai.request.poll` and every request's
+/// event recording take that lock, and the plugin broker serves `poll` on the main thread.
+pub(super) fn semantic_retrieval_passages_blocking(
+    runtime: &SharedAiRuntime,
+    provider: ResolvedAiProvider,
+    query: String,
+    allowed_source_ids: RetrievalSourceIds,
+    allowed_source_kinds: Vec<String>,
+    limit: usize,
+) -> Result<Vec<RetrievedPassage>, String> {
+    if query.trim().is_empty() || !provider.embedding_available || allowed_source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let has_index = runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?
+        .index
+        .is_some();
+    if !has_index {
+        return Ok(Vec::new());
+    }
+    let embedding_model = provider.embedding_model_or_model();
+    let embedding_provider = LmStudioEmbeddingProvider {
+        endpoint: provider.endpoint,
+        model: embedding_model,
+        remote: provider.remote,
+        api_key: provider.api_key,
+    };
+    let query_vector = embedding_provider
+        .embed(&[query])
+        .map_err(|error| error.to_string())?
+        .pop()
+        .ok_or_else(|| "embedding provider returned no query vector".to_string())?;
+    let runtime = runtime
+        .lock()
+        .map_err(|_| "AI runtime lock poisoned".to_string())?;
+    let Some(index) = runtime.index.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let semantic = index
+        .search(&query_vector, limit)
+        .map_err(|error| error.to_string())?;
+    let chunk_ids = semantic
+        .iter()
+        .map(|matched| matched.chunk_id.clone())
+        .collect::<Vec<_>>();
+    let chunks = index
+        .chunks_for_ids(&chunk_ids)
+        .map_err(|error| error.to_string())?;
+    let allowed_kind = |kind: &str| {
+        allowed_source_kinds.is_empty()
+            || allowed_source_kinds.iter().any(|allowed| allowed == kind)
+    };
+    Ok(semantic
+        .into_iter()
+        .enumerate()
+        .filter_map(|(rank, matched)| {
+            let chunk = chunks.iter().find(|chunk| chunk.id == matched.chunk_id)?;
+            let source_metadata = allowed_source_ids.get(&chunk.source.source_id)?;
+            if !allowed_kind(&chunk.source.source_kind) {
+                return None;
+            }
+            let source = SourceRef {
+                source_kind: chunk.source.source_kind.clone(),
+                summary: source_metadata.summary.clone(),
+                entity_id: source_metadata.entity_id.clone(),
+                document_id: (chunk.source.source_kind == "document")
+                    .then(|| chunk.source.source_id.clone()),
+                canonical_path: source_metadata.canonical_path.clone(),
+                revision: chunk.source.revision.clone(),
+                content_hash: chunk.source.source_hash.clone(),
+                byte_start: Some(chunk.byte_start),
+                byte_end: Some(chunk.byte_end),
+                excerpt_hash: chunk.text_hash.clone(),
+            };
+            Some(RetrievedPassage {
+                source,
+                text: chunk.text.clone(),
+                lexical_rank: rank as u32,
+            })
+        })
+        .collect())
 }
 
 pub(super) async fn direct_retrieval_context(
@@ -598,6 +628,69 @@ pub(super) async fn direct_retrieval_context(
             .map_err(CoreError::Conflict)
     })
     .await
+}
+
+/// Builds the worker-side step that lifts a plugin request's lexical context to the hybrid one the shell's own
+/// requests get (`direct_retrieval_context`): it adds the semantic passages for the policy's query. Returns `None`
+/// when there is nothing to add (no query, or the provider has no embedding model), so the request keeps its
+/// lexical context and no work is deferred. `selection` is the user's text without any retrieved context; the
+/// step returns it with the hybrid context appended.
+///
+/// The step runs on the request's worker after the `started` event, never in the broker call: plugin RPCs are
+/// served from the webview's custom-protocol handler, which runs on the main thread, and embedding is a network
+/// call. It never holds the project lease across that call, and every failure (no index, embedding error, project
+/// switched) yields `None`, which leaves the lexical context in place, as `direct_retrieval_context` does with
+/// `unwrap_or_default`.
+pub fn hybrid_context_preparation(
+    core: crate::SharedCore,
+    runtime: SharedAiRuntime,
+    caller: AiCaller,
+    policy: AiRetrievalPolicyPayload,
+    provider: ResolvedAiProvider,
+    selection: String,
+) -> Option<ContextPreparation> {
+    let query = policy
+        .query
+        .clone()
+        .filter(|query| !query.trim().is_empty())?;
+    if !provider.embedding_available {
+        return None;
+    }
+    Some(Box::new(move || {
+        let allowed_source_ids = {
+            let session = crate::current_session(&core).ok()?;
+            let guard = session.core.lock().ok()?;
+            if guard.info()?.root != caller.project_id {
+                return None;
+            }
+            retrieval_source_ids(guard.project(crate::trusted_shell()).ok()?, &policy).ok()?
+        };
+        let semantic = semantic_retrieval_passages_blocking(
+            &runtime,
+            provider,
+            query,
+            allowed_source_ids,
+            policy.allowed_source_kinds.clone(),
+            4,
+        )
+        .unwrap_or_default();
+        if semantic.is_empty() {
+            return None;
+        }
+        let session = crate::current_session(&core).ok()?;
+        let guard = session.core.lock().ok()?;
+        if guard.info()?.root != caller.project_id {
+            return None;
+        }
+        let (context, citations) = build_retrieval_context_with_semantic(
+            guard.project(crate::trusted_shell()).ok()?,
+            &caller,
+            &policy,
+            &semantic,
+        )
+        .ok()?;
+        Some((append_retrieved_context(selection, context), citations))
+    }))
 }
 
 pub(super) fn append_retrieved_context(selection: String, retrieved_context: String) -> String {

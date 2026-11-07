@@ -18,6 +18,33 @@ import {
 } from "../packages/modules/writing/src/plugin-protocol.ts";
 import { entityIdsInMarkdown, loadWritingDocument } from "../packages/modules/writing/src/document-source.ts";
 import {
+  MAX_WRITING_AI_LABEL_LENGTH,
+  MAX_WRITING_AI_PROVIDER_NAME_LENGTH,
+  MAX_WRITING_AI_TEMPLATES,
+} from "../packages/modules/writing/src/plugin-protocol.ts";
+import {
+  WRITING_AI_PASSAGE_COUNT,
+  WRITING_AI_QUERY_LIMIT,
+  WRITING_AI_RELATIONSHIP_DEPTH,
+  WRITING_AI_STALE_MESSAGE,
+  aiAcceptGuard,
+  aiCanStart,
+  aiSourceText,
+  applyAiEvent,
+  applyAiEvents,
+  buildAiStartRequest,
+  initialAiRunState,
+  retrievalPolicyFor,
+  retrievalQueryFor,
+} from "../packages/modules/writing/src/ai-flow.ts";
+import {
+  WRITING_AI_MAX_POLL_FAILURES,
+  WRITING_AI_POLL_MS,
+  startAiRun,
+} from "../packages/modules/writing/src/ai-run.ts";
+import { validateAiProposal } from "../src/lib/ai/proposal.ts";
+import { aiActionRequest, instructionFor, mergePromptTemplates } from "../src/lib/ai/promptTemplates.ts";
+import {
   WRITING_DRAFT_IDLE_MS,
   WRITING_DRAFT_INLINE_JSON_LIMIT_BYTES,
   WRITING_DRAFT_RETRY_MS,
@@ -27,6 +54,7 @@ import {
 import {
   parseWritingStateEvent,
   writingConflictMessage,
+  writingAiStateMessage,
   writingFullscreenMessage,
   writingLoadMessage,
   writingTitleMessage,
@@ -144,11 +172,122 @@ assert.deepEqual(parseWritingHostMessage({ type: "writing.editable", editable: f
   editable: false,
 });
 assert.equal(parseWritingHostMessage({ type: "writing.editable", editable: 0 }), null);
-assert.deepEqual(parseWritingHostMessage({ type: "writing.ai-state", enabled: true }), {
-  type: "writing.ai-state",
-  enabled: true,
-});
-assert.equal(parseWritingHostMessage({ type: "writing.ai-state" }), null);
+// AI state: whether AI is on, the provider's name and the editor templates; the whole message is validated.
+{
+  const template = (overrides = {}) => ({
+    id: "rewrite",
+    label: "Rewrite selection",
+    instruction: "Rewrite this.",
+    requiresSelection: true,
+    enabled: true,
+    kind: "editor",
+    ...overrides,
+  });
+  const state = (overrides = {}) => ({
+    type: "writing.ai-state",
+    enabled: true,
+    providerName: "LM Studio",
+    templates: [template()],
+    ...overrides,
+  });
+  assert.deepEqual(parseWritingHostMessage(state()), state());
+  assert.deepEqual(parseWritingHostMessage(state({ enabled: false, providerName: "", templates: [] })), {
+    type: "writing.ai-state",
+    enabled: false,
+    providerName: "",
+    templates: [],
+  });
+  // `requiresSelection` and `enabled` may be left out; they default to false and true.
+  assert.deepEqual(
+    parseWritingHostMessage(state({ templates: [{ id: "custom", label: "Custom", instruction: "", kind: "editor" }] }))
+      .templates,
+    [{ id: "custom", label: "Custom", instruction: "", requiresSelection: false, enabled: true, kind: "editor" }],
+  );
+  assert.equal(
+    parseWritingHostMessage(state({ providerName: "p".repeat(MAX_WRITING_AI_PROVIDER_NAME_LENGTH + 50) })).providerName
+      .length,
+    MAX_WRITING_AI_PROVIDER_NAME_LENGTH,
+    "the provider name is cut, like a title",
+  );
+  // Rejections: the old shape, wrong types, and any malformed template.
+  assert.equal(parseWritingHostMessage({ type: "writing.ai-state" }), null);
+  assert.equal(parseWritingHostMessage({ type: "writing.ai-state", enabled: true }), null, "the old shape is gone");
+  assert.equal(parseWritingHostMessage(state({ enabled: "yes" })), null);
+  assert.equal(parseWritingHostMessage(state({ enabled: undefined })), null);
+  assert.equal(parseWritingHostMessage(state({ providerName: undefined })), null);
+  assert.equal(parseWritingHostMessage(state({ providerName: 7 })), null);
+  assert.equal(parseWritingHostMessage(state({ templates: undefined })), null);
+  assert.equal(parseWritingHostMessage(state({ templates: "rewrite" })), null);
+  assert.equal(parseWritingHostMessage(state({ templates: { rewrite: template() } })), null);
+  for (const bad of [
+    null,
+    "rewrite",
+    [],
+    template({ id: "" }),
+    template({ id: 3 }),
+    template({ id: "x".repeat(129) }),
+    template({ label: "" }),
+    template({ label: 3 }),
+    template({ label: "l".repeat(MAX_WRITING_AI_LABEL_LENGTH + 1) }),
+    template({ instruction: undefined }),
+    template({ instruction: 3 }),
+    template({ instruction: "i".repeat(60 * 1024 + 1) }),
+    template({ requiresSelection: "yes" }),
+    template({ enabled: 1 }),
+    template({ kind: "git" }),
+    template({ kind: "image" }),
+    template({ kind: undefined }),
+  ]) {
+    assert.equal(
+      parseWritingHostMessage(state({ templates: [template({ id: "ok" }), bad] })),
+      null,
+      `one bad template rejects the message: ${JSON.stringify(bad)?.slice(0, 60)}`,
+    );
+  }
+  assert.equal(
+    parseWritingHostMessage(state({ templates: [template(), template({ label: "Again" })] })),
+    null,
+    "a repeated id is ambiguous",
+  );
+  const many = Array.from({ length: MAX_WRITING_AI_TEMPLATES + 1 }, (_, index) => template({ id: `t${index}` }));
+  assert.equal(parseWritingHostMessage(state({ templates: many })), null, "too many templates");
+  assert.notEqual(parseWritingHostMessage(state({ templates: many.slice(0, MAX_WRITING_AI_TEMPLATES) })), null);
+
+  // What the shell builds is what the webview accepts: the real merged templates, the git and image ones left out.
+  const merged = mergePromptTemplates({
+    templates: [
+      { id: "rewrite", label: "Rewrite", instruction: 'Rewrite it, "vividly".', enabled: false },
+      { id: "mine", label: "Mine", instruction: "Do mine.", kind: "editor", requiresSelection: true },
+    ],
+  });
+  const built = writingAiStateMessage({ enabled: true, providerName: "LM Studio", templates: merged });
+  assert.ok(merged.some((item) => item.kind === "git") && merged.some((item) => item.kind === "image"));
+  assert.ok(built.templates.every((item) => item.kind === "editor"));
+  assert.deepEqual(
+    built.templates.map((item) => item.id),
+    merged.filter((item) => item.kind === "editor").map((item) => item.id),
+  );
+  assert.deepEqual(Object.keys(built.templates[0]).sort(), [
+    "enabled",
+    "id",
+    "instruction",
+    "kind",
+    "label",
+    "requiresSelection",
+  ]);
+  const parsed = parseWritingHostMessage(JSON.parse(JSON.stringify(built)));
+  assert.deepEqual(parsed, built, "the builder and the parser agree");
+  assert.equal(parsed.templates.find((item) => item.id === "rewrite").enabled, false, "disabled ones stay");
+  // The dialog finds instructions in the received templates exactly as the shell does in its own.
+  assert.equal(
+    instructionFor(parsed.templates, "generate"),
+    instructionFor(merged, "generate"),
+    "the same instruction for an enabled template",
+  );
+  assert.equal(instructionFor(parsed.templates, "rewrite"), "", "and none for a disabled one");
+  assert.equal(instructionFor(parsed.templates, "mine"), "Do mine.");
+  assert.equal(instructionFor(parsed.templates, "git-message"), "", "git templates are not sent");
+}
 // Full screen is turned off by the shell (`on` is the state after the change) and titles arrive after a rename.
 assert.deepEqual(parseWritingHostMessage({ type: "writing.fullscreen", on: false }), {
   type: "writing.fullscreen",
@@ -643,7 +782,7 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
 // Entry wiring: the webview talks to the broker only, installs the shared broker editor host and reports ready.
 {
   const main = fs.readFileSync("packages/modules/writing/src/plugin-main.ts", "utf8");
-  assert.match(main, /createBrowserPluginRpcTransport\(\)/);
+  assert.match(main, /createBrowserPluginRpcTransport\(\{/, "the entry uses the browser transport");
   assert.match(
     main,
     /client\.call<ModuleManifest\[\]>\("schema\.list"/,
@@ -695,7 +834,11 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   // Forwarded shortcuts: the webview's own key listener maps keys with the shared rules, and prevents the default.
   assert.match(workspace, /window\.addEventListener\("keydown", handleShortcutKey\)/);
   assert.match(workspace, /writingShortcutForKey\(\{/);
-  assert.match(workspace, /editable: isEditableKeyTarget\(event\.target\)/, "history keys know when the caret is in a field");
+  assert.match(
+    workspace,
+    /editable: isEditableKeyTarget\(event\.target\)/,
+    "history keys know when the caret is in a field",
+  );
   assert.match(workspace, /kind: "shortcut", shortcut/);
   // A rename updates the title in place: replacing `view` would remount the editor, which is keyed on it.
   assert.match(workspace, /view\.title = message\.title/);
@@ -703,6 +846,571 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.doesNotMatch(workspace, /document\.save|documents\.save|entity\.update/, "the webview never saves");
   assert.doesNotMatch(main, /document\.save|documents\.save|entity\.update|field\.set/, "no write calls in the entry");
   assert.match(main, /transferText: \(text\) => transferText\(client, text\)/, "large drafts use the chunked hand-off");
+  assert.match(
+    main,
+    /createBrowserPluginRpcTransport\(\{ maxResponseBytes: WRITING_RPC_MAX_RESPONSE_BYTES \}\)/,
+    "long documents load: the response limit is raised past the SDK's 256 KiB default",
+  );
+
+  // AI: the editor's menu opens the webview's own dialog, which runs through the broker.
+  assert.match(workspace, /aiEnabled=\{aiState\.enabled\}/);
+  assert.match(workspace, /aiTemplates=\{aiState\.templates\}/);
+  assert.match(workspace, /onAiRequest=\{openAiAction\}/);
+  assert.match(workspace, /case "writing\.ai-state":[\s\S]*?aiState = \{ enabled: message\.enabled/);
+  assert.match(
+    workspace,
+    /shellEditable && !loading && !conflict && view !== null && aiDialog === null/,
+    "the editor is read-only while the dialog is open",
+  );
+  const startLoadSource = workspace.slice(
+    workspace.indexOf("function startLoad"),
+    workspace.indexOf("async function show("),
+  );
+  assert.match(startLoadSource, /closeAiDialog\(\);/, "a new load closes the dialog and so stops its request");
+  const prepare = workspace.slice(
+    workspace.indexOf("async function prepareAiRun"),
+    workspace.indexOf("async function acceptAiProposal"),
+  );
+  assert.match(prepare, /editorRef\?\.flushPendingChanges\(\);\s*await sync\.publishNow\(\);/, "drafts go out at once");
+  assert.doesNotMatch(prepare, /writing\.saved|awaitingSave/, "and the run does not wait for the save");
+  const acceptSource = workspace.slice(
+    workspace.indexOf("async function acceptAiProposal"),
+    workspace.indexOf("function chooseConflict"),
+  );
+  assert.ok(
+    acceptSource.indexOf("aiAcceptGuard(") < acceptSource.indexOf("validateAiProposal(") &&
+      acceptSource.indexOf("validateAiProposal(") < acceptSource.indexOf("insertAiTextAtRequest("),
+    "guard, then validation, then the editor",
+  );
+  assert.match(acceptSource, /replaceAiTextWithMarkdown\(proposal\)/);
+  assert.match(
+    acceptSource,
+    /handleChange\(view, next\);[\s\S]*await sync\.publishNow\(\);/,
+    "the new text goes out at once",
+  );
+
+  const dialog = fs.readFileSync("packages/modules/writing/src/AiRewriteDialog.svelte", "utf8");
+  for (const label of ["Generate rewrite", "Generate text", "Accept proposal", "Retry", "Discard", "Cancel"]) {
+    assert.ok(dialog.includes(label), `the dialog keeps the shell's "${label}" label`);
+  }
+  for (const title of ["Cancelling request…", "Rewriting selection…", "Review generated text", "Review rewrite"]) {
+    assert.ok(dialog.includes(title), `the dialog keeps the shell's "${title}" title`);
+  }
+  assert.match(dialog, /AiProposalPreview/, "the shared proposal preview");
+  assert.match(dialog, /event\.key !== "Escape"[\s\S]*?if \(!busy\) close\(\);/, "Escape closes unless a request runs");
+  assert.match(dialog, /onDestroy\(\(\) => active\?\.dispose\(\)\)/, "unmounting stops the request");
+  assert.match(dialog, /startAiRun\(/);
+  assert.doesNotMatch(dialog + workspace, /@tauri-apps|__TAURI|\blisten\(|ai-stream/, "no shell events in the webview");
+  for (const file of ["ai-flow.ts", "ai-run.ts"]) {
+    const source = fs.readFileSync(`packages/modules/writing/src/${file}`, "utf8");
+    assert.doesNotMatch(source, /@tauri-apps|\$lib\/project\/client|invoke\(/, `${file} is free of shell modules`);
+  }
+}
+
+// AI menu choices: shared by the shell and the webview, so Custom instruction can run with or without a selection.
+{
+  const templates = mergePromptTemplates();
+  const rewrite = (markdown, plain) => ({
+    mode: "rewrite",
+    selectionMarkdown: markdown,
+    selectionPlain: plain,
+    generationContext: "",
+  });
+  const generate = (context) => ({
+    mode: "generate",
+    selectionMarkdown: "",
+    selectionPlain: "",
+    generationContext: context,
+  });
+  assert.deepEqual(aiActionRequest(templates, "rewrite", "**A**", "A", "**A**"), rewrite("**A**", "A"));
+  assert.equal(aiActionRequest(templates, "rewrite", " ", "", "ctx"), null, "a selection template needs a selection");
+  assert.deepEqual(aiActionRequest(templates, "generate", "", "", "before\n[CURSOR]"), generate("before\n[CURSOR]"));
+  assert.deepEqual(
+    aiActionRequest(templates, "generate", "**A**", "A", "ctx"),
+    generate("ctx"),
+    "generate always writes at the cursor",
+  );
+  assert.deepEqual(
+    aiActionRequest(templates, "custom", "**A**", "A", "ctx"),
+    rewrite("**A**", "A"),
+    "Custom instruction rewrites the selection when there is one",
+  );
+  assert.deepEqual(
+    aiActionRequest(templates, "custom", "", "", "ctx"),
+    generate("ctx"),
+    "and writes at the cursor when there is none, so it can always start",
+  );
+  assert.equal(aiCanStart("generate", "", "Write a haiku."), true);
+  assert.deepEqual(aiActionRequest([{ id: "mine" }], "mine", "", "", "ctx"), generate("ctx"), "a user's own template");
+  assert.deepEqual(aiActionRequest([], "unknown", "x", "x", "ctx"), rewrite("x", "x"));
+  for (const source of [
+    fs.readFileSync("src/routes/+page.svelte", "utf8"),
+    fs.readFileSync("packages/modules/writing/src/WritingWorkspace.svelte", "utf8"),
+  ]) {
+    const open = source.slice(source.indexOf("function openAiAction"), source.indexOf("function openAiAction") + 600);
+    assert.match(
+      open,
+      /aiActionRequest\((aiPromptTemplates|aiState\.templates), action, markdown, plainText, context\)/,
+    );
+    assert.doesNotMatch(open, /action === "generate"/, "the mode comes from the shared rule");
+  }
+}
+
+// AI flow: what the webview asks the broker, mapped from the shell's own request.
+{
+  assert.equal(WRITING_AI_RELATIONSHIP_DEPTH, 2);
+  assert.equal(WRITING_AI_PASSAGE_COUNT, 8);
+  assert.equal(WRITING_AI_QUERY_LIMIT, 4000);
+
+  // The query is the shell's: entity name, instruction and plain selection, space-joined, empty parts dropped, cut.
+  assert.equal(
+    retrievalQueryFor({ entityName: "Chapter one", instruction: "Make it vivid.", selectionPlain: "The sea." }),
+    "Chapter one Make it vivid. The sea.",
+  );
+  assert.equal(
+    retrievalQueryFor({ entityName: "", instruction: "Write on.", selectionPlain: "" }),
+    "Write on.",
+    "a generate request has no selection",
+  );
+  assert.equal(retrievalQueryFor({ entityName: undefined, instruction: "", selectionPlain: "" }), "");
+  assert.equal(retrievalQueryFor({ entityName: "N", instruction: "i".repeat(5000), selectionPlain: "s" }).length, 4000);
+
+  // The policy is `direct_retrieval_context`'s: related to the entity, depth 2, eight passages, shared fields.
+  assert.deepEqual(retrievalPolicyFor("e1", "the query"), {
+    mode: "related",
+    query: "the query",
+    seedIds: ["e1"],
+    allowedSourceKinds: [],
+    relationshipDepth: 2,
+    passageCount: 8,
+    includeSharedFields: true,
+  });
+  assert.deepEqual(retrievalPolicyFor("e1", "   "), {
+    mode: "related",
+    seedIds: ["e1"],
+    allowedSourceKinds: [],
+    relationshipDepth: 2,
+    passageCount: 8,
+    includeSharedFields: true,
+  });
+  assert.deepEqual(retrievalPolicyFor(null, "only a query"), {
+    mode: "project",
+    query: "only a query",
+    seedIds: [],
+    allowedSourceKinds: [],
+    relationshipDepth: 0,
+    passageCount: 8,
+    includeSharedFields: true,
+  });
+  assert.equal(retrievalPolicyFor(null, ""), null, "no entity and no query means no retrieval");
+  assert.equal(retrievalPolicyFor("  ", " "), null);
+
+  // Source text: rewrite sends the selection as it is; generate prefers the cursor context, then the document.
+  const parts = {
+    selectionMarkdown: "**Selected**",
+    generationContext: "before\n[CURSOR]\nafter",
+    documentMarkdown: "Doc",
+  };
+  assert.equal(aiSourceText("rewrite", parts), "**Selected**");
+  assert.equal(aiSourceText("generate", parts), "before\n[CURSOR]\nafter");
+  assert.equal(aiSourceText("generate", { ...parts, generationContext: "  " }), "Doc");
+  assert.equal(aiSourceText("generate", { ...parts, generationContext: "", documentMarkdown: " \n" }), "[CURSOR]");
+
+  assert.equal(aiCanStart("rewrite", "text", "Do it"), true);
+  assert.equal(aiCanStart("rewrite", "  ", "Do it"), false, "a rewrite needs a selection");
+  assert.equal(aiCanStart("generate", "", "Do it"), true);
+  assert.equal(aiCanStart("generate", "", "  "), false, "every request needs an instruction");
+
+  const rewrite = buildAiStartRequest({
+    mode: "rewrite",
+    instruction: "Make it vivid.",
+    selectionMarkdown: "**The** sea.",
+    selectionPlain: "The sea.",
+    generationContext: "",
+    documentMarkdown: "Whole document",
+    entityId: "e1",
+    entityName: "Chapter one",
+    taskId: "task-1",
+  });
+  assert.deepEqual(rewrite, {
+    operation: "generate_text",
+    taskId: "task-1",
+    userInstruction: "Make it vivid.",
+    immediateContext: { selection: "**The** sea." },
+    retrievalPolicy: {
+      mode: "related",
+      query: "Chapter one Make it vivid. The sea.",
+      seedIds: ["e1"],
+      allowedSourceKinds: [],
+      relationshipDepth: 2,
+      passageCount: 8,
+      includeSharedFields: true,
+    },
+  });
+  const generate = buildAiStartRequest({
+    mode: "generate",
+    instruction: "Write on.",
+    selectionMarkdown: "",
+    selectionPlain: "",
+    generationContext: "",
+    documentMarkdown: "",
+    entityId: "e1",
+    entityName: "Chapter one",
+    taskId: "task-2",
+  });
+  assert.equal(generate.immediateContext.selection, "[CURSOR]");
+  assert.equal(generate.retrievalPolicy.query, "Chapter one Write on.");
+  // Only the keys the broker's payload schema allows.
+  assert.deepEqual(Object.keys(rewrite).sort(), [
+    "immediateContext",
+    "operation",
+    "retrievalPolicy",
+    "taskId",
+    "userInstruction",
+  ]);
+
+  // Accept guard: the entry, its load and its text must all be what the run started against.
+  const source = { entityId: "e1", token: "t1", markdown: "Text" };
+  assert.equal(aiAcceptGuard({ source, current: { ...source } }), null);
+  assert.equal(aiAcceptGuard({ source, current: { ...source, entityId: "e2" } }), WRITING_AI_STALE_MESSAGE);
+  assert.equal(aiAcceptGuard({ source, current: { ...source, token: "t2" } }), WRITING_AI_STALE_MESSAGE);
+  assert.equal(aiAcceptGuard({ source, current: { ...source, markdown: "Text!" } }), WRITING_AI_STALE_MESSAGE);
+  assert.equal(aiAcceptGuard({ source, current: null }), WRITING_AI_STALE_MESSAGE);
+  assert.equal(
+    WRITING_AI_STALE_MESSAGE,
+    "The entity or document changed while the rewrite was being prepared. Discard it and try again.",
+    "the shell's own wording",
+  );
+
+  // Proposal validation is the shell's, now shared.
+  assert.equal(validateAiProposal("A plain sentence with *emphasis*."), null);
+  assert.equal(validateAiProposal("  "), "The AI provider returned an empty proposal.");
+  assert.match(validateAiProposal("# Heading\ntext"), /block-level Markdown/);
+  assert.match(validateAiProposal("- item"), /block-level Markdown/);
+  assert.match(validateAiProposal("text <b>bold</b>"), /HTML markup/);
+  const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
+  assert.match(page, /import \{ validateAiProposal \} from "\$lib\/ai\/proposal"/, "the shell uses the shared rule");
+  assert.doesNotMatch(page, /function validateAiProposal/, "and no longer keeps its own copy");
+
+  // Events: a poll repeats the buffer, so applied sequences are skipped; the stream builds the proposal.
+  const event = (sequence, phase, extra = {}) => ({
+    sequence,
+    requestId: "r1",
+    phase,
+    delta: null,
+    output: null,
+    error: null,
+    ...extra,
+  });
+  {
+    const buffer = [event(0, "started"), event(1, "delta", { delta: "Hel" }), event(2, "delta", { delta: "lo" })];
+    let state = applyAiEvents(initialAiRunState(), buffer);
+    assert.equal(state.streamText, "Hello");
+    assert.equal(state.phase, "running");
+    assert.equal(state.lastSequence, 2);
+    assert.equal(state.progressMessage, "Writing proposal…");
+    // The same buffer again, now with one more event: nothing is applied twice.
+    state = applyAiEvents(state, [...buffer, event(3, "delta", { delta: "!" })]);
+    assert.equal(state.streamText, "Hello!");
+    state = applyAiEvents(state, [event(4, "usage", { output: '{"inputTokens":3,"outputTokens":2,"totalTokens":5}' })]);
+    assert.deepEqual(state.usage, { inputTokens: 3, outputTokens: 2, totalTokens: 5 });
+    state = applyAiEvents(state, [event(5, "completed", { output: "Hello!" })]);
+    assert.equal(state.phase, "completed");
+    assert.equal(state.proposal, "Hello!");
+    assert.equal(state.error, "");
+    assert.equal(state.progressMessage, "");
+    // Nothing after a terminal phase changes it.
+    const later = applyAiEvents(state, [event(6, "delta", { delta: "late" }), event(7, "failed", { error: "x" })]);
+    assert.deepEqual(later, state);
+    assert.equal(state.gap, false);
+  }
+  // Unreadable usage is no usage; a usage line without output changes nothing.
+  assert.equal(applyAiEvent(initialAiRunState(), event(0, "usage", { output: "not json" })).usage, null);
+  assert.equal(applyAiEvent(initialAiRunState(), event(0, "usage")).usage, null);
+  // The terminal output wins when the stream is shorter, and the stream wins when it is longer (as in the shell).
+  assert.equal(
+    applyAiEvents(initialAiRunState(), [event(0, "delta", { delta: "ab" }), event(1, "completed", { output: "abcd" })])
+      .proposal,
+    "abcd",
+  );
+  // Terminal phases and their messages.
+  {
+    const cancelled = applyAiEvents(initialAiRunState(), [
+      event(0, "delta", { delta: "part" }),
+      event(1, "cancelled", { output: "partial" }),
+    ]);
+    assert.equal(cancelled.phase, "cancelled");
+    assert.equal(cancelled.proposal, "partial");
+    assert.equal(cancelled.error, "");
+    const late = applyAiEvents(initialAiRunState(), [
+      event(0, "delta", { delta: "part" }),
+      event(1, "deadline_exceeded", { output: "partial" }),
+    ]);
+    assert.equal(late.phase, "deadline_exceeded");
+    assert.equal(late.error, "AI generation reached its time limit. The partial proposal is preserved below.");
+    assert.equal(
+      applyAiEvent(initialAiRunState(), event(0, "deadline_exceeded")).error,
+      "AI generation reached its time limit before producing a proposal.",
+    );
+    const failed = applyAiEvent(initialAiRunState(), event(0, "failed", { error: "Provider unavailable" }));
+    assert.equal(failed.phase, "failed");
+    assert.equal(failed.error, "Provider unavailable");
+    assert.equal(
+      applyAiEvent(initialAiRunState(), event(0, "failed")).error,
+      "The AI provider could not generate a proposal",
+    );
+  }
+  // A bounded buffer can drop deltas. The run notices the gap, and the completed output is the proposal.
+  {
+    const dropped = applyAiEvents(initialAiRunState(), [
+      event(40, "delta", { delta: "tail " }),
+      event(41, "completed", { output: "the whole text" }),
+    ]);
+    assert.equal(dropped.gap, true);
+    assert.equal(dropped.proposal, "the whole text", "not the gappy stream");
+    const noOutput = applyAiEvents(initialAiRunState(), [
+      event(0, "delta", { delta: "head " }),
+      event(9, "delta", { delta: "tail" }),
+      event(10, "failed", { error: "boom" }),
+    ]);
+    assert.equal(noOutput.gap, true);
+    assert.equal(noOutput.proposal, "", "a failed run with holes in its stream keeps no proposal");
+    const intact = applyAiEvents(initialAiRunState(), [
+      event(0, "delta", { delta: "head " }),
+      event(1, "delta", { delta: "tail" }),
+      event(2, "failed", { error: "boom" }),
+    ]);
+    assert.equal(intact.proposal, "head tail", "without holes the partial text stays, as in the shell");
+  }
+}
+
+// AI run: start, poll on a timer, dedupe, stop on a terminal phase, cancel, dispose, and release the request.
+{
+  const fakeTimers = () => {
+    const timers = new Map();
+    let next = 1;
+    return {
+      setTimer(callback, ms) {
+        timers.set(next, { callback, ms });
+        return next++;
+      },
+      clearTimer(handle) {
+        timers.delete(handle);
+      },
+      count: () => timers.size,
+      delays: () => [...timers.values()].map((timer) => timer.ms),
+      async fire() {
+        const due = [...timers.entries()];
+        timers.clear();
+        for (const [, timer] of due) timer.callback();
+        await settle();
+      },
+    };
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const event = (sequence, phase, extra = {}) => ({
+    sequence,
+    requestId: "req-1",
+    phase,
+    delta: null,
+    output: null,
+    error: null,
+    ...extra,
+  });
+  const request = {
+    operation: "generate_text",
+    taskId: "task",
+    userInstruction: "Rewrite",
+    immediateContext: { selection: "Text" },
+  };
+  /** A fake broker whose `poll` answers come from `script`, one per call (the last repeats). */
+  const make = (script, overrides = {}) => {
+    const clock = fakeTimers();
+    const calls = [];
+    const views = [];
+    let polls = 0;
+    const rpc = {
+      async call(method, payload) {
+        calls.push({ method, payload });
+        if (overrides[method]) return overrides[method](payload, calls.filter((call) => call.method === method).length);
+        if (method === "ai.request.start") return { requestId: "req-1" };
+        if (method === "ai.request.poll") {
+          const answer = script[Math.min(polls, script.length - 1)];
+          polls += 1;
+          if (answer instanceof Error) throw answer;
+          return answer;
+        }
+        if (method === "ai.request.cancel") return null;
+        if (method === "ai.request.citations") return [];
+        if (method === "ai.request.result") return { output: "from result" };
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    const run = startAiRun(
+      { rpc, onUpdate: (view) => views.push(view), setTimer: clock.setTimer, clearTimer: clock.clearTimer },
+      request,
+    );
+    const methods = () => calls.map((call) => call.method);
+    return { run, clock, calls, views, methods };
+  };
+
+  assert.equal(WRITING_AI_POLL_MS, 200);
+  // The happy path: start, an immediate poll, polling every 200 ms, no repeats, release after the terminal event.
+  {
+    const first = [event(0, "started"), event(1, "delta", { delta: "He" })];
+    const second = [...first, event(2, "delta", { delta: "llo" })];
+    const third = [...second, event(3, "completed", { output: "Hello" })];
+    const { clock, calls, views, methods } = make([first, second, third]);
+    await settle();
+    assert.deepEqual(calls[0], { method: "ai.request.start", payload: request });
+    assert.deepEqual(methods(), ["ai.request.start", "ai.request.poll"], "the first poll follows the start");
+    assert.deepEqual(clock.delays(), [200]);
+    assert.equal(views.at(-1).streamText, "He");
+    assert.equal(views.at(-1).phase, "running");
+    await clock.fire();
+    assert.equal(views.at(-1).streamText, "Hello", "events already applied are not applied again");
+    assert.equal(clock.count(), 1);
+    await clock.fire();
+    const last = views.at(-1);
+    assert.equal(last.phase, "completed");
+    assert.equal(last.proposal, "Hello");
+    assert.equal(clock.count(), 0, "polling stops at the terminal phase");
+    assert.deepEqual(calls.at(-1), { method: "ai.request.citations", payload: { requestId: "req-1" } }, "released");
+    assert.equal(methods().filter((method) => method === "ai.request.poll").length, 3);
+    assert.equal(methods().includes("ai.request.result"), false, "the event carried the output");
+    await clock.fire();
+    assert.equal(methods().filter((method) => method === "ai.request.poll").length, 3, "no polling after the end");
+  }
+  // A completed event without output falls back to the broker's result.
+  {
+    const { views, methods, clock } = make([[event(0, "completed")]]);
+    await settle();
+    assert.equal(views.at(-1).phase, "completed");
+    assert.equal(views.at(-1).proposal, "from result");
+    assert.deepEqual(methods().slice(-2), ["ai.request.result", "ai.request.citations"]);
+    assert.equal(clock.count(), 0);
+  }
+  // A failed start ends the run with the broker's message and nothing to release.
+  {
+    const { views, methods, clock } = make([[]], {
+      "ai.request.start": () => {
+        throw new Error("Configure an AI provider for this project first");
+      },
+    });
+    await settle();
+    assert.equal(views.at(-1).phase, "failed");
+    assert.equal(views.at(-1).error, "Configure an AI provider for this project first");
+    assert.deepEqual(methods(), ["ai.request.start"]);
+    assert.equal(clock.count(), 0);
+  }
+  // Cancel: the broker is asked, the run keeps polling until the cancelled event, and shows "cancelling" meanwhile.
+  {
+    const running = [event(0, "started"), event(1, "delta", { delta: "Half" })];
+    const { run, clock, views, methods } = make([running, [...running, event(2, "cancelled", { output: "Half" })]]);
+    await settle();
+    await run.cancel();
+    assert.equal(methods().includes("ai.request.cancel"), true);
+    assert.equal(views.at(-1).cancelPending, true);
+    assert.equal(views.at(-1).phase, "running");
+    await clock.fire();
+    assert.equal(views.at(-1).phase, "cancelled");
+    assert.equal(views.at(-1).proposal, "Half");
+    assert.equal(views.at(-1).cancelPending, false);
+    assert.equal(clock.count(), 0);
+    assert.equal(methods().at(-1), "ai.request.citations");
+  }
+  // Cancel before the broker named the request waits for the name, then cancels.
+  {
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const { run, methods } = make([[event(0, "started")]], {
+      "ai.request.start": async () => {
+        await gate;
+        return { requestId: "req-1" };
+      },
+    });
+    await run.cancel();
+    assert.equal(methods().includes("ai.request.cancel"), false, "no id to cancel yet");
+    release();
+    await settle();
+    assert.ok(methods().indexOf("ai.request.cancel") > methods().indexOf("ai.request.start"));
+  }
+  // A cancel that fails clears the pending flag and says why; a run that ends on its own drops that message.
+  {
+    const { run, views, clock } = make(
+      [[event(0, "started")], [event(0, "started"), event(1, "completed", { output: "Done" })]],
+      {
+        "ai.request.cancel": () => {
+          throw new Error("AI request does not exist");
+        },
+      },
+    );
+    await settle();
+    await run.cancel();
+    assert.equal(views.at(-1).cancelPending, false);
+    assert.equal(views.at(-1).error, "AI request does not exist");
+    await clock.fire();
+    assert.equal(views.at(-1).phase, "completed");
+    assert.equal(views.at(-1).error, "", "the request had finished on its own");
+  }
+  // Dispose (the dialog closed, or another entry loaded): polling stops, a running request is cancelled and
+  // released, and the run goes quiet.
+  {
+    const { run, clock, views, methods } = make([[event(0, "started")]]);
+    await settle();
+    const seen = views.length;
+    run.dispose();
+    await settle();
+    assert.equal(clock.count(), 0, "the poll timer is cleared");
+    assert.deepEqual(methods().slice(-2), ["ai.request.cancel", "ai.request.citations"]);
+    await clock.fire();
+    assert.equal(views.length, seen, "no updates after dispose");
+    run.dispose();
+    assert.equal(methods().filter((method) => method === "ai.request.cancel").length, 1, "dispose is idempotent");
+  }
+  // Disposed while the start call is in flight: the request that comes back is stopped.
+  {
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const { run, methods, clock } = make([[event(0, "started")]], {
+      "ai.request.start": async () => {
+        await gate;
+        return { requestId: "req-1" };
+      },
+    });
+    run.dispose();
+    release();
+    await settle();
+    assert.deepEqual(methods(), ["ai.request.start", "ai.request.cancel", "ai.request.citations"]);
+    assert.equal(clock.count(), 0);
+  }
+  // Disposing a finished run does not cancel anything again.
+  {
+    const { run, methods } = make([[event(0, "completed", { output: "x" })]]);
+    await settle();
+    run.dispose();
+    await settle();
+    assert.equal(methods().includes("ai.request.cancel"), false);
+  }
+  // Poll errors: transient ones are retried; a request that stays unreachable ends the run.
+  {
+    const script = [new Error("blip"), [event(0, "started"), event(1, "completed", { output: "Ok" })]];
+    const { clock, views } = make(script);
+    await settle();
+    assert.equal(views.at(-1).phase, "running", "one failed poll is not the end");
+    await clock.fire();
+    assert.equal(views.at(-1).phase, "completed");
+  }
+  {
+    const { clock, views, methods } = make([new Error("request is gone")]);
+    await settle();
+    for (let attempt = 1; attempt < WRITING_AI_MAX_POLL_FAILURES; attempt += 1) await clock.fire();
+    assert.equal(views.at(-1).phase, "failed");
+    assert.equal(views.at(-1).error, "request is gone");
+    assert.equal(clock.count(), 0);
+    assert.equal(methods().filter((method) => method === "ai.request.poll").length, WRITING_AI_MAX_POLL_FAILURES);
+    assert.deepEqual(methods().slice(-2), ["ai.request.cancel", "ai.request.citations"], "and the request is stopped");
+  }
 }
 
 // Bundle markers: the committed bundle is the broker-only build of this entry.
@@ -715,6 +1423,9 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.match(bundle, /asset\.shared\.read\.begin/, "the bundle reads images through the broker host");
   assert.match(bundle, /text\.transfer\.begin/, "the bundle hands large drafts over through text.transfer");
   assert.match(bundle, /Document editor/, "the bundle carries the shared rich-text editor");
+  assert.match(bundle, /ai\.request\.start/, "the bundle starts AI requests through the broker");
+  assert.match(bundle, /ai\.request\.poll/, "and polls them");
+  assert.match(bundle, /Generate rewrite/, "the bundle carries the AI dialog");
   assert.doesNotMatch(
     bundle,
     /__TAURI_INTERNALS__|@tauri-apps|trusted_module_rpc/,

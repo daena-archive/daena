@@ -222,7 +222,7 @@ function sectionIcon(section: WorkspaceSection) {
 }
 .project-home {
   width: min(1180px, 100%);
-  min-height: calc(100vh - 58px);
+  min-height: calc(100vh - var(--shell-topbar-height, 44px));
   margin: 0 auto;
   padding: clamp(30px, 5vw, 58px) 40px 64px;
   display: grid;

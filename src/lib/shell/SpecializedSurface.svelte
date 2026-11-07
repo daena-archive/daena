@@ -32,7 +32,7 @@ $effect(() => {
 .specialized-surface {
   display: flex;
   width: 100%;
-  height: calc(100vh - 58px);
+  height: calc(100vh - var(--shell-topbar-height, 44px));
   min-width: 0;
   min-height: 0;
   flex: 1 1 auto;
@@ -42,7 +42,7 @@ $effect(() => {
 @media (max-width: 760px) {
   .specialized-surface {
     height: auto;
-    min-height: calc(100vh - 104px);
+    min-height: calc(100vh - var(--shell-topbar-height, 44px));
     overflow: visible;
   }
 }

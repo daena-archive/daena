@@ -10,6 +10,7 @@ let {
   actionsLabel = "View actions",
   onBack,
   brandActions,
+  nav,
   actions,
   children,
 }: {
@@ -20,6 +21,7 @@ let {
   actionsLabel?: string;
   onBack: () => void;
   brandActions?: Snippet;
+  nav?: Snippet;
   actions?: Snippet;
   children?: Snippet;
 } = $props();
@@ -43,6 +45,7 @@ const actionContent = $derived(actions ?? children);
       <strong>{title}</strong>
       {#if subtitle}<small>{subtitle}</small>{/if}
     </div>
+    {#if nav}<div class="workspace-topbar-nav">{@render nav()}</div>{/if}
   </div>
   {#if actionContent}
     <div class="workspace-topbar-actions" role="toolbar" aria-label={actionsLabel}>
@@ -121,7 +124,13 @@ const actionContent = $derived(actions ?? children);
 .workspace-topbar-copy {
   display: grid;
   min-width: 0;
+  flex: 0 1 auto;
   gap: 2px;
+}
+.workspace-topbar-nav {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
 }
 .workspace-topbar-copy strong,
 .workspace-topbar-copy small {

@@ -464,7 +464,7 @@ async function seedExampleProject() {
 .project-center {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 58px);
+  min-height: calc(100vh - var(--shell-topbar-height, 44px));
   padding: 28px 32px 40px;
   background: var(--canvas);
 }

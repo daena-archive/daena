@@ -74,6 +74,7 @@ let {
   restoreNonce = 0,
   kinshipRefreshEpoch = 0,
   avatar,
+  nav,
   onOpenEntity,
   onOpenHouseEntry,
   onArchiveHouse,
@@ -96,6 +97,7 @@ let {
   /** Bumped when kinship data changes outside the tree (for example Lore relationship fields). */
   kinshipRefreshEpoch?: number;
   avatar?: Snippet<[string, string]>;
+  nav?: Snippet;
   onOpenEntity: (entityId: string) => void;
   onOpenHouseEntry?: (houseId: string) => void;
   onArchiveHouse?: (houseId: string) => void | Promise<void>;
@@ -1079,6 +1081,7 @@ function applyRelationshipDelete(id: string) {
         <strong>{houseId ? houseName || "House" : rootId ? (people.get(rootId)?.name ?? "Houses") : "Houses"}</strong>
         <small title={subtitle}>{subtitle}</small>
       </div>
+      {#if nav}<div class="family-topbar-nav">{@render nav()}</div>{/if}
       {#if loading && positioned}
         <span class="topbar-busy" aria-live="polite" aria-label="Updating family tree">
           <span class="busy-dot" aria-hidden="true"></span> Updating…
@@ -1575,7 +1578,13 @@ function applyRelationshipDelete(id: string) {
 .family-copy {
   display: grid;
   min-width: 0;
+  flex: 0 1 auto;
   gap: 2px;
+}
+.family-topbar-nav {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
 }
 .family-copy strong {
   overflow: hidden;

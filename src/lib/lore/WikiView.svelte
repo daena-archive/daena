@@ -1,5 +1,5 @@
 <script lang="ts">
-import { onMount } from "svelte";
+import { onMount, type Snippet } from "svelte";
 import {
   ArrowLeft,
   ArrowRight,
@@ -60,6 +60,7 @@ let {
   promptTemplates,
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
+  nav,
 }: {
   manifest: ModuleManifest;
   enabledManifests?: ManifestLike[];
@@ -71,6 +72,7 @@ let {
   promptTemplates?: PromptTemplate[];
   onClose?: () => void;
   onSelectEntity?: (id: string) => void;
+  nav?: Snippet;
 } = $props();
 
 // svelte-ignore state_referenced_locally
@@ -657,6 +659,7 @@ function handleEdit() {
     subtitle={`${wikiTotal} published pages`}
     icon={BookOpen}
     onBack={onClose}
+    {nav}
     actions={entity && currentId ? topbarActions : undefined}
     actionsLabel="Article actions" />
 
@@ -968,7 +971,7 @@ function handleEdit() {
 <style>
 .kb-shell {
   display: flex;
-  height: calc(100vh - 58px);
+  height: calc(100vh - var(--shell-topbar-height, 44px));
   min-height: 0;
   flex-direction: column;
   background: var(--theme-surface-bg, #f4f5f2);

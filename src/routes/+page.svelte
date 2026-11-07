@@ -260,8 +260,11 @@ import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState.ts";
 import {
   Pencil,
   Map as MapIcon,
+  PanelLeft,
+  PanelRight,
   Plus,
   Puzzle,
+  Square,
   ShieldCheck,
   X,
   Search,
@@ -1555,6 +1558,15 @@ const writingWebviewShown = $derived(
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
 const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen);
+/** Same gate the standalone view row used: Lore, Timeline, Writing, and Houses, not a full plugin sandbox. */
+const workspaceViewNavShown = $derived(
+  ready &&
+    !showSettings &&
+    !projectHomeOpen &&
+    !hostView &&
+    (!sandboxView || projectionSandboxOpen()) &&
+    (section === "lore" || section === "timeline" || section === "writing" || section === "houses"),
+);
 
 /**
  * Modal shell overlays, which cover the whole window. Plugin webviews are native children drawn above
@@ -8204,13 +8216,13 @@ onMount(() => {
         </div>
       </div>
     {/if}
-    {#if ready && !showSettings && !projectHomeOpen && !hostView && (!sandboxView || projectionSandboxOpen()) && (section === "lore" || section === "timeline" || section === "writing" || section === "houses")}
+    {#snippet workspaceViewSwitcher()}
       <WorkspaceViewNav
         label={`${section} views`}
         views={workspaceViewNavItems()}
         activeView={currentWorkspaceLocationView()}
         onSelect={(view) => void openWorkspaceView(view)} />
-    {/if}
+    {/snippet}
     {#if showSettings && settingsSurface === "application"}
       <SettingsView
         bind:section={settingsSection}
@@ -8680,7 +8692,8 @@ onMount(() => {
           onSelectEntity={(id) => {
             const ent = entities.find((e) => e.id === id);
             if (ent) void selectEntity(ent);
-          }} />
+          }}
+          nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined} />
       </SpecializedSurface>
     {:else if section === "houses" && housesView === "tree"}
       {#snippet treeAvatar(entityId: string, name: string)}
@@ -8701,6 +8714,7 @@ onMount(() => {
           restoreNonce={treeRestoreNonce}
           {kinshipRefreshEpoch}
           avatar={treeAvatar}
+          nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
           onNewPerson={openNewPerson}
           onNewHouse={openNewHouse}
           onOpenHouseEntry={(houseId) => {
@@ -8789,6 +8803,7 @@ onMount(() => {
             title={projection.title}
             subtitle={projection.subtitle}
             icon={projection.icon}
+            nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
             onBack={() => void closeProjectionView()} />
           {#key `${projection.pluginId}:${projection.viewId}`}
             <SandboxView pluginId={projection.pluginId} title={projection.title} />
@@ -8806,6 +8821,9 @@ onMount(() => {
         {/key}
       </SpecializedSurface>
     {:else if enabledWorkspaceSections().length === 0}
+      {#if workspaceViewNavShown}
+        <div class="workspace-view-fallback">{@render workspaceViewSwitcher()}</div>
+      {/if}
       <section class="empty-workspace-state">
         <div class="disabled-icon">◌</div>
         <span class="overline">WORKSPACE READY</span>
@@ -8897,10 +8915,39 @@ onMount(() => {
               {ENTITY_ACTIONS.new}</button>
           {/if}
         {/snippet}
+        {#snippet workbenchPaneToggles()}
+          <div class="workbench-pane-toggles" role="group" aria-label="Workbench panes">
+            <button
+              type="button"
+              aria-pressed={workbenchPaneVisibility.collection}
+              aria-label="Show collection pane"
+              title="Show collection pane"
+              onclick={() => void toggleWorkbenchPane("collection")}
+              ><PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+            <button
+              type="button"
+              aria-pressed={workbenchPaneVisibility.content}
+              aria-label="Show content pane"
+              title="Show content pane"
+              onclick={() => void toggleWorkbenchPane("content")}
+              ><Square size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+            {#if workbenchSupportsInspector()}
+              <button
+                type="button"
+                aria-pressed={workbenchPaneVisibility.inspector}
+                aria-label="Show inspector pane"
+                title="Show inspector pane"
+                onclick={() => void toggleWorkbenchPane("inspector")}
+                ><PanelRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
+            {/if}
+          </div>
+        {/snippet}
         <WorkspaceHeader
           kicker={workspaceHeadingKicker()}
           title={sectionLabel()}
           description={workspaceHeadingDescription()}
+          nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
+          layout={workbenchPaneToggles}
           actions={workspaceHeaderActions}
           onGuide={section === "lore"
             ? () => (loreGuideHint += 1)
@@ -8912,21 +8959,6 @@ onMount(() => {
             : section === "timeline"
               ? "Show timeline guide"
               : "Show guide"} />
-        <nav class="workbench-layout-controls" aria-label="Workbench panes">
-          <span>Layout</span><button
-            type="button"
-            aria-pressed={workbenchPaneVisibility.collection}
-            onclick={() => void toggleWorkbenchPane("collection")}>Collection</button
-          ><button
-            type="button"
-            aria-pressed={workbenchPaneVisibility.content}
-            onclick={() => void toggleWorkbenchPane("content")}>Content</button
-          >{#if workbenchSupportsInspector()}<button
-              type="button"
-              aria-pressed={workbenchPaneVisibility.inspector}
-              onclick={() => void toggleWorkbenchPane("inspector")}>Inspector</button
-            >{/if}
-        </nav>
       {/if}
       <section
         class:maps-workspace={section === "maps" && sandboxView?.renderer === "maps"}
@@ -10240,6 +10272,7 @@ onMount(() => {
   font: inherit;
 }
 .studio-shell {
+  --shell-topbar-height: 44px;
   min-height: 100vh;
   display: flex;
 }
@@ -10264,7 +10297,7 @@ onMount(() => {
 }
 .disabled-state {
   max-width: 1080px;
-  min-height: calc(100vh - 58px);
+  min-height: calc(100vh - var(--shell-topbar-height, 44px));
   margin: auto;
   padding: 10vh 7vw;
   display: flex;
@@ -10553,7 +10586,6 @@ onMount(() => {
 .studio-shell.writing-fullscreen > :global(aside),
 .studio-shell.writing-fullscreen :global(.topbar),
 .studio-shell.writing-fullscreen :global(.workspace-heading),
-.studio-shell.writing-fullscreen .workbench-layout-controls,
 .studio-shell.writing-fullscreen :global(.collection-panel),
 .studio-shell.writing-fullscreen :global(.inspector-panel),
 .studio-shell.writing-fullscreen :global(.pane-resize-handle) {
@@ -10570,35 +10602,32 @@ onMount(() => {
 .projection-bar:empty {
   display: none;
 }
-.workbench-layout-controls {
-  display: flex;
+.workbench-pane-toggles {
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 4px;
-  margin: -14px 40px 12px;
 }
-.workbench-layout-controls > span {
-  margin-right: 3px;
-  color: var(--ink-faint);
-  font-size: 9px;
-  font-weight: 750;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-.workbench-layout-controls button {
-  padding: 5px 8px;
+.workbench-pane-toggles button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
   color: var(--ink-faint);
   cursor: pointer;
-  font-size: 9px;
 }
-.workbench-layout-controls button:hover,
-.workbench-layout-controls button[aria-pressed="true"] {
+.workbench-pane-toggles button:hover,
+.workbench-pane-toggles button[aria-pressed="true"] {
   border-color: var(--line-strong);
   background: var(--surface);
   color: var(--ink);
+}
+.workspace-view-fallback {
+  padding: 8px 40px;
+  border-bottom: 1px solid var(--line);
 }
 .workspace-grid {
   display: grid;
@@ -11507,7 +11536,7 @@ onMount(() => {
 }
 .empty-workspace-state {
   display: grid;
-  min-height: calc(100vh - 58px);
+  min-height: calc(100vh - var(--shell-topbar-height, 44px));
   place-content: center;
   justify-items: center;
   padding: 40px;
@@ -12230,9 +12259,6 @@ onMount(() => {
   .projection-bar {
     margin-inline: 28px;
   }
-  .workbench-layout-controls {
-    margin-inline: 28px;
-  }
   .workspace-grid {
     grid-template-columns: 215px minmax(280px, 1fr);
     padding-inline: 28px;
@@ -12255,11 +12281,6 @@ onMount(() => {
   }
   .projection-bar {
     margin: 0 17px 12px;
-  }
-  .workbench-layout-controls {
-    justify-content: flex-start;
-    margin: 0 17px 10px;
-    overflow-x: auto;
   }
   .workspace-grid {
     gap: 12px;

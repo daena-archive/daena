@@ -62,9 +62,14 @@ let {
   </div>
   <div class="top-actions">
     {#if ready}
-      <button class="global-search" type="button" aria-haspopup="dialog" onclick={onQuickOpen}>
-        <span aria-hidden="true"><Search size={14} strokeWidth={1.8} aria-hidden="true" /></span>
-        <span class="global-search-label">Quick Open</span><kbd>{quickOpenShortcut}</kbd>
+      <button
+        class="global-search"
+        type="button"
+        aria-label="Quick Open"
+        title={`Quick Open · ${quickOpenShortcut}`}
+        aria-haspopup="dialog"
+        onclick={onQuickOpen}>
+        <Search size={14} strokeWidth={1.8} aria-hidden="true" /><kbd>{quickOpenShortcut}</kbd>
       </button>
       {#if status}{@render status()}{:else}<span class="sync-badge" title="Your work is stored locally"
           ><span></span> Local</span
@@ -82,8 +87,8 @@ let {
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  min-height: 58px;
-  padding: 0 40px;
+  min-height: var(--shell-topbar-height, 44px);
+  padding: 0 20px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 78%, transparent);
   backdrop-filter: blur(14px);
@@ -103,8 +108,8 @@ let {
 }
 .history-actions button {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
@@ -186,17 +191,17 @@ let {
 }
 .global-search {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
-  width: 230px;
-  padding: 8px 10px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink-faint);
   cursor: pointer;
   font-size: 12px;
-  text-align: left;
   transition:
     border-color 0.16s ease,
     box-shadow 0.16s ease;
@@ -204,11 +209,6 @@ let {
 .global-search:hover,
 .global-search:focus-visible {
   border-color: var(--accent-soft);
-}
-.global-search-label {
-  min-width: 0;
-  flex: 1;
-  color: var(--ink-soft);
 }
 .global-search kbd {
   padding: 2px 5px;
@@ -235,12 +235,6 @@ let {
   display: none;
 }
 
-@media (max-width: 1040px) {
-  .topbar {
-    padding-inline: 28px;
-  }
-}
-
 @media (max-width: 760px) {
   .topbar {
     position: relative;
@@ -256,10 +250,6 @@ let {
   }
   .sync-badge {
     display: none;
-  }
-  .global-search {
-    flex: 1;
-    width: auto;
   }
 }
 </style>

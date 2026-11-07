@@ -30,6 +30,7 @@ let {
 let trigger = $state<HTMLButtonElement | null>(null);
 let popoverEl = $state<HTMLDivElement | null>(null);
 let refreshing = $state(false);
+const iconOnly = $derived(tone === "neutral" || tone === "success");
 
 function setOpen(next: boolean, restoreFocus = false) {
   open = next;
@@ -77,10 +78,12 @@ $effect(() => {
     bind:this={trigger}
     type="button"
     class={`status-trigger ${tone}`}
+    class:icon-only={iconOnly}
     aria-expanded={open}
     aria-haspopup="dialog"
     aria-controls="status-center-popover"
-    title="Project status"
+    aria-label={summary}
+    title={summary}
     onclick={() => setOpen(!open)}>
     {#if tone === "busy"}<LoaderCircle
         class="spin"
@@ -90,7 +93,7 @@ $effect(() => {
         aria-hidden="true" />{:else if tone === "success"}<Check size={14} aria-hidden="true" />{:else}<Activity
         size={14}
         aria-hidden="true" />{/if}
-    <span>{summary}</span>
+    {#if !iconOnly}<span>{summary}</span>{/if}
   </button>
   {#if open}
     <div
@@ -142,15 +145,20 @@ $effect(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  height: 28px;
   max-width: 190px;
-  padding: 7px 9px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink-soft);
   font-size: 10px;
   cursor: pointer;
-  min-height: var(--control-min-height);
+}
+.status-trigger.icon-only {
+  width: 28px;
+  justify-content: center;
+  padding: 0;
 }
 .status-trigger span {
   overflow: hidden;
@@ -303,9 +311,6 @@ $effect(() => {
   }
 }
 @media (max-width: 760px) {
-  .status-trigger span {
-    display: none;
-  }
   .status-popover {
     position: fixed;
     top: 66px;

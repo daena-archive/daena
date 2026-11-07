@@ -228,6 +228,26 @@ the repository minimum target size. Reduced motion disables layout and viewport
 animation. Prefer ordinary grouped controls over application semantics unless
 the latter clearly helps screen readers.
 
+## Shell chrome
+
+The chrome above the panes is kept to two rows so tabs can join the topbar
+later ([`tabs.md`](../plans/tabs.md)).
+
+- **Topbar** (`GlobalToolbar`, `--shell-topbar-height`, 44px): Back and
+  Forward, breadcrumbs, a compact Quick Open (icon and shortcut; the name is in
+  its label and tooltip), and the project status. The status shows only its
+  icon while the project is current and keeps its short label when it is
+  working or needs attention.
+- **Workspace header** (`WorkspaceHeader`), one row: overline and title, the
+  view switcher (Library / Wiki / Graph and the like) as a segmented control,
+  then the pane toggles (Collection, Content, Inspector as icon buttons),
+  Guide and New. The workspace description is the title's tooltip and the
+  header's accessible description.
+- **Specialized surfaces** (Wiki, World graph, Chronology, Tree) carry the
+  same view switcher in their own bar, beside the title.
+
+Size full-height surfaces from `--shell-topbar-height`, not a fixed number.
+
 ## Workspaces
 
 ### Lore

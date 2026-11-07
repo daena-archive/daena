@@ -45,22 +45,19 @@ function handleKeydown(event: KeyboardEvent, index: number) {
 
 <style>
 .workspace-view-nav {
-  position: sticky;
-  top: 58px;
-  z-index: 3;
-  display: flex;
-  gap: 4px;
-  min-height: 46px;
-  padding: 7px 40px;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: blur(14px);
+  display: inline-flex;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
 }
 .workspace-view-nav button {
-  min-height: var(--control-min-height);
-  padding: 7px 11px;
+  padding: 4px 10px;
+  min-height: 26px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--ink-soft);
   font: inherit;
@@ -68,24 +65,18 @@ function handleKeydown(event: KeyboardEvent, index: number) {
   font-weight: 700;
   cursor: pointer;
 }
-.workspace-view-nav button:hover {
-  background: var(--surface-muted);
+.workspace-view-nav button:hover:not(.active) {
+  background: var(--surface);
   color: var(--ink);
 }
 .workspace-view-nav button.active {
-  border-color: var(--theme-warning-border, #d8c3a5);
   background: var(--accent-dark);
   color: var(--on-accent);
-}
-.workspace-view-nav + :global(.kb-shell),
-.workspace-view-nav + :global(.specialized-surface) {
-  height: calc(100vh - 104px);
 }
 
 @media (max-width: 760px) {
   .workspace-view-nav {
     overflow-x: auto;
-    padding-inline: 17px;
   }
   .workspace-view-nav button {
     flex: 0 0 auto;

@@ -41,7 +41,7 @@ const flushesBeforeNavigating = [
   ["openProjectCenter", /showSettings = true/],
   ["selectSearchResult", /leavePluginView\(\)|section = nextSection/],
   ["selectEntity", /selected = entity;/],
-  ["activateBreadcrumb", /dismissSettings\(\)|leavePluginView\(\)/],
+  // activateBreadcrumb is gone: the breadcrumb no longer navigates (tabs slice 3).
   ["reconcileWorkspaceSection", /leavePluginView\(\)/],
   ["openHouseTree", /leavePluginView\(\)/],
   ["openLoreLibrary", /dismissSettings\(\)|leavePluginView\(\)/],

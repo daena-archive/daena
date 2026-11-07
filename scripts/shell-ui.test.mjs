@@ -22,6 +22,7 @@ const componentPaths = [
   "src/lib/shell/ProjectSwitcher.svelte",
   "src/lib/shell/QuickOpen.svelte",
   "src/lib/shell/StatusCenter.svelte",
+  "src/lib/shell/TabStrip.svelte",
   "src/lib/shell/WorkbenchState.svelte",
   "src/lib/shell/WorkspaceViewNav.svelte",
 ];
@@ -83,12 +84,20 @@ const workspaceNav = components.get("src/lib/shell/WorkspaceViewNav.svelte");
 assert.match(workspaceNav, /tabindex=\{activeView === view\.id \? 0 : -1\}/);
 
 assert.doesNotMatch(shell, /Private studio/, "MVP Private studio crumb is gone");
-assert.match(shell, /activateBreadcrumb/, "workspace crumbs navigate");
-assert.match(shell, /shellBreadcrumbs/, "crumbs follow the current shell location");
+assert.match(shell, /<TabStrip/, "the shell renders TabStrip");
+assert.match(
+  shell,
+  /function currentTabPresentation\([\s\S]*?shellBreadcrumbs\(/,
+  "currentTabPresentation uses shellBreadcrumbs",
+);
 assert.match(shell, /entityBelongs/, "entity crumbs drop when the module no longer owns the entry");
+assert.match(shell, /activeTab\(shellTabs\)\.history/, "history reads go through the active tab");
 const toolbar = components.get("src/lib/shell/GlobalToolbar.svelte");
-assert.match(toolbar, /crumb\.onSelect/, "ancestor breadcrumbs are buttons");
-assert.match(toolbar, /aria-current/, "the current crumb is marked");
+assert.match(toolbar, /tabs\?: Snippet/, "GlobalToolbar takes a tabs snippet");
+const tabStrip = components.get("src/lib/shell/TabStrip.svelte");
+assert.match(tabStrip, /role="tablist"/);
+assert.match(tabStrip, /role="tab"/);
+assert.match(tabStrip, /aria-selected/);
 
 const controls = await read("src/lib/shell/controls.css");
 assert.match(controls, /:focus-visible/);

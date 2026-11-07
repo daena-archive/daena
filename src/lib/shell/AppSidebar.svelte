@@ -1,21 +1,8 @@
 <script lang="ts">
 import type { WorkspaceSection } from "$lib/modules/workspace";
 import ProjectSwitcher from "./ProjectSwitcher.svelte";
-import {
-  CalendarRange,
-  Boxes,
-  Castle,
-  Home,
-  Languages,
-  Library,
-  Map as MapIcon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Pencil,
-  Plus,
-  Puzzle,
-  Settings as SettingsIcon,
-} from "@lucide/svelte";
+import { workspaceIcon } from "./workspace-icons";
+import { Boxes, Home, PanelLeftClose, PanelLeftOpen, Plus, Puzzle, Settings as SettingsIcon } from "@lucide/svelte";
 import "./AppSidebar.css";
 
 export interface SidebarRecentProject {
@@ -127,15 +114,6 @@ $effect(() => {
     window.removeEventListener("scroll", onWindowChange, true);
   };
 });
-
-function workspaceIcon(section: WorkspaceSection) {
-  if (section === "lore") return Library;
-  if (section === "timeline") return CalendarRange;
-  if (section === "writing") return Pencil;
-  if (section === "language") return Languages;
-  if (section === "houses") return Castle;
-  return MapIcon;
-}
 </script>
 
 <aside

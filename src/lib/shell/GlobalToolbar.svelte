@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, Search } from "@lucide/svelte";
 
 let {
   ready,
-  breadcrumbs,
+  tabs,
   quickOpenShortcut,
   navigationBusy,
   canGoBack,
@@ -15,7 +15,7 @@ let {
   status,
 }: {
   ready: boolean;
-  breadcrumbs: Array<{ label: string; current?: boolean; onSelect?: () => void }>;
+  tabs?: Snippet;
   quickOpenShortcut: string;
   navigationBusy: boolean;
   canGoBack: boolean;
@@ -44,21 +44,8 @@ let {
           disabled={navigationBusy || !canGoForward}
           onclick={onForward}><ArrowRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>
+      {#if tabs}{@render tabs()}{/if}
     {/if}
-    <nav class="breadcrumbs" aria-label="Breadcrumb">
-      <ol>
-        {#each breadcrumbs as crumb, index}
-          <li>
-            {#if index > 0}<i aria-hidden="true">/</i>{/if}
-            {#if crumb.onSelect && !crumb.current}
-              <button type="button" onclick={crumb.onSelect}>{crumb.label}</button>
-            {:else}
-              <span aria-current={crumb.current ? "page" : undefined}>{crumb.label}</span>
-            {/if}
-          </li>
-        {/each}
-      </ol>
-    </nav>
   </div>
   <div class="top-actions">
     {#if ready}
@@ -100,6 +87,7 @@ let {
   align-items: center;
 }
 .topbar-leading {
+  flex: 1;
   gap: 12px;
 }
 .history-actions {
@@ -128,66 +116,10 @@ let {
   cursor: default;
   opacity: 0.42;
 }
-.breadcrumbs,
 .top-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.breadcrumbs {
-  min-width: 0;
-  color: var(--ink-faint);
-  font-size: 12px;
-}
-.breadcrumbs ol {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.breadcrumbs li {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-.breadcrumbs button,
-.breadcrumbs span {
-  overflow: hidden;
-  max-width: 180px;
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ink-faint);
-  font: inherit;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.breadcrumbs button {
-  cursor: pointer;
-  color: var(--ink-soft);
-}
-.breadcrumbs button:hover,
-.breadcrumbs button:focus-visible {
-  background: var(--surface-muted);
-  color: var(--ink);
-  outline: 0;
-}
-.breadcrumbs button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.breadcrumbs span[aria-current="page"] {
-  color: var(--ink);
-  font-weight: 600;
-}
-.breadcrumbs i {
-  color: var(--ink-faint);
-  font-style: normal;
 }
 .global-search {
   display: flex;
@@ -244,9 +176,12 @@ let {
     min-height: 0;
     padding: 12px 17px;
   }
-  .breadcrumbs,
+  .topbar-leading,
   .top-actions {
     width: 100%;
+  }
+  .topbar-leading {
+    flex: none;
   }
   .sync-badge {
     display: none;

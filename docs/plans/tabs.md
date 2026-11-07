@@ -5,8 +5,8 @@ views and settings, each in its own tab, managed from the topbar. Side-by-side
 viewing comes later; this plan keeps its data model ready for it but does not
 build it.
 
-Status: slice 1 (chrome restyle) done and checked in the real app; slice 2
-(tab model, `src/lib/navigation/tabs.ts`) done, not yet wired into the shell. Layout option A was chosen (tabs replace
+Status: slices 1 (chrome restyle) and 2 (tab model, `src/lib/navigation/tabs.ts`)
+done; slice 3 (one-tab wiring) done and checked in the real app. Layout option A was chosen (tabs replace
 the breadcrumb in the topbar, workspace header compacted). All open decisions are settled (see Decisions).
 
 ## Layout
@@ -236,6 +236,10 @@ handles them in its own keydown handler like `⌘K`.
 3. **One-tab wiring.** The shell runs on the tab store with one tab: history
    moves into the tab, and the tab strip replaces the breadcrumb. Nothing new
    for the user yet; existing navigation and history tests must still pass.
+   The breadcrumb's ancestor links go with it; the full trail is the tab's
+   tooltip. The tab panel (`#shell-tabpanel`) is `.app-main`, which also
+   holds the topbar, because the topbar and the workspace content are
+   sibling flex children there; a tighter panel needs a markup change.
 4. **Multiple tabs.** New, close, switch through the leave guards, the `+`
    button, open-in-new-tab entry points, the left-rail rule, singleton
    settings, titles and icons, per-project restore.

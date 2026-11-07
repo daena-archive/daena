@@ -45,3 +45,11 @@ export function shellBreadcrumbs(options: {
   if (options.entityName) items.push({ key: "entity", label: options.entityName });
   return items;
 }
+
+export function tabTitleFromBreadcrumbs(crumbs: ShellBreadcrumb[]): { title: string; tooltip: string } {
+  if (crumbs.length === 0) return { title: "", tooltip: "" };
+  const first = crumbs[0];
+  const last = crumbs[crumbs.length - 1];
+  const title = last.action === "view" && crumbs.length >= 2 ? `${first.label} · ${last.label}` : last.label;
+  return { title, tooltip: crumbs.map((crumb) => crumb.label).join(" / ") };
+}

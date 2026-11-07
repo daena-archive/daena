@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { breadcrumbViewLabel, shellBreadcrumbs } from "../src/lib/shell/breadcrumbs.ts";
+import { breadcrumbViewLabel, shellBreadcrumbs, tabTitleFromBreadcrumbs } from "../src/lib/shell/breadcrumbs.ts";
 
 assert.equal(breadcrumbViewLabel({ section: "lore", view: "library" }), null);
 assert.equal(breadcrumbViewLabel({ section: "lore", view: "wiki" }), "Wiki");
@@ -58,6 +58,21 @@ const plugin = shellBreadcrumbs({
 assert.deepEqual(
   plugin.map((item) => item.label),
   ["Lore library", "Dice · Roller"],
+);
+
+assert.deepEqual(tabTitleFromBreadcrumbs([]), { title: "", tooltip: "" });
+assert.deepEqual(tabTitleFromBreadcrumbs([{ key: "home", label: "Home" }]), { title: "Home", tooltip: "Home" });
+assert.deepEqual(tabTitleFromBreadcrumbs(shellBreadcrumbs({ sectionLabel: "Lore library", entityName: "Jon Doe" })), {
+  title: "Jon Doe",
+  tooltip: "Lore library / Jon Doe",
+});
+assert.deepEqual(tabTitleFromBreadcrumbs(shellBreadcrumbs({ sectionLabel: "Lore library", viewLabel: "Wiki" })), {
+  title: "Lore library · Wiki",
+  tooltip: "Lore library / Wiki",
+});
+assert.deepEqual(
+  tabTitleFromBreadcrumbs(shellBreadcrumbs({ sectionLabel: "Lore library", pluginLabel: "Dice · Roller" })),
+  { title: "Dice · Roller", tooltip: "Lore library / Dice · Roller" },
 );
 
 console.log("shell breadcrumbs passed");

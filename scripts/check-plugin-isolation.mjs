@@ -220,8 +220,8 @@ assert.ok(
 );
 const shellLocation = sourceSlice("function currentShellLocation()", "function recordCurrentShellLocation");
 assert.match(shellLocation, /sandboxView\?\.view && !projectionSandboxOpen\(\)/);
-const breadcrumbs = sourceSlice("function breadcrumbItems()", "function workspaceHeadingKicker");
-assert.match(breadcrumbs, /!projectionSandboxOpen\(\)/);
+const tabPresentation = sourceSlice("function currentTabPresentation()", "function workspaceHeadingKicker");
+assert.match(tabPresentation, /!projectionSandboxOpen\(\)/);
 const closeProjection = sourceSlice("async function closeProjectionView", "async function closePluginView");
 assert.match(closeProjection, /recordShellDeparture\(departure\)/);
 assert.match(closeProjection, /if \(projectionSandboxOpen\(\)\) sandboxView = null/);
@@ -235,7 +235,7 @@ assert.match(
 );
 assert.match(
   route,
-  /!hostView && \(!sandboxView \|\| projectionSandboxOpen\(\)\) && \(section === "lore"/,
+  /!hostView &&\s*\(!sandboxView \|\| projectionSandboxOpen\(\)\) &&\s*\(section === "lore"/,
   "workspace view tabs stay visible while the World graph or Chronology is open",
 );
 assert.doesNotMatch(

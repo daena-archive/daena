@@ -72,7 +72,6 @@ import {
   type OutlineNode,
 } from "$lib/writing/outline";
 import {
-  emptyShellNavigationHistory,
   recordShellLocation,
   sameShellLocation,
   shellHistoryBack,
@@ -83,6 +82,14 @@ import {
   type WorkspaceLocationView,
   type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
+import {
+  activeGroup,
+  activeTab,
+  createTabsState,
+  updateTab,
+  type ShellTabsState,
+  type TabIcon,
+} from "$lib/navigation/tabs";
 import {
   collectionEntityTypes,
   collectionTabForEntityType,
@@ -164,7 +171,9 @@ import {
 } from "$lib/ai/promptTemplates";
 import AppSidebar from "$lib/shell/AppSidebar.svelte";
 import GlobalToolbar from "$lib/shell/GlobalToolbar.svelte";
-import { breadcrumbViewLabel, shellBreadcrumbs } from "$lib/shell/breadcrumbs";
+import TabStrip from "$lib/shell/TabStrip.svelte";
+import { breadcrumbViewLabel, shellBreadcrumbs, tabTitleFromBreadcrumbs } from "$lib/shell/breadcrumbs";
+import { workspaceIcon } from "$lib/shell/workspace-icons";
 import WorkspaceHeader from "$lib/shell/WorkspaceHeader.svelte";
 import HostGuide from "$lib/guides/HostGuide.svelte";
 import { LORE_GUIDE_ID, loreGuideSteps, TIMELINE_GUIDE_ID, timelineGuideSteps } from "$lib/guides";
@@ -258,12 +267,15 @@ import { createMutationController } from "$lib/entity-lifecycle/mutationState.ts
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
 import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState.ts";
 import {
+  Boxes,
+  Home,
   Pencil,
   Map as MapIcon,
   PanelLeft,
   PanelRight,
   Plus,
   Puzzle,
+  Settings,
   Square,
   ShieldCheck,
   X,
@@ -410,7 +422,21 @@ let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
 let projectHomeOpen = $state(true);
-let shellNavigationHistory = $state<ShellNavigationHistory>(emptyShellNavigationHistory());
+function freshShellTabs(): ShellTabsState {
+  return createTabsState(
+    { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } },
+    "main",
+    Date.now(),
+  );
+}
+let shellTabs = $state<ShellTabsState>(freshShellTabs());
+const shellNavigationHistory = $derived(activeTab(shellTabs).history);
+function setShellNavigationHistory(history: ShellNavigationHistory) {
+  shellTabs = updateTab(shellTabs, activeTab(shellTabs).id, { history });
+}
+function activateShellTab(_id: string) {
+  // Tab switching comes in slice 4.
+}
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
 let section = $state<WorkspaceSection>("lore");
@@ -2327,12 +2353,12 @@ function currentShellLocation(): ShellLocation {
 
 function recordCurrentShellLocation() {
   if (!ready || shellNavigationRestoring) return;
-  shellNavigationHistory = recordShellLocation(shellNavigationHistory, currentShellLocation());
+  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, currentShellLocation()));
 }
 
 function recordShellDeparture(location: ShellLocation) {
   if (!ready || shellNavigationRestoring) return;
-  shellNavigationHistory = recordShellLocation(shellNavigationHistory, location);
+  setShellNavigationHistory(recordShellLocation(shellNavigationHistory, location));
 }
 
 async function openTreePerson(entityId: string) {
@@ -3317,31 +3343,7 @@ function sectionLabel() {
             : "Maps";
 }
 
-async function activateBreadcrumb(action: "section" | "view") {
-  if (!(await flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  const resetView = action === "section";
-  const alreadyCollection =
-    !projectHomeOpen &&
-    !showSettings &&
-    !hostView &&
-    !sandboxView &&
-    !selected &&
-    !loreWikiOpen &&
-    (!resetView || section !== "houses" || housesView === "houses");
-  if (alreadyCollection) return;
-  const departure = currentShellLocation();
-  if (!(await dismissSettings())) return;
-  if (!(await leavePluginView())) return;
-  recordShellDeparture(departure);
-  projectHomeOpen = false;
-  loreWikiOpen = false;
-  loreWikiEntityId = null;
-  if (resetView && section === "houses") housesView = "houses";
-  if (selected) clearSelection();
-}
-
-function breadcrumbItems() {
+function currentTabPresentation(): { title: string; tooltip: string; icon: TabIcon } {
   const tab = activeCollectionTab();
   const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
   const owner = selected ? sectionForEntityType(selected.entity_type) : null;
@@ -3351,6 +3353,7 @@ function breadcrumbItems() {
     (sandboxView?.view && sandboxView.renderer !== "maps" && !projectionSandboxOpen()
       ? { plugin: sandboxView.plugin, view: sandboxView.view }
       : null);
+  const entityName = entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null;
   const specs = shellBreadcrumbs({
     home: projectHomeOpen && !showSettings,
     settingsLabel: showSettings ? sectionLabel() : null,
@@ -3360,18 +3363,27 @@ function breadcrumbItems() {
       view: currentWorkspaceLocationView(),
       tabLabel,
     }),
-    entityName: entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null,
+    entityName,
     pluginLabel: plugin
       ? plugin.plugin.name === plugin.view.title
         ? plugin.plugin.name
         : `${plugin.plugin.name} · ${plugin.view.title}`
       : null,
   });
-  return specs.map((item, index) => ({
-    label: item.label,
-    current: index === specs.length - 1,
-    onSelect: index === specs.length - 1 || !item.action ? undefined : () => void activateBreadcrumb(item.action!),
-  }));
+  const { title, tooltip } = tabTitleFromBreadcrumbs(specs);
+  const icon: TabIcon =
+    projectHomeOpen && !showSettings
+      ? { kind: "home" }
+      : showSettings && settingsSurface === "project"
+        ? { kind: "project" }
+        : showSettings
+          ? { kind: "settings" }
+          : plugin
+            ? { kind: "plugin", key: `${plugin.plugin.id}:${plugin.view.id}` }
+            : entityName && selected
+              ? { kind: "entity", section, entityType: selected.entity_type ?? "" }
+              : { kind: "section", section };
+  return { title, tooltip, icon };
 }
 
 function workspaceHeadingKicker() {
@@ -3663,7 +3675,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
       direction === "back"
         ? { ...history, back: history.back.slice(0, -1) }
         : { ...history, forward: history.forward.slice(1) };
-    shellNavigationHistory = history;
+    setShellNavigationHistory(history);
     transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   }
   if (!transition) return;
@@ -3671,7 +3683,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
-    if (await restoreShellLocation(transition.target)) shellNavigationHistory = transition.history;
+    if (await restoreShellLocation(transition.target)) setShellNavigationHistory(transition.history);
   } finally {
     shellNavigationBusy = false;
   }
@@ -4985,7 +4997,7 @@ async function finishOpening(info?: ProjectInfo) {
   await refreshArchivedCount();
   await refreshGit();
   await refreshAdmin();
-  shellNavigationHistory = emptyShellNavigationHistory();
+  shellTabs = freshShellTabs();
   projectHomeOpen = true;
   ready = true;
 }
@@ -7356,7 +7368,7 @@ function resetProjectSessionState() {
   closeAiFieldFill();
   closeAiRewrite();
   clearSelection();
-  shellNavigationHistory = emptyShellNavigationHistory();
+  shellTabs = freshShellTabs();
   shellNavigationBusy = false;
   collectionScrollBySection = {};
   pendingCollectionScroll = null;
@@ -7840,12 +7852,57 @@ onMount(() => {
     onOpenSettings={() => void openSettings()}
     onCollapsedChange={updateRailCollapsed} />
 
-  <section
+  <div
+    id="shell-tabpanel"
+    role="tabpanel"
+    aria-labelledby={`shell-tab-${activeTab(shellTabs).id}`}
     class:sandbox-active={Boolean(sandboxView)}
     class:map-surface-open={mapSurfaceOpen}
     class:language-surface={languagePaneShown}
     class:writing-surface={writingWebviewShown}
     class="app-main">
+    {#snippet tabIcon(icon: TabIcon)}
+      {#if icon.kind === "home"}
+        <Home size={15} strokeWidth={1.8} aria-hidden="true" />
+      {:else if icon.kind === "settings"}
+        <Settings size={15} strokeWidth={1.8} aria-hidden="true" />
+      {:else if icon.kind === "project"}
+        <Boxes size={15} strokeWidth={1.8} aria-hidden="true" />
+      {:else if icon.kind === "section"}
+        {@const SectionIcon = workspaceIcon(icon.section)}
+        <SectionIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+      {:else if icon.kind === "plugin"}
+        <Puzzle size={15} strokeWidth={1.8} aria-hidden="true" />
+      {:else if icon.kind === "entity"}
+        {@const presentation = iconForEntityType(icon.entityType)}
+        <EntityGlyph
+          icon={presentation.icon}
+          iconColor={presentation.iconColor}
+          pluginId={presentation.pluginId}
+          size={15}
+          box={16} />
+      {/if}
+    {/snippet}
+    {#snippet shellTabsStrip()}
+      {@const current = activeTab(shellTabs)}
+      {@const presentation = currentTabPresentation()}
+      <TabStrip
+        tabs={activeGroup(shellTabs).tabs.map((tab) =>
+          tab.id === current.id
+            ? { id: tab.id, ...presentation, active: true, pinned: tab.pinned }
+            : {
+                id: tab.id,
+                title: tab.title,
+                tooltip: tab.title,
+                icon: tab.icon,
+                active: false,
+                pinned: tab.pinned,
+              },
+        )}
+        panelId="shell-tabpanel"
+        onActivate={activateShellTab}
+        icon={tabIcon} />
+    {/snippet}
     {#snippet projectStatusControl()}
       <StatusCenter
         bind:open={statusCenterOpen}
@@ -7857,7 +7914,7 @@ onMount(() => {
     {/snippet}
     <GlobalToolbar
       {ready}
-      breadcrumbs={breadcrumbItems()}
+      tabs={shellTabsStrip}
       quickOpenShortcut={quickOpenShortcutLabel()}
       navigationBusy={shellNavigationBusy}
       canGoBack={shellNavigationHistory.back.length > 0}
@@ -10121,7 +10178,7 @@ onMount(() => {
         <button aria-label="Dismiss" onclick={dismissLifecycleToast}
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
-  </section>
+  </div>
   {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
     <button
       class="mobile-create-button"

@@ -234,7 +234,8 @@ The chrome above the panes is kept to two rows so tabs can join the topbar
 later ([`tabs.md`](../plans/tabs.md)).
 
 - **Topbar** (`GlobalToolbar`, `--shell-topbar-height`, 44px): Back and
-  Forward, breadcrumbs, a compact Quick Open (icon and shortcut; the name is in
+  Forward (within the active tab), the tab strip (`TabStrip`: each tab's
+  title and icon, the full location trail as its tooltip), a compact Quick Open (icon and shortcut; the name is in
   its label and tooltip), and the project status. The status shows only its
   icon while the project is current and keeps its short label when it is
   working or needs attention.

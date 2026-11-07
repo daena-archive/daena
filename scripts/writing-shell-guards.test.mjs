@@ -254,24 +254,35 @@ function workspaceStyle() {
   assert.match(page, /Write the canonical story of this entry…/);
 }
 
-// `document.write` stays in the Writing manifest, and the reason is the create dialog's opening note, not saving.
-// Saving an open entry is the trusted shell (`project_save_entry`), so the plugin needs no capability for it, and
-// the Writing webview never writes a document. The create flow builds the trusted `daena.writing` context from the
-// template's module and hands the opening note to `entities.create`, which the broker authorizes as `document.write`
-// (covered by `writing_opening_note_on_create_needs_document_write` in src-tauri).
+// Writing does not declare `document.write`. A module that does (Lore, Language) still creates the entry
+// and its opening note in one `entities.create`. A module that does not creates the entry first, then the shell
+// saves a non-empty note through `project.saveEntry` before selection. `writing_plugin_cannot_write_documents`
+// checks the real manifest denies both document writes.
 {
   const manifest = JSON.parse(fs.readFileSync("packages/modules/writing/manifest.json", "utf8"));
-  assert.ok(manifest.capabilities.includes("document.write"), "the opening note on create needs document.write");
+  assert.ok(!manifest.capabilities.includes("document.write"), "Writing cannot save documents itself");
   assert.ok(
     manifest.templates.length > 0 && manifest.templates.every((template) => typeof template.document === "string"),
     "Writing templates offer an opening note",
   );
   const create = functionBody("createWithOption");
   assert.match(create, /buildModuleContext\(option\.module,/);
+  assert.match(create, /option\.module\.capabilities\.includes\("document\.write"\)/);
   assert.match(
     create,
-    /document: openingDocument\.trim\(\) \? \{ body: openingDocument\.trim\(\), format: "markdown" \} : undefined/,
+    /document:\s*writesDocuments && openingNote \? \{ body: openingNote, format: "markdown" \} : undefined/,
   );
+  assert.match(create, /if \(!writesDocuments && openingNote\)/);
+  assert.match(create, /entity_id: created\.id, body: openingNote, format: "markdown"/);
+  assert.match(create, /fields: \[\]/);
+  const saveAt = create.indexOf("await project.saveEntry(");
+  const refreshAt = create.indexOf("refreshAfterEntityMutation");
+  const selectAt = create.indexOf("selectEntity(");
+  const errorAt = create.indexOf("if (openingNoteError) error = openingNoteError");
+  assert.ok(saveAt >= 0 && saveAt < refreshAt, "the opening note is saved before refresh");
+  assert.ok(refreshAt < selectAt, "refresh happens before the selection moves");
+  assert.ok(selectAt < errorAt, "the note failure is reported after selectEntity clears error");
+  assert.match(create, /was created, but its opening note was not saved: \$\{friendlyError\(cause\)\}/);
   assert.match(
     functionBody("flushAutoSave"),
     /flushWritingWebview\(\)/,

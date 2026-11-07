@@ -78,6 +78,9 @@ pub(super) fn append_host_surface_query(url: &mut String, host_surface: Option<(
 
 pub(super) fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
     let label = plugin_window_label(plugin_id);
+    // The broker session's origin is this label. Cancel before the webview
+    // goes away. Sessions are not revoked here; lookup includes revoked ids.
+    cancel_plugin_webview_ai(app, &label);
     if let Ok(mut states) = embedded_webview_states().lock() {
         states.remove(&label);
     }
@@ -195,6 +198,7 @@ pub(super) fn validate_module_state(module_state: &str) -> Result<(), String> {
         .map_err(|error| format!("plugin module state is not valid JSON: {error}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plugin_webview_url(
     policy: &daena_plugin_host::PluginWebviewPolicy,
     project_id: &str,
@@ -726,6 +730,9 @@ pub(super) fn plugin_close_all_webviews(app: tauri::AppHandle) -> Result<(), Str
         .into_keys()
         .filter_map(|label| label.starts_with("plugin:").then_some(label))
         .collect();
+    for label in &labels {
+        cancel_plugin_webview_ai(&app, label);
+    }
     for label in labels {
         if let Ok(mut states) = embedded_webview_states().lock() {
             states.remove(&label);

@@ -12,7 +12,6 @@
     "entity.write",
     "entity.delete",
     "document.read",
-    "document.write",
     "field.read:self",
     "field.write:self",
     "relationship.read",

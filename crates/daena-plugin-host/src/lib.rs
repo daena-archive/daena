@@ -480,7 +480,9 @@ pub struct Session {
 #[derive(Debug, Default, Clone)]
 pub struct SessionRegistry {
     sessions: BTreeMap<String, Session>,
-    generations: BTreeMap<(String, String), u64>,
+    /// Activation generation per project, plugin and origin, so a new session from one runtime instance
+    /// does not make another instance's session stale.
+    generations: BTreeMap<(String, String, String), u64>,
 }
 
 impl SessionRegistry {
@@ -492,9 +494,19 @@ impl SessionRegistry {
         grants: BTreeSet<String>,
         ttl: Duration,
     ) -> Session {
-        let key = (project_id.into(), entry.manifest.id.clone());
+        let key = (
+            project_id.into(),
+            entry.manifest.id.clone(),
+            origin.to_string(),
+        );
+        // A new session replaces the earlier ones from the same origin (a reloaded webview, a re-issued trusted
+        // session). Sessions from other origins stay valid: the shell's trusted `bundled:<plugin>` session and the
+        // plugin's webview session are used side by side, and revoking one when the other is issued left the
+        // webview failing every call with `session.revoked`. `revoke_plugin` still ends all of them.
         for existing in self.sessions.values_mut().filter(|session| {
-            session.project_id == project_id && session.plugin_id == entry.manifest.id
+            session.project_id == project_id
+                && session.plugin_id == entry.manifest.id
+                && session.origin == origin
         }) {
             existing.revoked = true;
         }
@@ -557,6 +569,17 @@ impl SessionRegistry {
             session.revoked = true;
         }
     }
+
+    /// Ids issued for an origin, including revoked sessions. `issue` revokes
+    /// older sessions for the plugin but leaves them in the table, and an
+    /// in-flight AI request still names that id.
+    pub fn ids_for_origin(&self, origin: &str) -> Vec<String> {
+        self.sessions
+            .values()
+            .filter(|session| session.origin == origin)
+            .map(|session| session.id.clone())
+            .collect()
+    }
     pub fn revoke_plugin(&mut self, project_id: &str, plugin_id: &str) {
         for session in self
             .sessions
@@ -597,10 +620,11 @@ impl SessionRegistry {
         if session.expires_at <= SystemTime::now() {
             return Err(rpc_error("session.expired", "session has expired", false));
         }
-        if self
-            .generations
-            .get(&(session.project_id.clone(), session.plugin_id.clone()))
-            != Some(&session.generation)
+        if self.generations.get(&(
+            session.project_id.clone(),
+            session.plugin_id.clone(),
+            session.origin.clone(),
+        )) != Some(&session.generation)
         {
             return Err(rpc_error(
                 "session.stale",
@@ -3186,6 +3210,21 @@ impl PluginHost {
                 request.project_id == project_id
                     && plugin_id.is_none_or(|expected| expected == request.plugin_id)
             })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub fn session_ids_for_origin(&self, origin: &str) -> Vec<String> {
+        self.sessions.ids_for_origin(origin)
+    }
+
+    /// Request ids bound to one broker session. Other sessions of the same
+    /// plugin, including the shell's `bundled:<plugin id>` session, are not
+    /// included.
+    pub fn ai_request_ids_for_session(&self, session_id: &str) -> Vec<String> {
+        self.ai_requests
+            .iter()
+            .filter(|(_, request)| request.session_id == session_id)
             .map(|(id, _)| id.clone())
             .collect()
     }

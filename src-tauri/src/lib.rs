@@ -189,6 +189,60 @@ fn cancel_ai_requests_for(
     Ok(())
 }
 
+/// Cancels AI requests bound to the given broker session ids.
+///
+/// Lock order matches `cancel_ai_requests_for` and `dispatch_host_rpc`'s
+/// poll/cancel path: the plugin host lock is held, then the AI runtime lock
+/// is taken inside `cancel_ai_request` and released before the next id.
+/// `ai.request.start` drops the host lock before it takes the runtime lock,
+/// and releases that lock before it locks the host again.
+fn cancel_ai_requests_for_sessions(
+    plugins: &SharedPluginHost,
+    runtime: &ai::SharedAiRuntime,
+    session_ids: &[&str],
+) -> Result<(), String> {
+    let mut host = plugins
+        .lock()
+        .map_err(|_| "plugin host lock poisoned".to_string())?;
+    cancel_locked_ai_requests(&mut host, runtime, session_ids);
+    Ok(())
+}
+
+fn cancel_locked_ai_requests(
+    host: &mut PluginHost,
+    runtime: &ai::SharedAiRuntime,
+    session_ids: &[&str],
+) {
+    let mut request_ids = Vec::new();
+    for session_id in session_ids {
+        request_ids.extend(host.ai_request_ids_for_session(session_id));
+    }
+    for request_id in request_ids {
+        let _ = ai::cancel_ai_request(runtime, &request_id);
+        let _ = ai::remove_ai_citations(runtime, &request_id);
+        host.remove_ai_request(&request_id);
+    }
+}
+
+fn cancel_plugin_webview_ai(app: &tauri::AppHandle, origin: &str) {
+    let Some(plugins) = app.try_state::<SharedPluginHost>() else {
+        return;
+    };
+    let Some(runtime) = app.try_state::<ai::SharedAiRuntime>() else {
+        return;
+    };
+    let plugins = plugins.inner();
+    let runtime = runtime.inner();
+    // Copy the ids, then drop the host lock. The helper locks the host again
+    // and then the AI runtime, which is the same order as `cancel_ai_requests_for`.
+    let session_ids = match plugins.lock() {
+        Ok(host) => host.session_ids_for_origin(origin),
+        Err(_) => return,
+    };
+    let session_ids = session_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let _ = cancel_ai_requests_for_sessions(plugins, runtime, &session_ids);
+}
+
 fn refresh_ai_index(core: &SharedCore, ai_runtime: &ai::SharedAiRuntime) {
     let Ok(_guard) = begin_project_command() else {
         return;

@@ -553,6 +553,13 @@ fn writing_manifest_declares_the_workspace_host_surface() {
             "writing must declare {capability}"
         );
     }
+    assert!(
+        manifest
+            .capabilities
+            .iter()
+            .all(|capability| capability != "document.write"),
+        "writing must not declare document.write"
+    );
     assert!(manifest.views.iter().any(|view| {
         view.id == "writing-workspace"
             && matches!(

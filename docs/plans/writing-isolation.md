@@ -85,7 +85,7 @@ for other entity types in a Writing tab and for Lore and Maps entries.
 | 3a. Save before the window closes or the app quits | Done, verified in the real app | `186d149` |
 | 3b. Shell integration | Done, not yet tried in the real app | `4212e99` |
 | 4. AI through the broker | Done, not yet tried in the real app | `f26afa0` |
-| 5. Clean-up and switch-over | Done, not yet tried in the real app | |
+| 5. Clean-up and switch-over | Done, not yet tried in the real app | `0ac3332` |
 
 ### Done
 
@@ -188,7 +188,11 @@ for other entity types in a Writing tab and for Lore and Maps entries.
      the answer, so the broker drops its record. Cancel calls
      `ai.request.cancel` and waits for the `cancelled` event. Discard, Escape,
      any new `writing.load` and unmounting the dialog cancel and release a
-     running request. Five failed polls in a row end the run.
+     running request. Five failed polls in a row end the run. Closing the
+     webview (leaving the pane, or closing the project) cancels AI requests
+     bound to that webview's broker session and drops them from the host.
+     Hiding the webview for an overlay does not. The shell's trusted
+     `bundled:<plugin id>` session, and every other plugin, keep running.
    - **Accept** only when entity, token and the editor's markdown still equal
      the snapshot (the shell's message otherwise), then `validateAiProposal`,
      then `insertAiTextAtRequest` or `replaceAiTextWithMarkdown` with the shell's
@@ -258,20 +262,24 @@ for other entity types in a Writing tab and for Lore and Maps entries.
      inspect `+page.svelte` (`writing-outline`, `async-entity-picker`, `ui-ux`)
      assert only that live shell code (outline, "New in this manuscript"), so they
      needed no change.
-   - **`document.write` stays in the Writing manifest.** The create dialog offers
-     an opening note for Writing templates (both declare `"document": ""`), and
-     `createWithOption` builds the trusted `daena.writing` context and calls
-     `entities.create({ document })`. The broker authorizes that as
-     `entity.write` plus `document.write` (`RpcCapability::EntityCreate`), and
-     `trusted_module_rpc` checks the plugin's grants, which follow the manifest
-     exactly. Dropping it would make creating a manuscript or reference page with
-     an opening note fail. Saving does not need it: `project_save_entry` runs as
-     `trusted_shell()`, and the Writing webview calls no document-save method.
-     `writing_opening_note_on_create_needs_document_write` (src-tauri) shows the
-     create with a note authorized with the capability and denied without it;
-     `writing-shell-guards` pins the create path, the trusted save and that the
-     webview sources never save. Narrowing it would mean creating the entry first
-     and saving the note through the shell, which this slice did not do.
+   - **`document.write` is not in the Writing manifest.** The create dialog still
+     offers an opening note (both Writing templates declare `"document": ""`).
+     `createWithOption` keeps one atomic `entities.create({ document })` when the
+     template's module declares `document.write` (Lore and Language do; Maps
+     templates have no document). Writing
+     does not, so the shell creates the entry without a document and, when the
+     trimmed note is non-empty, saves it at once through `project.saveEntry`
+     (document only, no field changes, no expected revision: a new entity has no
+     document row, and any revision conflicts). That save runs before
+     `refreshAfterEntityMutation` and selection, so the webview's `document.list`
+     sees the note. If the save fails, the entry stays and navigation still
+     finishes, and the shell says the entry was created but its opening note was
+     not saved. `project_save_entry` runs as `trusted_shell()`. The Writing
+     webview calls no document-save method. `writing_plugin_cannot_write_documents`
+     shows the real manifest denies `entity.create` with a document and denies
+     `document.save`, and still allows `entity.create` without one.
+     `writing-shell-guards` pins both create paths, the order, the failure
+     message, the trusted save and that the webview sources never save.
 
 ### Manual checks
 
@@ -328,8 +336,6 @@ opening note.
 - Remounting is avoided, but a name looked up for an entity link is cached per
   editor; renames show after reopening.
 - Non-macOS builds of the new menu and close code have not been compiled here.
-- Two clippy warnings predate this work (`host.rs` useless conversion,
-  `plugin_webview_url` argument count).
 - Full screen hides the notice strip, as specified, so an `error` raised while
   it is on waits until full screen ends. Save errors still show in the webview
   header.
@@ -356,12 +362,24 @@ opening note.
   that requires a selection rewrites it, and any other template rewrites the
   selection when there is one and writes at the cursor when there is none. The
   instruction placeholder follows the mode.
-- A request keeps running if the shell hides or unmounts the webview while it
-  works, because the page is torn down without a chance to cancel; it ends at
-  the provider or at the deadline (5 minutes by default, as in the shell).
+- Creating an entry in a module without `document.write` (Writing) saves the
+  opening note in a second step. If that save fails, the entry exists without
+  the note.
+- Fixed during the follow-up review: issuing a broker session revoked every
+  other session of the same plugin and project, and bumped one activation
+  generation they all shared. The shell's trusted `bundled:<plugin>` session
+  and the plugin's webview session therefore revoked each other: after the
+  Writing webview started, the next trusted Writing call in the shell (outline
+  refreshes run after every save) re-issued the shell's session and left the
+  webview failing every call with `session.revoked` or `session.stale`,
+  including loading the next entry and AI polling. Revocation and the
+  generation are now per origin (`SessionRegistry::issue`), as the platform
+  spec binds a session to its runtime or webview instance; a reloaded webview
+  still replaces its own earlier session, and `revoke_plugin` still ends all of
+  them. `revoked_webview_sessions_stay_addressable_by_origin` covers it.
 - Fixed during the slice-4 review: the plugin RPC client caps responses at
   256 KiB by default, and Writing used the default, so any document whose
   `document.list` answer was over 256 KiB (about 40,000 words) could not be
-  opened in the webview. Writing's client now accepts up to 96 MiB. The Language
-  webview still uses the default. The slice-5 real-app check with a large
-  document covers this.
+  opened in the webview. Writing's client now accepts up to 96 MiB, and so does
+  the Language webview's (`LANGUAGE_RPC_MAX_RESPONSE_BYTES`). The manual check
+  with a long document covers this.

@@ -137,7 +137,7 @@ pub(super) async fn plugin_rpc(
                         .ok_or(CoreError::ProjectNotOpen)?;
                     if current != project_id {
                         return Err(CoreError::Unauthorized {
-                            operation: "access another project".into(),
+                            operation: "access another project",
                         });
                     }
                     let host = plugins

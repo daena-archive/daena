@@ -615,6 +615,38 @@ fn wait_ai_terminal(runtime: &ai::SharedAiRuntime, request_id: &str) -> Vec<ai::
     panic!("AI test provider did not reach a terminal state")
 }
 
+struct HoldUntilCancelled;
+
+impl ai::AiProvider for HoldUntilCancelled {
+    fn generate(
+        &self,
+        request: ai::ProviderRequest,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Vec<ai::AiStreamEvent> {
+        for _ in 0..3_000 {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return vec![ai::AiStreamEvent {
+                    sequence: 0,
+                    request_id: request.request_id,
+                    phase: "cancelled".into(),
+                    delta: None,
+                    output: None,
+                    error: None,
+                }];
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        vec![ai::AiStreamEvent {
+            sequence: 0,
+            request_id: request.request_id,
+            phase: "completed".into(),
+            delta: None,
+            output: Some("still-running".into()),
+            error: None,
+        }]
+    }
+}
+
 struct CancellationProvider;
 
 impl ai::AiProvider for CancellationProvider {
@@ -714,6 +746,77 @@ fn broker_ai_lifecycle_supports_text_and_structured_requests_without_provider() 
         .as_str()
         .unwrap()
         .contains("Ada"));
+}
+
+#[test]
+fn closing_a_webview_session_cancels_only_that_sessions_ai_request() {
+    let runtime = Arc::new(Mutex::new(ai::AiRuntime::with_provider(Arc::new(
+        HoldUntilCancelled,
+    ))));
+    let plugins = ai_test_host();
+    let payload = serde_json::json!({
+        "operation": "generate_text",
+        "taskId": "text",
+        "userInstruction": "rewrite",
+        "immediateContext": {"selection": "hello"}
+    });
+    let mut webview = ai_test_context(runtime.clone());
+    webview.session_id = "webview-session".into();
+    let mut other = ai_test_context(runtime.clone());
+    other.session_id = "bundled:daena.writing".into();
+    let started = dispatch_host_rpc(
+        &plugins,
+        "daena.writing",
+        "project",
+        "ai.request.start",
+        payload.clone(),
+        webview,
+    )
+    .unwrap();
+    let other_started = dispatch_host_rpc(
+        &plugins,
+        "daena.writing",
+        "project",
+        "ai.request.start",
+        payload,
+        other,
+    )
+    .unwrap();
+    let request_id = started["requestId"].as_str().unwrap();
+    let other_id = other_started["requestId"].as_str().unwrap();
+    cancel_ai_requests_for_sessions(&plugins, &runtime, &["webview-session"]).unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, request_id).last().unwrap().phase,
+        "cancelled"
+    );
+    let other_events = ai::poll_ai_events(&runtime, other_id).unwrap();
+    assert!(
+        other_events.iter().all(|event| event.phase != "cancelled"),
+        "{other_events:?}"
+    );
+    assert!(
+        ai::ai_request_result(&runtime, other_id)
+            .unwrap_err()
+            .contains("still running"),
+        "the other session's request must keep running"
+    );
+    assert!(plugins
+        .lock()
+        .unwrap()
+        .ai_request_ids_for_session("webview-session")
+        .is_empty());
+    assert_eq!(
+        plugins
+            .lock()
+            .unwrap()
+            .ai_request_ids_for_session("bundled:daena.writing"),
+        vec![other_id.to_string()]
+    );
+    cancel_ai_requests_for_sessions(&plugins, &runtime, &["bundled:daena.writing"]).unwrap();
+    assert_eq!(
+        wait_ai_terminal(&runtime, other_id).last().unwrap().phase,
+        "cancelled"
+    );
 }
 
 #[test]
@@ -2912,12 +3015,11 @@ fn asset_upload_refusals_leave_nothing_registered() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The shell creates a Writing entry through the trusted `daena.writing` context, and the create dialog offers an
-/// opening note because the Writing templates declare a `document`. That request needs `document.write`, so the
-/// capability stays in the manifest. Saving an open entry does not: `project_save_entry` is the trusted shell, not
-/// the plugin, and the Writing webview never saves.
+/// Writing's manifest has no `document.write`. The isolated webview therefore cannot create an entry that
+/// carries a document, and cannot call `document.save`. Creating the entry itself stays allowed; the shell
+/// saves an opening note afterwards through `project_save_entry`.
 #[test]
-fn writing_opening_note_on_create_needs_document_write() {
+fn writing_plugin_cannot_write_documents() {
     let root = std::env::temp_dir().join(format!("daena-writing-caps-{}", uuid::Uuid::new_v4()));
     let project = ProjectStore::open_directory(&root).unwrap();
     let project_id = root.to_string_lossy().to_string();
@@ -2927,7 +3029,7 @@ fn writing_opening_note_on_create_needs_document_write() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|capability| capability == "document.write"));
+        .all(|capability| capability != "document.write"));
     assert!(manifest["templates"]
         .as_array()
         .unwrap()
@@ -2939,42 +3041,33 @@ fn writing_opening_note_on_create_needs_document_write() {
         "document": {"body": "First lines", "format": "markdown"},
     });
     let without_note = serde_json::json!({"name": "Draft", "type": "daena.writing:manuscript"});
+    let save = serde_json::json!({
+        "entityId": "entity",
+        "body": "First lines",
+        "format": "markdown",
+        "expectedRevision": "rev",
+    });
 
-    let mut granted_host = bundled_plugin_host(new_shared_core()).unwrap();
-    sync_project_usage(&project, &mut granted_host).unwrap();
-    for payload in [&with_note, &without_note] {
-        granted_host
-            .authorize_bundled(
-                "daena.writing",
-                &project_id,
-                "entity.create",
-                payload.clone(),
-            )
-            .unwrap_or_else(|error| panic!("entity.create should be granted: {error}"));
-    }
-
-    let mut reduced = manifest.clone();
-    reduced["capabilities"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|capability| capability != "document.write");
-    // Writing's relationship fields target Lore and Lore's target Language, so those are registered beside it.
-    let mut denied_host = PluginHost::new();
-    for json in [
-        include_str!("../../packages/modules/language/manifest.json").to_string(),
-        include_str!("../../packages/modules/lore/manifest.json").to_string(),
-        reduced.to_string(),
-    ] {
-        denied_host.register_bundled_json(&json).unwrap();
-    }
-    sync_project_usage(&project, &mut denied_host).unwrap();
-    denied_host
-        .authorize_bundled("daena.writing", &project_id, "entity.create", without_note)
-        .unwrap();
-    let denied = denied_host
+    let mut host = bundled_plugin_host(new_shared_core()).unwrap();
+    sync_project_usage(&project, &mut host).unwrap();
+    let denied_create = host
         .authorize_bundled("daena.writing", &project_id, "entity.create", with_note)
         .unwrap_err();
-    assert!(denied.to_string().contains("capability.denied"), "{denied}");
+    assert!(
+        denied_create.to_string().contains("capability.denied"),
+        "{denied_create}"
+    );
+    host.authorize_bundled("daena.writing", &project_id, "entity.create", without_note)
+        .unwrap_or_else(|error| {
+            panic!("entity.create without a document should be granted: {error}")
+        });
+    let denied_save = host
+        .authorize_bundled("daena.writing", &project_id, "document.save", save)
+        .unwrap_err();
+    assert!(
+        denied_save.to_string().contains("capability.denied"),
+        "{denied_save}"
+    );
     drop(project);
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -427,6 +427,8 @@ fn existing_writing_grants_upgrade_to_the_isolated_manifest_without_consent() {
     for capability in added {
         assert!(stale.remove(capability), "{capability} is declared");
     }
+    // An older project may still have stored `document.write`. Realignment follows the manifest and drops it.
+    stale.insert("document.write".to_string());
     host.grants.insert_loaded("project", "daena.writing", stale);
 
     host.ensure_first_party_bundled_grants("project", "daena.writing")
@@ -435,7 +437,7 @@ fn existing_writing_grants_upgrade_to_the_isolated_manifest_without_consent() {
     for capability in added {
         assert!(grants.contains(capability), "{capability} is granted");
     }
-    assert!(grants.contains("document.write"));
+    assert!(!grants.contains("document.write"));
 }
 
 #[test]
@@ -2993,6 +2995,107 @@ fn plugin_importer_grant_does_not_expose_siblings_or_foreign_providers() {
             std::sync::Arc::new(|_| Ok(valid_staged_import())),
         )
         .is_err());
+}
+
+#[test]
+fn ai_request_ids_for_session_returns_only_that_session() {
+    let mut host = PluginHost::new();
+    host.register_ai_request(
+        "a1",
+        "proj",
+        "daena.writing",
+        "webview-1",
+        "generate_text",
+        None,
+    );
+    host.register_ai_request(
+        "a2",
+        "proj",
+        "daena.writing",
+        "webview-1",
+        "generate_text",
+        None,
+    );
+    host.register_ai_request(
+        "shell",
+        "proj",
+        "daena.writing",
+        "bundled:daena.writing",
+        "generate_text",
+        None,
+    );
+    host.register_ai_request(
+        "lore",
+        "proj",
+        "daena.lore",
+        "webview-lore",
+        "generate_text",
+        None,
+    );
+    assert_eq!(
+        host.ai_request_ids_for_session("webview-1"),
+        vec!["a1".to_string(), "a2".to_string()]
+    );
+    assert!(host.ai_request_ids_for_session("missing").is_empty());
+    assert_eq!(
+        host.ai_request_ids_for("proj", Some("daena.writing")).len(),
+        3
+    );
+}
+
+#[test]
+fn revoked_webview_sessions_stay_addressable_by_origin() {
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/writing/manifest.json"
+    ))
+    .unwrap();
+    let origin = plugin_window_label("daena.writing");
+    let first = host.bootstrap("daena.writing", "project", &origin).unwrap();
+    let second = host.bootstrap("daena.writing", "project", &origin).unwrap();
+    assert!(host.sessions.get(&first.id).unwrap().revoked);
+    let bundled = host
+        .ensure_bundled_session("daena.writing", "project")
+        .unwrap();
+    assert_ne!(bundled.origin, origin);
+    // The shell's trusted session and the live webview session coexist: issuing one must not revoke the other.
+    assert!(!host.sessions.get(&second.id).unwrap().revoked);
+    // Authorization may refuse the call for other reasons in this bare host; it must not be the session.
+    if let Err(error) = host.authorize_rpc(
+        &origin,
+        &RpcRequest {
+            rpc_version: 1,
+            session_id: second.id.clone(),
+            request_id: "after-bundled".into(),
+            method: "entity.get".into(),
+            payload: serde_json::json!({"id": "missing"}),
+        },
+    ) {
+        assert!(
+            !error.code.starts_with("session."),
+            "the webview keeps working after the shell uses its trusted session: {error:?}"
+        );
+    }
+    // And a webview reload does not revoke the shell's session.
+    let third = host.bootstrap("daena.writing", "project", &origin).unwrap();
+    assert!(host.sessions.get(&second.id).unwrap().revoked);
+    assert!(!host.sessions.get(&bundled.id).unwrap().revoked);
+    assert_eq!(
+        host.ensure_bundled_session("daena.writing", "project")
+            .unwrap()
+            .id,
+        bundled.id,
+        "the trusted session is reused, not re-issued"
+    );
+    let mut ids = host.session_ids_for_origin(&origin);
+    ids.sort();
+    let mut expected = vec![first.id, second.id, third.id];
+    expected.sort();
+    assert_eq!(ids, expected);
+    assert_eq!(
+        host.session_ids_for_origin(&bundled.origin),
+        vec![bundled.id]
+    );
 }
 
 #[test]

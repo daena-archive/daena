@@ -10,6 +10,13 @@ import {
   pickLanguageManifest,
 } from "../packages/modules/language/src/plugin-protocol.ts";
 import { createBrokerEditorHost, SHARED_ASSET_READ_METHOD } from "../src/lib/editor/broker-host.ts";
+import fs from "node:fs";
+
+// The webview raises the SDK's 256 KiB response limit, so large lexicons and long documents load.
+assert.match(
+  fs.readFileSync("packages/modules/language/src/plugin-main.ts", "utf8"),
+  /createBrowserPluginRpcTransport\(\{ maxResponseBytes: LANGUAGE_RPC_MAX_RESPONSE_BYTES \}\)/,
+);
 
 // Mount parameters: entityId and the percent-encoded pane state from SandboxView.
 const launch = parseLanguageMountParams(

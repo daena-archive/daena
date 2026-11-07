@@ -82,13 +82,9 @@ unfinished remainder.
   2.11.4 the runtime holds the webview's `window_id` mutex while the closure
   runs, and on the main thread the closure runs synchronously, so such a call
   deadlocks the app.
-- Two clippy warnings predate this work (`host.rs` useless conversion,
-  `plugin_webview_url` argument count), so workspace clippy with
-  `-D warnings` fails.
 
 ## Resume order
 
 1. Run the Writing Studio manual checks in the real app, windowed and in full
    screen ([`writing-isolation.md`](writing-isolation.md), "Manual checks").
    Writing is the last major module that was in the main webview.
-2. Clear the two pre-existing clippy warnings.

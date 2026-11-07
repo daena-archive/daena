@@ -6,6 +6,11 @@
 
 export const LANGUAGE_PLUGIN_ID = "daena.language";
 export const LANGUAGE_STATE_EVENT_TYPE = "daena.language/state@1";
+/**
+ * Largest broker response the webview accepts. The SDK's default is 256 KiB, which a large lexicon's entity and
+ * field lists or a long document can pass; Writing uses the same limit for the same reason.
+ */
+export const LANGUAGE_RPC_MAX_RESPONSE_BYTES = 96 * 1024 * 1024;
 
 export const LANGUAGE_PANES = ["overview", "lexicon", "sounds", "writing", "grammar", "forms", "samples"] as const;
 export type LanguagePane = (typeof LANGUAGE_PANES)[number];
@@ -58,8 +63,7 @@ export function parseLanguageMountParams(search: string): LanguageMountParams {
 
 /** Messages the shell posts into the webview (`plugin_webview_post`). */
 export type LanguageHostMessage =
-  | { type: "language.pane"; pane: LanguagePane }
-  | { type: "language.can-leave"; requestId: string };
+  { type: "language.pane"; pane: LanguagePane } | { type: "language.can-leave"; requestId: string };
 
 export function parseLanguageHostMessage(value: unknown): LanguageHostMessage | null {
   if (!isRecord(value)) return null;

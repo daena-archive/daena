@@ -8,7 +8,12 @@ import {
   uploadAssetChunks,
 } from "../../../plugin-sdk/src/index";
 import { applyPluginAppearance } from "../../../plugin-sdk/src/theme";
-import { createBrokerModuleContext, type ModuleContext, type ModuleManifest, type UUID } from "../../../module-api/src/index";
+import {
+  createBrokerModuleContext,
+  type ModuleContext,
+  type ModuleManifest,
+  type UUID,
+} from "../../../module-api/src/index";
 import { setDefaultEditorHost } from "../../../../src/lib/editor/host";
 import LanguageWorkspace from "./LanguageWorkspace.svelte";
 import { createBrokerEditorHost } from "../../../../src/lib/editor/broker-host.ts";
@@ -18,6 +23,7 @@ import {
   parseLanguageHostMessage,
   parseLanguageMountParams,
   pickLanguageManifest,
+  LANGUAGE_RPC_MAX_RESPONSE_BYTES,
   type LanguageWorkspaceBridge,
 } from "./plugin-protocol.ts";
 
@@ -26,7 +32,8 @@ const bundledManifest = manifestJson as unknown as ModuleManifest;
 const root = document.querySelector<HTMLElement>("#language-root");
 
 async function start(target: HTMLElement): Promise<void> {
-  const transport = createBrowserPluginRpcTransport();
+  // Large lexicons and long documents arrive in one answer, past the SDK's 256 KiB default.
+  const transport = createBrowserPluginRpcTransport({ maxResponseBytes: LANGUAGE_RPC_MAX_RESPONSE_BYTES });
   const client = createPluginRpcClient(transport);
   const bootstrap = await client.bootstrap();
   applyPluginAppearance(bootstrap.appearance, document.documentElement);

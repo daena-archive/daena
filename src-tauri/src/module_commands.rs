@@ -527,7 +527,13 @@ pub(super) async fn module_disable(
             return Err(CoreError::Conflict(error.to_string()));
         }
         host.deactivate_bundled(&project_id, &id);
+        // `close_plugin_webview` locks the plugin host again. This mutex is
+        // not reentrant, so drop the guard first.
+        drop(host);
         close_plugin_webview(&app, &id);
+        let host = plugins
+            .lock()
+            .map_err(|_| CoreError::Conflict("plugin host lock poisoned".into()))?;
         apply_relationship_runtime_schemas(project, &host)?;
         Ok(())
     })

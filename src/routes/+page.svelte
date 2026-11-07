@@ -5523,13 +5523,28 @@ async function createWithOption(
     const context = buildModuleContext(option.module, projectInfo?.root ?? "", {
       availableServices: enabledServices(),
     });
+    const openingNote = openingDocument.trim();
+    const writesDocuments = option.module.capabilities.includes("document.write");
     const created = await context.entities.create({
       name: requestedName.trim(),
       type: option.template.entityType,
       fields: fieldsForCreate,
       relationships: relationshipsForCreate,
-      document: openingDocument.trim() ? { body: openingDocument.trim(), format: "markdown" } : undefined,
+      document: writesDocuments && openingNote ? { body: openingNote, format: "markdown" } : undefined,
     });
+    // A new entity has no document row. Any expected revision conflicts
+    // ("document does not exist"), so the note is saved with none.
+    let openingNoteError = "";
+    if (!writesDocuments && openingNote) {
+      try {
+        await project.saveEntry({
+          document: { entity_id: created.id, body: openingNote, format: "markdown" },
+          fields: [],
+        });
+      } catch (cause) {
+        openingNoteError = `${created.name} was created, but its opening note was not saved: ${friendlyError(cause)}`;
+      }
+    }
     recordShellDeparture(departure);
     const createdType = option.template.entityType ?? "";
     const isHouse = createdType === HOUSE_TYPE || createdType === "house" || createdType.endsWith(":house");
@@ -5577,6 +5592,8 @@ async function createWithOption(
         false,
       );
     }
+    // selectEntity clears `error` while it loads. Set the note failure after that.
+    if (openingNoteError) error = openingNoteError;
     void tick().then(() => returnFocus?.focus());
     return true;
   } catch (cause) {

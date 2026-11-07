@@ -2912,6 +2912,73 @@ fn asset_upload_refusals_leave_nothing_registered() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The shell creates a Writing entry through the trusted `daena.writing` context, and the create dialog offers an
+/// opening note because the Writing templates declare a `document`. That request needs `document.write`, so the
+/// capability stays in the manifest. Saving an open entry does not: `project_save_entry` is the trusted shell, not
+/// the plugin, and the Writing webview never saves.
+#[test]
+fn writing_opening_note_on_create_needs_document_write() {
+    let root = std::env::temp_dir().join(format!("daena-writing-caps-{}", uuid::Uuid::new_v4()));
+    let project = ProjectStore::open_directory(&root).unwrap();
+    let project_id = root.to_string_lossy().to_string();
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../packages/modules/writing/manifest.json")).unwrap();
+    assert!(manifest["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|capability| capability == "document.write"));
+    assert!(manifest["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|template| template["document"].is_string()));
+    let with_note = serde_json::json!({
+        "name": "Draft",
+        "type": "daena.writing:manuscript",
+        "document": {"body": "First lines", "format": "markdown"},
+    });
+    let without_note = serde_json::json!({"name": "Draft", "type": "daena.writing:manuscript"});
+
+    let mut granted_host = bundled_plugin_host(new_shared_core()).unwrap();
+    sync_project_usage(&project, &mut granted_host).unwrap();
+    for payload in [&with_note, &without_note] {
+        granted_host
+            .authorize_bundled(
+                "daena.writing",
+                &project_id,
+                "entity.create",
+                payload.clone(),
+            )
+            .unwrap_or_else(|error| panic!("entity.create should be granted: {error}"));
+    }
+
+    let mut reduced = manifest.clone();
+    reduced["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|capability| capability != "document.write");
+    // Writing's relationship fields target Lore and Lore's target Language, so those are registered beside it.
+    let mut denied_host = PluginHost::new();
+    for json in [
+        include_str!("../../packages/modules/language/manifest.json").to_string(),
+        include_str!("../../packages/modules/lore/manifest.json").to_string(),
+        reduced.to_string(),
+    ] {
+        denied_host.register_bundled_json(&json).unwrap();
+    }
+    sync_project_usage(&project, &mut denied_host).unwrap();
+    denied_host
+        .authorize_bundled("daena.writing", &project_id, "entity.create", without_note)
+        .unwrap();
+    let denied = denied_host
+        .authorize_bundled("daena.writing", &project_id, "entity.create", with_note)
+        .unwrap_err();
+    assert!(denied.to_string().contains("capability.denied"), "{denied}");
+    drop(project);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn asset_upload_and_shared_list_require_their_capabilities() {
     let root = std::env::temp_dir().join(format!("daena-upload-caps-{}", uuid::Uuid::new_v4()));

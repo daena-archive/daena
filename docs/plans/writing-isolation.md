@@ -74,10 +74,9 @@ the shell claims the text once with `plugin_take_text_transfer`.
 
 ## Status
 
-Everything below is behind the `daena:writing-webview` developer flag, off by
-default. To try it, run `localStorage.setItem("daena:writing-webview","1")` in
-the main window's dev console and reload. With the flag off, Writing Studio
-uses the old editor in the main webview.
+The Writing webview is the only editor for manuscripts and reference pages. The
+`daena:writing-webview` developer flag is gone. The shell editor still renders
+for other entity types in a Writing tab and for Lore and Maps entries.
 
 | Slice | State | Commit |
 |---|---|---|
@@ -85,8 +84,8 @@ uses the old editor in the main webview.
 | 2. Editing and saving through the shell | Done, not yet tried in the real app | `bb34fc0` |
 | 3a. Save before the window closes or the app quits | Done, verified in the real app | `186d149` |
 | 3b. Shell integration | Done, not yet tried in the real app | `4212e99` |
-| 4. AI through the broker | Done, not yet tried in the real app | |
-| 5. Clean-up and switch-over | Not started | |
+| 4. AI through the broker | Done, not yet tried in the real app | `f26afa0` |
+| 5. Clean-up and switch-over | Done, not yet tried in the real app | |
 
 ### Done
 
@@ -147,8 +146,9 @@ uses the old editor in the main webview.
      wiring.
 
 5. **AI through the broker (4).** The rewrite/generate flow runs in the webview
-   when it is shown. The shell's own dialog and handlers stay for the old
-   editor (flag off) and go in slice 5. Field fill stays in the shell.
+   when it is shown. The shell's own dialog and handlers stay, because Lore,
+   Maps and unhandled Writing types still use them (see slice 5). Field fill
+   stays in the shell.
    - **State and templates travel in `writing.ai-state`**, not through a broker
      method. The message is `{enabled, providerName, templates}`; the shell
      posts it after the webview's `ready` (every `ready` counts, so a webview
@@ -225,21 +225,103 @@ uses the old editor in the main webview.
      preparation, the deferral conditions and the broker with the Writing
      policy.
 
-### Then: 5. Clean-up and switch-over
+6. **Clean-up and switch-over (5).** The webview is on for every project; the
+   flag is removed.
+   - **Removed.** `writingWebviewEnabled` (the `localStorage` read) and its use
+     in `writingWebviewShown`; the manuscripts and reference-page placeholder
+     variants of the shell editor (`Write your manuscript…`, `Write this
+     reference page…`), which the shell editor can no longer reach for those
+     entries. The old assertion that the flag exists in
+     `scripts/check-plugin-isolation.mjs` is now one that no `daena:writing-webview`
+     appears in `src/`.
+   - **One editor per entry.** `writingEntrySelected` (Writing section, entity
+     type handled by the webview) decides the content column: the webview slot
+     when `writingWebviewShown`, the shell editor only when
+     `!writingEntrySelected`. When such an entry is selected but the webview is not
+     shown (content pane hidden, or a state where the workspace grid renders without
+     it), the column is empty, never the shell editor, so there is no second writer
+     next to the webview's drafts. The other states the audit looked at (not
+     ready, settings, project home, host view, Lore wiki, Houses tree, projection
+     and plugin sandbox views) replace the whole workspace grid earlier in the
+     template, so the editor branch is not reached at all.
+     `writing-shell-guards.test.mjs` checks the derived, the branch chain and that
+     the only `RichTextEditor` sits behind the guard.
+   - **Kept, though the plan suggested removing it.** The shell editor
+     (`RichTextEditor`, `MarkdownArticle`, Article and Edit, the conflict banner,
+     `editorRef`, `editorFullscreen`), the shell AI rewrite dialog
+     (`aiRewriteOpen`, `startAiRewrite`, `acceptAiRewrite`, `openAiAction`) and
+     field fill: Lore ("Write the canonical story of this entry…"), Maps and any
+     Writing type the webview does not handle (custom tabs; `Write this
+     {label}…`) still use them. The empty-state variants for the Writing tabs stay
+     too: with nothing selected the shell shows them. The outline, create flow,
+     quick open, history and inspector are shell by design. The tests that
+     inspect `+page.svelte` (`writing-outline`, `async-entity-picker`, `ui-ux`)
+     assert only that live shell code (outline, "New in this manuscript"), so they
+     needed no change.
+   - **`document.write` stays in the Writing manifest.** The create dialog offers
+     an opening note for Writing templates (both declare `"document": ""`), and
+     `createWithOption` builds the trusted `daena.writing` context and calls
+     `entities.create({ document })`. The broker authorizes that as
+     `entity.write` plus `document.write` (`RpcCapability::EntityCreate`), and
+     `trusted_module_rpc` checks the plugin's grants, which follow the manifest
+     exactly. Dropping it would make creating a manuscript or reference page with
+     an opening note fail. Saving does not need it: `project_save_entry` runs as
+     `trusted_shell()`, and the Writing webview calls no document-save method.
+     `writing_opening_note_on_create_needs_document_write` (src-tauri) shows the
+     create with a note authorized with the capability and denied without it;
+     `writing-shell-guards` pins the create path, the trusted save and that the
+     webview sources never save. Narrowing it would mean creating the entry first
+     and saving the note through the shell, which this slice did not do.
 
-- Turn the webview on by default and remove the flag.
-- Remove the old Writing editor path from `+page.svelte`, then drop
-  `document.write` from the Writing manifest (the shell's trusted Writing
-  context needs it until then) and update the fuzz corpus copy.
-- Update the tests that inspect `+page.svelte` for Writing code
-  (`scripts/writing-outline.test.mjs`, `async-entity-picker.test.mjs`,
-  `ui-ux.test.mjs`).
-- Update `ARCHITECTURE.md`, `UI_UX.md` and `PLUGIN_SDK.md`, which still
-  describe Writing as host-owned.
-- Real-app check, windowed and fullscreen: typing and autosave, switching
-  entries right after typing, a document over 128 KiB, a conflict (Reload, Keep
-  mine, recovery copy), images, mentions, links, overlays, quit right after
-  typing.
+### Manual checks
+
+Slices 2, 3b, 4 and 5 have not been tried in the real app. Run these in
+windowed mode and in full screen, on macOS. The flag no longer exists, so they
+run on the only path: the webview. Also open a Lore entry and a Map note once to
+see that the shell editor still works there, and create a manuscript with an
+opening note.
+
+1. **Editing and saving.**
+   - Type in a manuscript and a reference page; the header shows "Unsaved
+     changes", then "Saving…", then "Saved".
+   - Switch to another entry, another collection tab, another module and back
+     right after typing; nothing typed is lost.
+   - Switch between Article and Edit.
+2. **Long documents.** Open and edit a manuscript over 256 KiB (about 40,000
+   words). It loads (the raised RPC response limit) and saves (drafts over
+   128 KiB go through the chunked `text.transfer` hand-off).
+3. **Conflicts.** While an entry is open with unsaved typing, change its
+   `document.md` on disk. The conflict banner appears in the webview; try
+   Reload, Keep mine and the recovery copy, each once.
+4. **Shell integration.**
+   - Rename from the header (button and double-click) opens the shell's edit
+     dialog, and the header updates without losing the caret.
+   - Archive from the header asks for confirmation, then archives.
+   - Cmd/Ctrl+K, Cmd/Ctrl+N and Alt+Left/Right from inside the editor run the
+     shell's quick open, create and history (Alt+arrows go back and forward
+     from the editor too, so they do not move by word there).
+   - Full screen on and off from the editor toggle and Escape, and ended by
+     selecting another entry; the sidebar, inspector and top bar step aside.
+   - An error or project diagnostic shows in the strip above the editor and can
+     be dismissed. Modal dialogs hide the webview; anchored popovers (project
+     switcher, status center) hide it only when they overlap it.
+   - The inspector (fields, relationships, assets, Show on map, Fill empty
+     fields) still works next to the webview, and field edits save together
+     with the document.
+5. **AI** (with a provider configured and AI on for the project).
+   - Rewrite a selection; generate at the cursor; Custom instruction with a
+     selection (rewrites it) and without one (writes at the cursor).
+   - Cancel while a request runs; Discard and Escape after it ends; Retry.
+   - Accept, then check the text saved.
+   - Switch entries while a request runs; the dialog closes.
+   - With an embedding model and a built index, the proposal can draw on
+     related entries (semantic retrieval).
+   - Turning AI off for the project removes the AI menu.
+6. **Editor content.** Insert and show images, mention entities, add and open
+   entity links (Open button and Cmd/Ctrl+click), and open web links in the
+   browser.
+7. **Quit.** Type, then press Cmd+Q at once; reopen and the text is there.
+   Repeat with the window's close button and with closing the project.
 
 ### Known limits
 

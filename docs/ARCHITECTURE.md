@@ -254,8 +254,14 @@ export.
 ### Runtime isolation and authority
 
 Third-party UI runs in an isolated, application-controlled webview origin with
-no host DOM or ambient Tauri access. Background logic runs in bounded WASM
-when supported. Plugin webviews have an empty Tauri permission set and
+no host DOM or ambient Tauri access. Bundled editors that have moved out of the
+shell follow the same rule: Chronology, the Lore World graph, Language, and the
+Writing Studio editor for manuscripts and reference pages run in plugin webviews
+with the same broker. Writing's webview holds the editor and hands its text to
+the shell, which stays the only writer: it saves the document and the
+inspector's field edits together, handles conflicts and recovery copies, and
+flushes the webview's last text before any navigation, project close, or quit.
+Background logic runs in bounded WASM when supported. Plugin webviews have an empty Tauri permission set and
 communicate through same-origin `POST /__rpc` using the versioned broker
 envelope:
 

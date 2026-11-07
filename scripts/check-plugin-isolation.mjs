@@ -292,8 +292,8 @@ assert.match(tauriSource, /\("daena\.language", "\/dist\/ui\/language\.css"\)/);
 assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.js"\)/);
 assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
 
-// Writing workspace: behind a developer flag, the content pane for manuscripts and reference pages is the
-// isolated daena.writing webview, kept mounted across selections.
+// Writing workspace: the content pane for manuscripts and reference pages is the isolated daena.writing webview,
+// kept mounted across selections. It is the only editor for them; there is no flag for the old path.
 assert.match(
   route,
   /<SandboxView pluginId="daena\.writing" viewId="writing-workspace" title="Writing" \/>/,
@@ -309,10 +309,10 @@ assert.doesNotMatch(
   /\{#key[^}]*\}\s*<div class="writing-mount"/,
   "the Writing webview must not be keyed on the entity",
 );
-assert.match(
-  route,
-  /localStorage\.getItem\("daena:writing-webview"\) === "1"/,
-  "the Writing webview is behind a dev flag",
+assert.deepEqual(
+  listSourceFiles("src").filter((file) => fs.readFileSync(file, "utf8").includes("daena:writing-webview")),
+  [],
+  "the daena:writing-webview developer flag is gone; the webview is the only Writing editor",
 );
 assert.match(route, /listen<unknown>\("writing-state"/, "the shell must listen for the Writing webview state");
 assert.match(

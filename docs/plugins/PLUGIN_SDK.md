@@ -288,7 +288,11 @@ its own plugin origin, CSP, initialization policy, and broker session; plugin
 JavaScript still never runs in the host DOM. The plugin library remains the
 management surface for installation, consent, upgrades, rollback, and
 disablement. Built-in Lore, Timeline, and Writing navigation is also host-owned,
-so it is not duplicated by empty module manifests.
+so it is not duplicated by empty module manifests. The Writing Studio content
+pane for manuscripts and reference pages is a sandboxed view of this kind (the
+`daena.writing` webview): it edits text in its own origin and hands it to the
+shell, which is the only writer, so the plugin needs no document-save call for
+editing.
 
 ### Theme packs
 

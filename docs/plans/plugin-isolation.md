@@ -60,9 +60,11 @@ unfinished remainder.
 
 ## Still open
 
-- Writing editing and saving still run in the main webview by default. Slices 1 and 2 of
-  [`writing-isolation.md`](writing-isolation.md) ship the webview (`src-tauri/plugin-assets/writing/`,
-  `npm run build:writing-ui`) with editing and shell-side saving behind `localStorage["daena:writing-webview"] = "1"`.
+- Writing Studio's manuscript and reference-page editor now runs only in the `daena.writing` plugin webview
+  (`src-tauri/plugin-assets/writing/`, built by `npm run build:writing-ui`), with the shell as the only writer; the
+  developer flag and the old editor path for those entries are gone (slice 5 of
+  [`writing-isolation.md`](writing-isolation.md)). Slices 2, 3b, 4 and 5 have not been tried in the real app yet; the
+  manual checks are listed there.
 - The SDK caps uploads at 64 MiB.
 - `RichTextEditor` is safe to destroy while focused: blur during a reactive
   update never calls `onChange`, and destroying the editor drops edits still in
@@ -86,8 +88,7 @@ unfinished remainder.
 
 ## Resume order
 
-1. Finish isolating Writing Studio, the last major module still in the main
-   webview. Progress and the next slice are tracked in
-   [`writing-isolation.md`](writing-isolation.md) (next: slice 3b, shell
-   integration).
+1. Run the Writing Studio manual checks in the real app, windowed and in full
+   screen ([`writing-isolation.md`](writing-isolation.md), "Manual checks").
+   Writing is the last major module that was in the main webview.
 2. Clear the two pre-existing clippy warnings.

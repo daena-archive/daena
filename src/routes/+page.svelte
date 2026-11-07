@@ -422,17 +422,6 @@ let languageWebview = $state({ mounted: false, ready: false });
 const languageLeave = new LanguageLeaveTracker();
 /** A pane the shell asked the mounted Language webview to show and has not yet seen confirmed. */
 let languagePaneRequest: LanguagePane | null = null;
-/**
- * Developer flag for the isolated Writing webview, read once. While the webview only renders the selected
- * entry read-only it stays off by default, so the shell editor keeps working.
- */
-const writingWebviewEnabled = (() => {
-  try {
-    return localStorage.getItem("daena:writing-webview") === "1";
-  } catch {
-    return false;
-  }
-})();
 /** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let writingWebview = $state({ mounted: false, ready: false });
 /** Counts the webview's `ready` reports, so the AI state is posted again to a webview that restarted. */
@@ -1544,21 +1533,25 @@ const languagePaneShown = $derived(
 );
 
 /**
- * The Writing webview replaces the shell editor in the content column for manuscripts and reference pages.
- * It stays mounted while the selection moves between them.
+ * A manuscript or reference page is selected in the Writing section. The Writing webview is the only editor for it:
+ * the shell editor never renders for such an entry, even in states where the webview is not shown (see
+ * `writingWebviewShown`), so a second editor can never take typing next to the webview's drafts.
+ */
+const writingEntrySelected = $derived(section === "writing" && writingWebviewHandles(selected?.entity_type));
+/**
+ * The Writing webview is the content column's editor for manuscripts and reference pages. It stays mounted while the
+ * selection moves between them.
  */
 const writingWebviewShown = $derived(
-  writingWebviewEnabled &&
+  writingEntrySelected &&
     ready &&
-    section === "writing" &&
     workbenchPaneVisibility.content &&
     !projectHomeOpen &&
     !showSettings &&
     !hostView &&
     !sandboxView &&
     !loreWikiOpen &&
-    enabledWorkspaceSections().includes("writing") &&
-    writingWebviewHandles(selected?.entity_type),
+    enabledWorkspaceSections().includes("writing"),
 );
 /** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
 const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen);
@@ -9276,7 +9269,8 @@ onMount(() => {
               <SandboxView pluginId="daena.writing" viewId="writing-workspace" title="Writing" />
             </div>
           </div>
-        {:else if workbenchPaneVisibility.content}
+        {:else if workbenchPaneVisibility.content && !writingEntrySelected}
+          <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
               {@const mapId = selected?.entity_type === "daena.maps:world-map" ? selected.id : null}
@@ -9593,11 +9587,7 @@ onMount(() => {
                         onSaveRequest={() => void flushAutoSave()}
                         onFullscreenChange={setEditorFullscreen}
                         placeholder={section === "writing"
-                          ? writingView === "manuscripts"
-                            ? "Write your manuscript…"
-                            : writingView === "reference"
-                              ? "Write this reference page…"
-                              : `Write this ${createLabel()}…`
+                          ? `Write this ${createLabel()}…`
                           : section === "maps"
                             ? "Describe this map and the world it contains…"
                             : "Write the canonical story of this entry…"} />

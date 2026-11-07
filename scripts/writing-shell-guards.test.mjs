@@ -187,7 +187,10 @@ function workspaceStyle() {
     "the top banner is left to the webview",
   );
   assert.match(page, /\{#if error && !writingWebviewShown\}/, "the toast is left to the webview");
-  const slot = between("{:else if writingWebviewShown}", "{:else if workbenchPaneVisibility.content}");
+  const slot = between(
+    "{:else if writingWebviewShown}",
+    "{:else if workbenchPaneVisibility.content && !writingEntrySelected}",
+  );
   assert.match(slot, /class="writing-content"/);
   assert.match(
     slot,
@@ -195,6 +198,99 @@ function workspaceStyle() {
     "hidden in full screen",
   );
   assert.ok(slot.indexOf("writing-notices") < slot.indexOf("writing-mount"), "the notices are above the slot");
+}
+
+// The webview is the only editor for a manuscript or reference page. Whenever one is selected in the Writing section,
+// the shell editor must not render, whether or not the webview is shown (not ready, content pane hidden, an
+// overlay view open): a second editor would be a second writer next to the webview's drafts.
+{
+  assert.match(
+    page,
+    /const writingEntrySelected = \$derived\(section === "writing" && writingWebviewHandles\(selected\?\.entity_type\)\);/,
+    "one derived says a webview-handled Writing entry is selected",
+  );
+  const shown = between("const writingWebviewShown = $derived(", "\n);");
+  assert.match(
+    shown,
+    /^const writingWebviewShown = \$derived\(\s*writingEntrySelected &&/,
+    "shown only for such an entry",
+  );
+  for (const gate of [
+    "ready",
+    "workbenchPaneVisibility.content",
+    "!projectHomeOpen",
+    "!showSettings",
+    "!hostView",
+    "!sandboxView",
+    "!loreWikiOpen",
+  ]) {
+    assert.ok(shown.includes(gate), `the webview needs ${gate}`);
+  }
+  assert.doesNotMatch(page, /daena:writing-webview|writingWebviewEnabled/, "no flag chooses between two editors");
+
+  // The content column chooses between the Language slot, the Writing slot and the shell editor (the chain starts
+  // at `{#if languagePaneShown}`; its `{:else if}` branches are checked here).
+  const chain = between("{#if languagePaneShown}", "{#snippet contentPaneBody()}");
+  const branches = [...chain.matchAll(/^ {8}\{(?:#|:else )if ([^}]+)\}/gm)].map((match) => match[1]);
+  assert.deepEqual(
+    branches,
+    ["writingWebviewShown", "workbenchPaneVisibility.content && !writingEntrySelected"],
+    "the shell editor branch excludes webview-handled Writing entries",
+  );
+  // The shell editor (RichTextEditor and the content pane body) renders only inside that last branch.
+  assert.equal(page.match(/<RichTextEditor\b/g)?.length, 1, "one shell RichTextEditor");
+  assert.ok(
+    page.indexOf("<RichTextEditor") >
+      page.indexOf("{:else if workbenchPaneVisibility.content && !writingEntrySelected}"),
+    "the shell RichTextEditor sits behind the guard",
+  );
+  assert.equal(page.match(/\{#snippet contentPaneBody\(\)\}/g)?.length, 1);
+  assert.equal(page.match(/children=\{contentPaneBody\}/g)?.length, 1, "the content pane body is rendered once");
+  // Lore, Maps and the Writing types the webview does not handle keep the shell editor.
+  assert.match(
+    page,
+    /placeholder=\{section === "writing"\s*\? `Write this \$\{createLabel\(\)\}…`\s*: section === "maps"/,
+  );
+  assert.match(page, /Write the canonical story of this entry…/);
+}
+
+// `document.write` stays in the Writing manifest, and the reason is the create dialog's opening note, not saving.
+// Saving an open entry is the trusted shell (`project_save_entry`), so the plugin needs no capability for it, and
+// the Writing webview never writes a document. The create flow builds the trusted `daena.writing` context from the
+// template's module and hands the opening note to `entities.create`, which the broker authorizes as `document.write`
+// (covered by `writing_opening_note_on_create_needs_document_write` in src-tauri).
+{
+  const manifest = JSON.parse(fs.readFileSync("packages/modules/writing/manifest.json", "utf8"));
+  assert.ok(manifest.capabilities.includes("document.write"), "the opening note on create needs document.write");
+  assert.ok(
+    manifest.templates.length > 0 && manifest.templates.every((template) => typeof template.document === "string"),
+    "Writing templates offer an opening note",
+  );
+  const create = functionBody("createWithOption");
+  assert.match(create, /buildModuleContext\(option\.module,/);
+  assert.match(
+    create,
+    /document: openingDocument\.trim\(\) \? \{ body: openingDocument\.trim\(\), format: "markdown" \} : undefined/,
+  );
+  assert.match(
+    functionBody("flushAutoSave"),
+    /flushWritingWebview\(\)/,
+    "the shell is the writer, after the webview's flush",
+  );
+  assert.match(page, /await project\.saveEntry\(\s*\{\s*document: \{ entity_id: entityId, body, format: "markdown" \}/);
+  const command = fs.readFileSync("src-tauri/src/project_commands.rs", "utf8");
+  assert.match(
+    command,
+    /fn project_save_entry\([\s\S]*?core\.project\(trusted_shell\(\)\)\?\.save_entry_with_options\(/,
+    "saving is the trusted shell, not a plugin identity",
+  );
+  const webviewSources = fs
+    .readdirSync("packages/modules/writing/src")
+    .filter((file) => /\.(ts|svelte)$/.test(file))
+    .map((file) => [file, fs.readFileSync(`packages/modules/writing/src/${file}`, "utf8")]);
+  for (const [file, source] of webviewSources) {
+    assert.doesNotMatch(source, /document\.save|documents\.save|saveEntry|document\.write/, `${file} never saves`);
+  }
 }
 
 // A rename refreshes the header in place when the editor keeps its text.

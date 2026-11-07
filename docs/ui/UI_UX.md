@@ -252,6 +252,17 @@ Archive remain available while document autosave is visible. Leaving for an
 identity action flushes or explicitly resolves unsaved text. Returning from
 Archive restores the entry to its correct tab.
 
+The editor for manuscripts and reference pages runs in an isolated Writing
+webview inside the content pane: header (title, Article and Edit), editor,
+conflict banner, AI rewrite and generate dialog, and footer. The shell keeps the
+sidebar, collection tabs, outline, create flow, quick open, history, and the
+inspector. Rename, Archive, Cmd/Ctrl+K, Cmd/Ctrl+N, Alt+Left and Alt+Right from
+the editor run the shell's own dialogs and navigation, full screen fills the
+window, and errors and diagnostics show in a strip above the editor. Every
+exit from the pane saves first and stays put if the save fails. Other
+entity types in a Writing tab, and Lore and Maps entries, keep the shell
+editor.
+
 Manuscripts stay one type. Parent, contents, revisions, and world links are
 optional relationships. A sketch or short story is a manuscript with no parent.
 A series is nested with `part_of` only when the author links it. On Manuscripts,

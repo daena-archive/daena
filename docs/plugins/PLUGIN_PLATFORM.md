@@ -245,8 +245,12 @@ Rules:
   `writing.editable`, `writing.ai-state`) and the `daena.writing/state@1`
   protocol (`ready`, `draft`, `flush-reply`, `open-link`, `open-entity`,
   `fullscreen`, `request-rename`, `request-archive`, `shortcut`); see
-  [`writing-isolation.md`](../plans/writing-isolation.md). A plugin still cannot
-  register arbitrary native commands or create an unregistered host surface.
+  [`writing-isolation.md`](../plans/writing-isolation.md). The Writing webview
+  is the only editor for those entries and the shell is the only writer: the
+  webview hands its text to the shell, which saves it with the entry's field
+  edits in one trusted `saveEntry` call, and the webview never writes a
+  document itself. A plugin still cannot register arbitrary native commands or
+  create an unregistered host surface.
 - A package digest covers the manifest and every packaged file. The manifest's
   migration checksums are part of that digest.
 - Enabled state and granted capabilities are not stored in the package
@@ -637,9 +641,9 @@ The following features are deferred, with their default behavior decided now:
 - **Auto-apply a pack on install:** deferred and disallowed.
 - **Grantable WASI host functions:** deferred. v1 WASM is deny-all imports.
 - **Remaining bundled UIs in isolated webviews:** deferred. Chronology, the
-  Lore World graph, and Language already run in their plugin webviews, and
-  Writing renders documents read-only in its webview behind a developer flag
-  while editing moves over. The isolation rule is unchanged. Current surfaces are in
+  Lore World graph, Language, and the Writing editor for manuscripts and
+  reference pages already run in their plugin webviews. The isolation rule is
+  unchanged. Current surfaces are in
   [`plugin-isolation.md`](../plans/plugin-isolation.md).
 
 Any future change to identity, isolation, authority, package integrity, data

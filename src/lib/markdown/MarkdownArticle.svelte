@@ -1,11 +1,12 @@
 <script lang="ts">
 import type { Entity } from "$lib/project/client";
+import type { OpenIntent } from "$lib/navigation/open-intent";
 import { headingOutlineFromTree, parseMarkdown } from "./index.ts";
 import MarkdownNode from "./MarkdownNode.svelte";
 
 export let markdown = "";
 export let entities: Entity[] = [];
-export let onOpenEntity: (id: string) => void = () => {};
+export let onOpenEntity: (id: string, intent?: OpenIntent) => void = () => {};
 export let showOutline = true;
 
 $: tree = parseMarkdown(markdown);

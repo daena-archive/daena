@@ -145,6 +145,37 @@ assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "x".re
   kind: "open-entity",
   entityId: "x".repeat(128),
 });
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "e-1", newTab: true }), {
+  kind: "open-entity",
+  entityId: "e-1",
+  newTab: true,
+});
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "e-1", newTab: false }), {
+  kind: "open-entity",
+  entityId: "e-1",
+  newTab: false,
+});
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "e-1", newTab: "yes" }), {
+  kind: "open-entity",
+  entityId: "e-1",
+});
+assert.deepEqual(parseLanguageStateEvent({ kind: "open-entity", entityId: "e-1", newTab: null }), {
+  kind: "open-entity",
+  entityId: "e-1",
+});
+assert.equal(parseLanguageStateEvent({ kind: "open-entity", entityId: "", newTab: true }), null);
+assert.equal(parseLanguageStateEvent({ kind: "shortcut" }), null);
+assert.equal(parseLanguageStateEvent({ kind: "shortcut", shortcut: "quick-open" }), null);
+assert.equal(parseLanguageStateEvent({ kind: "shortcut", shortcut: "tab-9" }), null);
+assert.equal(parseLanguageStateEvent({ kind: "shortcut", shortcut: 1 }), null);
+assert.deepEqual(parseLanguageStateEvent({ kind: "shortcut", shortcut: "tab-next" }), {
+  kind: "shortcut",
+  shortcut: "tab-next",
+});
+assert.deepEqual(parseLanguageStateEvent({ kind: "shortcut", shortcut: "tab-last" }), {
+  kind: "shortcut",
+  shortcut: "tab-last",
+});
 
 assert.equal(LANGUAGE_LEAVE_PENDING_TIMEOUT_MS, 1500);
 

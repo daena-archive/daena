@@ -68,6 +68,25 @@ for (const kind of ["open-entity", "request-rename", "request-archive"]) {
   assert.equal(parseWritingStateEvent({ kind, entityId: "x".repeat(129) }), null, `${kind} drops overlong ids`);
   assert.deepEqual(parseWritingStateEvent({ kind, entityId: "e-1" }), { kind, entityId: "e-1" });
 }
+assert.deepEqual(parseWritingStateEvent({ kind: "open-entity", entityId: "e-1", newTab: true }), {
+  kind: "open-entity",
+  entityId: "e-1",
+  newTab: true,
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "open-entity", entityId: "e-1", newTab: false }), {
+  kind: "open-entity",
+  entityId: "e-1",
+  newTab: false,
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "open-entity", entityId: "e-1", newTab: "yes" }), {
+  kind: "open-entity",
+  entityId: "e-1",
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "open-entity", entityId: "e-1", newTab: 1 }), {
+  kind: "open-entity",
+  entityId: "e-1",
+});
+assert.equal(parseWritingStateEvent({ kind: "open-entity", entityId: "", newTab: true }), null);
 
 // Fullscreen is the webview's own: it names the entry and the state after the change.
 assert.equal(parseWritingStateEvent({ kind: "fullscreen" }), null);
@@ -92,9 +111,19 @@ assert.deepEqual(parseWritingStateEvent({ kind: "fullscreen", entityId: "e1", on
 });
 assert.equal(parseWritingStateEvent({ kind: "shortcut" }), null);
 assert.equal(parseWritingStateEvent({ kind: "shortcut", shortcut: "save" }), null);
+assert.equal(parseWritingStateEvent({ kind: "shortcut", shortcut: "tab-9" }), null);
+assert.equal(parseWritingStateEvent({ kind: "shortcut", shortcut: 1 }), null);
 assert.deepEqual(parseWritingStateEvent({ kind: "shortcut", shortcut: "quick-open" }), {
   kind: "shortcut",
   shortcut: "quick-open",
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "shortcut", shortcut: "tab-close" }), {
+  kind: "shortcut",
+  shortcut: "tab-close",
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "shortcut", shortcut: "tab-last" }), {
+  kind: "shortcut",
+  shortcut: "tab-last",
 });
 
 // Drafts: text or a transfer reference, never both, never neither.

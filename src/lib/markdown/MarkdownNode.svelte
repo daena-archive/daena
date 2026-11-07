@@ -4,6 +4,7 @@ import { normalizeHexColor } from "./color.ts";
 import { nodeText } from "./text.ts";
 import { safeHref } from "./urls.ts";
 import AssetImage from "./AssetImage.svelte";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 
 type MdNode = {
   type: string;
@@ -32,7 +33,7 @@ type MdNode = {
 export let node: MdNode;
 export let entityIds: Set<string> = new Set();
 export let entities: Array<{ id: string; name: string; deleted?: boolean }> = [];
-export let onOpenEntity: (id: string) => void = () => {};
+export let onOpenEntity: (id: string, intent?: OpenIntent) => void = () => {};
 
 function headingId(): string {
   return node.data?.hProperties?.id ?? "";
@@ -126,10 +127,16 @@ function entityDisplayName(): string {
   return txt || id;
 }
 
+function platformIsMac(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+}
+
 function openEntity(event: MouseEvent) {
+  // A right-click is not an open. Middle-click (auxclick button 1) is a new tab.
+  if (event.type === "auxclick" && event.button !== 1) return;
   event.preventDefault();
   const id = entityId();
-  if (id) onOpenEntity(id);
+  if (id) onOpenEntity(id, openIntent(event, platformIsMac()));
 }
 </script>
 
@@ -248,7 +255,8 @@ function openEntity(event: MouseEvent) {
     data-entity-id={id}
     data-is-custom={custom ? "true" : undefined}
     title={missing ? "Missing entity" : undefined}
-    onclick={openEntity}>
+    onclick={openEntity}
+    onauxclick={openEntity}>
     {#if custom}
       {#each children() as child}<MarkdownNode node={child} {entityIds} {entities} {onOpenEntity} />{/each}
     {:else}

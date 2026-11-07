@@ -292,7 +292,8 @@ await scenario("entity reference: hovering offers Open before Edit, and Open ope
   const edit = container.querySelector(".entity-reference-edit");
   assert.equal(open?.textContent, "Open", "the popover offers Open");
   assert.equal(edit?.textContent, "Edit reference", "Edit reference stays in the popover");
-  assert.equal(open.nextElementSibling, edit, "Open sits before Edit");
+  assert.equal(open.nextElementSibling?.textContent, "Open in new tab", "Open in new tab sits beside Open");
+  assert.equal(open.nextElementSibling?.nextElementSibling, edit, "Edit follows Open in new tab");
   open.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   assert.deepEqual(openedEntities, ["e-9"], "the host opens the referenced entity once");
   harness.flushSync();

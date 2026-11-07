@@ -39,7 +39,7 @@ export interface BrokerEditorHostOptions {
   /** Asks the shell to open an external link (the shell checks the scheme). */
   openLink: (href: string) => void;
   /** Asks the shell to open an entity (the shell checks that it still exists). */
-  openEntity: (entityId: string) => void;
+  openEntity: (entityId: string, options?: { newTab?: boolean }) => void;
   /** The asset namespace this host owns, such as `language` or `writing`. */
   namespace: string;
   /**
@@ -321,8 +321,8 @@ export function createBrokerEditorHost(options: BrokerEditorHostOptions): Editor
     async openExternal(href) {
       options.openLink(href);
     },
-    openEntity(entityId) {
-      options.openEntity(entityId);
+    openEntity(entityId, openOptions) {
+      options.openEntity(entityId, openOptions);
     },
     async resolveEntityNames(ids) {
       const names: Record<string, string> = {};

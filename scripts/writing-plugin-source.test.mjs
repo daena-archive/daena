@@ -402,6 +402,9 @@ assert.equal(parseWritingHostMessage([]), null);
     { kind: "conflict-action", entityId: "e1", token: "t1", action: "recovery" },
     { kind: "open-link", href: "https://example.com" },
     { kind: "open-entity", entityId: "e2" },
+    { kind: "open-entity", entityId: "e2", newTab: true },
+    { kind: "open-entity", entityId: "e2", newTab: false },
+    { kind: "shortcut", shortcut: "tab-close" },
     { kind: "fullscreen", entityId: "e1", on: false },
     { kind: "fullscreen", entityId: "e1", on: true },
     { kind: "request-rename", entityId: "e1" },
@@ -441,12 +444,16 @@ assert.equal(parseWritingHostMessage([]), null);
     { kind: "fullscreen", entityId: "e1", enabled: true },
     { kind: "request-rename" },
     { kind: "shortcut", shortcut: "save" },
+    { kind: "shortcut", shortcut: "tab-9" },
   ];
   for (const payload of rejected) {
     assert.equal(parseWritingStatePayload(payload), null, `webview rejects ${JSON.stringify(payload)}`);
     assert.equal(parseWritingStateEvent(payload), null, `shell rejects ${JSON.stringify(payload)}`);
   }
   assert.equal(parseWritingDraft({ ...inline, text: "é".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES) }), null);
+  const stripped = { kind: "open-entity", entityId: "e2", newTab: "yes" };
+  assert.deepEqual(parseWritingStatePayload(stripped), { kind: "open-entity", entityId: "e2" });
+  assert.deepEqual(parseWritingStateEvent(stripped), { kind: "open-entity", entityId: "e2" });
 }
 
 assert.deepEqual([...WRITING_CONFLICT_ACTIONS], ["reload", "overwrite", "recovery"]);

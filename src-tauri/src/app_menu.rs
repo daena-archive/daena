@@ -1,24 +1,53 @@
-//! macOS menu, so that Cmd+Q and the Quit item go through the close handshake.
+//! macOS menu. Quit and Close Window go through the close handshake, and the tab items tell the shell
+//! which tab shortcut to run.
 //!
 //! With no menu set, tauri 2.11.6 installs `Menu::default` on macOS. Its Quit item is the predefined `quit`,
 //! which muda maps to `terminate:`. AppKit then exits without raising `CloseRequested` or `ExitRequested`, so
-//! the handshake in app_close.rs never sees the quit. This module builds the same menu, mirroring
-//! `Menu::default` (macOS branch) item for item, with one difference: Quit is a custom item with the
-//! `CmdOrCtrl+Q` accelerator. Its handler closes the main window, so the handshake runs before the app exits.
-//! Other platforms keep the menu they had before, which is none.
+//! the handshake in app_close.rs never sees the quit. The predefined close-window item also has a fixed Cmd+W
+//! accelerator, which this app uses for Close Tab. This module builds the same menu otherwise, with these
+//! differences:
+//!
+//! - Quit is a custom item (`CmdOrCtrl+Q`). It closes the main window so the handshake runs, and it exits
+//!   only when that window is already gone.
+//! - Close Window is a custom item (`CmdOrCtrl+Shift+W`) in the File and Window menus. It closes the main
+//!   window the same way and does nothing when that window is already gone. It does not exit the app.
+//! - File also has New Tab (`CmdOrCtrl+T`), Reopen Closed Tab (`CmdOrCtrl+Shift+T`) and Close Tab
+//!   (`CmdOrCtrl+W`).
+//! - Window also has Show Next Tab and Show Previous Tab. Their accelerators are
+//!   `CmdOrCtrl+Shift+BracketRight` and `CmdOrCtrl+Shift+BracketLeft` (⇧⌘] and ⇧⌘[).
+//!
+//! Those five tab items emit `shell-shortcut` to the main webview. The keydown listeners do not handle
+//! ⌘T, ⌘W or ⇧⌘T, so the menu is the only path for them. Other platforms keep the menu they had before,
+//! which is none.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use tauri::menu::{
     AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
     WINDOW_SUBMENU_ID,
 };
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 /// Id of the custom Quit item. `on_menu_event` recognises the click by this id.
 pub(crate) const QUIT_MENU_ID: &str = "app-quit";
 
 /// Accelerator of the custom Quit item. `CmdOrCtrl` is Cmd on macOS.
 pub(crate) const QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
+
+/// Id of both Close Window items. `on_menu_event` recognises the click by this id.
+pub(crate) const WINDOW_CLOSE_MENU_ID: &str = "window-close";
+
+/// Close Window. Cmd+W is Close Tab, so the window moves to Shift+Cmd+W.
+pub(crate) const WINDOW_CLOSE_ACCELERATOR: &str = "CmdOrCtrl+Shift+W";
+
+pub(crate) const TAB_NEW_ACCELERATOR: &str = "CmdOrCtrl+T";
+pub(crate) const TAB_REOPEN_ACCELERATOR: &str = "CmdOrCtrl+Shift+T";
+pub(crate) const TAB_CLOSE_ACCELERATOR: &str = "CmdOrCtrl+W";
+
+/// muda 0.19.3 parses both `BracketRight` and `]` as `Code::BracketRight` (`parse_code` in
+/// accelerator.rs). The named code is the `keyboard-types` code and does not depend on a one-character token.
+pub(crate) const TAB_NEXT_ACCELERATOR: &str = "CmdOrCtrl+Shift+BracketRight";
+/// Same parser: `BracketLeft` and `[` are `Code::BracketLeft`.
+pub(crate) const TAB_PREVIOUS_ACCELERATOR: &str = "CmdOrCtrl+Shift+BracketLeft";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuitAction {
@@ -33,6 +62,35 @@ pub(crate) fn quit_action(main_window_exists: bool) -> QuitAction {
         QuitAction::CloseMainWindow
     } else {
         QuitAction::ExitApp
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowCloseAction {
+    CloseMainWindow,
+    /// No main window. Unlike Quit, Close Window must not exit the app.
+    Ignore,
+}
+
+/// Close Window closes the main window when it exists, so the same handshake runs. With no main window it
+/// does nothing: only Quit exits the app.
+pub(crate) fn window_close_action(main_exists: bool) -> WindowCloseAction {
+    if main_exists {
+        WindowCloseAction::CloseMainWindow
+    } else {
+        WindowCloseAction::Ignore
+    }
+}
+
+/// Menu ids that are tab shortcuts. Quit and Close Window are not in this map.
+pub(crate) fn menu_shortcut(id: &str) -> Option<&'static str> {
+    match id {
+        "tab-new" => Some("tab-new"),
+        "tab-close" => Some("tab-close"),
+        "tab-reopen" => Some("tab-reopen"),
+        "tab-next" => Some("tab-next"),
+        "tab-previous" => Some("tab-previous"),
+        _ => None,
     }
 }
 
@@ -60,6 +118,27 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         true,
         Some(QUIT_ACCELERATOR),
     )?;
+    let show_next_tab = MenuItem::with_id(
+        app,
+        "tab-next",
+        "Show Next Tab",
+        true,
+        Some(TAB_NEXT_ACCELERATOR),
+    )?;
+    let show_previous_tab = MenuItem::with_id(
+        app,
+        "tab-previous",
+        "Show Previous Tab",
+        true,
+        Some(TAB_PREVIOUS_ACCELERATOR),
+    )?;
+    let window_close = MenuItem::with_id(
+        app,
+        WINDOW_CLOSE_MENU_ID,
+        "Close Window",
+        true,
+        Some(WINDOW_CLOSE_ACCELERATOR),
+    )?;
     let window_menu = Submenu::with_id_and_items(
         app,
         WINDOW_SUBMENU_ID,
@@ -69,7 +148,10 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &PredefinedMenuItem::minimize(app, None)?,
             &PredefinedMenuItem::maximize(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::close_window(app, None)?,
+            &show_next_tab,
+            &show_previous_tab,
+            &PredefinedMenuItem::separator(app)?,
+            &window_close,
         ],
     )?;
     let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "Help", true, &[])?;
@@ -95,7 +177,31 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                 app,
                 "File",
                 true,
-                &[&PredefinedMenuItem::close_window(app, None)?],
+                &[
+                    &MenuItem::with_id(app, "tab-new", "New Tab", true, Some(TAB_NEW_ACCELERATOR))?,
+                    &MenuItem::with_id(
+                        app,
+                        "tab-reopen",
+                        "Reopen Closed Tab",
+                        true,
+                        Some(TAB_REOPEN_ACCELERATOR),
+                    )?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(
+                        app,
+                        "tab-close",
+                        "Close Tab",
+                        true,
+                        Some(TAB_CLOSE_ACCELERATOR),
+                    )?,
+                    &MenuItem::with_id(
+                        app,
+                        WINDOW_CLOSE_MENU_ID,
+                        "Close Window",
+                        true,
+                        Some(WINDOW_CLOSE_ACCELERATOR),
+                    )?,
+                ],
             )?,
             &Submenu::with_items(
                 app,
@@ -123,20 +229,37 @@ pub(crate) fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     )
 }
 
-/// Runs the quit action for a click on the custom Quit item.
+/// Runs a custom menu item. Quit and Close Window close the main window. Tab items emit the shortcut name
+/// to the main webview, which runs it through the same path as a keydown.
 pub(crate) fn on_menu_event(app: &AppHandle, event: MenuEvent) {
-    if event.id != QUIT_MENU_ID {
+    if event.id == QUIT_MENU_ID {
+        let main = app.get_webview_window("main");
+        match quit_action(main.is_some()) {
+            QuitAction::CloseMainWindow => {
+                if let Some(window) = main {
+                    if let Err(error) = window.close() {
+                        eprintln!("could not close the main window for quit: {error}");
+                    }
+                }
+            }
+            QuitAction::ExitApp => app.exit(0),
+        }
         return;
     }
-    let main = app.get_webview_window("main");
-    match quit_action(main.is_some()) {
-        QuitAction::CloseMainWindow => {
+    if event.id == WINDOW_CLOSE_MENU_ID {
+        let main = app.get_webview_window("main");
+        if let WindowCloseAction::CloseMainWindow = window_close_action(main.is_some()) {
             if let Some(window) = main {
                 if let Err(error) = window.close() {
-                    eprintln!("could not close the main window for quit: {error}");
+                    eprintln!("could not close the main window: {error}");
                 }
             }
         }
-        QuitAction::ExitApp => app.exit(0),
+        return;
+    }
+    if let Some(shortcut) = menu_shortcut(event.id.as_ref()) {
+        if let Err(error) = app.emit_to("main", "shell-shortcut", shortcut) {
+            eprintln!("could not send shell shortcut {shortcut}: {error}");
+        }
     }
 }

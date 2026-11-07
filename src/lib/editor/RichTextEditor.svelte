@@ -1358,15 +1358,19 @@ function openEntityReferenceEditor() {
 }
 
 /** Opens the entity through the host and closes the reference popover. False when the host cannot open entities. */
-function openEntityReference(entityId: string): boolean {
+function openEntityReference(entityId: string, options?: { newTab?: boolean }): boolean {
   if (!effectiveHost?.openEntity) return false;
   entityReferenceEdit = null;
-  effectiveHost.openEntity(entityId);
+  effectiveHost.openEntity(entityId, options);
   return true;
 }
 
 function openEntityReferenceFromPopover() {
   if (entityReferenceEdit) openEntityReference(entityReferenceEdit.entityId);
+}
+
+function openEntityReferenceInNewTab() {
+  if (entityReferenceEdit) openEntityReference(entityReferenceEdit.entityId, { newTab: true });
 }
 
 /** Closes the reference popover. An open dialog still reads the reference it edits, so the popover stays for it. */
@@ -2024,7 +2028,10 @@ onMount(() => {
         const entityId = anchor?.dataset.entityId;
         if (!entityId) return false;
         event.preventDefault();
-        if ((event.metaKey || event.ctrlKey) && openEntityReference(entityId)) return true;
+        const modified = event.metaKey || event.ctrlKey;
+        // Modifier-click stays in this tab. Shift added to it opens a new tab.
+        if (modified && event.shiftKey && openEntityReference(entityId, { newTab: true })) return true;
+        if (modified && openEntityReference(entityId)) return true;
         showEntityReferenceEditor(entityId, anchor.textContent ?? "", _position, anchor.getBoundingClientRect());
         return true;
       },
@@ -2686,6 +2693,11 @@ $: inTable = editorState?.isActive("table") ?? false;
           class="entity-reference-open"
           onmousedown={(event) => event.preventDefault()}
           onclick={openEntityReferenceFromPopover}>Open</button>
+        <button
+          type="button"
+          class="entity-reference-open"
+          onmousedown={(event) => event.preventDefault()}
+          onclick={openEntityReferenceInNewTab}>Open in new tab</button>
       {/if}
       <button
         type="button"

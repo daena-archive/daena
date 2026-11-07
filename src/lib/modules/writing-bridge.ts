@@ -5,6 +5,8 @@
  * IPC and state, and scripts/writing-bridge.test.mjs exercises them directly.
  */
 
+import { isTabShortcut, type TabShortcut } from "../navigation/tab-shortcuts.ts";
+
 export const WRITING_PLUGIN_ID = "daena.writing";
 export const WRITING_VIEW_ID = "writing-workspace";
 export const WRITING_STATE_EVENT = "writing-state";
@@ -46,11 +48,11 @@ export type WritingStateEvent =
   | { kind: "flush-reply"; requestId: string; draft: WritingBridgeDraft | null }
   | { kind: "conflict-action"; entityId: string; token: string; action: WritingBridgeConflictAction }
   | { kind: "open-link"; href: string }
-  | { kind: "open-entity"; entityId: string }
+  | { kind: "open-entity"; entityId: string; newTab?: boolean }
   | { kind: "fullscreen"; entityId: string; on: boolean }
   | { kind: "request-rename"; entityId: string }
   | { kind: "request-archive"; entityId: string }
-  | { kind: "shortcut"; shortcut: WritingBridgeShortcut };
+  | { kind: "shortcut"; shortcut: WritingBridgeShortcut | TabShortcut };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -124,13 +126,18 @@ export function parseWritingStateEvent(payload: unknown): WritingStateEvent | nu
       return typeof payload.href === "string" && payload.href.length <= MAX_HREF_LENGTH
         ? { kind: "open-link", href: payload.href }
         : null;
-    case "open-entity":
+    case "open-entity": {
+      const entityId = idOf(payload.entityId);
+      if (entityId === null) return null;
+      // Only a boolean is kept. Anything else is treated as absent, and a bad id is still rejected.
+      return typeof payload.newTab === "boolean"
+        ? { kind: "open-entity", entityId, newTab: payload.newTab }
+        : { kind: "open-entity", entityId };
+    }
     case "request-rename":
     case "request-archive": {
       const entityId = idOf(payload.entityId);
-      return entityId === null
-        ? null
-        : { kind: payload.kind as "open-entity" | "request-rename" | "request-archive", entityId };
+      return entityId === null ? null : { kind: payload.kind as "request-rename" | "request-archive", entityId };
     }
     case "fullscreen": {
       const entityId = idOf(payload.entityId);
@@ -138,8 +145,11 @@ export function parseWritingStateEvent(payload: unknown): WritingStateEvent | nu
         ? { kind: "fullscreen", entityId, on: payload.on }
         : null;
     }
-    case "shortcut":
-      return isWritingShortcut(payload.shortcut) ? { kind: "shortcut", shortcut: payload.shortcut } : null;
+    case "shortcut": {
+      const shortcut = payload.shortcut;
+      if (isWritingShortcut(shortcut) || isTabShortcut(shortcut)) return { kind: "shortcut", shortcut };
+      return null;
+    }
     default:
       return null;
   }

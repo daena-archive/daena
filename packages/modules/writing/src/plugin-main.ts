@@ -49,7 +49,10 @@ async function start(target: HTMLElement): Promise<void> {
       rpc: client,
       fetch: (url) => window.fetch(url),
       openLink: (href) => void publish({ kind: "open-link", href }),
-      openEntity: (entityId) => void publish({ kind: "open-entity", entityId }),
+      openEntity: (entityId, options) =>
+        void publish(
+          options?.newTab ? { kind: "open-entity", entityId, newTab: true } : { kind: "open-entity", entityId },
+        ),
       namespace: manifest.schemas[0]?.namespace ?? "writing",
       launchEntityId: () => shownEntityId,
       uploadChunks: (transfer, bytes) => uploadAssetChunks(transfer, bytes),

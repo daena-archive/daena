@@ -23,6 +23,7 @@ import {
   parseLanguageHostMessage,
   parseLanguageMountParams,
   pickLanguageManifest,
+  tabShortcutForKey,
   LANGUAGE_RPC_MAX_RESPONSE_BYTES,
   type LanguageWorkspaceBridge,
 } from "./plugin-protocol.ts";
@@ -48,13 +49,34 @@ async function start(target: HTMLElement): Promise<void> {
   const publish = createLanguageStatePublisher(client, (cause) => {
     console.warn("Language state could not be published", cause);
   });
+  // Key events in this webview never reach the shell. Forward only the tab chords.
+  window.addEventListener("keydown", (event) => {
+    const shortcut = tabShortcutForKey(
+      {
+        key: event.key,
+        code: event.code,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+      },
+      typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform),
+    );
+    if (shortcut === null) return;
+    event.preventDefault();
+    void publish({ kind: "shortcut", shortcut });
+  });
 
   setDefaultEditorHost(
     createBrokerEditorHost({
       rpc: client,
       fetch: (url) => window.fetch(url),
       openLink: (href) => void publish({ kind: "open-link", href }),
-      openEntity: (entityId) => void publish({ kind: "open-entity", entityId }),
+      openEntity: (entityId, options) =>
+        void publish(
+          options?.newTab ? { kind: "open-entity", entityId, newTab: true } : { kind: "open-entity", entityId },
+        ),
       namespace: "language",
       launchEntityId: entityId,
       uploadChunks: (transfer, bytes) => uploadAssetChunks(transfer, bytes),

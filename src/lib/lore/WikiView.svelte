@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
+import type { OpenIntent } from "$lib/navigation/open-intent";
 import { headingOutline } from "$lib/markdown";
 import {
   project,
@@ -60,6 +61,7 @@ let {
   promptTemplates,
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
+  onOpenEntityInNewTab,
   nav,
 }: {
   manifest: ModuleManifest;
@@ -72,6 +74,8 @@ let {
   promptTemplates?: PromptTemplate[];
   onClose?: () => void;
   onSelectEntity?: (id: string) => void;
+  /** Opens this wiki entry in another tab. A new-tab link does nothing when this is omitted. */
+  onOpenEntityInNewTab?: (id: string) => void;
   nav?: Snippet;
 } = $props();
 
@@ -569,7 +573,11 @@ function resetProfileAsOf() {
   profileAsOfOpen = false;
 }
 
-function openEntity(id: string) {
+function openEntity(id: string, intent?: OpenIntent) {
+  if (intent === "new-tab") {
+    onOpenEntityInNewTab?.(id);
+    return;
+  }
   if (id === currentId) return;
   resetProfileAsOf();
   pushHistory(id);

@@ -84,6 +84,7 @@ import {
   type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
+import { isTabShortcut, tabShortcutForKey, type TabShortcut } from "$lib/navigation/tab-shortcuts";
 import {
   activeGroup,
   activeTab,
@@ -392,7 +393,10 @@ import { defaultCreateFieldValue, isCreateDropdownField, isCreateValuePopulated 
 import { friendlyError } from "$lib/shell/errors";
 import { isMapsProviderField } from "$lib/maps/provider-fields";
 installShellEditorHost();
-setShellEntityOpener((entityId) => void openEntityById(entityId));
+setShellEntityOpener((entityId, options) => {
+  if (options?.newTab) void openInNewTab(() => openEntityById(entityId));
+  else void openEntityById(entityId);
+});
 
 type InstalledModule = ProjectModuleManifest;
 type AiFieldSuggestion = { value: unknown; rationale: string; confidence: string };
@@ -1814,7 +1818,11 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
       return;
     }
     case "open-entity":
-      void openEntityById(event.entityId);
+      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
+      else void openEntityById(event.entityId);
+      return;
+    case "shortcut":
+      if (languageWebview.mounted) runShellShortcut(event.shortcut);
       return;
   }
 }
@@ -2009,13 +2017,46 @@ $effect(() => {
   untrack(() => exitWritingFullscreen());
 });
 
+/** Moves among the tabs of the active group. A missing index does nothing. One tab does not cycle. */
+function runTabShortcut(shortcut: TabShortcut) {
+  if (shortcut === "tab-new") {
+    void openInNewTab(openProjectHome, { position: "end" });
+    return;
+  }
+  if (shortcut === "tab-close") {
+    void closeShellTab(activeTab(shellTabs).id);
+    return;
+  }
+  if (shortcut === "tab-reopen") {
+    void reopenShellTab();
+    return;
+  }
+  const tabs = activeGroup(shellTabs).tabs;
+  if (shortcut === "tab-next" || shortcut === "tab-previous") {
+    if (tabs.length < 2) return;
+    const index = tabs.findIndex((tab) => tab.id === activeTab(shellTabs).id);
+    if (index < 0) return;
+    const next = shortcut === "tab-next" ? (index + 1) % tabs.length : (index - 1 + tabs.length) % tabs.length;
+    void switchToTab(tabs[next].id);
+    return;
+  }
+  const target = shortcut === "tab-last" ? tabs[tabs.length - 1] : tabs[Number(shortcut.slice("tab-".length)) - 1];
+  if (target) void switchToTab(target.id);
+}
+
 /**
- * Runs a shell shortcut. The window listeners and the keys the Writing webview forwards both come here, so the
- * rules stay in one place: quick open toggles, create opens the template gallery unless another dialog is open,
- * and history moves back or forward.
+ * Runs a shell shortcut. The window listeners, the macOS menu and the keys a plugin webview forwards all come
+ * here. Quick open toggles, create opens the template gallery unless another dialog is open, and history moves
+ * back or forward. Tab shortcuts do nothing while a modal overlay is open. That overlay includes Quick Open,
+ * so a close-tab chord cannot dismiss a dialog or close the window.
  */
-function runShellShortcut(shortcut: WritingBridgeShortcut) {
+function runShellShortcut(shortcut: WritingBridgeShortcut | TabShortcut) {
   if (!ready) return;
+  if (isTabShortcut(shortcut)) {
+    if (modalOverlayOpen) return;
+    runTabShortcut(shortcut);
+    return;
+  }
   if (shortcut === "history-back") void navigateShellHistory("back");
   else if (shortcut === "history-forward") void navigateShellHistory("forward");
   else if (shortcut === "quick-open") {
@@ -2073,7 +2114,8 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       return;
     }
     case "open-entity":
-      void openEntityById(event.entityId);
+      if (event.newTab) void openInNewTab(() => openEntityById(event.entityId));
+      else void openEntityById(event.entityId);
       return;
     case "fullscreen":
       // Only the entry on screen can change the full screen; a message for any other entry is stale.
@@ -3595,15 +3637,26 @@ async function openLoreLibrary() {
   loreWikiEntityId = null;
 }
 
-async function openLoreWiki() {
+async function openLoreWiki(entityId?: string) {
   if (!(await flushAutoSave())) return;
-  if (!projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView) return;
+  const showingWiki = !projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView;
+  if (showingWiki && entityId === undefined) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
-  loreWikiEntityId =
-    selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
+  if (entityId === undefined) {
+    loreWikiEntityId =
+      selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
+  } else {
+    const entity = await restoreShellEntity(entityId);
+    loreWikiEntityId = entity ? entityId : null;
+  }
+  // Remount so an already-open wiki takes the entry this call names.
+  if (loreWikiOpen) {
+    loreWikiOpen = false;
+    await tick();
+  }
   loreWikiOpen = true;
 }
 
@@ -7927,6 +7980,12 @@ onMount(() => {
       runShellShortcut("create");
     }
   };
+  const handleTabKey = (event: KeyboardEvent) => {
+    const shortcut = tabShortcutForKey(event, isMac());
+    if (shortcut === null) return;
+    event.preventDefault();
+    runShellShortcut(shortcut);
+  };
   const handleWritingFullscreenKey = (event: KeyboardEvent) => {
     // Escape with focus in the shell. Inside the webview, its editor reports the change itself.
     if (event.key === "Escape") exitWritingFullscreen();
@@ -7939,6 +7998,7 @@ onMount(() => {
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
   window.addEventListener("keydown", handleQuickOpenKey);
+  window.addEventListener("keydown", handleTabKey);
   window.addEventListener("keydown", handleWritingFullscreenKey);
   window.addEventListener("resize", handleWorkbenchResize);
   let closeListenerDisposed = false;
@@ -8130,6 +8190,14 @@ onMount(() => {
       unlistenLanguageState = cleanup;
     })
     .catch(() => {});
+  let unlistenShellShortcut: (() => void) | undefined;
+  void listen<unknown>("shell-shortcut", (event) => {
+    if (isTabShortcut(event.payload)) runShellShortcut(event.payload);
+  })
+    .then((cleanup) => {
+      unlistenShellShortcut = cleanup;
+    })
+    .catch(() => {});
   let unlistenWritingState: (() => void) | undefined;
   void listen<unknown>("writing-state", (event) => {
     const message = parseWritingStateEvent(event.payload);
@@ -8146,6 +8214,7 @@ onMount(() => {
     window.removeEventListener("beforeunload", handleBeforeUnload);
     window.removeEventListener("keydown", handleHistoryKey);
     window.removeEventListener("keydown", handleQuickOpenKey);
+    window.removeEventListener("keydown", handleTabKey);
     window.removeEventListener("keydown", handleWritingFullscreenKey);
     window.removeEventListener("resize", handleWorkbenchResize);
     cancelAutoSave();
@@ -8160,6 +8229,7 @@ onMount(() => {
     unlistenMapsState?.();
     unlistenMapsSelection?.();
     unlistenLanguageState?.();
+    unlistenShellShortcut?.();
     unlistenWritingState?.();
   };
 });
@@ -9123,6 +9193,7 @@ onMount(() => {
             const ent = entities.find((e) => e.id === id);
             if (ent) void selectEntity(ent);
           }}
+          onOpenEntityInNewTab={(id) => void openInNewTab(() => openLoreWiki(id))}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined} />
       </SpecializedSurface>
     {:else if section === "houses" && housesView === "tree"}
@@ -10069,9 +10140,9 @@ onMount(() => {
                     <MarkdownArticle
                       markdown={documentBody}
                       {entities}
-                      onOpenEntity={(id) => {
+                      onOpenEntity={(id, intent) => {
                         const target = entities.find((entity) => entity.id === id && !entity.deleted);
-                        if (target) void selectEntity(target);
+                        if (target) void openEntityWithIntent(target, intent ?? "current");
                       }} />
                   {:else}
                     {#key selected?.id}

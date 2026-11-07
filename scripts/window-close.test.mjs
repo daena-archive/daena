@@ -118,7 +118,20 @@ assert.match(
   /MenuItem::with_id\(\s*app,\s*QUIT_MENU_ID,[\s\S]*?Some\(QUIT_ACCELERATOR\)/,
   "the custom Quit item carries that accelerator",
 );
-assert.match(appMenu, /if event\.id != QUIT_MENU_ID/, "the Quit click is recognised by its id");
+assert.match(appMenu, /if event\.id == QUIT_MENU_ID/, "the Quit click is recognised by its id");
+assert.match(appMenu, /event\.id == WINDOW_CLOSE_MENU_ID/, "Close Window is recognised by its id");
+assert.match(appMenu, /window_close_action\(main\.is_some\(\)\)/, "Close Window consults window_close_action");
+assert.match(appMenu, /menu_shortcut\(event\.id\.as_ref\(\)\)/, "tab items are mapped by menu_shortcut");
+assert.match(
+  appMenu,
+  /emit_to\(\s*"main",\s*"shell-shortcut",\s*shortcut\s*\)/,
+  "a tab menu item emits the shortcut name to the main webview",
+);
+assert.match(appMenu, /pub\(crate\) const WINDOW_CLOSE_ACCELERATOR: &str = "CmdOrCtrl\+Shift\+W";/);
+assert.match(appMenu, /pub\(crate\) const TAB_CLOSE_ACCELERATOR: &str = "CmdOrCtrl\+W";/);
+assert.match(appMenu, /pub\(crate\) const TAB_NEXT_ACCELERATOR: &str = "CmdOrCtrl\+Shift\+BracketRight";/);
+assert.match(appMenu, /pub\(crate\) const TAB_PREVIOUS_ACCELERATOR: &str = "CmdOrCtrl\+Shift\+BracketLeft";/);
+assert.doesNotMatch(appMenu, /PredefinedMenuItem::close_window/, "Cmd+W is no longer the predefined close-window item");
 assert.match(appMenu, /window\.close\(\)/, "the Quit handler closes the main window");
 assert.match(
   lib,
@@ -139,7 +152,6 @@ for (const item of [
   "fullscreen",
   "minimize",
   "maximize",
-  "close_window",
 ]) {
   assert.match(appMenu, new RegExp(`PredefinedMenuItem::${item}\\(`), `the menu keeps the predefined ${item} item`);
 }

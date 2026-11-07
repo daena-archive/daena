@@ -14,7 +14,98 @@ export const DEFAULT_WRITING_MODE: WritingMode = "read";
 
 /** Shell shortcuts the webview forwards, because key events inside it never reach the main webview. */
 export const WRITING_SHORTCUTS = ["quick-open", "create", "history-back", "history-forward"] as const;
-export type WritingShortcut = (typeof WRITING_SHORTCUTS)[number];
+
+/**
+ * Copy of `src/lib/navigation/tab-shortcuts.ts`. Plugin packages cannot import the shell.
+ * `scripts/tab-shortcuts.test.mjs` checks this copy against the shell.
+ */
+export const TAB_SHORTCUTS = [
+  "tab-new",
+  "tab-close",
+  "tab-reopen",
+  "tab-next",
+  "tab-previous",
+  "tab-1",
+  "tab-2",
+  "tab-3",
+  "tab-4",
+  "tab-5",
+  "tab-6",
+  "tab-7",
+  "tab-8",
+  "tab-last",
+] as const;
+
+export type TabShortcut = (typeof TAB_SHORTCUTS)[number];
+export type WritingShortcut = (typeof WRITING_SHORTCUTS)[number] | TabShortcut;
+
+export function isTabShortcut(value: unknown): value is TabShortcut {
+  return typeof value === "string" && (TAB_SHORTCUTS as readonly string[]).includes(value);
+}
+
+/** A keydown as the mapping reads it. A KeyboardEvent has every field. */
+export interface TabKeyPress {
+  key: string;
+  code?: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  repeat: boolean;
+}
+
+const TAB_DIGITS: Readonly<Record<string, TabShortcut>> = {
+  "1": "tab-1",
+  "2": "tab-2",
+  "3": "tab-3",
+  "4": "tab-4",
+  "5": "tab-5",
+  "6": "tab-6",
+  "7": "tab-7",
+  "8": "tab-8",
+  "9": "tab-last",
+};
+
+/**
+ * The tab shortcut a keydown stands for on this platform, or null.
+ * This is the keydown column only. On macOS, ⌘T, ⌘W and ⇧⌘T belong to the menu, so they are null here.
+ * Next and previous allow key repeat. New, close, reopen and the digit jumps do not. Alt never matches.
+ */
+export function tabShortcutForKey(press: TabKeyPress, isMac: boolean): TabShortcut | null {
+  if (press.altKey) return null;
+
+  // Ctrl+Tab and Ctrl+Shift+Tab on both platforms. The other modifier must not be held.
+  if (press.ctrlKey && !press.metaKey && press.key === "Tab") {
+    return press.shiftKey ? "tab-previous" : "tab-next";
+  }
+
+  // Windows and Linux also cycle with Ctrl+PageDown and Ctrl+PageUp.
+  if (!isMac && press.ctrlKey && !press.metaKey && !press.shiftKey) {
+    if (press.key === "PageDown") return "tab-next";
+    if (press.key === "PageUp") return "tab-previous";
+  }
+
+  const platform = isMac ? press.metaKey && !press.ctrlKey : press.ctrlKey && !press.metaKey;
+  if (!platform) return null;
+
+  // A shifted digit is not a tab shortcut. ⇧⌘T is the menu's reopen on macOS.
+  if (press.shiftKey) {
+    if (!isMac && !press.repeat && press.key.toLowerCase() === "t") return "tab-reopen";
+    return null;
+  }
+
+  if (press.repeat) return null;
+
+  const digit = TAB_DIGITS[press.key];
+  if (digit) return digit;
+
+  // ⌘T and ⌘W are menu items on macOS, so the keydown path leaves them alone.
+  if (isMac) return null;
+  const key = press.key.toLowerCase();
+  if (key === "t") return "tab-new";
+  if (key === "w") return "tab-close";
+  return null;
+}
 
 /** What the user chose in the conflict banner; the shell runs the matching action it already has. */
 export const WRITING_CONFLICT_ACTIONS = ["reload", "overwrite", "recovery"] as const;
@@ -38,7 +129,9 @@ export function isWritingMode(value: unknown): value is WritingMode {
 }
 
 export function isWritingShortcut(value: unknown): value is WritingShortcut {
-  return typeof value === "string" && (WRITING_SHORTCUTS as readonly string[]).includes(value);
+  return (
+    (typeof value === "string" && (WRITING_SHORTCUTS as readonly string[]).includes(value)) || isTabShortcut(value)
+  );
 }
 
 export function isWritingConflictAction(value: unknown): value is WritingConflictAction {
@@ -269,7 +362,7 @@ export type WritingStatePayload =
   /** The user's choice in the conflict banner; the shell checks entity and token like it does for a draft. */
   | { kind: "conflict-action"; entityId: string; token: string; action: WritingConflictAction }
   | { kind: "open-link"; href: string }
-  | { kind: "open-entity"; entityId: string }
+  | { kind: "open-entity"; entityId: string; newTab?: boolean }
   /** The webview's own full screen; `on` is the state after the change, and `entityId` is the entry it is for. */
   | { kind: "fullscreen"; entityId: string; on: boolean }
   | { kind: "request-rename"; entityId: string }
@@ -306,13 +399,18 @@ export function parseWritingStatePayload(value: unknown): WritingStatePayload | 
       return typeof value.href === "string" && value.href.length <= MAX_HREF_LENGTH
         ? { kind: "open-link", href: value.href }
         : null;
-    case "open-entity":
+    case "open-entity": {
+      const entityId = boundedId(value.entityId);
+      if (entityId === null) return null;
+      // Only a boolean is kept. Anything else is treated as absent, and a bad id is still rejected.
+      return typeof value.newTab === "boolean"
+        ? { kind: "open-entity", entityId, newTab: value.newTab }
+        : { kind: "open-entity", entityId };
+    }
     case "request-rename":
     case "request-archive": {
       const entityId = boundedId(value.entityId);
-      return entityId === null
-        ? null
-        : { kind: value.kind as "open-entity" | "request-rename" | "request-archive", entityId };
+      return entityId === null ? null : { kind: value.kind as "request-rename" | "request-archive", entityId };
     }
     case "fullscreen": {
       const entityId = boundedId(value.entityId);
@@ -350,7 +448,7 @@ export function isEditableKeyTarget(target: EventTarget | null): boolean {
  * The shell shortcut a key press in the webview stands for. It applies the same rules as the shell's window
  * listeners (`handleHistoryKey` and `handleQuickOpenKey` in src/routes/+page.svelte), so a key does the same thing
  * in both: Alt+ArrowLeft and Alt+ArrowRight alone go back and forward unless the caret is in a text field, Cmd/Ctrl+K
- * opens quick open and Cmd/Ctrl+N creates. Null for every other key.
+ * opens quick open and Cmd/Ctrl+N creates. Tab chords are `tabShortcutForKey`. Null for every other key.
  */
 export function writingShortcutForKey(press: WritingKeyPress): WritingShortcut | null {
   if (press.altKey) {

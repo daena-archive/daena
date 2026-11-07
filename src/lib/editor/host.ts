@@ -39,7 +39,7 @@ export interface EditorHost {
    * Opens the entity with this id in the host's surface. Null when the host cannot open entities, which
    * hides the Open action on entity references.
    */
-  openEntity: ((entityId: string) => void) | null;
+  openEntity: ((entityId: string, options?: { newTab?: boolean }) => void) | null;
   /**
    * Current names for entity ids, keyed by id, for references whose entity the editor's `entities` prop does
    * not list. Deleted, missing and unreadable ids are left out of the result. Null when the host cannot look

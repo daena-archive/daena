@@ -115,7 +115,9 @@ export const shellEditorHost: EditorHost = {
  * Sets the function that opens an entity for editor links, or clears it with null. The route calls
  * this once its selection state exists; until then editors in the main webview offer no Open action.
  */
-export function setShellEntityOpener(opener: ((entityId: string) => void) | null): void {
+export function setShellEntityOpener(
+  opener: ((entityId: string, options?: { newTab?: boolean }) => void) | null,
+): void {
   shellEditorHost.openEntity = opener;
 }
 

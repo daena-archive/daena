@@ -11,7 +11,8 @@ done; slice 3 (one-tab wiring) done and checked in the real app; slice 4
 done and checked in the real app; `+` adds at the far right; opening a
 workspace in a new tab no longer folds into an existing tab; "Open in new tab"
 in the rail and row menus; Close all tabs; copies of the current tab's
-entry; all checked in the real app except unlimited copies. Layout option A was chosen (tabs replace
+entry; all checked in the real app. Slice 6 (shortcuts and the remaining
+open-in-new-tab paths) done and checked in the real app. Layout option A was chosen (tabs replace
 the breadcrumb in the topbar, workspace header compacted). All open decisions are settled (see Decisions).
 
 ## Layout
@@ -107,12 +108,18 @@ breadcrumb would repeat the tab title. So the restyle is part of this work.
 | New tab                  | `⌘T`             | `Ctrl+T`             |
 | Close tab                | `⌘W`             | `Ctrl+W`             |
 | Reopen closed tab        | `⇧⌘T`            | `Ctrl+Shift+T`       |
-| Next / previous tab      | `⌃Tab` / `⌃⇧Tab` | `Ctrl+Tab` / `+Shift`|
+| Next / previous tab      | `⌃Tab` / `⌃⇧Tab`, `⇧⌘]` / `⇧⌘[` | `Ctrl+Tab` / `+Shift`, `Ctrl+PageDown` / `PageUp` |
 | Go to tab 1–8, last tab  | `⌘1`–`⌘8`, `⌘9`  | `Ctrl+1`–`8`, `9`    |
 | Back / Forward (in tab)  | `⌥←` / `⌥→`      | `Alt+←` / `Alt+→`    |
 
-`⌘W` closes the window today through the menu that `app_menu.rs` builds as a
-copy of `Menu::default`. Close Window moves to `⇧⌘W`.
+On macOS, New Tab, Reopen Closed Tab and Close Tab are File menu items and
+Show Next / Previous Tab are Window menu items (`app_menu.rs`); Close Window
+moves to `⇧⌘W` and still runs the close handshake. The keydown paths leave
+`⌘T`, `⌘W` and `⇧⌘T` to the menu so nothing fires twice. `⌃Tab` and `⌘1`–`⌘9`
+are keydown on every platform. Tab shortcuts do nothing while a modal overlay
+(a dialog or Quick Open) is open. The names live in
+`src/lib/navigation/tab-shortcuts.ts`; Writing and Language keep checked
+copies.
 
 ## Approach
 
@@ -223,11 +230,12 @@ now.
 ### Shortcuts while a plugin webview has focus
 
 Key events inside a plugin webview never reach the main webview. On macOS the
-tab shortcuts are native menu items in `app_menu.rs` (a Tab section in the
-File menu), which fire whatever webview has focus, and send a menu event to the
-shell. Windows and Linux have no menu today. There the plugin webview runtime
-forwards those key chords to the shell as a host message, and the main webview
-handles them in its own keydown handler like `⌘K`.
+menu items fire whatever webview has focus and emit `shell-shortcut` to the
+main webview. The Writing and Language webviews forward the keydown chords
+(`⌃Tab`, `⌘1`–`⌘9`, and on Windows and Linux also `Ctrl+T/W/Shift+T`) as a
+`shortcut` state message, which the shell runs through `runShellShortcut`.
+The World graph and Chronology webviews do not forward keys, so `⌃Tab` and
+`⌘1`–`⌘9` don't work while they have focus (the menu items still do).
 
 ### Accessibility
 

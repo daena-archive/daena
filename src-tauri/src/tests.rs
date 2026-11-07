@@ -3,7 +3,9 @@ use crate::app_close::{
     abandon_close, acknowledge_close, cancel_close, confirm_close, request_close,
     should_intercept_exit, CloseHandshake,
 };
-use crate::app_menu::{quit_action, QuitAction};
+use crate::app_menu::{
+    menu_shortcut, quit_action, window_close_action, QuitAction, WindowCloseAction,
+};
 
 #[test]
 fn main_window_capability_allows_printing_wiki_pages() {
@@ -5076,6 +5078,27 @@ fn exit_is_allowed_after_our_own_close_or_without_a_main_window() {
 fn quit_closes_the_main_window_when_it_exists_and_exits_otherwise() {
     assert_eq!(quit_action(true), QuitAction::CloseMainWindow);
     assert_eq!(quit_action(false), QuitAction::ExitApp);
+}
+
+#[test]
+fn app_menu_shortcut_maps_tab_items_and_ignores_quit_and_close() {
+    assert_eq!(menu_shortcut("tab-new"), Some("tab-new"));
+    assert_eq!(menu_shortcut("tab-reopen"), Some("tab-reopen"));
+    assert_eq!(menu_shortcut("tab-close"), Some("tab-close"));
+    assert_eq!(menu_shortcut("tab-next"), Some("tab-next"));
+    assert_eq!(menu_shortcut("tab-previous"), Some("tab-previous"));
+    assert_eq!(menu_shortcut("app-quit"), None);
+    assert_eq!(menu_shortcut("window-close"), None);
+    assert_eq!(menu_shortcut(""), None);
+}
+
+#[test]
+fn app_menu_window_close_closes_the_main_window_when_it_exists_and_does_nothing_otherwise() {
+    assert_eq!(
+        window_close_action(true),
+        WindowCloseAction::CloseMainWindow
+    );
+    assert_eq!(window_close_action(false), WindowCloseAction::Ignore);
 }
 
 #[test]

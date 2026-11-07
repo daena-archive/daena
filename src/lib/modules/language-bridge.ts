@@ -5,6 +5,7 @@
  * IPC and state, and scripts/language-bridge.test.mjs exercises them directly.
  */
 
+import { isTabShortcut, type TabShortcut } from "../navigation/tab-shortcuts.ts";
 import { PLUGIN_LEAVE_PENDING_TIMEOUT_MS, PluginLeaveTracker, type PluginLeaveTimers } from "./plugin-leave.ts";
 
 export const LANGUAGE_PLUGIN_ID = "daena.language";
@@ -30,7 +31,8 @@ export type LanguageStateEvent =
   | { kind: "leave-reply"; requestId: string; allowed: boolean }
   | { kind: "entity-changed"; entityId: string; deleted: boolean }
   | { kind: "open-link"; href: string }
-  | { kind: "open-entity"; entityId: string };
+  | { kind: "open-entity"; entityId: string; newTab?: boolean }
+  | { kind: "shortcut"; shortcut: TabShortcut };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,8 +78,14 @@ export function parseLanguageStateEvent(payload: unknown): LanguageStateEvent | 
       return typeof payload.href === "string" ? { kind: "open-link", href: payload.href } : null;
     case "open-entity": {
       const entityId = idOf(payload.entityId);
-      return entityId === null ? null : { kind: "open-entity", entityId };
+      if (entityId === null) return null;
+      // Only a boolean is kept. Anything else is treated as absent, and a bad id is still rejected.
+      return typeof payload.newTab === "boolean"
+        ? { kind: "open-entity", entityId, newTab: payload.newTab }
+        : { kind: "open-entity", entityId };
     }
+    case "shortcut":
+      return isTabShortcut(payload.shortcut) ? { kind: "shortcut", shortcut: payload.shortcut } : null;
     default:
       return null;
   }

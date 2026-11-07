@@ -23,6 +23,7 @@ import {
 } from "./document-source.ts";
 import {
   isEditableKeyTarget,
+  tabShortcutForKey,
   writingShortcutForKey,
   type WritingAiTemplate,
   type WritingConflictAction,
@@ -341,15 +342,27 @@ onMount(() => {
   const off = bridge.onHostMessage(handleHostMessage);
   // Key events in this webview never reach the shell, so the shortcuts the shell owns are forwarded instead.
   const handleShortcutKey = (event: KeyboardEvent) => {
-    const shortcut = writingShortcutForKey({
+    const press = {
       key: event.key,
+      code: event.code,
       metaKey: event.metaKey,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
       shiftKey: event.shiftKey,
       repeat: event.repeat,
       editable: isEditableKeyTarget(event.target),
-    });
+    };
+    const shortcut =
+      tabShortcutForKey(press, typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)) ??
+      writingShortcutForKey({
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+        editable: isEditableKeyTarget(event.target),
+      });
     if (shortcut === null) return;
     event.preventDefault();
     void bridge.publish({ kind: "shortcut", shortcut });
@@ -413,7 +426,12 @@ onMount(() => {
           <MarkdownArticle
             markdown={source.markdown}
             entities={mentioned}
-            onOpenEntity={(entityId) => void bridge.publish({ kind: "open-entity", entityId })} />
+            onOpenEntity={(entityId, intent) =>
+              void bridge.publish(
+                intent === "new-tab"
+                  ? { kind: "open-entity", entityId, newTab: true }
+                  : { kind: "open-entity", entityId },
+              )} />
         </div>
       {:else}
         <div class="writing-editor">

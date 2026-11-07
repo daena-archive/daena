@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { WorkspaceSection } from "$lib/modules/workspace";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import ProjectSwitcher from "./ProjectSwitcher.svelte";
 import { workspaceIcon } from "./workspace-icons";
 import { Boxes, Home, PanelLeftClose, PanelLeftOpen, Plus, Puzzle, Settings as SettingsIcon } from "@lucide/svelte";
@@ -27,6 +28,7 @@ export interface SidebarToolItem {
 
 let {
   ready,
+  isMac,
   collapsed,
   projectMenuOpen,
   projectName,
@@ -53,6 +55,7 @@ let {
   onCollapsedChange,
 }: {
   ready: boolean;
+  isMac: boolean;
   collapsed: boolean;
   projectMenuOpen: boolean;
   projectName: string;
@@ -72,10 +75,10 @@ let {
   onOpenProjectCenter: () => void;
   onOpenSettings: () => void;
   onCloseProject: () => void;
-  onOpenHome: () => void;
+  onOpenHome: (intent: OpenIntent) => void;
   onCreate: () => void;
-  onOpenWorkspace: (key: string) => void;
-  onOpenTool: (key: string) => void;
+  onOpenWorkspace: (key: string, intent: OpenIntent) => void;
+  onOpenTool: (key: string, intent: OpenIntent) => void;
   onCollapsedChange: (collapsed: boolean) => void;
 } = $props();
 
@@ -98,6 +101,18 @@ function showTooltip(event: Event, title: string) {
 
 function hideTooltip() {
   tooltip = null;
+}
+
+function railIntent(event: MouseEvent): OpenIntent {
+  return openIntent(event, isMac);
+}
+
+function railAux(event: MouseEvent, open: (intent: OpenIntent) => void) {
+  if (event.button === 1) open("new-tab");
+}
+
+function blockMiddleClickScroll(event: MouseEvent) {
+  if (event.button === 1) event.preventDefault();
 }
 
 $effect(() => {
@@ -150,7 +165,9 @@ $effect(() => {
         class:active={homeActive}
         class="rail-button rail-home-button"
         title="Home"
-        onclick={onOpenHome}
+        onclick={(event) => onOpenHome(railIntent(event))}
+        onauxclick={(event) => railAux(event, onOpenHome)}
+        onmousedown={blockMiddleClickScroll}
         onmouseenter={(e) => showTooltip(e, "Home")}
         onmouseleave={hideTooltip}
         onfocus={(e) => showTooltip(e, "Home")}
@@ -179,7 +196,9 @@ $effect(() => {
               aria-current={item.active ? "page" : undefined}
               class:active={item.active}
               class="rail-button"
-              onclick={() => onOpenWorkspace(item.key)}
+              onclick={(event) => onOpenWorkspace(item.key, railIntent(event))}
+              onauxclick={(event) => railAux(event, (intent) => onOpenWorkspace(item.key, intent))}
+              onmousedown={blockMiddleClickScroll}
               onmouseenter={(e) => showTooltip(e, wsTitle)}
               onmouseleave={hideTooltip}
               onfocus={(e) => showTooltip(e, wsTitle)}
@@ -203,7 +222,9 @@ $effect(() => {
                 title={item.title}
                 aria-current={item.active ? "page" : undefined}
                 aria-label={item.ariaLabel}
-                onclick={() => onOpenTool(item.key)}
+                onclick={(event) => onOpenTool(item.key, railIntent(event))}
+                onauxclick={(event) => railAux(event, (intent) => onOpenTool(item.key, intent))}
+                onmousedown={blockMiddleClickScroll}
                 onmouseenter={(e) => showTooltip(e, item.title)}
                 onmouseleave={hideTooltip}
                 onfocus={(e) => showTooltip(e, item.title)}

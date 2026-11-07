@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
 import { Clock3, Command, Compass, FileText, Plus, Search, X } from "@lucide/svelte";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import { groupQuickOpenItems, moveQuickOpenIndex, type QuickOpenItem } from "$lib/quick-open/model";
 import EntityGlyph from "$lib/entity-colors/EntityGlyph.svelte";
 import { DEFAULT_TYPE_COLOR } from "$lib/entity-colors/presets";
@@ -10,12 +11,13 @@ interface Props {
   query: string;
   items: QuickOpenItem[];
   loading: boolean;
+  isMac: boolean;
   onQueryChange: (query: string) => void;
-  onSelect: (item: QuickOpenItem) => void;
+  onSelect: (item: QuickOpenItem, intent: OpenIntent) => void;
   onClose: () => void;
 }
 
-let { query, items, loading, onQueryChange, onSelect, onClose }: Props = $props();
+let { query, items, loading, isMac, onQueryChange, onSelect, onClose }: Props = $props();
 let dialog = $state<HTMLElement | null>(null);
 let searchInput = $state<HTMLInputElement | null>(null);
 let activeIndex = $state(0);
@@ -68,7 +70,7 @@ function handleKeydown(event: KeyboardEvent) {
   }
   if (event.key === "Enter" && activeIndex >= 0 && orderedItems[activeIndex]) {
     event.preventDefault();
-    onSelect(orderedItems[activeIndex]);
+    onSelect(orderedItems[activeIndex], openIntent(event, isMac));
     return;
   }
   trapModalTab(event, dialog);
@@ -121,7 +123,13 @@ function handleKeydown(event: KeyboardEvent) {
               class:active={index === activeIndex}
               class="quick-open-item"
               onmousemove={() => (activeIndex = index)}
-              onclick={() => onSelect(item)}>
+              onmousedown={(event) => {
+                if (event.button === 1) event.preventDefault();
+              }}
+              onauxclick={(event) => {
+                if (event.button === 1) onSelect(item, "new-tab");
+              }}
+              onclick={(event) => onSelect(item, openIntent(event, isMac))}>
               <span class="quick-open-icon">
                 {#if item.icon}<EntityGlyph
                     icon={item.icon}
@@ -141,7 +149,9 @@ function handleKeydown(event: KeyboardEvent) {
         </div>{/if}
     </div>
     <footer>
-      <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>Esc</kbd> Close</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span
+        >{isMac ? "⌘↵ new tab" : "Ctrl+↵ new tab"}</span
+      ><span><kbd>Esc</kbd> Close</span>
     </footer>
   </div>
 </div>

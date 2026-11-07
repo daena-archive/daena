@@ -98,6 +98,20 @@ const tabStrip = components.get("src/lib/shell/TabStrip.svelte");
 assert.match(tabStrip, /role="tablist"/);
 assert.match(tabStrip, /role="tab"/);
 assert.match(tabStrip, /aria-selected/);
+assert.match(tabStrip, /onClose/, "TabStrip closes a tab");
+assert.match(tabStrip, /onNew/, "TabStrip opens a new tab");
+assert.match(tabStrip, /aria-label=\{`Close \$\{/, "a tab's close button names the tab");
+assert.match(tabStrip, /role="presentation"/, "the tab pill is not a nested button");
+for (const name of [
+  "switchToTab",
+  "openInNewTab",
+  "closeShellTab",
+  "persistShellTabs",
+  "loadShellTabs",
+  "snapshotActiveTab",
+]) {
+  assert.match(shell, new RegExp(`function ${name}\\(`), `the shell defines ${name}`);
+}
 
 const controls = await read("src/lib/shell/controls.css");
 assert.match(controls, /:focus-visible/);

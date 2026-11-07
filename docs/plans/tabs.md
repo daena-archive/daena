@@ -6,7 +6,8 @@ viewing comes later; this plan keeps its data model ready for it but does not
 build it.
 
 Status: slices 1 (chrome restyle) and 2 (tab model, `src/lib/navigation/tabs.ts`)
-done; slice 3 (one-tab wiring) done and checked in the real app. Layout option A was chosen (tabs replace
+done; slice 3 (one-tab wiring) done and checked in the real app; slice 4
+(multiple tabs) done and checked in the real app. Layout option A was chosen (tabs replace
 the breadcrumb in the topbar, workspace header compacted). All open decisions are settled (see Decisions).
 
 ## Layout
@@ -64,14 +65,18 @@ breadcrumb would repeat the tab title. So the restyle is part of this work.
   manuscripts, or Lore library next to Lore graph, are fine: an inactive tab is
   only a saved location. Only the active tab is live, so switching between two
   tabs of the same plugin reloads its webview with the other tab's state.
-- **One tab per entity view.** Opening something that is already open in a tab
-  switches to that tab. Duplicates arrive with side-by-side.
+- **One tab per entity view, on new-tab opens.** Opening something in a new
+  tab (`⌘`-click, `⌘↵`, middle-click) when it is already open in a tab
+  switches to that tab. A plain click inside a tab only navigates that tab,
+  even if another tab shows the same place. Deliberate duplicates arrive with
+  side-by-side.
 - **Left rail (plain click):** if a tab for that workspace is already open,
   switch to it (the most recently used one if there are several), and leave
   the current tab alone. Otherwise the current tab navigates there, like any
   other click. `⌘`-click always opens a new tab.
 - **Settings and the project center** open in their own tab, or switch to it if
-  it is already open, like a singleton.
+  it is already open, like a singleton. Closing them from inside closes their
+  tab, unless it is the only tab.
 - **No preview tabs** in v1. A single click does not open a
   temporary tab that the next click replaces.
 - **Closing:** the active tab hands over to its right neighbour, or the left one
@@ -245,8 +250,14 @@ handles them in its own keydown handler like `⌘K`.
    settings, titles and icons, per-project restore.
 5. **Management.** Context menu, pin, drag and keyboard reorder, overflow list,
    reopen closed tab, narrow-window layout, popover-overlap registration.
+   Close tabs of an entity archived in this session and of a plugin or
+   section that gets disabled (slice 4 already closes them on switch and
+   drops them when a project opens).
 6. **Shortcuts.** Native menu items on macOS; key forwarding from plugin
-   webviews on other platforms; `newTab` in `open-entity`.
+   webviews on other platforms; `newTab` in `open-entity`. The remaining
+   open-in-new-tab entry points: collection row menus, wiki links, graph
+   nodes, and `⌘⇧`-click in editors (slice 4 covers the rail, collection
+   rows, Quick Open and the hover card).
 
 ### Later
 

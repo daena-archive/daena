@@ -2,9 +2,11 @@
 import { onMount } from "svelte";
 import { project, type Entity } from "$lib/project/client";
 import { htmlToMarkdown, markdownToPlainText } from "$lib/markdown";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 
 export let entities: Entity[] = [];
-export let onOpen: (entity: Entity) => void = () => {};
+export let isMac = false;
+export let onOpen: (entity: Entity, intent: OpenIntent) => void = () => {};
 
 let activeEntity: Entity | null = null;
 let position = { top: 0, left: 0 };
@@ -30,10 +32,21 @@ function scheduleHide() {
   }, 150);
 }
 
-function openActiveEntity() {
+function openActiveEntity(event: MouseEvent) {
   const entity = activeEntity;
   activeEntity = null;
-  if (entity) onOpen(entity);
+  if (entity) onOpen(entity, openIntent(event, isMac));
+}
+
+function openActiveEntityAux(event: MouseEvent) {
+  if (event.button !== 1) return;
+  const entity = activeEntity;
+  activeEntity = null;
+  if (entity) onOpen(entity, "new-tab");
+}
+
+function blockMiddleClickScroll(event: MouseEvent) {
+  if (event.button === 1) event.preventDefault();
 }
 
 async function showFor(target: HTMLElement) {
@@ -113,7 +126,11 @@ onMount(() => {
     {:else}
       <p class="entity-hover-empty">No document preview available.</p>
     {/if}
-    <button type="button" onclick={openActiveEntity}>Open fully</button>
+    <button
+      type="button"
+      onclick={openActiveEntity}
+      onauxclick={openActiveEntityAux}
+      onmousedown={blockMiddleClickScroll}>Open fully</button>
   </section>
 {/if}
 

@@ -72,6 +72,7 @@ import {
   type OutlineNode,
 } from "$lib/writing/outline";
 import {
+  emptyShellNavigationHistory,
   recordShellLocation,
   sameShellLocation,
   shellHistoryBack,
@@ -82,11 +83,26 @@ import {
   type WorkspaceLocationView,
   type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import {
   activeGroup,
   activeTab,
+  activateTab,
+  closeTab,
   createTabsState,
+  discardTab,
+  findTab,
+  findTabByIdentity,
+  mostRecentTabForSection,
+  openTab,
+  parseTabsState,
+  pruneTabs,
+  serializeTabsState,
+  tabIdentity,
+  tabsStorageKey,
   updateTab,
+  type NewTab,
+  type ShellTab,
   type ShellTabsState,
   type TabIcon,
 } from "$lib/navigation/tabs";
@@ -422,21 +438,24 @@ let error = $state("");
 let projectTransitionBusy = $state(false);
 let projectTransitionMessage = $state("");
 let projectHomeOpen = $state(true);
+function homeNewTab(): NewTab {
+  return { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } };
+}
 function freshShellTabs(): ShellTabsState {
-  return createTabsState(
-    { id: crypto.randomUUID(), location: { kind: "home" }, title: "Home", icon: { kind: "home" } },
-    "main",
-    Date.now(),
-  );
+  return createTabsState(homeNewTab(), "main", Date.now());
 }
 let shellTabs = $state<ShellTabsState>(freshShellTabs());
 const shellNavigationHistory = $derived(activeTab(shellTabs).history);
 function setShellNavigationHistory(history: ShellNavigationHistory) {
   shellTabs = updateTab(shellTabs, activeTab(shellTabs).id, { history });
 }
-function activateShellTab(_id: string) {
-  // Tab switching comes in slice 4.
-}
+$effect(() => {
+  void shellTabs;
+  void ready;
+  if (typeof window === "undefined") return;
+  const timer = window.setTimeout(() => persistShellTabs(), 400);
+  return () => window.clearTimeout(timer);
+});
 let shellNavigationBusy = $state(false);
 let shellNavigationRestoring = false;
 let section = $state<WorkspaceSection>("lore");
@@ -2452,9 +2471,47 @@ async function openNavigationItem(item: NavigationItem) {
   await openPluginView(item);
 }
 
-function openSidebarNavigationItem(key: string) {
+function mostRecentPluginTab(state: ShellTabsState, key: string): ShellTab | null {
+  let best: ShellTab | null = null;
+  for (const group of state.groups) {
+    for (const tab of group.tabs) {
+      if (tab.location.kind !== "plugin" || tab.location.key !== key) continue;
+      if (!best || tab.lastActiveAt > best.lastActiveAt) best = tab;
+    }
+  }
+  return best;
+}
+
+function openSidebarNavigationItem(key: string, intent: OpenIntent = "current") {
   const item = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
-  if (item) void openNavigationItem(item);
+  if (!item) return;
+  if (intent === "new-tab") {
+    void openInNewTab(() => openNavigationItem(item));
+    return;
+  }
+  const state = snapshotActiveTab();
+  const currentId = activeTab(state).id;
+  const existing =
+    item.kind === "workspace" ? mostRecentTabForSection(state, item.section) : mostRecentPluginTab(state, item.key);
+  if (existing && existing.id !== currentId) {
+    void switchToTab(existing.id);
+    return;
+  }
+  void openNavigationItem(item);
+}
+
+function openHomeWithIntent(intent: OpenIntent) {
+  if (intent === "new-tab") {
+    void openInNewTab(() => openProjectHome());
+    return;
+  }
+  const state = snapshotActiveTab();
+  const home = findTabByIdentity(state, "home");
+  if (home && home.id !== activeTab(state).id) {
+    void switchToTab(home.id);
+    return;
+  }
+  void openProjectHome();
 }
 
 function updateRailCollapsed(collapsed: boolean) {
@@ -3386,6 +3443,13 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
   return { title, tooltip, icon };
 }
 
+function inactiveTabTitle(tab: ShellTab): string {
+  if (tab.icon.kind !== "entity") return tab.title;
+  const entityId = tab.location.kind === "workspace" || tab.location.kind === "plugin" ? tab.location.entityId : null;
+  if (!entityId) return tab.title;
+  return entities.find((candidate) => candidate.id === entityId)?.name ?? tab.title;
+}
+
 function workspaceHeadingKicker() {
   return section === "lore"
     ? "WORLD BIBLE"
@@ -3687,6 +3751,164 @@ async function navigateShellHistory(direction: "back" | "forward") {
   } finally {
     shellNavigationBusy = false;
   }
+}
+
+function snapshotActiveTab(state: ShellTabsState = shellTabs): ShellTabsState {
+  const presentation = currentTabPresentation();
+  return updateTab(state, activeTab(state).id, {
+    location: currentShellLocation(),
+    title: presentation.title,
+    icon: presentation.icon,
+  });
+}
+
+function persistShellTabs() {
+  if (!ready || !projectInfo) return;
+  try {
+    localStorage.setItem(tabsStorageKey(projectInfo.root), serializeTabsState(snapshotActiveTab()));
+  } catch {
+    // Quota and private-mode storage failures leave the previous save in place.
+  }
+}
+
+function loadShellTabs(info: ProjectInfo): ShellTabsState {
+  try {
+    const parsed = parseTabsState(localStorage.getItem(tabsStorageKey(info.root)));
+    if (!parsed) return freshShellTabs();
+    return pruneTabs(parsed, (tab) => shellLocationAvailable(tab.location), homeNewTab(), Date.now());
+  } catch {
+    return freshShellTabs();
+  }
+}
+
+function otherTabByIdentity(state: ShellTabsState, identity: string, exceptId: string): ShellTab | null {
+  let best: ShellTab | null = null;
+  for (const group of state.groups) {
+    for (const tab of group.tabs) {
+      if (tab.id === exceptId || tabIdentity(tab.location) !== identity) continue;
+      if (!best || tab.lastActiveAt > best.lastActiveAt) best = tab;
+    }
+  }
+  return best;
+}
+
+async function switchToTab(tabId: string): Promise<boolean> {
+  if (!ready || shellNavigationBusy) return false;
+  const found = findTab(shellTabs, tabId);
+  if (!found) return false;
+  if (found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id) return true;
+  dismissTransientMenus();
+  if (!(await flushAutoSave())) return false;
+  const current = currentShellLocation();
+  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+    return false;
+  if (!shellLocationAvailable(found.tab.location)) {
+    shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
+    error = "That tab's workspace is no longer available.";
+    return false;
+  }
+  const target = found.tab.location;
+  shellTabs = activateTab(snapshotActiveTab(), tabId, Date.now());
+  shellNavigationBusy = true;
+  try {
+    await restoreShellLocation(target);
+  } finally {
+    shellTabs = snapshotActiveTab();
+    shellNavigationBusy = false;
+  }
+  return true;
+}
+
+async function openInNewTab(navigate: () => Promise<unknown>): Promise<void> {
+  if (!ready || shellNavigationBusy) return;
+  dismissTransientMenus();
+  if (!(await flushAutoSave())) return;
+  const current = currentShellLocation();
+  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  const id = crypto.randomUUID();
+  shellNavigationBusy = true;
+  try {
+    shellTabs = openTab(
+      snapshotActiveTab(),
+      { id, location: currentShellLocation(), title: "", icon: currentTabPresentation().icon },
+      Date.now(),
+    );
+    let navigateError: unknown = null;
+    try {
+      await navigate();
+    } catch (cause) {
+      navigateError = cause;
+    } finally {
+      setShellNavigationHistory(emptyShellNavigationHistory());
+    }
+    const identity = tabIdentity(currentShellLocation());
+    const existing = otherTabByIdentity(shellTabs, identity, id);
+    if (existing) {
+      const location = existing.location;
+      shellTabs = activateTab(discardTab(shellTabs, id), existing.id, Date.now());
+      try {
+        await restoreShellLocation(location);
+      } finally {
+        shellTabs = snapshotActiveTab();
+      }
+    } else {
+      shellTabs = snapshotActiveTab();
+    }
+    if (navigateError) throw navigateError;
+  } finally {
+    shellNavigationBusy = false;
+  }
+}
+
+async function closeShellTab(tabId: string): Promise<void> {
+  if (!ready || shellNavigationBusy) return;
+  const found = findTab(shellTabs, tabId);
+  if (!found) return;
+  const isActive = found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id;
+  if (!isActive) {
+    shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
+    return;
+  }
+  if (!(await flushAutoSave())) return;
+  const current = currentShellLocation();
+  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
+  shellTabs = closeTab(snapshotActiveTab(), tabId, Date.now(), homeNewTab());
+  const next = activeTab(shellTabs).location;
+  shellNavigationBusy = true;
+  try {
+    await restoreShellLocation(next);
+  } finally {
+    shellTabs = snapshotActiveTab();
+    shellNavigationBusy = false;
+  }
+}
+
+async function openSettingsTab(nextSection?: SettingsSection) {
+  if (!ready || currentShellLocation().kind === "settings") {
+    await openSettings(nextSection ?? "general");
+    return;
+  }
+  const existing = findTabByIdentity(snapshotActiveTab(), "settings");
+  if (existing) {
+    if (!(await switchToTab(existing.id))) return;
+    if (nextSection !== undefined) await openSettings(nextSection);
+    return;
+  }
+  await openInNewTab(() => openSettings(nextSection ?? "general"));
+}
+
+async function openProjectCenterTab(nextSection?: ProjectSection) {
+  if (currentShellLocation().kind === "project") {
+    await openProjectCenter(nextSection ?? "overview");
+    return;
+  }
+  const existing = findTabByIdentity(snapshotActiveTab(), "project");
+  if (existing) {
+    if (!(await switchToTab(existing.id))) return;
+    if (nextSection !== undefined) await openProjectCenter(nextSection);
+    return;
+  }
+  await openInNewTab(() => openProjectCenter(nextSection ?? "overview"));
 }
 
 $effect(() => {
@@ -4828,7 +5050,7 @@ async function refreshProjectStatus() {
 
 function openStatusDestination(section: ProjectSection) {
   statusCenterOpen = false;
-  void openProjectCenter(section);
+  void openProjectCenterTab(section);
 }
 
 function statusCenterItems(): StatusCenterItem[] {
@@ -4997,9 +5219,19 @@ async function finishOpening(info?: ProjectInfo) {
   await refreshArchivedCount();
   await refreshGit();
   await refreshAdmin();
-  shellTabs = freshShellTabs();
+  shellTabs = projectInfo ? loadShellTabs(projectInfo) : freshShellTabs();
   projectHomeOpen = true;
   ready = true;
+  const restoredTab = activeTab(shellTabs);
+  if (restoredTab.location.kind !== "home") {
+    shellNavigationBusy = true;
+    try {
+      await restoreShellLocation(restoredTab.location);
+    } finally {
+      shellTabs = snapshotActiveTab();
+      shellNavigationBusy = false;
+    }
+  }
 }
 
 async function runProjectTransition(message: string, operation: () => Promise<void>) {
@@ -5038,6 +5270,7 @@ async function pickAndOpenProject(intent: "create" | "open") {
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
       if (!(await flushAutoSave())) return;
       if (!(await leavePluginView({ closeWebviews: true }))) return;
+      persistShellTabs();
       resetProjectSessionState();
       await project.close();
       await finishOpening(intent === "create" ? await project.create(path) : await project.openDirectory(path));
@@ -5062,6 +5295,7 @@ async function openRecentProject(path: string) {
   await runProjectTransition("Opening project…", async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
+    persistShellTabs();
     resetProjectSessionState();
     await project.close();
     await finishOpening(await project.openDirectory(path));
@@ -5075,6 +5309,7 @@ async function closeProject() {
   await runProjectTransition("Closing project…", async () => {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
+    persistShellTabs();
     resetProjectSessionState();
     await project.close();
   });
@@ -5373,6 +5608,11 @@ async function rebindMapLocation(location: MapLocation) {
   } catch (cause) {
     error = friendlyError(cause);
   }
+}
+
+function openEntityWithIntent(entity: Entity, intent: OpenIntent) {
+  if (intent === "new-tab") void openInNewTab(() => selectEntity(entity));
+  else void selectEntity(entity);
 }
 
 async function selectEntity(entity: Entity, recordHistory = true) {
@@ -5792,9 +6032,12 @@ function handleCreateDialogKeydown(event: KeyboardEvent) {
   trapModalTab(event, createDialogElement);
 }
 
+function isMac() {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+}
+
 function quickOpenShortcutLabel() {
-  if (typeof navigator === "undefined") return "Ctrl K";
-  return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K";
+  return isMac() ? "⌘K" : "Ctrl K";
 }
 
 function quickOpenItems(): QuickOpenItem[] {
@@ -5916,7 +6159,7 @@ function closeQuickOpen() {
   searchRequest += 1;
 }
 
-async function selectQuickOpenItem(item: QuickOpenItem) {
+async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "current") {
   const action = item.action;
   const matchedEntity =
     action.kind === "entity"
@@ -5924,35 +6167,44 @@ async function selectQuickOpenItem(item: QuickOpenItem) {
       : null;
   closeQuickOpen();
   await tick();
-  if (action.kind === "entity") {
-    if (matchedEntity) await selectSearchResult(matchedEntity);
-    return;
-  }
-  if (action.kind === "map-feature") {
-    await ensureMapEditorOpen(action.mapEntityId);
-    mapFocusLinkId = null;
-    mapFocusFeatureId = null;
-    await tick();
-    mapFocusFeatureId = action.featureId;
-    return;
-  }
-  if (action.kind === "destination") {
-    if (action.destination === "home") await openProjectHome();
-    else if (action.destination.startsWith("navigation:")) {
-      openSidebarNavigationItem(action.destination.slice("navigation:".length));
+  const run = async () => {
+    if (action.kind === "entity") {
+      if (matchedEntity) await selectSearchResult(matchedEntity);
+      return;
     }
+    if (action.kind === "map-feature") {
+      await ensureMapEditorOpen(action.mapEntityId);
+      mapFocusLinkId = null;
+      mapFocusFeatureId = null;
+      await tick();
+      mapFocusFeatureId = action.featureId;
+      return;
+    }
+    if (action.kind === "destination") {
+      if (action.destination === "home") await openProjectHome();
+      else if (action.destination.startsWith("navigation:")) {
+        const key = action.destination.slice("navigation:".length);
+        const navItem = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
+        if (navItem) await openNavigationItem(navItem);
+      }
+      return;
+    }
+    if (action.kind === "create") {
+      const option = createOptions().find((candidate) => candidate.key === action.templateKey);
+      if (!option) return;
+      openFocusedCreate(option.key);
+      return;
+    }
+    if (action.kind === "command" && action.command === "template-gallery") openCreationMenu();
+  };
+  if (action.kind === "command" && action.command !== "template-gallery") {
+    if (action.command === "snapshots") await openProjectCenterTab("snapshots");
+    else if (action.command === "plugins") await openProjectCenterTab("extensions");
+    else await openSettingsTab();
     return;
   }
-  if (action.kind === "create") {
-    const option = createOptions().find((candidate) => candidate.key === action.templateKey);
-    if (!option) return;
-    openFocusedCreate(option.key);
-    return;
-  }
-  if (action.command === "template-gallery") openCreationMenu();
-  else if (action.command === "snapshots") await openProjectCenter("snapshots");
-  else if (action.command === "plugins") await openProjectCenter("extensions");
-  else await openSettings();
+  if (intent === "new-tab") await openInNewTab(run);
+  else await run();
 }
 
 function updateField(definition: FieldDefinition, event: Event) {
@@ -6244,7 +6496,7 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
     actionLabel: ENTITY_ACTIONS.viewArchive,
     onAction: () => {
       dismissLifecycleToast();
-      void openProjectCenter("archive");
+      void openProjectCenterTab("archive");
     },
   });
   await tick();
@@ -6856,6 +7108,15 @@ function closeSettings() {
   projectSection = "overview";
   statusCenterOpen = false;
 }
+function closeAdministrationTab() {
+  const kind = currentShellLocation().kind;
+  const openCount = shellTabs.groups.reduce((count, group) => count + group.tabs.length, 0);
+  if (openCount > 1 && (kind === "settings" || kind === "project")) {
+    void closeShellTab(activeTab(shellTabs).id);
+    return;
+  }
+  closeSettings();
+}
 function setSchemaEditorDirty(dirty: boolean) {
   schemaEditorDirty = dirty;
 }
@@ -7459,6 +7720,7 @@ async function importPortableCheckpoint() {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
+    persistShellTabs();
     resetProjectSessionState();
     await finishOpening();
     projectDiagnostics = [];
@@ -7495,6 +7757,7 @@ async function restoreRecoveryBackup(path: string) {
     if (!(await flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
+    persistShellTabs();
     resetProjectSessionState();
     await finishOpening();
   });
@@ -7533,6 +7796,7 @@ onMount(() => {
   };
   themeMedia.addEventListener("change", handleSystemThemeChange);
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+    persistShellTabs();
     editorRef?.flushPendingChanges();
     if (!hasUnsavedChanges) return;
     event.preventDefault();
@@ -7619,6 +7883,7 @@ onMount(() => {
           await keepWindowOpen();
           return;
         }
+        persistShellTabs();
         await project.appCloseConfirm();
       } catch (cause) {
         error = `The window stayed open because closing failed: ${friendlyError(cause)}`;
@@ -7816,6 +8081,7 @@ onMount(() => {
   {/if}
   <AppSidebar
     {ready}
+    isMac={isMac()}
     collapsed={railCollapsed}
     projectMenuOpen={showProjectMenu}
     projectName={projectInfo?.name ?? "Local project"}
@@ -7843,13 +8109,13 @@ onMount(() => {
     onOpenRecent={(root) => void openRecentProject(root)}
     onRemoveRecent={removeRecentProject}
     onProjectMenuChange={(open) => (showProjectMenu = open)}
-    onOpenProjectCenter={() => void openProjectCenter()}
+    onOpenProjectCenter={() => void openProjectCenterTab()}
     onCloseProject={closeProject}
-    onOpenHome={() => void openProjectHome()}
+    onOpenHome={openHomeWithIntent}
     onCreate={toggleCreateForm}
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
-    onOpenSettings={() => void openSettings()}
+    onOpenSettings={() => void openSettingsTab()}
     onCollapsedChange={updateRailCollapsed} />
 
   <div
@@ -7887,20 +8153,16 @@ onMount(() => {
       {@const current = activeTab(shellTabs)}
       {@const presentation = currentTabPresentation()}
       <TabStrip
-        tabs={activeGroup(shellTabs).tabs.map((tab) =>
-          tab.id === current.id
-            ? { id: tab.id, ...presentation, active: true, pinned: tab.pinned }
-            : {
-                id: tab.id,
-                title: tab.title,
-                tooltip: tab.title,
-                icon: tab.icon,
-                active: false,
-                pinned: tab.pinned,
-              },
-        )}
+        tabs={activeGroup(shellTabs).tabs.map((tab) => {
+          if (tab.id === current.id) return { id: tab.id, ...presentation, active: true, pinned: tab.pinned };
+          const title = inactiveTabTitle(tab);
+          return { id: tab.id, title, tooltip: title, icon: tab.icon, active: false, pinned: tab.pinned };
+        })}
         panelId="shell-tabpanel"
-        onActivate={activateShellTab}
+        busy={shellNavigationBusy}
+        onActivate={(id) => void switchToTab(id)}
+        onClose={(id) => void closeShellTab(id)}
+        onNew={() => void openInNewTab(openProjectHome)}
         icon={tabIcon} />
     {/snippet}
     {#snippet projectStatusControl()}
@@ -7928,7 +8190,8 @@ onMount(() => {
         items={quickOpenItems()}
         loading={quickOpenSearchLoading}
         onQueryChange={(query) => (globalQuery = query)}
-        onSelect={(item) => void selectQuickOpenItem(item)}
+        isMac={isMac()}
+        onSelect={(item, intent) => void selectQuickOpenItem(item, intent)}
         onClose={closeQuickOpen} />{/if}
     {#if showCreateForm}{@const createOption = selectedCreateOption()}
       <div class="modal-backdrop">
@@ -8298,7 +8561,7 @@ onMount(() => {
         {updateChannelPreference}
         onUpdateChannelChange={updateUpdateChannelPreference}
         onRemoveRecent={removeRecentProject}
-        onClose={closeSettings}
+        onClose={closeAdministrationTab}
         onBeforeNavigate={beforeVisibleSettingsNavigate} />
     {:else if showSettings && projectInfo}
       <ProjectCenter
@@ -8315,7 +8578,7 @@ onMount(() => {
         snapshotRepository={gitStatus?.repository ?? false}
         snapshotBranch={gitStatus?.branch ?? null}
         {archivedCount}
-        onClose={closeSettings}
+        onClose={closeAdministrationTab}
         onBeforeNavigate={beforeVisibleProjectNavigate}
         onImportExternal={openExternalImport}
         onExportMarkdown={exportMarkdownProject}
@@ -8714,9 +8977,9 @@ onMount(() => {
           };
         })}
         onNewEntry={toggleCreateForm}
-        onSnapshots={() => void openProjectCenter("snapshots")}
-        onProjectCenter={() => void openProjectCenter()}
-        onExtensions={() => void openProjectCenter("extensions")}
+        onSnapshots={() => void openProjectCenterTab("snapshots")}
+        onProjectCenter={() => void openProjectCenterTab()}
+        onExtensions={() => void openProjectCenterTab("extensions")}
         onOpenWorkspace={(target) => void switchSection(target)}
         onOpenEntity={(entity) => void selectSearchResult(entity)} />
     {:else if hostView}
@@ -8886,7 +9149,7 @@ onMount(() => {
         <span class="overline">WORKSPACE READY</span>
         <h1>Choose a workspace to begin.</h1>
         <p>No workspace modules are enabled in this project. Enable one from Project → Extensions to start working.</p>
-        <button class="primary-button" onclick={() => void openProjectCenter("extensions")}>Open Extensions</button>
+        <button class="primary-button" onclick={() => void openProjectCenterTab("extensions")}>Open Extensions</button>
       </section>
     {:else}
       {#if projectDiagnostics.length && !writingWebviewShown}<div class="project-diagnostics" role="alert">
@@ -9199,7 +9462,16 @@ onMount(() => {
                         strokeWidth={1.8}
                         aria-hidden="true" />{/if}</button
                   >{:else}<span class="outline-toggle-spacer" aria-hidden="true"></span>{/if}
-                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                <button
+                  type="button"
+                  class="collection-item-main"
+                  onclick={(event) => void openEntityWithIntent(entity, openIntent(event, isMac()))}
+                  onauxclick={(event) => {
+                    if (event.button === 1) void openEntityWithIntent(entity, "new-tab");
+                  }}
+                  onmousedown={(event) => {
+                    if (event.button === 1) event.preventDefault();
+                  }}>
                   <EntityGlyph
                     icon={rowIcon.icon}
                     iconColor={rowIcon.iconColor}
@@ -9245,7 +9517,16 @@ onMount(() => {
                 >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}
                     <div class:selected={selected?.id === entity.id} class="collection-item">
-                      <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                      <button
+                        type="button"
+                        class="collection-item-main"
+                        onclick={(event) => void openEntityWithIntent(entity, openIntent(event, isMac()))}
+                        onauxclick={(event) => {
+                          if (event.button === 1) void openEntityWithIntent(entity, "new-tab");
+                        }}
+                        onmousedown={(event) => {
+                          if (event.button === 1) event.preventDefault();
+                        }}>
                         <EntityGlyph
                           icon={rowIcon.icon}
                           iconColor={rowIcon.iconColor}
@@ -9266,7 +9547,16 @@ onMount(() => {
                 entity.entity_type,
               )}
               <div class:selected={selected?.id === entity.id} class="collection-item">
-                <button type="button" class="collection-item-main" onclick={() => void selectEntity(entity)}>
+                <button
+                  type="button"
+                  class="collection-item-main"
+                  onclick={(event) => void openEntityWithIntent(entity, openIntent(event, isMac()))}
+                  onauxclick={(event) => {
+                    if (event.button === 1) void openEntityWithIntent(entity, "new-tab");
+                  }}
+                  onmousedown={(event) => {
+                    if (event.button === 1) event.preventDefault();
+                  }}>
                   <EntityGlyph
                     icon={rowIcon.icon}
                     iconColor={rowIcon.iconColor}
@@ -10179,7 +10469,10 @@ onMount(() => {
           ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
       </div>{/if}
   </div>
-  {#if ready}<EntityHoverCard {entities} onOpen={(entity) => void selectEntity(entity)} />
+  {#if ready}<EntityHoverCard
+      {entities}
+      isMac={isMac()}
+      onOpen={(entity, intent) => void openEntityWithIntent(entity, intent)} />
     <button
       class="mobile-create-button"
       aria-label={`${ENTITY_ACTIONS.new} ${createLabel()}`}

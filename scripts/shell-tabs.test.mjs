@@ -11,12 +11,14 @@ import {
   closeTab,
   closeTabsToRight,
   createTabsState,
+  discardTab,
   findTab,
   findTabByIdentity,
   mostRecentTabForSection,
   moveTab,
   openTab,
   parseTabsState,
+  pruneTabs,
   reopenClosedTab,
   serializeTabsState,
   setTabPinned,
@@ -776,6 +778,168 @@ assert.deepEqual(
   check(parseTabsState(badIcon)).groups[0].tabs[0].icon,
   { kind: "home" },
   "an invalid icon falls back to home",
+);
+
+// discardTab
+
+const discardStrip = deepFreeze(
+  stripOf(
+    [
+      shellTab("a", loreAria, { lastActiveAt: 1 }),
+      shellTab("b", loreBran, { lastActiveAt: 2 }),
+      shellTab("c", writing, { lastActiveAt: 3 }),
+    ],
+    "b",
+    [shellTab("old", home)],
+  ),
+);
+assert.equal(discardTab(discardStrip, "missing"), discardStrip, "discarding an unknown id returns the same state");
+const onlyDiscard = deepFreeze(stripOf([shellTab("a", loreAria)], "a", [shellTab("old", home)]));
+assert.equal(discardTab(onlyDiscard, "a"), onlyDiscard, "discarding the last tab returns the same state");
+
+const discardedMiddle = check(discardTab(discardStrip, "b"));
+assert.deepEqual(tabIds(discardedMiddle), ["a", "c"]);
+assert.equal(activeTab(discardedMiddle).id, "c", "discarding the active middle tab activates its right neighbour");
+assert.equal(findTab(discardedMiddle, "c").tab.lastActiveAt, 3, "discard does not stamp a new activation time");
+assert.equal(discardedMiddle.closed, discardStrip.closed, "discard does not touch the closed stack");
+
+const discardedLast = check(discardTab(deepFreeze(stripOf(discardStrip.groups[0].tabs, "c")), "c"));
+assert.equal(activeTab(discardedLast).id, "b", "discarding the active last tab activates its left neighbour");
+assert.deepEqual(discardedLast.closed, []);
+
+const discardedInactive = check(discardTab(discardStrip, "a"));
+assert.equal(activeTab(discardedInactive).id, "b", "discarding an inactive tab keeps the active tab");
+assert.deepEqual(tabIds(discardedInactive), ["b", "c"]);
+assert.equal(discardedInactive.closed, discardStrip.closed);
+
+const discardGroups = deepFreeze({
+  version: 1,
+  groups: [
+    { id: "main", tabs: [shellTab("a", loreAria, { lastActiveAt: 4 })], activeTabId: "a" },
+    {
+      id: "side",
+      tabs: [shellTab("c", writing, { lastActiveAt: 8 }), shellTab("d", loreGraph, { lastActiveAt: 9 })],
+      activeTabId: "c",
+    },
+  ],
+  activeGroupId: "main",
+  closed: [shellTab("old", home)],
+});
+const discardedSide = check(discardTab(discardGroups, "c"));
+assert.equal(discardedSide.groups.length, 2, "discarding a tab that leaves its group non-empty keeps the group");
+assert.equal(discardedSide.groups[1].activeTabId, "d", "an inactive group's active tab hands over to its neighbour");
+assert.equal(discardedSide.activeGroupId, "main");
+assert.equal(discardedSide.closed, discardGroups.closed);
+
+const discardedActiveGroup = check(discardTab(discardGroups, "a"));
+assert.deepEqual(
+  discardedActiveGroup.groups.map((group) => group.id),
+  ["side"],
+  "discarding the only tab of the active group removes that group",
+);
+assert.equal(discardedActiveGroup.activeGroupId, "side");
+assert.equal(activeTab(discardedActiveGroup).id, "c");
+assert.equal(activeTab(discardedActiveGroup).lastActiveAt, 8, "discard does not stamp the group it activates");
+assert.equal(discardedActiveGroup.closed, discardGroups.closed);
+
+const discardedInactiveGroup = check(
+  discardTab(
+    deepFreeze({
+      version: 1,
+      groups: [
+        { id: "main", tabs: [shellTab("a", loreAria), shellTab("b", loreBran)], activeTabId: "a" },
+        { id: "side", tabs: [shellTab("c", writing)], activeTabId: "c" },
+      ],
+      activeGroupId: "main",
+      closed: [],
+    }),
+    "c",
+  ),
+);
+assert.deepEqual(
+  discardedInactiveGroup.groups.map((group) => group.id),
+  ["main"],
+  "discarding the only tab of an inactive group removes that group",
+);
+assert.equal(activeTab(discardedInactiveGroup).id, "a");
+
+// pruneTabs
+
+const pruneBase = deepFreeze(
+  stripOf(
+    [
+      shellTab("a", loreAria, { lastActiveAt: 1 }),
+      shellTab("b", loreBran, { lastActiveAt: 2 }),
+      shellTab("c", writing, { lastActiveAt: 3 }),
+    ],
+    "b",
+    [shellTab("old", plugin), shellTab("keep-closed", home)],
+  ),
+);
+assert.equal(
+  pruneTabs(pruneBase, () => true, replacement, 50),
+  pruneBase,
+  "pruning nothing returns the same state",
+);
+
+const prunedMiddle = check(pruneTabs(pruneBase, (tab) => tab.id !== "b" && tab.id !== "old", replacement, 50));
+assert.deepEqual(tabIds(prunedMiddle), ["a", "c"]);
+assert.equal(activeTab(prunedMiddle).id, "c", "pruning the active tab activates the right kept neighbour");
+assert.equal(activeTab(prunedMiddle).lastActiveAt, 50, "pruning the active tab stamps the neighbour");
+assert.deepEqual(
+  prunedMiddle.closed.map((tab) => tab.id),
+  ["keep-closed"],
+  "pruned closed entries go away and dropped open tabs are not pushed onto closed",
+);
+
+const prunedRight = check(pruneTabs(pruneBase, (tab) => tab.id === "a" || tab.id === "keep-closed", replacement, 60));
+assert.equal(activeTab(prunedRight).id, "a", "when the right neighbour is also dropped, the left one activates");
+assert.equal(activeTab(prunedRight).lastActiveAt, 60);
+assert.deepEqual(
+  prunedRight.closed.map((tab) => tab.id),
+  ["keep-closed"],
+);
+
+const prunedNone = check(pruneTabs(pruneBase, () => false, tabFor("fresh", home), 70));
+assert.deepEqual(tabIds(prunedNone), ["fresh"], "pruning every tab leaves the replacement");
+assert.equal(activeTab(prunedNone).lastActiveAt, 70);
+assert.equal(prunedNone.activeGroupId, "main", "the replacement keeps the active group id");
+assert.deepEqual(prunedNone.closed, [], "a full prune also clears rejected closed tabs");
+
+const pruneGroups = deepFreeze({
+  version: 1,
+  groups: [
+    { id: "main", tabs: [shellTab("a", loreAria, { lastActiveAt: 1 })], activeTabId: "a" },
+    {
+      id: "side",
+      tabs: [shellTab("c", writing, { lastActiveAt: 2 }), shellTab("d", loreBran, { lastActiveAt: 3 })],
+      activeTabId: "c",
+    },
+  ],
+  activeGroupId: "main",
+  closed: [shellTab("old", home)],
+});
+const prunedActiveGroup = check(pruneTabs(pruneGroups, (tab) => tab.id !== "a", replacement, 80));
+assert.deepEqual(
+  prunedActiveGroup.groups.map((group) => group.id),
+  ["side"],
+  "an emptied group is removed",
+);
+assert.equal(prunedActiveGroup.activeGroupId, "side", "emptying the active group activates the first remaining group");
+assert.equal(activeTab(prunedActiveGroup).id, "c");
+assert.equal(activeTab(prunedActiveGroup).lastActiveAt, 80);
+assert.equal(prunedActiveGroup.closed.length, 1, "a kept closed tab stays");
+
+const prunedSideActive = check(pruneTabs(pruneGroups, (tab) => tab.id !== "c", replacement, 90));
+assert.equal(prunedSideActive.activeGroupId, "main");
+assert.equal(activeTab(prunedSideActive).id, "a");
+assert.equal(activeTab(prunedSideActive).lastActiveAt, 1, "keeping the global active tab does not restamp it");
+const prunedSide = prunedSideActive.groups.find((group) => group.id === "side");
+assert.equal(prunedSide.activeTabId, "d", "a background group activates the neighbour of its dropped active tab");
+assert.equal(
+  prunedSide.tabs.find((tab) => tab.id === "d").lastActiveAt,
+  3,
+  "a background group does not get a new activation time",
 );
 
 const manyClosed = Array.from({ length: 12 }, (_, index) => shellTab(`old-${index}`, loreAt(String(index))));

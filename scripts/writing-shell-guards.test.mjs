@@ -28,6 +28,9 @@ function between(from, to) {
 const flushesBeforeNavigating = [
   ["toggleWorkbenchPane", /workbenchPaneVisibility = \{/],
   ["navigateShellHistory", /shellNavigationBusy = true/],
+  ["switchToTab", /activateTab\(/],
+  ["openInNewTab", /openTab\(/],
+  ["closeShellTab", /closeTab\(snapshotActiveTab/],
   ["createWithOption", /entities\.create\(/],
   ["openTreePerson", /leavePluginView\(\)/],
   ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/],

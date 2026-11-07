@@ -182,6 +182,89 @@ export function updateTab(
   return replaceGroup(state, { ...found.group, tabs });
 }
 
+/** Removes a tab without pushing it onto `closed`. The last tab is kept. */
+export function discardTab(state: ShellTabsState, tabId: string): ShellTabsState {
+  const found = findTab(state, tabId);
+  if (!found || totalTabCount(state) === 1) return state;
+
+  const { group, index } = found;
+  if (group.tabs.length === 1) {
+    const groups = state.groups.filter((candidate) => candidate.id !== group.id);
+    if (state.activeGroupId !== group.id) return { ...state, groups };
+    return { ...state, groups, activeGroupId: groups[0].id };
+  }
+
+  const tabs = group.tabs.filter((tab) => tab.id !== tabId);
+  const activeTabId =
+    group.activeTabId === tabId ? (group.tabs[index + 1] ?? group.tabs[index - 1]).id : group.activeTabId;
+  return {
+    ...state,
+    groups: state.groups.map((candidate) => (candidate.id === group.id ? { ...group, tabs, activeTabId } : candidate)),
+  };
+}
+
+/**
+ * Drops open and closed tabs `keep` rejects. Dropped open tabs are not pushed
+ * onto `closed`. An emptied active group activates its neighbour, as `closeTab`
+ * does. Nothing left becomes one group holding `replacement`.
+ */
+export function pruneTabs(
+  state: ShellTabsState,
+  keep: (tab: ShellTab) => boolean,
+  replacement: NewTab,
+  now: number,
+): ShellTabsState {
+  let dropped = false;
+  const closed = state.closed.filter((tab) => {
+    if (keep(tab)) return true;
+    dropped = true;
+    return false;
+  });
+
+  const groups: ShellTabGroup[] = [];
+  for (const group of state.groups) {
+    const tabs = group.tabs.filter((tab) => {
+      if (keep(tab)) return true;
+      dropped = true;
+      return false;
+    });
+    if (tabs.length === 0) continue;
+
+    let activeTabId = group.activeTabId;
+    let nextTabs = tabs;
+    if (!tabs.some((tab) => tab.id === group.activeTabId)) {
+      const neighbour = keptNeighbour(group.tabs, group.activeTabId, keep);
+      if (!neighbour) continue;
+      activeTabId = neighbour.id;
+      if (state.activeGroupId === group.id) {
+        nextTabs = tabs.map((tab) => (tab.id === neighbour.id ? { ...tab, lastActiveAt: now } : tab));
+      }
+    }
+    groups.push({ ...group, tabs: nextTabs, activeTabId });
+  }
+
+  if (!dropped) return state;
+  if (groups.length === 0) {
+    const tab = buildTab(replacement, now);
+    return {
+      ...state,
+      groups: [{ id: state.activeGroupId, tabs: [tab], activeTabId: tab.id }],
+      activeGroupId: state.activeGroupId,
+      closed,
+    };
+  }
+
+  let activeGroupId = state.activeGroupId;
+  let nextGroups = groups;
+  if (!groups.some((group) => group.id === state.activeGroupId)) {
+    const next = groups[0];
+    activeGroupId = next.id;
+    const tabs = next.tabs.map((tab) => (tab.id === next.activeTabId ? { ...tab, lastActiveAt: now } : tab));
+    nextGroups = groups.map((group) => (group.id === next.id ? { ...next, tabs } : group));
+  }
+  return { ...state, groups: nextGroups, activeGroupId, closed };
+}
+
 export function closeTab(state: ShellTabsState, tabId: string, now: number, replacement: NewTab): ShellTabsState {
   const found = findTab(state, tabId);
   if (!found) return state;
@@ -417,6 +500,16 @@ function countPinned(tabs: ShellTab[]): number {
 
 function totalTabCount(state: ShellTabsState): number {
   return state.groups.reduce((count, group) => count + group.tabs.length, 0);
+}
+
+function keptNeighbour(tabs: ShellTab[], activeId: string, keep: (tab: ShellTab) => boolean): ShellTab | null {
+  const index = tabs.findIndex((tab) => tab.id === activeId);
+  if (index === -1) return tabs.find((tab) => keep(tab)) ?? null;
+  return (
+    tabs.slice(index + 1).find((tab) => keep(tab)) ??
+    [...tabs.slice(0, index)].reverse().find((tab) => keep(tab)) ??
+    null
+  );
 }
 
 function pushClosed(closed: ShellTab[], tabs: ShellTab[]): ShellTab[] {

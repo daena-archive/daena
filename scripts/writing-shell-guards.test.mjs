@@ -30,7 +30,8 @@ const flushesBeforeNavigating = [
   ["navigateShellHistory", /shellNavigationBusy = true/],
   ["switchToTab", /activateTab\(/],
   ["openInNewTab", /openTab\(/],
-  ["closeShellTab", /closeTab\(snapshotActiveTab/],
+  ["closeShellTab", /applyTabsChange\(/],
+  ["applyTabsChange", /change\(snapshotActiveTab\(\)\)/],
   ["createWithOption", /entities\.create\(/],
   ["openTreePerson", /leavePluginView\(\)/],
   ["openPluginView", /leavePluginView\(\)|openHostView\(|dismissSettings\(\)/],
@@ -67,11 +68,19 @@ const flushesBeforeNavigating = [
 ];
 for (const [name, navigates] of flushesBeforeNavigating) {
   const body = functionBody(name);
-  const flush = body.indexOf("flushAutoSave()");
   const step = body.search(navigates);
-  assert.ok(flush >= 0, `${name} saves the open entry through flushAutoSave`);
   assert.ok(step >= 0, `${name} still navigates where its check expects (${navigates})`);
-  assert.ok(flush < step, `${name} saves before it navigates`);
+  if (body.includes("flushAutoSave()")) {
+    const flush = body.indexOf("flushAutoSave()");
+    assert.ok(flush < step, `${name} saves before it navigates`);
+    continue;
+  }
+  // closeShellTab delegates to applyTabsChange, which saves before it changes the active tab.
+  assert.match(body, /applyTabsChange\(/, `${name} saves through applyTabsChange`);
+  const delegated = functionBody("applyTabsChange");
+  const flush = delegated.indexOf("flushAutoSave()");
+  const delegatedStep = delegated.search(/change\(snapshotActiveTab\(\)\)/);
+  assert.ok(flush >= 0 && delegatedStep >= 0 && flush < delegatedStep, `${name} saves before it navigates`);
 }
 
 // These reach a navigation through a function that saves first, so they only need to call it.

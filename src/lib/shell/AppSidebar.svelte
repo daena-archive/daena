@@ -1,7 +1,9 @@
 <script lang="ts">
 import type { WorkspaceSection } from "$lib/modules/workspace";
+import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import ProjectSwitcher from "./ProjectSwitcher.svelte";
+import RailContextMenu from "./RailContextMenu.svelte";
 import { workspaceIcon } from "./workspace-icons";
 import { Boxes, Home, PanelLeftClose, PanelLeftOpen, Plus, Puzzle, Settings as SettingsIcon } from "@lucide/svelte";
 import "./AppSidebar.css";
@@ -53,6 +55,7 @@ let {
   onOpenWorkspace,
   onOpenTool,
   onCollapsedChange,
+  menuOpen = $bindable(false),
 }: {
   ready: boolean;
   isMac: boolean;
@@ -80,12 +83,23 @@ let {
   onOpenWorkspace: (key: string, intent: OpenIntent) => void;
   onOpenTool: (key: string, intent: OpenIntent) => void;
   onCollapsedChange: (collapsed: boolean) => void;
+  /** True while a rail context menu is shown. Setting it to false from outside closes that menu. */
+  menuOpen?: boolean;
 } = $props();
 
+type RailMenu = {
+  x: number;
+  y: number;
+  label: string;
+  returnFocus: HTMLElement;
+  items: Array<{ label: string; action: () => void }>;
+};
+
 let tooltip = $state<{ text: string; x: number; y: number } | null>(null);
+let railMenu = $state<RailMenu | null>(null);
 
 function showTooltip(event: Event, title: string) {
-  if (!collapsed || !ready || !title) return;
+  if (!collapsed || !ready || !title || railMenu) return;
   const target = event.currentTarget as HTMLElement | null;
   if (!target) return;
   const rect = target.getBoundingClientRect();
@@ -115,8 +129,45 @@ function blockMiddleClickScroll(event: MouseEvent) {
   if (event.button === 1) event.preventDefault();
 }
 
+function railMenuItems(open: (intent: OpenIntent) => void): RailMenu["items"] {
+  return [
+    { label: ENTITY_ACTIONS.open, action: () => open("current") },
+    { label: ENTITY_ACTIONS.openInNewTab, action: () => open("new-tab") },
+  ];
+}
+
+function showRailMenu(anchor: HTMLElement, x: number, y: number, title: string, open: (intent: OpenIntent) => void) {
+  hideTooltip();
+  railMenu = { x, y, label: `Actions for ${title}`, returnFocus: anchor, items: railMenuItems(open) };
+  menuOpen = true;
+}
+
+function onRailContextMenu(event: MouseEvent, title: string, open: (intent: OpenIntent) => void) {
+  event.preventDefault();
+  showRailMenu(event.currentTarget as HTMLElement, event.clientX, event.clientY, title, open);
+}
+
+function onRailMenuKey(event: KeyboardEvent, title: string, open: (intent: OpenIntent) => void) {
+  const contextKey = event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey);
+  if (!contextKey || event.altKey || event.metaKey || event.ctrlKey) return;
+  event.preventDefault();
+  const anchor = event.currentTarget as HTMLElement;
+  const rect = anchor.getBoundingClientRect();
+  showRailMenu(anchor, rect.left, rect.bottom + 4, title, open);
+}
+
+function closeRailMenu() {
+  railMenu = null;
+  menuOpen = false;
+}
+
 $effect(() => {
   if (!collapsed || !ready) tooltip = null;
+});
+
+$effect(() => {
+  // The parent clears menuOpen from outside: close the rail menu here as well.
+  if (!menuOpen && railMenu) railMenu = null;
 });
 
 $effect(() => {
@@ -168,6 +219,8 @@ $effect(() => {
         onclick={(event) => onOpenHome(railIntent(event))}
         onauxclick={(event) => railAux(event, onOpenHome)}
         onmousedown={blockMiddleClickScroll}
+        oncontextmenu={(event) => onRailContextMenu(event, "Home", onOpenHome)}
+        onkeydown={(event) => onRailMenuKey(event, "Home", onOpenHome)}
         onmouseenter={(e) => showTooltip(e, "Home")}
         onmouseleave={hideTooltip}
         onfocus={(e) => showTooltip(e, "Home")}
@@ -199,6 +252,9 @@ $effect(() => {
               onclick={(event) => onOpenWorkspace(item.key, railIntent(event))}
               onauxclick={(event) => railAux(event, (intent) => onOpenWorkspace(item.key, intent))}
               onmousedown={blockMiddleClickScroll}
+              oncontextmenu={(event) =>
+                onRailContextMenu(event, item.title, (intent) => onOpenWorkspace(item.key, intent))}
+              onkeydown={(event) => onRailMenuKey(event, item.title, (intent) => onOpenWorkspace(item.key, intent))}
               onmouseenter={(e) => showTooltip(e, wsTitle)}
               onmouseleave={hideTooltip}
               onfocus={(e) => showTooltip(e, wsTitle)}
@@ -225,6 +281,9 @@ $effect(() => {
                 onclick={(event) => onOpenTool(item.key, railIntent(event))}
                 onauxclick={(event) => railAux(event, (intent) => onOpenTool(item.key, intent))}
                 onmousedown={blockMiddleClickScroll}
+                oncontextmenu={(event) =>
+                  onRailContextMenu(event, item.title, (intent) => onOpenTool(item.key, intent))}
+                onkeydown={(event) => onRailMenuKey(event, item.title, (intent) => onOpenTool(item.key, intent))}
                 onmouseenter={(e) => showTooltip(e, item.title)}
                 onmouseleave={hideTooltip}
                 onfocus={(e) => showTooltip(e, item.title)}
@@ -288,5 +347,14 @@ $effect(() => {
   </div>
   {#if tooltip}
     <div class="rail-tooltip" style="left: {tooltip.x}px; top: {tooltip.y}px;">{tooltip.text}</div>
+  {/if}
+  {#if railMenu}
+    <RailContextMenu
+      x={railMenu.x}
+      y={railMenu.y}
+      label={railMenu.label}
+      items={railMenu.items}
+      returnFocus={railMenu.returnFocus}
+      onClose={closeRailMenu} />
   {/if}
 </aside>

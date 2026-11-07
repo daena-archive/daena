@@ -5,6 +5,7 @@
 export const ENTITY_ACTIONS = {
   new: "New",
   open: "Open",
+  openInNewTab: "Open in new tab",
   openIn: "Open in…",
   editIdentity: "Edit identity",
   archive: "Archive",

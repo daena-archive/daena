@@ -20,6 +20,8 @@ const componentPaths = [
   "src/lib/shell/EntityFieldsDialog.svelte",
   "src/lib/shell/PaneResizeHandle.svelte",
   "src/lib/shell/ProjectSwitcher.svelte",
+  "src/lib/shell/RailContextMenu.svelte",
+  "src/lib/entity-lifecycle/EntityRowActions.svelte",
   "src/lib/shell/QuickOpen.svelte",
   "src/lib/shell/StatusCenter.svelte",
   "src/lib/shell/TabStrip.svelte",
@@ -100,18 +102,86 @@ assert.match(tabStrip, /role="tab"/);
 assert.match(tabStrip, /aria-selected/);
 assert.match(tabStrip, /onClose/, "TabStrip closes a tab");
 assert.match(tabStrip, /onNew/, "TabStrip opens a new tab");
+assert.match(tabStrip, /"Close all tabs"/, "the tab menu closes every unpinned tab");
+assert.match(tabStrip, /onCloseAll/, "TabStrip reports Close all tabs to the shell");
 assert.match(tabStrip, /aria-label=\{`Close \$\{/, "a tab's close button names the tab");
 assert.match(tabStrip, /role="presentation"/, "the tab pill is not a nested button");
+assert.match(tabStrip, /role="menu"/);
+assert.match(tabStrip, /data-shell-popover="tab-menu"/);
+assert.match(tabStrip, /data-shell-popover="tab-list"/);
+assert.match(tabStrip, /menuitemradio/);
+assert.match(tabStrip, /aria-label="All tabs"/);
+assert.match(tabStrip, /ContextMenu/);
+assert.match(tabStrip, /F10/);
+assert.match(tabStrip, /shiftKey/);
+assert.match(tabStrip, /tabDropIndex/);
+const runItem = tabStrip.slice(tabStrip.indexOf("function runItem("), tabStrip.indexOf("function checkOverflow("));
+assert.ok(
+  runItem.indexOf("action()") >= 0 && runItem.indexOf("action()") < runItem.indexOf("closePopover("),
+  "menu items run before the popover closes, because closing clears the menu's tab",
+);
+assert.match(shell, /showProjectMenu \|\| statusCenterOpen \|\| tabStripPopoverOpen \|\| railMenuOpen/);
+assert.match(
+  shell,
+  /openInNewTab\(\(\) => openNavigationItem\(item\), \{ dedupe: false \}\)/,
+  "opening a workspace from the rail in a new tab never folds into an existing tab of it",
+);
+assert.match(
+  shell,
+  /identity === originIdentity\s*\?\s*null\s*:\s*otherTabByIdentity\(shellTabs, identity, \[id, originId\]\)/,
+  "opening the current tab's own place in a new tab always makes a copy, however many tabs already show it",
+);
 for (const name of [
   "switchToTab",
   "openInNewTab",
   "closeShellTab",
+  "closeAllShellTabs",
   "persistShellTabs",
   "loadShellTabs",
   "snapshotActiveTab",
+  "applyTabsChange",
+  "pruneUnavailableShellTabs",
+  "closeTabsForEntity",
+  "reopenShellTab",
 ]) {
   assert.match(shell, new RegExp(`function ${name}\\(`), `the shell defines ${name}`);
 }
+
+const vocabulary = await read("src/lib/entity-lifecycle/vocabulary.ts");
+assert.match(vocabulary, /openInNewTab: "Open in new tab"/);
+
+const rowActions = components.get("src/lib/entity-lifecycle/EntityRowActions.svelte");
+assert.match(rowActions, /ENTITY_ACTIONS\.openInNewTab/, "the row menu offers Open in new tab");
+assert.match(rowActions, /addEventListener\("contextmenu"/, "a right-click on the row opens the row menu");
+const rowActionUses = shell.match(/<EntityRowActions[\s\S]*?\/>/g) ?? [];
+assert.equal(rowActionUses.length, 3, "the shell has three collection row menus");
+for (const use of rowActionUses) {
+  assert.match(use, /onOpenInNewTab=\{/, "every collection row menu passes onOpenInNewTab");
+  assert.match(use, /contextHost="\.collection-item"/, "every collection row menu opens on right-click of its row");
+}
+
+const railMenu = components.get("src/lib/shell/RailContextMenu.svelte");
+assert.match(railMenu, /role="menu"/);
+assert.match(railMenu, /data-shell-popover="rail-menu"/);
+const railRunItem = railMenu.slice(railMenu.indexOf("function runItem("), railMenu.indexOf("function onMenuKeydown("));
+assert.ok(
+  railRunItem.indexOf("action()") >= 0 && railRunItem.indexOf("action()") < railRunItem.indexOf("onClose()"),
+  "a rail menu item runs its action before the menu closes",
+);
+
+const sidebar = components.get("src/lib/shell/AppSidebar.svelte");
+assert.match(sidebar, /RailContextMenu/, "the rail opens RailContextMenu");
+assert.match(
+  sidebar,
+  /oncontextmenu=/,
+  "the rail's Home, workspace and tool buttons open the rail menu on right-click",
+);
+assert.match(shell, /bind:menuOpen=\{railMenuOpen\}/, "the shell binds the rail menu state");
+assert.match(
+  shell,
+  /if \(railMenuOpen\) \{\s*railMenuOpen = false;/,
+  "dismissing transient menus closes the rail menu",
+);
 
 const controls = await read("src/lib/shell/controls.css");
 assert.match(controls, /:focus-visible/);

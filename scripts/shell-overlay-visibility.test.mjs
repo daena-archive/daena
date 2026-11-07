@@ -71,8 +71,8 @@ assert.match(modal, /dialogState\.open/, "dialogs remain in the modal set");
 assert.match(modal, /showDiscardPrompt/, "the modal set keeps the discard prompt");
 assert.match(
   shell,
-  /const anchoredPopoverOpen = \$derived\(showProjectMenu \|\| statusCenterOpen\);/,
-  "the anchored popovers are the project switcher and the status center",
+  /const anchoredPopoverOpen = \$derived\(showProjectMenu \|\| statusCenterOpen \|\| tabStripPopoverOpen \|\| railMenuOpen\);/,
+  "the anchored popovers are the project switcher, the status center, the tab strip, and the rail menu",
 );
 
 const measuring = between(shell, "async function measureAnchoredPopovers()", "\n}\n");

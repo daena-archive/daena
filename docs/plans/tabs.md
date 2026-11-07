@@ -7,7 +7,11 @@ build it.
 
 Status: slices 1 (chrome restyle) and 2 (tab model, `src/lib/navigation/tabs.ts`)
 done; slice 3 (one-tab wiring) done and checked in the real app; slice 4
-(multiple tabs) done and checked in the real app. Layout option A was chosen (tabs replace
+(multiple tabs) done and checked in the real app; slice 5 (management)
+done and checked in the real app; `+` adds at the far right; opening a
+workspace in a new tab no longer folds into an existing tab; "Open in new tab"
+in the rail and row menus; Close all tabs; copies of the current tab's
+entry; all checked in the real app except unlimited copies. Layout option A was chosen (tabs replace
 the breadcrumb in the topbar, workspace header compacted). All open decisions are settled (see Decisions).
 
 ## Layout
@@ -42,9 +46,11 @@ breadcrumb would repeat the tab title. So the restyle is part of this work.
   others and Close to the right.
 - When tabs no longer fit at their minimum width, the strip scrolls and a
   chevron opens a list of all tabs.
-- The `+` button and `⌘T` open a new tab on Home.
-- Context menu: Duplicate tab (disabled until side-by-side, see below), Pin /
-  Unpin, Close, Close others, Close to the right, Reopen closed tab.
+- The `+` button and `⌘T` open a new tab on Home, at the far right. Tabs
+  opened from a tab (`⌘`-click, middle-click, `⌘↵`) go right after it.
+- Context menu: Pin / Unpin, Move left, Move right, Close, Close others, Close
+  to the right, Close all tabs (keeps pinned tabs), Reopen closed tab.
+  Duplicate tab arrives with side-by-side.
 - No unsaved-changes dot on inactive tabs: switching away flushes or asks, so
   only the active tab can be dirty, and it already shows the shell's save
   state.
@@ -58,7 +64,8 @@ breadcrumb would repeat the tab title. So the restyle is part of this work.
   - `⌘`-click (Ctrl-click elsewhere) or middle-click on rail items, collection
     rows, Quick Open results, wiki links, graph nodes and hover cards;
   - `⌘↵` in Quick Open;
-  - "Open in new tab" in entity context menus and the hover card;
+  - "Open in new tab" in the collection row menu (⋯ or right-click on the
+    row) and in the rail's right-click menu (Home, workspaces, tools);
   - in rich-text editors, `⌘`-click already follows a reference in the current
     tab, so a new tab is `⌘⇧`-click.
 - **Any number of tabs per plugin.** Two Writing tabs on different
@@ -66,10 +73,13 @@ breadcrumb would repeat the tab title. So the restyle is part of this work.
   only a saved location. Only the active tab is live, so switching between two
   tabs of the same plugin reloads its webview with the other tab's state.
 - **One tab per entity view, on new-tab opens.** Opening something in a new
-  tab (`⌘`-click, `⌘↵`, middle-click) when it is already open in a tab
-  switches to that tab. A plain click inside a tab only navigates that tab,
-  even if another tab shows the same place. Deliberate duplicates arrive with
-  side-by-side.
+  tab (`⌘`-click, `⌘↵`, middle-click) when it is already open in another tab
+  switches to that tab. Opening the current tab's own entry in a new tab
+  always makes a copy of it, however many tabs already show it. A plain click inside a tab only navigates that tab,
+  even if another tab shows the same place. Opening a whole workspace in a new
+  tab (`⌘`-click on the rail, `⌘↵` on a workspace in Quick Open) always opens
+  one, even when it lands where another tab already is, so a workspace can
+  have several tabs. Duplicates of one entry arrive with side-by-side.
 - **Left rail (plain click):** if a tab for that workspace is already open,
   switch to it (the most recently used one if there are several), and leave
   the current tab alone. Otherwise the current tab navigates there, like any

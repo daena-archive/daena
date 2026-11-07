@@ -36,6 +36,7 @@ Every first-party workspace uses the same actions:
 | ------------------ | ------------------ | -------------------------------------------------------------------------- |
 | New                | New                | Workspace header, rail, mobile FAB                                         |
 | Open               | Open               | Collection row overflow                                                    |
+| Open in new tab    | Open in new tab    | Collection row overflow and right-click, rail right-click                  |
 | Open in…           | Open in…           | Row and dock menus; moves to a specialized view without copying the entity |
 | Edit identity      | Edit identity      | Row overflow, docks, editor; rename, and type change only when safe        |
 | Archive            | Archive            | Row overflow, editor, specialized Overview; reversible                     |
@@ -235,7 +236,10 @@ later ([`tabs.md`](../plans/tabs.md)).
 
 - **Topbar** (`GlobalToolbar`, `--shell-topbar-height`, 44px): Back and
   Forward (within the active tab), the tab strip (`TabStrip`: each tab's
-  title and icon, the full location trail as its tooltip), a compact Quick Open (icon and shortcut; the name is in
+  title and icon, the full location trail as its tooltip; a context menu to
+  pin, move, close, close others or to the right, and reopen; drag to
+  reorder; an All tabs list when tabs overflow, and a single tabs button
+  in narrow windows), a compact Quick Open (icon and shortcut; the name is in
   its label and tooltip), and the project status. The status shows only its
   icon while the project is current and keeps its short label when it is
   working or needs attention.

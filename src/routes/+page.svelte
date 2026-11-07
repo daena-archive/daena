@@ -88,16 +88,22 @@ import {
   activeGroup,
   activeTab,
   activateTab,
+  closeAllTabs,
+  closeOtherTabs,
   closeTab,
+  closeTabsToRight,
   createTabsState,
   discardTab,
   findTab,
   findTabByIdentity,
   mostRecentTabForSection,
+  moveTab,
   openTab,
   parseTabsState,
   pruneTabs,
+  reopenClosedTab,
   serializeTabsState,
+  setTabPinned,
   tabIdentity,
   tabsStorageKey,
   updateTab,
@@ -663,6 +669,8 @@ let settingsSection = $state<SettingsSection>("general");
 let projectSection = $state<ProjectSection>("overview");
 let archivedCount = $state(0);
 let statusCenterOpen = $state(false);
+let tabStripPopoverOpen = $state(false);
+let railMenuOpen = $state(false);
 let moduleSchemaOverlay = $state<ModuleSchemaOverlay>({ version: 1 });
 let moduleSchemaPackage = $state<{
   schemas: Array<{ namespace: string; entityTypes: EntityTypeDefinition[]; fields: FieldDefinition[] }>;
@@ -1618,7 +1626,8 @@ const workspaceViewNavShown = $derived(
  * the main webview, so while one of these is open every embedded plugin webview is hidden.
  * Toasts are not here: they are anchored clear of the content column instead (see `.toast-left`).
  * The collection filter popover and the rail tooltip are left out: they never overlap the content column.
- * The anchored popovers (project switcher, status center) are in `anchoredPopoverOpen` instead.
+ * The anchored popovers (project switcher, status center, tab menu, tab list, rail menu) are in
+ * `anchoredPopoverOpen` instead.
  */
 const modalOverlayOpen = $derived(
   quickOpenOpen ||
@@ -1643,10 +1652,12 @@ const modalOverlayOpen = $derived(
 );
 
 /**
- * Anchored popovers: the project switcher (inline in the sidebar, or a flyout when the rail is collapsed) and
- * the status center. They hide an embedded plugin webview only when their rectangle overlaps its placeholder.
+ * Anchored popovers: the project switcher (inline in the sidebar, or a flyout when the rail is collapsed),
+ * the status center, the tab strip's context menu and tab list, and the rail's context menu, which opens
+ * beside the rail and can cover a plugin webview. They hide an embedded plugin webview only when their
+ * rectangle overlaps its placeholder.
  */
-const anchoredPopoverOpen = $derived(showProjectMenu || statusCenterOpen);
+const anchoredPopoverOpen = $derived(showProjectMenu || statusCenterOpen || tabStripPopoverOpen || railMenuOpen);
 /** True while an open anchored popover overlaps the placeholder of an embedded plugin webview. */
 let popoverOverlapsWebview = $state(false);
 
@@ -2486,7 +2497,7 @@ function openSidebarNavigationItem(key: string, intent: OpenIntent = "current") 
   const item = [...workspaceNavigationItems(), ...pluginViews()].find((candidate) => candidate.key === key);
   if (!item) return;
   if (intent === "new-tab") {
-    void openInNewTab(() => openNavigationItem(item));
+    void openInNewTab(() => openNavigationItem(item), { dedupe: false });
     return;
   }
   const state = snapshotActiveTab();
@@ -3371,6 +3382,14 @@ function dismissTransientMenus(): boolean {
     // closeCreateForm may prompt; treat as dismissed
     dismissed = true;
   }
+  if (tabStripPopoverOpen) {
+    tabStripPopoverOpen = false;
+    dismissed = true;
+  }
+  if (railMenuOpen) {
+    railMenuOpen = false;
+    dismissed = true;
+  }
   return dismissed;
 }
 
@@ -3781,11 +3800,11 @@ function loadShellTabs(info: ProjectInfo): ShellTabsState {
   }
 }
 
-function otherTabByIdentity(state: ShellTabsState, identity: string, exceptId: string): ShellTab | null {
+function otherTabByIdentity(state: ShellTabsState, identity: string, exceptIds: string[]): ShellTab | null {
   let best: ShellTab | null = null;
   for (const group of state.groups) {
     for (const tab of group.tabs) {
-      if (tab.id === exceptId || tabIdentity(tab.location) !== identity) continue;
+      if (exceptIds.includes(tab.id) || tabIdentity(tab.location) !== identity) continue;
       if (!best || tab.lastActiveAt > best.lastActiveAt) best = tab;
     }
   }
@@ -3819,19 +3838,35 @@ async function switchToTab(tabId: string): Promise<boolean> {
   return true;
 }
 
-async function openInNewTab(navigate: () => Promise<unknown>): Promise<void> {
+/**
+ * Opens a new tab and navigates in it. `position: "end"` (the + button) adds it at the far right; the default
+ * puts it right after the current tab, since a link opened from a tab belongs next to it.
+ * `dedupe` (default true) switches to an existing tab that shows the same place instead. Opening a whole
+ * workspace passes false: the workspace restores its last view and entry, which another tab may already show,
+ * and the user asked for another tab of it.
+ */
+async function openInNewTab(
+  navigate: () => Promise<unknown>,
+  options: { position?: "after-active" | "end"; dedupe?: boolean } = {},
+): Promise<void> {
   if (!ready || shellNavigationBusy) return;
   dismissTransientMenus();
   if (!(await flushAutoSave())) return;
   const current = currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
+  // Where the tab this was opened from stands. Opening that same place in a new tab is a deliberate copy, so
+  // the duplicate check below is skipped for it, however many tabs already show it; any other place that is
+  // open in another tab still switches there.
+  const originId = activeTab(shellTabs).id;
+  const originIdentity = tabIdentity(currentShellLocation());
   shellNavigationBusy = true;
   try {
     shellTabs = openTab(
       snapshotActiveTab(),
       { id, location: currentShellLocation(), title: "", icon: currentTabPresentation().icon },
       Date.now(),
+      { position: options.position },
     );
     let navigateError: unknown = null;
     try {
@@ -3842,7 +3877,12 @@ async function openInNewTab(navigate: () => Promise<unknown>): Promise<void> {
       setShellNavigationHistory(emptyShellNavigationHistory());
     }
     const identity = tabIdentity(currentShellLocation());
-    const existing = otherTabByIdentity(shellTabs, identity, id);
+    const existing =
+      options.dedupe === false
+        ? null
+        : identity === originIdentity
+          ? null
+          : otherTabByIdentity(shellTabs, identity, [id, originId]);
     if (existing) {
       const location = existing.location;
       shellTabs = activateTab(discardTab(shellTabs, id), existing.id, Date.now());
@@ -3860,27 +3900,84 @@ async function openInNewTab(navigate: () => Promise<unknown>): Promise<void> {
   }
 }
 
-async function closeShellTab(tabId: string): Promise<void> {
-  if (!ready || shellNavigationBusy) return;
-  const found = findTab(shellTabs, tabId);
-  if (!found) return;
-  const isActive = found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id;
-  if (!isActive) {
-    shellTabs = closeTab(shellTabs, tabId, Date.now(), homeNewTab());
-    return;
+async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState): Promise<boolean> {
+  if (!ready || shellNavigationBusy) return false;
+  const beforeId = activeTab(shellTabs).id;
+  const preview = change(shellTabs);
+  if (preview === shellTabs) return false;
+  if (activeTab(preview).id === beforeId) {
+    shellTabs = preview;
+    return true;
   }
-  if (!(await flushAutoSave())) return;
+  dismissTransientMenus();
+  if (!(await flushAutoSave())) return false;
   const current = currentShellLocation();
-  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
-  shellTabs = closeTab(snapshotActiveTab(), tabId, Date.now(), homeNewTab());
-  const next = activeTab(shellTabs).location;
+  if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
+    return false;
+  shellTabs = change(snapshotActiveTab());
   shellNavigationBusy = true;
   try {
-    await restoreShellLocation(next);
+    await restoreShellLocation(activeTab(shellTabs).location);
   } finally {
     shellTabs = snapshotActiveTab();
     shellNavigationBusy = false;
   }
+  return true;
+}
+
+async function closeShellTab(tabId: string): Promise<void> {
+  await applyTabsChange((state) => closeTab(state, tabId, Date.now(), homeNewTab()));
+}
+
+async function pinShellTab(id: string, pinned: boolean) {
+  await applyTabsChange((state) => setTabPinned(state, id, pinned));
+}
+
+async function moveShellTab(id: string, toIndex: number) {
+  await applyTabsChange((state) => moveTab(state, id, toIndex));
+}
+
+async function closeOtherShellTabs(id: string) {
+  await applyTabsChange((state) => closeOtherTabs(state, id, Date.now()));
+}
+
+async function closeShellTabsToRight(id: string) {
+  await applyTabsChange((state) => closeTabsToRight(state, id, Date.now()));
+}
+
+async function closeAllShellTabs(id: string) {
+  await applyTabsChange((state) => closeAllTabs(state, id, Date.now(), homeNewTab()));
+}
+
+async function reopenShellTab() {
+  await applyTabsChange((state) => reopenClosedTab(state, Date.now()));
+}
+
+function pruneUnavailableShellTabs() {
+  shellTabs = pruneTabs(
+    snapshotActiveTab(),
+    (tab) => tab.id === activeTab(shellTabs).id || shellLocationAvailable(tab.location),
+    homeNewTab(),
+    Date.now(),
+  );
+}
+
+function closeTabsForEntity(entityId: string) {
+  const activeId = activeTab(shellTabs).id;
+  const ids = shellTabs.groups.flatMap((group) =>
+    group.tabs
+      .filter((tab) => {
+        if (tab.id === activeId) return false;
+        const location = tab.location;
+        return (location.kind === "workspace" || location.kind === "plugin") && location.entityId === entityId;
+      })
+      .map((tab) => tab.id),
+  );
+  if (ids.length === 0) return;
+  const now = Date.now();
+  let next = shellTabs;
+  for (const id of ids) next = closeTab(next, id, now, homeNewTab());
+  shellTabs = next;
 }
 
 async function openSettingsTab(nextSection?: SettingsSection) {
@@ -6203,7 +6300,8 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
     else await openSettingsTab();
     return;
   }
-  if (intent === "new-tab") await openInNewTab(run);
+  const workspaceDestination = action.kind === "destination" && action.destination.startsWith("navigation:");
+  if (intent === "new-tab") await openInNewTab(run, { dedupe: !workspaceDestination });
   else await run();
 }
 
@@ -6490,6 +6588,7 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   if (isTimelineEventEntity(target.entity_type)) notifyProfileTimelineChanged(target.id);
   const wasSelected = selected?.id === target.id;
   if (wasSelected) clearSelection();
+  closeTabsForEntity(target.id);
   await refreshAfterEntityMutation({ entityId: target.id, removed: true });
   showLifecycleToast({
     message: archivedToastMessage(result.value),
@@ -7009,6 +7108,7 @@ async function toggleModule(id: ModuleId) {
     await refreshAdmin();
     if (!selectedCreateOption()) selectedCreateKey = "";
     if (showCreateForm && !selectedCreateOption()) closeCreateForm();
+    pruneUnavailableShellTabs();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -7569,6 +7669,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
     await refreshAdmin();
     if (hostView?.plugin.id === plugin.id) hostView = null;
     if (sandboxView?.plugin.id === plugin.id) sandboxView = null;
+    pruneUnavailableShellTabs();
   } catch (cause) {
     error = friendlyError(cause);
   } finally {
@@ -8116,7 +8217,8 @@ onMount(() => {
     onOpenWorkspace={openSidebarNavigationItem}
     onOpenTool={openSidebarNavigationItem}
     onOpenSettings={() => void openSettingsTab()}
-    onCollapsedChange={updateRailCollapsed} />
+    onCollapsedChange={updateRailCollapsed}
+    bind:menuOpen={railMenuOpen} />
 
   <div
     id="shell-tabpanel"
@@ -8160,9 +8262,17 @@ onMount(() => {
         })}
         panelId="shell-tabpanel"
         busy={shellNavigationBusy}
+        canReopen={shellTabs.closed.length > 0}
+        bind:popoverOpen={tabStripPopoverOpen}
         onActivate={(id) => void switchToTab(id)}
         onClose={(id) => void closeShellTab(id)}
-        onNew={() => void openInNewTab(openProjectHome)}
+        onNew={() => void openInNewTab(openProjectHome, { position: "end" })}
+        onPin={(id, pinned) => void pinShellTab(id, pinned)}
+        onMove={(id, toIndex) => void moveShellTab(id, toIndex)}
+        onCloseOthers={(id) => void closeOtherShellTabs(id)}
+        onCloseToRight={(id) => void closeShellTabsToRight(id)}
+        onCloseAll={(id) => void closeAllShellTabs(id)}
+        onReopen={() => void reopenShellTab()}
         icon={tabIcon} />
     {/snippet}
     {#snippet projectStatusControl()}
@@ -9483,8 +9593,10 @@ onMount(() => {
                 <EntityRowActions
                   entityName={entity.name}
                   onOpen={() => void selectEntity(entity)}
+                  onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
-                  onArchive={() => void archiveEntity(entity)} />
+                  onArchive={() => void archiveEntity(entity)}
+                  contextHost=".collection-item" />
               </div>
             {/snippet}
             {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number, hasParent: boolean)}
@@ -9539,9 +9651,11 @@ onMount(() => {
                         entityName={entity.name}
                         openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
                         onOpen={() => void selectEntity(entity)}
+                        onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                         onEditIdentity={() => void openEntityEditDialog(entity)}
                         onArchive={() => void archiveEntity(entity)}
-                        onOpenTree={() => void openHouseTree(entity)} />
+                        onOpenTree={() => void openHouseTree(entity)}
+                        contextHost=".collection-item" />
                     </div>{/each}{/if}
               </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
                 entity.entity_type,
@@ -9569,9 +9683,11 @@ onMount(() => {
                   entityName={entity.name}
                   openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
                   onOpen={() => void selectEntity(entity)}
+                  onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
                   onArchive={() => void archiveEntity(entity)}
-                  onOpenTree={() => void openHouseTree(entity)} />
+                  onOpenTree={() => void openHouseTree(entity)}
+                  contextHost=".collection-item" />
               </div>{/each}{/if}
         {/snippet}
         {#snippet collectionFooter()}

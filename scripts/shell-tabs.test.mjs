@@ -7,6 +7,7 @@ import {
   activeGroup,
   activeTab,
   assertTabsInvariants,
+  closeAllTabs,
   closeOtherTabs,
   closeTab,
   closeTabsToRight,
@@ -180,6 +181,31 @@ assert.deepEqual(
   "a pinned tab opened from an unpinned tab still goes to the end of the pinned region",
 );
 
+// openTab at the end
+
+const middleActive = check(
+  stripOf([shellTab("p", home, { pinned: true }), shellTab("a", loreAria), shellTab("b", loreBran)], "a"),
+);
+const atEnd = check(openTab(deepFreeze(middleActive), tabFor("new", writing), 100, { position: "end" }));
+assert.deepEqual(tabIds(atEnd), ["p", "a", "b", "new"], "position end adds after the last tab");
+assert.equal(activeTab(atEnd).id, "new");
+const pinnedActive = check(stripOf(middleActive.groups[0].tabs, "p"));
+assert.deepEqual(
+  tabIds(check(openTab(deepFreeze(pinnedActive), tabFor("new", writing), 100, { position: "end" }))),
+  ["p", "a", "b", "new"],
+  "position end ignores a pinned active tab",
+);
+assert.deepEqual(
+  tabIds(check(openTab(deepFreeze(middleActive), tabFor("pin", writing, { pinned: true }), 100, { position: "end" }))),
+  ["p", "pin", "a", "b"],
+  "a pinned tab still goes to the end of the pinned region",
+);
+assert.deepEqual(
+  tabIds(check(openTab(deepFreeze(middleActive), tabFor("next", writing), 100))),
+  ["p", "a", "next", "b"],
+  "the default still opens right after the active tab",
+);
+
 // activateTab
 
 state = check(activateTab(deepFreeze(kept), "graph", 5000));
@@ -326,6 +352,107 @@ assert.equal(
   pinnedStrip,
   "nothing to the right is the same state",
 );
+
+// closeAllTabs
+
+const everyTab = stripOf(
+  [shellTab("a", loreAria), shellTab("b", loreBran), shellTab("c", writing), shellTab("d", loreGraph)],
+  "b",
+);
+const allClosed = check(closeAllTabs(deepFreeze(everyTab), "c", 9500, replacement));
+assert.deepEqual(tabIds(allClosed), ["replacement"], "close all with no pinned tab leaves only the replacement");
+assert.equal(activeTab(allClosed).id, "replacement");
+assert.equal(activeTab(allClosed).lastActiveAt, 9500, "the replacement is stamped as active");
+assert.equal(allClosed.activeGroupId, "main", "the group keeps its id");
+assert.deepEqual(
+  allClosed.closed.map((tab) => tab.id),
+  ["a", "b", "c", "d"],
+  "close all pushes closed tabs left to right",
+);
+
+const allUnpinnedActive = check(closeAllTabs(deepFreeze(pinnedStrip), "a", 9500, replacement));
+assert.deepEqual(tabIds(allUnpinnedActive), ["p1", "p2"], "close all keeps pinned tabs");
+assert.equal(activeTab(allUnpinnedActive).id, "p1", "an unpinned active tab hands over to the first pinned tab");
+assert.equal(activeTab(allUnpinnedActive).lastActiveAt, 9500, "the first pinned tab is stamped when it becomes active");
+assert.deepEqual(
+  allUnpinnedActive.closed.map((tab) => tab.id),
+  ["a", "b", "c", "d"],
+  "close all keeps the unpinned tabs in the closed stack, left to right",
+);
+
+const closeAllKeepsPinned = check(
+  closeAllTabs(deepFreeze(stripOf(pinnedStrip.groups[0].tabs, "p2")), "a", 9500, replacement),
+);
+assert.deepEqual(
+  tabIds(closeAllKeepsPinned),
+  ["p1", "p2"],
+  "close all keeps pinned tabs when the active tab is pinned",
+);
+assert.equal(activeTab(closeAllKeepsPinned).id, "p2", "a pinned active tab stays active");
+assert.equal(activeTab(closeAllKeepsPinned).lastActiveAt, 0, "a pinned active tab that stays active is not restamped");
+
+const reopenOrder = check(
+  stripOf(
+    [
+      shellTab("keep", home, { pinned: true }),
+      ...Array.from({ length: 12 }, (_, index) => shellTab(`t${index}`, loreAt(String(index)))),
+    ],
+    "t5",
+  ),
+);
+const cappedAll = check(closeAllTabs(deepFreeze(reopenOrder), "t5", 9600, replacement));
+assert.deepEqual(tabIds(cappedAll), ["keep"], "close all keeps the pinned tab");
+assert.deepEqual(
+  cappedAll.closed.map((tab) => tab.id),
+  Array.from({ length: 10 }, (_, index) => `t${index + 2}`),
+  "the closed stack keeps the newest ten tabs, left to right",
+);
+const reopenedFirst = check(reopenClosedTab(deepFreeze(cappedAll), 9700));
+assert.equal(activeTab(reopenedFirst).id, "t11", "reopening after close all brings back the rightmost tab first");
+
+const allPinned = deepFreeze(
+  stripOf([shellTab("p1", home, { pinned: true }), shellTab("p2", loreAt("pinned-two"), { pinned: true })], "p1"),
+);
+assert.equal(closeAllTabs(allPinned, "p1", 9500, replacement), allPinned, "all pinned tabs give the same state");
+const knownOnly = deepFreeze(stripOf([shellTab("a", loreAria)], "a"));
+assert.equal(
+  closeAllTabs(knownOnly, "missing", 1, replacement),
+  knownOnly,
+  "closeAllTabs with an unknown id is a no-op",
+);
+
+const sideOfGroups = deepFreeze({
+  version: 1,
+  groups: [
+    { id: "main", tabs: [shellTab("a", loreAria), shellTab("b", loreBran)], activeTabId: "a" },
+    { id: "side", tabs: [shellTab("c", writing)], activeTabId: "c" },
+  ],
+  activeGroupId: "main",
+  closed: [],
+});
+const emptiedActive = check(closeAllTabs(sideOfGroups, "a", 1000, replacement));
+assert.deepEqual(
+  emptiedActive.groups.map((group) => group.id),
+  ["side"],
+  "close all removes an emptied group",
+);
+assert.equal(emptiedActive.activeGroupId, "side", "emptying the active group activates the first remaining group");
+assert.equal(activeTab(emptiedActive).id, "c");
+assert.equal(activeTab(emptiedActive).lastActiveAt, 1000);
+assert.deepEqual(
+  emptiedActive.closed.map((tab) => tab.id),
+  ["a", "b"],
+);
+
+const sideActive = deepFreeze({ ...sideOfGroups, activeGroupId: "side" });
+const emptiedInactive = check(closeAllTabs(sideActive, "a", 1000, replacement));
+assert.deepEqual(
+  emptiedInactive.groups.map((group) => group.id),
+  ["side"],
+  "an emptied inactive group is removed",
+);
+assert.equal(emptiedInactive.activeGroupId, "side", "emptying an inactive group keeps the active group");
+assert.equal(activeTab(emptiedInactive).id, "c");
 
 // reopenClosedTab
 

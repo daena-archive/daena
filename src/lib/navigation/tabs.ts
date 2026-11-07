@@ -131,10 +131,11 @@ export function openTab(
   state: ShellTabsState,
   tab: NewTab,
   now: number,
-  options?: { activate?: boolean },
+  options?: { activate?: boolean; position?: "after-active" | "end" },
 ): ShellTabsState {
   if (findTab(state, tab.id)) return state;
   const activate = options?.activate ?? true;
+  const position = options?.position ?? "after-active";
   const group = activeGroup(state);
   const activeIndex = group.tabs.findIndex((candidate) => candidate.id === group.activeTabId);
   const pinnedCount = countPinned(group.tabs);
@@ -142,6 +143,8 @@ export function openTab(
   let insertAt: number;
   if (pinned) {
     insertAt = pinnedCount;
+  } else if (position === "end") {
+    insertAt = group.tabs.length;
   } else if (group.tabs[activeIndex].pinned) {
     insertAt = pinnedCount;
   } else {
@@ -342,6 +345,53 @@ export function closeTabsToRight(state: ShellTabsState, tabId: string, now: numb
   return {
     ...replaceGroup(state, { ...group, tabs, activeTabId: closesActive ? tabId : group.activeTabId }),
     closed: pushClosed(state.closed, closing),
+  };
+}
+
+/**
+ * Closes every unpinned tab of the group that holds `tabId`, keeping pinned
+ * tabs. Closed tabs are pushed left to right.
+ */
+export function closeAllTabs(state: ShellTabsState, tabId: string, now: number, replacement: NewTab): ShellTabsState {
+  const found = findTab(state, tabId);
+  if (!found) return state;
+  const { group } = found;
+  const closing = group.tabs.filter((tab) => !tab.pinned);
+  if (closing.length === 0) return state;
+  const closed = pushClosed(state.closed, closing);
+
+  const pinned = group.tabs.filter((tab) => tab.pinned);
+  if (pinned.length > 0) {
+    const activeKept = pinned.some((tab) => tab.id === group.activeTabId);
+    const activeTabId = activeKept ? group.activeTabId : pinned[0].id;
+    const stamp = !activeKept && state.activeGroupId === group.id;
+    const tabs = stamp ? pinned.map((tab) => (tab.id === activeTabId ? { ...tab, lastActiveAt: now } : tab)) : pinned;
+    return {
+      ...replaceGroup(state, { ...group, tabs, activeTabId }),
+      closed,
+    };
+  }
+
+  if (totalTabCount(state) === group.tabs.length) {
+    const tab = buildTab(replacement, now);
+    return {
+      ...state,
+      groups: [{ id: group.id, tabs: [tab], activeTabId: tab.id }],
+      activeGroupId: group.id,
+      closed,
+    };
+  }
+
+  // Other groups exist, so the emptied group goes.
+  const groups = state.groups.filter((candidate) => candidate.id !== group.id);
+  if (state.activeGroupId !== group.id) return { ...state, groups, closed };
+  const next = groups[0];
+  const tabs = next.tabs.map((tab) => (tab.id === next.activeTabId ? { ...tab, lastActiveAt: now } : tab));
+  return {
+    ...state,
+    groups: groups.map((candidate) => (candidate.id === next.id ? { ...next, tabs } : candidate)),
+    activeGroupId: next.id,
+    closed,
   };
 }
 

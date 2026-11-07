@@ -1,4 +1,5 @@
 <script lang="ts">
+import { tick } from "svelte";
 import { MoreHorizontal } from "@lucide/svelte";
 import { confirmDialog } from "$lib/dialogs.svelte";
 import { archiveConfirmOptions } from "./archive.ts";
@@ -15,10 +16,12 @@ let {
   openInLabel = "",
   disabled = false,
   onOpen,
+  onOpenInNewTab,
   onEditIdentity,
   onArchive,
   onOpenTree,
   onOpenIn,
+  contextHost,
 }: {
   entityName: string;
   open?: boolean;
@@ -29,22 +32,32 @@ let {
   openInLabel?: string;
   disabled?: boolean;
   onOpen: () => void | Promise<void>;
+  /** Shown after Open when set. */
+  onOpenInNewTab?: () => void | Promise<void>;
   onEditIdentity: () => void | Promise<void>;
   onArchive: () => void | Promise<void>;
   onOpenTree?: () => void | Promise<void>;
   onOpenIn?: () => void | Promise<void>;
+  /** Selector of an ancestor of the row that also opens this menu on right-click, for example ".collection-item". */
+  contextHost?: string;
 } = $props();
 
 let menuOpen = $state(false);
 let archiveBusy = $state(false);
 let rootEl = $state<HTMLElement | null>(null);
 let triggerEl = $state<HTMLButtonElement | null>(null);
+let menuEl = $state<HTMLDivElement | null>(null);
 let menuTop = $state(0);
 let menuRight = $state(8);
+/** Set while the menu sits at a right-click point. Null keeps it under the ⋯ trigger. */
+let menuLeft = $state<number | null>(null);
 
 const label = $derived(`Actions for ${entityName}`);
 const openInText = $derived(
   openInLabel ? `${ENTITY_ACTIONS.openIn.replace("…", "")} ${openInLabel}` : ENTITY_ACTIONS.openIn,
+);
+const menuPlacement = $derived(
+  menuLeft === null ? `top: ${menuTop}px; right: ${menuRight}px` : `top: ${menuTop}px; left: ${menuLeft}px`,
 );
 
 function close(options?: { restoreFocus?: boolean }) {
@@ -62,9 +75,10 @@ function toggle(event: MouseEvent) {
     close({ restoreFocus: false });
     return;
   }
+  menuLeft = null;
   menuOpen = true;
   placeMenu();
-  queueMicrotask(() => triggerEl?.focus());
+  void tick().then(focusFirstItem);
 }
 
 function placeMenu() {
@@ -72,6 +86,44 @@ function placeMenu() {
   const rect = triggerEl.getBoundingClientRect();
   menuTop = rect.bottom + 4;
   menuRight = Math.max(8, window.innerWidth - rect.right);
+}
+
+/** Opens the menu at a right-click point, kept inside the row's right edge and on screen vertically. */
+async function openAtPointer(clientX: number, clientY: number, host: HTMLElement) {
+  menuLeft = clientX;
+  menuTop = clientY;
+  menuOpen = true;
+  await tick();
+  const menu = menuEl;
+  if (menu) {
+    const margin = 8;
+    const rowRight = host.getBoundingClientRect().right;
+    menuLeft = Math.max(margin, Math.min(clientX, rowRight - menu.offsetWidth));
+    const overflowsBottom = clientY + menu.offsetHeight > window.innerHeight - margin;
+    menuTop = overflowsBottom ? Math.max(margin, clientY - menu.offsetHeight) : clientY;
+  }
+  focusFirstItem();
+}
+
+function focusFirstItem() {
+  menuEl?.querySelector<HTMLButtonElement>("[role='menuitem']")?.focus();
+}
+
+/** Arrow, Home and End move focus between the menu items while focus is inside the menu. */
+function moveMenuFocus(event: KeyboardEvent) {
+  const root = menuEl;
+  if (!root?.contains(document.activeElement)) return;
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const items = [...root.querySelectorAll<HTMLButtonElement>("[role='menuitem']")];
+  if (items.length === 0) return;
+  event.preventDefault();
+  const current = items.findIndex((item) => item === document.activeElement);
+  let next: number;
+  if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = items.length - 1;
+  else if (event.key === "ArrowDown") next = (current + 1) % items.length;
+  else next = current <= 0 ? items.length - 1 : current - 1;
+  items[next]?.focus();
 }
 
 async function run(action: () => void | Promise<void>) {
@@ -101,8 +153,20 @@ async function runArchive() {
 }
 
 $effect(() => {
+  if (!contextHost || !rootEl) return;
+  const host = rootEl.closest<HTMLElement>(contextHost);
+  if (!host) return;
+  const onContextMenu = (event: MouseEvent) => {
+    if (disabled || archiveBusy) return;
+    event.preventDefault();
+    void openAtPointer(event.clientX, event.clientY, host);
+  };
+  host.addEventListener("contextmenu", onContextMenu);
+  return () => host.removeEventListener("contextmenu", onContextMenu);
+});
+
+$effect(() => {
   if (!menuOpen) return;
-  placeMenu();
   let ignoreOpeningPointer = true;
   queueMicrotask(() => {
     ignoreOpeningPointer = false;
@@ -115,7 +179,9 @@ $effect(() => {
     if (event.key === "Escape") {
       event.preventDefault();
       close();
+      return;
     }
+    moveMenuFocus(event);
   };
   const onReposition = () => close({ restoreFocus: false });
   window.addEventListener("pointerdown", onPointer, true);
@@ -144,9 +210,13 @@ $effect(() => {
     <MoreHorizontal size={15} strokeWidth={1.8} aria-hidden="true" />
   </button>
   {#if menuOpen}
-    <div class="row-actions-menu" role="menu" aria-label={label} style="top: {menuTop}px; right: {menuRight}px">
+    <div bind:this={menuEl} class="row-actions-menu" role="menu" aria-label={label} style={menuPlacement}>
       {#if open}
         <button type="button" role="menuitem" onclick={() => void run(onOpen)}>{ENTITY_ACTIONS.open}</button>
+        {#if onOpenInNewTab}
+          <button type="button" role="menuitem" onclick={() => void run(onOpenInNewTab)}
+            >{ENTITY_ACTIONS.openInNewTab}</button>
+        {/if}
       {/if}
       {#if editIdentity}
         <button type="button" role="menuitem" onclick={() => void run(onEditIdentity)}

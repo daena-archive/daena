@@ -37,13 +37,15 @@ webview into an isolated plugin webview. General isolation rules are in
 Webview to shell, as `daena.writing/state@1` events (owner-bound, like
 Language): `ready`, `draft` (entity id, token, text or a transfer id),
 `flush-reply`, `conflict-action` (entity id, token, `reload` | `overwrite` |
-`recovery`), `open-link`, `open-entity`, `fullscreen`, `request-rename`,
-`request-archive`, `shortcut` (Cmd+K, Cmd+N, Alt+arrows).
+`recovery`), `open-link`, `open-entity`, `fullscreen` (entity id, `on`),
+`request-rename` and `request-archive` (entity id; the shell checks it is the
+selection), `shortcut` (Cmd+K, Cmd+N, Alt+arrows).
 
 Shell to webview, as host messages (capped at 64 KiB): `writing.load` (entity
 id, token, revision, editable, placeholder, mode), `writing.flush` (request
 id), `writing.saved` (revision), `writing.conflict` (message, canOverwrite),
-`writing.save-error`, `writing.editable`, `writing.ai-state`. The webview reads
+`writing.save-error`, `writing.editable`, `writing.ai-state`, `writing.fullscreen`
+(`on`), `writing.title` (entity id, title). The webview reads
 document text itself with `document.list`; broker responses are not size-capped,
 so only the webview-to-shell direction needs chunking.
 
@@ -79,7 +81,7 @@ uses the old editor in the main webview.
 | 1. Platform plumbing | Done | `a228aad` |
 | 2. Editing and saving through the shell | Done, not yet tried in the real app | `bb34fc0` |
 | 3a. Save before the window closes or the app quits | Done, verified in the real app | `186d149` |
-| 3b. Shell integration | Next | |
+| 3b. Shell integration | Done, not yet tried in the real app | |
 | 4. AI through the broker | Not started | |
 | 5. Clean-up and switch-over | Not started | |
 
@@ -107,30 +109,41 @@ uses the old editor in the main webview.
    menu is built in `src-tauri/src/app_menu.rs` (Tauri's default, item for
    item) with a custom Quit so Cmd+Q uses the same handshake. This also fixed
    the old editor, which lost the last second of typing on quit.
+4. **Shell integration (3b).**
+   - **Guards.** Every path that hides or unmounts the webview, or changes its
+     entry, saves first and stops if the save fails. The content-column toggle,
+     history back and forward, creating an entry and the Houses tree's person
+     link had no flush and now have one. `scripts/writing-shell-guards.test.mjs`
+     checks the order for each path; its list is the audit.
+   - **Notices.** While the webview shows, `error` and `projectDiagnostics`
+     render as a strip above its slot, in normal flow, with the existing message
+     styles and dismiss button. The top banner and the toast step aside for it.
+   - **Rename and archive.** The header's Rename and double-click post
+     `request-rename`, which opens the shell's edit dialog. Archive posts
+     `request-archive`, which runs the entry's own archive confirmation and then
+     `archiveSelected`. Both check the entry is the selection. A rename that
+     leaves the editor in place sends `writing.title`, so the header updates
+     without a reload.
+   - **Keyboard.** `writingShortcutForKey` maps Cmd/Ctrl+K, Cmd/Ctrl+N and
+     Alt+ArrowLeft/Right with the shell's own modifier rules, and the webview
+     forwards them as `shortcut`. The shell runs them through `runShellShortcut`,
+     which the window listeners use too.
+   - **Full screen.** The editor's toggle and Escape publish `fullscreen` with
+     the entry id and `on`. The shell keeps `writingFullscreen` out of
+     `modalOverlayOpen`, so the webview stays visible, and the content column
+     fills the window: the sidebar, top bar, workspace heading, collection,
+     inspector and notice strip step aside. The webview sizes its editor to fill.
+     The shell ends it with `writing.fullscreen` (`on: false`) on a selection
+     change, when the pane is left or unmounted, and on Escape in the shell.
+   - **Article and Edit stay webview-owned.** The webview takes its mode from the
+     first `writing.load` and keeps its own after that, so switching needs no
+     round trip. The open question from the old 3b list is settled this way.
+   - **Tests.** `writing-bridge` and `writing-plugin-source` cover the new and
+     changed messages, their rejection cases and the shortcut table.
+     `writing-shell-guards` (in `test:shell`) covers the flush order and the shell
+     wiring.
 
-### Next: 3b. Shell integration
-
-- **Guard the navigation paths that skip `flushAutoSave`.** Settings, project
-  home, plugin views, collection tab changes and the workbench content toggle
-  unmount the webview and can drop up to 0.5 s of unsent text. Route each
-  through the flush (the Language guard call sites in `+page.svelte` are the
-  list to mirror).
-- **Notices.** The shell's `error` string and `projectDiagnostics` (for example
-  "Draft saved as …" after a recovery copy) have no surface while the webview is
-  shown. Add a host message or a shell-side strip above the webview.
-- **Rename and archive** from the webview header: `request-rename` and
-  `request-archive` open the shell's existing dialogs.
-- **Keyboard.** `shortcut` events (quick open, create, history back/forward)
-  call the shell's handlers, since window listeners do not see keys typed in
-  the webview.
-- **Fullscreen.** `editorFullscreen` is in `modalOverlayOpen`, which hides every
-  embedded webview. Let the webview own fullscreen: it publishes `fullscreen`,
-  the shell expands the webview's slot to the window and does not treat it as
-  an overlay.
-- **Decide:** whether `documentMode` (Article/Edit) should round-trip to the
-  shell; today the webview keeps its own after the first load.
-
-### Then: 4. AI
+### Next: 4. AI
 
 Rewrite and generate through `ai.request.*` from the webview (Writing is the
 first plugin webview to call AI). Map the shell's `retrievalQuery`,
@@ -162,3 +175,9 @@ shell inspector.
 - Non-macOS builds of the new menu and close code have not been compiled here.
 - Two clippy warnings predate this work (`host.rs` useless conversion,
   `plugin_webview_url` argument count).
+- Full screen hides the notice strip, as specified, so an `error` raised while
+  it is on waits until full screen ends. Save errors still show in the webview
+  header.
+- Alt+ArrowLeft and Alt+ArrowRight go back and forward from inside the editor
+  too, as they already do from the shell editor, so Option+arrow word movement
+  is taken there.

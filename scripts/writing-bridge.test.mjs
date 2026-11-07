@@ -10,8 +10,10 @@ import {
   isWritingShortcut,
   parseWritingStateEvent,
   writingConflictMessage,
+  writingFullscreenMessage,
   writingLoadMessage,
   writingMessageCurrent,
+  writingTitleMessage,
   writingWebviewHandles,
 } from "../src/lib/modules/writing-bridge.ts";
 import { openableLinkHref } from "../src/lib/modules/plugin-links.ts";
@@ -65,10 +67,27 @@ for (const kind of ["open-entity", "request-rename", "request-archive"]) {
   assert.deepEqual(parseWritingStateEvent({ kind, entityId: "e-1" }), { kind, entityId: "e-1" });
 }
 
-// Fullscreen and shortcuts.
+// Fullscreen is the webview's own: it names the entry and the state after the change.
 assert.equal(parseWritingStateEvent({ kind: "fullscreen" }), null);
-assert.equal(parseWritingStateEvent({ kind: "fullscreen", enabled: "yes" }), null);
-assert.deepEqual(parseWritingStateEvent({ kind: "fullscreen", enabled: true }), { kind: "fullscreen", enabled: true });
+assert.equal(parseWritingStateEvent({ kind: "fullscreen", entityId: "e1" }), null, "on is required");
+assert.equal(parseWritingStateEvent({ kind: "fullscreen", entityId: "e1", on: "yes" }), null);
+assert.equal(parseWritingStateEvent({ kind: "fullscreen", on: true }), null, "entityId is required");
+assert.equal(parseWritingStateEvent({ kind: "fullscreen", entityId: "", on: true }), null);
+assert.equal(
+  parseWritingStateEvent({ kind: "fullscreen", entityId: "e1", enabled: true }),
+  null,
+  "the old field is gone",
+);
+assert.deepEqual(parseWritingStateEvent({ kind: "fullscreen", entityId: "e1", on: true }), {
+  kind: "fullscreen",
+  entityId: "e1",
+  on: true,
+});
+assert.deepEqual(parseWritingStateEvent({ kind: "fullscreen", entityId: "e1", on: false }), {
+  kind: "fullscreen",
+  entityId: "e1",
+  on: false,
+});
 assert.equal(parseWritingStateEvent({ kind: "shortcut" }), null);
 assert.equal(parseWritingStateEvent({ kind: "shortcut", shortcut: "save" }), null);
 assert.deepEqual(parseWritingStateEvent({ kind: "shortcut", shortcut: "quick-open" }), {
@@ -164,6 +183,15 @@ assert.deepEqual(writingLoadMessage("e1", "t2", "", { editable: true, placeholde
   editable: true,
   placeholder: "Write…",
   mode: "edit",
+});
+
+// The shell only turns the webview's full screen off, and renames reach the header without a reload.
+assert.deepEqual(writingFullscreenMessage(false), { type: "writing.fullscreen", on: false });
+assert.deepEqual(writingFullscreenMessage(true), { type: "writing.fullscreen", on: true });
+assert.deepEqual(writingTitleMessage("e1", "Chapter two"), {
+  type: "writing.title",
+  entityId: "e1",
+  title: "Chapter two",
 });
 
 // Acceptance: a draft or conflict action counts only for the selected entry and the load the shell last posted.

@@ -244,7 +244,7 @@ import EntityEmptyState from "$lib/entity-lifecycle/EntityEmptyState.svelte";
 import EntityIdentityDialog from "$lib/entity-lifecycle/EntityIdentityDialog.svelte";
 import EntityRowActions from "$lib/entity-lifecycle/EntityRowActions.svelte";
 import MutationStatus from "$lib/entity-lifecycle/MutationStatus.svelte";
-import { archivedToastMessage } from "$lib/entity-lifecycle/archive.ts";
+import { archiveConfirmOptions, archivedToastMessage } from "$lib/entity-lifecycle/archive.ts";
 import {
   toAsyncEntityPage,
   toShellSortDirection,
@@ -285,10 +285,13 @@ import {
   createWritingFlushBroker,
   parseWritingStateEvent,
   writingConflictMessage,
+  writingFullscreenMessage,
   writingLoadMessage,
   writingMessageCurrent,
+  writingTitleMessage,
   writingWebviewHandles,
   type WritingBridgeDraft,
+  type WritingBridgeShortcut,
   type WritingLoad,
   type WritingStateEvent,
 } from "$lib/modules/writing-bridge";
@@ -429,6 +432,11 @@ const writingWebviewEnabled = (() => {
 })();
 /** Mount state of the Writing webview: `mounted` while its content pane element exists, `ready` after it reports ready. */
 let writingWebview = $state({ mounted: false, ready: false });
+/**
+ * The Writing webview's full screen, as the webview reports it. Kept apart from `editorFullscreen`: that one hides
+ * every embedded webview, and this one needs the webview visible so it can fill the window.
+ */
+let writingFullscreen = $state(false);
 /**
  * What the last `writing.load` was for (entity id and the shell's load counter), so an unchanged selection is
  * not reposted. Saving does not change it; a new entity or a reload from disk does.
@@ -1547,6 +1555,8 @@ const writingWebviewShown = $derived(
     enabledWorkspaceSections().includes("writing") &&
     writingWebviewHandles(selected?.entity_type),
 );
+/** The content column fills the window while the Writing webview is in full screen (see `writingFullscreen`). */
+const writingFullscreenShown = $derived(writingWebviewShown && writingFullscreen);
 
 /**
  * Modal shell overlays, which cover the whole window. Plugin webviews are native children drawn above
@@ -1752,6 +1762,7 @@ function trackWritingMount() {
     writingLoadKey = null;
     writingLoad = null;
     writingEditablePosted = null;
+    writingFullscreen = false;
     writingFlush.releaseAll();
   };
 }
@@ -1776,7 +1787,9 @@ const writingEditable = $derived(
 );
 
 function writingPlaceholder() {
-  return selected?.entity_type === "daena.writing:reference-page" ? "Write this reference page…" : "Write your manuscript…";
+  return selected?.entity_type === "daena.writing:reference-page"
+    ? "Write this reference page…"
+    : "Write your manuscript…";
 }
 
 /**
@@ -1786,8 +1799,7 @@ function writingPlaceholder() {
  */
 async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
   // A transfer is claimed first so a rejected draft does not leave its text waiting.
-  const text =
-    "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
+  const text = "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
   if (!writingMessageCurrent(draft, selected?.id, writingLoad)) return false;
   if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return false;
   if (text === documentBody) return false;
@@ -1822,7 +1834,11 @@ async function flushWritingWebview(): Promise<boolean> {
 async function postWritingLoad(entityId: string, key: string) {
   // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
   // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
-  if (writingLoad?.entityId === entityId && (await flushWritingWebview())) return;
+  if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
+    // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
+    if (selected?.id === entityId) void postWritingMessage(writingTitleMessage(entityId, selected.name));
+    return;
+  }
   if (writingLoadKey !== key) return;
   const load: WritingLoad = { entityId, token: crypto.randomUUID() };
   writingLoad = load;
@@ -1899,9 +1915,52 @@ function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "
   }
 }
 
+/** Ends the Writing webview's full screen from the shell's side, and tells the webview to leave its own. */
+function exitWritingFullscreen() {
+  if (!writingFullscreen) return;
+  writingFullscreen = false;
+  if (writingWebview.ready) void postWritingMessage(writingFullscreenMessage(false));
+}
+
+// The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
+$effect(() => {
+  void selected?.id;
+  void writingWebviewShown;
+  untrack(() => exitWritingFullscreen());
+});
+
 /**
- * Writing state from the webview. Fullscreen, rename, archive and shortcut messages are still ignored until
- * the shell integration takes them over.
+ * Runs a shell shortcut. The window listeners and the keys the Writing webview forwards both come here, so the
+ * rules stay in one place: quick open toggles, create opens the template gallery unless another dialog is open,
+ * and history moves back or forward.
+ */
+function runShellShortcut(shortcut: WritingBridgeShortcut) {
+  if (!ready) return;
+  if (shortcut === "history-back") void navigateShellHistory("back");
+  else if (shortcut === "history-forward") void navigateShellHistory("forward");
+  else if (shortcut === "quick-open") {
+    if (quickOpenOpen) closeQuickOpen();
+    else openQuickOpen();
+  } else if (!quickOpenOpen && !showCreateForm && !entityEditDialog && !showExternalImport) {
+    // Global New (⌘/Ctrl+N) opens the full template gallery.
+    openCreationMenu();
+  }
+}
+
+/** The webview's Archive button: the same confirmation as the entry's own Archive button, then the shell's archive. */
+async function confirmWritingArchive(entityId: string) {
+  const target = selected;
+  if (!target || target.id !== entityId || selectedLoading || projectDiagnostics.length > 0 || entityMutation.busy)
+    return;
+  if (!(await confirmDialog(archiveConfirmOptions(target.name)))) return;
+  // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
+  if (selected?.id !== entityId) return;
+  await archiveSelected();
+}
+
+/**
+ * Writing state from the webview. Each entry-scoped message is checked against the selection, the way the shell's
+ * own actions are; drafts and conflict actions also carry the load token (see writingMessageCurrent).
  */
 function handleWritingStateEvent(event: WritingStateEvent) {
   switch (event.kind) {
@@ -1911,6 +1970,7 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       writingLoadKey = null;
       writingLoad = null;
       writingEditablePosted = null;
+      writingFullscreen = false;
       writingFlush.releaseAll();
       writingWebview.ready = true;
       return;
@@ -1933,6 +1993,19 @@ function handleWritingStateEvent(event: WritingStateEvent) {
     }
     case "open-entity":
       void openEntityById(event.entityId);
+      return;
+    case "fullscreen":
+      // Only the entry on screen can change the full screen; a message for any other entry is stale.
+      if (writingWebview.mounted && event.entityId === selected?.id) writingFullscreen = event.on;
+      return;
+    case "shortcut":
+      if (writingWebview.mounted) runShellShortcut(event.shortcut);
+      return;
+    case "request-rename":
+      if (writingWebview.mounted && selected && event.entityId === selected.id) void openEntityEditDialog(selected);
+      return;
+    case "request-archive":
+      if (writingWebview.mounted) void confirmWritingArchive(event.entityId);
       return;
     default:
       return;
@@ -2079,8 +2152,9 @@ function resetWorkbenchPane(pane: "collection" | "inspector") {
 }
 
 async function toggleWorkbenchPane(pane: WorkbenchPane) {
-  // Hiding the content column tears down the Language webview, so ask it first while it is mounted.
-  if (pane === "content" && workbenchPaneVisibility.content && languageWebview.mounted) {
+  // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
+  if (pane === "content" && workbenchPaneVisibility.content) {
+    if (!(await flushAutoSave())) return;
     if (!(await canLeaveLanguageSection())) return;
   }
   const visible = !workbenchPaneVisibility[pane];
@@ -2091,6 +2165,8 @@ async function toggleWorkbenchPane(pane: WorkbenchPane) {
 
 function workspaceGridStyle() {
   if (mapSurfaceOpen) return undefined;
+  // Full screen hides the other panes, so the content column is the only track.
+  if (writingFullscreenShown) return "grid-template-columns: minmax(0, 1fr)";
   const panes = activePaneDimensions();
   const collectionVisible = workbenchPaneVisibility.collection;
   const contentVisible = workbenchPaneVisibility.content;
@@ -2246,6 +2322,7 @@ async function openTreePerson(entityId: string) {
     }
   }
   if (!entity || entity.deleted) return;
+  if (!(await flushAutoSave())) return;
   if (!(await leavePluginView())) return;
   section = "lore";
   projectHomeOpen = false;
@@ -3565,6 +3642,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
     transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   }
   if (!transition) return;
+  if (!(await flushAutoSave())) return;
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
@@ -5414,6 +5492,8 @@ async function createWithOption(
   const departure = currentShellLocation();
   createBusy = true;
   try {
+    // The new entry changes the section and the selection, so unsent text in the open entry is saved first.
+    if (!(await flushAutoSave())) return false;
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
@@ -7422,8 +7502,14 @@ onMount(() => {
   const handleHistoryKey = (event: KeyboardEvent) => {
     if (!ready || !event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    // In a text field or editor, Alt+arrows move the caret by word.
+    if (
+      event.target instanceof Element &&
+      event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
+    )
+      return;
     event.preventDefault();
-    void navigateShellHistory(event.key === "ArrowLeft" ? "back" : "forward");
+    runShellShortcut(event.key === "ArrowLeft" ? "history-back" : "history-forward");
   };
   const handleQuickOpenKey = (event: KeyboardEvent) => {
     const modifier = event.metaKey || event.ctrlKey;
@@ -7431,13 +7517,15 @@ onMount(() => {
     const key = event.key.toLowerCase();
     if (key === "k") {
       event.preventDefault();
-      if (quickOpenOpen) closeQuickOpen();
-      else openQuickOpen();
+      runShellShortcut("quick-open");
     } else if (key === "n" && !quickOpenOpen && !showCreateForm && !entityEditDialog && !showExternalImport) {
       event.preventDefault();
-      // Global New (⌘/Ctrl+N) opens the full template gallery.
-      openCreationMenu();
+      runShellShortcut("create");
     }
+  };
+  const handleWritingFullscreenKey = (event: KeyboardEvent) => {
+    // Escape with focus in the shell. Inside the webview, its editor reports the change itself.
+    if (event.key === "Escape") exitWritingFullscreen();
   };
   const handleWorkbenchResize = () => {
     workbenchViewportWidth = window.innerWidth;
@@ -7447,6 +7535,7 @@ onMount(() => {
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
   window.addEventListener("keydown", handleQuickOpenKey);
+  window.addEventListener("keydown", handleWritingFullscreenKey);
   window.addEventListener("resize", handleWorkbenchResize);
   let closeListenerDisposed = false;
   let unlistenWindowClose: (() => void) | undefined;
@@ -7652,6 +7741,7 @@ onMount(() => {
     window.removeEventListener("beforeunload", handleBeforeUnload);
     window.removeEventListener("keydown", handleHistoryKey);
     window.removeEventListener("keydown", handleQuickOpenKey);
+    window.removeEventListener("keydown", handleWritingFullscreenKey);
     window.removeEventListener("resize", handleWorkbenchResize);
     cancelAutoSave();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
@@ -7672,7 +7762,7 @@ onMount(() => {
 
 <svelte:head><title>Daena Archive</title><link rel="icon" href={logoUrl} /></svelte:head>
 
-<main class="studio-shell" aria-label="Daena Archive">
+<main class="studio-shell" class:writing-fullscreen={writingFullscreenShown} aria-label="Daena Archive">
   {#if projectTransitionBusy}
     <div class="project-transition-backdrop" role="status" aria-live="polite" aria-busy="true">
       <div class="project-transition-card">
@@ -8709,7 +8799,7 @@ onMount(() => {
         <button class="primary-button" onclick={() => void openProjectCenter("extensions")}>Open Extensions</button>
       </section>
     {:else}
-      {#if projectDiagnostics.length}<div class="project-diagnostics" role="alert">
+      {#if projectDiagnostics.length && !writingWebviewShown}<div class="project-diagnostics" role="alert">
           <span>{projectDiagnostics[0]}</span><button
             class="quiet-button"
             onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
@@ -9162,8 +9252,24 @@ onMount(() => {
             </div>
           {/key}
         {:else if writingWebviewShown}
-          <div class="writing-mount" {@attach trackWritingMount}>
-            <SandboxView pluginId="daena.writing" viewId="writing-workspace" title="Writing" />
+          <div class="writing-content">
+            <!-- The webview draws over the content column, so the shell's messages sit above its slot, in flow. -->
+            {#if !writingFullscreen && (error || projectDiagnostics.length > 0)}
+              <div class="writing-notices">
+                {#if projectDiagnostics.length > 0}<div class="project-diagnostics" role="alert">
+                    <span>{projectDiagnostics[0]}</span><button
+                      class="quiet-button"
+                      onclick={() => void importPortableCheckpoint()}>Import checkpoint</button>
+                  </div>{/if}
+                {#if error}<div class="writing-notice" role="alert" aria-live="assertive">
+                    <span>{error}</span><button aria-label="Dismiss" onclick={() => (error = "")}
+                      ><X size={16} strokeWidth={1.8} aria-hidden="true" /></button>
+                  </div>{/if}
+              </div>
+            {/if}
+            <div class="writing-mount" {@attach trackWritingMount}>
+              <SandboxView pluginId="daena.writing" viewId="writing-workspace" title="Writing" />
+            </div>
           </div>
         {:else if workbenchPaneVisibility.content}
           {#snippet contentPaneBody()}
@@ -9950,7 +10056,7 @@ onMount(() => {
         {/if}
       </section>
     {/if}
-    {#if error}<div
+    {#if error && !writingWebviewShown}<div
         class="toast"
         class:toast-left={embeddedPluginWebviewIds.length > 0}
         role="alert"
@@ -10390,6 +10496,56 @@ onMount(() => {
   min-height: 0;
   flex: 1;
   flex-direction: column;
+}
+/* The Writing content column: the shell's notices sit in flow above the slot, so the slot shrinks to them. */
+.writing-content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.writing-notices {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin: 12px 16px 0;
+}
+.writing-notices .project-diagnostics {
+  margin: 0;
+}
+.writing-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-warning-border, #e5d4ba);
+  border-radius: 9px;
+  background: var(--warning-bg);
+  color: var(--theme-warning-text, #765a39);
+  font-size: 12px;
+}
+.writing-notice span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.writing-notice button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 17px;
+}
+/* Full screen: the shell's chrome steps aside, and the content column is the only pane left. */
+.studio-shell.writing-fullscreen > :global(aside),
+.studio-shell.writing-fullscreen :global(.topbar),
+.studio-shell.writing-fullscreen :global(.workspace-heading),
+.studio-shell.writing-fullscreen .workbench-layout-controls,
+.studio-shell.writing-fullscreen :global(.collection-panel),
+.studio-shell.writing-fullscreen :global(.inspector-panel),
+.studio-shell.writing-fullscreen :global(.pane-resize-handle) {
+  display: none;
 }
 .projection-bar {
   min-height: 42px;

@@ -14,6 +14,7 @@ import {
   parseWritingMountParams,
   parseWritingStatePayload,
   pickWritingManifest,
+  writingShortcutForKey,
 } from "../packages/modules/writing/src/plugin-protocol.ts";
 import { entityIdsInMarkdown, loadWritingDocument } from "../packages/modules/writing/src/document-source.ts";
 import {
@@ -26,7 +27,9 @@ import {
 import {
   parseWritingStateEvent,
   writingConflictMessage,
+  writingFullscreenMessage,
   writingLoadMessage,
+  writingTitleMessage,
 } from "../src/lib/modules/writing-bridge.ts";
 
 // Mount parameters: the shell mounts without a selection and posts writing.load afterwards.
@@ -146,6 +149,28 @@ assert.deepEqual(parseWritingHostMessage({ type: "writing.ai-state", enabled: tr
   enabled: true,
 });
 assert.equal(parseWritingHostMessage({ type: "writing.ai-state" }), null);
+// Full screen is turned off by the shell (`on` is the state after the change) and titles arrive after a rename.
+assert.deepEqual(parseWritingHostMessage({ type: "writing.fullscreen", on: false }), {
+  type: "writing.fullscreen",
+  on: false,
+});
+assert.equal(parseWritingHostMessage({ type: "writing.fullscreen" }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.fullscreen", on: "false" }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.fullscreen", enabled: false }), null, "the old field is gone");
+assert.deepEqual(parseWritingHostMessage({ type: "writing.title", entityId: "e1", title: "Chapter two" }), {
+  type: "writing.title",
+  entityId: "e1",
+  title: "Chapter two",
+});
+assert.equal(parseWritingHostMessage({ type: "writing.title", entityId: "e1" }), null, "a title is required");
+assert.equal(parseWritingHostMessage({ type: "writing.title", title: "Chapter two" }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.title", entityId: "", title: "x" }), null);
+assert.equal(parseWritingHostMessage({ type: "writing.title", entityId: "e1", title: 7 }), null);
+assert.equal(
+  parseWritingHostMessage({ type: "writing.title", entityId: "e1", title: "t".repeat(2000) }).title.length,
+  512,
+  "titles are capped",
+);
 assert.equal(parseWritingHostMessage({ type: "language.pane", pane: "overview" }), null);
 assert.equal(parseWritingHostMessage("writing.load"), null);
 assert.equal(parseWritingHostMessage(null), null);
@@ -167,6 +192,60 @@ assert.equal(parseWritingHostMessage([]), null);
   ]) {
     assert.deepEqual(parseWritingHostMessage(message), message);
   }
+  for (const message of [
+    writingFullscreenMessage(true),
+    writingFullscreenMessage(false),
+    writingTitleMessage("e1", "A"),
+  ]) {
+    assert.deepEqual(parseWritingHostMessage(message), message);
+  }
+}
+
+// Shortcut mapping: the same keys and modifier rules as the shell's window listeners, and nothing else.
+{
+  const press = (key, modifiers = {}) => ({
+    key,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    repeat: false,
+    ...modifiers,
+  });
+  const cmd = { metaKey: true };
+  const ctrl = { ctrlKey: true };
+  assert.equal(writingShortcutForKey(press("k", cmd)), "quick-open");
+  assert.equal(writingShortcutForKey(press("K", ctrl)), "quick-open", "the key is matched without case");
+  assert.equal(writingShortcutForKey(press("n", cmd)), "create");
+  assert.equal(writingShortcutForKey(press("N", ctrl)), "create");
+  assert.equal(writingShortcutForKey(press("ArrowLeft", { altKey: true })), "history-back");
+  assert.equal(writingShortcutForKey(press("ArrowRight", { altKey: true })), "history-forward");
+  assert.equal(
+    writingShortcutForKey(press("ArrowLeft", { altKey: true, editable: true })),
+    null,
+    "Alt+arrows in a text field move by word instead of going back",
+  );
+  assert.equal(writingShortcutForKey(press("k", { ...cmd, editable: true })), "quick-open", "Cmd+K works while typing");
+  // Held keys do not repeat quick open or create, but history is not gated on repeat (as in the shell).
+  assert.equal(writingShortcutForKey(press("k", { ...cmd, repeat: true })), null);
+  assert.equal(writingShortcutForKey(press("n", { ...ctrl, repeat: true })), null);
+  assert.equal(writingShortcutForKey(press("ArrowLeft", { altKey: true, repeat: true })), "history-back");
+  // Shift and Alt change the meaning of K and N, so they do not trigger the shortcut.
+  assert.equal(writingShortcutForKey(press("k", { ...cmd, shiftKey: true })), null);
+  assert.equal(writingShortcutForKey(press("k", { ...cmd, altKey: true })), null);
+  assert.equal(writingShortcutForKey(press("n", { ...ctrl, altKey: true })), null);
+  // History needs Alt alone: Cmd or Ctrl or Shift with Alt means something else.
+  assert.equal(writingShortcutForKey(press("ArrowLeft", { altKey: true, metaKey: true })), null);
+  assert.equal(writingShortcutForKey(press("ArrowLeft", { altKey: true, ctrlKey: true })), null);
+  assert.equal(writingShortcutForKey(press("ArrowLeft", { altKey: true, shiftKey: true })), null);
+  assert.equal(writingShortcutForKey(press("ArrowUp", { altKey: true })), null);
+  // Without a modifier, or with the wrong key, nothing is forwarded.
+  assert.equal(writingShortcutForKey(press("k")), null, "K alone is typing");
+  assert.equal(writingShortcutForKey(press("n")), null, "N alone is typing");
+  assert.equal(writingShortcutForKey(press("ArrowLeft")), null);
+  assert.equal(writingShortcutForKey(press("s", cmd)), null, "save is the editor's own");
+  assert.equal(writingShortcutForKey(press("f", cmd)), null, "search is the editor's own");
+  assert.equal(writingShortcutForKey(press("Escape")), null);
 }
 
 // State payloads: the webview parser and the shell bridge accept and reject the same things.
@@ -184,7 +263,8 @@ assert.equal(parseWritingHostMessage([]), null);
     { kind: "conflict-action", entityId: "e1", token: "t1", action: "recovery" },
     { kind: "open-link", href: "https://example.com" },
     { kind: "open-entity", entityId: "e2" },
-    { kind: "fullscreen", enabled: false },
+    { kind: "fullscreen", entityId: "e1", on: false },
+    { kind: "fullscreen", entityId: "e1", on: true },
     { kind: "request-rename", entityId: "e1" },
     { kind: "request-archive", entityId: "e1" },
     { kind: "shortcut", shortcut: "history-back" },
@@ -216,7 +296,10 @@ assert.equal(parseWritingHostMessage([]), null);
     { kind: "flush-reply", requestId: "f-1" },
     { kind: "open-link", href: 1 },
     { kind: "open-entity", entityId: "" },
-    { kind: "fullscreen", enabled: "true" },
+    { kind: "fullscreen", entityId: "e1", on: "true" },
+    { kind: "fullscreen", on: true },
+    { kind: "fullscreen", entityId: "", on: true },
+    { kind: "fullscreen", entityId: "e1", enabled: true },
     { kind: "request-rename" },
     { kind: "shortcut", shortcut: "save" },
   ];
@@ -388,7 +471,11 @@ assert.equal(isWritingConflictAction("merge"), false);
     const atLimit = "a".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES);
     assert.equal(draftNeedsTransfer(atLimit), false);
     assert.equal(draftNeedsTransfer(`${atLimit}a`), true);
-    assert.equal(draftNeedsTransfer("é".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES / 2 + 1)), true, "bytes, not characters");
+    assert.equal(
+      draftNeedsTransfer("é".repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES / 2 + 1)),
+      true,
+      "bytes, not characters",
+    );
     // Escaping can push small text over the event cap: every quote becomes two bytes.
     const quotes = '"'.repeat(WRITING_DRAFT_INLINE_LIMIT_BYTES);
     assert.equal(draftNeedsTransfer(quotes), true);
@@ -597,6 +684,22 @@ assert.deepEqual(entityIdsInMarkdown("[bad](daena://entity/%E0%A4%A)"), [], "a m
   assert.match(workspace, /chooseConflict\("reload"\)/);
   assert.match(workspace, /chooseConflict\("overwrite"\)/);
   assert.match(workspace, /chooseConflict\("recovery"\)/);
+  // Full screen: the editor's toggle and Escape both report through setFullscreen, and the shell's off switch sets it.
+  assert.match(workspace, /onFullscreenChange=\{setFullscreen\}/);
+  assert.match(workspace, /kind: "fullscreen", entityId: view\.entityId, on: next/);
+  assert.match(workspace, /case "writing\.fullscreen":[\s\S]*?fullscreen = message\.on;/);
+  assert.doesNotMatch(workspace, /onFullscreenChange=\{\(next\) => \(fullscreen = next\)\}/, "toggles are published");
+  // Rename and archive ask the shell; the shell checks the selection.
+  assert.match(workspace, /kind: "request-rename", entityId: view\.entityId/);
+  assert.match(workspace, /kind: "request-archive", entityId: view\.entityId/);
+  // Forwarded shortcuts: the webview's own key listener maps keys with the shared rules, and prevents the default.
+  assert.match(workspace, /window\.addEventListener\("keydown", handleShortcutKey\)/);
+  assert.match(workspace, /writingShortcutForKey\(\{/);
+  assert.match(workspace, /editable: isEditableKeyTarget\(event\.target\)/, "history keys know when the caret is in a field");
+  assert.match(workspace, /kind: "shortcut", shortcut/);
+  // A rename updates the title in place: replacing `view` would remount the editor, which is keyed on it.
+  assert.match(workspace, /view\.title = message\.title/);
+  assert.match(workspace, /\.writing-editor :global\(\.editor-shell\)/, "the shared editor fills the panel");
   assert.doesNotMatch(workspace, /document\.save|documents\.save|entity\.update/, "the webview never saves");
   assert.doesNotMatch(main, /document\.save|documents\.save|entity\.update|field\.set/, "no write calls in the entry");
   assert.match(main, /transferText: \(text\) => transferText\(client, text\)/, "large drafts use the chunked hand-off");

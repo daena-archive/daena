@@ -25,6 +25,7 @@ export const MAX_WRITING_ID_LENGTH = 128;
 /** Draft text up to this many UTF-8 bytes travels inline in a state event (events are capped at 256 KiB). */
 export const WRITING_DRAFT_INLINE_LIMIT_BYTES = 128 * 1024;
 const MAX_HREF_LENGTH = 4096;
+const MAX_TITLE_LENGTH = 512;
 
 export function isWritingMode(value: unknown): value is WritingMode {
   return typeof value === "string" && (WRITING_MODES as readonly string[]).includes(value);
@@ -76,8 +77,7 @@ export function parseWritingMountParams(search: string): WritingMountParams {
  * is no longer current. Saving does not change the token.
  */
 export type WritingDraft =
-  | { entityId: string; token: string; text: string }
-  | { entityId: string; token: string; transfer: string };
+  { entityId: string; token: string; text: string } | { entityId: string; token: string; transfer: string };
 
 /** Validates a draft. Text over the inline limit and malformed fields return null. */
 export function parseWritingDraft(value: unknown): WritingDraft | null {
@@ -114,7 +114,11 @@ export type WritingHostMessage =
   | { type: "writing.conflict"; entityId: string; message: string; canOverwrite: boolean }
   | { type: "writing.save-error"; entityId: string; message: string }
   | { type: "writing.editable"; editable: boolean }
-  | { type: "writing.ai-state"; enabled: boolean };
+  | { type: "writing.ai-state"; enabled: boolean }
+  /** The shell turns the webview's full screen off (selection change, navigation, Escape in the shell). */
+  | { type: "writing.fullscreen"; on: boolean }
+  /** The entry was renamed; the header updates without a reload, so the editor keeps its text and focus. */
+  | { type: "writing.title"; entityId: string; title: string };
 
 const MAX_PLACEHOLDER_LENGTH = 200;
 const MAX_CONFLICT_MESSAGE_LENGTH = 2000;
@@ -174,6 +178,13 @@ export function parseWritingHostMessage(value: unknown): WritingHostMessage | nu
       return typeof value.editable === "boolean" ? { type: "writing.editable", editable: value.editable } : null;
     case "writing.ai-state":
       return typeof value.enabled === "boolean" ? { type: "writing.ai-state", enabled: value.enabled } : null;
+    case "writing.fullscreen":
+      return typeof value.on === "boolean" ? { type: "writing.fullscreen", on: value.on } : null;
+    case "writing.title": {
+      const entityId = boundedId(value.entityId);
+      if (entityId === null || typeof value.title !== "string") return null;
+      return { type: "writing.title", entityId, title: value.title.slice(0, MAX_TITLE_LENGTH) };
+    }
     default:
       return null;
   }
@@ -189,7 +200,8 @@ export type WritingStatePayload =
   | { kind: "conflict-action"; entityId: string; token: string; action: WritingConflictAction }
   | { kind: "open-link"; href: string }
   | { kind: "open-entity"; entityId: string }
-  | { kind: "fullscreen"; enabled: boolean }
+  /** The webview's own full screen; `on` is the state after the change, and `entityId` is the entry it is for. */
+  | { kind: "fullscreen"; entityId: string; on: boolean }
   | { kind: "request-rename"; entityId: string }
   | { kind: "request-archive"; entityId: string }
   | { kind: "shortcut"; shortcut: WritingShortcut };
@@ -232,13 +244,56 @@ export function parseWritingStatePayload(value: unknown): WritingStatePayload | 
         ? null
         : { kind: value.kind as "open-entity" | "request-rename" | "request-archive", entityId };
     }
-    case "fullscreen":
-      return typeof value.enabled === "boolean" ? { kind: "fullscreen", enabled: value.enabled } : null;
+    case "fullscreen": {
+      const entityId = boundedId(value.entityId);
+      return entityId !== null && typeof value.on === "boolean" ? { kind: "fullscreen", entityId, on: value.on } : null;
+    }
     case "shortcut":
       return isWritingShortcut(value.shortcut) ? { kind: "shortcut", shortcut: value.shortcut } : null;
     default:
       return null;
   }
+}
+
+/** A key press as the shortcut mapping reads it. A KeyboardEvent has all of these fields. */
+export interface WritingKeyPress {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  repeat: boolean;
+  /** True when the key went to a text field or the editor. Alt+arrows move by word there, so history ignores them. */
+  editable?: boolean;
+}
+
+/** Whether a key event's target takes text, where Alt+arrows move the caret by word. */
+export function isEditableKeyTarget(target: EventTarget | null): boolean {
+  return (
+    typeof Element !== "undefined" &&
+    target instanceof Element &&
+    target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null
+  );
+}
+
+/**
+ * The shell shortcut a key press in the webview stands for. It applies the same rules as the shell's window
+ * listeners (`handleHistoryKey` and `handleQuickOpenKey` in src/routes/+page.svelte), so a key does the same thing
+ * in both: Alt+ArrowLeft and Alt+ArrowRight alone go back and forward unless the caret is in a text field, Cmd/Ctrl+K
+ * opens quick open and Cmd/Ctrl+N creates. Null for every other key.
+ */
+export function writingShortcutForKey(press: WritingKeyPress): WritingShortcut | null {
+  if (press.altKey) {
+    if (press.metaKey || press.ctrlKey || press.shiftKey || press.editable) return null;
+    if (press.key === "ArrowLeft") return "history-back";
+    if (press.key === "ArrowRight") return "history-forward";
+    return null;
+  }
+  if (!(press.metaKey || press.ctrlKey) || press.shiftKey || press.repeat) return null;
+  const key = press.key.toLowerCase();
+  if (key === "k") return "quick-open";
+  if (key === "n") return "create";
+  return null;
 }
 
 /** What the workspace needs from its host; the plugin entry wires it to the host message channel and the broker. */

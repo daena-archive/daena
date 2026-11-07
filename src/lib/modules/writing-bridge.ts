@@ -46,7 +46,7 @@ export type WritingStateEvent =
   | { kind: "conflict-action"; entityId: string; token: string; action: WritingBridgeConflictAction }
   | { kind: "open-link"; href: string }
   | { kind: "open-entity"; entityId: string }
-  | { kind: "fullscreen"; enabled: boolean }
+  | { kind: "fullscreen"; entityId: string; on: boolean }
   | { kind: "request-rename"; entityId: string }
   | { kind: "request-archive"; entityId: string }
   | { kind: "shortcut"; shortcut: WritingBridgeShortcut };
@@ -131,8 +131,12 @@ export function parseWritingStateEvent(payload: unknown): WritingStateEvent | nu
         ? null
         : { kind: payload.kind as "open-entity" | "request-rename" | "request-archive", entityId };
     }
-    case "fullscreen":
-      return typeof payload.enabled === "boolean" ? { kind: "fullscreen", enabled: payload.enabled } : null;
+    case "fullscreen": {
+      const entityId = idOf(payload.entityId);
+      return entityId !== null && typeof payload.on === "boolean"
+        ? { kind: "fullscreen", entityId, on: payload.on }
+        : null;
+    }
     case "shortcut":
       return isWritingShortcut(payload.shortcut) ? { kind: "shortcut", shortcut: payload.shortcut } : null;
     default:
@@ -157,7 +161,21 @@ export type WritingHostMessage =
   | { type: "writing.conflict"; entityId: string; message: string; canOverwrite: boolean }
   | { type: "writing.save-error"; entityId: string; message: string }
   | { type: "writing.editable"; editable: boolean }
-  | { type: "writing.ai-state"; enabled: boolean };
+  | { type: "writing.ai-state"; enabled: boolean }
+  | { type: "writing.fullscreen"; on: boolean }
+  | { type: "writing.title"; entityId: string; title: string };
+
+/**
+ * Turns the webview's full screen on or off. The shell only sends `false`; the webview starts its own full screens.
+ */
+export function writingFullscreenMessage(on: boolean): WritingHostMessage {
+  return { type: "writing.fullscreen", on };
+}
+
+/** The header title of an entry the shell has renamed. */
+export function writingTitleMessage(entityId: string, title: string): WritingHostMessage {
+  return { type: "writing.title", entityId, title };
+}
 
 /** Builds the `writing.load` message for a selection. */
 export function writingLoadMessage(

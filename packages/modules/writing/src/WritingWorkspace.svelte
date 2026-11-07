@@ -11,11 +11,13 @@ import {
   type WritingDocument,
   type WritingDocumentRpc,
 } from "./document-source.ts";
-import type {
-  WritingConflictAction,
-  WritingHostMessage,
-  WritingMode,
-  WritingWorkspaceBridge,
+import {
+  isEditableKeyTarget,
+  writingShortcutForKey,
+  type WritingConflictAction,
+  type WritingHostMessage,
+  type WritingMode,
+  type WritingWorkspaceBridge,
 } from "./plugin-protocol.ts";
 
 /**
@@ -44,6 +46,10 @@ let requested = $state(false);
 let shellEditable = $state(false);
 let mode = $state<WritingMode>("edit");
 let modeChosen = false;
+/**
+ * The editor's full screen. The shell expands this webview's slot to the window while it is on, so the editor
+ * only has to fill its own document. Article and Edit stay in this component, so they need no round trip.
+ */
 let fullscreen = $state(false);
 let conflict = $state<{ message: string; canOverwrite: boolean } | null>(null);
 let saveError = $state("");
@@ -70,9 +76,7 @@ const sync = createDraftSync({
 });
 
 const editable = $derived(shellEditable && !loading && !conflict && view !== null);
-const statusLabel = $derived(
-  pending ? "Unsaved changes" : awaitingSave ? "Saving…" : savedNote ? "Saved" : "",
-);
+const statusLabel = $derived(pending ? "Unsaved changes" : awaitingSave ? "Saving…" : savedNote ? "Saved" : "");
 
 function startLoad(message: Extract<WritingHostMessage, { type: "writing.load" }>) {
   const seq = ++loadSeq;
@@ -154,6 +158,22 @@ function chooseConflict(action: WritingConflictAction) {
   void bridge.publish({ kind: "conflict-action", entityId: view.entityId, token: view.token, action });
 }
 
+/** The editor's full screen toggle, and Escape inside the editor, both come through here; the shell follows. */
+function setFullscreen(next: boolean) {
+  if (next === fullscreen) return;
+  fullscreen = next;
+  if (view) void bridge.publish({ kind: "fullscreen", entityId: view.entityId, on: next });
+}
+
+/** Rename and archive run in the shell, which checks the entry is still the selection and shows its dialogs. */
+function requestRename() {
+  if (view) void bridge.publish({ kind: "request-rename", entityId: view.entityId });
+}
+
+function requestArchive() {
+  if (view) void bridge.publish({ kind: "request-archive", entityId: view.entityId });
+}
+
 /** Links leave through the shell; anchors inside the article stay in the page. */
 function handleArticleClick(event: MouseEvent) {
   const anchor = (event.target as Element | null)?.closest?.("a[href]");
@@ -199,6 +219,14 @@ function handleHostMessage(message: WritingHostMessage) {
     case "writing.ai-state":
       // The AI flow arrives in a later slice.
       return;
+    case "writing.fullscreen":
+      // The shell ends the full screen (selection change, navigation, Escape in the shell). Nothing is sent back.
+      fullscreen = message.on;
+      return;
+    case "writing.title":
+      // Mutated rather than replaced: the editor is keyed on the view object, and replacing it would remount it.
+      if (view && message.entityId === view.entityId) view.title = message.title;
+      return;
   }
 }
 
@@ -209,25 +237,52 @@ onMount(() => {
     loading = true;
   }
   const off = bridge.onHostMessage(handleHostMessage);
+  // Key events in this webview never reach the shell, so the shortcuts the shell owns are forwarded instead.
+  const handleShortcutKey = (event: KeyboardEvent) => {
+    const shortcut = writingShortcutForKey({
+      key: event.key,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      repeat: event.repeat,
+      editable: isEditableKeyTarget(event.target),
+    });
+    if (shortcut === null) return;
+    event.preventDefault();
+    void bridge.publish({ kind: "shortcut", shortcut });
+  };
+  window.addEventListener("keydown", handleShortcutKey);
   return () => {
     off();
+    window.removeEventListener("keydown", handleShortcutKey);
     sync.dispose();
   };
 });
 </script>
 
 <section class="writing-workspace">
-  <div class="writing-panel">
+  <div class="writing-panel" class:is-fullscreen={fullscreen}>
     {#if view}
       {@const source = view}
       <header class="writing-header">
-        <h2>{source.title}</h2>
+        <h2 title="Double-click to edit" ondblclick={requestRename}>{source.title}</h2>
         <div class="writing-controls">
+          <div class="writing-entity-actions">
+            <button type="button" aria-label={`Rename ${source.title}`} onclick={requestRename}>Rename</button>
+            <button type="button" aria-label={`Archive ${source.title}`} onclick={requestArchive}>Archive</button>
+          </div>
           <div class="writing-mode-toggle" aria-label="Document mode">
-            <button type="button" class:active={mode === "read"} aria-pressed={mode === "read"} onclick={() => setMode("read")}
-              >Article</button
-            ><button type="button" class:active={mode === "edit"} aria-pressed={mode === "edit"} onclick={() => setMode("edit")}
-              >Edit</button>
+            <button
+              type="button"
+              class:active={mode === "read"}
+              aria-pressed={mode === "read"}
+              onclick={() => setMode("read")}>Article</button
+            ><button
+              type="button"
+              class:active={mode === "edit"}
+              aria-pressed={mode === "edit"}
+              onclick={() => setMode("edit")}>Edit</button>
           </div>
           <span class="writing-status" role="status" aria-live="polite">{statusLabel}</span>
         </div>
@@ -235,14 +290,14 @@ onMount(() => {
       {#if conflict}
         <div class="writing-conflict" role="alert">
           <div class="writing-conflict-copy">
-            <strong>{conflict.canOverwrite ? "This entry changed elsewhere" : "Canonical source needs attention"}</strong>
+            <strong
+              >{conflict.canOverwrite ? "This entry changed elsewhere" : "Canonical source needs attention"}</strong>
             <p>{conflict.message}</p>
           </div>
           <div class="writing-conflict-actions">
             <button type="button" onclick={() => chooseConflict("reload")}>Reload disk</button>
             <button type="button" disabled={!conflict.canOverwrite} onclick={() => chooseConflict("overwrite")}
-              >Keep mine (overwrite)</button
-            >
+              >Keep mine (overwrite)</button>
             <button type="button" onclick={() => chooseConflict("recovery")}>Save recovery copy</button>
           </div>
         </div>
@@ -270,7 +325,7 @@ onMount(() => {
               {fullscreen}
               placeholder={source.placeholder}
               onChange={(markdown) => handleChange(source, markdown)}
-              onFullscreenChange={(next) => (fullscreen = next)}
+              onFullscreenChange={setFullscreen}
               onSaveRequest={publishNow} />
           {/key}
         </div>
@@ -334,6 +389,24 @@ onMount(() => {
   align-items: flex-end;
   flex-direction: column;
   gap: 7px;
+}
+.writing-entity-actions {
+  display: flex;
+  gap: 6px;
+}
+.writing-entity-actions button {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+.writing-entity-actions button:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
 }
 .writing-mode-toggle {
   display: flex;
@@ -420,6 +493,26 @@ onMount(() => {
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
+}
+.writing-editor :global(.editor-shell) {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+/* Full screen: the shell has expanded this webview to the window, so the panel drops its chrome and centres
+   the header and editor the way the shell's full-screen editor does. */
+.writing-panel.is-fullscreen {
+  padding: 28px clamp(22px, 5vw, 72px) 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.writing-panel.is-fullscreen .writing-header,
+.writing-panel.is-fullscreen .writing-editor,
+.writing-panel.is-fullscreen .writing-scroll,
+.writing-panel.is-fullscreen .writing-conflict,
+.writing-panel.is-fullscreen .writing-save-error {
+  width: min(1120px, 100%);
+  align-self: center;
 }
 .writing-scroll {
   min-height: 0;

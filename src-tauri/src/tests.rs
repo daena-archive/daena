@@ -2028,6 +2028,41 @@ fn plugin_state_events_forward_only_for_their_owner() {
         shell_event_for_plugin_event("daena.lore", "daena.lore/state@1"),
         None
     );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.lore", "daena.lore/shortcut@1"),
+        Some("shell-shortcut")
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.timeline", "daena.timeline/shortcut@1"),
+        Some("shell-shortcut")
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.lore", "daena.timeline/shortcut@1"),
+        None
+    );
+    assert_eq!(
+        shell_event_for_plugin_event("daena.timeline", "daena.lore/shortcut@1"),
+        None
+    );
+}
+
+#[test]
+fn shell_shortcut_payload_keeps_only_known_tab_ids() {
+    assert_eq!(
+        shell_shortcut_id(&serde_json::json!({"shortcut": "tab-next"})),
+        Some("tab-next")
+    );
+    assert_eq!(
+        shell_shortcut_id(&serde_json::json!({"shortcut": "tab-last"})),
+        Some("tab-last")
+    );
+    assert_eq!(
+        shell_shortcut_id(&serde_json::json!({"shortcut": "tab-9"})),
+        None
+    );
+    assert_eq!(shell_shortcut_id(&serde_json::json!({"shortcut": 1})), None);
+    assert_eq!(shell_shortcut_id(&serde_json::json!({})), None);
+    assert_eq!(shell_shortcut_id(&serde_json::json!(null)), None);
 }
 
 #[test]
@@ -2308,6 +2343,91 @@ fn schema_list_is_served_over_the_plugin_protocol_bridge() {
     assert_eq!(page["ok"], true, "{page}");
     assert!(page["result"]["items"].is_array());
     assert!(page["result"]["hasMore"].is_boolean());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn plugin_protocol_bridge_preserves_session_error_codes() {
+    let root = std::env::temp_dir().join(format!("daena-session-code-{}", uuid::Uuid::new_v4()));
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_directory(trusted_shell(), &root)
+        .unwrap();
+    let project_id = current_info(&core).unwrap().unwrap().root;
+    let mut host = bundled_plugin_host(core.clone()).unwrap();
+    {
+        let session = current_session(&core).unwrap();
+        let core = session.core.lock().unwrap();
+        sync_project_usage(core.project(trusted_shell()).unwrap(), &mut host).unwrap();
+    }
+    host.session_ttl = Duration::ZERO;
+    let plugins: SharedPluginHost = Arc::new(Mutex::new(host));
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let ai_runtime: ai::SharedAiRuntime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let label = plugin_window_label("daena.timeline");
+    let post = |body: serde_json::Value| {
+        let request = tauri::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "{}://daena.timeline/__rpc",
+                daena_plugin_host::runtime::plugin_protocol("daena.timeline")
+            ))
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let response =
+            plugin_protocol_response(&label, &request, &core, &plugins, &transfers, &ai_runtime);
+        assert_eq!(response.status(), 200, "{response:?}");
+        serde_json::from_slice::<serde_json::Value>(response.body()).unwrap()
+    };
+    let rpc = |session_id: &str, request_id: &str| {
+        post(serde_json::json!({
+            "op": "rpc",
+            "request": {
+                "rpcVersion": 1,
+                "sessionId": session_id,
+                "requestId": request_id,
+                "method": "entity.list",
+                "payload": {},
+            },
+        }))
+    };
+    let expired_bootstrap = post(serde_json::json!({
+        "op": "bootstrap",
+        "pluginId": "daena.timeline",
+        "projectId": project_id,
+    }));
+    let expired_id = expired_bootstrap["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let expired = rpc(&expired_id, "expired-1");
+    assert_eq!(expired["ok"], false, "{expired}");
+    assert_eq!(expired["requestId"], "expired-1");
+    assert_eq!(expired["error"]["code"], "session.expired");
+    assert_eq!(expired["error"]["message"], "session has expired");
+    assert_eq!(expired["error"]["retryable"], false);
+
+    plugins.lock().unwrap().session_ttl = Duration::from_secs(15 * 60);
+    let live_bootstrap = post(serde_json::json!({
+        "op": "bootstrap",
+        "pluginId": "daena.timeline",
+        "projectId": project_id,
+    }));
+    let live_id = live_bootstrap["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    plugins.lock().unwrap().sessions.revoke_session(&live_id);
+    let revoked = rpc(&live_id, "revoked-1");
+    assert_eq!(revoked["ok"], false, "{revoked}");
+    assert_eq!(revoked["requestId"], "revoked-1");
+    assert_eq!(revoked["error"]["code"], "session.revoked");
+    assert_eq!(revoked["error"]["message"], "session has been revoked");
+    assert_eq!(revoked["error"]["retryable"], false);
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -1364,11 +1364,35 @@ pub(super) fn plugin_protocol_response(
             let request_id = request.request_id.clone();
             let mutation_request_id = sanitize_mutation_request_id(&request_id);
             let result = (|| -> Result<serde_json::Value, String> {
-                let session = plugins
-                    .lock()
-                    .map_err(|_| "plugin host lock poisoned".to_string())?
-                    .authorize_rpc(webview_label, &request)
-                    .map_err(|error| error.message)?;
+                let session = {
+                    let host = plugins
+                        .lock()
+                        .map_err(|_| "plugin host lock poisoned".to_string())?;
+                    match host.authorize_rpc(webview_label, &request) {
+                        Ok(session) => session,
+                        // `valid` returns these before dispatch. Keep the
+                        // RpcError so the SDK can renew. Other authorize
+                        // failures still collapse to `core.error` below.
+                        Err(error)
+                            if matches!(
+                                error.code.as_str(),
+                                "session.expired"
+                                    | "session.revoked"
+                                    | "session.stale"
+                                    | "session.invalid"
+                                    | "session.origin"
+                            ) =>
+                        {
+                            return Ok(serde_json::json!({
+                                "rpcVersion": 1,
+                                "requestId": request_id,
+                                "ok": false,
+                                "error": error,
+                            }));
+                        }
+                        Err(error) => return Err(error.message),
+                    }
+                };
                 validate_broker_payload(&request.method, &request.payload)
                     .map_err(|error| error.to_string())?;
                 let current_project = current_info(core)?.map(|info| info.root);
@@ -1593,9 +1617,40 @@ pub(super) fn shell_event_for_plugin_event(
         Some("language-state")
     } else if event_type.starts_with("daena.writing/state@") {
         Some("writing-state")
+    } else if event_type.starts_with("daena.lore/shortcut@")
+        || event_type.starts_with("daena.timeline/shortcut@")
+    {
+        Some("shell-shortcut")
     } else {
         None
     }
+}
+
+/// Tab shortcut ids. Same list as `TAB_SHORTCUTS` in
+/// `src/lib/navigation/tab-shortcuts.ts`. `app_menu::menu_shortcut` only names
+/// the five menu items, so the digit jumps live here.
+const TAB_SHORTCUT_IDS: &[&str] = &[
+    "tab-new",
+    "tab-close",
+    "tab-reopen",
+    "tab-next",
+    "tab-previous",
+    "tab-1",
+    "tab-2",
+    "tab-3",
+    "tab-4",
+    "tab-5",
+    "tab-6",
+    "tab-7",
+    "tab-8",
+    "tab-last",
+];
+
+/// Shortcut id to emit on `shell-shortcut`, or `None` when `payload.shortcut`
+/// is missing, not a string, or not a known tab shortcut id.
+pub(super) fn shell_shortcut_id(payload: &serde_json::Value) -> Option<&'static str> {
+    let shortcut = payload.get("shortcut")?.as_str()?;
+    TAB_SHORTCUT_IDS.iter().copied().find(|id| *id == shortcut)
 }
 
 /// Forwards plugin-published state events to the shell as Tauri events (see
@@ -1628,6 +1683,14 @@ pub(super) fn forward_plugin_state_event(publisher_plugin_id: &str, payload: &se
         }),
         // The language and writing payloads are passed through unchanged.
         "language-state" | "writing-state" => state,
+        // Only a known tab shortcut id, as a string, reaches the main webview.
+        "shell-shortcut" => {
+            let Some(shortcut) = shell_shortcut_id(&state) else {
+                return;
+            };
+            let _ = app.emit_to("main", shell_event, shortcut);
+            return;
+        }
         _ => return,
     };
     let _ = app.emit(shell_event, body);

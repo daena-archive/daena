@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from "@lucide/svelte";
 import MarkdownArticle from "$lib/markdown/MarkdownArticle.svelte";
-import type { OpenIntent } from "$lib/navigation/open-intent";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import { headingOutline } from "$lib/markdown";
 import {
   project,
@@ -62,6 +62,7 @@ let {
   onClose = () => {},
   onSelectEntity = (_id: string) => {},
   onOpenEntityInNewTab,
+  isMac = false,
   nav,
 }: {
   manifest: ModuleManifest;
@@ -76,6 +77,8 @@ let {
   onSelectEntity?: (id: string) => void;
   /** Opens this wiki entry in another tab. A new-tab link does nothing when this is omitted. */
   onOpenEntityInNewTab?: (id: string) => void;
+  /** Whether the new-tab modifier is Command (macOS) rather than Ctrl. */
+  isMac?: boolean;
   nav?: Snippet;
 } = $props();
 
@@ -586,6 +589,13 @@ function openEntity(id: string, intent?: OpenIntent) {
   document.querySelector(".kb-content")?.scrollTo(0, 0);
 }
 
+/** Middle-click (auxclick button 1) opens the entry in a new tab. Other auxclick buttons do nothing. */
+function openEntityOnMiddleClick(event: MouseEvent, id: string) {
+  if (event.button !== 1) return;
+  event.preventDefault();
+  openEntity(id, openIntent(event, isMac));
+}
+
 function goBack() {
   if (historyIndex <= 0) return;
   historyIndex -= 1;
@@ -685,7 +695,8 @@ function handleEdit() {
       onPrevious={() => (wikiPage = Math.max(0, wikiPage - 1))}
       onNext={() => (wikiPage += 1)}
       onHome={goToMain}
-      onOpen={openEntity} />
+      onOpen={openEntity}
+      {isMac} />
 
     <main class="kb-content">
       {#if searchError}<p class="kb-alert" role="alert">Search is unavailable: {searchError}</p>{/if}
@@ -715,7 +726,10 @@ function handleEdit() {
               <div class="recent-grid">
                 {#each recent.slice(0, 4) as item}
                   {@const recentEntity = recentEntities.find((candidate) => candidate.id === item.id)}
-                  <button type="button" onclick={() => openEntity(item.id)}>
+                  <button
+                    type="button"
+                    onclick={(event) => openEntity(item.id, openIntent(event, isMac))}
+                    onauxclick={(event) => openEntityOnMiddleClick(event, item.id)}>
                     <span class="recent-icon">{item.name.slice(0, 1).toUpperCase()}</span>
                     <span
                       ><small>{item.typeLabel}</small><strong>{item.name}</strong><em
@@ -753,7 +767,12 @@ function handleEdit() {
                     </header>
                     <ul>
                       {#each group.list.slice(0, 4) as item}
-                        <li><button type="button" onclick={() => openEntity(item.id)}>{item.name}</button></li>
+                        <li>
+                          <button
+                            type="button"
+                            onclick={(event) => openEntity(item.id, openIntent(event, isMac))}
+                            onauxclick={(event) => openEntityOnMiddleClick(event, item.id)}>{item.name}</button>
+                        </li>
                       {/each}
                     </ul>
                     {#if group.count > 4}<small class="more-count">+ {group.count - 4} more in the sidebar</small>{/if}
@@ -848,7 +867,10 @@ function handleEdit() {
                         <dd class="wiki-rel-targets">
                           {#each row.targets as target}
                             <div class="wiki-rel-target">
-                              <button type="button" onclick={() => openEntity(target.id)}>{target.name}</button>
+                              <button
+                                type="button"
+                                onclick={(event) => openEntity(target.id, openIntent(event, isMac))}
+                                onauxclick={(event) => openEntityOnMiddleClick(event, target.id)}>{target.name}</button>
                               {@render wikiAttrChips(target.attributes)}
                             </div>
                           {/each}
@@ -923,7 +945,8 @@ function handleEdit() {
                       {#each group.relationships as relationship}<li>
                           <span>{humanizeType(relationship.relationship_type)}</span><button
                             type="button"
-                            onclick={() => openEntity(relationship.target_id)}
+                            onclick={(event) => openEntity(relationship.target_id, openIntent(event, isMac))}
+                            onauxclick={(event) => openEntityOnMiddleClick(event, relationship.target_id)}
                             >{entityName(relationship.target_id)}</button>
                           {@render wikiAttrChips(relationship.attributes)}
                         </li>{/each}
@@ -936,7 +959,8 @@ function handleEdit() {
                       {#each group.relationships as relationship}<li>
                           <span>{humanizeType(relationship.relationship_type)}</span><button
                             type="button"
-                            onclick={() => openEntity(relationship.source_id)}
+                            onclick={(event) => openEntity(relationship.source_id, openIntent(event, isMac))}
+                            onauxclick={(event) => openEntityOnMiddleClick(event, relationship.source_id)}
                             >{entityName(relationship.source_id)}<small
                               >{entityTypeOf(relationship.source_id)
                                 ? ` · ${labelForType(entityTypeOf(relationship.source_id))}`

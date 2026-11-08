@@ -25,7 +25,8 @@
     "search.query",
     "schema.overlay",
     "service.provide:daena.timeline.resolve-date@1",
-    "service.call:daena.maps/navigation"
+    "service.call:daena.maps/navigation",
+    "event.publish:daena.timeline/shortcut@1"
   ],
   "dependencies": {
     "daena.lore": {
@@ -195,7 +196,7 @@
     "provides": [{ "name": "daena.timeline.resolve-date", "major": 1 }],
     "consumes": [{ "name": "daena.maps/navigation", "major": 1 }]
   },
-  "events": { "publishes": [], "subscribes": [] },
+  "events": { "publishes": [{ "name": "daena.timeline/shortcut", "version": 1 }], "subscribes": [] },
   "migrations": [
     {
       "id": "timeline-v1",

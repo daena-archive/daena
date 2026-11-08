@@ -1,6 +1,6 @@
 /**
  * Tab shortcut names shared by the shell keydown listener, the macOS menu, and the
- * plugin webviews. The Writing and Language packages keep their own copies of this
+ * plugin webviews. Writing, Language, Lore and Timeline keep their own copies of this
  * list and of `tabShortcutForKey` (they cannot import `src/`).
  */
 

@@ -9180,6 +9180,7 @@ onMount(() => {
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
         <WikiView
+          isMac={isMac()}
           manifest={manifestForWorkspaceSection("lore")!}
           enabledManifests={modules.filter((module) => module.enabled)}
           initialEntityId={loreWikiEntityId}

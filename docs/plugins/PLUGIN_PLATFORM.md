@@ -111,7 +111,9 @@ session is bound to:
 
 Every broker method verifies the session before calling a core service.
 Disabling, upgrading, uninstalling, closing the project, or restarting the
-plugin revokes its sessions immediately.
+plugin revokes its sessions immediately. A session also expires (the host
+default is 15 minutes). The SDK renews an expired, revoked, or stale
+session once per failed call and retries that call.
 
 Raw Tauri project, migration, Git, backup, restore, file-dialog, opener, and
 filesystem commands are never available to plugin webviews. Plugin requests do
@@ -766,7 +768,8 @@ appearance.get  schema.list
   with `asset.update` and `referenceScope: "project"`.
 - **Shell-forwarded plugin events are bound to their publisher.** The host
   forwards `daena.maps/state@1`, `daena.maps/selection@1`,
-  `daena.language/state@1`, and `daena.writing/state@1` to the shell only when the event name's namespace
+  `daena.language/state@1`, `daena.writing/state@1`, `daena.lore/shortcut@1`,
+  and `daena.timeline/shortcut@1` to the shell only when the event name's namespace
   equals the publishing plugin's ID. Declaring another plugin's event name in
   a manifest is not enough to reach the shell.
 - **`service.provide` is vestigial as a method.** Providers register at

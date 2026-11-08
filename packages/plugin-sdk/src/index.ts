@@ -303,13 +303,22 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
     await handshake;
   }
 
-  async function call(method: string, payload: unknown, suppliedRequestId?: string): Promise<unknown> {
-    if (method === "plugin.bootstrap") return bootstrap();
-    await ensureSession();
-    const requestId = suppliedRequestId ?? globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`;
+  function renewableSessionError(error: unknown): boolean {
+    return (
+      isRpcError(error) &&
+      (error.code === "session.expired" || error.code === "session.revoked" || error.code === "session.stale")
+    );
+  }
+
+  async function sendRpc(
+    method: string,
+    payload: unknown,
+    requestId: string,
+    activeSessionId: string,
+  ): Promise<unknown> {
     const value = await post({
       op: "rpc",
-      request: { rpcVersion: 1, sessionId, requestId, method, payload },
+      request: { rpcVersion: 1, sessionId: activeSessionId, requestId, method, payload },
     });
     if (!isRecord(value) || value.rpcVersion !== 1 || value.requestId !== requestId || typeof value.ok !== "boolean") {
       throw rpcFailure("transport.protocol", "plugin RPC response does not match the request");
@@ -320,6 +329,26 @@ export function createBrowserPluginRpcTransport(options: BrowserPluginRpcTranspo
     }
     if (!("result" in value)) throw rpcFailure("transport.protocol", "plugin RPC success has no result");
     return value.result;
+  }
+
+  async function call(method: string, payload: unknown, suppliedRequestId?: string): Promise<unknown> {
+    if (method === "plugin.bootstrap") return bootstrap();
+    await ensureSession();
+    const requestId = suppliedRequestId ?? globalThis.crypto?.randomUUID?.() ?? `${pluginId}-${++sequence}`;
+    const usedSessionId = sessionId;
+    if (!usedSessionId) throw rpcFailure("transport.protocol", "plugin session is missing");
+    try {
+      return await sendRpc(method, payload, requestId, usedSessionId);
+    } catch (error) {
+      if (!renewableSessionError(error)) throw error;
+      // A concurrent call may already have replaced this dead session.
+      // Clear it only when it is still the id this call presented.
+      if (sessionId === usedSessionId) sessionId = undefined;
+      await ensureSession();
+      const renewedSessionId = sessionId;
+      if (!renewedSessionId) throw rpcFailure("transport.protocol", "plugin session is missing");
+      return await sendRpc(method, payload, requestId, renewedSessionId);
+    }
   }
 
   bindAppearancePush();
@@ -511,8 +540,7 @@ export function createPluginRpcClient(transport: PluginRpcTransport): PluginRpcC
     getAppearance: () => callTransport<PluginAppearance>(transport, "appearance.get", {}),
     beginAssetRead: (assetId, namespace) =>
       callTransport<AssetReadHandle>(transport, "asset.read.begin", { assetId, namespace }),
-    beginSharedAssetRead: (path) =>
-      callTransport<AssetReadHandle>(transport, "asset.shared.read.begin", { path }),
+    beginSharedAssetRead: (path) => callTransport<AssetReadHandle>(transport, "asset.shared.read.begin", { path }),
     updateAssetMetadata: (input, options) =>
       callTransport<unknown>(transport, "asset.update", input, options?.requestId),
     deleteAsset: (input, options) => callTransport<void>(transport, "asset.delete", input, options?.requestId),

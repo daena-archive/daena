@@ -1357,6 +1357,44 @@ fn expired_session_is_rejected() {
 }
 
 #[test]
+fn expired_session_authorizes_after_bootstrap_from_the_same_origin() {
+    let mut host = host();
+    host.session_ttl = Duration::ZERO;
+    let expired = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    let denied = host.authorize_rpc(
+        "plugin://one",
+        &RpcRequest {
+            rpc_version: 1,
+            session_id: expired.id.clone(),
+            request_id: "expired".into(),
+            method: "entity.list".into(),
+            payload: serde_json::json!({}),
+        },
+    );
+    assert_eq!(denied.unwrap_err().code, "session.expired");
+
+    host.session_ttl = Duration::from_secs(15 * 60);
+    let renewed = host
+        .bootstrap("com.example.one", "project", "plugin://one")
+        .unwrap();
+    assert_ne!(renewed.id, expired.id);
+    assert!(host.sessions.get(&expired.id).unwrap().revoked);
+    host.authorize_rpc(
+        "plugin://one",
+        &RpcRequest {
+            rpc_version: 1,
+            session_id: renewed.id,
+            request_id: "renewed".into(),
+            method: "entity.list".into(),
+            payload: serde_json::json!({}),
+        },
+    )
+    .expect("a new bootstrap from the same origin authorizes");
+}
+
+#[test]
 fn canonical_bundled_manifests_register_without_handwritten_rust_copies() {
     let mut host = PluginHost::new();
     host.register_bundled_json(include_str!("../../../packages/modules/lore/manifest.json"))

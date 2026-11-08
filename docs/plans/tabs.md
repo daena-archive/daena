@@ -118,8 +118,8 @@ moves to `⇧⌘W` and still runs the close handshake. The keydown paths leave
 `⌘T`, `⌘W` and `⇧⌘T` to the menu so nothing fires twice. `⌃Tab` and `⌘1`–`⌘9`
 are keydown on every platform. Tab shortcuts do nothing while a modal overlay
 (a dialog or Quick Open) is open. The names live in
-`src/lib/navigation/tab-shortcuts.ts`; Writing and Language keep checked
-copies.
+`src/lib/navigation/tab-shortcuts.ts`; Writing, Language, the World graph
+and Chronology keep checked copies.
 
 ## Approach
 
@@ -234,8 +234,8 @@ menu items fire whatever webview has focus and emit `shell-shortcut` to the
 main webview. The Writing and Language webviews forward the keydown chords
 (`⌃Tab`, `⌘1`–`⌘9`, and on Windows and Linux also `Ctrl+T/W/Shift+T`) as a
 `shortcut` state message, which the shell runs through `runShellShortcut`.
-The World graph and Chronology webviews do not forward keys, so `⌃Tab` and
-`⌘1`–`⌘9` don't work while they have focus (the menu items still do).
+The World graph and Chronology webviews forward the same chords as a
+`shortcut` event.
 
 ### Accessibility
 
@@ -262,7 +262,8 @@ The World graph and Chronology webviews do not forward keys, so `⌃Tab` and
    The breadcrumb's ancestor links go with it; the full trail is the tab's
    tooltip. The tab panel (`#shell-tabpanel`) is `.app-main`, which also
    holds the topbar, because the topbar and the workspace content are
-   sibling flex children there; a tighter panel needs a markup change.
+   sibling flex children there; a tighter panel needs a markup change
+   (side-by-side does it, see `side-by-side.md`).
 4. **Multiple tabs.** New, close, switch through the leave guards, the `+`
    button, open-in-new-tab entry points, the left-rail rule, singleton
    settings, titles and icons, per-project restore.

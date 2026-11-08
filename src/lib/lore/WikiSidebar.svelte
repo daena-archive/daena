@@ -1,5 +1,6 @@
 <script lang="ts">
 import { BookOpen, Clock3, Home, Search } from "@lucide/svelte";
+import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 
 export interface WikiSidebarItem {
   id: string;
@@ -28,6 +29,7 @@ let {
   onNext,
   onHome,
   onOpen,
+  isMac = false,
 }: {
   query?: string;
   groups: WikiSidebarGroup[];
@@ -41,8 +43,17 @@ let {
   onPrevious: () => void;
   onNext: () => void;
   onHome: () => void;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, intent?: OpenIntent) => void;
+  /** Whether the new-tab modifier is Command (macOS) rather than Ctrl. */
+  isMac?: boolean;
 } = $props();
+
+/** Middle-click (auxclick button 1) opens the entry in a new tab. Other auxclick buttons do nothing. */
+function openOnMiddleClick(event: MouseEvent, id: string) {
+  if (event.button !== 1) return;
+  event.preventDefault();
+  onOpen(id, openIntent(event, isMac));
+}
 </script>
 
 <aside class:has-query={query.trim()} class="kb-sidebar" aria-label="Wiki navigation">
@@ -63,7 +74,11 @@ let {
         <ul>
           {#each recent as item}
             <li>
-              <button class:active={item.id === currentId} type="button" onclick={() => onOpen(item.id)}>
+              <button
+                class:active={item.id === currentId}
+                type="button"
+                onclick={(event) => onOpen(item.id, openIntent(event, isMac))}
+                onauxclick={(event) => openOnMiddleClick(event, item.id)}>
                 <span>{item.name}</span><small>{item.typeLabel}</small>
               </button>
             </li>
@@ -85,7 +100,11 @@ let {
             <ul>
               {#each group.list as item}
                 <li>
-                  <button class:active={item.id === currentId} type="button" onclick={() => onOpen(item.id)}>
+                  <button
+                    class:active={item.id === currentId}
+                    type="button"
+                    onclick={(event) => onOpen(item.id, openIntent(event, isMac))}
+                    onauxclick={(event) => openOnMiddleClick(event, item.id)}>
                     <span>{item.name}</span>
                   </button>
                 </li>

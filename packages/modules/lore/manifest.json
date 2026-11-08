@@ -25,7 +25,8 @@
     "record.read:self",
     "record.write:self",
     "ai.text.generate-structured",
-    "service.call:daena.maps/navigation"
+    "service.call:daena.maps/navigation",
+    "event.publish:daena.lore/shortcut@1"
   ],
   "dependencies": {
     "daena.language": {
@@ -428,7 +429,7 @@
     }
   ],
   "services": { "provides": [], "consumes": [{ "name": "daena.maps/navigation", "major": 1 }] },
-  "events": { "publishes": [], "subscribes": [] },
+  "events": { "publishes": [{ "name": "daena.lore/shortcut", "version": 1 }], "subscribes": [] },
   "migrations": [
     {
       "id": "lore-v1",

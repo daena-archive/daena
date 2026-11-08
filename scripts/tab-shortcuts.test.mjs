@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import {
   TAB_SHORTCUTS as shellShortcuts,
@@ -12,6 +13,14 @@ import {
   TAB_SHORTCUTS as languageShortcuts,
   tabShortcutForKey as languageForKey,
 } from "../packages/modules/language/src/plugin-protocol.ts";
+import {
+  TAB_SHORTCUTS as loreShortcuts,
+  tabShortcutForKey as loreForKey,
+} from "../packages/modules/lore/src/tab-shortcuts.ts";
+import {
+  TAB_SHORTCUTS as timelineShortcuts,
+  tabShortcutForKey as timelineForKey,
+} from "../packages/modules/timeline/src/tab-shortcuts.ts";
 
 const base = { metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, repeat: false };
 const press = (key, mods = {}) => ({ ...base, key, ...mods });
@@ -76,6 +85,18 @@ const rows = [
 
 assert.deepEqual(writingShortcuts, shellShortcuts, "Writing's tab shortcut list matches the shell");
 assert.deepEqual(languageShortcuts, shellShortcuts, "Language's tab shortcut list matches the shell");
+assert.deepEqual(loreShortcuts, shellShortcuts, "Lore's tab shortcut list matches the shell");
+assert.deepEqual(timelineShortcuts, shellShortcuts, "Timeline's tab shortcut list matches the shell");
+
+// The host's forwarder keeps its own list (src-tauri/src/transfer.rs TAB_SHORTCUT_IDS).
+const transferSource = readFileSync(new URL("../src-tauri/src/transfer.rs", import.meta.url), "utf8");
+const rustList = transferSource.match(/const TAB_SHORTCUT_IDS: &\[&str\] = &\[([^\]]*)\];/);
+assert.ok(rustList, "transfer.rs declares TAB_SHORTCUT_IDS");
+assert.deepEqual(
+  [...rustList[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+  [...shellShortcuts],
+  "the host's forwarded shortcut ids match the shell",
+);
 
 for (const name of shellShortcuts) assert.equal(isTabShortcut(name), true, name);
 assert.equal(isTabShortcut("tab-9"), false);
@@ -94,6 +115,8 @@ for (const isMac of [true, false]) {
     assert.equal(shell, expected, label);
     assert.equal(writingForKey(input, isMac), shell, `writing agrees: ${label}`);
     assert.equal(languageForKey(input, isMac), shell, `language agrees: ${label}`);
+    assert.equal(loreForKey(input, isMac), shell, `lore agrees: ${label}`);
+    assert.equal(timelineForKey(input, isMac), shell, `timeline agrees: ${label}`);
   }
 }
 

@@ -204,4 +204,37 @@ assert.match(shell, /EntityFieldsDialog/);
 assert.match(shell, /openFieldsDialog/);
 assert.match(inspector, /sticky\?: boolean/);
 
+const wikiView = await read("src/lib/lore/WikiView.svelte");
+const wikiSidebar = await read("src/lib/lore/WikiSidebar.svelte");
+assert.match(wikiView, /import \{ openIntent, type OpenIntent \} from "\$lib\/navigation\/open-intent"/);
+assert.doesNotMatch(wikiView, /openEntity\([^,()]*\)/, "no WikiView button opens an entry without an intent");
+assert.equal(
+  wikiView.match(/onclick=\{\(event\) => openEntity\([^)]*openIntent\(event, isMac\)\)\}/g)?.length,
+  5,
+  "the five WikiView entity buttons pass openIntent(...) to openEntity",
+);
+assert.equal(
+  wikiView.match(/onauxclick=\{\(event\) => openEntityOnMiddleClick\(event, /g)?.length,
+  5,
+  "the same five WikiView buttons open a new tab on middle-click",
+);
+assert.match(wikiView, /isMac = false,/, "WikiView takes isMac and defaults it to false");
+assert.match(
+  wikiSidebar,
+  /onOpen: \(id: string, intent\?: OpenIntent\) => void;/,
+  "WikiSidebar's onOpen accepts an open intent",
+);
+assert.equal(
+  wikiSidebar.match(/onclick=\{\(event\) => onOpen\(item\.id, openIntent\(event, isMac\)\)\}/g)?.length,
+  2,
+  "both WikiSidebar lists pass the open intent",
+);
+assert.equal(
+  wikiSidebar.match(/onauxclick=\{\(event\) => openOnMiddleClick\(event, item\.id\)\}/g)?.length,
+  2,
+  "both WikiSidebar lists open a new tab on middle-click",
+);
+const wikiTag = shell.slice(shell.indexOf("<WikiView"), shell.indexOf("/>", shell.indexOf("<WikiView")));
+assert.match(wikiTag, /isMac=\{isMac\(\)\}/, "the shell passes the platform to WikiView");
+
 console.log(`shell UI boundary checks passed (${componentPaths.length + 1} Svelte files compiled)`);

@@ -26,6 +26,9 @@ pub use trust::{
 };
 
 const SIGNATURE_FILE: &str = "signature.json";
+/// Host API version packages are checked against. Minor bumps add surface
+/// (1.1.0: the `accent-text` theme token); see ADR 0007.
+const HOST_API_VERSION: &str = "1.1.0";
 pub const MAX_PLUGIN_ICON_SVG_BYTES: usize = 32 * 1024;
 type PackageFiles = Vec<(String, Vec<u8>)>;
 type PackageTree = (PackageFiles, BTreeSet<String>);
@@ -423,7 +426,7 @@ pub fn verify_archive_bytes(
         std::str::from_utf8(&manifest_bytes).map_err(|e| PackageError(e.to_string()))?,
     )
     .map_err(|e| PackageError(e.to_string()))?;
-    if !host_api_compatible(&manifest.host_api, "1.0.0") {
+    if !host_api_compatible(&manifest.host_api, HOST_API_VERSION) {
         return Err(PackageError(
             "package is incompatible with the current host API".into(),
         ));
@@ -531,7 +534,7 @@ fn verify_installed(
             "installed package path does not match its manifest".into(),
         ));
     }
-    if !host_api_compatible(&manifest.host_api, "1.0.0") {
+    if !host_api_compatible(&manifest.host_api, HOST_API_VERSION) {
         return Err(PackageError(
             "installed package is incompatible with the current host API".into(),
         ));

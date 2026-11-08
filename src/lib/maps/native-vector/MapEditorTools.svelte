@@ -243,7 +243,7 @@ const iconProps = { size: 16, strokeWidth: 1.8, "aria-hidden": true } as const;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
   cursor: pointer;
 }
 .icon-button:hover:not(:disabled),

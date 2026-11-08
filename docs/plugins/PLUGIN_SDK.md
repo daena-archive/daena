@@ -330,6 +330,9 @@ Rules:
   `url()`, fonts, or shadows-as-css.
 - Merged contrast floors: `ink` / `surface` and `ink` / `canvas` at 4.5;
   `rail-text` / `rail-bg` at 3.0. Non-opaque eight-digit hex fails contrast.
+- Host API 1.1.0 added `accent-text` (overlines, text links and the focus ring
+  on paper surfaces). Packs written before it still validate; the host fills
+  `accent-text` from the builtin map like any omitted key.
 
 Installation catalogs packs; it does not auto-apply. The user picks a pack in
 Settings. Packs follow **installation**, not project enablement, so they work

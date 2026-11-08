@@ -14,6 +14,7 @@ import {
 import "@xyflow/svelte/dist/style.css";
 import type { Snippet } from "svelte";
 import { TREE_KEYBOARD } from "$lib/entity-lifecycle/vocabulary.ts";
+import { resolveBuiltinTokens } from "$lib/theme.ts";
 import FamilyPersonNode from "./FamilyPersonNode.svelte";
 import FamilyRelationshipEdge from "./FamilyRelationshipEdge.svelte";
 import FamilyUnionNode from "./FamilyUnionNode.svelte";
@@ -91,11 +92,13 @@ let reducedMotion = $state(
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 );
 let colorMode = $state<"light" | "dark">("light");
-const miniMapBg = $derived(colorMode === "dark" ? "#182720" : "#f4f2ec");
+// The minimap draws SVG fills from props, so it reads the builtin catalog for the resolved mode.
+const miniMapTokens = $derived(resolveBuiltinTokens(colorMode));
+const miniMapBg = $derived(miniMapTokens["surface-muted"]);
 const miniMapMask = $derived(colorMode === "dark" ? "rgba(242,238,228,0.22)" : "rgba(37,37,31,0.14)");
 const miniMapMaskStroke = $derived(colorMode === "dark" ? "rgba(242,238,228,0.42)" : "rgba(37,37,31,0.22)");
-const miniMapNode = $derived(colorMode === "dark" ? "#b8b1a5" : "#62594e");
-const miniMapNodeStroke = $derived(colorMode === "dark" ? "#31443a" : "#d9cdbd");
+const miniMapNode = $derived(miniMapTokens["ink-muted"]);
+const miniMapNodeStroke = $derived(colorMode === "dark" ? miniMapTokens.line : miniMapTokens["line-strong"]);
 let nodes = $state.raw<Node[]>([]);
 let edges = $state.raw<Edge[]>([]);
 let canvasEl = $state<HTMLElement | null>(null);

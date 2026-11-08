@@ -2819,7 +2819,7 @@ onMount(() => {
               <span class="panel-kicker">Map layers</span>
               <strong>{listedLayers.length} layers · {uiFeatureCollection().features.length} features</strong>
               <small class="map-panel-subtitle"
-                >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} rasters` : ""}</small>
+                >{unitsLabel}{listedRasters.length ? ` · ${listedRasters.length} ${listedRasters.length === 1 ? "raster" : "rasters"}` : ""}</small>
             </div>
             <button
               type="button"
@@ -4043,7 +4043,7 @@ onMount(() => {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -4132,7 +4132,7 @@ onMount(() => {
   white-space: nowrap;
 }
 .map-panel-subtitle {
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint, #8c897f);
   font-size: 11px;
   line-height: 1.3;
 }
@@ -4146,7 +4146,7 @@ onMount(() => {
   border: 1px solid var(--line, #e4e1d8);
   border-radius: 8px;
   background: var(--surface, #fffefa);
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
   cursor: pointer;
 }
 .panel-icon-btn:hover:not(:disabled) {

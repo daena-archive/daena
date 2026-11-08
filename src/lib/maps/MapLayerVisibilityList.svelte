@@ -134,7 +134,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
 }
 .layer-section summary :global(svg) {
   flex: 0 0 auto;
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint, #8c897f);
   transition: transform 0.15s ease;
 }
 .layer-section[open] summary :global(svg) {
@@ -155,7 +155,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
   padding: 2px 6px;
   border-radius: 999px;
   background: var(--surface-muted, #f4f2ec);
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint, #8c897f);
   font-size: 10px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -200,7 +200,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
 }
 .layer-book-head strong {
   flex: 1;
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -215,7 +215,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
 }
 .empty-note {
   margin: 0;
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint, #8c897f);
   font-size: 11px;
 }
 .layer-book.studio .empty-note {
@@ -252,7 +252,7 @@ const enabledCount = $derived(flatLayers.filter((layer) => layer.enabled).length
   place-items: center;
   border-radius: 6px;
   background: var(--surface-muted, #f4f2ec);
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
 }
 .layer-name {
   display: grid;
@@ -278,7 +278,7 @@ button.layer-name {
   white-space: nowrap;
 }
 .layer-name small {
-  color: var(--ink-faint, #aaa79d);
+  color: var(--ink-faint, #8c897f);
   font-weight: 500;
   font-size: 10px;
 }
@@ -291,7 +291,7 @@ button.layer-name {
   border: 1px solid var(--line, #e4e1d8);
   border-radius: 7px;
   background: var(--surface, #fffefa);
-  color: var(--ink-soft, #77766d);
+  color: var(--ink-soft, #6c6b62);
   cursor: pointer;
 }
 .mini-icon:hover:not(:disabled) {

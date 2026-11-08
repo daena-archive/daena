@@ -97,6 +97,9 @@ assert.equal(
   "#aa7744",
 );
 assert.equal(resolveAppliedTokens("light", { accent: "#aa7744" }).accent, "#aa7744");
+// Packs that predate `accent-text` still resolve; the id fills from the builtin map.
+assert.equal(resolveAppliedTokens("light", { accent: "#aa7744" })["accent-text"], "#8f5e31");
+assert.equal(resolveAppliedTokens("dark", { accent: "#c58a4a" })["accent-text"], "#d7a25c");
 assert.equal(resolveAppliedTokens("light", { ink: "#fffefa", surface: "#fffefa" }).ink, BUILTIN_THEME_TOKENS.light.ink);
 
 const overlayRoot = themeRoot();

@@ -56,3 +56,6 @@ Sandboxed sessions may read the resolved appearance without a grant
 
 - 2026-09-09: accepted after the host catalog, Settings picker, and sandbox
   sync shipped.
+- 2026-11-08: added `accent-text` (minor; host API 1.1.0) and retuned the
+  light `ink-soft` / `ink-faint` and dark `ink-soft` / `ink-muted` values for
+  contrast and ramp order.

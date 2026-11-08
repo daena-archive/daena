@@ -519,6 +519,7 @@ Theme packs are host-painted JSON overlays. See
 - Rust owns `THEME_TOKEN_IDS` and the builtin maps. Values are parsed colors
   (`#rgb`, `#rrggbb`, `#rrggbbaa`) only. Adding a token is minor; removing or
   renaming one is major. `themes` is an optional defaulted manifest v1 field.
+  Host API 1.1.0 added `accent-text`; sparse packs fill it from the builtin map.
   A pack-only plugin may be `kind: "declarative"` with empty entrypoints.
 - Pack `id` is unique within the package; the globally addressable id is
   `pluginId/themeId`. `name` is 1–128 characters. When `themes` is non-empty,

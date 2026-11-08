@@ -43,6 +43,7 @@ pub const THEME_TOKEN_IDS: &[&str] = &[
     "surface-quiet",
     "canvas",
     "accent",
+    "accent-text",
     "accent-dark",
     "accent-soft",
     "accent-bg",
@@ -78,8 +79,8 @@ pub const THEME_TOKEN_IDS: &[&str] = &[
 
 const BUILTIN_LIGHT: &[(&str, &str)] = &[
     ("ink", "#25251f"),
-    ("ink-soft", "#77766d"),
-    ("ink-faint", "#aaa79d"),
+    ("ink-soft", "#6c6b62"),
+    ("ink-faint", "#8c897f"),
     ("ink-muted", "#62594e"),
     ("line", "#e4e1d8"),
     ("line-soft", "#e9e1d4"),
@@ -91,6 +92,7 @@ const BUILTIN_LIGHT: &[(&str, &str)] = &[
     ("surface-quiet", "#fffcf7"),
     ("canvas", "#f7f6f2"),
     ("accent", "#b4773f"),
+    ("accent-text", "#8f5e31"),
     ("accent-dark", "#365342"),
     ("accent-soft", "#c99965"),
     ("accent-bg", "#f2e4d2"),
@@ -126,9 +128,9 @@ const BUILTIN_LIGHT: &[(&str, &str)] = &[
 
 const BUILTIN_DARK: &[(&str, &str)] = &[
     ("ink", "#f2eee4"),
-    ("ink-soft", "#d8d1c3"),
+    ("ink-soft", "#b8b1a5"),
     ("ink-faint", "#a49e92"),
-    ("ink-muted", "#b8b1a5"),
+    ("ink-muted", "#d8d1c3"),
     ("line", "#31443a"),
     ("line-soft", "#26372f"),
     ("line-strong", "#435a4e"),
@@ -139,6 +141,7 @@ const BUILTIN_DARK: &[(&str, &str)] = &[
     ("surface-quiet", "#101b17"),
     ("canvas", "#0e1714"),
     ("accent", "#c58a4a"),
+    ("accent-text", "#d7a25c"),
     ("accent-dark", "#557d63"),
     ("accent-soft", "#d7a25c"),
     ("accent-bg", "#3c3525"),
@@ -434,12 +437,32 @@ mod tests {
     }
 
     #[test]
+    fn builtin_secondary_tokens_meet_their_floors() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let tokens = builtin_theme_tokens(mode);
+            let ratio = |fg: &str, bg: &str| contrast_ratio(&tokens[fg], &tokens[bg]).unwrap();
+            // accent-text carries overlines, text links and the focus ring on paper.
+            assert!(ratio("accent-text", "surface") >= 4.5, "{mode:?} accent-text/surface");
+            assert!(ratio("accent-text", "canvas") >= 4.5, "{mode:?} accent-text/canvas");
+            assert!(ratio("ink-soft", "canvas") >= 4.5, "{mode:?} ink-soft/canvas");
+            assert!(ratio("ink-faint", "surface") >= 3.0, "{mode:?} ink-faint/surface");
+            // The ink ramp stays ordered: ink > ink-muted > ink-soft > ink-faint.
+            let ramp = ["ink", "ink-muted", "ink-soft", "ink-faint"]
+                .map(|id| ratio(id, "surface"));
+            assert!(ramp.windows(2).all(|pair| pair[0] > pair[1]), "{mode:?} {ramp:?}");
+        }
+    }
+
+    #[test]
     fn sparse_overlay_fills_from_builtin() {
         let mut overlay = BTreeMap::new();
         overlay.insert("accent".into(), "#b4773f".into());
         let merged = resolve_theme_tokens(ThemeMode::Light, &overlay).unwrap();
         assert_eq!(merged.get("accent").unwrap(), "#b4773f");
         assert_eq!(merged.get("canvas").unwrap(), "#f7f6f2");
+        assert_eq!(merged.get("accent-text").unwrap(), "#8f5e31");
+        let dark = resolve_theme_tokens(ThemeMode::Dark, &overlay).unwrap();
+        assert_eq!(dark.get("accent-text").unwrap(), "#d7a25c");
     }
 
     #[test]

@@ -8,13 +8,13 @@ export type PluginKind = "declarative" | "sandboxed";
 export type FieldType = "text" | "number" | "boolean" | "date" | "enum" | "oneof" | "relationship";
 export declare const CATALOG_ICON_IDS: readonly ["agriculture", "anchor", "animal", "art", "artifact", "bird", "calendar", "camp", "castle", "collection", "compass", "concept", "craft", "crown", "culture", "danger", "encounter", "era", "event", "faction", "fire", "fish", "flower", "forest", "group", "heart", "home", "ice", "insect", "journey", "key", "language", "law", "library", "lock", "magic", "manuscript", "map", "mine", "moon", "mountain", "music", "object", "person", "place", "plant", "reference", "religion", "science", "scroll", "settlement", "ship", "spirit", "star", "storm", "sun", "theatre", "unknown", "vision", "wand", "water", "wealth", "world"];
 export declare const TYPE_COLOR_PRESET_IDS: readonly ["brass", "copper", "ember", "moss", "pine", "ocean", "sky", "frost", "amber", "gold", "sand", "rose", "plum", "violet", "slate", "ink"];
-export declare const THEME_TOKEN_IDS: readonly ["ink", "ink-soft", "ink-faint", "ink-muted", "line", "line-soft", "line-strong", "surface", "surface-muted", "surface-warm", "surface-subtle", "surface-quiet", "canvas", "accent", "accent-dark", "accent-soft", "accent-bg", "on-accent", "on-bright-accent", "brass-ink", "danger", "danger-bg", "danger-line", "success", "success-bg", "success-line", "warning", "warning-bg", "warning-line", "info", "info-bg", "info-line", "rail-bg", "rail-surface", "rail-surface-strong", "rail-popover", "rail-text", "rail-text-soft", "rail-text-muted", "rail-text-faint", "rail-accent", "rail-accent-hover", "rail-online", "rail-offline", "rail-border"];
+export declare const THEME_TOKEN_IDS: readonly ["ink", "ink-soft", "ink-faint", "ink-muted", "line", "line-soft", "line-strong", "surface", "surface-muted", "surface-warm", "surface-subtle", "surface-quiet", "canvas", "accent", "accent-text", "accent-dark", "accent-soft", "accent-bg", "on-accent", "on-bright-accent", "brass-ink", "danger", "danger-bg", "danger-line", "success", "success-bg", "success-line", "warning", "warning-bg", "warning-line", "info", "info-bg", "info-line", "rail-bg", "rail-surface", "rail-surface-strong", "rail-popover", "rail-text", "rail-text-soft", "rail-text-muted", "rail-text-faint", "rail-accent", "rail-accent-hover", "rail-online", "rail-offline", "rail-border"];
 export type ThemeTokenId = typeof THEME_TOKEN_IDS[number];
 export declare const BUILTIN_THEME_TOKENS: {
     readonly light: {
         readonly ink: "#25251f";
-        readonly "ink-soft": "#77766d";
-        readonly "ink-faint": "#aaa79d";
+        readonly "ink-soft": "#6c6b62";
+        readonly "ink-faint": "#8c897f";
         readonly "ink-muted": "#62594e";
         readonly line: "#e4e1d8";
         readonly "line-soft": "#e9e1d4";
@@ -26,6 +26,7 @@ export declare const BUILTIN_THEME_TOKENS: {
         readonly "surface-quiet": "#fffcf7";
         readonly canvas: "#f7f6f2";
         readonly accent: "#b4773f";
+        readonly "accent-text": "#8f5e31";
         readonly "accent-dark": "#365342";
         readonly "accent-soft": "#c99965";
         readonly "accent-bg": "#f2e4d2";
@@ -60,9 +61,9 @@ export declare const BUILTIN_THEME_TOKENS: {
     };
     readonly dark: {
         readonly ink: "#f2eee4";
-        readonly "ink-soft": "#d8d1c3";
+        readonly "ink-soft": "#b8b1a5";
         readonly "ink-faint": "#a49e92";
-        readonly "ink-muted": "#b8b1a5";
+        readonly "ink-muted": "#d8d1c3";
         readonly line: "#31443a";
         readonly "line-soft": "#26372f";
         readonly "line-strong": "#435a4e";
@@ -73,6 +74,7 @@ export declare const BUILTIN_THEME_TOKENS: {
         readonly "surface-quiet": "#101b17";
         readonly canvas: "#0e1714";
         readonly accent: "#c58a4a";
+        readonly "accent-text": "#d7a25c";
         readonly "accent-dark": "#557d63";
         readonly "accent-soft": "#d7a25c";
         readonly "accent-bg": "#3c3525";

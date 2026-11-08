@@ -4,21 +4,44 @@ import { project } from "$lib/project/client";
 
 let {
   pluginId,
+  instanceId,
   viewId,
   title,
   mapEntityId,
   linkId,
   entityId,
   moduleState,
+  holdMount = false,
 }: {
   pluginId: string;
+  instanceId: string;
   viewId?: string;
   title: string;
   mapEntityId?: string;
   linkId?: string;
   entityId?: string;
   moduleState?: Record<string, unknown> | null;
+  /**
+   * While true, the webview is not created yet. The shell sets it during a tab switch: the active tab (and so
+   * `instanceId`) changes before the target location is restored, and a view that is about to be replaced must
+   * not create a webview for the wrong tab.
+   */
+  holdMount?: boolean;
 } = $props();
+
+let releaseWaiters: Array<() => void> = [];
+
+$effect(() => {
+  if (holdMount) return;
+  const waiters = releaseWaiters;
+  releaseWaiters = [];
+  for (const release of waiters) release();
+});
+
+function mountReleased(): Promise<void> {
+  if (!holdMount) return Promise.resolve();
+  return new Promise((resolve) => releaseWaiters.push(resolve));
+}
 
 let container = $state<HTMLElement | null>(null);
 let hostMounted = $state(false);
@@ -55,7 +78,7 @@ function scheduleResize() {
     const key = boundsKey(bounds);
     if (key === lastBoundsKey) return;
     lastBoundsKey = key;
-    void project.resizePluginWebview(pluginId, bounds).catch((cause) => {
+    void project.resizePluginWebview(pluginId, instanceId, bounds).catch((cause) => {
       lastBoundsKey = null;
       error = cause instanceof Error ? cause.message : String(cause);
     });
@@ -75,6 +98,10 @@ function observePositionSources(observer: ResizeObserver) {
 }
 
 onMount(() => {
+  // Captured for teardown. A `{#key}` swap creates the next view before this
+  // cleanup runs. Closing every webview of this plugin would close that newer instance.
+  const mountedPluginId = pluginId;
+  const mountedInstanceId = instanceId;
   let alive = true;
   const observer = new ResizeObserver(scheduleResize);
   observePositionSources(observer);
@@ -90,18 +117,27 @@ onMount(() => {
   const mount = async () => {
     await tick();
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await mountReleased();
     if (!alive) return;
     lastBoundsKey = null;
-    // Close any leftover child before mounting so the mount query params
-    // (mapEntityId, linkId, entityId, state) are applied on a fresh document
-    // load rather than a reused view.
-    await project.unmountPluginWebview(pluginId).catch(() => undefined);
-    await project.closePluginWebview(pluginId).catch(() => undefined);
+    // Drop this instance's previous child so the mount query params
+    // (mapEntityId, linkId, entityId, state) load in a fresh document.
+    // The host mount closes every other embedded plugin webview.
+    await project.unmountPluginWebview(mountedPluginId, mountedInstanceId).catch(() => undefined);
     if (!alive) return;
     const bounds = currentBounds();
     if (!bounds) throw new Error("sandbox view container is unavailable");
     const serialisedState = moduleState ? JSON.stringify(moduleState) : undefined;
-    await project.mountPluginWebview(pluginId, viewId, bounds, mapEntityId, linkId, entityId, serialisedState);
+    await project.mountPluginWebview(
+      mountedPluginId,
+      mountedInstanceId,
+      viewId,
+      bounds,
+      mapEntityId,
+      linkId,
+      entityId,
+      serialisedState,
+    );
     if (alive) {
       hostMounted = true;
       lastBoundsKey = boundsKey(bounds);
@@ -120,8 +156,7 @@ onMount(() => {
     window.visualViewport?.removeEventListener("resize", scheduleResize);
     window.removeEventListener("scroll", scheduleResize, { capture: true });
     if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
-    void project.unmountPluginWebview(pluginId);
-    void project.closePluginWebview(pluginId);
+    void project.unmountPluginWebview(mountedPluginId, mountedInstanceId);
   };
 });
 </script>

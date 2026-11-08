@@ -158,7 +158,32 @@ assert.doesNotMatch(
   "plugin assets must use the shared broker protocol",
 );
 assert.match(tauriSource, /plugin_protocol_response\(/);
-assert.match(tauriSource, /plugin_window_label\(plugin_id\) != webview_label/);
+const transfer = fs.readFileSync("src-tauri/src/transfer.rs", "utf8");
+const protocolStart = transfer.indexOf("fn plugin_protocol_response");
+const protocolEnd = transfer.indexOf("fn shell_event_for_plugin_event");
+assert.ok(protocolStart !== -1 && protocolEnd > protocolStart, "plugin protocol handler is present");
+const protocol = transfer.slice(protocolStart, protocolEnd);
+assert.match(
+  protocol,
+  /!label_belongs_to_plugin\(webview_label,\s*plugin_id\)/,
+  "the plugin protocol must reject a webview whose label is not the URI host's plugin",
+);
+assert.doesNotMatch(
+  protocol,
+  /plugin_window_label\(plugin_id\) != webview_label/,
+  "the protocol gate is the instance-aware predicate, not bare-label equality",
+);
+const hostIdentity = fs.readFileSync("src-tauri/src/host.rs", "utf8");
+assert.match(
+  hostIdentity,
+  /label_belongs_to_plugin\(label, plugin_id\)/,
+  "bootstrap must accept an instance label only for the requested plugin",
+);
+assert.match(
+  hostIdentity,
+  /accepted_plugin_webview_label\(label\)/,
+  "plugin_rpc must reject a plugin: label that is neither bare nor an instance label",
+);
 assert.match(tauri, /connect-src 'self'/);
 assert.match(tauri, /frame-src 'none'/);
 assert.equal(/core:default/.test(capability), false, "plugin webviews must not receive the core API");
@@ -167,7 +192,6 @@ assert.equal(allowedRuntimeImports.size, 0, "the host runtime-import allowlist m
 for (const retired of ["src/lib/modules/projections.ts", "src/lib/ProjectionView.svelte"]) {
   assert.equal(fs.existsSync(retired), false, `${retired} is retired: Lore and Chronology are sandboxed webviews`);
 }
-const transfer = fs.readFileSync("src-tauri/src/transfer.rs", "utf8");
 assert.match(transfer, /\("daena\.lore", "\/dist\/ui\/lore\.js"\)/);
 assert.match(transfer, /\("daena\.lore", "\/dist\/ui\/lore\.css"\)/);
 assert.match(fs.readFileSync("src/routes/+page.svelte", "utf8"), /CalendarEditor\.svelte/);
@@ -230,7 +254,7 @@ assert.match(route, /<WorkspaceTopbar/);
 assert.match(route, /\{:else if projectionSandboxKey\(\)\}/);
 assert.match(
   route,
-  /<SandboxView pluginId=\{projection\.pluginId\} title=\{projection\.title\} \/>/,
+  /<SandboxView\s+pluginId=\{projection\.pluginId\}\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+title=\{projection\.title\}\s*\/>/,
   "the World graph and Chronology mount one SandboxView with their table entry",
 );
 assert.match(
@@ -263,7 +287,7 @@ assert.doesNotMatch(
 // shell no longer carries a Language projection or a window-global leave guard.
 assert.match(
   route,
-  /<SandboxView\s+pluginId="daena\.language"\s+viewId="language-workspace"/,
+  /<SandboxView\s+pluginId="daena\.language"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="language-workspace"/,
   "the Languages content pane must mount the isolated daena.language webview",
 );
 assert.doesNotMatch(route, /<ModuleMount\b/, "the shell must not mount Language through the trusted ModuleMount");
@@ -296,7 +320,7 @@ assert.match(tauriSource, /\("daena\.writing", "\/dist\/ui\/writing\.css"\)/);
 // kept mounted across selections. It is the only editor for them; there is no flag for the old path.
 assert.match(
   route,
-  /<SandboxView pluginId="daena\.writing" viewId="writing-workspace" title="Writing" \/>/,
+  /<SandboxView\s+pluginId="daena\.writing"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="writing-workspace"\s+title="Writing"\s*\/>/,
   "the Writing content pane must mount the isolated daena.writing webview",
 );
 assert.doesNotMatch(
@@ -304,9 +328,14 @@ assert.doesNotMatch(
   /<SandboxView[^>]*pluginId="daena\.writing"[^>]*entityId=/,
   "the Writing webview is told the entity with writing.load, not remounted per entity",
 );
+assert.match(
+  route,
+  /\{#key shownWebviewInstance\}\s*<div class="writing-mount"/,
+  "a Writing tab switch remounts under the other tab's instance",
+);
 assert.doesNotMatch(
   route,
-  /\{#key[^}]*\}\s*<div class="writing-mount"/,
+  /\{#key[^}]*(?:selected|entityId|writingLoad)[^}]*\}\s*<div class="writing-mount"/,
   "the Writing webview must not be keyed on the entity",
 );
 assert.deepEqual(

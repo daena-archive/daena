@@ -1665,6 +1665,20 @@ const anchoredPopoverOpen = $derived(showProjectMenu || statusCenterOpen || tabS
 /** True while an open anchored popover overlaps the placeholder of an embedded plugin webview. */
 let popoverOverlapsWebview = $state(false);
 
+/** Tab id of the webview on screen. Every embedded view is this instance. */
+const shownWebviewInstance = $derived(activeTab(shellTabs).id);
+
+/**
+ * Drops a forwarded event whose `instanceId` names some other tab.
+ * `null` or a missing field is a bare external window and is still handled.
+ * Read this before the state parsers; those parsers ignore the field.
+ */
+function foreignWebviewInstance(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null) return false;
+  const instanceId = (payload as { instanceId?: unknown }).instanceId;
+  return typeof instanceId === "string" && instanceId !== shownWebviewInstance;
+}
+
 /** Embedded plugin webviews the shell is currently drawing (the Language or Writing pane, or a webview sandbox view). */
 const embeddedPluginWebviewIds = $derived.by(() => {
   const ids = new Set<string>();
@@ -1676,8 +1690,9 @@ const embeddedPluginWebviewIds = $derived.by(() => {
 });
 
 async function setPluginWebviewVisibleQuietly(pluginId: string, visible: boolean) {
+  const instanceId = shownWebviewInstance;
   try {
-    await project.setPluginWebviewVisible(pluginId, visible);
+    await project.setPluginWebviewVisible(pluginId, instanceId, visible);
   } catch {
     // Visibility is best effort; a webview that is not mounted yet has nothing to hide.
   }
@@ -1715,17 +1730,31 @@ $effect(() => {
 });
 
 $effect(() => {
-  // Re-applied when an embedded webview reports ready, in case an overlay opened during its mount.
+  // Re-applied when an embedded webview reports ready, in case an overlay opened during its mount,
+  // and when the shown tab changes, so visibility addresses that tab's instance.
   void languageWebview.ready;
   void writingWebview.ready;
+  void shownWebviewInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) void setPluginWebviewVisibleQuietly(pluginId, visible);
 });
 
+/**
+ * `{#key}` creates the next attachment before it destroys the previous one
+ * (`BranchManager.ensure` mounts the new branch, then `#commit` destroys the
+ * old). A stale cleanup must not clear state the new instance just set.
+ */
+let languageMountGeneration = 0;
+
 /** Attachment for the Language content pane: tracks whether the pane element is in the document. */
 function trackLanguageMount() {
+  const generation = ++languageMountGeneration;
   languageWebview.mounted = true;
+  languageWebview.ready = false;
+  languagePaneRequest = null;
+  languageLeave.releaseAll();
   return () => {
+    if (generation !== languageMountGeneration) return;
     languageWebview.mounted = false;
     languageWebview.ready = false;
     languagePaneRequest = null;
@@ -1733,9 +1762,9 @@ function trackLanguageMount() {
   };
 }
 
-async function postLanguageMessage(message: unknown): Promise<boolean> {
+async function postLanguageMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
   try {
-    await project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, message);
+    await project.postPluginWebviewMessage(LANGUAGE_PLUGIN_ID, instanceId, message);
     return true;
   } catch {
     return false;
@@ -1763,9 +1792,12 @@ function requestLanguagePane(next: LanguagePane) {
 /** Asks the Language webview whether it may be torn down. Resolves true when it is not mounted or ready. */
 async function canLeaveLanguageSection(): Promise<boolean> {
   if (section !== "language" || !languageWebview.mounted || !languageWebview.ready) return true;
+  // Captured before the await. `switchToTab` and `applyTabsChange` call this
+  // before they change `shellTabs`, so this is the outgoing tab.
+  const instanceId = shownWebviewInstance;
   const requestId = crypto.randomUUID();
   const decision = languageLeave.begin(requestId);
-  const sent = await postLanguageMessage({ type: "language.can-leave", requestId });
+  const sent = await postLanguageMessage({ type: "language.can-leave", requestId }, instanceId);
   if (!sent) languageLeave.reply(requestId, true);
   return decision;
 }
@@ -1827,10 +1859,21 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
   }
 }
 
+/** See `languageMountGeneration`. Same `{#key}` setup-before-cleanup order. */
+let writingMountGeneration = 0;
+
 /** Attachment for the Writing content pane: tracks whether the pane element is in the document. */
 function trackWritingMount() {
+  const generation = ++writingMountGeneration;
   writingWebview.mounted = true;
+  writingWebview.ready = false;
+  writingLoadKey = null;
+  writingLoad = null;
+  writingEditablePosted = null;
+  writingFullscreen = false;
+  writingFlush.releaseAll();
   return () => {
+    if (generation !== writingMountGeneration) return;
     writingWebview.mounted = false;
     writingWebview.ready = false;
     writingLoadKey = null;
@@ -1841,9 +1884,9 @@ function trackWritingMount() {
   };
 }
 
-async function postWritingMessage(message: unknown): Promise<boolean> {
+async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
   try {
-    await project.postPluginWebviewMessage(WRITING_PLUGIN_ID, message);
+    await project.postPluginWebviewMessage(WRITING_PLUGIN_ID, instanceId, message);
     return true;
   } catch {
     return false;
@@ -1899,6 +1942,9 @@ function enqueueWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
  */
 async function flushWritingWebview(): Promise<boolean> {
   if (!writingWebview.mounted || !writingWebview.ready || writingLoad === null) return false;
+  // The flush post runs before this function awaits. Callers (`flushAutoSave`
+  // via `switchToTab` / `applyTabsChange`) run that before `shellTabs` changes,
+  // so the post addresses the outgoing tab. The default instance is read then.
   const draft = await writingFlush.request();
   const applied = draft ? await enqueueWritingDraft(draft) : false;
   await writingDraftQueue;
@@ -1906,11 +1952,12 @@ async function flushWritingWebview(): Promise<boolean> {
 }
 
 async function postWritingLoad(entityId: string, key: string) {
+  const instanceId = shownWebviewInstance;
   // Reloading the entry the webview already shows: its unsent text reaches the shell before the editor is
   // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
   if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
     // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
-    if (selected?.id === entityId) void postWritingMessage(writingTitleMessage(entityId, selected.name));
+    if (selected?.id === entityId) void postWritingMessage(writingTitleMessage(entityId, selected.name), instanceId);
     return;
   }
   if (writingLoadKey !== key) return;
@@ -1923,6 +1970,7 @@ async function postWritingLoad(entityId: string, key: string) {
       placeholder: writingPlaceholder(),
       mode: documentMode,
     }),
+    instanceId,
   );
   if (sent) return;
   if (writingLoadKey === key) writingLoadKey = null;
@@ -8109,7 +8157,8 @@ onMount(() => {
     })
     .catch(() => {});
   let unlistenMapsState: (() => void) | undefined;
-  void listen<{ mapEntityId: string; status: string; detail: unknown }>("maps-state", (event) => {
+  void listen<{ mapEntityId: string; status: string; detail: unknown; instanceId?: unknown }>("maps-state", (event) => {
+    if (foreignWebviewInstance(event.payload)) return;
     const { mapEntityId, status, detail } = event.payload;
     if (status === "fullscreen") {
       const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
@@ -8174,7 +8223,8 @@ onMount(() => {
     })
     .catch(() => {});
   let unlistenMapsSelection: (() => void) | undefined;
-  void listen<{ mapEntityId: string; anchor: unknown }>("maps-selection", (event) => {
+  void listen<{ mapEntityId: string; anchor: unknown; instanceId?: unknown }>("maps-selection", (event) => {
+    if (foreignWebviewInstance(event.payload)) return;
     if (event.payload.mapEntityId === currentMapId()) mapSelection = event.payload.anchor;
   })
     .then((cleanup) => {
@@ -8183,6 +8233,7 @@ onMount(() => {
     .catch(() => {});
   let unlistenLanguageState: (() => void) | undefined;
   void listen<unknown>("language-state", (event) => {
+    if (foreignWebviewInstance(event.payload)) return;
     const message = parseLanguageStateEvent(event.payload);
     if (message) handleLanguageStateEvent(message);
   })
@@ -8200,6 +8251,7 @@ onMount(() => {
     .catch(() => {});
   let unlistenWritingState: (() => void) | undefined;
   void listen<unknown>("writing-state", (event) => {
+    if (foreignWebviewInstance(event.payload)) return;
     const message = parseWritingStateEvent(event.payload);
     if (message) handleWritingStateEvent(message);
   })
@@ -9308,7 +9360,13 @@ onMount(() => {
             nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
             onBack={() => void closeProjectionView()} />
           {#key `${projection.pluginId}:${projection.viewId}`}
-            <SandboxView pluginId={projection.pluginId} title={projection.title} />
+            {#key shownWebviewInstance}
+              <SandboxView
+                pluginId={projection.pluginId}
+                instanceId={shownWebviewInstance}
+                holdMount={shellNavigationBusy}
+                title={projection.title} />
+            {/key}
           {/key}
         </section>
       </SpecializedSurface>
@@ -9319,7 +9377,14 @@ onMount(() => {
         bind:element={specializedSurfaceElement}
         onScroll={rememberSpecializedSurfaceScroll}>
         {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
-          <SandboxView pluginId={sandboxView.plugin.id} viewId={sandboxView.view?.id} title={sandboxView.plugin.name} />
+          {#key shownWebviewInstance}
+            <SandboxView
+              pluginId={sandboxView.plugin.id}
+              instanceId={shownWebviewInstance}
+              holdMount={shellNavigationBusy}
+              viewId={sandboxView.view?.id}
+              title={sandboxView.plugin.name} />
+          {/key}
         {/key}
       </SpecializedSurface>
     {:else if enabledWorkspaceSections().length === 0}
@@ -9824,14 +9889,18 @@ onMount(() => {
 
         {#if languagePaneShown}
           {#key selected?.id ?? "language"}
-            <div class="language-mount" {@attach trackLanguageMount}>
-              <SandboxView
-                pluginId="daena.language"
-                viewId="language-workspace"
-                title="Language"
-                entityId={selected?.id}
-                moduleState={{ pane: languagePane }} />
-            </div>
+            {#key shownWebviewInstance}
+              <div class="language-mount" {@attach trackLanguageMount}>
+                <SandboxView
+                  pluginId="daena.language"
+                  instanceId={shownWebviewInstance}
+                  holdMount={shellNavigationBusy}
+                  viewId="language-workspace"
+                  title="Language"
+                  entityId={selected?.id}
+                  moduleState={{ pane: languagePane }} />
+              </div>
+            {/key}
           {/key}
         {:else if writingWebviewShown}
           <div class="writing-content">
@@ -9849,9 +9918,16 @@ onMount(() => {
                   </div>{/if}
               </div>
             {/if}
-            <div class="writing-mount" {@attach trackWritingMount}>
-              <SandboxView pluginId="daena.writing" viewId="writing-workspace" title="Writing" />
-            </div>
+            {#key shownWebviewInstance}
+              <div class="writing-mount" {@attach trackWritingMount}>
+                <SandboxView
+                  pluginId="daena.writing"
+                  instanceId={shownWebviewInstance}
+                  holdMount={shellNavigationBusy}
+                  viewId="writing-workspace"
+                  title="Writing" />
+              </div>
+            {/key}
           </div>
         {:else if workbenchPaneVisibility.content && !writingEntrySelected}
           <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->

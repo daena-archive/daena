@@ -1249,7 +1249,7 @@ pub(super) fn plugin_protocol_response(
             400,
         );
     }
-    if plugin_window_label(plugin_id) != webview_label {
+    if !label_belongs_to_plugin(webview_label, plugin_id) {
         return json_response(
             serde_json::json!({"error": "plugin protocol origin mismatch"}),
             403,
@@ -1573,7 +1573,8 @@ pub(super) fn plugin_protocol_response(
                     .map_err(|error| error.to_string())?
                 };
                 if let Some(payload) = publish_payload {
-                    forward_plugin_state_event(&session.plugin_id, &payload);
+                    // `session.origin` is the full webview label stored at bootstrap.
+                    forward_plugin_state_event(&session.plugin_id, &payload, &session.origin);
                 }
                 Ok(
                     serde_json::json!({"rpcVersion": 1, "requestId": request_id, "ok": true, "result": value}),
@@ -1653,46 +1654,83 @@ pub(super) fn shell_shortcut_id(payload: &serde_json::Value) -> Option<&'static 
     TAB_SHORTCUT_IDS.iter().copied().find(|id| *id == shortcut)
 }
 
-/// Forwards plugin-published state events to the shell as Tauri events (see
-/// `shell_event_for_plugin_event`). The shell owns the wrapper chrome around
-/// the child webview (maps save chip, conflict banner, capture tool; language
-/// and writing workspace status), which has no other way to reach it. Forwarding is a
-/// hint only; the shell re-queries canonical records before acting.
-/// `publisher_plugin_id` is the authorized session's plugin, never a value
-/// taken from the event payload.
-pub(super) fn forward_plugin_state_event(publisher_plugin_id: &str, payload: &serde_json::Value) {
-    let Some(event_type) = payload.get("type").and_then(serde_json::Value::as_str) else {
-        return;
-    };
-    let Some(shell_event) = shell_event_for_plugin_event(publisher_plugin_id, event_type) else {
-        return;
-    };
-    let Some(app) = APP_HANDLE.get() else {
-        return;
-    };
+/// `instanceId` stamped on a forwarded shell event. Taken from the session
+/// origin label. A bare external-window label has no instance, so the field
+/// is JSON null. A plugin cannot choose this value.
+fn instance_id_from_origin(origin_label: &str) -> serde_json::Value {
+    parse_plugin_instance_label(origin_label)
+        .map(|(_, instance)| serde_json::Value::String(instance))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn state_with_instance_id(mut state: serde_json::Value, origin_label: &str) -> serde_json::Value {
+    if let Some(object) = state.as_object_mut() {
+        object.insert("instanceId".into(), instance_id_from_origin(origin_label));
+    }
+    state
+}
+
+/// Shell event name and body for one plugin publish. `None` when the event
+/// is not forwarded. `shell-shortcut` stays a string and carries no instance.
+/// Every other forwarded body gets `instanceId` from `origin_label`, replacing
+/// one the plugin put in its payload.
+pub(super) fn forwarded_shell_event(
+    publisher_plugin_id: &str,
+    payload: &serde_json::Value,
+    origin_label: &str,
+) -> Option<(&'static str, serde_json::Value)> {
+    let event_type = payload.get("type").and_then(serde_json::Value::as_str)?;
+    let shell_event = shell_event_for_plugin_event(publisher_plugin_id, event_type)?;
     let state = payload.get("payload").cloned().unwrap_or_default();
     let body = match shell_event {
         "maps-state" => serde_json::json!({
             "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
             "status": state.get("status").and_then(serde_json::Value::as_str).unwrap_or("state"),
             "detail": state.get("detail").cloned().unwrap_or(serde_json::Value::Null),
+            "instanceId": instance_id_from_origin(origin_label),
         }),
         "maps-selection" => serde_json::json!({
             "mapEntityId": state.get("mapEntityId").cloned().unwrap_or_default(),
             "anchor": state.get("anchor").cloned().unwrap_or(serde_json::Value::Null),
+            "instanceId": instance_id_from_origin(origin_label),
         }),
-        // The language and writing payloads are passed through unchanged.
-        "language-state" | "writing-state" => state,
-        // Only a known tab shortcut id, as a string, reaches the main webview.
+        "language-state" | "writing-state" => state_with_instance_id(state, origin_label),
         "shell-shortcut" => {
-            let Some(shortcut) = shell_shortcut_id(&state) else {
-                return;
-            };
-            let _ = app.emit_to("main", shell_event, shortcut);
-            return;
+            let shortcut = shell_shortcut_id(&state)?;
+            return Some((shell_event, serde_json::Value::String(shortcut.to_string())));
         }
-        _ => return,
+        _ => return None,
     };
+    Some((shell_event, body))
+}
+
+/// Forwards plugin-published state events to the shell as Tauri events (see
+/// `shell_event_for_plugin_event`). The shell owns the wrapper chrome around
+/// the child webview (maps save chip, conflict banner, capture tool; language
+/// and writing workspace status), which has no other way to reach it. Forwarding is a
+/// hint only; the shell re-queries canonical records before acting.
+/// `publisher_plugin_id` is the authorized session's plugin, never a value
+/// taken from the event payload. `origin_label` is that session's origin, the
+/// full webview label.
+pub(super) fn forward_plugin_state_event(
+    publisher_plugin_id: &str,
+    payload: &serde_json::Value,
+    origin_label: &str,
+) {
+    let Some((shell_event, body)) =
+        forwarded_shell_event(publisher_plugin_id, payload, origin_label)
+    else {
+        return;
+    };
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    if shell_event == "shell-shortcut" {
+        if let Some(shortcut) = body.as_str() {
+            let _ = app.emit_to("main", shell_event, shortcut);
+        }
+        return;
+    }
     let _ = app.emit(shell_event, body);
 }
 

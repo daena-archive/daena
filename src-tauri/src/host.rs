@@ -17,9 +17,11 @@ pub(super) struct PluginBootstrap {
     pub(super) manifest: PluginManifest,
 }
 
-/// Bootstrap and RPC use a host-created `plugin:<id>` webview label as the
-/// origin binding. The trusted main window cannot call this surface, and the
-/// plugin cannot submit an arbitrary origin in its request payload.
+/// Bootstrap and RPC use a host-created webview label as the origin binding:
+/// the bare `plugin:<sanitized id>` of an external window, or
+/// `plugin:<id with '.' as '/'>:<instance>` for an embedded instance. The
+/// trusted main window cannot call this surface, and the plugin cannot submit
+/// an arbitrary origin in its request payload.
 #[tauri::command]
 pub(super) fn plugin_bootstrap(
     window: tauri::WebviewWindow,
@@ -560,11 +562,17 @@ pub(super) fn plugin_webview_identity(
     expected: Option<&str>,
 ) -> Result<String, String> {
     let label = window.label();
-    let _plugin_id = label
-        .strip_prefix("plugin:")
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "plugin RPC requires a plugin webview".to_string())?;
-    if expected.is_some_and(|expected| plugin_window_label(expected) != label) {
+    match label.strip_prefix("plugin:") {
+        Some(rest) if !rest.is_empty() => {}
+        _ => return Err("plugin RPC requires a plugin webview".into()),
+    }
+    if let Some(plugin_id) = expected {
+        if !label_belongs_to_plugin(label, plugin_id) {
+            return Err("plugin webview identity mismatch".into());
+        }
+    } else if !accepted_plugin_webview_label(label) {
+        // `plugin_rpc` has no plugin id yet. A `plugin:` label that is neither
+        // a bare window label nor a valid instance label is not a session origin.
         return Err("plugin webview identity mismatch".into());
     }
     Ok(label.to_string())

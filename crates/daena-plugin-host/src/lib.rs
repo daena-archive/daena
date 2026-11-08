@@ -35,8 +35,10 @@ pub use package::{
     MAX_CATALOG_BYTES, MAX_TRUST_SNAPSHOT_BYTES, TRUST_SNAPSHOT_FILE,
 };
 pub use runtime::{
-    plugin_window_label, validate_bridge_request, webview_policy, PluginWebviewPolicy, WasmLimits,
-    WasmRuntimeRegistry, BUNDLED_TIMELINE_SERVICE_WASM, WASM_SERVICE_ABI, WASM_SERVICE_MAX_BYTES,
+    accepted_plugin_webview_label, label_belongs_to_plugin, parse_plugin_instance_label,
+    plugin_instance_label, plugin_window_label, validate_bridge_request, webview_policy,
+    PluginWebviewPolicy, WasmLimits, WasmRuntimeRegistry, BUNDLED_TIMELINE_SERVICE_WASM,
+    WASM_SERVICE_ABI, WASM_SERVICE_MAX_BYTES,
 };
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);

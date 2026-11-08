@@ -27,8 +27,9 @@ use daena_plugin_api::{
     SCHEMA_OVERLAY_VERSION,
 };
 use daena_plugin_host::{
-    plugin_window_label, review_manifest, webview_policy, ArchiveLimits, DependencyResolver,
-    PluginHost, Session, VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
+    accepted_plugin_webview_label, label_belongs_to_plugin, parse_plugin_instance_label,
+    plugin_instance_label, plugin_window_label, review_manifest, webview_policy, ArchiveLimits,
+    DependencyResolver, PluginHost, Session, VerificationPolicy, BUNDLED_TIMELINE_SERVICE_WASM,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};

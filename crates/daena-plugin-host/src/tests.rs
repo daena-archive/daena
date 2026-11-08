@@ -3136,6 +3136,175 @@ fn revoked_webview_sessions_stay_addressable_by_origin() {
     );
 }
 
+const WRITING_INSTANCE_A: &str = "4f2a9c1b-1111-4222-8333-444444444444";
+const WRITING_INSTANCE_B: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+#[test]
+fn plugin_instance_labels_encode_the_plugin_id_and_reject_bad_instances() {
+    let writing = plugin_instance_label("daena.writing", WRITING_INSTANCE_A).unwrap();
+    let dashed = plugin_instance_label("daena-writing", WRITING_INSTANCE_A).unwrap();
+    assert_eq!(
+        writing,
+        format!("plugin:daena/writing:{WRITING_INSTANCE_A}")
+    );
+    assert_eq!(dashed, format!("plugin:daena-writing:{WRITING_INSTANCE_A}"));
+    assert_ne!(writing, dashed);
+    assert_eq!(
+        parse_plugin_instance_label(&writing),
+        Some(("daena.writing".into(), WRITING_INSTANCE_A.into()))
+    );
+    assert!(label_belongs_to_plugin(&writing, "daena.writing"));
+    assert!(!label_belongs_to_plugin(&writing, "daena-writing"));
+    assert!(label_belongs_to_plugin(&dashed, "daena-writing"));
+    assert!(!label_belongs_to_plugin(&dashed, "daena.writing"));
+    // Bare labels still collide. Instance labels do not.
+    assert_eq!(
+        plugin_window_label("daena.writing"),
+        plugin_window_label("daena-writing")
+    );
+    assert!(label_belongs_to_plugin(
+        &plugin_window_label("daena.writing"),
+        "daena.writing"
+    ));
+    assert!(label_belongs_to_plugin(
+        &plugin_window_label("daena-writing"),
+        "daena-writing"
+    ));
+    assert!(!label_belongs_to_plugin(&writing, "daena.lore"));
+
+    assert!(plugin_instance_label("daena.writing", "").is_err());
+    assert!(plugin_instance_label("daena.writing", &"a".repeat(65)).is_err());
+    assert!(plugin_instance_label("daena.writing", "AAAA").is_err());
+    assert!(plugin_instance_label("daena.writing", "ab:cd").is_err());
+    assert!(plugin_instance_label("daena.writing", "ab/cd").is_err());
+    assert!(plugin_instance_label("daena.writing", "not-hex-gg").is_err());
+    assert!(plugin_instance_label("Daena.writing", WRITING_INSTANCE_A).is_err());
+    assert!(plugin_instance_label("", WRITING_INSTANCE_A).is_err());
+    assert!(plugin_instance_label("daena.writing", &"a".repeat(64)).is_ok());
+
+    assert_eq!(parse_plugin_instance_label("plugin:daena-writing"), None);
+    assert_eq!(
+        parse_plugin_instance_label(&format!("plugin:daena.writing:{WRITING_INSTANCE_A}")),
+        None,
+        "a dot in the encoded id is not the canonical label"
+    );
+    assert_eq!(
+        parse_plugin_instance_label(&format!("plugin:daena/writing:{WRITING_INSTANCE_A}:extra")),
+        None
+    );
+    assert_eq!(parse_plugin_instance_label("plugin:daena/writing:"), None);
+    assert_eq!(
+        parse_plugin_instance_label(&format!("plugin:daena/writing:{}", "A".repeat(8))),
+        None
+    );
+    assert!(!accepted_plugin_webview_label("plugin:"));
+    assert!(!accepted_plugin_webview_label("main"));
+    assert!(!accepted_plugin_webview_label(&format!(
+        "plugin:daena/writing:{}",
+        "A".repeat(8)
+    )));
+    assert!(!accepted_plugin_webview_label(
+        "plugin:daena/writing:abcd:extra"
+    ));
+    assert!(accepted_plugin_webview_label(&writing));
+    assert!(accepted_plugin_webview_label(&plugin_window_label(
+        "daena.writing"
+    )));
+    assert!(accepted_plugin_webview_label("plugin:daena-writing"));
+}
+
+#[test]
+fn two_instance_origins_keep_separate_sessions_and_ai_requests() {
+    let mut host = PluginHost::new();
+    host.register_bundled_json(include_str!(
+        "../../../packages/modules/writing/manifest.json"
+    ))
+    .unwrap();
+    let origin_a = plugin_instance_label("daena.writing", WRITING_INSTANCE_A).unwrap();
+    let origin_b = plugin_instance_label("daena.writing", WRITING_INSTANCE_B).unwrap();
+    let first_a = host
+        .bootstrap("daena.writing", "project", &origin_a)
+        .unwrap();
+    let first_b = host
+        .bootstrap("daena.writing", "project", &origin_b)
+        .unwrap();
+    assert_eq!(first_a.origin, origin_a);
+    assert_eq!(first_b.origin, origin_b);
+    assert!(!host.sessions.get(&first_a.id).unwrap().revoked);
+    assert!(!host.sessions.get(&first_b.id).unwrap().revoked);
+
+    let second_a = host
+        .bootstrap("daena.writing", "project", &origin_a)
+        .unwrap();
+    assert!(host.sessions.get(&first_a.id).unwrap().revoked);
+    assert!(!host.sessions.get(&first_b.id).unwrap().revoked);
+    assert!(!host.sessions.get(&second_a.id).unwrap().revoked);
+    assert_eq!(second_a.origin, origin_a);
+
+    let request = RpcRequest {
+        rpc_version: 1,
+        session_id: second_a.id.clone(),
+        request_id: "across".into(),
+        method: "entity.get".into(),
+        payload: serde_json::json!({"id": "missing"}),
+    };
+    let crossed = host.authorize_rpc(&origin_b, &request).unwrap_err();
+    assert_eq!(crossed.code, "session.origin");
+    if let Err(error) = host.authorize_rpc(&origin_a, &request) {
+        assert!(
+            !error.code.starts_with("session."),
+            "instance A still authorizes on its own origin: {error:?}"
+        );
+    }
+
+    host.register_ai_request(
+        "req-a",
+        "project",
+        "daena.writing",
+        &second_a.id,
+        "generate_text",
+        None,
+    );
+    host.register_ai_request(
+        "req-a-old",
+        "project",
+        "daena.writing",
+        &first_a.id,
+        "generate_text",
+        None,
+    );
+    host.register_ai_request(
+        "req-b",
+        "project",
+        "daena.writing",
+        &first_b.id,
+        "generate_text",
+        None,
+    );
+    let mut origins_a = host.session_ids_for_origin(&origin_a);
+    origins_a.sort();
+    let mut expected_a = vec![first_a.id.clone(), second_a.id.clone()];
+    expected_a.sort();
+    assert_eq!(origins_a, expected_a);
+    assert_eq!(
+        host.session_ids_for_origin(&origin_b),
+        vec![first_b.id.clone()]
+    );
+    let mut cancelled = Vec::new();
+    for session_id in host.session_ids_for_origin(&origin_a) {
+        cancelled.extend(host.ai_request_ids_for_session(&session_id));
+    }
+    cancelled.sort();
+    assert_eq!(
+        cancelled,
+        vec!["req-a".to_string(), "req-a-old".to_string()]
+    );
+    assert_eq!(
+        host.ai_request_ids_for_session(&first_b.id),
+        vec!["req-b".to_string()]
+    );
+}
+
 #[test]
 fn ai_request_eviction_drops_oldest_by_insertion_order() {
     let mut host = PluginHost::new();

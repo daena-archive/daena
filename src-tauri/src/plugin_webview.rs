@@ -77,18 +77,32 @@ pub(super) fn append_host_surface_query(url: &mut String, host_surface: Option<(
 }
 
 pub(super) fn close_plugin_webview(app: &tauri::AppHandle, plugin_id: &str) {
-    let label = plugin_window_label(plugin_id);
-    // The broker session's origin is this label. Cancel before the webview
-    // goes away. Sessions are not revoked here; lookup includes revoked ids.
-    cancel_plugin_webview_ai(app, &label);
-    if let Ok(mut states) = embedded_webview_states().lock() {
-        states.remove(&label);
+    // Bare external window, plus every embedded instance label of this plugin.
+    // Cancel each origin before its webview goes away. Sessions are not
+    // revoked here; lookup includes revoked ids. Another instance's origin
+    // is a different label, so its requests stay.
+    let mut labels = app
+        .webviews()
+        .into_keys()
+        .filter(|label| label_belongs_to_plugin(label, plugin_id))
+        .collect::<Vec<_>>();
+    let bare = plugin_window_label(plugin_id);
+    if !labels.iter().any(|label| label == &bare) {
+        labels.push(bare);
     }
-    if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.close();
+    for label in &labels {
+        cancel_plugin_webview_ai(app, label);
     }
-    if let Some(window) = app.get_webview_window(&label) {
-        let _ = window.close();
+    for label in &labels {
+        if let Ok(mut states) = embedded_webview_states().lock() {
+            states.remove(label);
+        }
+        if let Some(webview) = app.get_webview(label) {
+            let _ = webview.close();
+        }
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
     }
 }
 
@@ -252,6 +266,7 @@ pub(super) async fn plugin_mount_webview(
     state: tauri::State<'_, SharedCore>,
     plugins: tauri::State<'_, SharedPluginHost>,
     plugin_id: String,
+    instance_id: String,
     view_id: Option<String>,
     map_entity_id: Option<String>,
     link_id: Option<String>,
@@ -295,7 +310,7 @@ pub(super) async fn plugin_mount_webview(
         )?;
         (policy, url)
     };
-    let label = policy.label.clone();
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
 
     // Only one embedded plugin view occupies the workspace. Do not close a
     // legacy external plugin window with the same identity.
@@ -304,6 +319,8 @@ pub(super) async fn plugin_mount_webview(
             && other_label != label
             && app.get_webview_window(&other_label).is_none()
         {
+            // Its session origin is that label; cancel before it goes away.
+            cancel_plugin_webview_ai(&app, &other_label);
             if let Ok(mut states) = embedded_webview_states().lock() {
                 states.remove(&other_label);
             }
@@ -319,6 +336,7 @@ pub(super) async fn plugin_mount_webview(
         window.close().map_err(|error| error.to_string())?;
     }
     if let Some(webview) = app.get_webview(&label) {
+        cancel_plugin_webview_ai(&app, &label);
         if let Ok(mut states) = embedded_webview_states().lock() {
             states.remove(&label);
         }
@@ -383,9 +401,10 @@ pub(super) async fn plugin_resize_webview(
     app: tauri::AppHandle,
     bounds: PluginWebviewBounds,
     plugin_id: String,
+    instance_id: String,
 ) -> Result<(), String> {
     let bounds = native_plugin_bounds(&app, bounds)?;
-    let label = plugin_window_label(&plugin_id);
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "embedded plugin webview is not mounted".to_string())?;
@@ -416,12 +435,19 @@ pub(super) async fn plugin_resize_webview(
 pub(super) fn plugin_unmount_webview(
     app: tauri::AppHandle,
     plugin_id: String,
+    instance_id: String,
 ) -> Result<(), String> {
-    let label = plugin_window_label(&plugin_id);
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
+    // Teardown used to call `close_plugin_webview`, which cancelled this
+    // origin. Cancel only this instance so a newer instance of the same
+    // plugin, mounted in the meantime, keeps its requests.
+    cancel_plugin_webview_ai(&app, &label);
     if let Ok(mut states) = embedded_webview_states().lock() {
         states.remove(&label);
     }
     if let Some(webview) = app.get_webview(&label) {
+        // Embedded children are not windows. A bare external window shares
+        // no instance label, so this close cannot reach it.
         if app.get_webview_window(&label).is_none() {
             webview.close().map_err(|error| error.to_string())?;
         }
@@ -446,10 +472,11 @@ pub(super) fn host_message_script(message: &serde_json::Value) -> Result<String,
 pub(super) fn plugin_webview_post(
     app: tauri::AppHandle,
     plugin_id: String,
+    instance_id: String,
     message: serde_json::Value,
 ) -> Result<(), String> {
     let script = host_message_script(&message)?;
-    let label = plugin_window_label(&plugin_id);
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| "embedded plugin webview is not mounted".to_string())?;
@@ -462,9 +489,10 @@ pub(super) fn plugin_webview_post(
 pub(super) fn plugin_set_webview_visible(
     app: tauri::AppHandle,
     plugin_id: String,
+    instance_id: String,
     visible: bool,
 ) -> Result<(), String> {
-    let label = plugin_window_label(&plugin_id);
+    let label = plugin_instance_label(&plugin_id, &instance_id)?;
     let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };

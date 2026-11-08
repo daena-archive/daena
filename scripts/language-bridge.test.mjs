@@ -96,6 +96,11 @@ assert.equal(parseLanguageStateEvent({ kind: "entity-changed", entityId: "", del
 assert.equal(parseLanguageStateEvent({ kind: "open-link" }), null);
 assert.equal(parseLanguageStateEvent({ kind: "ready", pane: "overview", entityId: 7 }), null);
 
+assert.deepEqual(
+  parseLanguageStateEvent({ kind: "ready", pane: "lexicon", entityId: null, instanceId: "not-this-tab" }),
+  { kind: "ready", pane: "lexicon", entityId: null },
+  "a payload instanceId does not choose the instance; the shell reads the host's copy first",
+);
 assert.deepEqual(parseLanguageStateEvent({ kind: "ready", pane: "lexicon", entityId: null }), {
   kind: "ready",
   pane: "lexicon",

@@ -51,6 +51,11 @@ assert.equal(parseWritingStateEvent({ kind: "ready", entityId: 7 }), null);
 assert.equal(parseWritingStateEvent({ kind: "ready", entityId: "x".repeat(129) }), null);
 assert.deepEqual(parseWritingStateEvent({ kind: "ready" }), { kind: "ready", entityId: null });
 assert.deepEqual(parseWritingStateEvent({ kind: "ready", entityId: "e1" }), { kind: "ready", entityId: "e1" });
+assert.deepEqual(
+  parseWritingStateEvent({ kind: "ready", entityId: "e1", instanceId: "not-this-tab" }),
+  { kind: "ready", entityId: "e1" },
+  "a payload instanceId does not choose the instance; the shell reads the host's copy first",
+);
 
 // Links and entity ids.
 assert.equal(parseWritingStateEvent({ kind: "open-link" }), null);

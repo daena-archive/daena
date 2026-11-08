@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use daena_plugin_api::{PluginKind, PluginManifest, RpcRequest};
+use daena_plugin_api::{is_identifier, PluginKind, PluginManifest, RpcRequest};
 use wasmtime::{
     Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
@@ -73,6 +73,84 @@ pub fn plugin_window_label(plugin_id: &str) -> String {
         })
         .collect::<String>();
     format!("plugin:{sanitized}")
+}
+
+/// Instance ids are tab ids. Tabs are restored from storage, so the host
+/// checks the shape itself and does not rewrite a bad value into a safe one.
+fn valid_instance_id(instance: &str) -> bool {
+    (1..=64).contains(&instance.len())
+        && instance
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f' | b'-'))
+}
+
+/// Embedded webview label. Plugin ids are `is_identifier` and never contain
+/// `:` or `/`, so replacing `.` with `/` is injective and the label still
+/// has exactly one `:` after the `plugin:` prefix.
+///
+/// `daena.writing` and instance `4f2a…` become `plugin:daena/writing:4f2a…`.
+pub fn plugin_instance_label(plugin_id: &str, instance: &str) -> Result<String, String> {
+    if !is_identifier(plugin_id) {
+        return Err("plugin id is invalid".into());
+    }
+    if !valid_instance_id(instance) {
+        return Err("plugin instance id is invalid".into());
+    }
+    let encoded = plugin_id.replace('.', "/");
+    Ok(format!("plugin:{encoded}:{instance}"))
+}
+
+/// `Some((plugin id, instance))` when `label` is the canonical form of
+/// `plugin_instance_label`. Anything else, including a bare window label, is
+/// not an instance label.
+pub fn parse_plugin_instance_label(label: &str) -> Option<(String, String)> {
+    let rest = label.strip_prefix("plugin:")?;
+    let (encoded, instance) = rest.split_once(':')?;
+    if encoded.is_empty() || encoded.contains('.') || instance.contains(':') {
+        return None;
+    }
+    if !valid_instance_id(instance) {
+        return None;
+    }
+    let plugin_id = encoded.replace('/', ".");
+    if !is_identifier(&plugin_id) {
+        return None;
+    }
+    let canonical = plugin_instance_label(&plugin_id, instance).ok()?;
+    if canonical != label {
+        return None;
+    }
+    Some((plugin_id, instance.to_string()))
+}
+
+/// Bare external window or embedded instance of this plugin.
+///
+/// A label that parses as an instance belongs only when the decoded id is
+/// `plugin_id`. Anything else keeps today's bare check: equality with
+/// `plugin_window_label`. That check still collides for ids that sanitize to
+/// the same string (`daena.writing` and `daena-writing`).
+pub fn label_belongs_to_plugin(label: &str, plugin_id: &str) -> bool {
+    match parse_plugin_instance_label(label) {
+        Some((parsed, _)) => parsed == plugin_id,
+        None => plugin_window_label(plugin_id) == label,
+    }
+}
+
+/// Label `plugin_rpc` may bind a session to. A valid instance label, or a
+/// bare `plugin:` label with no second `:` whose body is only the characters
+/// `plugin_window_label` emits. A `plugin:` label that is neither is rejected.
+pub fn accepted_plugin_webview_label(label: &str) -> bool {
+    if parse_plugin_instance_label(label).is_some() {
+        return true;
+    }
+    let Some(body) = label.strip_prefix("plugin:") else {
+        return false;
+    };
+    !body.is_empty()
+        && !body.contains(':')
+        && body
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'/' | b'_'))
 }
 
 pub fn webview_policy(manifest: &PluginManifest) -> Option<PluginWebviewPolicy> {

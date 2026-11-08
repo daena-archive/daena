@@ -2066,6 +2066,220 @@ fn shell_shortcut_payload_keeps_only_known_tab_ids() {
 }
 
 #[test]
+fn forwarded_instance_id_comes_from_the_label_not_the_payload() {
+    let instance = "4f2a9c1b-1111-4222-8333-444444444444";
+    let origin = plugin_instance_label("daena.writing", instance).unwrap();
+    let (event, body) = forwarded_shell_event(
+        "daena.writing",
+        &serde_json::json!({
+            "type": "daena.writing/state@1",
+            "payload": { "kind": "ready", "instanceId": "from-the-plugin" }
+        }),
+        &origin,
+    )
+    .unwrap();
+    assert_eq!(event, "writing-state");
+    assert_eq!(body["kind"], "ready");
+    assert_eq!(body["instanceId"], instance);
+
+    let (_, bare_body) = forwarded_shell_event(
+        "daena.writing",
+        &serde_json::json!({
+            "type": "daena.writing/state@1",
+            "payload": { "kind": "ready", "instanceId": "from-the-plugin" }
+        }),
+        &plugin_window_label("daena.writing"),
+    )
+    .unwrap();
+    assert!(bare_body["instanceId"].is_null());
+
+    let lore_instance = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let (shortcut_event, shortcut_body) = forwarded_shell_event(
+        "daena.lore",
+        &serde_json::json!({
+            "type": "daena.lore/shortcut@1",
+            "payload": { "shortcut": "tab-next", "instanceId": "from-the-plugin" }
+        }),
+        &plugin_instance_label("daena.lore", lore_instance).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(shortcut_event, "shell-shortcut");
+    assert_eq!(shortcut_body, "tab-next");
+
+    let (language_event, language_body) = forwarded_shell_event(
+        "daena.language",
+        &serde_json::json!({
+            "type": "daena.language/state@1",
+            "payload": { "kind": "ready", "instanceId": "from-the-plugin" }
+        }),
+        &plugin_instance_label("daena.language", instance).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(language_event, "language-state");
+    assert_eq!(language_body["instanceId"], instance);
+
+    let maps_instance = "abc123";
+    let (_, maps_body) = forwarded_shell_event(
+        "daena.maps",
+        &serde_json::json!({
+            "type": "daena.maps/state@1",
+            "payload": {
+                "mapEntityId": "map-1",
+                "status": "saved",
+                "detail": null,
+                "instanceId": "from-the-plugin"
+            }
+        }),
+        &plugin_instance_label("daena.maps", maps_instance).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(maps_body["instanceId"], maps_instance);
+    assert_eq!(maps_body["mapEntityId"], "map-1");
+    assert!(maps_body.get("from-the-plugin").is_none());
+
+    let (_, selection) = forwarded_shell_event(
+        "daena.maps",
+        &serde_json::json!({
+            "type": "daena.maps/selection@1",
+            "payload": { "mapEntityId": "map-1", "anchor": {"id": "pin"}, "instanceId": "from-the-plugin" }
+        }),
+        &plugin_instance_label("daena.maps", maps_instance).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(selection["instanceId"], maps_instance);
+    assert_eq!(selection["anchor"]["id"], "pin");
+}
+
+#[test]
+fn foreign_instance_label_cannot_read_another_plugins_protocol() {
+    let core: SharedCore = new_shared_core();
+    let plugins: SharedPluginHost = Arc::new(Mutex::new(PluginHost::new()));
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let ai_runtime: ai::SharedAiRuntime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let request = tauri::http::Request::builder()
+        .method("GET")
+        .uri("plugin://daena.writing/dist/ui/writing.js")
+        .body(Vec::new())
+        .unwrap();
+    let respond = |label: &str| {
+        plugin_protocol_response(&label, &request, &core, &plugins, &transfers, &ai_runtime)
+    };
+    let lore = plugin_instance_label("daena.lore", "4f2a9c1b-1111-4222-8333-444444444444").unwrap();
+    assert_eq!(respond(&lore).status(), 403);
+    assert_eq!(respond("plugin:daena/writing:GGGG").status(), 403);
+    assert_eq!(respond("plugin:daena.writing:abcd").status(), 403);
+    let writing =
+        plugin_instance_label("daena.writing", "4f2a9c1b-1111-4222-8333-444444444444").unwrap();
+    assert_ne!(
+        respond(&writing).status(),
+        403,
+        "a writing instance passes the label gate for plugin://daena.writing"
+    );
+    assert_ne!(
+        respond(&plugin_window_label("daena.writing")).status(),
+        403,
+        "the bare external-window label still passes the label gate"
+    );
+}
+
+#[test]
+fn two_instance_labels_bootstrap_as_separate_protocol_sessions() {
+    let root = std::env::temp_dir().join(format!("daena-instance-label-{}", uuid::Uuid::new_v4()));
+    let core: SharedCore = new_shared_core();
+    current_session(&core)
+        .unwrap()
+        .core
+        .lock()
+        .unwrap()
+        .open_directory(trusted_shell(), &root)
+        .unwrap();
+    let project_id = current_info(&core).unwrap().unwrap().root;
+    let mut host = bundled_plugin_host(core.clone()).unwrap();
+    {
+        let session = current_session(&core).unwrap();
+        let guard = session.core.lock().unwrap();
+        sync_project_usage(guard.project(trusted_shell()).unwrap(), &mut host).unwrap();
+    }
+    let plugins: SharedPluginHost = Arc::new(Mutex::new(host));
+    let transfers: SharedBinaryTransfers = Arc::new(Mutex::new(BinaryTransferManager::default()));
+    let ai_runtime: ai::SharedAiRuntime = Arc::new(Mutex::new(ai::AiRuntime::default()));
+    let instance_a = "4f2a9c1b-1111-4222-8333-444444444444";
+    let instance_b = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    let label_a = plugin_instance_label("daena.writing", instance_a).unwrap();
+    let label_b = plugin_instance_label("daena.writing", instance_b).unwrap();
+    let post = |label: &str, body: serde_json::Value| {
+        let request = tauri::http::Request::builder()
+            .method("POST")
+            .uri("plugin://daena.writing/__rpc")
+            .body(serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        let response =
+            plugin_protocol_response(label, &request, &core, &plugins, &transfers, &ai_runtime);
+        assert_eq!(response.status(), 200, "{response:?}");
+        serde_json::from_slice::<serde_json::Value>(response.body()).unwrap()
+    };
+    let bootstrap = |label: &str| {
+        let reply = post(
+            label,
+            serde_json::json!({
+                "op": "bootstrap",
+                "pluginId": "daena.writing",
+                "projectId": project_id,
+            }),
+        );
+        reply["sessionId"].as_str().expect("session id").to_string()
+    };
+    let version = |label: &str, session_id: &str, request_id: &str| {
+        post(
+            label,
+            serde_json::json!({
+                "op": "rpc",
+                "request": {
+                    "rpcVersion": 1,
+                    "sessionId": session_id,
+                    "requestId": request_id,
+                    "method": "app.version",
+                    "payload": {},
+                },
+            }),
+        )
+    };
+    let session_a = bootstrap(&label_a);
+    let session_b = bootstrap(&label_b);
+    assert_ne!(session_a, session_b);
+    assert_eq!(version(&label_a, &session_a, "a-live")["ok"], true);
+    assert_eq!(version(&label_b, &session_b, "b-live")["ok"], true);
+    let crossed = version(&label_b, &session_a, "crossed");
+    assert_eq!(crossed["ok"], false, "{crossed}");
+    assert_eq!(crossed["error"]["code"], "session.origin");
+    // Re-bootstrapping A revokes only A's previous session.
+    let session_a2 = bootstrap(&label_a);
+    assert_ne!(session_a2, session_a);
+    let revoked = version(&label_a, &session_a, "a-revoked");
+    assert_eq!(revoked["error"]["code"], "session.revoked");
+    assert_eq!(version(&label_b, &session_b, "b-still")["ok"], true);
+    assert_eq!(version(&label_a, &session_a2, "a2")["ok"], true);
+    // A lore instance still cannot bootstrap as writing.
+    let lore = plugin_instance_label("daena.lore", instance_a).unwrap();
+    let request = tauri::http::Request::builder()
+        .method("POST")
+        .uri("plugin://daena.writing/__rpc")
+        .body(
+            serde_json::to_vec(&serde_json::json!({
+                "op": "bootstrap",
+                "pluginId": "daena.writing",
+                "projectId": project_id,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let forbidden =
+        plugin_protocol_response(&lore, &request, &core, &plugins, &transfers, &ai_runtime);
+    assert_eq!(forbidden.status(), 403);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn broker_dispatch_uses_plugin_project_authority() {
     let mut core = CoreService::new();
     core.open_memory(AuthorityContext::trusted_shell()).unwrap();

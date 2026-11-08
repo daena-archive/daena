@@ -5,10 +5,11 @@ one is instant and keeps its in-editor state. Side-by-side tabs come later.
 This plan gives each webview its own label and session so two of the same
 plugin can exist, and it does not build side-by-side.
 
-Status: slice 1 done (SDK renews an expired, revoked, or stale session once). Slices 2–4 not started. Workspace tabs are in place
+Status: slice 1 done (SDK renews an expired, revoked, or stale session once). Slice 2 done (instance labels and routing; pool size stays 1, so leaving a tab still destroys the webview). Slices 3–4 not started. Workspace tabs are in place
 (`docs/plans/tabs.md`). An inactive tab is a saved `ShellLocation`. One
-embedded webview exists at a time, label `plugin:<sanitized id>`, and
-leaving a tab destroys it.
+embedded webview exists at a time. Its label names the plugin and the tab
+(`plugin:daena/writing:<tab id>`). Leaving a tab destroys it. An external
+plugin window still uses the bare label from `plugin_window_label`.
 
 Found while planning: a plugin session expires after 15 minutes. Slice 1
 renews an expired, revoked, or stale session once and retries the call.
@@ -61,41 +62,39 @@ closing or switching the project destroys that tab's webview.
 
 ### Label
 
-`plugin_window_label` (`crates/daena-plugin-host/src/runtime.rs:64`) keeps
-ASCII letters, digits, `-`, `/`, `_`, and `:`, and turns every other
-character into `-`. `daena.writing` becomes `plugin:daena-writing`. A plugin
-id may already contain `:`, so `plugin:<sanitized id>:<instance>` cannot be
-split. `plugin:foo:bar:inst` is plugin `foo:bar` or plugin `foo` with
-instance `bar:inst`.
-
-Tauri labels allow the same set (`[A-Za-z0-9\-/:_]`). No separator character
-is reserved.
-
-Use a length prefix. The length is the length of the sanitized id, in
-decimal, with no extra characters:
+Plugin ids are `is_identifier` (`crates/daena-plugin-api/src/lib.rs`):
+lowercase ASCII letters, digits, `-`, and `_`, separated by `.`. They never
+contain `:` or `/`. The length-prefix encoding is not used. Replacing each
+`.` with `/` is injective, and the label still has exactly one `:` after
+the `plugin:` prefix. Tauri labels allow `[A-Za-z0-9\-/:_]`.
 
 ```text
-plugin:<length>:<sanitized id>:<instance>
+plugin:<plugin id with every "." replaced by "/">:<instance>
 ```
 
-`daena.writing` with instance `4f2a9c1b-…` (the tab id) is
-`plugin:13:daena-writing:4f2a9c1b-…`. Parse by reading the length, taking
-that many characters, and requiring a `:` and a non-empty instance after
-them. The instance is a tab id: hex, hyphens, and nothing else. Tab ids come
-from `crypto.randomUUID()`, but tabs are also restored from `localStorage`,
-so the host validates the instance itself (`[0-9a-f-]`, 1 to 64 characters)
-and rejects anything else; the shell never builds a label. The sanitized id
-must equal the body of `plugin_window_label(plugin_id)`.
+`daena.writing` with instance `4f2a…` (the tab id) is
+`plugin:daena/writing:4f2a…`. `plugin_instance_label` builds that.
+`parse_plugin_instance_label` strips `plugin:`, splits on the single
+remaining `:`, decodes `/` to `.`, and requires `is_identifier` plus the
+instance rule. Anything else is not an instance label. The instance is 1–64
+characters of `[0-9a-f-]`. Tab ids come from `crypto.randomUUID()`, but tabs
+are also restored from `localStorage`, so the host validates the instance
+and rejects anything else. It does not sanitize a bad id. The shell never
+builds a label.
 
-External plugin windows keep the bare label from `plugin_window_label`
-(`open_plugin_webview` in `plugin_webview.rs`). The matcher accepts either
-form, and only for that plugin. A Writing instance does not match
-`daena.maps`. A bare `plugin:` prefix is not enough.
+`daena.writing` and a hypothetical `daena-writing` do not collide:
+`plugin:daena/writing:…` and `plugin:daena-writing:…`. Each belongs only to
+its own plugin. `label_belongs_to_plugin` is the check every identity site
+uses. A label belongs to plugin P when it parses as an instance of P, or
+when it is the bare label `plugin_window_label` already accepts for P.
 
-`plugin_window_label` itself stays the bare label. A new function next to
-it builds and parses instance labels. Two plugin ids that sanitize to the
-same string already collide today (`daena.writing` and `daena-writing`).
-The prefix does not make that worse.
+External plugin windows keep that bare label (`open_plugin_webview` in
+`plugin_webview.rs`). A bare label has no second `:`. A Writing instance
+does not match `daena.maps`. A bare `plugin:` prefix is not enough.
+
+`plugin_window_label` itself stays the bare label. Two plugin ids that
+sanitize to the same string still collide on it (`daena.writing` and
+`daena-writing` are both `plugin:daena-writing`). Instance labels do not.
 
 ### Identity checks
 
@@ -156,6 +155,13 @@ around 8177) ignore a payload whose `instanceId` is not the shown instance.
 shortcuts, pane changes, or drafts from a hidden instance.
 `writingMessageCurrent` (`writing-bridge.ts:286`) stays as a second check
 for entity and load token. It is not the instance check.
+
+A tab switch makes the target tab active before it restores the target's
+location, so for a moment the old location is drawn under the new tab's
+instance. `SandboxView` therefore takes `holdMount` (the shell passes
+`shellNavigationBusy`) and creates no webview until the restore is done. A
+view that the restore replaces never creates a webview for the wrong tab;
+slice 3 relies on this so no stray instance enters the pool.
 
 ### Pool
 
@@ -451,7 +457,7 @@ Do not add a plugin-published event for the instance id.
    and type. Save still works. This slice is worth shipping before the pool,
    because the visible editor has the same cliff today.
 
-2. **Instance labels and routing. Pool size stays 1.** Behavior matches
+2. **Instance labels and routing. Pool size stays 1. Done.** Behavior matches
    today: leave still destroys the webview. Every identity site in the
    table accepts an instance label and rejects the wrong plugin. Commands
    take `instanceId`. Shell events gain `instanceId` from the session.

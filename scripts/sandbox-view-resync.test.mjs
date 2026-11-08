@@ -77,4 +77,79 @@ assert.match(
   "the open sandbox view's plugin, which is a projection while one is open, is in the hidden set",
 );
 
+assert.match(sandbox, /instanceId: string/, "SandboxView requires instanceId");
+assert.match(sandbox, /resizePluginWebview\(pluginId, instanceId, bounds\)/);
+assert.match(sandbox, /unmountPluginWebview\(mountedPluginId, mountedInstanceId\)/);
+assert.match(sandbox, /mountPluginWebview\(\s*mountedPluginId,\s*mountedInstanceId,/);
+assert.doesNotMatch(sandbox, /closePluginWebview/, "teardown must not close every instance of the plugin");
+
+const client = await read("src/lib/project/client.ts");
+for (const name of [
+  "mountPluginWebview",
+  "postPluginWebviewMessage",
+  "setPluginWebviewVisible",
+  "resizePluginWebview",
+  "unmountPluginWebview",
+]) {
+  const signature = client.slice(client.indexOf(`${name}:`), client.indexOf(`${name}:`) + 400);
+  assert.match(signature, /instanceId/, `${name} takes instanceId`);
+}
+assert.match(client, /closePluginWebview: \(pluginId: string\) =>/, "closePluginWebview stays plugin-scoped");
+
+function listener(source, start, end) {
+  return between(source, start, end);
+}
+const mapsState = listener(
+  shell,
+  "listen<{ mapEntityId: string; status: string; detail: unknown; instanceId?: unknown }>(",
+  "let unlistenMapsSelection",
+);
+assert.ok(
+  mapsState.indexOf("foreignWebviewInstance(event.payload)") <
+    mapsState.indexOf("const { mapEntityId, status, detail }"),
+  "maps-state reads instanceId before it uses the payload",
+);
+const mapsSelection = listener(
+  shell,
+  'listen<{ mapEntityId: string; anchor: unknown; instanceId?: unknown }>("maps-selection"',
+  "let unlistenLanguageState",
+);
+assert.ok(
+  mapsSelection.indexOf("foreignWebviewInstance(event.payload)") < mapsSelection.indexOf("event.payload.mapEntityId"),
+  "maps-selection reads instanceId before it uses the payload",
+);
+const languageState = listener(shell, 'listen<unknown>("language-state"', "let unlistenShellShortcut");
+assert.ok(
+  languageState.indexOf("foreignWebviewInstance(event.payload)") < languageState.indexOf("parseLanguageStateEvent"),
+  "language-state reads instanceId before the parser",
+);
+const writingState = listener(shell, 'listen<unknown>("writing-state"', "return () => {");
+assert.ok(
+  writingState.indexOf("foreignWebviewInstance(event.payload)") < writingState.indexOf("parseWritingStateEvent"),
+  "writing-state reads instanceId before the parser",
+);
+assert.match(
+  shell,
+  /function foreignWebviewInstance[\s\S]*instanceId !== shownWebviewInstance/,
+  "a string instanceId for another tab is dropped; null is not",
+);
+assert.equal(
+  (shell.match(/\{#key shownWebviewInstance\}/g) ?? []).length,
+  4,
+  "each embedded view remounts on the tab id",
+);
+
+// A tab switch changes the active tab (the instance) before it restores the target location. Views wait for the
+// restore to finish, so a view that is about to be replaced never creates a webview for the wrong tab.
+assert.match(sandbox, /holdMount\?: boolean/, "SandboxView takes holdMount");
+assert.ok(
+  sandbox.indexOf("await mountReleased();") < sandbox.indexOf("await project.unmountPluginWebview(mountedPluginId"),
+  "the mount waits for holdMount before it touches the webview",
+);
+assert.equal(
+  shell.match(/holdMount=\{shellNavigationBusy\}/g)?.length,
+  4,
+  "each embedded view holds its mount while a tab switch restores",
+);
+
 console.log("sandbox view resync: ok");

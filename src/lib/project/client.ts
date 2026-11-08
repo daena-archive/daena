@@ -699,27 +699,40 @@ export const project = {
   openPluginWebview: (pluginId: string, viewId?: string) => invoke<void>("plugin_open_webview", { pluginId, viewId }),
   mountPluginWebview: (
     pluginId: string,
+    instanceId: string,
     viewId: string | undefined,
     bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },
     mapEntityId?: string,
     linkId?: string,
     entityId?: string,
     moduleState?: string,
-  ) => invoke<void>("plugin_mount_webview", { pluginId, viewId, mapEntityId, linkId, entityId, moduleState, bounds }),
+  ) =>
+    invoke<void>("plugin_mount_webview", {
+      pluginId,
+      instanceId,
+      viewId,
+      mapEntityId,
+      linkId,
+      entityId,
+      moduleState,
+      bounds,
+    }),
   /** Delivers one shell message to the mounted plugin webview as a `daena:host-message` event. */
-  postPluginWebviewMessage: (pluginId: string, message: unknown) =>
-    invoke<void>("plugin_webview_post", { pluginId, message }),
+  postPluginWebviewMessage: (pluginId: string, instanceId: string, message: unknown) =>
+    invoke<void>("plugin_webview_post", { pluginId, instanceId, message }),
   /** Claims text a plugin committed with `text.transfer.commit`. Works once per transfer, for the plugin that made it. */
   takePluginTextTransfer: (pluginId: string, transferId: string) =>
     invoke<string>("plugin_take_text_transfer", { pluginId, transferId }),
   /** Hides or shows the mounted plugin webview, e.g. under a shell overlay. */
-  setPluginWebviewVisible: (pluginId: string, visible: boolean) =>
-    invoke<void>("plugin_set_webview_visible", { pluginId, visible }),
+  setPluginWebviewVisible: (pluginId: string, instanceId: string, visible: boolean) =>
+    invoke<void>("plugin_set_webview_visible", { pluginId, instanceId, visible }),
   resizePluginWebview: (
     pluginId: string,
+    instanceId: string,
     bounds: { x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number },
-  ) => invoke<void>("plugin_resize_webview", { pluginId, bounds }),
-  unmountPluginWebview: (pluginId: string) => invoke<void>("plugin_unmount_webview", { pluginId }),
+  ) => invoke<void>("plugin_resize_webview", { pluginId, instanceId, bounds }),
+  unmountPluginWebview: (pluginId: string, instanceId: string) =>
+    invoke<void>("plugin_unmount_webview", { pluginId, instanceId }),
   closeAllPluginWebviews: () => invoke<void>("plugin_close_all_webviews"),
   hostViewData: (pluginId: string, viewId: string, selectedEntityId?: string) =>
     invoke<HostViewData>("plugin_host_view_data", { pluginId, viewId, selectedEntityId: selectedEntityId ?? null }),

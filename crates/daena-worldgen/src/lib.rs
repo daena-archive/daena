@@ -1,21 +1,32 @@
-//! Cube-sphere planetary terrain: analytic tectonics and landscape evolution.
+//! Cube-sphere planetary terrain: analytic tectonics, erosion and climate.
 //!
 //! Phase A builds a deterministic world on a nested cube-sphere, from a plate
 //! model at `min(n, 256)` down to an eroded surface at the requested `n`.
-//! Stored cell fields are `f32`. Geometry and area sums use `f64`.
+//! Phase B1 reads that surface and builds a seasonal climate. Stored cell
+//! fields are `f32`. Geometry and area sums use `f64`.
 
 #![deny(unsafe_code)]
 
+mod biome;
+mod climate;
 mod evolution;
 mod grid;
+mod hydrology;
 mod noise;
+mod planet;
 mod render;
 mod routing;
 mod sealevel;
 mod tectonics;
 
-pub use grid::{downsample, resample, upsample, CubeSphere, FACE_BASIS, NONE};
+pub use biome::Biome;
+pub use climate::{
+    ClimateField, ClimateStats, ClimateSummary, NH_SUMMER_SOLSTICE, NH_WINTER_SOLSTICE,
+};
+pub use grid::{downsample, downsample_max, resample, upsample, CubeSphere, FACE_BASIS, NONE};
+pub use hydrology::{Hydrology, Lake, LakeKind, RiverEnd, RiverSegment};
 pub use noise::{derive_seed, fbm, hash3, ridged, splitmix64, warp, SeedDomain};
+pub use planet::PlanetSettings;
 pub use render::{
     hillshade, render_equirect, render_equirect_with_shade, render_orthographic,
     render_orthographic_with_shade, write_png, Layer,
@@ -147,7 +158,7 @@ impl Default for ErosionParams {
     fn default() -> Self {
         Self {
             m: 0.45,
-            k: 2.5e-5,
+            k: 4.2e-5,
             s_c: 0.35,
             kappa: 0.02,
             max_elevation_m: 9500.0,
@@ -176,6 +187,10 @@ pub struct WorldSettings {
     pub schedule: Schedule,
     /// Erosion coefficients.
     pub erosion: ErosionParams,
+    /// Star, orbit and climate knobs.
+    pub planet: PlanetSettings,
+    /// Discharge at or above this, in m³/s, is a river. Default 100.
+    pub river_min_m3s: f64,
 }
 
 impl Default for WorldSettings {
@@ -190,6 +205,8 @@ impl Default for WorldSettings {
             tectonic_activity: 1.0,
             schedule: Schedule::default(),
             erosion: ErosionParams::default(),
+            planet: PlanetSettings::default(),
+            river_min_m3s: 100.0,
         }
     }
 }
@@ -263,6 +280,13 @@ impl WorldSettings {
                 )));
             }
         }
+        self.planet.validate()?;
+        if !self.river_min_m3s.is_finite() || self.river_min_m3s < 0.0 {
+            return Err(WorldError::InvalidSettings(format!(
+                "river_min_m3s must be finite and >= 0, got {}",
+                self.river_min_m3s
+            )));
+        }
         Ok(())
     }
 }
@@ -278,6 +302,12 @@ pub enum Stage {
     SeaLevel,
     /// Drainage on the shifted surface.
     FinalRouting,
+    /// Seasonal climate on the finished surface.
+    Climate,
+    /// Lakes, rivers and ice on the finished surface.
+    Hydrology,
+    /// Biome classes.
+    Biomes,
 }
 
 /// Receives stage updates and can stop the build.
@@ -342,7 +372,28 @@ pub struct LevelStats {
     pub mean_elevation_m: f32,
     /// Cells clamped to the elevation cap in the last iteration.
     pub clamped_cells: u32,
-    /// Wall time for the level, milliseconds.
+    /// Pit basins closed by evaporation in the last iteration.
+    pub closed_basins: u32,
+    /// Domain cells with positive ice discharge in the last iteration.
+    pub glaciated_cells: u32,
+    /// Wall time for the level, milliseconds. Excludes the climate pass.
+    pub wall_ms: f64,
+}
+
+/// One climate integration used to drive erosion, or the final surface.
+#[derive(Clone, Debug)]
+pub struct ClimatePass {
+    /// `level_64`, `level_256`, or `final`.
+    pub label: &'static str,
+    /// Edge of the surface this pass read.
+    pub source_n: u32,
+    /// Years integrated, including the year that converged.
+    pub spinup_years: u32,
+    /// True when the same-month change fell below 0.02 K.
+    pub converged: bool,
+    /// Largest same-month change on the last raw year, K.
+    pub residual_k: f64,
+    /// Wall time for the coarse spin-up, milliseconds.
     pub wall_ms: f64,
 }
 
@@ -398,14 +449,127 @@ pub struct World {
     pub sea_level_shift_m: f32,
     /// Land fraction, percentiles and per-level stats.
     pub stats: WorldStats,
-    /// Phase timings in milliseconds: tectonics, each level, sea level, final routing, total.
+    /// Full-resolution annual climate.
+    pub climate: ClimateSummary,
+    /// Coarse monthly climate used to build [`Self::climate`].
+    pub climate_field: ClimateField,
+    /// Lakes, rivers, discharge and ice. Elevation is unchanged.
+    pub hydrology: Hydrology,
+    /// One [`Biome`] discriminant per cell.
+    pub biome: Vec<u8>,
+    /// Phase timings in milliseconds. `total` includes climate, water and biomes.
     pub timings: Vec<(&'static str, f64)>,
+    /// Evolution climate passes, then the final pass. Spin-up years are per pass.
+    pub climate_passes: Vec<ClimatePass>,
+}
+
+/// Land aridity and the ocean rainfall belts used to judge the moisture scheme.
+#[derive(Clone, Copy, Debug)]
+pub struct LandMoisture {
+    /// Hot desert plus cold desert, divided by ice-free land area.
+    pub desert_fraction: f64,
+    /// Area-weighted annual precipitation on all land, mm.
+    pub p_land_mm: f64,
+    /// Ice-free land at `|lat|` 40–60°, mm.
+    pub p_midlat_mm: f64,
+    /// Ocean at `|lat| < 10°`, mm.
+    pub ocean_equator_mm: f64,
+    /// Ocean at `|lat|` 15–35°, mm.
+    pub ocean_subtrop_mm: f64,
+    /// Ocean at `|lat|` 40–60°, mm.
+    pub ocean_midlat_mm: f64,
+}
+
+fn ratio(sum: f64, area: f64) -> f64 {
+    if area > 0.0 {
+        sum / area
+    } else {
+        0.0
+    }
 }
 
 impl World {
     /// FNV-1a over the little-endian bits of each elevation.
     pub fn elevation_hash(&self) -> u64 {
         elevation_hash(&self.elevation_m)
+    }
+
+    /// FNV-1a over the climate summary, in field order, then sea-ice months.
+    pub fn climate_hash(&self) -> u64 {
+        self.climate.hash_bits()
+    }
+
+    /// FNV-1a over lakes, rivers, discharge, ice and flood receivers.
+    pub fn hydrology_hash(&self) -> u64 {
+        self.hydrology.hash_bits()
+    }
+
+    /// FNV-1a over the biome ids.
+    pub fn biome_hash(&self) -> u64 {
+        biome::hash_bits(&self.biome)
+    }
+
+    /// Desert share of ice-free land, and area-weighted precipitation.
+    ///
+    /// Ice-free land excludes ice-sheet and glacier cells. Mid-latitude rain
+    /// is ice-free land at `|lat|` 40–60°. Ocean bands are the equator
+    /// (`|lat| < 10°`), the dry belt (15–35°) and the westerlies (40–60°).
+    pub fn land_moisture(&self) -> LandMoisture {
+        let mut desert = 0.0;
+        let mut ice_free = 0.0;
+        let mut land_p = 0.0;
+        let mut land_a = 0.0;
+        let mut mid_p = 0.0;
+        let mut mid_a = 0.0;
+        let mut ocean_eq_p = 0.0;
+        let mut ocean_eq_a = 0.0;
+        let mut ocean_dry_p = 0.0;
+        let mut ocean_dry_a = 0.0;
+        let mut ocean_mid_p = 0.0;
+        let mut ocean_mid_a = 0.0;
+        for cell in 0..self.grid.cell_count() {
+            let area = self.grid.area_m2(cell as u32);
+            let precip = f64::from(self.climate.p_annual_mm.get(cell).copied().unwrap_or(0.0));
+            let lat = self.grid.lat_lon(cell as u32).0.to_degrees().abs();
+            if self.ocean.get(cell).copied().unwrap_or(1) == 1 {
+                if lat < 10.0 {
+                    ocean_eq_p += precip * area;
+                    ocean_eq_a += area;
+                }
+                if (15.0..=35.0).contains(&lat) {
+                    ocean_dry_p += precip * area;
+                    ocean_dry_a += area;
+                }
+                if (40.0..=60.0).contains(&lat) {
+                    ocean_mid_p += precip * area;
+                    ocean_mid_a += area;
+                }
+                continue;
+            }
+            land_p += precip * area;
+            land_a += area;
+            let class = self.biome.get(cell).copied().and_then(Biome::from_u8);
+            let ice = class.is_some_and(|class| matches!(class, Biome::IceSheet | Biome::Glacier));
+            if ice {
+                continue;
+            }
+            ice_free += area;
+            if class.is_some_and(Biome::is_desert) {
+                desert += area;
+            }
+            if (40.0..=60.0).contains(&lat) {
+                mid_p += precip * area;
+                mid_a += area;
+            }
+        }
+        LandMoisture {
+            desert_fraction: ratio(desert, ice_free),
+            p_land_mm: ratio(land_p, land_a),
+            p_midlat_mm: ratio(mid_p, mid_a),
+            ocean_equator_mm: ratio(ocean_eq_p, ocean_eq_a),
+            ocean_subtrop_mm: ratio(ocean_dry_p, ocean_dry_a),
+            ocean_midlat_mm: ratio(ocean_mid_p, ocean_mid_a),
+        }
     }
 
     /// Bilinear elevation at a geographic point. Latitude and longitude are degrees.
@@ -438,15 +602,7 @@ pub fn generate(
     timings.push(("tectonics", elapsed_ms(t0)));
     progress.report(Stage::Tectonics, 1, 1);
 
-    let evolved = evolution::evolve(
-        settings.seed,
-        settings.radius_m,
-        settings.resolution,
-        &settings.schedule,
-        &settings.erosion,
-        &tectonics,
-        progress,
-    )?;
+    let evolved = evolution::evolve(settings, &tectonics, progress)?;
     timings.extend(evolved.timings);
 
     if progress.cancelled() {
@@ -473,14 +629,13 @@ pub fn generate(
     let route_domain: Vec<u8> = sea.ocean.iter().map(|flag| u8::from(*flag == 0)).collect();
     // Evolution already dropped its routing scratch before returning.
     let mut scratch = RoutingScratch::new(n);
-    let open = |_: u32| false;
     let _routed = route(
         &fields.grid,
         &elevation,
         &route_domain,
         None,
         &mut scratch,
-        &open,
+        None,
     );
     let receiver = std::mem::take(&mut scratch.receiver);
     let area = std::mem::take(&mut scratch.area);
@@ -489,6 +644,55 @@ pub fn generate(
     drop(area);
     timings.push(("final_routing", elapsed_ms(t_route)));
     progress.report(Stage::FinalRouting, 1, 1);
+
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    progress.report(Stage::Climate, 0, 1);
+    let t_coarse = Instant::now();
+    let climate_field = climate::coarse(&fields.grid, &elevation, &sea.ocean, &settings.planet)?;
+    let coarse_ms = elapsed_ms(t_coarse);
+    timings.push(("climate_coarse", coarse_ms));
+    let mut climate_passes = evolved.passes;
+    climate_passes.push(ClimatePass {
+        label: "final",
+        source_n: fields.grid.n,
+        spinup_years: climate_field.spinup_years,
+        converged: climate_field.converged,
+        residual_k: climate_field.spinup_residual_k,
+        wall_ms: coarse_ms,
+    });
+    let t_down = Instant::now();
+    let climate = climate::downscale(
+        &fields.grid,
+        &elevation,
+        &sea.ocean,
+        &settings.planet,
+        &climate_field,
+    );
+    timings.push(("climate_downscale", elapsed_ms(t_down)));
+    progress.report(Stage::Climate, 1, 1);
+
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    progress.report(Stage::Hydrology, 0, 1);
+    let t_hydro = Instant::now();
+    let hydrology = hydrology::build(
+        &fields.grid,
+        &elevation,
+        &sea.ocean,
+        &climate,
+        settings.river_min_m3s,
+    )?;
+    timings.push(("hydrology", elapsed_ms(t_hydro)));
+    progress.report(Stage::Hydrology, 1, 1);
+
+    progress.report(Stage::Biomes, 0, 1);
+    let t_biome = Instant::now();
+    let biome = biome::classify(&fields.grid, &elevation, &sea.ocean, &climate, &hydrology)?;
+    timings.push(("biomes", elapsed_ms(t_biome)));
+    progress.report(Stage::Biomes, 1, 1);
     timings.push(("total", elapsed_ms(started)));
 
     let stats = summarize(&elevation, &sea, evolved.stats);
@@ -507,7 +711,12 @@ pub fn generate(
         tectonics,
         sea_level_shift_m: sea.shift_m,
         stats,
+        climate,
+        climate_field,
+        hydrology,
+        biome,
         timings,
+        climate_passes,
     })
 }
 
@@ -572,8 +781,11 @@ fn elapsed_ms(started: Instant) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    mod biome;
+    mod climate;
     mod evolution;
     mod grid;
+    mod hydrology;
     mod noise;
     mod pipeline;
     mod routing;

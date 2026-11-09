@@ -88,6 +88,7 @@ fn zero_uplift_does_not_raise_or_undercut() {
             k_rock: &k_rock,
             scratch: &mut scratch,
             options: &options,
+            water: None,
         },
         &mut progress,
     )
@@ -124,6 +125,7 @@ fn uniform_uplift_step_shrinks() {
             k_rock: &k_rock,
             scratch: &mut scratch,
             options: &options,
+            water: None,
         },
         &mut progress,
     )
@@ -163,6 +165,7 @@ fn rift_subsidence_stops_at_floor() {
             k_rock: &k_rock,
             scratch: &mut scratch,
             options: &options,
+            water: None,
         },
         &mut progress,
     )
@@ -174,4 +177,26 @@ fn rift_subsidence_stops_at_floor() {
             domain[cell]
         );
     }
+}
+
+#[test]
+fn sea_frame_matches_solve_and_does_not_write() {
+    let grid = CubeSphere::new(8, 6_371_000.0).unwrap();
+    let n = grid.cell_count();
+    let mut h = vec![0.0f32; n];
+    let mut domain = vec![1u8; n];
+    for cell in 0..n {
+        let z = grid.position(cell as u32)[2];
+        h[cell] = (z * 1500.0) as f32;
+        if z < 0.0 {
+            domain[cell] = 0;
+        }
+    }
+    let before = h.clone();
+    let (frame, ocean) = crate::sealevel::sea_frame(&grid, &h, &domain, 0.29);
+    assert_eq!(h, before);
+    let mut shifted = before.clone();
+    let solved = crate::sealevel::solve(&grid, &mut shifted, &domain, 0.29);
+    assert_eq!(frame, shifted);
+    assert_eq!(ocean, solved.ocean);
 }

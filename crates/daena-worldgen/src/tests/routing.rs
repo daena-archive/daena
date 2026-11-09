@@ -1,6 +1,8 @@
-use crate::grid::CubeSphere;
+use std::collections::VecDeque;
+
+use crate::grid::{CubeSphere, NONE};
 use crate::noise::{derive_seed, hash_u01, noise_on_sphere, SeedDomain};
-use crate::routing::{route, validate_routing, RoutingScratch};
+use crate::routing::{route, validate_routing, BasinBalance, RoutingScratch};
 
 fn terrain(n: u32, seed: u64, ocean_fraction: f64) -> (CubeSphere, Vec<f32>, Vec<u8>) {
     let grid = CubeSphere::new(n, 6_371_000.0).unwrap();
@@ -23,7 +25,7 @@ fn terrain(n: u32, seed: u64, ocean_fraction: f64) -> (CubeSphere, Vec<f32>, Vec
 fn assert_routed(n: u32, seed: u64, ocean_fraction: f64) {
     let (grid, h, domain) = terrain(n, seed, ocean_fraction);
     let mut scratch = RoutingScratch::new(grid.cell_count());
-    let _stats = route(&grid, &h, &domain, None, &mut scratch, &|_| false);
+    let _stats = route(&grid, &h, &domain, None, &mut scratch, None);
     validate_routing(&scratch.receiver, &scratch.stack).unwrap();
     let mut root_area = 0.0f64;
     let mut total = 0.0f64;
@@ -116,4 +118,128 @@ fn pass_edges_match_brute_force() {
         assert!(!expect.is_empty());
         assert_eq!(got, expect, "with_ocean={with_ocean}");
     }
+}
+
+#[test]
+fn balance_closes_pits_and_zero_evap_closes_none() {
+    let (grid, h, domain) = terrain(16, 4, 0.25);
+    let n = h.len();
+    let mut scratch = RoutingScratch::new(n);
+    let open = route(&grid, &h, &domain, None, &mut scratch, None);
+    assert_eq!(open.closed_basins, 0);
+    let open_recv = scratch.receiver.clone();
+    let open_stack = scratch.stack.clone();
+    validate_routing(&open_recv, &open_stack).unwrap();
+
+    let runoff = vec![0.01f32; n];
+    let dry = vec![0.0f32; n];
+    let zero = route(
+        &grid,
+        &h,
+        &domain,
+        None,
+        &mut scratch,
+        Some(&BasinBalance {
+            runoff_m_yr: &runoff,
+            evap_m_yr: &dry,
+        }),
+    );
+    assert_eq!(zero.closed_basins, 0);
+    assert!(zero.closed_pits.is_empty());
+    assert_eq!(scratch.receiver, open_recv);
+    assert_eq!(scratch.stack, open_stack);
+
+    let wet_air = vec![1.0e6f32; n];
+    let trickle = vec![1.0e-9f32; n];
+    let shut = route(
+        &grid,
+        &h,
+        &domain,
+        None,
+        &mut scratch,
+        Some(&BasinBalance {
+            runoff_m_yr: &trickle,
+            evap_m_yr: &wet_air,
+        }),
+    );
+    validate_routing(&scratch.receiver, &scratch.stack).unwrap();
+    assert!(shut.closed_basins > 0, "closed {}", shut.closed_basins);
+    assert_eq!(shut.closed_pits.len() as u32, shut.closed_basins);
+    for &pit in &shut.closed_pits {
+        assert_eq!(
+            scratch.receiver[pit as usize], pit,
+            "closed pit {pit} was carved"
+        );
+        assert_eq!(domain[pit as usize], 1);
+    }
+}
+
+#[test]
+fn bowl_stays_closed_until_runoff_exceeds_evaporation() {
+    let (grid, h, domain, pit) = bowl();
+    let n = h.len();
+    let mut scratch = RoutingScratch::new(n);
+    let trickle = vec![1.0e-8f32; n];
+    let arid = vec![1.0e6f32; n];
+    let shut = route(
+        &grid,
+        &h,
+        &domain,
+        None,
+        &mut scratch,
+        Some(&BasinBalance {
+            runoff_m_yr: &trickle,
+            evap_m_yr: &arid,
+        }),
+    );
+    validate_routing(&scratch.receiver, &scratch.stack).unwrap();
+    assert_eq!(scratch.receiver[pit as usize], pit);
+    assert!(shut.closed_pits.contains(&pit));
+    assert!(shut.carved < shut.pits);
+
+    let flood = vec![5.0f32; n];
+    let none = vec![0.0f32; n];
+    let open = route(
+        &grid,
+        &h,
+        &domain,
+        None,
+        &mut scratch,
+        Some(&BasinBalance {
+            runoff_m_yr: &flood,
+            evap_m_yr: &none,
+        }),
+    );
+    validate_routing(&scratch.receiver, &scratch.stack).unwrap();
+    assert_eq!(open.closed_basins, 0);
+    assert_ne!(scratch.receiver[pit as usize], pit);
+}
+
+fn bowl() -> (CubeSphere, Vec<f32>, Vec<u8>, u32) {
+    let grid = CubeSphere::new(8, 6_371_000.0).unwrap();
+    let n = grid.cell_count();
+    let mut domain = vec![1u8; n];
+    domain[0] = 0;
+    let mut h = vec![0.0f32; n];
+    let mut depth = vec![u32::MAX; n];
+    let mut queue = VecDeque::new();
+    depth[0] = 0;
+    h[0] = -200.0;
+    queue.push_back(0u32);
+    while let Some(cell) = queue.pop_front() {
+        for nb in grid.neighbors(cell) {
+            if nb == NONE || depth[nb as usize] != u32::MAX {
+                continue;
+            }
+            depth[nb as usize] = depth[cell as usize] + 1;
+            h[nb as usize] = depth[nb as usize] as f32 * 80.0;
+            queue.push_back(nb);
+        }
+    }
+    let pit = (0..n)
+        .filter(|&cell| depth[cell] >= 3 && domain[cell] == 1)
+        .max_by_key(|&cell| (depth[cell], cell))
+        .unwrap();
+    h[pit] = -20.0;
+    (grid, h, domain, pit as u32)
 }

@@ -6,7 +6,8 @@ use std::process::ExitCode;
 
 use daena_worldgen::{
     generate, hillshade, render_equirect_with_shade, render_orthographic_with_shade, write_png,
-    ContinentLayout, Layer, NoProgress, World, WorldError, WorldSettings,
+    Biome, ContinentLayout, LakeKind, Layer, NoProgress, PlanetSettings, World, WorldError,
+    WorldSettings,
 };
 
 fn main() -> ExitCode {
@@ -33,6 +34,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         plate_count: args.plate_count,
         continent_layout: args.layout,
         tectonic_activity: args.activity,
+        planet: args.planet,
+        river_min_m3s: args.river_min,
         ..WorldSettings::default()
     };
     let mut progress = NoProgress;
@@ -44,7 +47,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", report_json(&world));
         return Ok(());
     }
-    let need_shade = args.globe || args.layers.contains(&Layer::Relief);
+    let need_shade = args.globe || args.layers.iter().any(|layer| layer.shaded());
     let shade = if need_shade {
         hillshade(&world)
     } else {
@@ -88,6 +91,8 @@ struct Args {
     globe: bool,
     threads: Option<usize>,
     hash: bool,
+    planet: PlanetSettings,
+    river_min: f64,
 }
 
 impl Args {
@@ -104,10 +109,13 @@ impl Args {
         let mut globe = false;
         let mut threads: Option<usize> = None;
         let mut hash = false;
+        let mut planet = PlanetSettings::default();
+        let mut river_min = 100.0f64;
         let mut tokens: Vec<String> = input.collect();
         let mut index = 0;
         while index < tokens.len() {
-            let arg = tokens[index].as_str();
+            let arg = tokens[index].clone();
+            let arg = arg.as_str();
             match arg {
                 "--globe" => globe = true,
                 "--hash" => hash = true,
@@ -181,6 +189,13 @@ impl Args {
                         layers = Some(parsed);
                     }
                 }
+                "--river-min" => {
+                    river_min = take_value(&mut tokens, &mut index, "--river-min")?
+                        .parse()
+                        .map_err(|_| {
+                            WorldError::InvalidSettings("--river-min is not a number".to_string())
+                        })?;
+                }
                 "--threads" => {
                     let value: usize = take_value(&mut tokens, &mut index, "--threads")?
                         .parse()
@@ -195,9 +210,11 @@ impl Args {
                     threads = Some(value);
                 }
                 other => {
-                    return Err(WorldError::InvalidSettings(format!(
-                        "unknown argument {other}"
-                    )));
+                    if !take_planet_flag(other, &mut tokens, &mut index, &mut planet)? {
+                        return Err(WorldError::InvalidSettings(format!(
+                            "unknown argument {other}"
+                        )));
+                    }
                 }
             }
             index += 1;
@@ -222,8 +239,52 @@ impl Args {
             globe,
             threads,
             hash,
+            planet,
+            river_min,
         })
     }
+}
+
+fn take_planet_flag(
+    flag: &str,
+    tokens: &mut [String],
+    index: &mut usize,
+    planet: &mut PlanetSettings,
+) -> Result<bool, WorldError> {
+    let parsed = match flag {
+        "--luminosity" => Some(parse_f64(tokens, index, flag)?),
+        "--star-mass" => Some(parse_f64(tokens, index, flag)?),
+        "--orbit-au" => Some(parse_f64(tokens, index, flag)?),
+        "--eccentricity" => Some(parse_f64(tokens, index, flag)?),
+        "--tilt" => Some(parse_f64(tokens, index, flag)?),
+        "--rotation-hours" => Some(parse_f64(tokens, index, flag)?),
+        "--greenhouse" => Some(parse_f64(tokens, index, flag)?),
+        "--temp-offset" => Some(parse_f64(tokens, index, flag)?),
+        "--precip-scale" => Some(parse_f64(tokens, index, flag)?),
+        _ => None,
+    };
+    let Some(value) = parsed else {
+        return Ok(false);
+    };
+    match flag {
+        "--luminosity" => planet.star_luminosity = value,
+        "--star-mass" => planet.star_mass = value,
+        "--orbit-au" => planet.orbit_au = value,
+        "--eccentricity" => planet.eccentricity = value,
+        "--tilt" => planet.axial_tilt_deg = value,
+        "--rotation-hours" => planet.rotation_hours = value,
+        "--greenhouse" => planet.greenhouse_wm2 = value,
+        "--temp-offset" => planet.temperature_offset_c = value,
+        "--precip-scale" => planet.precipitation_scale = value,
+        _ => {}
+    }
+    Ok(true)
+}
+
+fn parse_f64(tokens: &mut [String], index: &mut usize, flag: &str) -> Result<f64, WorldError> {
+    take_value(tokens, index, flag)?
+        .parse()
+        .map_err(|_| WorldError::InvalidSettings(format!("{flag} is not a number")))
 }
 
 fn take_value(tokens: &mut [String], index: &mut usize, flag: &str) -> Result<String, WorldError> {
@@ -371,10 +432,37 @@ fn report_json(world: &World) -> String {
         out.push(',');
         push_u32(&mut out, "clamped_cells", level.clamped_cells);
         out.push(',');
+        push_u32(&mut out, "closed_basins", level.closed_basins);
+        out.push(',');
+        push_u32(&mut out, "glaciated_cells", level.glaciated_cells);
+        out.push(',');
         push_f64(&mut out, "wall_ms", level.wall_ms);
         out.push('}');
     }
     out.push(']');
+    out.push(',');
+    out.push_str("\"climate_passes\":[");
+    for (i, pass) in world.climate_passes.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('{');
+        push_str(&mut out, "stage", pass.label);
+        out.push(',');
+        push_u32(&mut out, "source_n", pass.source_n);
+        out.push(',');
+        push_u32(&mut out, "spinup_years", pass.spinup_years);
+        out.push(',');
+        push_bool(&mut out, "converged", pass.converged);
+        out.push(',');
+        push_f64(&mut out, "residual_k", pass.residual_k);
+        out.push(',');
+        push_f64(&mut out, "wall_ms", pass.wall_ms);
+        out.push('}');
+    }
+    out.push(']');
+    out.push(',');
+    push_climate(&mut out, world);
     out.push(',');
     push_str(
         &mut out,
@@ -383,6 +471,177 @@ fn report_json(world: &World) -> String {
     );
     out.push('}');
     out
+}
+
+fn push_climate(out: &mut String, world: &World) {
+    let stats = &world.climate.stats;
+    out.push_str("\"climate\":{");
+    push_f64(out, "t_global_c", stats.t_global_c);
+    out.push(',');
+    push_f64(out, "t_equator_c", stats.t_equator_c);
+    out.push(',');
+    push_f64(out, "t_polar_c", stats.t_polar_c);
+    out.push(',');
+    push_f64(out, "p_global_mm", stats.p_global_mm);
+    out.push(',');
+    push_f64(out, "p_equator_mm", stats.p_equator_mm);
+    out.push(',');
+    push_f64(out, "p_subtropical_land_mm", stats.p_subtropical_land_mm);
+    out.push(',');
+    push_u32(out, "spinup_years", stats.spinup_years);
+    out.push(',');
+    push_bool(out, "spinup_converged", stats.spinup_converged);
+    out.push(',');
+    push_f64(out, "spinup_residual_k", stats.spinup_residual_k);
+    out.push(',');
+    push_f64(out, "phi_h_deg", stats.phi_h_deg);
+    let rain = world.land_moisture();
+    out.push(',');
+    push_f64(out, "land_desert_fraction", rain.desert_fraction);
+    out.push(',');
+    push_f64(out, "p_land_mm", rain.p_land_mm);
+    out.push(',');
+    push_f64(out, "p_land_midlat_mm", rain.p_midlat_mm);
+    out.push(',');
+    push_f64(out, "p_ocean_equator_mm", rain.ocean_equator_mm);
+    out.push(',');
+    push_f64(out, "p_ocean_subtrop_mm", rain.ocean_subtrop_mm);
+    out.push(',');
+    push_f64(out, "p_ocean_midlat_mm", rain.ocean_midlat_mm);
+    out.push_str("},");
+    push_str(out, "climate_hash", &world.climate_hash().to_string());
+    out.push(',');
+    push_water(out, world);
+    out.push(',');
+    push_str(out, "hydrology_hash", &world.hydrology_hash().to_string());
+    out.push(',');
+    push_str(out, "biome_hash", &world.biome_hash().to_string());
+}
+
+fn push_water(out: &mut String, world: &World) {
+    let hydro = &world.hydrology;
+    let mut fresh = 0u32;
+    let mut saline = 0u32;
+    let mut flat = 0u32;
+    let mut lake_area = 0.0;
+    let mut largest = 0.0f64;
+    let mut endorheic = 0.0;
+    let mut lake_in = 0.0;
+    for lake in &hydro.lakes {
+        match lake.kind {
+            LakeKind::Fresh => fresh += 1,
+            LakeKind::Saline => saline += 1,
+            LakeKind::SaltFlat => flat += 1,
+        }
+        lake_area += lake.area_m2;
+        largest = largest.max(lake.area_m2);
+        lake_in += lake.inflow_m3;
+        if lake.kind != LakeKind::Fresh {
+            endorheic += lake.inflow_m3;
+        }
+    }
+    let mut runoff = 0.0;
+    let mut glacier = 0.0;
+    let mut sheet = 0.0;
+    let mut perennial = 0.0;
+    let mut seasonal = 0.0;
+    let mut max_q = 0.0f64;
+    for river in &hydro.rivers {
+        max_q = max_q.max(river.max_discharge_m3s);
+    }
+    let mut land_area = 0.0;
+    let mut land_class = [0.0; 26];
+    for cell in 0..world.grid.cell_count() {
+        let area = world.grid.area_m2(cell as u32);
+        if world.ocean.get(cell).copied().unwrap_or(1) == 1 {
+            let months = world.climate.sea_ice_months.get(cell).copied().unwrap_or(0);
+            if months >= 11 {
+                perennial += area;
+            } else if (4..=10).contains(&months) {
+                seasonal += area;
+            }
+        } else {
+            runoff += f64::from(
+                world
+                    .climate
+                    .runoff_mm
+                    .get(cell)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(0.0),
+            ) / 1000.0
+                * area;
+            land_area += area;
+            if let Some(class) = world.biome.get(cell).copied().and_then(Biome::from_u8) {
+                if class.is_land_class() {
+                    land_class[class as usize] += area;
+                }
+            }
+        }
+        match hydro.ice_cover.get(cell).copied().unwrap_or(0) {
+            1 => glacier += area,
+            2 => sheet += area,
+            _ => {}
+        }
+    }
+    let share = if runoff > 0.0 {
+        endorheic / runoff
+    } else if lake_in > 0.0 {
+        endorheic / lake_in
+    } else {
+        0.0
+    };
+    out.push_str("\"hydrology\":{");
+    push_u32(out, "lakes_fresh", fresh);
+    out.push(',');
+    push_u32(out, "lakes_saline", saline);
+    out.push(',');
+    push_u32(out, "lakes_salt_flat", flat);
+    out.push(',');
+    push_f64(out, "lake_area_km2", lake_area / 1.0e6);
+    out.push(',');
+    push_f64(out, "largest_lake_km2", largest / 1.0e6);
+    out.push(',');
+    push_f64(out, "endorheic_inflow_share", share);
+    out.push(',');
+    push_u32(out, "river_segments", hydro.rivers.len() as u32);
+    out.push(',');
+    push_f64(
+        out,
+        "river_length_km",
+        hydro.river_length_m(&world.grid) / 1000.0,
+    );
+    out.push(',');
+    push_f64(out, "max_discharge_m3s", max_q);
+    out.push_str("},\"ice\":{");
+    push_f64(out, "glacier_km2", glacier / 1.0e6);
+    out.push(',');
+    push_f64(out, "ice_sheet_km2", sheet / 1.0e6);
+    out.push(',');
+    push_f64(out, "sea_ice_perennial_km2", perennial / 1.0e6);
+    out.push(',');
+    push_f64(out, "sea_ice_seasonal_km2", seasonal / 1.0e6);
+    out.push_str("},\"biomes\":{");
+    let mut first = true;
+    for id in 0..26u8 {
+        let Some(class) = Biome::from_u8(id) else {
+            continue;
+        };
+        if !class.is_land_class() {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        let fraction = if land_area > 0.0 {
+            land_class[id as usize] / land_area
+        } else {
+            0.0
+        };
+        push_f64(out, class.name(), fraction);
+    }
+    out.push('}');
 }
 
 fn push_str(out: &mut String, key: &str, value: &str) {
@@ -398,6 +657,13 @@ fn push_u64(out: &mut String, key: &str, value: u64) {
     out.push_str(key);
     out.push_str("\":");
     out.push_str(&value.to_string());
+}
+
+fn push_bool(out: &mut String, key: &str, value: bool) {
+    out.push('"');
+    out.push_str(key);
+    out.push_str("\":");
+    out.push_str(if value { "true" } else { "false" });
 }
 
 fn push_u32(out: &mut String, key: &str, value: u32) {

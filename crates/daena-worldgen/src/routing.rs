@@ -2,8 +2,8 @@
 //!
 //! Depression routing follows Cordonnier, Bovy & Braun (2019): pit basins are
 //! joined by a minimum spanning tree of passes and carved by reversing the
-//! receiver path. `closed` is the phase B hook. Phase A passes a predicate
-//! that is always false, so every pit may drain.
+//! receiver path. A [`BasinBalance`] may keep a pit closed. `None` carves
+//! every pit, which is the phase A behaviour.
 
 use std::collections::VecDeque;
 
@@ -55,6 +55,17 @@ pub(crate) struct PassEdge {
     pub(crate) k: u32,
 }
 
+/// Per-cell water balance for depression closure. Length matches the grid.
+///
+/// Runoff and evaporation are metres per year. `None` passed to [`route`]
+/// leaves every pit open.
+pub struct BasinBalance<'a> {
+    /// Runoff depth, metres per year.
+    pub runoff_m_yr: &'a [f32],
+    /// Net evaporation, metres per year. Lake loss is `max(0, PET − P)`.
+    pub evap_m_yr: &'a [f32],
+}
+
 /// Pit count before carving, and how many basins were carved.
 pub struct RouteStats {
     /// Domain roots before carving, including closed pits.
@@ -63,6 +74,11 @@ pub struct RouteStats {
     pub carved: u32,
     /// Pass edges stored before the sort and dedup. Zero when nothing was carved.
     pub edges: u32,
+    /// Pit basins whose evaporation swallowed their inflow.
+    pub closed_basins: u32,
+    /// Pit cell of each closed basin. Empty outside tests.
+    #[cfg(test)]
+    pub closed_pits: Vec<u32>,
 }
 
 impl RoutingScratch {
@@ -102,15 +118,15 @@ impl RoutingScratch {
 
 /// Route `elev` over `domain` (`1` = erodible). `weight` defaults to 1.
 ///
-/// `closed(root_cell)` keeps that pit as a root and leaves it out of the
-/// spanning tree. Phase A passes `|_| false`.
+/// `balance: None` carves every pit. A balance builds the same tree, then
+/// closes a pit when evaporation over the area below its pass meets the inflow.
 pub fn route(
     grid: &CubeSphere,
     elev: &[f32],
     domain: &[u8],
     weight: Option<&[f32]>,
     scratch: &mut RoutingScratch,
-    closed: &dyn Fn(u32) -> bool,
+    balance: Option<&BasinBalance<'_>>,
 ) -> RouteStats {
     let n = elev.len();
     scratch.resize(n);
@@ -123,7 +139,10 @@ pub fn route(
     }
     receivers(grid, elev, domain, scratch);
     build_donors_stack(scratch);
-    let stats = depress(grid, elev, domain, scratch, closed);
+    let stats = depress(grid, elev, domain, scratch, balance);
+    // Depression carving clears the donor graph. Rebuild it from the receivers
+    // that carving left, including the case where nothing was carved.
+    build_donors_stack(scratch);
     drainage(grid, scratch);
     if cfg!(debug_assertions) {
         if let Err(err) = validate_routing(&scratch.receiver, &scratch.stack) {
@@ -339,7 +358,7 @@ fn depress(
     elev: &[f32],
     domain: &[u8],
     scratch: &mut RoutingScratch,
-    closed: &dyn Fn(u32) -> bool,
+    balance: Option<&BasinBalance<'_>>,
 ) -> RouteStats {
     scratch.lake_level.fill(f32::NAN);
     scratch.donors.clear();
@@ -358,17 +377,13 @@ fn depress(
         .any(|seg| domain[seg.root as usize] == 0);
     let mut open = Vec::new();
     for seg in &scratch.segs {
-        if domain[seg.root as usize] == 1 && !closed(seg.root) {
+        if domain[seg.root as usize] == 1 {
             open.push(*seg);
         }
     }
     if open.is_empty() {
         release_edges(scratch);
-        return RouteStats {
-            pits,
-            carved: 0,
-            edges: 0,
-        };
+        return route_stats(pits, 0, 0, 0, Vec::new());
     }
     let ocean_nodes = usize::from(has_ocean);
     let node_count = open.len() + ocean_nodes;
@@ -482,8 +497,25 @@ fn depress(
             &mut queue,
         );
     }
+    let (closed, closed_basins, closed_pits) = match balance {
+        Some(balance) => close_basins(&ClosureIn {
+            grid,
+            elev,
+            edges: &scratch.edges,
+            stack: &scratch.stack,
+            pit: &node_pit,
+            start: &node_start,
+            end: &node_end,
+            parent_edge: &parent_edge,
+            balance,
+        }),
+        None => (vec![0u8; node_count], 0, Vec::new()),
+    };
     let mut carved = 0u32;
     for node in 0..node_count {
+        if closed[node] == 1 {
+            continue;
+        }
         let ei = parent_edge[node];
         if ei == NONE {
             continue;
@@ -519,14 +551,168 @@ fn depress(
         carved += 1;
     }
     release_edges(scratch);
-    if carved > 0 {
-        build_donors_stack(scratch);
-    }
+    route_stats(pits, carved, edges, closed_basins, closed_pits)
+}
+
+fn route_stats(
+    pits: u32,
+    carved: u32,
+    edges: u32,
+    closed_basins: u32,
+    closed_pits: Vec<u32>,
+) -> RouteStats {
+    #[cfg(not(test))]
+    let _ = closed_pits;
     RouteStats {
         pits,
         carved,
         edges,
+        closed_basins,
+        #[cfg(test)]
+        closed_pits,
     }
+}
+
+struct ClosureIn<'a> {
+    grid: &'a CubeSphere,
+    elev: &'a [f32],
+    edges: &'a [PassEdge],
+    stack: &'a [u32],
+    pit: &'a [u32],
+    start: &'a [u32],
+    end: &'a [u32],
+    parent_edge: &'a [u32],
+    balance: &'a BasinBalance<'a>,
+}
+
+/// Leaf-to-root water balance. A basin is closed when `e · A_lake >= inflow`.
+fn close_basins(input: &ClosureIn<'_>) -> (Vec<u8>, u32, Vec<u32>) {
+    let nodes = input.pit.len();
+    let mut child_n = vec![0u32; nodes];
+    let mut parent = vec![NONE; nodes];
+    for (node, &ei) in input.parent_edge.iter().enumerate() {
+        if ei == NONE {
+            continue;
+        }
+        let edge = &input.edges[ei as usize];
+        let up = if edge.a == node as u32 {
+            edge.b
+        } else {
+            edge.a
+        };
+        parent[node] = up;
+        child_n[up as usize] += 1;
+    }
+    let mut off = vec![0u32; nodes + 1];
+    for i in 0..nodes {
+        off[i + 1] = off[i] + child_n[i];
+    }
+    let mut cursor = off.clone();
+    let mut kids = vec![0u32; off[nodes] as usize];
+    for (node, &up) in parent.iter().enumerate() {
+        if up == NONE {
+            continue;
+        }
+        let slot = cursor[up as usize] as usize;
+        cursor[up as usize] += 1;
+        kids[slot] = node as u32;
+    }
+    let mut order = Vec::with_capacity(nodes);
+    let mut walk = Vec::new();
+    for (node, &up) in parent.iter().enumerate() {
+        if up == NONE {
+            walk.push((node as u32, 0u8));
+        }
+    }
+    while let Some((node, seen)) = walk.pop() {
+        if seen == 1 {
+            order.push(node);
+            continue;
+        }
+        walk.push((node, 1));
+        let s = off[node as usize] as usize;
+        let e = off[node as usize + 1] as usize;
+        for &kid in kids[s..e].iter().rev() {
+            walk.push((kid, 0));
+        }
+    }
+    let mut overflow = vec![0.0f64; nodes];
+    let mut open = vec![0u8; nodes];
+    let mut closed = vec![0u8; nodes];
+    let mut closed_pits = Vec::new();
+    let mut closed_basins = 0u32;
+    for &node_u in &order {
+        let node = node_u as usize;
+        let pit = input.pit[node];
+        if pit == NONE {
+            continue;
+        }
+        let start = input.start[node] as usize;
+        let end = input.end[node] as usize;
+        let mut q_local = 0.0f64;
+        for idx in start..end {
+            let cell = input.stack[idx];
+            let runoff = f64::from(
+                input
+                    .balance
+                    .runoff_m_yr
+                    .get(cell as usize)
+                    .copied()
+                    .unwrap_or(0.0),
+            )
+            .max(0.0);
+            q_local += runoff * input.grid.area_m2(cell);
+        }
+        let mut a_lake = 0.0f64;
+        let ei = input.parent_edge[node];
+        if ei != NONE {
+            let pass = input.edges[ei as usize].pass;
+            for idx in start..end {
+                let cell = input.stack[idx];
+                if input.elev[cell as usize] < pass {
+                    a_lake += input.grid.area_m2(cell);
+                }
+            }
+        }
+        let evap = f64::from(
+            input
+                .balance
+                .evap_m_yr
+                .get(pit as usize)
+                .copied()
+                .unwrap_or(0.0),
+        )
+        .max(0.0);
+        let mut inflow = q_local;
+        let s = off[node] as usize;
+        let e = off[node + 1] as usize;
+        for &kid in &kids[s..e] {
+            if open[kid as usize] == 1 {
+                inflow += overflow[kid as usize];
+            }
+        }
+        if evap * a_lake >= inflow {
+            closed[node] = 1;
+            overflow[node] = 0.0;
+            closed_basins = closed_basins.saturating_add(1);
+            closed_pits.push(pit);
+        } else {
+            open[node] = 1;
+            overflow[node] = inflow - evap * a_lake;
+        }
+    }
+    (closed, closed_basins, closed_pits)
+}
+
+/// Replace drainage area using `weight`. Used after glacier weights are known.
+pub(crate) fn accumulate_with_weight(
+    grid: &CubeSphere,
+    scratch: &mut RoutingScratch,
+    weight: &[f32],
+) {
+    scratch.weight.clear();
+    scratch.weight.extend_from_slice(weight);
+    drainage(grid, scratch);
 }
 
 fn release_edges(scratch: &mut RoutingScratch) {

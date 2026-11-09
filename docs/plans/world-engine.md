@@ -86,6 +86,41 @@ the 700 MB target (per-root basin records and buffer growth), shelves and
 coasts are tuned by one continental-crust margin constant, and rifts follow
 plate boundaries that are still smoother than Earth's.
 
+## Phase B results (2026-11-09)
+
+Climate, water, ice and biomes, coupled back into erosion:
+
+- **Climate** (`climate.rs`, `planet.rs`): seasonal energy balance on a 64-cell
+  climate grid with lagged snow and sea-ice cover, meridional transport on
+  32 equal-area bands, zonal mixing within bands, and maritime heat capacity
+  from geography. No wind or upwind-temperature feedback in the temperature
+  step: those loops were unstable. Winds are diagnosed after spin-up and drive
+  moisture only (steering wind 1.6× the surface wind, poleward eddy transport
+  in the westerlies, land recycling). Every pass spins up from the same warm
+  start (15 °C, no ice), so a bistable cold planet does not inherit its branch
+  from the coarse history.
+- **Coupling**: climate passes at levels 64 and 256 set runoff-weighted
+  erosion, close basins whose evaporation beats their inflow, and give
+  glaciers stronger erosion, fjord base levels and overdeepened rock basins.
+- **Water and ice** (`hydrology.rs`): priority-flood lakes settled by water
+  balance (fresh, saline, salt flat), river discharge and traced river
+  segments, glaciers and ice sheets routed along drainage.
+- **Biomes** (`biome.rs`): 26 classes from temperature, aridity and
+  seasonality.
+- **Cross-face sampling** uses a slope limiter, so sharp contrasts next to a
+  cube-face edge cannot overshoot (this was the seam in cold worlds).
+
+Seed 7, default Earth-like settings: global mean 14.7 °C, equator 28 °C,
+global precipitation about 1000 mm, 23 % of ice-free land is desert, peaks
+7.8 km. Engine only: `n = 512` 2.5 s / 536 MB, `n = 1024` 5.4 s / 1.58 GB.
+Identical output for 1 and 12 threads.
+
+Known gaps: with this model a −15 °C offset already tips seed 7 into a
+snowball (the published state is a two-year mean of a 12 K cycle), so a
+"frozen" preset should use a milder offset; memory at `n = 1024` is well above
+the phase A target; the dry-belt edges over the ocean are still sharper than
+Earth's.
+
 ## Grid: equiangular cube sphere
 
 - Six faces, `n × n` cells each. Cell id = `face * n * n + j * n + i`.

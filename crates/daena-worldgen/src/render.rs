@@ -13,7 +13,7 @@ use png::{BitDepth, ColorType, Compression, Encoder, FilterType};
 use rayon::prelude::*;
 
 use crate::grid::{cross, dot3, CubeSphere, NONE};
-use crate::{direction_from_lat_lon, World, WorldError};
+use crate::{direction_from_lat_lon, Biome, World, WorldError};
 
 /// Preview layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,10 +30,30 @@ pub enum Layer {
     Drainage,
     /// Pre-erosion `base_m` with the relief ramp and no shade.
     Base,
+    /// Annual mean temperature, °C.
+    Temp,
+    /// Warmest month, °C.
+    TempWarm,
+    /// Coldest month, °C.
+    TempCold,
+    /// Annual precipitation, mm.
+    Precip,
+    /// Precipitation over potential evapotranspiration.
+    Aridity,
+    /// Ocean months colder than `-1.8 °C` at sea level.
+    SeaIce,
+    /// Flat biome colours with a light hillshade.
+    Biome,
+    /// Satellite-like biomes, lakes, sea ice and rivers.
+    Natural,
+    /// Rivers drawn over grey relief.
+    Rivers,
+    /// Lakes drawn over grey relief.
+    Lakes,
 }
 
 impl Layer {
-    /// File stem: `relief`, `plates`, `crust`, `uplift`, `drainage`, `base`.
+    /// File stem used by the CLI.
     pub fn name(self) -> &'static str {
         match self {
             Self::Relief => "relief",
@@ -42,6 +62,16 @@ impl Layer {
             Self::Uplift => "uplift",
             Self::Drainage => "drainage",
             Self::Base => "base",
+            Self::Temp => "temp",
+            Self::TempWarm => "temp-warm",
+            Self::TempCold => "temp-cold",
+            Self::Precip => "precip",
+            Self::Aridity => "aridity",
+            Self::SeaIce => "sea-ice",
+            Self::Biome => "biome",
+            Self::Natural => "natural",
+            Self::Rivers => "rivers",
+            Self::Lakes => "lakes",
         }
     }
 
@@ -54,8 +84,36 @@ impl Layer {
             "uplift" => Some(Self::Uplift),
             "drainage" => Some(Self::Drainage),
             "base" => Some(Self::Base),
+            "temp" => Some(Self::Temp),
+            "temp-warm" => Some(Self::TempWarm),
+            "temp-cold" => Some(Self::TempCold),
+            "precip" => Some(Self::Precip),
+            "aridity" => Some(Self::Aridity),
+            "sea-ice" => Some(Self::SeaIce),
+            "biome" => Some(Self::Biome),
+            "natural" => Some(Self::Natural),
+            "rivers" => Some(Self::Rivers),
+            "lakes" => Some(Self::Lakes),
             _ => None,
         }
+    }
+
+    /// Relief and climate layers draw land shading so geography stays readable.
+    pub fn shaded(self) -> bool {
+        matches!(
+            self,
+            Self::Relief
+                | Self::Temp
+                | Self::TempWarm
+                | Self::TempCold
+                | Self::Precip
+                | Self::Aridity
+                | Self::SeaIce
+                | Self::Biome
+                | Self::Natural
+                | Self::Rivers
+                | Self::Lakes
+        )
     }
 }
 
@@ -206,7 +264,7 @@ struct Caches {
 }
 
 fn relief_shade(world: &World, layer: Layer) -> Option<Vec<f32>> {
-    if layer == Layer::Relief {
+    if layer.shaded() {
         Some(hillshade(world))
     } else {
         None
@@ -321,6 +379,36 @@ fn pixel_color(ctx: &PixelCtx<'_>, x: u32, y: u32) -> [u8; 3] {
                 .unwrap_or(GREY)
         }
         Layer::Drainage => drainage_pixel(world, caches, dir),
+        Layer::Temp => climate_shade(
+            world,
+            shade,
+            dir,
+            temp_color(sample_climate(world, dir, |c| &c.t_annual_c)),
+        ),
+        Layer::TempWarm => climate_shade(
+            world,
+            shade,
+            dir,
+            temp_color(sample_climate(world, dir, |c| &c.t_warm_c)),
+        ),
+        Layer::TempCold => climate_shade(
+            world,
+            shade,
+            dir,
+            temp_color(sample_climate(world, dir, |c| &c.t_cold_c)),
+        ),
+        Layer::Precip => climate_shade(
+            world,
+            shade,
+            dir,
+            precip_color(sample_climate(world, dir, |c| &c.p_annual_mm)),
+        ),
+        Layer::Aridity => climate_shade(world, shade, dir, aridity_at(world, dir)),
+        Layer::SeaIce => climate_shade(world, shade, dir, sea_ice_at(world, dir)),
+        Layer::Biome => biome_pixel(world, shade, dir),
+        Layer::Natural => natural_pixel(world, shade, dir),
+        Layer::Rivers => river_pixel(world, shade, dir),
+        Layer::Lakes => lake_pixel(world, shade, dir),
     }
 }
 
@@ -553,6 +641,169 @@ fn uplift_color(uplift: f32) -> [u8; 3] {
     }
 }
 
+fn sample_climate(
+    world: &World,
+    dir: [f64; 3],
+    field: impl Fn(&crate::ClimateSummary) -> &[f32],
+) -> f32 {
+    let values = field(&world.climate);
+    if values.len() == world.grid.cell_count() {
+        world.grid.sample_bilinear(values, dir)
+    } else {
+        0.0
+    }
+}
+
+fn climate_shade(world: &World, shade: &[f32], dir: [f64; 3], rgb: [u8; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let ocean = world.ocean.get(cell).copied().unwrap_or(1) == 1;
+    tone(rgb, sample_shade(&world.grid, shade, dir), ocean)
+}
+
+fn temp_color(temperature: f32) -> [u8; 3] {
+    ramp(&TEMP_STOPS, f64::from(temperature))
+}
+
+fn precip_color(precip: f32) -> [u8; 3] {
+    let t = (f64::from(precip) / 4000.0).clamp(0.0, 1.0).sqrt();
+    if t < 0.5 {
+        lerp(PRECIP_TAN, PRECIP_GREEN, t / 0.5)
+    } else {
+        lerp(PRECIP_GREEN, PRECIP_BLUE, (t - 0.5) / 0.5)
+    }
+}
+
+fn aridity_at(world: &World, dir: [f64; 3]) -> [u8; 3] {
+    let precip = f64::from(sample_climate(world, dir, |c| &c.p_annual_mm));
+    let pet = f64::from(sample_climate(world, dir, |c| &c.pet_annual_mm));
+    let ratio = if pet <= 0.0 {
+        if precip > 0.0 {
+            2.0
+        } else {
+            0.0
+        }
+    } else {
+        (precip / pet).clamp(0.0, 2.0)
+    };
+    let t = ratio / 2.0;
+    if t < 0.5 {
+        lerp(PRECIP_TAN, PRECIP_GREEN, t / 0.5)
+    } else {
+        lerp(PRECIP_GREEN, PRECIP_BLUE, (t - 0.5) / 0.5)
+    }
+}
+
+fn biome_pixel(world: &World, shade: &[f32], dir: [f64; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let class = biome_at(world, cell);
+    let light = sample_shade(&world.grid, shade, dir);
+    tone_light(class.color(), light)
+}
+
+fn natural_pixel(world: &World, shade: &[f32], dir: [f64; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let class = biome_at(world, cell);
+    let light = sample_shade(&world.grid, shade, dir);
+    let ocean = world.ocean.get(cell).copied().unwrap_or(1) == 1;
+    let mut rgb = if ocean {
+        let h = world.grid.sample_bilinear(&world.elevation_m, dir);
+        let depth = ramp(&OCEAN_STOPS, f64::from(h).min(0.0));
+        let months = world.climate.sea_ice_months.get(cell).copied().unwrap_or(0);
+        let ice = f64::from(months) / 12.0;
+        tone(lerp(depth, [248, 250, 252], ice), light, true)
+    } else if matches!(class, Biome::FreshLake | Biome::SaltLake | Biome::SaltFlat) {
+        tone(class.natural(), light, true)
+    } else {
+        tone(class.natural(), light, false)
+    };
+    if let Some(strength) = river_strength(world, cell) {
+        rgb = lerp(rgb, [24, 72, 168], strength);
+    }
+    rgb
+}
+
+fn river_pixel(world: &World, shade: &[f32], dir: [f64; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let h = world.grid.sample_bilinear(&world.elevation_m, dir);
+    let light = sample_shade(&world.grid, shade, dir);
+    let grey = ramp(&GREY_RELIEF, f64::from(h));
+    let ocean = world.ocean.get(cell).copied().unwrap_or(1) == 1;
+    let base = tone(grey, light, ocean || h <= 0.0);
+    if let Some(strength) = river_strength(world, cell) {
+        lerp(base, [20, 70, 180], strength)
+    } else {
+        base
+    }
+}
+
+fn lake_pixel(world: &World, shade: &[f32], dir: [f64; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let h = world.grid.sample_bilinear(&world.elevation_m, dir);
+    let light = sample_shade(&world.grid, shade, dir);
+    let grey = ramp(&GREY_RELIEF, f64::from(h));
+    let ocean = world.ocean.get(cell).copied().unwrap_or(1) == 1;
+    let base = tone(grey, light, ocean || h <= 0.0);
+    let class = biome_at(world, cell);
+    match class {
+        Biome::FreshLake => tone(class.natural(), light, true),
+        Biome::SaltLake => tone(class.natural(), light, true),
+        Biome::SaltFlat => tone(class.natural(), light, false),
+        _ => base,
+    }
+}
+
+fn biome_at(world: &World, cell: usize) -> Biome {
+    world
+        .biome
+        .get(cell)
+        .copied()
+        .and_then(Biome::from_u8)
+        .unwrap_or(Biome::DeepOcean)
+}
+
+fn river_strength(world: &World, cell: usize) -> Option<f64> {
+    let discharge = world.hydrology.discharge_m3s.get(cell).copied()?;
+    let threshold = world.settings.river_min_m3s;
+    if !discharge.is_finite() || discharge < threshold {
+        return None;
+    }
+    let ocean = world.ocean.get(cell).copied().unwrap_or(1) == 1;
+    let lake = world
+        .hydrology
+        .lake_id
+        .get(cell)
+        .copied()
+        .unwrap_or(crate::grid::NONE)
+        != crate::grid::NONE;
+    if ocean || lake {
+        return None;
+    }
+    let ratio = if threshold <= 0.0 {
+        discharge.max(1.0)
+    } else {
+        discharge / threshold
+    };
+    let t = ratio.log10().clamp(0.0, 4.0) / 4.0;
+    Some(0.4 + 0.6 * t)
+}
+
+fn tone_light(rgb: [u8; 3], shade: f32) -> [u8; 3] {
+    let shade = f64::from(shade).clamp(0.0, 1.0);
+    let light = 0.84 + 0.16 * shade;
+    [
+        byte(f64::from(rgb[0]) * light),
+        byte(f64::from(rgb[1]) * light),
+        byte(f64::from(rgb[2]) * light),
+    ]
+}
+
+fn sea_ice_at(world: &World, dir: [f64; 3]) -> [u8; 3] {
+    let cell = world.grid.cell_at(dir) as usize;
+    let months = world.climate.sea_ice_months.get(cell).copied().unwrap_or(0);
+    let t = f64::from(months) / 12.0;
+    lerp(SEA_ICE_DARK, [255, 255, 255], t.clamp(0.0, 1.0))
+}
+
 fn drainage_color(log_area: f32) -> [u8; 3] {
     let t = ((f64::from(log_area) - 7.0) / 6.0).clamp(0.0, 1.0);
     lerp([18, 42, 72], [236, 224, 170], t)
@@ -651,4 +902,21 @@ const LAND_STOPS: [(f64, [u8; 3]); 6] = [
     (2000.0, [132, 90, 54]),
     (3500.0, [156, 156, 156]),
     (5000.0, [255, 255, 255]),
+];
+
+const TEMP_STOPS: [(f64, [u8; 3]); 3] = [
+    (-40.0, [8, 32, 140]),
+    (0.0, [255, 255, 255]),
+    (30.0, [120, 16, 24]),
+];
+
+const PRECIP_TAN: [u8; 3] = [210, 180, 120];
+const PRECIP_GREEN: [u8; 3] = [40, 140, 60];
+const PRECIP_BLUE: [u8; 3] = [20, 60, 180];
+const SEA_ICE_DARK: [u8; 3] = [30, 50, 80];
+const GREY_RELIEF: [(f64, [u8; 3]); 4] = [
+    (-6000.0, [40, 44, 52]),
+    (0.0, [120, 124, 128]),
+    (1500.0, [186, 186, 188]),
+    (4000.0, [236, 236, 238]),
 ];

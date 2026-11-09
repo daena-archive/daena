@@ -12,13 +12,15 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
+use crate::climate::{self, SurfaceWater};
 use crate::grid::{resample, CubeSphere};
 use crate::noise::{
     derive_seed, derive_seed_salt, fbm, fbm_fixed_norm, noise_on_sphere, SeedDomain,
 };
-use crate::routing::{route, RoutingScratch};
+use crate::routing::{accumulate_with_weight, route, BasinBalance, RoutingScratch};
+use crate::sealevel;
 use crate::tectonics::Tectonics;
-use crate::{ErosionParams, LevelStats, Progress, Schedule, Stage, WorldError};
+use crate::{ClimatePass, ErosionParams, LevelStats, Progress, Stage, WorldError, WorldSettings};
 
 /// Elevation and masks handed from one level to the next.
 struct Carry {
@@ -53,8 +55,23 @@ pub(crate) struct Evolved {
     pub fields: LevelFields,
     /// One entry per level, coarse to fine.
     pub stats: Vec<LevelStats>,
-    /// `(name, milliseconds)` for each level.
+    /// `(name, milliseconds)` for each level and each climate pass.
     pub timings: Vec<(&'static str, f64)>,
+    /// Climate passes that drove erosion. The final pass is added later.
+    pub passes: Vec<ClimatePass>,
+}
+
+/// Borrowed runoff, evaporation and ice for one erosion level.
+#[derive(Clone, Copy)]
+pub(crate) struct WaterIn<'a> {
+    /// Runoff, mm/yr.
+    pub runoff_mm: &'a [f32],
+    /// Runoff, m/yr.
+    pub runoff_m_yr: &'a [f32],
+    /// Net lake evaporation, m/yr.
+    pub evap_m_yr: &'a [f32],
+    /// Ice balance, m water equivalent per year.
+    pub ice_m_yr: &'a [f32],
 }
 
 /// Controls the optional per-step checks used by tests.
@@ -85,6 +102,10 @@ pub(crate) struct ErodeReport {
     pub carved_last: u32,
     /// Cells clamped to the elevation cap in the last iteration.
     pub clamped_last: u32,
+    /// Closed pit basins in the last iteration.
+    pub closed_last: u32,
+    /// Glaciated domain cells in the last iteration.
+    pub glaciated_last: u32,
     /// Max `|Δh|` per iteration when requested. Read by the erosion tests.
     #[allow(dead_code)]
     pub steps: Vec<f32>,
@@ -98,44 +119,98 @@ pub(crate) struct ErodeReport {
 }
 
 /// Evolve every level from 32 up to `settings.resolution`.
+///
+/// A climate pass runs at the start of level 64 from the level-32 surface, and
+/// at the start of level 256 from the level-128 surface. Later levels downscale
+/// that pass. Levels before the first pass erode with weight 1 and no ice.
 pub(crate) fn evolve(
-    seed: u64,
-    radius_m: f64,
-    resolution: u32,
-    schedule: &Schedule,
-    erosion: &ErosionParams,
+    settings: &WorldSettings,
     tectonics: &Tectonics,
     progress: &mut dyn Progress,
 ) -> Result<Evolved, WorldError> {
+    let seed = settings.seed;
+    let radius_m = settings.radius_m;
     let tect_grid = CubeSphere::new(tectonics.n, radius_m).map_err(WorldError::Internal)?;
     let mut parent: Option<Carry> = None;
     let mut stats = Vec::new();
     let mut timings = Vec::new();
     let mut final_fields: Option<LevelFields> = None;
-    let levels = level_resolutions(resolution);
+    let mut driving: Option<climate::ClimateField> = None;
+    let mut passes = Vec::new();
+    let levels = level_resolutions(settings.resolution);
     for (index, n) in levels.iter().copied().enumerate() {
         if progress.cancelled() {
             return Err(WorldError::Cancelled);
         }
-        let step = schedule.step_for(n).ok_or_else(|| {
+        let step = settings.schedule.step_for(n).ok_or_else(|| {
             WorldError::InvalidSettings(format!("schedule does not cover n = {n}"))
         })?;
-        let started = Instant::now();
         let grid = CubeSphere::new(n, radius_m).map_err(WorldError::Internal)?;
         let mut prepared = prepare_fields(&tect_grid, tectonics, &grid, seed)?;
+        if n == 64 || n == 256 {
+            let source = parent.as_ref().ok_or_else(|| {
+                WorldError::Internal(format!("climate at n = {n} has no coarser surface"))
+            })?;
+            let expect = if n == 64 { 32 } else { 128 };
+            if source.grid.n != expect {
+                return Err(WorldError::Internal(format!(
+                    "climate at n = {n} expected source {expect}, found {}",
+                    source.grid.n
+                )));
+            }
+            let started_c = Instant::now();
+            let (frame, ocean) = sealevel::sea_frame(
+                &source.grid,
+                &source.h,
+                &source.domain,
+                settings.land_fraction,
+            );
+            let field = climate::coarse(&source.grid, &frame, &ocean, &settings.planet)?;
+            let wall_ms = elapsed_ms(started_c);
+            timings.push((climate_timing_name(n), wall_ms));
+            passes.push(ClimatePass {
+                label: climate_label(n),
+                source_n: source.grid.n,
+                spinup_years: field.spinup_years,
+                converged: field.converged,
+                residual_k: field.spinup_residual_k,
+                wall_ms,
+            });
+            driving = Some(field);
+        }
         prepared.h = initial_elevation(&grid, &prepared, parent.as_ref(), seed)?;
         fill_single_cell_pits(&grid, &mut prepared.h, &prepared.domain);
         parent = None;
+        let started = Instant::now();
+        let surface = match driving.as_ref() {
+            Some(field) => {
+                let (frame, ocean) = sealevel::sea_frame(
+                    &grid,
+                    &prepared.h,
+                    &prepared.domain,
+                    settings.land_fraction,
+                );
+                Some(climate::surface_water(
+                    &grid,
+                    &frame,
+                    &ocean,
+                    &settings.planet,
+                    field,
+                ))
+            }
+            None => None,
+        };
         let mut scratch = RoutingScratch::new(grid.cell_count());
         let stage = Stage::Level(n);
         let options = ErodeOptions {
             iterations: step.iterations,
             dt_yr: step.dt_yr,
-            params: *erosion,
+            params: settings.erosion,
             record_steps: false,
             check_bounds: false,
             stage: Some(stage),
         };
+        let water = surface.as_ref().map(water_in);
         let report = erode(
             ErodeJob {
                 grid: &grid,
@@ -145,10 +220,12 @@ pub(crate) fn evolve(
                 k_rock: &prepared.k_rock,
                 scratch: &mut scratch,
                 options: &options,
+                water,
             },
             progress,
         )?;
         drop(scratch);
+        drop(surface);
         let wall_ms = elapsed_ms(started);
         stats.push(LevelStats {
             n,
@@ -160,6 +237,8 @@ pub(crate) fn evolve(
             max_elevation_m: report.max_domain_m,
             mean_elevation_m: report.mean_domain_m,
             clamped_cells: report.clamped_last,
+            closed_basins: report.closed_last,
+            glaciated_cells: report.glaciated_last,
             wall_ms,
         });
         timings.push((level_timing_name(n), wall_ms));
@@ -181,7 +260,33 @@ pub(crate) fn evolve(
         fields,
         stats,
         timings,
+        passes,
     })
+}
+
+fn water_in(surface: &SurfaceWater) -> WaterIn<'_> {
+    WaterIn {
+        runoff_mm: &surface.runoff_mm,
+        runoff_m_yr: &surface.runoff_m_yr,
+        evap_m_yr: &surface.evap_m_yr,
+        ice_m_yr: &surface.ice_m_yr,
+    }
+}
+
+fn climate_label(n: u32) -> &'static str {
+    match n {
+        64 => "level_64",
+        256 => "level_256",
+        _ => "level_other",
+    }
+}
+
+fn climate_timing_name(n: u32) -> &'static str {
+    match n {
+        64 => "climate_64",
+        256 => "climate_256",
+        _ => "climate_other",
+    }
 }
 
 struct Prepared {
@@ -424,6 +529,8 @@ pub(crate) struct ErodeJob<'a> {
     pub scratch: &'a mut RoutingScratch,
     /// Step count, time step and checks.
     pub options: &'a ErodeOptions,
+    /// Runoff, evaporation and ice. `None` keeps weight 1 and every basin open.
+    pub water: Option<WaterIn<'a>>,
 }
 
 /// Run the erosion loop in place. Tests call this directly.
@@ -442,9 +549,19 @@ pub(crate) fn erode(
     let mut edges_peak = 0u32;
     let mut carved_last = 0u32;
     let mut clamped_last = 0u32;
+    let mut closed_last = 0u32;
+    let mut glaciated_last = 0u32;
     let iterations = job.options.iterations;
     let record_steps = job.options.record_steps;
     let stage = job.options.stage;
+    let water = job.water;
+    let base_weight: Vec<f32> = match water {
+        Some(water) => water.runoff_mm.iter().copied().map(runoff_weight).collect(),
+        None => Vec::new(),
+    };
+    let mut boosted = vec![0.0f32; base_weight.len()];
+    let mut q_ice = vec![0.0f64; n];
+    let mut glaciated = vec![0u8; n];
     for iter in 0..iterations {
         if progress.cancelled() {
             return Err(WorldError::Cancelled);
@@ -455,15 +572,49 @@ pub(crate) fn erode(
             Vec::new()
         };
         fill_single_cell_pits(job.grid, job.h, job.domain);
-        let open = |_: u32| false;
-        let routed = route(job.grid, job.h, job.domain, None, job.scratch, &open);
+        let balance = water.map(|water| BasinBalance {
+            runoff_m_yr: water.runoff_m_yr,
+            evap_m_yr: water.evap_m_yr,
+        });
+        let weight = if water.is_some() {
+            Some(base_weight.as_slice())
+        } else {
+            None
+        };
+        let routed = route(
+            job.grid,
+            job.h,
+            job.domain,
+            weight,
+            job.scratch,
+            balance.as_ref(),
+        );
         if iter == 0 {
             pits_first = routed.pits;
         }
         pits_last = routed.pits;
         edges_peak = edges_peak.max(routed.edges);
         carved_last = routed.carved;
-        violations = violations.saturating_add(stream_power(&mut job, &mut am, &mut lake));
+        closed_last = routed.closed_basins;
+        if let Some(water) = water {
+            glaciated_last = apply_ice(
+                job.grid,
+                job.domain,
+                job.scratch,
+                water.ice_m_yr,
+                &base_weight,
+                &mut IceBuf {
+                    boosted: &mut boosted,
+                    q_ice: &mut q_ice,
+                    glaciated: &mut glaciated,
+                },
+            );
+        }
+        violations =
+            violations.saturating_add(stream_power(&mut job, &mut am, &mut lake, &glaciated));
+        if water.is_some() {
+            overdeepen(job.h, job.domain, &q_ice, job.options.dt_yr);
+        }
         hillslopes(
             job.h,
             job.domain,
@@ -497,11 +648,100 @@ pub(crate) fn erode(
         edges_peak,
         carved_last,
         clamped_last,
+        closed_last,
+        glaciated_last,
         steps,
         violations,
         max_domain_m,
         mean_domain_m,
     })
+}
+
+const RUNOFF_REF_MM: f32 = 400.0;
+const WEIGHT_MIN: f32 = 0.02;
+const WEIGHT_MAX: f32 = 4.0;
+const GLACIER_WEIGHT: f32 = 2.0;
+const GLACIER_K: f64 = 3.0;
+const FJORD_BASE_M: f64 = -300.0;
+const OVERDEEP_CAP_M: f64 = 1.0e-3;
+const OVERDEEP_SCALE: f64 = 2.0e-4;
+const OVERDEEP_Q_M3: f64 = 1.0e9;
+const OVERDEEP_FLOOR_M: f64 = -500.0;
+
+fn runoff_weight(runoff_mm: f32) -> f32 {
+    (f64::from(runoff_mm) / f64::from(RUNOFF_REF_MM))
+        .clamp(f64::from(WEIGHT_MIN), f64::from(WEIGHT_MAX)) as f32
+}
+
+struct IceBuf<'a> {
+    boosted: &'a mut [f32],
+    q_ice: &'a mut [f64],
+    glaciated: &'a mut [u8],
+}
+
+/// Ice discharge on the current receivers, then glacier weights.
+///
+/// `q_ice = balance·area + Σ donors max(q_ice, 0)`, leaves first.
+fn apply_ice(
+    grid: &CubeSphere,
+    domain: &[u8],
+    scratch: &mut RoutingScratch,
+    ice_m_yr: &[f32],
+    base_weight: &[f32],
+    buf: &mut IceBuf<'_>,
+) -> u32 {
+    buf.q_ice.fill(0.0);
+    for idx in (0..scratch.stack.len()).rev() {
+        let cell = scratch.stack[idx];
+        let i = cell as usize;
+        let mut sum = f64::from(ice_m_yr.get(i).copied().unwrap_or(0.0)) * grid.area_m2(cell);
+        let s = scratch.donor_offset[i] as usize;
+        let e = scratch.donor_offset[i + 1] as usize;
+        for &donor in &scratch.donors[s..e] {
+            sum += buf.q_ice[donor as usize].max(0.0);
+        }
+        buf.q_ice[i] = sum;
+    }
+    let mut count = 0u32;
+    let mut any = false;
+    for i in 0..buf.q_ice.len() {
+        let ice = domain.get(i).copied().unwrap_or(0) == 1 && buf.q_ice[i] > 0.0;
+        buf.glaciated[i] = u8::from(ice);
+        let mut weight = base_weight.get(i).copied().unwrap_or(1.0);
+        if ice {
+            count = count.saturating_add(1);
+            if weight < GLACIER_WEIGHT {
+                weight = GLACIER_WEIGHT;
+                any = true;
+            }
+        }
+        if let Some(slot) = buf.boosted.get_mut(i) {
+            *slot = weight;
+        }
+    }
+    if any {
+        accumulate_with_weight(grid, scratch, buf.boosted);
+    }
+    count
+}
+
+fn overdeepen(h: &mut [f32], domain: &[u8], q_ice: &[f64], dt_yr: f64) {
+    for (i, height) in h.iter_mut().enumerate() {
+        if domain.get(i).copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        let q = q_ice.get(i).copied().unwrap_or(0.0);
+        if q <= 0.0 {
+            continue;
+        }
+        let rate = (OVERDEEP_SCALE * (q / OVERDEEP_Q_M3).sqrt()).min(OVERDEEP_CAP_M);
+        let lowered = f64::from(*height) - rate * dt_yr;
+        if lowered >= OVERDEEP_FLOOR_M {
+            *height = lowered as f32;
+        } else if f64::from(*height) > OVERDEEP_FLOOR_M {
+            *height = OVERDEEP_FLOOR_M as f32;
+        }
+    }
 }
 
 /// Raise each strict single-cell pit to 1 cm above its lowest neighbour.
@@ -537,7 +777,7 @@ pub(crate) fn fill_single_cell_pits(grid: &CubeSphere, h: &mut [f32], domain: &[
     h.copy_from_slice(&next);
 }
 
-fn stream_power(job: &mut ErodeJob<'_>, am: &mut [f32], lake: &mut [u8]) -> u32 {
+fn stream_power(job: &mut ErodeJob<'_>, am: &mut [f32], lake: &mut [u8], glaciated: &[u8]) -> u32 {
     let m_exp = job.options.params.m;
     let k_coeff = job.options.params.k;
     let dt = job.options.dt_yr;
@@ -583,17 +823,24 @@ fn stream_power(job: &mut ErodeJob<'_>, am: &mut [f32], lake: &mut [u8]) -> u32 
                 hr = hr.max(level);
             }
         }
-        if domain[r] == 0 {
-            hr = hr.max(0.0);
-        }
         // A rift floor near −1000 m must not become the base level for the
         // surrounding landscape. Cells with non-negative uplift grade to sea
         // level (0 in this pre-shift frame) when their receiver lies below it.
-        if u_raw >= 0.0 {
+        // A glacier draining off the domain grades to −300 m instead.
+        let fjord = glaciated.get(i).copied().unwrap_or(0) == 1 && domain[r] == 0;
+        if domain[r] == 0 {
+            hr = if fjord { FJORD_BASE_M } else { hr.max(0.0) };
+        }
+        if u_raw >= 0.0 && !fjord {
             hr = hr.max(0.0);
         }
         let dist = f64::from(job.scratch.receiver_dist[i]).max(1.0e-6);
-        let f = k_coeff * f64::from(k_rock[i]) * dt * f64::from(am[i]) / dist;
+        let k_scale = if glaciated.get(i).copied().unwrap_or(0) == 1 {
+            GLACIER_K
+        } else {
+            1.0
+        };
+        let f = k_coeff * k_scale * f64::from(k_rock[i]) * dt * f64::from(am[i]) / dist;
         let new_h = hold_subsidence_floor(u_raw, (old + u_dt + f * hr) / (1.0 + f));
         if check_bounds && u_dt.abs() <= 1.0e-15 && old + 1.0e-3 >= hr {
             let raised = new_h > old + 1.0e-2;

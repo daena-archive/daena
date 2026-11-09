@@ -30,6 +30,36 @@ pub(crate) fn solve(
     domain: &[u8],
     land_fraction: f64,
 ) -> SeaLevel {
+    let shift = shift_for(find_threshold(grid, elevation, land_fraction));
+    if shift != 0.0 {
+        for value in elevation.iter_mut() {
+            *value += shift;
+        }
+    }
+    finish(grid, elevation, domain, shift)
+}
+
+/// Copy of `elevation` shifted onto sea level, plus the ocean flood.
+///
+/// The caller's buffer is not written. `S < 0` leaves the copy unshifted, matching [`solve`].
+pub(crate) fn sea_frame(
+    grid: &CubeSphere,
+    elevation: &[f32],
+    domain: &[u8],
+    land_fraction: f64,
+) -> (Vec<f32>, Vec<u8>) {
+    let shift = shift_for(find_threshold(grid, elevation, land_fraction));
+    let mut frame = elevation.to_vec();
+    if shift != 0.0 {
+        for value in &mut frame {
+            *value += shift;
+        }
+    }
+    let ocean = flood(grid, &frame, domain);
+    (frame, ocean)
+}
+
+fn find_threshold(grid: &CubeSphere, elevation: &[f32], land_fraction: f64) -> f32 {
     let n = elevation.len();
     let mut total = 0.0f64;
     let mut order = Vec::with_capacity(n);
@@ -57,17 +87,26 @@ pub(crate) fn solve(
         acc += grid.area_m2(cell);
         threshold = elevation[cell as usize];
     }
-    drop(order);
-    let shift = if threshold < 0.0 { 0.0 } else { -threshold };
-    if shift != 0.0 {
-        for value in elevation.iter_mut() {
-            *value += shift;
-        }
+    threshold
+}
+
+fn shift_for(threshold: f32) -> f32 {
+    if threshold < 0.0 {
+        0.0
+    } else {
+        -threshold
     }
+}
+
+fn finish(grid: &CubeSphere, elevation: &[f32], domain: &[u8], shift: f32) -> SeaLevel {
+    let n = elevation.len();
+    let mut total = 0.0f64;
     let mut above = 0.0f64;
     for (cell, &height) in elevation.iter().enumerate() {
+        let area = grid.area_m2(cell as u32);
+        total += area;
         if height > 0.0 {
-            above += grid.area_m2(cell as u32);
+            above += area;
         }
     }
     let achieved = if total == 0.0 { 0.0 } else { above / total };

@@ -1,4 +1,4 @@
-use crate::grid::{downsample, upsample, CubeSphere};
+use crate::grid::{downsample, downsample_max, upsample, CubeSphere};
 
 const RADIUS: f64 = 6_371_000.0;
 
@@ -148,4 +148,174 @@ fn downsample_of_upsample_matches_smooth_field() {
         max_err = max_err.max((orig - got).abs());
     }
     assert!(max_err < 0.05, "max err {max_err}");
+}
+
+#[test]
+fn downsample_max_keeps_the_largest_child() {
+    let parent = CubeSphere::new(8, RADIUS).unwrap();
+    let child = CubeSphere::new(16, RADIUS).unwrap();
+    let mut field = vec![1.0f32; child.cell_count()];
+    let kids = parent.child_ids(0);
+    field[kids[2] as usize] = 9.0;
+    let got = downsample_max(&child, &field, &parent).unwrap();
+    assert_eq!(got[0], 9.0);
+    assert!(got[1..].iter().all(|value| *value == 1.0));
+}
+
+#[test]
+fn bilinear_across_faces_matches_interior_accuracy() {
+    let n = 32u32;
+    let grid = CubeSphere::new(n, RADIUS).unwrap();
+    let axis = [0.3, -0.5, 0.81];
+    let truth = |p: [f64; 3]| p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2];
+    let field: Vec<f32> = (0..grid.cell_count())
+        .map(|cell| truth(grid.position(cell as u32)) as f32)
+        .collect();
+    let mut interior = 0.0f64;
+    let mut edge = 0.0f64;
+    let nf = n as f64;
+    for face in 0..6u32 {
+        let mut s = 1.25;
+        while s <= nf - 1.25 {
+            let mut t = 1.25;
+            while t <= nf - 1.25 {
+                interior = interior.max(sample_error(&grid, &field, face, s, t, &truth));
+                t += 0.5;
+            }
+            s += 0.5;
+        }
+        for along in 0..n {
+            let a = along as f64 + 0.5;
+            for inset in [0.05, 0.25, 0.55, 0.85] {
+                for (fx, fy) in [(inset, a), (nf - inset, a), (a, inset), (a, nf - inset)] {
+                    edge = edge.max(sample_error(&grid, &field, face, fx, fy, &truth));
+                }
+            }
+        }
+        for fx in [0.05, 0.25, 0.75] {
+            for fy in [0.05, 0.25, 0.75] {
+                for (x, y) in [(fx, fy), (nf - fx, fy), (fx, nf - fy), (nf - fx, nf - fy)] {
+                    edge = edge.max(sample_error(&grid, &field, face, x, y, &truth));
+                }
+            }
+        }
+    }
+    assert!(
+        edge <= 2.0 * interior.max(1e-8),
+        "edge {edge} interior {interior}"
+    );
+}
+
+fn sample_error(
+    grid: &CubeSphere,
+    field: &[f32],
+    face: u32,
+    fx: f64,
+    fy: f64,
+    truth: &impl Fn([f64; 3]) -> f64,
+) -> f64 {
+    let point = point_on_face(face, grid.n, fx, fy);
+    (f64::from(grid.sample_bilinear(field, point)) - truth(point)).abs()
+}
+
+fn point_on_face(face: u32, n: u32, fx: f64, fy: f64) -> [f64; 3] {
+    let nf = n as f64;
+    let a = (fx / nf - 0.5) * std::f64::consts::FRAC_PI_2;
+    let b = (fy / nf - 0.5) * std::f64::consts::FRAC_PI_2;
+    let basis = crate::grid::FACE_BASIS[face as usize];
+    let ta = a.tan();
+    let tb = b.tan();
+    let mut q = [0.0; 3];
+    for c in 0..3 {
+        q[c] = basis[0][c] + ta * basis[1][c] + tb * basis[2][c];
+    }
+    let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+    [q[0] / len, q[1] / len, q[2] / len]
+}
+
+#[test]
+fn chart_stencil_matches_sample_at() {
+    let grid = CubeSphere::new(16, RADIUS).unwrap();
+    let field: Vec<f32> = (0..grid.cell_count())
+        .map(|cell| {
+            let p = grid.position(cell as u32);
+            (p[0] * 3.0 + p[1] * -2.0 + p[2] * 5.0) as f32
+        })
+        .collect();
+    let n = grid.n as f64;
+    for face in 0..6u32 {
+        let mut s = -0.35;
+        while s <= n + 0.35 {
+            let mut t = -0.35;
+            while t <= n + 0.35 {
+                let stencil = grid.chart_stencil(face, s, t);
+                let got = stencil.sample(&field);
+                let expect = f64::from(grid.sample_at(&field, face, s, t));
+                assert!(
+                    (got - expect).abs() < 1e-4,
+                    "face {face} ({s},{t}) stencil {got} sample {expect}"
+                );
+                t += 0.7;
+            }
+            s += 0.7;
+        }
+    }
+}
+
+/// A two-valued field with a sharp step across face edges: every sample near
+/// an edge, through the bilinear chart and through the precomputed stencil,
+/// must stay inside the field's range (no cross-face overshoot).
+#[test]
+fn cross_face_samples_do_not_overshoot_sharp_steps() {
+    let grid = CubeSphere::new(16, RADIUS).unwrap();
+    let axis = {
+        let raw = [0.3f64, 0.8, -0.5];
+        let len = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+        [raw[0] / len, raw[1] / len, raw[2] / len]
+    };
+    let field: Vec<f32> = (0..grid.cell_count() as u32)
+        .map(|cell| {
+            let p = grid.position(cell);
+            if p[0] * axis[0] + p[1] * axis[1] + p[2] * axis[2] > 0.05 {
+                40.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let n = grid.n;
+    let mut checked = 0;
+    for cell in 0..grid.cell_count() as u32 {
+        let (_, i, j) = grid.decode(cell);
+        if i != 0 && j != 0 && i + 1 != n && j + 1 != n {
+            continue;
+        }
+        let a = grid.position(cell);
+        for nb in grid.neighbors(cell) {
+            if nb == crate::grid::NONE {
+                continue;
+            }
+            let b = grid.position(nb);
+            for t in [0.1, 0.3, 0.5, 0.7] {
+                let raw = [
+                    a[0] + (b[0] - a[0]) * t,
+                    a[1] + (b[1] - a[1]) * t,
+                    a[2] + (b[2] - a[2]) * t,
+                ];
+                let len = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+                let p = [raw[0] / len, raw[1] / len, raw[2] / len];
+                let direct = grid.sample_bilinear(&field, p);
+                let (face, fx, fy) = grid.face_coords(p);
+                let stencil = grid.chart_stencil(face, fx, fy).sample(&field);
+                for value in [f64::from(direct), stencil] {
+                    assert!(
+                        (-1e-4..=40.0001).contains(&value),
+                        "cell {cell} -> {nb} t {t}: sample {value} outside [0, 40]"
+                    );
+                }
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000);
 }

@@ -7,6 +7,7 @@ members = [
     "crates/daena-physical",
     "crates/daena-plugin-api",
     "crates/daena-plugin-host",
+    "crates/daena-worldgen",
     "src-tauri",
 ]
 exclude = [
@@ -32,4 +33,7 @@ opt-level = 3
 
 # The generator is CPU-bound; keep it optimized even in dev builds.
 [profile.dev.package.daena-physical]
+opt-level = 3
+
+[profile.dev.package.daena-worldgen]
 opt-level = 3

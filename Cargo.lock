@@ -1029,6 +1029,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "daena-worldgen"
+version = "0.1.0"
+dependencies = [
+ "png 0.17.16",
+ "rayon",
+]
+
+[[package]]
 name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

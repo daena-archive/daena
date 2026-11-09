@@ -1,18 +1,22 @@
 # World engine: emergent physical worlds at real-world scale
 
-Status: accepted direction, phase A in progress. The engine is a new crate,
-`crates/daena-worldgen`; the current `crates/daena-physical` pipeline keeps
-working until the engine is integrated (phase D).
+Status: phases A–C are built (terrain; climate, water and ice; presets). What
+is left of them is under "Remaining work". Phase D adds hazards and phase E
+integrates the engine. The engine is a new crate, `crates/daena-worldgen`; the
+current `crates/daena-physical` pipeline keeps working until phase E.
 
 Decisions (2026-11-08):
 
-- New crate, integrated in phase D.
+- New crate, integrated in phase E.
 - Default resolution `n = 512` (~20 km cells); `n = 1024` (~10 km) is the
   high setting.
-- Phase D is a hard cut: Maps is in beta, so worlds saved in the current
-  source format are not kept readable.
-- Hazards (tsunamis, tornadoes, cyclones and the rest) are deferred until
-  terrain, climate and water are proven.
+- Integration (phase E) is a hard cut: Maps is in beta, so worlds saved in
+  the current source format are not kept readable.
+- Hazards (tsunamis, tornadoes, cyclones and the rest) were deferred until
+  terrain, climate and water were proven. They are back on the agenda as
+  phase D (2026-11-09), before integration: the shipped product already
+  derives earthquake, volcanic, storm and flood hazards, and integration must
+  keep them.
 - Atlas keeps solving the coarse-to-detail transform for now; it is revisited
   once the canonical cells are ~10–20 km instead of ~100 km.
 
@@ -65,7 +69,7 @@ greenhouse, rotation, tectonic activity — not separate painters.
 | 2048 (stretch) | 4.9 km | 25.2M | < 30 s | < 2.5 GB |
 
 `n = 1024` is 85× the cells of today's production grid. These are engine
-targets; the product budgets in ADR 0004 change only in phase D, with the
+targets; the product budgets in ADR 0004 change only in phase E, with the
 measurements from this engine as the evidence.
 
 ## Phase A results (2026-11-08)
@@ -87,6 +91,9 @@ coasts are tuned by one continental-crust margin constant, and rifts follow
 plate boundaries that are still smoother than Earth's.
 
 ## Phase B results (2026-11-09)
+
+Recorded when phase B landed. Phase C changed the climate; current numbers
+are under phase C and "Remaining work".
 
 Climate, water, ice and biomes, coupled back into erosion:
 
@@ -203,17 +210,47 @@ warmer than Earth), poles −9 to −12.5 °C, 6–17 % desert, 670–990 mm of 
 rain, 0–27 M km² perennial and 6–23 M km² seasonal sea ice. Every run is
 3.2–4.1 s on the development build; output is identical for 1 and 12 threads.
 
-Known gaps, in order of effect:
+Open gaps are listed under "Remaining work".
 
-- **Sea ice has no thickness or latent heat.** Near the pole, where summer
-  sunlight is strongest, the pack melts back as readily as at its edge, so
-  ice months can dip from 10 to 8 poleward of the main pack.
-- **Cold worlds settle slowly.** Frozen's ice fronts still move by about 4 K
-  between the last two spin-up years; it publishes the two-year mean.
-- **Hothouse equator is still about 37 °C** (the Eocene's was about 35 °C).
-- **Island arcs stay modest at low land fractions.** Continental crust is
-  placed independently of plates and takes most of the land budget, so on one
-  seed Archipelago and Water world share their continents.
+## Remaining work (2026-11-09)
+
+Phases A–C are built. These items of theirs are open, in priority order;
+phase D (hazards) and phase E (integration) follow.
+
+1. **Speed and memory targets** (phases A and B). Release build, seed 7,
+   engine only, same machine as the baseline:
+
+   | Level | Time | Target | Peak memory | Target |
+   | --- | --- | --- | --- | --- |
+   | `n = 512` | 3.0 s | 1.5 s | 490 MB | 200 MB |
+   | `n = 1024` | 5.9 s | 6 s | 1.71 GB | 700 MB |
+
+   Phase A alone met the `n = 512` time (0.86 s). At `n = 512` the climate is
+   now about 1.7 s of the 3.0 s: three passes on the 64-cell climate grid
+   (0.28 s at level 64, 0.66 s at level 256, 0.63 s on the final surface)
+   plus 0.13 s of downscaling, mostly the 40-year temperature spin-up, the
+   discarded moisture year and the alternating transport solves. Erosion
+   levels take about 0.8 s and tectonics 0.2 s. Memory was over target at
+   `n = 1024` in phase A (per-root basin records, buffer growth), and phase B
+   more than doubled it (full-resolution climate and hydrology fields).
+2. **Sea level from a water inventory** (planned for phase C). Sea level is
+   still solved from a target land fraction, so presets set land share
+   directly instead of it following from how much water the planet has.
+3. **Open physics gaps**:
+   - rifts follow plate boundaries that are smoother than Earth's and show as
+     long thin troughs (phase A);
+   - continental shelves are tuned by one crust-margin constant (phase A);
+   - continental crust is placed independently of plates, so on one seed
+     Archipelago and Water world share their continents, and island arcs
+     stay modest at low land fractions (phase A);
+   - dry-belt edges over the ocean are sharper than Earth's (phase B);
+   - sea ice has no thickness or latent heat, so near the pole it melts back
+     as readily as at its edge (phase C);
+   - cold worlds keep up to about 4 K of drift at ice fronts after the
+     40-year spin-up (Frozen, and two of nine Earthlike seeds); the
+     published state is the two-year mean (phase C);
+   - Earthlike runs about 1 K warmer than Earth (14.9–16.6 °C), and the
+     Hothouse equator averages about 37 °C (phase C).
 
 ## Grid: equiangular cube sphere
 
@@ -251,14 +288,16 @@ settings + seed
        flow routing -> depression routing -> drainage -> implicit stream power
        -> threshold hillslopes -> smoothing
        climate pass 2 at n = 256 (or the final level if smaller)
-  -> sea level: solve for the water inventory, shift so sea level = 0
+  -> sea level: from the target land fraction (a water inventory is still to
+       come), shift so sea level = 0
   -> climate pass 3 on the final surface, downscaled to N
   -> hydrology: oceans, lakes by water balance, rivers, glaciers, sea ice
-  -> biomes (hazards deferred)
+  -> biomes
+  -> hazards (phase D): long-term rate and potential fields
   -> outputs: cube-sphere fields, lat/lon sampling, previews
 ```
 
-Phases A–C below build the engine; phase D integrates it.
+Phases A–D below build the engine; phase E integrates it.
 
 ### Tectonics (phase A)
 
@@ -343,9 +382,9 @@ Default schedule (tunable): 30 iterations at `n ≤ 64`, 20 at 128, 12 at 256,
 Physical units throughout (metres, years, m²), so the same constants mean the
 same thing at every level.
 
-Sea level is solved after the last level from the target land fraction
-(phase C: from a water inventory), then all elevations shift so sea level is
-0 m. Sea rising over the eroded margins drowns valleys and lowlands: shelves,
+Sea level is solved after the last level from the target land fraction (a
+water inventory is planned; see "Remaining work"), then all elevations shift
+so sea level is 0 m. Sea rising over the eroded margins drowns valleys and lowlands: shelves,
 rias, islands and straits come from the landscape itself. Ocean is water at or
 below sea level connected to the open ocean; enclosed depressions below sea
 level stay land until hydrology decides whether they hold a lake.
@@ -367,8 +406,10 @@ windward/leeward corrections.
   bands only as far as their shared sea reaches and deposits it on ocean.
   Sea ice insulates the ocean below it. Ocean has a mixed-layer heat
   capacity, land a small one, so continents get strong seasons. Albedo by
-  surface (ocean, land, snow and ice below a threshold temperature), which
-  gives ice–albedo feedback: cold presets can run away toward a snowball.
+  surface (ocean, land, snow and ice below a threshold temperature; cover
+  follows the 3×3 neighbourhood temperature, and land whose warmest month
+  stays below freezing becomes ice sheet), which gives ice–albedo feedback:
+  cold presets can run away toward a snowball.
   Greenhouse strength shifts `A`. Lapse rate −6.5 K/km on downscaling.
 - **Circulation**: Hadley cell edge from rotation rate (Held–Hou scaling,
   ~30° for Earth, wider for slow rotators), giving trade winds, westerlies and
@@ -379,6 +420,8 @@ windward/leeward corrections.
   condensation where vapour exceeds saturation (including orographic cooling
   on windward slopes; descending lee air dries, giving rain shadows),
   convection in the ITCZ and suppression under the subtropical highs.
+  Vapour and soil water carry from month to month, and storm-track eddies
+  carry vapour poleward from the Hadley edge to the pole.
 - **Water balance**: potential evaporation from temperature, actual
   evaporation by the Budyko curve (Fu's equation), runoff = P − AET.
 - **Ice**: monthly snow accumulation against positive-degree-day melt gives a
@@ -408,23 +451,7 @@ windward/leeward corrections.
   tropical seasonal and rain forest, wetland, mangrove, salt flat. Ocean
   classes: sea ice, reef, shelf, deep ocean, trench.
 
-### Presets (phase C) and hazards (deferred)
-
-Hazards are deferred (see Decisions). When they return, they are long-term
-rate or potential fields (ADR 0004), not simulated events:
-
-- earthquakes from boundary distance, type and relative speed;
-- volcanism at arcs, rifts, ridges and hotspots;
-- tsunami exposure: ocean-path distance from subduction trenches to low
-  coasts;
-- tropical cyclones: genesis where the warmest-month sea surface exceeds
-  26.5 °C between ~5° and the Hadley edge, tracks carried by trade winds and
-  recurving into the westerlies, decaying over land;
-- tornadoes and severe convection: warm, moist, low-relief continental
-  interiors in mid-latitudes with a strong meridional temperature contrast,
-  stronger in the lee of ranges (dryline);
-- floods (high discharge on low slopes), landslides (slope, rain, shaking),
-  avalanches (slope and snow).
+### Presets (phase C)
 
 Presets set physical parameters only (`Preset::settings`, CLI `--preset`):
 
@@ -443,11 +470,49 @@ Climate presets use the greenhouse term, not the artistic temperature offset,
 so that offset stays free for the user. Every preset is a starting point; each
 parameter stays editable, and CLI flags override the preset in any order.
 
-### Integration (phase D, after review)
+### Hazards (phase D)
+
+Hazards are long-term rate or potential fields (ADR 0004) derived from the
+engine's causes, not simulated events. Users materialize individual events
+from them, as today.
+
+Parity with the shipped product comes first, because integration replaces the
+pipeline that derives these now:
+
+- earthquakes: hazard and annual rate from boundary distance, kind and
+  relative speed;
+- volcanism: hazard, eruption rate and stable volcanic sources (origin and
+  activity class) at arcs, rifts, ridges and hotspots, using the arc
+  volcanoes and hotspot points the tectonics already places;
+- storms: genesis, track density and intensity potential from the seasonal
+  climate (warm-month sea surface above 26.5 °C between ~5° and the Hadley
+  edge, carried by the trade winds, recurving into the westerlies, decaying
+  over land);
+- drought, heat-wave and extreme-rain potentials from the seasonal climate;
+- floods: high discharge on low slopes, from basin-outlet thresholds.
+
+Then the hazards of the original brief that the product does not have yet:
+
+- tsunami exposure: ocean-path distance from subduction trenches to low
+  coasts;
+- tornadoes and severe convection: warm, moist, low-relief continental
+  interiors in mid-latitudes with a strong meridional temperature contrast,
+  stronger in the lee of ranges (dryline);
+- landslides (slope, rain, shaking) and avalanches (slope and snow).
+
+Each field is per cell on the cube sphere, bounded, versioned and
+deterministic like the rest of the engine, and costs a few percent of the
+generation time at most. Tests check the physical ordering each field must
+keep (nearer a fast convergent boundary is more seismic; a warmer sea spawns
+more storms), as the current hazard tests do.
+
+### Integration (phase E, after review)
 
 - A new physical source version that stores the cube-sphere elevation and
   causes natively (≈ 25 MB of `i32` elevation at `n = 1024`, within the
   128 MB source bound), with the old version rejected per ADR 0004.
+- Event sampling (earthquake, eruption, storm, flood) reads the phase D
+  fields; events already materialized stay authored history.
 - `daena-physical` generation calls the engine; climate, hydrology, hazards,
   Find Place, routing and landmass selection read engine fields through
   lat/lon sampling instead of the equirectangular grid.

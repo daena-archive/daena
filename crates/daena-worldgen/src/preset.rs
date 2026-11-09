@@ -90,8 +90,8 @@ impl Preset {
     /// Starting settings. Seed and resolution stay at their defaults; callers set them.
     ///
     /// The climate presets use the greenhouse knob, not `temperature_offset_c`, so the
-    /// artistic offset stays free for the user. Frozen stays mild: at −16 W/m² some seeds
-    /// already fall to a 6 °C equator, and −31 W/m² (a −15 °C offset) is a hard snowball.
+    /// artistic offset stays free for the user. Frozen stays mild: with ice-sheet albedo
+    /// and weaker moist transport in cold air, −12 W/m² already slides toward a snowball.
     pub fn settings(self) -> WorldSettings {
         let base = WorldSettings::default();
         let (
@@ -103,7 +103,7 @@ impl Preset {
             precipitation_scale,
         ) = match self {
             Self::Earthlike => (0.29, 14, ContinentLayout::Mixed, 1.0, 0.0, 1.0),
-            Self::Frozen => (0.32, 14, ContinentLayout::Mixed, 1.0, -12.0, 1.0),
+            Self::Frozen => (0.32, 14, ContinentLayout::Mixed, 1.0, -8.0, 1.0),
             Self::Hothouse => (0.25, 14, ContinentLayout::Mixed, 1.0, 20.0, 1.0),
             Self::Desert => (0.60, 14, ContinentLayout::Few, 1.0, 6.0, 0.25),
             Self::Archipelago => (0.10, 30, ContinentLayout::Many, 1.5, 8.0, 1.0),

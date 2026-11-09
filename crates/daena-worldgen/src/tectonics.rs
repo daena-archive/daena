@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 use crate::grid::{dot3, normalize, CubeSphere, NONE};
 use crate::noise::{
-    derive_seed, derive_seed_salt, fbm, hash_u01, random_unit, ridged, warp, SeedDomain,
+    derive_seed, derive_seed_salt, fbm, hash3, hash_u01, random_unit, ridged, warp, SeedDomain,
 };
 use crate::{ContinentLayout, WorldError, WorldSettings};
 
@@ -170,6 +170,7 @@ pub fn build(settings: &WorldSettings, n: u32) -> Result<Tectonics, WorldError> 
         bg_seed: derive_seed(seed, SeedDomain::BackgroundUplift),
         old_seed: derive_seed(seed, SeedDomain::OldOrogen),
         arc_seed: derive_seed(seed, SeedDomain::ArcRidged),
+        volcano_seed: derive_seed(seed, SeedDomain::ArcVolcano),
         xform_seed: derive_seed(seed, SeedDomain::TransformRidged),
         mod_seed: derive_seed(seed, SeedDomain::UpliftModulation),
     };
@@ -224,6 +225,7 @@ struct FieldCtx<'a> {
     bg_seed: u64,
     old_seed: u64,
     arc_seed: u64,
+    volcano_seed: u64,
     xform_seed: u64,
     mod_seed: u64,
 }
@@ -1201,7 +1203,15 @@ fn eval_cell(ctx: &FieldCtx<'_>, i: usize) -> (f32, f32, f32) {
         if rec.crust_a == 0 && rec.crust_b == 0 {
             let s_trench = (f64::from(rec.convergence_m_yr) / 0.05).clamp(0.4, 1.5);
             let arc = ridged(ctx.arc_seed, p, 12.0, 5, 2.0, 0.5);
-            base += 4000.0 * s_trench * bump((d - 150_000.0) / 50_000.0) * (0.35 + 0.65 * arc);
+            let band = bump((d - 150_000.0) / 60_000.0);
+            let platform = 2500.0 * s_trench * band * (0.35 + 0.65 * arc);
+            // The 125-site search only matters inside the arc band.
+            let cones = if band > 1.0e-4 {
+                volcano_field(ctx.volcano_seed, p, ctx.radius, 140_000.0, 55_000.0)
+            } else {
+                0.0
+            };
+            base += platform + 5000.0 * s_trench.min(1.2) * band * cones;
         }
     }
     add_hotspot_base(ctx, p, crust, &mut base);
@@ -1217,7 +1227,7 @@ fn add_hotspot_base(ctx: &FieldCtx<'_>, p: [f64; 3], crust: u8, base: &mut f64) 
     for hs in ctx.hotspots {
         for (k, point) in hs.points.iter().enumerate() {
             let sigma = if crust == 0 { 70_000.0 } else { 250_000.0 };
-            let amp = if crust == 0 { 4800.0 } else { 300.0 };
+            let amp = if crust == 0 { 6800.0 } else { 300.0 };
             let min_dot = (8.0 * sigma / ctx.radius).cos();
             if dot3(p, *point) < min_dot {
                 continue;
@@ -1368,6 +1378,58 @@ fn gauss(d: f64, sigma: f64) -> f64 {
 
 fn bump(x: f64) -> f64 {
     (-x * x).exp()
+}
+
+/// Discrete volcanoes on a jittered lattice: the largest cone value at `p`, in [0, 1].
+/// `spacing_m` is the lattice step, `sigma_m` the cone radius; about a third of
+/// lattice sites have no volcano so chains break into islands.
+///
+/// Only sites whose un-normalised point lies within `spacing_m / 2` of the unit sphere
+/// are kept. A thin shell gives each surface point a fixed set of candidate sites, so
+/// there are no seams at lattice planes. A full 3D box would count sites from several
+/// radial layers, which jumped at lattice planes and gave about three times the intended
+/// density. With the shell, density is one site per `spacing_m²` on the sphere, times
+/// the 0.65 occupancy.
+pub(crate) fn volcano_field(
+    seed: u64,
+    p: [f64; 3],
+    radius_m: f64,
+    spacing_m: f64,
+    sigma_m: f64,
+) -> f64 {
+    let c = spacing_m / radius_m;
+    let base = [
+        (p[0] / c).floor() as i64,
+        (p[1] / c).floor() as i64,
+        (p[2] / c).floor() as i64,
+    ];
+    let mut best = 0.0f64;
+    for dx in -2i64..=2 {
+        for dy in -2i64..=2 {
+            for dz in -2i64..=2 {
+                let l = [base[0] + dx, base[1] + dy, base[2] + dz];
+                let h = hash3(seed, l[0], l[1], l[2]);
+                if ((h & 0xFFFF) as f64 / 65535.0) < 0.35 {
+                    continue;
+                }
+                let jitter = |shift: u32| 0.15 + 0.7 * (((h >> shift) & 0xFFFF) as f64 / 65535.0);
+                let raw = [
+                    (l[0] as f64 + jitter(16)) * c,
+                    (l[1] as f64 + jitter(32)) * c,
+                    (l[2] as f64 + jitter(48)) * c,
+                ];
+                let shell = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+                if (shell - 1.0).abs() > 0.5 * c {
+                    continue;
+                }
+                let centre = normalize(raw);
+                let distance = angle_between(p, centre) * radius_m;
+                let value = (-(distance / sigma_m).powi(2)).exp();
+                best = best.max(value);
+            }
+        }
+    }
+    best
 }
 
 fn f32_key(x: f32) -> u32 {

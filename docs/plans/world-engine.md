@@ -154,41 +154,66 @@ settings). Calibrating them exposed four climate faults, fixed here:
   stopped at the Ferrel edge; it now rises to the middle of the Ferrel band
   and fades to zero at the pole.
 
-Seed 7, `n = 512`, after the fixes (global, equator and polar °C; rain mm;
-desert share of ice-free land; ice in million km²):
+### Phase C, second pass: transport, sea ice, land ice and island arcs
 
-| Preset | T | T eq | T pole | P | P land | Desert | Ice sheet | Perennial sea ice |
+- **Moist transport.** Warm air carries more latent heat, so the atmosphere's
+  diffusivity is scaled by `(1 + χ(T)) / (1 + χ(T_Earth))`, with
+  `χ = (L/c_p)·RH·dq_s/dT` at each band interface and `T_Earth` the
+  calibration climate's zonal profile. Earth is unchanged; warm planets
+  flatten their pole-to-equator contrast and cold planets sharpen it.
+  Hothouse went from a 36 K to a 27 K contrast (equator 40 → 37 °C, poles
+  4 → 10 °C).
+- **Ocean heat transport.** A second band exchange on ocean-mean
+  temperature, scaled by the sea two bands share, deposits heat on ocean
+  only, and is solved with the atmosphere by alternating implicit solves.
+  The ocean takes about a fifth of the transport (diffusivity 0.12 against
+  0.375 for the atmosphere, which together keep Earth's total).
+- **Insulating sea ice.** Ice hides 70 % of the ocean's extra heat capacity
+  from the air, so winters over the pack are cold and the ice melts back in
+  summer. Earthlike's sea ice went from 53 M km² perennial and 2 M km²
+  seasonal to 12 M km² and 20 M km² (Earth: a few and about 25–30).
+  Spin-up now converges.
+- **Land-ice albedo.** Land whose warmest month stays below about −2 °C at
+  its height (regional, over the last twelve months) becomes ice sheet with
+  albedo 0.5. A stronger version (0.62, from +2 °C) never settled: ice
+  sheets kept advancing for decades.
+- **Island arcs and hotspot islands.** Ocean–ocean arcs carry a lower
+  platform plus discrete volcanoes on a jittered lattice (about 140 km apart,
+  55 km radius, a third of sites empty); sites are kept only in a thin shell
+  around the sphere, which avoids seams at lattice planes. Oceanic hotspots
+  rise 6.8 km. Archipelago at `n = 128` has 132–133 small islands against
+  82–94 before; most arcs show as chains of shallow banks with a few islands.
+
+Seed 7, `n = 512` (global, equator and polar °C; rain mm; desert share of
+ice-free land; ice in million km²):
+
+| Preset | T | T eq | T pole | P | P land | Desert | Ice sheet | Perennial / seasonal sea ice |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Earthlike | 12.4 | 27.8 | −18.2 | 969 | 515 | 38% | 0 | 53 |
-| Frozen | −0.2 | 17.9 | −30.6 | 404 | 223 | 31% | 0.4 | 112 |
-| Hothouse | 27.0 | 39.6 | 3.9 | 2271 | 1270 | 15% | 0 | 0 |
-| Desert | 12.4 | 25.4 | −14.6 | 470 | 240 | 65% | 0.05 | 8 |
-| Archipelago | 22.0 | 34.6 | −5.8 | 1707 | 1173 | 22% | 0 | 13 |
-| Water world | 23.0 | 35.0 | −2.9 | 1763 | 1849 | 22% | 0.02 | 11 |
-| Pangea | 12.6 | 27.5 | −17.3 | 958 | 448 | 48% | 0 | 42 |
-| Shattered | 14.3 | 28.9 | −15.9 | 1102 | 622 | 29% | 0 | 9 |
+| Earthlike | 15.0 | 28.5 | −10.7 | 1058 | 615 | 29% | 1.1 | 12 / 20 |
+| Frozen | 3.3 | 22.4 | −30.8 | 571 | 327 | 35% | 12.4 | 98 / 2 |
+| Hothouse | 27.1 | 37.2 | 9.8 | 2023 | 1284 | 14% | 0 | 0 / 0 |
+| Desert | 13.1 | 26.0 | −13.3 | 487 | 269 | 61% | 0 | 0 / 3 |
+| Archipelago | 22.9 | 33.0 | 2.2 | 1593 | 1260 | 17% | 0 | 0 / 1 |
+| Water world | 23.7 | 33.2 | 5.3 | 1619 | 2017 | 17% | 0 | 0 / 0 |
+| Pangea | 15.1 | 28.2 | −10.0 | 1040 | 510 | 42% | 0 | 5 / 10 |
+| Shattered | 14.9 | 28.8 | −15.6 | 1113 | 660 | 26% | 0.7 | 0 / 3 |
 
-Seed 7 is the most arid Earthlike world checked (39 % at `n = 256`). Eight
-other seeds at `n = 256` give 8–21 % desert (median about 17 %; Earth about
-20 %) and 610–910 mm of land rain (median about 780 mm; Earth about 750).
-Every run is 3.2–4.1 s on the development build (the warm-up moisture year
-adds about 0.1–0.2 s); output is identical for 1 and 12 threads.
+Eight other Earthlike seeds at `n = 256`: 14.9–16.6 °C global (about 1 K
+warmer than Earth), poles −9 to −12.5 °C, 6–17 % desert, 670–990 mm of land
+rain, 0–27 M km² perennial and 6–23 M km² seasonal sea ice. Every run is
+3.2–4.1 s on the development build; output is identical for 1 and 12 threads.
 
 Known gaps, in order of effect:
 
-- **No ocean heat transport.** Polar seas are too cold: Earthlike has about
-  53 M km² of perennial sea ice (Earth: a few). Land has no ice-sheet albedo,
-  so ice sheets stay small.
-- **Band transport near ice fronts.** Open water in a band that also holds ice
-  draws the band's extra transport, so the winter just equatorward of a front
-  can be warmer than further from it; a faint seasonal-ice strip appears ahead
-  of some fronts. Local 2D heat exchange removes it but did not settle within
-  40 years.
-- **Hothouse keeps Earth's pole-to-equator gradient,** so its equator
-  averages 40 °C.
-- **Archipelago has no island arcs.** Ocean–ocean subduction does not build
-  volcanic islands, and continental crust is placed independently of plates,
-  so on one seed Archipelago is Water world with a lower sea.
+- **Sea ice has no thickness or latent heat.** Near the pole, where summer
+  sunlight is strongest, the pack melts back as readily as at its edge, so
+  ice months can dip from 10 to 8 poleward of the main pack.
+- **Cold worlds settle slowly.** Frozen's ice fronts still move by about 4 K
+  between the last two spin-up years; it publishes the two-year mean.
+- **Hothouse equator is still about 37 °C** (the Eocene's was about 35 °C).
+- **Island arcs stay modest at low land fractions.** Continental crust is
+  placed independently of plates and takes most of the land budget, so on one
+  seed Archipelago and Water world share their continents.
 
 ## Grid: equiangular cube sphere
 
@@ -337,7 +362,10 @@ windward/leeward corrections.
   radiation `A + B·T`, diffusive meridional transport on equal-area bands,
   zonal mixing within a band), stepped over 12 months until periodic.
   Transport reaches each cell as the same flux per unit area, solved
-  implicitly with the local balance (one tridiagonal solve per month). Ocean has a mixed-layer heat
+  implicitly with the local balance. The atmosphere's diffusivity scales with
+  moisture (Clausius–Clapeyron); a second, ocean channel moves heat between
+  bands only as far as their shared sea reaches and deposits it on ocean.
+  Sea ice insulates the ocean below it. Ocean has a mixed-layer heat
   capacity, land a small one, so continents get strong seasons. Albedo by
   surface (ocean, land, snow and ice below a threshold temperature), which
   gives ice–albedo feedback: cold presets can run away toward a snowball.
@@ -403,7 +431,7 @@ Presets set physical parameters only (`Preset::settings`, CLI `--preset`):
 | Preset | Land | Greenhouse | Rain supply | Plates | Layout | Activity |
 | --- | --- | --- | --- | --- | --- | --- |
 | Earthlike | 29% | 0 | 1.0 | 14 | mixed | 1.0 |
-| Frozen | 32% | −12 W/m² | 1.0 | 14 | mixed | 1.0 |
+| Frozen | 32% | −8 W/m² | 1.0 | 14 | mixed | 1.0 |
 | Hothouse | 25% | +20 W/m² | 1.0 | 14 | mixed | 1.0 |
 | Desert | 60% | +6 W/m² | 0.25 | 14 | few | 1.0 |
 | Archipelago | 10% | +8 W/m² | 1.0 | 30 | many | 1.5 |

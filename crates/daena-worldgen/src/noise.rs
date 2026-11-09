@@ -50,6 +50,8 @@ pub enum SeedDomain {
     BackgroundUplift,
     /// Continental base fBm.
     ContinentalSurface,
+    /// Ocean-ocean arc volcano lattice: site occupancy and jitter.
+    ArcVolcano,
 }
 
 impl SeedDomain {
@@ -78,6 +80,7 @@ impl SeedDomain {
             Self::OldOrogen => 0x1014,
             Self::BackgroundUplift => 0x1015,
             Self::ContinentalSurface => 0x1016,
+            Self::ArcVolcano => 0x1017,
         }
     }
 }

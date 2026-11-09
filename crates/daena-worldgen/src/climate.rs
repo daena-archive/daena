@@ -20,6 +20,13 @@ const LON_BINS: usize = 64;
 const SPINUP_LIMIT: u32 = 40;
 const SPINUP_TOLERANCE_K: f64 = 0.02;
 const B_FEEDBACK: f64 = 2.09;
+/// Ocean heat transport between bands, W/m²/K in `sin φ` units like the
+/// atmospheric diffusivity, scaled by the sea the two bands share.
+const OCEAN_DIFFUSION: f64 = 0.12;
+/// Alternating atmosphere and ocean solves per month.
+const TRANSPORT_SWEEPS: usize = 3;
+/// Share of the ocean's extra heat capacity hidden by full sea-ice cover.
+const SEA_ICE_INSULATION: f64 = 0.7;
 /// Zonal mixing inside a latitude band, W/m²/K. Not an upwind coupling.
 /// Zonal flow crosses a continent in days, so land and sea in one band
 /// exchange heat about as strongly as they radiate (`B`). At 1 W/m²/K polar
@@ -47,6 +54,8 @@ const MELT_MM_PER_PDD: f64 = 4.0;
 // 0.62 over [-1.8, -8] °C. Cover lags that target by a month or two.
 const LAND_ALBEDO_COLD: f64 = 0.45;
 const LAND_SNOW_RAMP_C: f64 = -22.0;
+/// Ice-sheet albedo at the climate-cell scale (ice, firn, margins and cloud).
+const LAND_ICE_ALBEDO: f64 = 0.5;
 // Spec evaporation is 9/4 mm per 6 h at a unit deficit and 25 °C (9 mm/day).
 // That equilibrium is about 500 mm/yr here, short of 600–1400. 4 mm per 6 h
 // is 16 mm/day at full deficit and lands near the middle of the range.
@@ -616,7 +625,9 @@ fn rotation_of(hours: f64) -> Rotation {
     Rotation {
         phi_h_deg: phi_h,
         phi_f_deg: phi_h + 0.5 * (90.0 - phi_h),
-        diffusion: 0.45 * scale.clamp(0.5, 3.0),
+        // Atmospheric share of Earth's meridional transport; the ocean channel
+        // (`OCEAN_DIFFUSION`) carries the rest.
+        diffusion: 0.375 * scale.clamp(0.5, 3.0),
     }
 }
 
@@ -634,6 +645,9 @@ fn spin_up(
     let mut state = vec![15.0; n];
     let mut snow = vec![0.0; n];
     let mut ice = vec![0.0; n];
+    let mut glacier = vec![0.0; n];
+    // Neighbourhood temperature of the last twelve months, a rolling window.
+    let mut regional = vec![15.0; MONTHS * n];
     let mut temperature = vec![15.0; MONTHS * n];
     let mut s_land = vec![0.0; MONTHS * n];
     let mut s_ocean = vec![0.0; MONTHS * n];
@@ -652,12 +666,17 @@ fn spin_up(
                 temperature: &state,
                 snow: &snow,
                 ice: &ice,
+                glacier: &glacier,
                 insolation: &insolation[month * n..(month + 1) * n],
                 dt,
                 a_coeff,
                 diffusion: rotation.diffusion,
             });
             relax_cover(geo, land, &next, &mut snow, &mut ice);
+            for cell in 0..n {
+                regional[month * n + cell] = neighbourhood_mean(&geo[cell].neighbors, &next, cell);
+            }
+            relax_glacier(land, &regional, &mut glacier);
             let base = month * n;
             for cell in 0..n {
                 let idx = base + cell;
@@ -733,6 +752,28 @@ fn concat_f32(previous: &[f64], current: &[f64]) -> Vec<f32> {
     out
 }
 
+/// Perennial land ice, relaxed each month toward the warmest of the last
+/// twelve months. Land whose warmest month stays
+/// near freezing at its height keeps its snow through summer and turns into an
+/// ice sheet, which then reflects like ice. Without it polar continents had
+/// warm summers and no ice sheets.
+fn relax_glacier(land: &[CoarseLand], regional: &[f64], glacier: &mut [f64]) {
+    let n = land.len();
+    for cell in 0..n {
+        if land[cell].land_frac <= 0.0 {
+            glacier[cell] = 0.0;
+            continue;
+        }
+        let mut warm = f64::MIN;
+        for month in 0..MONTHS {
+            warm = warm.max(regional[month * n + cell]);
+        }
+        let t_warm = warm - LAPSE_K_PER_M * land[cell].elev_mean;
+        let target = smoothstep(0.0, -4.0, t_warm);
+        glacier[cell] += COVER_STEP * (target - glacier[cell]);
+    }
+}
+
 fn relax_cover(
     geo: &[Geo],
     land: &[CoarseLand],
@@ -774,6 +815,7 @@ struct EnergyIn<'a> {
     temperature: &'a [f64],
     snow: &'a [f64],
     ice: &'a [f64],
+    glacier: &'a [f64],
     insolation: &'a [f64],
     dt: f64,
     a_coeff: f64,
@@ -797,27 +839,35 @@ fn step_temperature(input: &EnergyIn<'_>) -> Vec<f64> {
     let local: Vec<LocalBalance> = (0..input.geo.len())
         .into_par_iter()
         .map(|cell| {
+            let land_frac = input.land[cell].land_frac;
+            let albedo = cover_albedo(
+                land_frac,
+                input.snow[cell],
+                input.ice[cell],
+                input.glacier[cell],
+            );
+            let band_mean = sample_band_delta(input.geo[cell].pos[2], &t_bar);
             local_balance(
-                input.capacity[cell],
+                insulated_capacity(input.capacity[cell], land_frac, input.ice[cell]),
                 input.temperature[cell],
                 input.insolation[cell],
-                cover_albedo(
-                    input.land[cell].land_frac,
-                    input.snow[cell],
-                    input.ice[cell],
-                ),
-                sample_band_delta(input.geo[cell].pos[2], &t_bar),
+                albedo,
+                band_mean,
                 input.dt,
                 input.a_coeff,
             )
         })
         .collect();
-    let flux = band_transport(input.geo, &local, input.diffusion, input.dt);
+    let flux = band_transport(input.geo, input.land, &local, &t_bar, input.diffusion);
     (0..input.geo.len())
         .into_par_iter()
         .map(|cell| {
             let item = local[cell];
-            (item.num + sample_band_delta(input.geo[cell].pos[2], &flux)) / item.k
+            let z = input.geo[cell].pos[2];
+            let sea_share = 1.0 - input.land[cell].land_frac;
+            let air = sample_band_delta(z, &flux.air);
+            let sea = sea_share * sample_band_delta(z, &flux.sea);
+            (item.num + air + sea) / item.k
         })
         .collect()
 }
@@ -845,45 +895,181 @@ fn local_balance(
     }
 }
 
-/// Meridional flux convergence per band, W/m², solved with the local balances.
-fn band_transport(geo: &[Geo], local: &[LocalBalance], diffusion: f64, dt: f64) -> [f64; BANDS] {
-    let mut sum_a = [0.0; BANDS];
-    let mut sum_g = [0.0; BANDS];
-    let mut sum_area = [0.0; BANDS];
+/// Meridional heat convergence per band, W/m².
+struct BandFlux {
+    /// Atmosphere, per unit of band area. Every cell takes the same flux.
+    air: [f64; BANDS],
+    /// Ocean, per unit of ocean area. A cell takes it times its ocean share.
+    sea: [f64; BANDS],
+}
+
+/// Atmosphere and ocean transport, solved implicitly with the local balances.
+///
+/// A cell is `T = (num + F_air + w F_sea) / k`, with `w` its ocean share. Band
+/// means are then linear in the two fluxes, so each channel is one implicit
+/// band exchange; the two are coupled by a few alternating solves.
+fn band_transport(
+    geo: &[Geo],
+    land: &[CoarseLand],
+    local: &[LocalBalance],
+    t_bar: &[f64; BANDS],
+    diffusion: f64,
+) -> BandFlux {
+    let mut area = [0.0; BANDS];
+    let mut sea_area = [0.0; BANDS];
     let mut occupied = [false; BANDS];
-    for (place, item) in geo.iter().zip(local) {
-        sum_a[place.band] += place.area * item.num / item.k;
-        sum_g[place.band] += place.area / item.k;
-        sum_area[place.band] += place.area;
+    for (place, cell) in geo.iter().zip(land) {
+        area[place.band] += place.area;
+        sea_area[place.band] += place.area * (1.0 - cell.land_frac);
         occupied[place.band] = true;
     }
+    // Area means: T_bar = a + g F_air + h F_sea. Ocean means (weights A w):
+    // T_sea = a_o + g_o F_air + h_o F_sea, with F_sea per unit of band area.
     let mut a = [0.0; BANDS];
     let mut g = [0.0; BANDS];
-    for band in 0..BANDS {
-        if sum_area[band] > 0.0 {
-            a[band] = sum_a[band] / sum_area[band];
-            g[band] = sum_g[band] / sum_area[band];
+    let mut h = [0.0; BANDS];
+    let mut a_o = [0.0; BANDS];
+    let mut g_o = [0.0; BANDS];
+    let mut h_o = [0.0; BANDS];
+    for ((place, cell), item) in geo.iter().zip(land).zip(local) {
+        let b = place.band;
+        let w = 1.0 - cell.land_frac;
+        let share = if sea_area[b] > 0.0 {
+            w * area[b] / sea_area[b]
+        } else {
+            0.0
+        };
+        a[b] += place.area * item.num / item.k;
+        g[b] += place.area / item.k;
+        h[b] += place.area * share / item.k;
+        a_o[b] += place.area * w * item.num / item.k;
+        g_o[b] += place.area * w / item.k;
+        h_o[b] += place.area * w * share / item.k;
+    }
+    let mut sea_frac = [0.0; BANDS];
+    for b in 0..BANDS {
+        if area[b] > 0.0 {
+            a[b] /= area[b];
+            g[b] /= area[b];
+            h[b] /= area[b];
+            sea_frac[b] = sea_area[b] / area[b];
+        }
+        if sea_area[b] > 0.0 {
+            a_o[b] /= sea_area[b];
+            g_o[b] /= sea_area[b];
+            h_o[b] /= sea_area[b];
         }
     }
     fill_empty_bands(&mut a, &mut g, &occupied);
-    let mut capacity = [0.0; BANDS];
-    for band in 0..BANDS {
-        if g[band] > 0.0 {
-            capacity[band] = dt / g[band];
+    let mut air_conductance = meridional_conductance(BANDS, diffusion);
+    let mut sea_conductance = meridional_conductance(BANDS, OCEAN_DIFFUSION);
+    let dx = 2.0 / BANDS as f64;
+    for i in 0..BANDS - 1 {
+        let x = -1.0 + (i + 1) as f64 * dx;
+        let t_face = 0.5 * (t_bar[i] + t_bar[i + 1]);
+        air_conductance[i] *= moist_scale(t_face, x);
+        // Ocean heat moves only as far as the sea between the bands reaches.
+        sea_conductance[i] *= sea_frac[i].min(sea_frac[i + 1]);
+    }
+    let air_inertia: Vec<f64> = g.iter().map(|value| 1.0 / value.max(1e-12)).collect();
+    let has_sea: Vec<bool> = (0..BANDS)
+        .map(|b| sea_area[b] > 0.0 && h_o[b] > 0.0)
+        .collect();
+    let sea_inertia: Vec<f64> = (0..BANDS)
+        .map(|b| if has_sea[b] { 1.0 / h_o[b] } else { 1.0 })
+        .collect();
+    let mut air = [0.0; BANDS];
+    let mut sea_band = [0.0; BANDS];
+    for _ in 0..TRANSPORT_SWEEPS {
+        let base: Vec<f64> = (0..BANDS).map(|b| a[b] + h[b] * sea_band[b]).collect();
+        let mixed = exchange_bands(&air_inertia, &base, &air_conductance).unwrap_or(base.clone());
+        for b in 0..BANDS {
+            air[b] = (mixed[b] - base[b]) * air_inertia[b];
+        }
+        let base: Vec<f64> = (0..BANDS)
+            .map(|b| {
+                if has_sea[b] {
+                    a_o[b] + g_o[b] * air[b]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let mixed = exchange_bands(&sea_inertia, &base, &sea_conductance).unwrap_or(base.clone());
+        for b in 0..BANDS {
+            sea_band[b] = if has_sea[b] {
+                (mixed[b] - base[b]) * sea_inertia[b]
+            } else {
+                0.0
+            };
         }
     }
-    let mixed = diffuse_meridional(&capacity, &a, diffusion, dt);
-    let mut flux = [0.0; BANDS];
-    for band in 0..BANDS {
-        if g[band] > 0.0 {
-            flux[band] = (mixed[band] - a[band]) / g[band];
+    let mut sea = [0.0; BANDS];
+    for b in 0..BANDS {
+        if sea_frac[b] > 0.0 {
+            sea[b] = sea_band[b] / sea_frac[b];
         }
     }
-    flux
+    BandFlux { air, sea }
 }
 
-fn cover_albedo(land_frac: f64, snow: f64, ice: f64) -> f64 {
-    let land = 0.32 + (LAND_ALBEDO_COLD - 0.32) * snow;
+/// `D (1 − x²) / dx²` at the `n − 1` inner interfaces of `n` equal-area bands.
+fn meridional_conductance(n: usize, diffusion: f64) -> Vec<f64> {
+    let dx = 2.0 / n as f64;
+    (1..n)
+        .map(|i| {
+            let x = -1.0 + i as f64 * dx;
+            diffusion * (1.0 - x * x) / (dx * dx)
+        })
+        .collect()
+}
+
+/// Implicit exchange `inertia_b (T_b − base_b) = Σ c (T_neighbour − T_b)` with
+/// `conductance[i]` between bands `i` and `i + 1`. Conserves `Σ inertia T`.
+fn exchange_bands(inertia: &[f64], base: &[f64], conductance: &[f64]) -> Option<Vec<f64>> {
+    let n = base.len();
+    if n == 0 || inertia.len() != n || conductance.len() + 1 != n {
+        return None;
+    }
+    let mut lower = vec![0.0; n];
+    let mut diag = vec![0.0; n];
+    let mut upper = vec![0.0; n];
+    let mut rhs = vec![0.0; n];
+    for i in 0..n {
+        let left = if i == 0 { 0.0 } else { conductance[i - 1] };
+        let right = if i + 1 == n { 0.0 } else { conductance[i] };
+        lower[i] = -left;
+        upper[i] = -right;
+        diag[i] = inertia[i] + left + right;
+        rhs[i] = inertia[i] * base[i];
+    }
+    thomas(&lower, &diag, &upper, &rhs)
+}
+
+/// Latent-heat weight of moist transport, `(L / c_p) RH dq_s/dT`, dimensionless.
+fn moist_chi(t_c: f64) -> f64 {
+    let t = t_c.clamp(-60.0, 60.0);
+    let e_s = 611.2 * (17.27 * t / (t + 237.3)).exp();
+    let q_s = 0.622 * e_s / 1.0e5;
+    2490.0 * 0.8 * q_s * 17.27 * 237.3 / ((t + 237.3) * (t + 237.3))
+}
+
+/// Annual zonal-mean temperature of the Earth-like calibration, °C, at
+/// `x = sin φ`. The base diffusivity already carries this climate's moisture.
+fn earth_reference_c(x: f64) -> f64 {
+    28.0 - 44.0 * x * x
+}
+
+/// Moist transport relative to the calibration climate. Warm air carries more
+/// latent heat (Clausius–Clapeyron), so warm planets flatten their pole-to-
+/// equator contrast and cold planets sharpen it.
+fn moist_scale(t_face_c: f64, x: f64) -> f64 {
+    ((1.0 + moist_chi(t_face_c)) / (1.0 + moist_chi(earth_reference_c(x)))).clamp(0.4, 3.0)
+}
+
+fn cover_albedo(land_frac: f64, snow: f64, ice: f64, glacier: f64) -> f64 {
+    let seasonal = 0.32 + (LAND_ALBEDO_COLD - 0.32) * snow;
+    let land = seasonal + (LAND_ICE_ALBEDO - seasonal) * glacier;
     let ocean = 0.28 + (0.62 - 0.28) * ice;
     land_frac * land + (1.0 - land_frac) * ocean
 }
@@ -973,9 +1159,11 @@ fn nearest_occupied(occupied: &[bool], band: usize) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
 /// Implicit diffusion `C (T' − T) / Δt = D d/dx [(1 − x²) dT'/dx]` on equal-area
 /// `x = sin φ` bands. No flux through the poles. The stencil conserves `Σ C T`
 /// in exact arithmetic: interface fluxes cancel and the polar conductances are zero.
+#[cfg(test)]
 pub(crate) fn diffuse_meridional(
     capacity: &[f64],
     temperature: &[f64],
@@ -986,28 +1174,9 @@ pub(crate) fn diffuse_meridional(
     if n == 0 || capacity.len() != n || !(dt.is_finite() && dt.abs() > 0.0) {
         return temperature.to_vec();
     }
-    let dx = 2.0 / n as f64;
-    let coeff = diffusion / (dx * dx);
-    let mut lower = vec![0.0; n];
-    let mut diag = vec![0.0; n];
-    let mut upper = vec![0.0; n];
-    let mut rhs = vec![0.0; n];
-    for i in 0..n {
-        let x_left = -1.0 + i as f64 * dx;
-        let x_right = x_left + dx;
-        let k_left = if i == 0 { 0.0 } else { 1.0 - x_left * x_left };
-        let k_right = if i + 1 == n {
-            0.0
-        } else {
-            1.0 - x_right * x_right
-        };
-        let c_dt = capacity[i] / dt;
-        lower[i] = -coeff * k_left;
-        diag[i] = c_dt + coeff * (k_left + k_right);
-        upper[i] = -coeff * k_right;
-        rhs[i] = c_dt * temperature[i];
-    }
-    thomas(&lower, &diag, &upper, &rhs).unwrap_or_else(|| temperature.to_vec())
+    let inertia: Vec<f64> = capacity.iter().map(|c| c / dt).collect();
+    exchange_bands(&inertia, temperature, &meridional_conductance(n, diffusion))
+        .unwrap_or_else(|| temperature.to_vec())
 }
 
 fn thomas(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) -> Option<Vec<f64>> {
@@ -2059,4 +2228,12 @@ fn fnv_f32(mut hash: u64, values: &[f32]) -> u64 {
         }
     }
     hash
+}
+
+/// Heat capacity seen by the air. Sea ice insulates the ocean below it, so an
+/// ice-covered sea responds much like land: cold winters over the pack, and ice
+/// that melts back in summer. With the full ocean capacity under the ice, polar
+/// seas barely cooled in winter and almost all sea ice was perennial.
+fn insulated_capacity(capacity: f64, land_frac: f64, ice: f64) -> f64 {
+    capacity - SEA_ICE_INSULATION * (1.0 - land_frac) * ice * (OCEAN_HEAT - LAND_HEAT)
 }

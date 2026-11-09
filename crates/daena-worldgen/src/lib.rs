@@ -793,4 +793,5 @@ mod tests {
     mod preset;
     mod routing;
     mod settings;
+    mod tectonics;
 }

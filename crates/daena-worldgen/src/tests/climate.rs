@@ -618,7 +618,19 @@ fn sea_ice_edges_are_single_fronts() {
                     }
                     let cell = field.grid.cell_at(point) as usize;
                     let cover: f32 = (0..12).map(|m| field.s_ocean[m * n + cell]).sum();
-                    let icy = cover / 12.0 > 0.5;
+                    // Hysteresis: seasonal pack sits near half cover all
+                    // year, and the old stripes flipped between 0 and 1.
+                    let cover = cover / 12.0;
+                    let icy = if cover > 0.6 {
+                        true
+                    } else if cover < 0.4 {
+                        false
+                    } else {
+                        match previous {
+                            Some(state) => state,
+                            None => continue,
+                        }
+                    };
                     if previous.is_some_and(|old| old != icy) {
                         toggles += 1;
                     }

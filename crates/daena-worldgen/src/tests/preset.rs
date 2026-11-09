@@ -69,6 +69,16 @@ fn perennial_ice_area(world: &World) -> f64 {
         .sum()
 }
 
+/// Area of ocean cells with sea ice in four to ten months of the year.
+fn seasonal_ice_area(world: &World) -> f64 {
+    (0..world.grid.cell_count())
+        .filter(|&cell| {
+            world.ocean[cell] == 1 && (4..=10).contains(&world.climate.sea_ice_months[cell])
+        })
+        .map(|cell| world.grid.area_m2(cell as u32))
+        .sum()
+}
+
 #[test]
 fn names_and_validation() {
     for preset in Preset::ALL {
@@ -142,6 +152,19 @@ fn presets_behave_as_named_at_n64() {
     );
     let hot_ice = perennial_ice_area(&hothouse) / ocean_area(&hothouse);
     assert!(hot_ice < 0.02, "hothouse perennial ice share {hot_ice}");
+    // Moist transport: warm air carries more latent heat, so a hothouse has a
+    // flatter pole-to-equator contrast. With fixed diffusivity it was 35.6 K.
+    let hot_stats = &hothouse.climate.stats;
+    let hot_gradient = hot_stats.t_equator_c - hot_stats.t_polar_c;
+    assert!(hot_gradient < 31.0, "hothouse gradient {hot_gradient}");
+    // Insulating sea ice: Earth-like ice is largely seasonal. When the air over
+    // ice kept the full ocean heat capacity, seasonal ice was 4 % of perennial.
+    let seasonal = seasonal_ice_area(&earth);
+    let perennial = perennial_ice_area(&earth);
+    assert!(
+        seasonal > 0.5 * perennial,
+        "earthlike seasonal ice {seasonal} perennial {perennial}"
+    );
 
     // Also guards the rain floor: while each month restarted its moisture at
     // half saturation, a water-poor planet still drew about 400 mm on land

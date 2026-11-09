@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use daena_worldgen::{
     generate, hillshade, render_equirect_with_shade, render_orthographic_with_shade, write_png,
-    Biome, ContinentLayout, LakeKind, Layer, NoProgress, PlanetSettings, World, WorldError,
+    Biome, ContinentLayout, LakeKind, Layer, NoProgress, PlanetSettings, Preset, World, WorldError,
     WorldSettings,
 };
 
@@ -22,21 +22,31 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse(env::args().skip(1))?;
+    if args.list_presets {
+        for preset in Preset::ALL {
+            println!("{}\t{}", preset.as_str(), preset.description());
+        }
+        return Ok(());
+    }
     if let Some(threads) = args.threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build_global()?;
     }
+    let base = match args.preset {
+        Some(preset) => preset.settings(),
+        None => WorldSettings::default(),
+    };
     let settings = WorldSettings {
-        seed: args.seed,
-        resolution: args.resolution,
-        land_fraction: args.land_fraction,
-        plate_count: args.plate_count,
-        continent_layout: args.layout,
-        tectonic_activity: args.activity,
-        planet: args.planet,
-        river_min_m3s: args.river_min,
-        ..WorldSettings::default()
+        seed: args.seed.unwrap_or(base.seed),
+        resolution: args.resolution.unwrap_or(base.resolution),
+        land_fraction: args.land_fraction.unwrap_or(base.land_fraction),
+        plate_count: args.plate_count.unwrap_or(base.plate_count),
+        continent_layout: args.layout.unwrap_or(base.continent_layout),
+        tectonic_activity: args.activity.unwrap_or(base.tectonic_activity),
+        planet: args.planet.apply(base.planet),
+        river_min_m3s: args.river_min.unwrap_or(base.river_min_m3s),
+        ..base
     };
     let mut progress = NoProgress;
     let world = generate(&settings, &mut progress)?;
@@ -44,7 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _ = args.hash;
     std::fs::create_dir_all(&args.out)?;
     if args.layers.is_empty() {
-        println!("{}", report_json(&world));
+        println!("{}", report_json(&world, args.preset));
         return Ok(());
     }
     let need_shade = args.globe || args.layers.iter().any(|layer| layer.shaded());
@@ -74,43 +84,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             write_png(&args.out.join(name), size, size, &rgb)?;
         }
     }
-    println!("{}", report_json(&world));
+    println!("{}", report_json(&world, args.preset));
     Ok(())
 }
 
 struct Args {
-    seed: u64,
-    resolution: u32,
-    land_fraction: f64,
-    plate_count: u32,
-    layout: ContinentLayout,
-    activity: f64,
+    preset: Option<Preset>,
+    list_presets: bool,
+    seed: Option<u64>,
+    resolution: Option<u32>,
+    land_fraction: Option<f64>,
+    plate_count: Option<u32>,
+    layout: Option<ContinentLayout>,
+    activity: Option<f64>,
     out: PathBuf,
     width: u32,
     layers: Vec<Layer>,
     globe: bool,
     threads: Option<usize>,
     hash: bool,
-    planet: PlanetSettings,
-    river_min: f64,
+    planet: PlanetOverrides,
+    river_min: Option<f64>,
 }
 
 impl Args {
     fn parse(input: impl Iterator<Item = String>) -> Result<Self, WorldError> {
-        let mut seed = 1u64;
-        let mut resolution = 512u32;
-        let mut land_fraction = 0.29f64;
-        let mut plate_count = 14u32;
-        let mut layout = ContinentLayout::Mixed;
-        let mut activity = 1.0f64;
+        let mut preset: Option<Preset> = None;
+        let mut list_presets = false;
+        let mut seed: Option<u64> = None;
+        let mut resolution: Option<u32> = None;
+        let mut land_fraction: Option<f64> = None;
+        let mut plate_count: Option<u32> = None;
+        let mut layout: Option<ContinentLayout> = None;
+        let mut activity: Option<f64> = None;
         let mut out: Option<PathBuf> = None;
         let mut width = 2048u32;
         let mut layers: Option<Vec<Layer>> = None;
         let mut globe = false;
         let mut threads: Option<usize> = None;
         let mut hash = false;
-        let mut planet = PlanetSettings::default();
-        let mut river_min = 100.0f64;
+        let mut planet = PlanetOverrides::default();
+        let mut river_min: Option<f64> = None;
         let mut tokens: Vec<String> = input.collect();
         let mut index = 0;
         while index < tokens.len() {
@@ -119,44 +133,70 @@ impl Args {
             match arg {
                 "--globe" => globe = true,
                 "--hash" => hash = true,
+                "--list-presets" => list_presets = true,
+                "--preset" => {
+                    if preset.is_some() {
+                        return Err(WorldError::InvalidSettings(
+                            "--preset given more than once".to_string(),
+                        ));
+                    }
+                    let text = take_value(&mut tokens, &mut index, "--preset")?;
+                    preset = Some(Preset::parse(&text).ok_or_else(|| {
+                        WorldError::InvalidSettings(format!("unknown preset {text}"))
+                    })?);
+                }
                 "--seed" => {
-                    seed = take_value(&mut tokens, &mut index, "--seed")?
-                        .parse()
-                        .map_err(|_| {
-                            WorldError::InvalidSettings("--seed is not a u64".to_string())
-                        })?
+                    seed = Some(
+                        take_value(&mut tokens, &mut index, "--seed")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings("--seed is not a u64".to_string())
+                            })?,
+                    )
                 }
                 "--n" => {
-                    resolution = take_value(&mut tokens, &mut index, "--n")?
-                        .parse()
-                        .map_err(|_| WorldError::InvalidSettings("--n is not a u32".to_string()))?
+                    resolution = Some(
+                        take_value(&mut tokens, &mut index, "--n")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings("--n is not a u32".to_string())
+                            })?,
+                    )
                 }
                 "--land" => {
-                    land_fraction = take_value(&mut tokens, &mut index, "--land")?
-                        .parse()
-                        .map_err(|_| {
-                            WorldError::InvalidSettings("--land is not a number".to_string())
-                        })?
+                    land_fraction = Some(
+                        take_value(&mut tokens, &mut index, "--land")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings("--land is not a number".to_string())
+                            })?,
+                    )
                 }
                 "--plates" => {
-                    plate_count = take_value(&mut tokens, &mut index, "--plates")?
-                        .parse()
-                        .map_err(|_| {
-                            WorldError::InvalidSettings("--plates is not a u32".to_string())
-                        })?
+                    plate_count = Some(
+                        take_value(&mut tokens, &mut index, "--plates")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings("--plates is not a u32".to_string())
+                            })?,
+                    )
                 }
                 "--layout" => {
                     let text = take_value(&mut tokens, &mut index, "--layout")?;
-                    layout = ContinentLayout::parse(&text).ok_or_else(|| {
+                    layout = Some(ContinentLayout::parse(&text).ok_or_else(|| {
                         WorldError::InvalidSettings(format!("unknown layout {text}"))
-                    })?;
+                    })?);
                 }
                 "--activity" => {
-                    activity = take_value(&mut tokens, &mut index, "--activity")?
-                        .parse()
-                        .map_err(|_| {
-                            WorldError::InvalidSettings("--activity is not a number".to_string())
-                        })?
+                    activity = Some(
+                        take_value(&mut tokens, &mut index, "--activity")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings(
+                                    "--activity is not a number".to_string(),
+                                )
+                            })?,
+                    )
                 }
                 "--out" => out = Some(PathBuf::from(take_value(&mut tokens, &mut index, "--out")?)),
                 "--width" => {
@@ -190,11 +230,15 @@ impl Args {
                     }
                 }
                 "--river-min" => {
-                    river_min = take_value(&mut tokens, &mut index, "--river-min")?
-                        .parse()
-                        .map_err(|_| {
-                            WorldError::InvalidSettings("--river-min is not a number".to_string())
-                        })?;
+                    river_min = Some(
+                        take_value(&mut tokens, &mut index, "--river-min")?
+                            .parse()
+                            .map_err(|_| {
+                                WorldError::InvalidSettings(
+                                    "--river-min is not a number".to_string(),
+                                )
+                            })?,
+                    );
                 }
                 "--threads" => {
                     let value: usize = take_value(&mut tokens, &mut index, "--threads")?
@@ -219,14 +263,19 @@ impl Args {
             }
             index += 1;
         }
-        let out =
-            out.ok_or_else(|| WorldError::InvalidSettings("--out is required".to_string()))?;
+        let out = match out {
+            Some(out) => out,
+            None if list_presets => PathBuf::new(),
+            None => return Err(WorldError::InvalidSettings("--out is required".to_string())),
+        };
         if width < 2 {
             return Err(WorldError::InvalidSettings(
                 "--width must be >= 2".to_string(),
             ));
         }
         Ok(Self {
+            preset,
+            list_presets,
             seed,
             resolution,
             land_fraction,
@@ -245,11 +294,45 @@ impl Args {
     }
 }
 
+/// Planet flags as typed. A field that was not given keeps the base value.
+#[derive(Default)]
+struct PlanetOverrides {
+    star_luminosity: Option<f64>,
+    star_mass: Option<f64>,
+    orbit_au: Option<f64>,
+    eccentricity: Option<f64>,
+    axial_tilt_deg: Option<f64>,
+    rotation_hours: Option<f64>,
+    greenhouse_wm2: Option<f64>,
+    temperature_offset_c: Option<f64>,
+    precipitation_scale: Option<f64>,
+}
+
+impl PlanetOverrides {
+    /// Each flag that was given replaces its field of `base`.
+    fn apply(&self, base: PlanetSettings) -> PlanetSettings {
+        PlanetSettings {
+            star_luminosity: self.star_luminosity.unwrap_or(base.star_luminosity),
+            star_mass: self.star_mass.unwrap_or(base.star_mass),
+            orbit_au: self.orbit_au.unwrap_or(base.orbit_au),
+            eccentricity: self.eccentricity.unwrap_or(base.eccentricity),
+            axial_tilt_deg: self.axial_tilt_deg.unwrap_or(base.axial_tilt_deg),
+            rotation_hours: self.rotation_hours.unwrap_or(base.rotation_hours),
+            greenhouse_wm2: self.greenhouse_wm2.unwrap_or(base.greenhouse_wm2),
+            temperature_offset_c: self
+                .temperature_offset_c
+                .unwrap_or(base.temperature_offset_c),
+            precipitation_scale: self.precipitation_scale.unwrap_or(base.precipitation_scale),
+            ..base
+        }
+    }
+}
+
 fn take_planet_flag(
     flag: &str,
     tokens: &mut [String],
     index: &mut usize,
-    planet: &mut PlanetSettings,
+    planet: &mut PlanetOverrides,
 ) -> Result<bool, WorldError> {
     let parsed = match flag {
         "--luminosity" => Some(parse_f64(tokens, index, flag)?),
@@ -267,15 +350,15 @@ fn take_planet_flag(
         return Ok(false);
     };
     match flag {
-        "--luminosity" => planet.star_luminosity = value,
-        "--star-mass" => planet.star_mass = value,
-        "--orbit-au" => planet.orbit_au = value,
-        "--eccentricity" => planet.eccentricity = value,
-        "--tilt" => planet.axial_tilt_deg = value,
-        "--rotation-hours" => planet.rotation_hours = value,
-        "--greenhouse" => planet.greenhouse_wm2 = value,
-        "--temp-offset" => planet.temperature_offset_c = value,
-        "--precip-scale" => planet.precipitation_scale = value,
+        "--luminosity" => planet.star_luminosity = Some(value),
+        "--star-mass" => planet.star_mass = Some(value),
+        "--orbit-au" => planet.orbit_au = Some(value),
+        "--eccentricity" => planet.eccentricity = Some(value),
+        "--tilt" => planet.axial_tilt_deg = Some(value),
+        "--rotation-hours" => planet.rotation_hours = Some(value),
+        "--greenhouse" => planet.greenhouse_wm2 = Some(value),
+        "--temp-offset" => planet.temperature_offset_c = Some(value),
+        "--precip-scale" => planet.precipitation_scale = Some(value),
         _ => {}
     }
     Ok(true)
@@ -307,7 +390,7 @@ fn default_layers() -> Vec<Layer> {
     ]
 }
 
-fn report_json(world: &World) -> String {
+fn report_json(world: &World, preset: Option<Preset>) -> String {
     let mut out = String::new();
     out.push('{');
     out.push_str("\"settings\":{");
@@ -332,6 +415,15 @@ fn report_json(world: &World) -> String {
         "tectonic_activity",
         world.settings.tectonic_activity,
     );
+    out.push(',');
+    match preset {
+        Some(preset) => push_str(&mut out, "preset", preset.as_str()),
+        None => push_null(&mut out, "preset"),
+    }
+    out.push(',');
+    push_f64(&mut out, "river_min_m3s", world.settings.river_min_m3s);
+    out.push(',');
+    push_planet(&mut out, &world.settings.planet);
     out.push(',');
     out.push_str("\"erosion\":{");
     push_f64(&mut out, "m", world.settings.erosion.m);
@@ -642,6 +734,36 @@ fn push_water(out: &mut String, world: &World) {
         push_f64(out, class.name(), fraction);
     }
     out.push('}');
+}
+
+fn push_planet(out: &mut String, planet: &PlanetSettings) {
+    out.push_str("\"planet\":{");
+    push_f64(out, "star_luminosity", planet.star_luminosity);
+    out.push(',');
+    push_f64(out, "star_mass", planet.star_mass);
+    out.push(',');
+    push_f64(out, "orbit_au", planet.orbit_au);
+    out.push(',');
+    push_f64(out, "eccentricity", planet.eccentricity);
+    out.push(',');
+    push_f64(out, "perihelion_deg", planet.perihelion_deg);
+    out.push(',');
+    push_f64(out, "axial_tilt_deg", planet.axial_tilt_deg);
+    out.push(',');
+    push_f64(out, "rotation_hours", planet.rotation_hours);
+    out.push(',');
+    push_f64(out, "greenhouse_wm2", planet.greenhouse_wm2);
+    out.push(',');
+    push_f64(out, "temperature_offset_c", planet.temperature_offset_c);
+    out.push(',');
+    push_f64(out, "precipitation_scale", planet.precipitation_scale);
+    out.push('}');
+}
+
+fn push_null(out: &mut String, key: &str) {
+    out.push('"');
+    out.push_str(key);
+    out.push_str("\":null");
 }
 
 fn push_str(out: &mut String, key: &str, value: &str) {

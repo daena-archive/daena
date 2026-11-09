@@ -121,6 +121,75 @@ snowball (the published state is a two-year mean of a 12 K cycle), so a
 the phase A target; the dry-belt edges over the ocean are still sharper than
 Earth's.
 
+## Phase C results (2026-11-09)
+
+Presets (`preset.rs`, CLI `--preset` and `--list-presets`; flags override a
+preset in any order; the JSON report records the preset and the planet
+settings). Calibrating them exposed four climate faults, fixed here:
+
+- **Runaway ocean cells.** Meridional transport added one temperature step to
+  every cell of a band, so each cell took energy in proportion to its heat
+  capacity. In a polar band that is mostly land, the few ocean cells took the
+  band's whole convergence and ran past 200 °C (rain then reached 6–196 m a
+  year). Transport is now a flux per unit area, solved implicitly with each
+  cell's local balance: one tridiagonal solve on the bands per month.
+- **Hot polar land.** With honest transport, land under the polar summer sun
+  reached 20 °C next to perennial sea ice. Zonal mixing went from 1 to
+  3 W/m²/K (land and sea in one band now exchange heat about as strongly as
+  they radiate).
+- **Striped sea-ice edges.** The albedo jump is worth about 15 K to one cell,
+  so with cover following each cell's own temperature every cell was bistable
+  and ice edges came out as alternating frozen and open rows. Cover now follows
+  the 3×3 neighbourhood temperature. Fronts then move until latitude pins them,
+  so a 40-year spin-up can leave 1–2 K (Earth-like) to 5 K (Frozen) at edge
+  cells; the published state is the usual two-year mean, and the tests check
+  the area-weighted drift (< 0.1 K) instead of the single worst cell.
+- **A rain floor.** Each month the moisture column restarted at half
+  saturation and ran 48 six-hour sweeps; in the dry belt that start-up vapour
+  was still raining out at the end, about 200 mm a year that no evaporation
+  setting could remove (a rain supply of 0.15 still gave 370 mm on land).
+  Vapour and soil water now carry from month to month after one discarded
+  warm-up year, and each month publishes the mean of its sweeps. Without the
+  floor, land above 60° was nearly rainless, because the storm-track eddy flux
+  stopped at the Ferrel edge; it now rises to the middle of the Ferrel band
+  and fades to zero at the pole.
+
+Seed 7, `n = 512`, after the fixes (global, equator and polar °C; rain mm;
+desert share of ice-free land; ice in million km²):
+
+| Preset | T | T eq | T pole | P | P land | Desert | Ice sheet | Perennial sea ice |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Earthlike | 12.4 | 27.8 | −18.2 | 969 | 515 | 38% | 0 | 53 |
+| Frozen | −0.2 | 17.9 | −30.6 | 404 | 223 | 31% | 0.4 | 112 |
+| Hothouse | 27.0 | 39.6 | 3.9 | 2271 | 1270 | 15% | 0 | 0 |
+| Desert | 12.4 | 25.4 | −14.6 | 470 | 240 | 65% | 0.05 | 8 |
+| Archipelago | 22.0 | 34.6 | −5.8 | 1707 | 1173 | 22% | 0 | 13 |
+| Water world | 23.0 | 35.0 | −2.9 | 1763 | 1849 | 22% | 0.02 | 11 |
+| Pangea | 12.6 | 27.5 | −17.3 | 958 | 448 | 48% | 0 | 42 |
+| Shattered | 14.3 | 28.9 | −15.9 | 1102 | 622 | 29% | 0 | 9 |
+
+Seed 7 is the most arid Earthlike world checked (39 % at `n = 256`). Eight
+other seeds at `n = 256` give 8–21 % desert (median about 17 %; Earth about
+20 %) and 610–910 mm of land rain (median about 780 mm; Earth about 750).
+Every run is 3.2–4.1 s on the development build (the warm-up moisture year
+adds about 0.1–0.2 s); output is identical for 1 and 12 threads.
+
+Known gaps, in order of effect:
+
+- **No ocean heat transport.** Polar seas are too cold: Earthlike has about
+  53 M km² of perennial sea ice (Earth: a few). Land has no ice-sheet albedo,
+  so ice sheets stay small.
+- **Band transport near ice fronts.** Open water in a band that also holds ice
+  draws the band's extra transport, so the winter just equatorward of a front
+  can be warmer than further from it; a faint seasonal-ice strip appears ahead
+  of some fronts. Local 2D heat exchange removes it but did not settle within
+  40 years.
+- **Hothouse keeps Earth's pole-to-equator gradient,** so its equator
+  averages 40 °C.
+- **Archipelago has no island arcs.** Ocean–ocean subduction does not build
+  volcanic islands, and continental crust is placed independently of plates,
+  so on one seed Archipelago is Water world with a lower sea.
+
 ## Grid: equiangular cube sphere
 
 - Six faces, `n × n` cells each. Cell id = `face * n * n + j * n + i`.
@@ -265,8 +334,10 @@ windward/leeward corrections.
 - **Insolation** by latitude and month from luminosity, orbital distance and
   axial tilt (daily-mean insolation formula with solar declination).
 - **Temperature**: a seasonal energy-balance model (Budyko–Sellers outgoing
-  radiation `A + B·T`, diffusive meridional transport on the cube-sphere
-  graph), stepped over 12 months until periodic. Ocean has a mixed-layer heat
+  radiation `A + B·T`, diffusive meridional transport on equal-area bands,
+  zonal mixing within a band), stepped over 12 months until periodic.
+  Transport reaches each cell as the same flux per unit area, solved
+  implicitly with the local balance (one tridiagonal solve per month). Ocean has a mixed-layer heat
   capacity, land a small one, so continents get strong seasons. Albedo by
   surface (ocean, land, snow and ice below a threshold temperature), which
   gives ice–albedo feedback: cold presets can run away toward a snowball.
@@ -327,20 +398,22 @@ rate or potential fields (ADR 0004), not simulated events:
 - floods (high discharge on low slopes), landslides (slope, rain, shaking),
   avalanches (slope and snow).
 
-Presets set physical parameters only:
+Presets set physical parameters only (`Preset::settings`, CLI `--preset`):
 
-| Preset | Land | Climate | Tectonics |
-| --- | --- | --- | --- |
-| Earthlike | 29% | Earth forcing | ~14 plates |
-| Frozen | 32% | weak star / low greenhouse, ice to mid-latitudes, sea ice | Earthlike |
-| Hothouse (tropical) | 25% | strong greenhouse, no ice, wet, high sea | Earthlike |
-| Desert | 60% | low water inventory, dry interiors, endorheic basins | Earthlike |
-| Archipelago | 10% | warm, wet | many small plates, strong arcs and hotspots |
-| Water world | 2% | warm | volcanic islands only |
-| Pangea | 30% | one supercontinent, monsoons, interior desert | few large plates |
-| Shattered | 35% | Earthlike | many plates, high activity: straits and islands |
+| Preset | Land | Greenhouse | Rain supply | Plates | Layout | Activity |
+| --- | --- | --- | --- | --- | --- | --- |
+| Earthlike | 29% | 0 | 1.0 | 14 | mixed | 1.0 |
+| Frozen | 32% | −12 W/m² | 1.0 | 14 | mixed | 1.0 |
+| Hothouse | 25% | +20 W/m² | 1.0 | 14 | mixed | 1.0 |
+| Desert | 60% | +6 W/m² | 0.25 | 14 | few | 1.0 |
+| Archipelago | 10% | +8 W/m² | 1.0 | 30 | many | 1.5 |
+| Water world | 2% | +8 W/m² | 1.0 | 20 | many | 1.2 |
+| Pangea | 30% | 0 | 1.0 | 8 | pangea | 1.0 |
+| Shattered | 35% | 0 | 1.0 | 40 | many | 1.8 |
 
-Every preset is a starting point; each parameter stays editable.
+Climate presets use the greenhouse term, not the artistic temperature offset,
+so that offset stays free for the user. Every preset is a starting point; each
+parameter stays editable, and CLI flags override the preset in any order.
 
 ### Integration (phase D, after review)
 

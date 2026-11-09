@@ -14,6 +14,7 @@ mod grid;
 mod hydrology;
 mod noise;
 mod planet;
+mod preset;
 mod render;
 mod routing;
 mod sealevel;
@@ -27,6 +28,7 @@ pub use grid::{downsample, downsample_max, resample, upsample, CubeSphere, FACE_
 pub use hydrology::{Hydrology, Lake, LakeKind, RiverEnd, RiverSegment};
 pub use noise::{derive_seed, fbm, hash3, ridged, splitmix64, warp, SeedDomain};
 pub use planet::PlanetSettings;
+pub use preset::Preset;
 pub use render::{
     hillshade, render_equirect, render_equirect_with_shade, render_orthographic,
     render_orthographic_with_shade, write_png, Layer,
@@ -788,6 +790,7 @@ mod tests {
     mod hydrology;
     mod noise;
     mod pipeline;
+    mod preset;
     mod routing;
     mod settings;
 }

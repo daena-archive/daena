@@ -21,7 +21,10 @@ const SPINUP_LIMIT: u32 = 40;
 const SPINUP_TOLERANCE_K: f64 = 0.02;
 const B_FEEDBACK: f64 = 2.09;
 /// Zonal mixing inside a latitude band, W/m²/K. Not an upwind coupling.
-const GAMMA_ZONAL: f64 = 1.0;
+/// Zonal flow crosses a continent in days, so land and sea in one band
+/// exchange heat about as strongly as they radiate (`B`). At 1 W/m²/K polar
+/// land under the summer sun reached 20 °C next to perennial sea ice.
+const GAMMA_ZONAL: f64 = 3.0;
 const LAPSE_K_PER_M: f64 = 0.0065;
 const LAND_HEAT: f64 = 1.0e7;
 const OCEAN_HEAT: f64 = 2.1e8;
@@ -32,6 +35,8 @@ const COVER_STEP: f64 = 0.5;
 const THERMAL_SCALE: f64 = 3.0e5;
 const THERMAL_CAP_MS: f64 = 5.0;
 const MOISTURE_SWEEPS: usize = 48;
+/// Discarded moisture years before the published one.
+const MOISTURE_WARMUP_YEARS: usize = 1;
 const STEP_SECONDS: f64 = 6.0 * 3600.0;
 const FU_W: f64 = 2.6;
 const PDD_SIGMA_K: f64 = 4.5;
@@ -182,6 +187,8 @@ struct Geo {
     pos: [f64; 3],
     east: [f64; 3],
     north: [f64; 3],
+    /// Grid neighbours, `NONE` where missing.
+    neighbors: [u32; 8],
 }
 
 #[derive(Clone, Copy)]
@@ -299,6 +306,34 @@ pub(crate) fn coarse(
         s_ocean: to_f32(&spin.s_ocean),
         maritime: to_f32(&maritime),
     })
+}
+
+/// Spin-up on `grid` with sea-level land of the given fraction per cell.
+/// Returns the published monthly temperature, `month * cells + cell`.
+#[cfg(test)]
+pub(crate) fn spin_up_on_land(
+    grid: &CubeSphere,
+    land_frac: &[f64],
+    planet: &PlanetSettings,
+) -> Vec<f64> {
+    let land: Vec<CoarseLand> = land_frac
+        .iter()
+        .map(|frac| CoarseLand {
+            land_frac: *frac,
+            elev_mean: 0.0,
+            elev_barrier: 0.0,
+        })
+        .collect();
+    let geo = build_geo(grid);
+    let rotation = rotation_of(planet.rotation_hours);
+    let maritime = maritime_index(grid, &geo, &land, &rotation);
+    let capacity: Vec<f64> = land
+        .iter()
+        .zip(&maritime)
+        .map(|(cell, maritime)| heat_capacity(cell.land_frac, *maritime))
+        .collect();
+    let insolation = monthly_insolation(&geo, planet);
+    spin_up(planet, &geo, &land, &capacity, &insolation, &rotation).temperature
 }
 
 /// Runoff, net lake evaporation and ice balance on `fine`, using `field`.
@@ -551,6 +586,7 @@ fn build_geo(grid: &CubeSphere) -> Vec<Geo> {
                 pos,
                 east,
                 north,
+                neighbors: grid.neighbors(cell as u32),
             }
         })
         .collect()
@@ -704,13 +740,31 @@ fn relax_cover(
     snow: &mut [f64],
     ice: &mut [f64],
 ) {
+    // Cover follows the 3×3 neighbourhood temperature, not the cell alone. The
+    // albedo jump is worth about 15 K to one cell, so a target from its own
+    // temperature made every cell bistable: neighbours at the same latitude
+    // settled 16 K apart and the sea-ice edge came out as alternating rows.
     for cell in 0..geo.len() {
-        let t_elev = temperature[cell] - LAPSE_K_PER_M * land[cell].elev_mean;
+        let regional = neighbourhood_mean(&geo[cell].neighbors, temperature, cell);
+        let t_elev = regional - LAPSE_K_PER_M * land[cell].elev_mean;
         let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
-        let ocean_target = smoothstep(-1.8, -8.0, temperature[cell]);
+        let ocean_target = smoothstep(-1.8, -8.0, regional);
         snow[cell] += COVER_STEP * (land_target - snow[cell]);
         ice[cell] += COVER_STEP * (ocean_target - ice[cell]);
     }
+}
+
+/// Mean of `cell` and its existing grid neighbours.
+fn neighbourhood_mean(neighbors: &[u32; 8], field: &[f64], cell: usize) -> f64 {
+    let mut sum = field[cell];
+    let mut count = 1.0;
+    for nb in neighbors {
+        if *nb != NONE {
+            sum += field[*nb as usize];
+            count += 1.0;
+        }
+    }
+    sum / count
 }
 
 struct EnergyIn<'a> {
@@ -727,15 +781,23 @@ struct EnergyIn<'a> {
 }
 
 fn step_temperature(input: &EnergyIn<'_>) -> Vec<f64> {
-    // Zonal mixing uses the incoming temperature. Interpolating the band mean
-    // in sin φ keeps a cell on a band edge off a step. Diffusion then acts on
-    // the local step, as before.
-    let (incoming_mean, _) = band_means(input.geo, input.capacity, input.temperature);
-    let t_star: Vec<f64> = (0..input.geo.len())
+    // Meridional transport reaches every cell as the same flux per unit area,
+    // solved implicitly together with the local balance. A uniform temperature
+    // increment would hand each cell energy in proportion to its heat
+    // capacity: in a polar band that is mostly land, the few ocean cells took
+    // the whole band's convergence and ran away past 200 °C.
+    //
+    // Each cell is `T = (num + F) / k` for its band's flux `F`, so the band's
+    // area mean is `a + g F` with `a = <num / k>` and `g = <1 / k>`. Diffusing
+    // that mean implicitly is the tridiagonal solve below with capacity
+    // `dt / g`, which gives `F` for every band at once. Zonal mixing reads the
+    // incoming band mean. Both are interpolated in sin φ so a cell on a band
+    // edge does not take a step.
+    let (t_bar, _) = band_means(input.geo, input.capacity, input.temperature);
+    let local: Vec<LocalBalance> = (0..input.geo.len())
         .into_par_iter()
         .map(|cell| {
-            let band_mean = sample_band_delta(input.geo[cell].pos[2], &incoming_mean);
-            implicit_local(
+            local_balance(
                 input.capacity[cell],
                 input.temperature[cell],
                 input.insolation[cell],
@@ -744,26 +806,30 @@ fn step_temperature(input: &EnergyIn<'_>) -> Vec<f64> {
                     input.snow[cell],
                     input.ice[cell],
                 ),
-                band_mean,
+                sample_band_delta(input.geo[cell].pos[2], &t_bar),
                 input.dt,
                 input.a_coeff,
             )
         })
         .collect();
-    let (t_bar, c_bar) = band_means(input.geo, input.capacity, &t_star);
-    let t_prime = diffuse_meridional(&c_bar, &t_bar, input.diffusion, input.dt);
-    let delta: Vec<f64> = t_prime
-        .iter()
-        .zip(t_bar)
-        .map(|(prime, mean)| prime - mean)
-        .collect();
+    let flux = band_transport(input.geo, &local, input.diffusion, input.dt);
     (0..input.geo.len())
         .into_par_iter()
-        .map(|cell| t_star[cell] + sample_band_delta(input.geo[cell].pos[2], &delta))
+        .map(|cell| {
+            let item = local[cell];
+            (item.num + sample_band_delta(input.geo[cell].pos[2], &flux)) / item.k
+        })
         .collect()
 }
 
-fn implicit_local(
+/// Implicit month for one cell, before transport: `T = (num + F) / k`.
+#[derive(Clone, Copy)]
+struct LocalBalance {
+    num: f64,
+    k: f64,
+}
+
+fn local_balance(
     capacity: f64,
     incoming: f64,
     insolation: f64,
@@ -771,10 +837,49 @@ fn implicit_local(
     band_mean: f64,
     dt: f64,
     a_coeff: f64,
-) -> f64 {
+) -> LocalBalance {
     let c_dt = capacity / dt;
-    (c_dt * incoming + insolation * (1.0 - albedo) - a_coeff + GAMMA_ZONAL * band_mean)
-        / (c_dt + B_FEEDBACK + GAMMA_ZONAL)
+    LocalBalance {
+        num: c_dt * incoming + insolation * (1.0 - albedo) - a_coeff + GAMMA_ZONAL * band_mean,
+        k: c_dt + B_FEEDBACK + GAMMA_ZONAL,
+    }
+}
+
+/// Meridional flux convergence per band, W/m², solved with the local balances.
+fn band_transport(geo: &[Geo], local: &[LocalBalance], diffusion: f64, dt: f64) -> [f64; BANDS] {
+    let mut sum_a = [0.0; BANDS];
+    let mut sum_g = [0.0; BANDS];
+    let mut sum_area = [0.0; BANDS];
+    let mut occupied = [false; BANDS];
+    for (place, item) in geo.iter().zip(local) {
+        sum_a[place.band] += place.area * item.num / item.k;
+        sum_g[place.band] += place.area / item.k;
+        sum_area[place.band] += place.area;
+        occupied[place.band] = true;
+    }
+    let mut a = [0.0; BANDS];
+    let mut g = [0.0; BANDS];
+    for band in 0..BANDS {
+        if sum_area[band] > 0.0 {
+            a[band] = sum_a[band] / sum_area[band];
+            g[band] = sum_g[band] / sum_area[band];
+        }
+    }
+    fill_empty_bands(&mut a, &mut g, &occupied);
+    let mut capacity = [0.0; BANDS];
+    for band in 0..BANDS {
+        if g[band] > 0.0 {
+            capacity[band] = dt / g[band];
+        }
+    }
+    let mixed = diffuse_meridional(&capacity, &a, diffusion, dt);
+    let mut flux = [0.0; BANDS];
+    for band in 0..BANDS {
+        if g[band] > 0.0 {
+            flux[band] = (mixed[band] - a[band]) / g[band];
+        }
+    }
+    flux
 }
 
 fn cover_albedo(land_frac: f64, snow: f64, ice: f64) -> f64 {
@@ -1128,13 +1233,18 @@ fn surface_wind(
 /// Fractional position inside the Ferrel band, `0` outside it.
 ///
 /// This is the `s` used by [`band_wind`]: `( |φ'| − φ_H ) / (φ_F − φ_H)`.
-fn ferrel_s(phi_p_deg: f64, phi_h: f64, phi_f: f64) -> f64 {
-    let magnitude = phi_p_deg.abs();
-    if magnitude < phi_h || magnitude >= phi_f {
-        return 0.0;
+/// Poleward eddy moisture speed, m/s: rises from the Hadley edge to the middle
+/// of the Ferrel band, then fades to zero at the pole.
+fn storm_track_eddy(magnitude: f64, phi_h: f64, phi_f: f64) -> f64 {
+    let mid = 0.5 * (phi_h + phi_f);
+    if magnitude <= phi_h {
+        0.0
+    } else if magnitude < mid {
+        3.0 * (std::f64::consts::FRAC_PI_2 * (magnitude - phi_h) / (mid - phi_h).max(1e-6)).sin()
+    } else {
+        3.0 * (std::f64::consts::FRAC_PI_2 * ((magnitude - mid) / (90.0 - mid).max(1e-6)).min(1.0))
+            .cos()
     }
-    let span = (phi_f - phi_h).max(1e-6);
-    ((magnitude - phi_h) / span).clamp(0.0, 1.0)
 }
 
 fn band_wind(phi_p_deg: f64, phi_h: f64, phi_f: f64) -> (f64, f64) {
@@ -1190,43 +1300,52 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     let n = geo.len();
     let steps = planet.month_seconds() / STEP_SECONDS;
     let mut monthly = vec![0.0; MONTHS * n];
-    for month in 0..MONTHS {
-        let t_month = &temperature[month * n..(month + 1) * n];
-        let prep = moisture_prep(
-            &MoistureCtx {
-                grid,
-                itcz: &itcz[month],
-                phi_h_deg,
-                phi_f_deg,
-                precip_scale: planet.precipitation_scale,
-            },
-            geo,
-            land,
-            t_month,
-            &insolation[month * n..(month + 1) * n],
-            wind,
-            month,
-        );
-        let mut column: Vec<f64> = t_month
-            .iter()
-            .map(|value| 0.5 * saturation_mm(*value))
-            .collect();
-        let mut rain = vec![0.0; n];
-        // Soil-water memory, per cell, for this month's sweeps. Land
-        // evaporation reads the mean of previous steps, then the mean takes
-        // in the step that just fell.
-        let mut p_mean = vec![0.0; n];
-        for _ in 0..MOISTURE_SWEEPS {
-            let stepped = moisture_sweep(grid, &prep, &column, &p_mean);
-            for cell in 0..n {
-                column[cell] = stepped[cell].0;
-                let p_step = stepped[cell].1;
-                rain[cell] = p_step;
-                p_mean[cell] = 0.8 * p_mean[cell] + 0.2 * p_step;
+    // Vapour and soil water carry from month to month. Restarting each month
+    // at half saturation left that start-up vapour still raining out in the
+    // dry belt after 48 sweeps, a floor of about 200 mm a year that the
+    // evaporation supply could not lower. Warm-up years from the last month's
+    // saturation are discarded; each published month is the mean rain of its
+    // sweeps.
+    let last = &temperature[(MONTHS - 1) * n..];
+    let mut column: Vec<f64> = last
+        .iter()
+        .map(|value| 0.5 * saturation_mm(*value))
+        .collect();
+    // Soil-water memory per cell. Land evaporation reads the mean of previous
+    // steps, then the mean takes in the step that just fell.
+    let mut p_mean = vec![0.0; n];
+    for year in 0..=MOISTURE_WARMUP_YEARS {
+        for month in 0..MONTHS {
+            let prep = moisture_prep(
+                &MoistureCtx {
+                    grid,
+                    itcz: &itcz[month],
+                    phi_h_deg,
+                    phi_f_deg,
+                    precip_scale: planet.precipitation_scale,
+                },
+                geo,
+                land,
+                &temperature[month * n..(month + 1) * n],
+                &insolation[month * n..(month + 1) * n],
+                wind,
+                month,
+            );
+            let mut rain = vec![0.0; n];
+            for _ in 0..MOISTURE_SWEEPS {
+                let stepped = moisture_sweep(grid, &prep, &column, &p_mean);
+                for cell in 0..n {
+                    column[cell] = stepped[cell].0;
+                    let p_step = stepped[cell].1;
+                    rain[cell] += p_step;
+                    p_mean[cell] = 0.8 * p_mean[cell] + 0.2 * p_step;
+                }
             }
-        }
-        for cell in 0..n {
-            monthly[month * n + cell] = rain[cell] * steps;
+            if year == MOISTURE_WARMUP_YEARS {
+                for cell in 0..n {
+                    monthly[month * n + cell] = rain[cell] / MOISTURE_SWEEPS as f64 * steps;
+                }
+            }
         }
     }
     monthly
@@ -1279,9 +1398,9 @@ fn moisture_cell(
     let w_sat = saturation_mm(temperature);
     let ice = smoothstep(-1.8, -8.0, temperature);
     // The 850–700 hPa layer carries vapour faster than the surface wind.
-    // Surface winds stored on the field are left unchanged. Inside the Ferrel
-    // band, mid-latitude eddies add a poleward flux. `s` matches `band_wind`.
-    let s = ferrel_s(phi_p, ctx.phi_h_deg, ctx.phi_f_deg);
+    // Surface winds stored on the field are left unchanged. Storm-track eddies
+    // add a poleward flux from the Hadley edge to the pole; stopping it at the
+    // Ferrel edge left land above 60° with almost no rain.
     let sign = if phi_p > 0.0 {
         1.0
     } else if phi_p < 0.0 {
@@ -1289,7 +1408,7 @@ fn moisture_cell(
     } else {
         0.0
     };
-    let eddy = sign * 3.0 * (std::f64::consts::PI * s).sin();
+    let eddy = sign * storm_track_eddy(phi_p.abs(), ctx.phi_h_deg, ctx.phi_f_deg);
     let steered = [
         wind[0] * 1.6 + eddy * place.north[0],
         wind[1] * 1.6 + eddy * place.north[1],

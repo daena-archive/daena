@@ -61,12 +61,35 @@ greenhouse, rotation, tectonic activity — not separate painters.
 
 ## Targets
 
+Revised 2026-11-11 for the full pipeline (terrain, climate, water, ice,
+biomes). Release build, Earthlike seed 7, engine only, default threads, on an
+M4 Pro:
+
 | Level `n` (cells per cube edge) | Cell (Earth radius) | Cells | Target time | Target RSS |
 | --- | --- | --- | --- | --- |
-| 256 | 39 km | 393k | < 0.5 s | < 64 MB |
-| 512 | 19.5 km | 1.57M | < 1.5 s | < 200 MB |
-| 1024 | 9.8 km | 6.29M | < 6 s | < 700 MB |
-| 2048 (stretch) | 4.9 km | 25.2M | < 30 s | < 2.5 GB |
+| 256 | 39 km | 393k | < 1.0 s | < 100 MB |
+| 512 | 19.5 km | 1.57M | < 1.6 s | < 300 MB |
+| 1024 | 9.8 km | 6.29M | < 4.5 s | < 1.1 GB |
+
+The first targets (0.5 s / 64 MB, 1.5 s / 200 MB, 6 s / 700 MB, and a
+2048 stretch of 30 s / 2.5 GB) were set in phase A, before the engine had a
+climate. Tectonics and the three coarse climate passes cost the same at every
+`n`, about 0.6 s even after the planned cuts, so `n = 256` cannot reach
+0.5 s. The 2048 level is no longer a target: at the planned memory per cell
+it would need about 4.5 GB.
+
+Stage budgets at `n = 512`, summing to about 1.45 s (10 % margin):
+
+| Stage | 2026-11-11 | Budget |
+| --- | --- | --- |
+| Climate, three coarse passes | 1.00 s | 0.45 s |
+| Erosion, all levels | 0.71 s | 0.60 s |
+| Tectonics | 0.21 s | 0.15 s |
+| Downscale, sea level, final routing, hydrology, biomes | 0.28 s | 0.25 s |
+
+The memory targets assume about 180 bytes per cell at the peak, against about
+290 today. They are provisional until a memory profile shows what is live at
+the peak.
 
 `n = 1024` is 85× the cells of today's production grid. These are engine
 targets; the product budgets in ADR 0004 change only in phase E, with the
@@ -242,25 +265,34 @@ per month than this step.
 
 ## Remaining work (2026-11-09)
 
-Phases A–C are built. These items of theirs are open, in priority order;
-phase D (hazards) and phase E (integration) follow.
+Phases A–C are built. Order to finish the engine, decided 2026-11-11:
+phase D parity hazards, then phase E integration, then the new hazards. The
+items below are open but do not block that order.
 
-1. **Speed and memory targets** (phases A and B). Release build, seed 7,
-   engine only, same machine as the baseline:
+1. **Speed and memory targets** (see "Targets"). Release build, Earthlike
+   seed 7, engine only, on 2026-11-11, after the climate speedup (median of
+   three runs):
 
    | Level | Time | Target | Peak memory | Target |
    | --- | --- | --- | --- | --- |
-   | `n = 256` | 1.52 s | 0.5 s | 191 MB | 64 MB |
-   | `n = 512` | 2.27 s | 1.5 s | 512 MB | 200 MB |
-   | `n = 1024` | 5.01 s | 6 s | 1.80 GB | 700 MB |
+   | `n = 256` | 1.23 s | 1.0 s | 175 MB | 100 MB |
+   | `n = 512` | 1.90 s | 1.6 s | 512 MB | 300 MB |
+   | `n = 1024` | 4.38 s | 4.5 s | 1.80 GB | 1.1 GB |
 
-   Phase A alone met the `n = 512` time (0.86 s). At `n = 512` the three
-   climate passes now take 0.90 s (0.19 s at level 64, 0.31 s at level 256,
-   0.41 s on the final surface), and downscaling 0.11 s. The 0.8 s
-   three-pass target is missed by about 0.10 s. Erosion and the remaining
-   stages take about 1.25 s. Memory is still over target: phase A left the
-   `n = 1024` basin records and buffer growth, and phase B added the
-   full-resolution climate and hydrology fields.
+   Speed work with identical output stopped here: each further step saved
+   tens of milliseconds for hours of work. The targets stay as goals, not
+   gates for phases D and E. At `n = 512` the three climate passes take
+   0.64 s, erosion 0.71 s and tectonics 0.21 s. Every climate pass stops at
+   its year cap; the erosion passes end 10 years still changing by about
+   0.1 K RMS a year. The levers left, each a real change to output or
+   memory layout, in order of expected gain:
+   1. a shorter climate schedule for the erosion passes, checked against the
+      climate and terrain bands (an estimated 0.3 s);
+   2. a memory profile of the peak, then cuts; phase A left the `n = 1024`
+      basin records and buffer growth, and phase B added the full-resolution
+      climate and hydrology fields;
+   3. tectonics and the fine-grid stages;
+   4. fewer erosion iterations on the small levels.
 2. **Sea level from a water inventory** (planned for phase C). Sea level is
    still solved from a target land fraction, so presets set land share
    directly instead of it following from how much water the planet has.

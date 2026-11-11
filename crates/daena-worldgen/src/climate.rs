@@ -7,6 +7,7 @@
 use rayon::prelude::*;
 
 use crate::grid::{cross, dot3, normalize, ChartStencil, CubeSphere, NONE};
+use crate::par::for_each_cell_mut;
 use crate::{PlanetSettings, WorldError};
 
 /// Month index of the northern-hemisphere summer solstice. Month 0 is the spring equinox.
@@ -80,6 +81,19 @@ const THERMAL_SCALE: f64 = 3.0e5;
 const THERMAL_CAP_MS: f64 = 5.0;
 const MOISTURE_SWEEPS: usize = 48;
 const STEP_SECONDS: f64 = 6.0 * 3600.0;
+/// Tasks per fused monthly cover pass. The M4 Pro has 8 performance cores;
+/// splitting this small grid 12 ways leaves work on the efficiency cores. A
+/// minimum chunk size does not change the body or its order.
+const FUSED_TASKS: usize = 8;
+/// Below this many cells the monthly temperature fill is faster on one
+/// thread.
+const FILL_PARALLEL_CELLS: usize = 8192;
+/// The temperature output is a few flops per cell and is faster on one thread
+/// across the whole climate grid.
+const OUTPUT_PARALLEL_CELLS: usize = 32_768;
+/// The fused cover pass does enough work (9-neighbour mean plus the annual
+/// maximum on land) to pay for a split at the smallest climate grid.
+const FUSED_PARALLEL_CELLS: usize = 4096;
 const FU_W: f64 = 2.6;
 const PDD_SIGMA_K: f64 = 4.5;
 const MELT_MM_PER_PDD: f64 = 4.0;
@@ -284,12 +298,19 @@ struct Spinup {
     eq_iters: u32,
 }
 
+#[derive(Clone, Copy)]
 struct MoistureCell {
     /// Face coordinates of the upwind point, precomputed once per cell/month.
     upwind_face: u32,
     upwind_fx: f64,
     upwind_fy: f64,
     calm: bool,
+    /// In-face bilinear stencil: the four cell ids, their weights in the same
+    /// corner order and the weight sum. `false` keeps the cross-face path.
+    in_face: bool,
+    upwind_ids: [u32; 4],
+    upwind_weights: [f64; 4],
+    upwind_wsum: f64,
     /// `2.25 · (W_sat(T) / 50) · (1 − ice) · (1 − land_frac) · precipitation_scale`.
     ocean_factor: f64,
     /// Sea-level saturation, mm. The deficit ratio divides by this.
@@ -299,6 +320,28 @@ struct MoistureCell {
     convect: f64,
     rh_crit: f64,
     w_sat_barrier: f64,
+}
+
+impl Default for MoistureCell {
+    fn default() -> Self {
+        Self {
+            upwind_face: 0,
+            upwind_fx: 0.0,
+            upwind_fy: 0.0,
+            calm: false,
+            in_face: false,
+            upwind_ids: [0; 4],
+            upwind_weights: [0.0; 4],
+            upwind_wsum: 0.0,
+            ocean_factor: 0.0,
+            w_sat: 0.0,
+            land_pet: 0.0,
+            land_weight: 0.0,
+            convect: 0.0,
+            rh_crit: 0.0,
+            w_sat_barrier: 0.0,
+        }
+    }
 }
 
 /// Temperature state the seasonal spin-up starts from.
@@ -425,7 +468,7 @@ pub(crate) fn coarse_with(
         phi_f_deg: rotation.phi_f_deg,
         warmup_months: options.moisture_warmup_months,
     });
-    Ok(ClimateField {
+    let out = ClimateField {
         grid: grid.clone(),
         t_c: to_f32(&spin.temperature),
         p_mm: to_f32(&precip),
@@ -447,7 +490,8 @@ pub(crate) fn coarse_with(
         s_land: to_f32(&spin.s_land),
         s_ocean: to_f32(&spin.s_ocean),
         maritime: to_f32(&maritime),
-    })
+    };
+    Ok(out)
 }
 
 /// Spin-up on `grid` with sea-level land of the given fraction per cell.
@@ -788,6 +832,68 @@ fn rotation_of(hours: f64) -> Rotation {
     }
 }
 
+/// Shared inputs of the one per-month cover pass.
+struct CoverCtx<'a> {
+    geo: &'a [Geo],
+    land: &'a [CoarseLand],
+    next: &'a [f64],
+    regional: &'a [f64],
+    previous_t: &'a [f64],
+    base: usize,
+    n: usize,
+    month: usize,
+    ramp_end_c: f64,
+}
+
+impl CoverCtx<'_> {
+    /// Neighbourhood temperature, land snow, sea ice and glacier for one cell,
+    /// then the month's temperature and published cover. Returns the absolute
+    /// same-month change.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &self,
+        cell: usize,
+        regional_slot: &mut f64,
+        t_slot: &mut f64,
+        s_land_slot: &mut f64,
+        s_ocean_slot: &mut f64,
+        snow_slot: &mut f64,
+        ice_slot: &mut f64,
+        glacier_slot: &mut f64,
+    ) -> f64 {
+        let place = &self.geo[cell];
+        let land_cell = &self.land[cell];
+        let regional_now = neighbourhood_mean(&place.neighbors, self.next, cell);
+        *regional_slot = regional_now;
+        let t_elev = regional_now - LAPSE_K_PER_M * land_cell.elev_mean;
+        let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
+        let ocean_target = smoothstep(SEA_ICE_RAMP_START_C, self.ramp_end_c, regional_now);
+        *snow_slot += COVER_STEP * (land_target - *snow_slot);
+        *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
+        if land_cell.land_frac <= 0.0 {
+            *glacier_slot = 0.0;
+        } else {
+            let mut warm = f64::MIN;
+            for other in 0..MONTHS {
+                let value = if other == self.month {
+                    regional_now
+                } else {
+                    self.regional[other * self.n + cell]
+                };
+                warm = warm.max(value);
+            }
+            let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
+            let target = smoothstep(0.0, -4.0, t_warm);
+            *glacier_slot += COVER_STEP * (target - *glacier_slot);
+        }
+        *t_slot = self.next[cell];
+        *s_land_slot = *snow_slot;
+        *s_ocean_slot = *ice_slot;
+        (self.next[cell] - self.previous_t[self.base + cell]).abs()
+    }
+}
+
 fn spin_up(
     planet: &PlanetSettings,
     geo: &[Geo],
@@ -803,7 +909,6 @@ fn spin_up(
     let mut state = vec![15.0; n];
     let mut snow = vec![0.0; n];
     let mut ice = vec![0.0; n];
-    let mut ice_albedo = vec![0.0; n];
     let mut glacier = vec![0.0; n];
     // Neighbourhood temperature of the last twelve months, a rolling window.
     let mut regional = vec![15.0; MONTHS * n];
@@ -841,12 +946,6 @@ fn spin_up(
             .collect();
         let mut iterations = 0u32;
         loop {
-            let smoothed = if options.sea_ice_albedo_smoothed {
-                smooth_ice_cover(geo, &ice, &mut ice_albedo);
-                Some(ice_albedo.as_slice())
-            } else {
-                None
-            };
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -864,7 +963,7 @@ fn spin_up(
                 &band_geo,
                 &mut scratch,
                 &mut next,
-                smoothed,
+                options.sea_ice_albedo_smoothed,
             );
             // Cover reaches the same targets as the monthly rule, from the
             // 3×3 neighbourhood mean of the new temperature. Glacier stays 0:
@@ -924,12 +1023,6 @@ fn spin_up(
         years = year;
         let mut max_change = 0.0f64;
         for month in 0..MONTHS {
-            let smoothed = if options.sea_ice_albedo_smoothed {
-                smooth_ice_cover(geo, &ice, &mut ice_albedo);
-                Some(ice_albedo.as_slice())
-            } else {
-                None
-            };
             step_temperature(
                 &EnergyIn {
                     geo,
@@ -947,7 +1040,7 @@ fn spin_up(
                 &band_geo,
                 &mut scratch,
                 &mut next,
-                smoothed,
+                options.sea_ice_albedo_smoothed,
             );
             let base = month * n;
             // One pass after the temperature step: the neighbourhood
@@ -967,62 +1060,92 @@ fn spin_up(
             // at its height keeps its snow through summer and turns into an ice
             // sheet, which then reflects like ice. Without it polar continents
             // had warm summers and no ice sheets.
-            let month_change = regional_next
-                .par_iter_mut()
-                .zip(temperature[base..base + n].par_iter_mut())
-                .zip(s_land[base..base + n].par_iter_mut())
-                .zip(s_ocean[base..base + n].par_iter_mut())
-                .zip(snow.par_iter_mut())
-                .zip(ice.par_iter_mut())
-                .zip(glacier.par_iter_mut())
-                .enumerate()
-                .map(
-                    |(
-                        cell,
-                        (
-                            (
-                                ((((regional_slot, t_slot), s_land_slot), s_ocean_slot), snow_slot),
-                                ice_slot,
-                            ),
-                            glacier_slot,
-                        ),
-                    )| {
-                        let place = &geo[cell];
-                        let land_cell = &land[cell];
-                        let regional_now = neighbourhood_mean(&place.neighbors, &next, cell);
-                        *regional_slot = regional_now;
-                        let t_elev = regional_now - LAPSE_K_PER_M * land_cell.elev_mean;
-                        let land_target = smoothstep(-2.0, LAND_SNOW_RAMP_C, t_elev);
-                        let ocean_target = smoothstep(
-                            SEA_ICE_RAMP_START_C,
-                            options.sea_ice_ramp_end_c,
-                            regional_now,
-                        );
-                        *snow_slot += COVER_STEP * (land_target - *snow_slot);
-                        *ice_slot += COVER_STEP * (ocean_target - *ice_slot);
-                        if land_cell.land_frac <= 0.0 {
-                            *glacier_slot = 0.0;
-                        } else {
-                            let mut warm = f64::MIN;
-                            for other in 0..MONTHS {
-                                let value = if other == month {
-                                    regional_now
-                                } else {
-                                    regional[other * n + cell]
-                                };
-                                warm = warm.max(value);
-                            }
-                            let t_warm = warm - LAPSE_K_PER_M * land_cell.elev_mean;
-                            let target = smoothstep(0.0, -4.0, t_warm);
-                            *glacier_slot += COVER_STEP * (target - *glacier_slot);
-                        }
-                        *t_slot = next[cell];
-                        *s_land_slot = *snow_slot;
-                        *s_ocean_slot = *ice_slot;
-                        (next[cell] - previous_t[base + cell]).abs()
-                    },
+            let ctx = CoverCtx {
+                geo,
+                land,
+                next: &next,
+                regional: &regional,
+                previous_t: &previous_t,
+                base,
+                n,
+                month,
+                ramp_end_c: options.sea_ice_ramp_end_c,
+            };
+            let body = |cell: usize,
+                        regional_slot: &mut f64,
+                        t_slot: &mut f64,
+                        s_land_slot: &mut f64,
+                        s_ocean_slot: &mut f64,
+                        snow_slot: &mut f64,
+                        ice_slot: &mut f64,
+                        glacier_slot: &mut f64|
+             -> f64 {
+                ctx.step(
+                    cell,
+                    regional_slot,
+                    t_slot,
+                    s_land_slot,
+                    s_ocean_slot,
+                    snow_slot,
+                    ice_slot,
+                    glacier_slot,
                 )
-                .reduce(|| 0.0, f64::max);
+            };
+            let month_change = if n >= FUSED_PARALLEL_CELLS {
+                regional_next
+                    .par_iter_mut()
+                    .with_min_len((n / FUSED_TASKS).max(1))
+                    .zip(temperature[base..base + n].par_iter_mut())
+                    .zip(s_land[base..base + n].par_iter_mut())
+                    .zip(s_ocean[base..base + n].par_iter_mut())
+                    .zip(snow.par_iter_mut())
+                    .zip(ice.par_iter_mut())
+                    .zip(glacier.par_iter_mut())
+                    .enumerate()
+                    .map(
+                        |(
+                            cell,
+                            (
+                                (
+                                    (
+                                        (((regional_slot, t_slot), s_land_slot), s_ocean_slot),
+                                        snow_slot,
+                                    ),
+                                    ice_slot,
+                                ),
+                                glacier_slot,
+                            ),
+                        )| {
+                            body(
+                                cell,
+                                regional_slot,
+                                t_slot,
+                                s_land_slot,
+                                s_ocean_slot,
+                                snow_slot,
+                                ice_slot,
+                                glacier_slot,
+                            )
+                        },
+                    )
+                    .reduce(|| 0.0, f64::max)
+            } else {
+                let mut max_change = 0.0f64;
+                for cell in 0..n {
+                    let change = body(
+                        cell,
+                        &mut regional_next[cell],
+                        &mut temperature[base + cell],
+                        &mut s_land[base + cell],
+                        &mut s_ocean[base + cell],
+                        &mut snow[cell],
+                        &mut ice[cell],
+                        &mut glacier[cell],
+                    );
+                    max_change = max_change.max(change);
+                }
+                max_change
+            };
             max_change = max_change.max(month_change);
             regional[base..base + n].copy_from_slice(&regional_next);
             std::mem::swap(&mut state, &mut next);
@@ -1158,14 +1281,8 @@ fn neighbourhood_mean(neighbors: &[u32; 8], field: &[f64], cell: usize) -> f64 {
     sum / count
 }
 
-/// 3×3 neighbourhood mean of sea-ice cover. Computed before the temperature
-/// step so no cell reads a value written in the same pass.
-fn smooth_ice_cover(geo: &[Geo], ice: &[f64], out: &mut [f64]) {
-    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
-        *slot = neighbourhood_mean(&geo[cell].neighbors, ice, cell);
-    });
-}
-
+/// 3×3 neighbourhood mean of sea-ice cover is folded into the temperature
+/// fill: it reads `ice`, which that pass never writes.
 struct EnergyIn<'a> {
     geo: &'a [Geo],
     land: &'a [CoarseLand],
@@ -1184,7 +1301,7 @@ struct EnergyIn<'a> {
 struct StepScratch {
     local: Vec<LocalBalance>,
     band: Vec<BandTerm>,
-    mean: Vec<[f64; 3]>,
+    solve: BandSolve,
 }
 
 impl StepScratch {
@@ -1192,7 +1309,7 @@ impl StepScratch {
         Self {
             local: vec![LocalBalance { num: 0.0, k: 1.0 }; n],
             band: vec![BandTerm::default(); n],
-            mean: vec![[0.0; 3]; n],
+            solve: BandSolve::new(BANDS),
         }
     }
 }
@@ -1202,7 +1319,7 @@ fn step_temperature(
     band_geo: &BandGeo,
     scratch: &mut StepScratch,
     out: &mut [f64],
-    smoothed_ice: Option<&[f64]>,
+    smooth_ice: bool,
 ) {
     // Meridional transport reaches every cell as the same flux per unit area,
     // solved implicitly together with the local balance. A uniform temperature
@@ -1216,52 +1333,67 @@ fn step_temperature(
     // `dt / g`, which gives `F` for every band at once. Zonal mixing reads the
     // incoming band mean. Both are interpolated in sin φ so a cell on a band
     // edge does not take a step.
-    let (t_bar, _) = band_means(
-        input.geo,
-        input.capacity,
-        input.temperature,
-        &mut scratch.mean,
+    let t_bar = band_means_compact(band_geo, input.temperature);
+    let body = |cell: usize, slot: &mut LocalBalance, term: &mut BandTerm| {
+        let place = &input.geo[cell];
+        let land_frac = input.land[cell].land_frac;
+        // The 3×3 cover mean is computed here, from `ice`, which this pass
+        // never writes. Fusing it in saves a separate per-month pass.
+        let ice_albedo = if smooth_ice {
+            neighbourhood_mean(&place.neighbors, input.ice, cell)
+        } else {
+            input.ice[cell]
+        };
+        let albedo = cover_albedo(land_frac, input.snow[cell], ice_albedo, input.glacier[cell]);
+        let band_mean = sample_band_delta(place.pos[2], &t_bar);
+        let item = local_balance(
+            insulated_capacity(input.capacity[cell], land_frac, input.ice[cell]),
+            input.temperature[cell],
+            input.insolation[cell],
+            albedo,
+            band_mean,
+            input.dt,
+            input.a_coeff,
+        );
+        *slot = item;
+        let w = 1.0 - land_frac;
+        let sea_area = band_geo.sea_area[place.band];
+        let share = if sea_area > 0.0 {
+            w * band_geo.area[place.band] / sea_area
+        } else {
+            0.0
+        };
+        *term = BandTerm {
+            band: place.band,
+            a: place.area * item.num / item.k,
+            g: place.area / item.k,
+            h: place.area * share / item.k,
+            a_o: place.area * w * item.num / item.k,
+            g_o: place.area * w / item.k,
+            h_o: place.area * w * share / item.k,
+        };
+    };
+    if input.geo.len() >= FILL_PARALLEL_CELLS {
+        scratch
+            .local
+            .par_iter_mut()
+            .zip(scratch.band.par_iter_mut())
+            .enumerate()
+            .for_each(|(cell, (slot, term))| body(cell, slot, term));
+    } else {
+        for cell in 0..input.geo.len() {
+            body(cell, &mut scratch.local[cell], &mut scratch.band[cell]);
+        }
+    }
+    let flux = band_transport(
+        &scratch.band,
+        &t_bar,
+        input.diffusion,
+        band_geo,
+        &mut scratch.solve,
     );
-    scratch
-        .local
-        .par_iter_mut()
-        .zip(scratch.band.par_iter_mut())
-        .enumerate()
-        .for_each(|(cell, (slot, term))| {
-            let place = &input.geo[cell];
-            let land_frac = input.land[cell].land_frac;
-            let ice_albedo = smoothed_ice.map_or(input.ice[cell], |values| values[cell]);
-            let albedo = cover_albedo(land_frac, input.snow[cell], ice_albedo, input.glacier[cell]);
-            let band_mean = sample_band_delta(place.pos[2], &t_bar);
-            let item = local_balance(
-                insulated_capacity(input.capacity[cell], land_frac, input.ice[cell]),
-                input.temperature[cell],
-                input.insolation[cell],
-                albedo,
-                band_mean,
-                input.dt,
-                input.a_coeff,
-            );
-            *slot = item;
-            let w = 1.0 - land_frac;
-            let sea_area = band_geo.sea_area[place.band];
-            let share = if sea_area > 0.0 {
-                w * band_geo.area[place.band] / sea_area
-            } else {
-                0.0
-            };
-            *term = BandTerm {
-                band: place.band,
-                a: place.area * item.num / item.k,
-                g: place.area / item.k,
-                h: place.area * share / item.k,
-                a_o: place.area * w * item.num / item.k,
-                g_o: place.area * w / item.k,
-                h_o: place.area * w * share / item.k,
-            };
-        });
-    let flux = band_transport(&scratch.band, &t_bar, input.diffusion, band_geo);
-    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
+    let parallel = out.len() >= OUTPUT_PARALLEL_CELLS;
+    for_each_cell_mut(out, parallel, |cell, slot| {
         let item = scratch.local[cell];
         let z = input.geo[cell].pos[2];
         let sea_share = 1.0 - input.land[cell].land_frac;
@@ -1323,6 +1455,10 @@ struct BandGeo {
     sea_frac: [f64; BANDS],
     occupied: [bool; BANDS],
     sea_conductance: Vec<f64>,
+    /// Per-cell area and band, packed so the monthly band means stream over
+    /// two small arrays instead of the 88-byte `Geo` records.
+    area_by_cell: Vec<f64>,
+    band_by_cell: Vec<u8>,
 }
 
 fn band_geo(geo: &[Geo], land: &[CoarseLand]) -> BandGeo {
@@ -1351,6 +1487,8 @@ fn band_geo(geo: &[Geo], land: &[CoarseLand]) -> BandGeo {
         sea_frac,
         occupied,
         sea_conductance,
+        area_by_cell: geo.iter().map(|place| place.area).collect(),
+        band_by_cell: geo.iter().map(|place| place.band as u8).collect(),
     }
 }
 
@@ -1364,6 +1502,7 @@ fn band_transport(
     t_bar: &[f64; BANDS],
     diffusion: f64,
     band_geo: &BandGeo,
+    solve: &mut BandSolve,
 ) -> BandFlux {
     // Area means: T_bar = a + g F_air + h F_sea. Ocean means (weights A w):
     // T_sea = a_o + g_o F_air + h_o F_sea, with F_sea per unit of band area.
@@ -1396,43 +1535,54 @@ fn band_transport(
             h_o[b] /= band_geo.sea_area[b];
         }
     }
-    fill_empty_bands(&mut a, &mut g, &band_geo.occupied);
-    let mut air_conductance = meridional_conductance(BANDS, diffusion);
+    fill_empty_band(&mut a, &band_geo.occupied);
+    fill_empty_band(&mut g, &band_geo.occupied);
+    let mut air_conductance = [0.0; BANDS];
+    meridional_conductance_into(BANDS, diffusion, &mut air_conductance);
     let dx = 2.0 / BANDS as f64;
     for i in 0..BANDS - 1 {
         let x = -1.0 + (i + 1) as f64 * dx;
         let t_face = 0.5 * (t_bar[i] + t_bar[i + 1]);
         air_conductance[i] *= moist_scale(t_face, x);
     }
-    let air_inertia: Vec<f64> = g.iter().map(|value| 1.0 / value.max(1e-12)).collect();
-    let has_sea: Vec<bool> = (0..BANDS)
-        .map(|b| band_geo.sea_area[b] > 0.0 && h_o[b] > 0.0)
-        .collect();
-    let sea_inertia: Vec<f64> = (0..BANDS)
-        .map(|b| if has_sea[b] { 1.0 / h_o[b] } else { 1.0 })
-        .collect();
+    let mut air_inertia = [0.0; BANDS];
+    for b in 0..BANDS {
+        air_inertia[b] = 1.0 / g[b].max(1e-12);
+    }
+    let mut has_sea = [false; BANDS];
+    let mut sea_inertia = [0.0; BANDS];
+    for b in 0..BANDS {
+        has_sea[b] = band_geo.sea_area[b] > 0.0 && h_o[b] > 0.0;
+        sea_inertia[b] = if has_sea[b] { 1.0 / h_o[b] } else { 1.0 };
+    }
     let mut air = [0.0; BANDS];
     let mut sea_band = [0.0; BANDS];
     for _ in 0..TRANSPORT_SWEEPS {
-        let base: Vec<f64> = (0..BANDS).map(|b| a[b] + h[b] * sea_band[b]).collect();
-        let mixed = exchange_bands(&air_inertia, &base, &air_conductance).unwrap_or(base.clone());
+        let mut base = [0.0; BANDS];
         for b in 0..BANDS {
-            air[b] = (mixed[b] - base[b]) * air_inertia[b];
+            base[b] = a[b] + h[b] * sea_band[b];
         }
-        let base: Vec<f64> = (0..BANDS)
-            .map(|b| {
-                if has_sea[b] {
-                    a_o[b] + g_o[b] * air[b]
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let mixed =
-            exchange_bands(&sea_inertia, &base, &band_geo.sea_conductance).unwrap_or(base.clone());
+        let mixed_air =
+            exchange_bands_into(&air_inertia, &base, &air_conductance[..BANDS - 1], solve);
         for b in 0..BANDS {
-            sea_band[b] = if has_sea[b] {
-                (mixed[b] - base[b]) * sea_inertia[b]
+            air[b] = if mixed_air {
+                (solve.out[b] - base[b]) * air_inertia[b]
+            } else {
+                0.0
+            };
+        }
+        let mut base = [0.0; BANDS];
+        for b in 0..BANDS {
+            base[b] = if has_sea[b] {
+                a_o[b] + g_o[b] * air[b]
+            } else {
+                0.0
+            };
+        }
+        let mixed_sea = exchange_bands_into(&sea_inertia, &base, &band_geo.sea_conductance, solve);
+        for b in 0..BANDS {
+            sea_band[b] = if has_sea[b] && mixed_sea {
+                (solve.out[b] - base[b]) * sea_inertia[b]
             } else {
                 0.0
             };
@@ -1449,35 +1599,84 @@ fn band_transport(
 
 /// `D (1 − x²) / dx²` at the `n − 1` inner interfaces of `n` equal-area bands.
 fn meridional_conductance(n: usize, diffusion: f64) -> Vec<f64> {
+    let mut out = vec![0.0; n.saturating_sub(1)];
+    meridional_conductance_into(n, diffusion, &mut out);
+    out
+}
+
+fn meridional_conductance_into(n: usize, diffusion: f64, out: &mut [f64]) {
     let dx = 2.0 / n as f64;
-    (1..n)
-        .map(|i| {
-            let x = -1.0 + i as f64 * dx;
-            diffusion * (1.0 - x * x) / (dx * dx)
-        })
-        .collect()
+    for (i, slot) in out.iter_mut().enumerate() {
+        let x = -1.0 + (i + 1) as f64 * dx;
+        *slot = diffusion * (1.0 - x * x) / (dx * dx);
+    }
+}
+
+/// Tridiagonal buffers reused by every monthly transport solve.
+struct BandSolve {
+    lower: Vec<f64>,
+    diag: Vec<f64>,
+    upper: Vec<f64>,
+    rhs: Vec<f64>,
+    c_prime: Vec<f64>,
+    d_prime: Vec<f64>,
+    out: Vec<f64>,
+}
+
+impl BandSolve {
+    fn new(n: usize) -> Self {
+        Self {
+            lower: vec![0.0; n],
+            diag: vec![0.0; n],
+            upper: vec![0.0; n],
+            rhs: vec![0.0; n],
+            c_prime: vec![0.0; n],
+            d_prime: vec![0.0; n],
+            out: vec![0.0; n],
+        }
+    }
 }
 
 /// Implicit exchange `inertia_b (T_b − base_b) = Σ c (T_neighbour − T_b)` with
 /// `conductance[i]` between bands `i` and `i + 1`. Conserves `Σ inertia T`.
-fn exchange_bands(inertia: &[f64], base: &[f64], conductance: &[f64]) -> Option<Vec<f64>> {
+/// The result is left in `solve.out`; the buffers are reused across calls.
+fn exchange_bands_into(
+    inertia: &[f64],
+    base: &[f64],
+    conductance: &[f64],
+    solve: &mut BandSolve,
+) -> bool {
     let n = base.len();
-    if n == 0 || inertia.len() != n || conductance.len() + 1 != n {
-        return None;
+    if n == 0 || inertia.len() != n || conductance.len() + 1 != n || solve.lower.len() != n {
+        return false;
     }
-    let mut lower = vec![0.0; n];
-    let mut diag = vec![0.0; n];
-    let mut upper = vec![0.0; n];
-    let mut rhs = vec![0.0; n];
     for i in 0..n {
         let left = if i == 0 { 0.0 } else { conductance[i - 1] };
         let right = if i + 1 == n { 0.0 } else { conductance[i] };
-        lower[i] = -left;
-        upper[i] = -right;
-        diag[i] = inertia[i] + left + right;
-        rhs[i] = inertia[i] * base[i];
+        solve.lower[i] = -left;
+        solve.upper[i] = -right;
+        solve.diag[i] = inertia[i] + left + right;
+        solve.rhs[i] = inertia[i] * base[i];
     }
-    thomas(&lower, &diag, &upper, &rhs)
+    thomas_into(
+        &solve.lower,
+        &solve.diag,
+        &solve.upper,
+        &solve.rhs,
+        &mut solve.c_prime,
+        &mut solve.d_prime,
+        &mut solve.out,
+    )
+}
+
+#[cfg(test)]
+fn exchange_bands(inertia: &[f64], base: &[f64], conductance: &[f64]) -> Option<Vec<f64>> {
+    let mut solve = BandSolve::new(base.len());
+    if exchange_bands_into(inertia, base, conductance, &mut solve) {
+        Some(solve.out)
+    } else {
+        None
+    }
 }
 
 /// Latent-heat weight of moist transport, `(L / c_p) RH dq_s/dT`, dimensionless.
@@ -1509,88 +1708,85 @@ fn cover_albedo(land_frac: f64, snow: f64, ice: f64, glacier: f64) -> f64 {
 }
 
 /// Linear interpolation of the band increment in `x = sin φ`, clamped to the
-/// end-band centres so a cell on a band edge does not take a step.
-fn sample_band_delta(sin_phi: f64, delta: &[f64]) -> f64 {
-    let n = delta.len();
-    if n == 0 {
-        return 0.0;
-    }
-    if n == 1 {
-        return delta[0];
-    }
-    let dx = 2.0 / n as f64;
+/// end-band centres so a cell on a band edge does not take a step. All callers
+/// use the fixed band count, so the grid spacing is a constant.
+fn sample_band_delta(sin_phi: f64, delta: &[f64; BANDS]) -> f64 {
+    const DX: f64 = 2.0 / BANDS as f64;
+    const FIRST: f64 = -1.0 + 0.5 * DX;
+    const LAST: f64 = 1.0 - 0.5 * DX;
     let x = sin_phi.clamp(-1.0, 1.0);
-    let first = -1.0 + 0.5 * dx;
-    let last = 1.0 - 0.5 * dx;
-    if x <= first {
+    if x <= FIRST {
         return delta[0];
     }
-    if x >= last {
-        return delta[n - 1];
+    if x >= LAST {
+        return delta[BANDS - 1];
     }
-    let pos = (x - first) / dx;
-    let i = (pos.floor() as usize).min(n - 2);
+    let pos = (x - FIRST) / DX;
+    let i = (pos.floor() as usize).min(BANDS - 2);
     let frac = pos - i as f64;
     delta[i] * (1.0 - frac) + delta[i + 1] * frac
 }
 
-fn band_means(
-    geo: &[Geo],
-    capacity: &[f64],
-    temperature: &[f64],
-    terms: &mut [[f64; 3]],
-) -> ([f64; BANDS], [f64; BANDS]) {
-    // The per-cell products are independent, so fill them in parallel. The
-    // sums stay sequential in cell id order, the same order as before, so the
-    // bits do not depend on the thread count.
-    terms.par_iter_mut().enumerate().for_each(|(cell, slot)| {
-        let place = &geo[cell];
-        *slot = [
-            place.area * temperature[cell],
-            place.area * capacity[cell],
-            place.area,
-        ];
-    });
+/// Area-weighted band means in one sequential pass. The sums stay in cell id
+/// order, so the bits do not depend on the thread count.
+fn band_means(geo: &[Geo], temperature: &[f64]) -> [f64; BANDS] {
     let mut sum_t = [0.0; BANDS];
-    let mut sum_c = [0.0; BANDS];
     let mut sum_a = [0.0; BANDS];
     let mut occupied = [false; BANDS];
-    for (cell, term) in terms.iter().enumerate() {
-        let band = geo[cell].band;
-        sum_t[band] += term[0];
-        sum_c[band] += term[1];
-        sum_a[band] += term[2];
+    for (cell, place) in geo.iter().enumerate() {
+        let band = place.band;
+        sum_t[band] += place.area * temperature[cell];
+        sum_a[band] += place.area;
         occupied[band] = true;
     }
     let mut t_bar = [0.0; BANDS];
-    let mut c_bar = [0.0; BANDS];
     for band in 0..BANDS {
         if sum_a[band] > 0.0 {
             t_bar[band] = sum_t[band] / sum_a[band];
-            c_bar[band] = sum_c[band] / sum_a[band];
         }
     }
     // A sinφ band with no cell centre would otherwise have zero heat capacity and
     // couple the tridiagonal solve to an undefined temperature. Copy the nearest
     // occupied band so meridional transport stays well posed. Occupied bands keep
     // their area-weighted means.
-    fill_empty_bands(&mut t_bar, &mut c_bar, &occupied);
-    (t_bar, c_bar)
+    fill_empty_band(&mut t_bar, &occupied);
+    t_bar
 }
 
-fn fill_empty_bands(t_bar: &mut [f64], c_bar: &mut [f64], occupied: &[bool]) {
+/// [`band_means`] over the packed per-cell area and band arrays. The sum order
+/// and every product are the same, so the bits match the `Geo` walk.
+fn band_means_compact(band_geo: &BandGeo, temperature: &[f64]) -> [f64; BANDS] {
+    let mut sum_t = [0.0; BANDS];
+    let mut sum_a = [0.0; BANDS];
+    let mut occupied = [false; BANDS];
+    for (cell, &value) in temperature.iter().enumerate() {
+        let band = band_geo.band_by_cell[cell] as usize;
+        let area = band_geo.area_by_cell[cell];
+        sum_t[band] += area * value;
+        sum_a[band] += area;
+        occupied[band] = true;
+    }
+    let mut t_bar = [0.0; BANDS];
+    for band in 0..BANDS {
+        if sum_a[band] > 0.0 {
+            t_bar[band] = sum_t[band] / sum_a[band];
+        }
+    }
+    fill_empty_band(&mut t_bar, &occupied);
+    t_bar
+}
+
+fn fill_empty_band(values: &mut [f64; BANDS], occupied: &[bool; BANDS]) {
     if occupied.iter().all(|flag| *flag) {
         return;
     }
-    let snapshot_t = t_bar.to_vec();
-    let snapshot_c = c_bar.to_vec();
+    let snapshot = *values;
     for band in 0..BANDS {
         if occupied[band] {
             continue;
         }
         if let Some(source) = nearest_occupied(occupied, band) {
-            t_bar[band] = snapshot_t[source];
-            c_bar[band] = snapshot_c[source];
+            values[band] = snapshot[source];
         }
     }
 }
@@ -1629,32 +1825,58 @@ pub(crate) fn diffuse_meridional(
         .unwrap_or_else(|| temperature.to_vec())
 }
 
-fn thomas(lower: &[f64], diag: &[f64], upper: &[f64], rhs: &[f64]) -> Option<Vec<f64>> {
+fn thomas_into(
+    lower: &[f64],
+    diag: &[f64],
+    upper: &[f64],
+    rhs: &[f64],
+    c_prime: &mut [f64],
+    d_prime: &mut [f64],
+    out: &mut [f64],
+) -> bool {
     let n = rhs.len();
     if n == 0 || diag[0].abs() < 1e-30 {
-        return None;
+        return false;
     }
-    let mut c_prime = vec![0.0; n];
-    let mut d_prime = vec![0.0; n];
     c_prime[0] = upper[0] / diag[0];
     d_prime[0] = rhs[0] / diag[0];
     for i in 1..n {
         let pivot = diag[i] - lower[i] * c_prime[i - 1];
         if pivot.abs() < 1e-30 {
-            return None;
+            return false;
         }
         c_prime[i] = if i + 1 == n { 0.0 } else { upper[i] / pivot };
         d_prime[i] = (rhs[i] - lower[i] * d_prime[i - 1]) / pivot;
     }
-    let mut out = vec![0.0; n];
     out[n - 1] = d_prime[n - 1];
     for i in (0..n - 1).rev() {
         out[i] = d_prime[i] - c_prime[i] * out[i + 1];
     }
-    if out.iter().any(|value| !value.is_finite()) {
-        None
-    } else {
-        Some(out)
+    !out.iter().any(|value| !value.is_finite())
+}
+
+impl<'a> PrecipIn<'a> {
+    fn moisture_prep(&self, month: usize, out: &mut [MoistureCell]) {
+        let n = self.geo.len();
+        let ctx = MoistureCtx {
+            grid: self.grid,
+            itcz: &self.itcz[month],
+            phi_h_deg: self.phi_h_deg,
+            phi_f_deg: self.phi_f_deg,
+            precip_scale: self.planet.precipitation_scale,
+        };
+        let temperature = &self.temperature[month * n..(month + 1) * n];
+        let insolation = &self.insolation[month * n..(month + 1) * n];
+        out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
+            *slot = moisture_cell(
+                &ctx,
+                &self.geo[cell],
+                &self.land[cell],
+                temperature[cell],
+                insolation[cell],
+                wind_at(self.wind, month, cell, n),
+            );
+        });
     }
 }
 
@@ -1755,6 +1977,9 @@ fn diagnose_circulation(
     let window = tilt_deg + 10.0;
     let mut wind = vec![0.0; MONTHS * n * 3];
     let mut itcz = [[0.0; LON_BINS]; MONTHS];
+    // Cell centres never move, and the wind step projects every neighbour each
+    // month. Keep them packed so the gradient does not call `position` again.
+    let positions: Vec<[f64; 3]> = geo.iter().map(|place| place.pos).collect();
     for month in 0..MONTHS {
         let slice = &temperature[month * n..(month + 1) * n];
         let month_itcz = itcz_latitudes(geo, slice, window, tilt_deg);
@@ -1763,7 +1988,7 @@ fn diagnose_circulation(
         let smooth = smooth_two_rings(grid, &anomaly);
         let month_wind: Vec<[f64; 3]> = (0..n)
             .into_par_iter()
-            .map(|cell| surface_wind(grid, geo, &smooth, cell, &month_itcz, rotation))
+            .map(|cell| surface_wind(grid, geo, &positions, &smooth, cell, &month_itcz, rotation))
             .collect();
         for (cell, flow) in month_wind.iter().enumerate() {
             let base = (month * n + cell) * 3;
@@ -1776,9 +2001,7 @@ fn diagnose_circulation(
 }
 
 fn zonal_anomaly(geo: &[Geo], temperature: &[f64]) -> Vec<f64> {
-    let ones = vec![1.0; geo.len()];
-    let mut terms = vec![[0.0; 3]; geo.len()];
-    let (mean, _) = band_means(geo, &ones, temperature, &mut terms);
+    let mean = band_means(geo, temperature);
     temperature
         .iter()
         .enumerate()
@@ -1823,6 +2046,7 @@ fn smooth_two_rings(grid: &CubeSphere, field: &[f64]) -> Vec<f64> {
 fn surface_wind(
     grid: &CubeSphere,
     geo: &[Geo],
+    positions: &[[f64; 3]],
     anomaly: &[f64],
     cell: usize,
     itcz: &[f64; LON_BINS],
@@ -1837,7 +2061,7 @@ fn surface_wind(
         east: place.east,
         north: place.north,
     };
-    let (gx, gy) = tangent_gradient(grid, anomaly, cell, &frame, |nb| grid.position(nb));
+    let (gx, gy) = tangent_gradient(grid, anomaly, cell, &frame, |nb| positions[nb as usize]);
     let scale = THERMAL_SCALE * place.lat.cos().powi(2);
     let mut thermal_u = scale * gx;
     let mut thermal_v = scale * gy;
@@ -1912,21 +2136,9 @@ struct PrecipIn<'a> {
 }
 
 fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
-    let PrecipIn {
-        planet,
-        grid,
-        geo,
-        land,
-        temperature,
-        insolation,
-        wind,
-        itcz,
-        phi_h_deg,
-        phi_f_deg,
-        warmup_months,
-    } = *input;
-    let n = geo.len();
-    let steps = planet.month_seconds() / STEP_SECONDS;
+    let n = input.geo.len();
+    let steps = input.planet.month_seconds() / STEP_SECONDS;
+    let warmup_months = input.warmup_months;
     let mut monthly = vec![0.0; MONTHS * n];
     // Vapour and soil water carry from month to month. Restarting each month
     // at half saturation left that start-up vapour still raining out in the
@@ -1935,7 +2147,7 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     // saturation are discarded; each published month is the mean rain of its
     // sweeps. The month of a step is `(step - warmup) mod 12`, so 12 warm-up
     // months reproduce the old discarded year exactly.
-    let last = &temperature[(MONTHS - 1) * n..];
+    let last = &input.temperature[(MONTHS - 1) * n..];
     let mut column: Vec<f64> = last
         .iter()
         .map(|value| 0.5 * saturation_mm(*value))
@@ -1945,23 +2157,10 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
     let mut p_mean = vec![0.0; n];
     let mut column_next = vec![0.0; n];
     let mut rain = vec![0.0; n];
+    let mut prep = vec![MoistureCell::default(); n];
     for step in 0..warmup_months + MONTHS {
         let month = (step as isize - warmup_months as isize).rem_euclid(MONTHS as isize) as usize;
-        let prep = moisture_prep(
-            &MoistureCtx {
-                grid,
-                itcz: &itcz[month],
-                phi_h_deg,
-                phi_f_deg,
-                precip_scale: planet.precipitation_scale,
-            },
-            geo,
-            land,
-            &temperature[month * n..(month + 1) * n],
-            &insolation[month * n..(month + 1) * n],
-            wind,
-            month,
-        );
+        input.moisture_prep(month, &mut prep);
         rain.fill(0.0);
         for _ in 0..MOISTURE_SWEEPS {
             // One pass reads the old column and writes the next one, so the
@@ -1976,14 +2175,34 @@ fn precipitate(input: &PrecipIn<'_>) -> Vec<f64> {
                     let item = &prep[cell];
                     let w_up = if item.calm {
                         column[cell]
+                    } else if item.in_face {
+                        // In-face weights and vapour are non-negative, so the
+                        // caller's `.max(0.0)` is the identity here.
+                        let mut acc = 0.0;
+                        for corner in 0..4 {
+                            let weight = item.upwind_weights[corner];
+                            if weight == 0.0 {
+                                continue;
+                            }
+                            acc += column[item.upwind_ids[corner] as usize] * weight;
+                        }
+                        // The bilinear weights sum to exactly 1 for about 96%
+                        // of in-face samples; dividing by 1.0 is exact.
+                        if item.upwind_wsum == 1.0 {
+                            acc
+                        } else {
+                            acc / item.upwind_wsum
+                        }
                     } else {
-                        grid.sample_chart_at(
-                            &column,
-                            item.upwind_face,
-                            item.upwind_fx,
-                            item.upwind_fy,
-                        )
-                        .max(0.0)
+                        input
+                            .grid
+                            .sample_chart_at(
+                                &column,
+                                item.upwind_face,
+                                item.upwind_fx,
+                                item.upwind_fy,
+                            )
+                            .max(0.0)
                     };
                     let (w, p) = column_step(item, w_up, *pm);
                     *slot = w;
@@ -2007,31 +2226,6 @@ struct MoistureCtx<'a> {
     phi_h_deg: f64,
     phi_f_deg: f64,
     precip_scale: f64,
-}
-
-fn moisture_prep(
-    ctx: &MoistureCtx<'_>,
-    geo: &[Geo],
-    land: &[CoarseLand],
-    temperature: &[f64],
-    insolation: &[f64],
-    wind: &[f64],
-    month: usize,
-) -> Vec<MoistureCell> {
-    let n = geo.len();
-    (0..n)
-        .into_par_iter()
-        .map(|cell| {
-            moisture_cell(
-                ctx,
-                &geo[cell],
-                &land[cell],
-                temperature[cell],
-                insolation[cell],
-                wind_at(wind, month, cell, n),
-            )
-        })
-        .collect()
 }
 
 fn moisture_cell(
@@ -2078,11 +2272,51 @@ fn moisture_cell(
     } else {
         ctx.grid.face_coords(upwind)
     };
+    // Most upwind points stay inside one face. Resolve their bilinear stencil
+    // here, once per month, instead of rebuilding it on every sweep. The corner
+    // order, weights and sum are the ones `sample_chart_at` would compute.
+    let nf = ctx.grid.n as f64;
+    let in_face =
+        !calm && (0.5..nf - 0.5).contains(&upwind_fx) && (0.5..nf - 0.5).contains(&upwind_fy);
+    let mut upwind_ids = [0; 4];
+    let mut upwind_weights = [0.0; 4];
+    let mut upwind_wsum = 0.0;
+    if in_face {
+        let u = upwind_fx - 0.5;
+        let v = upwind_fy - 0.5;
+        let i0f = u.floor();
+        let j0f = v.floor();
+        let tx = u - i0f;
+        let ty = v - j0f;
+        let i0 = i0f as u32;
+        let j0 = j0f as u32;
+        upwind_ids = [
+            ctx.grid.id(upwind_face, i0, j0),
+            ctx.grid.id(upwind_face, i0 + 1, j0),
+            ctx.grid.id(upwind_face, i0, j0 + 1),
+            ctx.grid.id(upwind_face, i0 + 1, j0 + 1),
+        ];
+        upwind_weights = [
+            (1.0 - tx) * (1.0 - ty),
+            tx * (1.0 - ty),
+            (1.0 - tx) * ty,
+            tx * ty,
+        ];
+        for weight in upwind_weights {
+            if weight != 0.0 {
+                upwind_wsum += weight;
+            }
+        }
+    }
     MoistureCell {
         upwind_face,
         upwind_fx,
         upwind_fy,
         calm,
+        in_face,
+        upwind_ids,
+        upwind_weights,
+        upwind_wsum,
         ocean_factor: EVAP_MM_PER_6H
             * (w_sat / 50.0)
             * (1.0 - ice)

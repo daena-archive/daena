@@ -13,6 +13,7 @@ mod evolution;
 mod grid;
 mod hydrology;
 mod noise;
+mod par;
 mod planet;
 mod preset;
 mod render;
@@ -313,7 +314,10 @@ pub enum Stage {
 }
 
 /// Receives stage updates and can stop the build.
-pub trait Progress {
+///
+/// `Send` lets [`generate`] run on a rayon worker so its per-cell loops are
+/// injected from inside the pool.
+pub trait Progress: Send {
     /// `done` counts completed units of `total` for `stage`.
     fn report(&mut self, stage: Stage, done: u32, total: u32);
     /// Return true to abort with [`WorldError::Cancelled`].
@@ -589,7 +593,18 @@ impl World {
 }
 
 /// Build a world. `progress` is notified per tectonic stage and per erosion iteration.
+///
+/// Generation runs on a rayon worker, so every per-cell loop is injected from
+/// inside the pool instead of waking the workers from the main thread. A
+/// caller that is already inside the pool runs inline.
 pub fn generate(
+    settings: &WorldSettings,
+    progress: &mut dyn Progress,
+) -> Result<World, WorldError> {
+    rayon::scope(|_| generate_inner(settings, progress))
+}
+
+fn generate_inner(
     settings: &WorldSettings,
     progress: &mut dyn Progress,
 ) -> Result<World, WorldError> {

@@ -274,6 +274,14 @@ impl CubeSphere {
             .unwrap_or(0.0)
     }
 
+    /// Bilinear sample of an `f64` field at face coordinates the caller already
+    /// has. Same arithmetic as [`Self::sample_f64`] without the coordinate
+    /// lookup, for repeated samples of one point.
+    pub(crate) fn sample_chart_at(&self, field: &[f64], face: u32, fx: f64, fy: f64) -> f64 {
+        self.sample_chart(face, fx, fy, &|id| Some(field[id as usize]))
+            .unwrap_or(0.0)
+    }
+
     /// Face-local bilinear weights. A corner outside the face uses the cell
     /// [`extrapolated_cell`] would pick, shifted from that cell centre to the
     /// virtual node by a tangent gradient.

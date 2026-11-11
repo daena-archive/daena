@@ -6,6 +6,7 @@
 //! every pit, which is the phase A behaviour.
 
 use std::collections::VecDeque;
+use std::ops::Range;
 
 use rayon::prelude::*;
 
@@ -30,6 +31,17 @@ pub struct RoutingScratch {
     pub lake_level: Vec<f32>,
     /// Drainage area in square metres, accumulated in `f64`.
     pub area: Vec<f64>,
+    /// Stack position of each cell, used by the basin-parallel passes.
+    pub(crate) pos: Vec<u32>,
+    /// Contiguous stack ranges, each whole basins and about `chunk_cells`
+    /// cells unless one basin is larger.
+    pub(crate) chunks: Vec<(u32, u32)>,
+    /// Stack-order work buffer for `f64` basin passes.
+    pub(crate) stack_f64: Vec<f64>,
+    /// Below this cell count the basin passes run in cell order, in place.
+    pub(crate) parallel_min_cells: usize,
+    /// Target cell count of one basin chunk.
+    pub(crate) chunk_cells: usize,
     /// Empty means every cell has weight 1.
     weight: Vec<f32>,
     segs: Vec<BasinSeg>,
@@ -93,12 +105,43 @@ impl RoutingScratch {
             basin: vec![0; cell_count],
             lake_level: vec![f32::NAN; cell_count],
             area: vec![0.0; cell_count],
+            pos: vec![0; cell_count],
+            chunks: Vec::new(),
+            stack_f64: vec![0.0; cell_count],
+            parallel_min_cells: PARALLEL_BASIN_MIN_CELLS,
+            chunk_cells: BASIN_CHUNK_CELLS,
             weight: Vec::new(),
             segs: Vec::new(),
             cursor: vec![0; cell_count],
             dfs: Vec::new(),
             edges: Vec::new(),
         }
+    }
+
+    /// Rebuild the chunk ranges from the current basins. Production calls
+    /// this from `build_donors_stack` with `chunk_cells`; tests may pass a
+    /// smaller target so a small grid gets several chunks.
+    pub(crate) fn rechunk(&mut self, target_cells: usize) {
+        self.chunks.clear();
+        let mut start = 0u32;
+        let mut count = 0usize;
+        for seg in &self.segs {
+            let len = (seg.end - seg.start) as usize;
+            if count > 0 && count + len > target_cells {
+                self.chunks.push((start, seg.start));
+                start = seg.start;
+                count = 0;
+            }
+            count += len;
+        }
+        if count > 0 {
+            self.chunks.push((start, self.stack.len() as u32));
+        }
+    }
+
+    /// True when the basin passes use stack-order chunks in parallel.
+    pub(crate) fn parallel_basins(&self) -> bool {
+        self.receiver.len() >= self.parallel_min_cells
     }
 
     fn resize(&mut self, n: usize) {
@@ -108,12 +151,317 @@ impl RoutingScratch {
             self.basin.resize(n, 0);
             self.lake_level.resize(n, f32::NAN);
             self.area.resize(n, 0.0);
+            self.pos.resize(n, 0);
+            self.chunks.clear();
+            self.stack_f64.resize(n, 0.0);
             self.weight.clear();
             self.weight.shrink_to_fit();
             self.cursor.resize(n, 0);
             self.donor_offset.resize(n + 1, 0);
         }
     }
+}
+
+/// Production chunk target for the basin passes.
+pub(crate) const BASIN_CHUNK_CELLS: usize = 16_384;
+/// Below this cell count the basin passes run in cell order, in place.
+pub(crate) const PARALLEL_BASIN_MIN_CELLS: usize = 131_072;
+
+/// Cell-to-slot mapping for a basin kernel.
+///
+/// [`CellIndex`] is the identity used when the kernel runs on the field in
+/// cell order. [`Slots`] offsets the stack position by the chunk start.
+pub(crate) trait SlotIndex: Copy {
+    /// Slot of an arbitrary cell: the receiver or a donor.
+    fn at(self, cell: usize) -> usize;
+    /// Slot of the cell at `idx` in the kernel's stack range.
+    fn current(self, idx: usize, cell: usize) -> usize;
+}
+
+/// Identity mapping: the field is indexed by cell.
+#[derive(Clone, Copy)]
+pub(crate) struct CellIndex;
+
+impl SlotIndex for CellIndex {
+    #[inline(always)]
+    fn at(self, cell: usize) -> usize {
+        cell
+    }
+
+    #[inline(always)]
+    fn current(self, _idx: usize, cell: usize) -> usize {
+        cell
+    }
+}
+
+/// Chunk mapping: stack position minus the chunk start.
+#[derive(Clone, Copy)]
+pub(crate) struct Slots<'a> {
+    pos: &'a [u32],
+    base: usize,
+}
+
+impl SlotIndex for Slots<'_> {
+    #[inline(always)]
+    fn at(self, cell: usize) -> usize {
+        self.pos[cell] as usize - self.base
+    }
+
+    #[inline(always)]
+    fn current(self, idx: usize, _cell: usize) -> usize {
+        idx - self.base
+    }
+}
+
+/// Run `body` over every cell, sequentially below the parallel threshold and
+/// in parallel above it. Results are combined with `combine`.
+pub(crate) fn fold_cells_mut<T, U, F, C>(
+    field: &mut [T],
+    parallel: bool,
+    init: U,
+    body: F,
+    combine: C,
+) -> U
+where
+    T: Send,
+    U: Copy + Send + Sync,
+    F: Fn(usize, &mut T) -> U + Sync + Send,
+    C: Fn(U, U) -> U + Sync + Send,
+{
+    if parallel {
+        field
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, slot)| body(i, slot))
+            .reduce(|| init, &combine)
+    } else {
+        let mut acc = init;
+        for (i, slot) in field.iter_mut().enumerate() {
+            acc = combine(acc, body(i, slot));
+        }
+        acc
+    }
+}
+
+/// Stack, slot and chunk metadata shared by one basin pass.
+#[derive(Clone, Copy)]
+pub(crate) struct BasinView<'a> {
+    pub stack: &'a [u32],
+    pub pos: &'a [u32],
+    pub chunks: &'a [(u32, u32)],
+}
+
+/// Like [`fold_cells_mut`], for two equal-length fields updated together.
+pub(crate) fn fold_cells_zip_mut<A, B, U, F, C>(
+    first: &mut [A],
+    second: &mut [B],
+    parallel: bool,
+    init: U,
+    body: F,
+    combine: C,
+) -> U
+where
+    A: Send,
+    B: Send,
+    U: Copy + Send + Sync,
+    F: Fn(usize, &mut A, &mut B) -> U + Sync + Send,
+    C: Fn(U, U) -> U + Sync + Send,
+{
+    if parallel {
+        first
+            .par_iter_mut()
+            .zip(second.par_iter_mut())
+            .enumerate()
+            .map(|(i, (a, b))| body(i, a, b))
+            .reduce(|| init, &combine)
+    } else {
+        let mut acc = init;
+        for i in 0..first.len() {
+            acc = combine(acc, body(i, &mut first[i], &mut second[i]));
+        }
+        acc
+    }
+}
+
+fn run_range<T, F>(work: &mut [T], view: BasinView<'_>, lo: usize, hi: usize, kernel: &F) -> u32
+where
+    T: Copy + Send + Sync,
+    F: Fn(Range<usize>, Slots<'_>, &mut [T]) -> u32 + Sync + Send,
+{
+    if hi - lo == 1 {
+        let (start, end) = view.chunks[lo];
+        let base = start as usize;
+        let range = base..end as usize;
+        return kernel(
+            range,
+            Slots {
+                pos: view.pos,
+                base,
+            },
+            work,
+        );
+    }
+    let mid = (lo + hi) / 2;
+    let split = (view.chunks[mid].0 - view.chunks[lo].0) as usize;
+    let (left, right) = work.split_at_mut(split);
+    let (a, b) = rayon::join(
+        || run_range(left, view, lo, mid, kernel),
+        || run_range(right, view, mid, hi, kernel),
+    );
+    a.saturating_add(b)
+}
+
+/// Slot initialiser shared by the three runner entry points.
+struct Init<I> {
+    fill: I,
+    /// Whether cell mode also applies `fill` before the kernel.
+    cell_mode: bool,
+}
+
+/// Run one basin kernel over `field`, filling each slot with `init` first.
+///
+/// Below `parallel_min_cells` the kernel runs in cell order on the field
+/// itself, with no gather or scatter. Above it, `work` holds a stack-order
+/// copy, the kernel runs over the precomputed chunks, and the result is
+/// scattered back. `cell_kernel` receives the field itself; `chunk_kernel`
+/// maps each cell through the chunk slots. Both call the same kernel body.
+pub(crate) fn run_basin_kernel<T, I, C, F>(
+    field: &mut [T],
+    work: &mut [T],
+    view: BasinView<'_>,
+    parallel: bool,
+    init: I,
+    cell_kernel: C,
+    chunk_kernel: F,
+) -> u32
+where
+    T: Copy + Send + Sync,
+    I: Fn(usize, T) -> T + Sync + Send,
+    C: FnOnce(Range<usize>, &mut [T]) -> u32,
+    F: Fn(Range<usize>, Slots<'_>, &mut [T]) -> u32 + Sync + Send,
+{
+    run_basin_kernel_inner(
+        field,
+        work,
+        view,
+        parallel,
+        Init {
+            fill: init,
+            cell_mode: true,
+        },
+        cell_kernel,
+        chunk_kernel,
+    )
+}
+
+/// Like [`run_basin_kernel`], but `init` only fills the chunk-order copy.
+/// Cell mode leaves the field untouched for the kernel to read in place.
+pub(crate) fn run_basin_kernel_gather<T, I, C, F>(
+    field: &mut [T],
+    work: &mut [T],
+    view: BasinView<'_>,
+    parallel: bool,
+    init: I,
+    cell_kernel: C,
+    chunk_kernel: F,
+) -> u32
+where
+    T: Copy + Send + Sync,
+    I: Fn(usize, T) -> T + Sync + Send,
+    C: FnOnce(Range<usize>, &mut [T]) -> u32,
+    F: Fn(Range<usize>, Slots<'_>, &mut [T]) -> u32 + Sync + Send,
+{
+    run_basin_kernel_inner(
+        field,
+        work,
+        view,
+        parallel,
+        Init {
+            fill: init,
+            cell_mode: false,
+        },
+        cell_kernel,
+        chunk_kernel,
+    )
+}
+
+/// Run one basin kernel over `field` without touching slots before the
+/// kernel. Cell mode reads the field in place; chunk mode copies it to `work`.
+pub(crate) fn run_basin_kernel_keep<T, C, F>(
+    field: &mut [T],
+    work: &mut [T],
+    view: BasinView<'_>,
+    parallel: bool,
+    cell_kernel: C,
+    chunk_kernel: F,
+) -> u32
+where
+    T: Copy + Send + Sync,
+    C: FnOnce(Range<usize>, &mut [T]) -> u32,
+    F: Fn(Range<usize>, Slots<'_>, &mut [T]) -> u32 + Sync + Send,
+{
+    run_basin_kernel_inner::<T, fn(usize, T) -> T, C, F>(
+        field,
+        work,
+        view,
+        parallel,
+        Init {
+            fill: |_: usize, value: T| value,
+            cell_mode: false,
+        },
+        cell_kernel,
+        chunk_kernel,
+    )
+}
+
+fn run_basin_kernel_inner<T, I, C, F>(
+    field: &mut [T],
+    work: &mut [T],
+    view: BasinView<'_>,
+    parallel: bool,
+    init: Init<I>,
+    cell_kernel: C,
+    chunk_kernel: F,
+) -> u32
+where
+    T: Copy + Send + Sync,
+    I: Fn(usize, T) -> T + Sync + Send,
+    C: FnOnce(Range<usize>, &mut [T]) -> u32,
+    F: Fn(Range<usize>, Slots<'_>, &mut [T]) -> u32 + Sync + Send,
+{
+    if !parallel {
+        if init.cell_mode {
+            for (cell, slot) in field.iter_mut().enumerate() {
+                *slot = (init.fill)(cell, *slot);
+            }
+        }
+        return cell_kernel(0..view.stack.len(), field);
+    }
+    if view.chunks.is_empty() {
+        return 0;
+    }
+    {
+        let current: &[T] = field;
+        work[..view.stack.len()]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(idx, slot)| {
+                let cell = view.stack[idx] as usize;
+                *slot = (init.fill)(cell, current[cell]);
+            });
+    }
+    let stats = run_range(
+        &mut work[..view.stack.len()],
+        view,
+        0,
+        view.chunks.len(),
+        &chunk_kernel,
+    );
+    let work: &[T] = work;
+    field.par_iter_mut().enumerate().for_each(|(cell, slot)| {
+        *slot = work[view.pos[cell] as usize];
+    });
+    stats
 }
 
 /// Route `elev` over `domain` (`1` = erodible). `weight` defaults to 1.
@@ -135,7 +483,6 @@ pub fn route(
         scratch.weight.extend_from_slice(w);
     } else if !scratch.weight.is_empty() {
         scratch.weight.clear();
-        scratch.weight.shrink_to_fit();
     }
     receivers(grid, elev, domain, scratch);
     build_donors_stack(scratch);
@@ -192,6 +539,8 @@ fn receivers(grid: &CubeSphere, elev: &[f32], domain: &[u8], scratch: &mut Routi
 
 fn build_donors_stack(scratch: &mut RoutingScratch) {
     let n = scratch.receiver.len();
+    // Cell mode never reads `pos` or the chunk list, so skip both writes.
+    let parallel = scratch.parallel_basins();
     scratch.cursor.fill(0);
     for c in 0..n {
         let r = scratch.receiver[c] as usize;
@@ -225,8 +574,28 @@ fn build_donors_stack(scratch: &mut RoutingScratch) {
             continue;
         }
         let start = scratch.stack.len() as u32;
+        let root_s = scratch.donor_offset[root] as usize;
+        let root_e = scratch.donor_offset[root + 1] as usize;
+        if root_s == root_e {
+            // Isolated roots are most of the ocean; skip the DFS stack.
+            if parallel {
+                scratch.pos[root] = start;
+            }
+            scratch.stack.push(root as u32);
+            scratch.basin[root] = root as u32;
+            scratch.segs.push(BasinSeg {
+                root: root as u32,
+                start,
+                end: start + 1,
+            });
+            continue;
+        }
+        scratch.dfs.clear();
         scratch.dfs.push(root as u32);
         while let Some(node) = scratch.dfs.pop() {
+            if parallel {
+                scratch.pos[node as usize] = scratch.stack.len() as u32;
+            }
             scratch.stack.push(node);
             scratch.basin[node as usize] = root as u32;
             let s = scratch.donor_offset[node as usize] as usize;
@@ -241,6 +610,9 @@ fn build_donors_stack(scratch: &mut RoutingScratch) {
             start,
             end,
         });
+    }
+    if parallel {
+        scratch.rechunk(scratch.chunk_cells);
     }
 }
 
@@ -266,7 +638,7 @@ pub(crate) fn collect_pass_edges(
 
 /// Sort by basin pair and keep the lowest pass (ties: lowest cell ids).
 fn keep_lowest_pass_per_pair(edges: &mut Vec<PassEdge>) {
-    edges.sort_by(|e, f| {
+    edges.sort_unstable_by(|e, f| {
         e.a.cmp(&f.a)
             .then(e.b.cmp(&f.b))
             .then(f32_key(e.pass).cmp(&f32_key(f.pass)))
@@ -362,9 +734,6 @@ fn depress(
 ) -> RouteStats {
     scratch.lake_level.fill(f32::NAN);
     scratch.donors.clear();
-    scratch.donors.shrink_to_fit();
-    scratch.dfs.clear();
-    scratch.dfs.shrink_to_fit();
     let n = elev.len();
     let pits = scratch
         .segs
@@ -409,23 +778,33 @@ fn depress(
             scratch.basin[scratch.stack[idx as usize] as usize] = node;
         }
     }
-    scratch.edges.clear();
     let ocean_node = if has_ocean { 0 } else { NONE };
-    for seg in &open {
-        for idx in seg.start..seg.end {
-            push_lowest_passes(
-                grid,
-                elev,
-                &scratch.basin,
-                ocean_node,
-                &mut scratch.edges,
-                scratch.stack[idx as usize],
-            );
-        }
+    let parts: Vec<Vec<PassEdge>> = open
+        .par_chunks(64)
+        .map(|chunk| {
+            let mut local = Vec::new();
+            for seg in chunk {
+                for idx in seg.start..seg.end {
+                    push_lowest_passes(
+                        grid,
+                        elev,
+                        &scratch.basin,
+                        ocean_node,
+                        &mut local,
+                        scratch.stack[idx as usize],
+                    );
+                }
+            }
+            local
+        })
+        .collect();
+    scratch.edges.clear();
+    for part in parts {
+        scratch.edges.extend(part);
     }
     let edges = u32::try_from(scratch.edges.len()).unwrap_or(u32::MAX);
     keep_lowest_pass_per_pair(&mut scratch.edges);
-    scratch.edges.sort_by(|e, f| {
+    scratch.edges.sort_unstable_by(|e, f| {
         f32_key(e.pass)
             .cmp(&f32_key(f.pass))
             .then(e.a.cmp(&f.a))
@@ -717,7 +1096,6 @@ pub(crate) fn accumulate_with_weight(
 
 fn release_edges(scratch: &mut RoutingScratch) {
     scratch.edges.clear();
-    scratch.edges.shrink_to_fit();
 }
 
 fn lowest_unseen(node_pit: &[u32], elev: &[f32], seen: &[u8]) -> Option<u32> {
@@ -794,23 +1172,52 @@ fn link_distance(grid: &CubeSphere, a: u32, b: u32) -> f32 {
 
 fn drainage(grid: &CubeSphere, scratch: &mut RoutingScratch) {
     let n = scratch.receiver.len();
-    let weighted = scratch.weight.len() == n;
-    for c in 0..n {
-        let weight = if weighted {
-            f64::from(scratch.weight[c])
-        } else {
-            1.0
-        };
-        scratch.area[c] = grid.area_m2(c as u32) * weight;
-    }
-    for idx in (0..scratch.stack.len()).rev() {
-        let c = scratch.stack[idx] as usize;
-        let r = scratch.receiver[c] as usize;
-        if r != c {
-            let add = scratch.area[c];
-            scratch.area[r] += add;
+    let parallel = scratch.parallel_basins();
+    let RoutingScratch {
+        area,
+        stack_f64,
+        stack,
+        pos,
+        chunks,
+        receiver,
+        weight,
+        ..
+    } = scratch;
+    let weight = if weight.len() == n {
+        Some(weight.as_slice())
+    } else {
+        None
+    };
+    run_basin_kernel(
+        area,
+        stack_f64,
+        BasinView { stack, pos, chunks },
+        parallel,
+        |cell, _| {
+            let weight = weight.map_or(1.0, |weight| f64::from(weight[cell]));
+            grid.area_m2(cell as u32) * weight
+        },
+        |range, values| drainage_kernel(range, CellIndex, values, stack, receiver),
+        |range, slots, values| drainage_kernel(range, slots, values, stack, receiver),
+    );
+}
+
+fn drainage_kernel<S: SlotIndex>(
+    range: Range<usize>,
+    slots: S,
+    values: &mut [f64],
+    stack: &[u32],
+    receiver: &[u32],
+) -> u32 {
+    for idx in range.rev() {
+        let cell = stack[idx] as usize;
+        let r = receiver[cell] as usize;
+        if r != cell {
+            let add = values[slots.current(idx, cell)];
+            values[slots.at(r)] += add;
         }
     }
+    0
 }
 
 /// Every cell reaches a root, `stack` is a permutation, and receivers come first.

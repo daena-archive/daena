@@ -243,3 +243,32 @@ fn bowl() -> (CubeSphere, Vec<f32>, Vec<u8>, u32) {
     h[pit] = -20.0;
     (grid, h, domain, pit as u32)
 }
+
+#[test]
+fn chunked_drainage_matches_whole_stack_order() {
+    use crate::routing::accumulate_with_weight;
+
+    let (grid, h, domain) = terrain(16, 7, 0.2);
+    let n = h.len();
+    let mut scratch = RoutingScratch::new(n);
+    scratch.parallel_min_cells = 0;
+    scratch.chunk_cells = 8;
+    route(&grid, &h, &domain, None, &mut scratch, None);
+
+    let mut expect = vec![0.0f64; n];
+    for (cell, slot) in expect.iter_mut().enumerate() {
+        *slot = grid.area_m2(cell as u32);
+    }
+    for idx in (0..scratch.stack.len()).rev() {
+        let c = scratch.stack[idx] as usize;
+        let r = scratch.receiver[c] as usize;
+        if r != c {
+            let add = expect[c];
+            expect[r] += add;
+        }
+    }
+
+    assert!(scratch.chunks.len() > 1, "chunks {}", scratch.chunks.len());
+    accumulate_with_weight(&grid, &mut scratch, &vec![1.0f32; n]);
+    assert_eq!(scratch.area, expect);
+}

@@ -8,6 +8,7 @@
 //! stated once for the elevation that level starts from, and the coarse level
 //! needs it to cut channels.
 
+use std::ops::Range;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -17,7 +18,10 @@ use crate::grid::{resample, CubeSphere};
 use crate::noise::{
     derive_seed, derive_seed_salt, fbm, fbm_fixed_norm, noise_on_sphere, SeedDomain,
 };
-use crate::routing::{accumulate_with_weight, route, BasinBalance, RoutingScratch};
+use crate::routing::{
+    accumulate_with_weight, fold_cells_mut, fold_cells_zip_mut, route, run_basin_kernel_gather,
+    run_basin_kernel_keep, BasinBalance, BasinView, CellIndex, RoutingScratch, SlotIndex,
+};
 use crate::sealevel;
 use crate::tectonics::Tectonics;
 use crate::{ClimatePass, ErosionParams, LevelStats, Progress, Stage, WorldError, WorldSettings};
@@ -116,6 +120,9 @@ pub(crate) struct ErodeReport {
     pub max_domain_m: f32,
     /// Area-weighted mean domain elevation after the last iteration.
     pub mean_domain_m: f32,
+    /// Ice discharge of the last iteration. Compared by the mode test.
+    #[cfg(test)]
+    pub q_ice: Vec<f64>,
 }
 
 /// Evolve every level from 32 up to `settings.resolution`.
@@ -549,6 +556,7 @@ pub(crate) fn erode(
     let mut aux = vec![0.0f32; n];
     let mut am = vec![0.0f32; n];
     let mut lake = vec![0u8; n];
+    let mut pit_next = vec![0.0f32; n];
     let mut steps = Vec::new();
     let mut violations = 0u32;
     let mut pits_last = 0u32;
@@ -578,7 +586,7 @@ pub(crate) fn erode(
         } else {
             Vec::new()
         };
-        fill_single_cell_pits(job.grid, job.h, job.domain);
+        fill_single_cell_pits_swap(job.grid, job.h, job.domain, &mut pit_next);
         let balance = water.map(|water| BasinBalance {
             runoff_m_yr: water.runoff_m_yr,
             evap_m_yr: water.evap_m_yr,
@@ -617,10 +625,21 @@ pub(crate) fn erode(
                 },
             );
         }
-        violations =
-            violations.saturating_add(stream_power(&mut job, &mut am, &mut lake, &glaciated));
+        violations = violations.saturating_add(stream_power(
+            &mut job,
+            &mut am,
+            &mut lake,
+            &glaciated,
+            &mut pit_next,
+        ));
         if water.is_some() {
-            overdeepen(job.h, job.domain, &q_ice, job.options.dt_yr);
+            overdeepen(
+                job.h,
+                job.domain,
+                &q_ice,
+                job.options.dt_yr,
+                job.scratch.parallel_basins(),
+            );
         }
         hillslopes(
             job.h,
@@ -628,6 +647,7 @@ pub(crate) fn erode(
             &lake,
             job.scratch,
             job.options.params.s_c,
+            &mut pit_next,
         );
         smooth(
             job.grid,
@@ -636,7 +656,12 @@ pub(crate) fn erode(
             job.domain,
             job.options.params.kappa,
         );
-        clamped_last = clamp_elevation(job.h, job.domain, job.options.params.max_elevation_m);
+        clamped_last = clamp_elevation(
+            job.h,
+            job.domain,
+            job.options.params.max_elevation_m,
+            job.scratch.parallel_basins(),
+        );
         if record_steps {
             let mut max_step = 0.0f32;
             for (old, new) in before.iter().zip(job.h.iter()) {
@@ -661,6 +686,8 @@ pub(crate) fn erode(
         violations,
         max_domain_m,
         mean_domain_m,
+        #[cfg(test)]
+        q_ice,
     })
 }
 
@@ -686,6 +713,43 @@ struct IceBuf<'a> {
     glaciated: &'a mut [u8],
 }
 
+struct IceKernel<'a> {
+    grid: &'a CubeSphere,
+    stack: &'a [u32],
+    donor_offset: &'a [u32],
+    donors: &'a [u32],
+    ice_m_yr: &'a [f32],
+}
+
+fn ice_kernel<const COMPUTE_BASE: bool, S: SlotIndex>(
+    kernel: &IceKernel<'_>,
+    range: Range<usize>,
+    slots: S,
+    values: &mut [f64],
+) -> u32 {
+    let stack = kernel.stack;
+    let donor_offset = kernel.donor_offset;
+    let donors = kernel.donors;
+    let ice_m_yr = kernel.ice_m_yr;
+    let grid = kernel.grid;
+    for idx in range.rev() {
+        let cell = stack[idx] as usize;
+        let slot = slots.current(idx, cell);
+        let s = donor_offset[cell] as usize;
+        let e = donor_offset[cell + 1] as usize;
+        let mut sum = if COMPUTE_BASE {
+            f64::from(ice_m_yr.get(cell).copied().unwrap_or(0.0)) * grid.area_m2(cell as u32)
+        } else {
+            values[slot]
+        };
+        for &donor in &donors[s..e] {
+            sum += values[slots.at(donor as usize)].max(0.0);
+        }
+        values[slot] = sum;
+    }
+    0
+}
+
 /// Ice discharge on the current receivers, then glacier weights.
 ///
 /// `q_ice = balance·area + Σ donors max(q_ice, 0)`, leaves first.
@@ -697,58 +761,91 @@ fn apply_ice(
     base_weight: &[f32],
     buf: &mut IceBuf<'_>,
 ) -> u32 {
-    buf.q_ice.fill(0.0);
-    for idx in (0..scratch.stack.len()).rev() {
-        let cell = scratch.stack[idx];
-        let i = cell as usize;
-        let mut sum = f64::from(ice_m_yr.get(i).copied().unwrap_or(0.0)) * grid.area_m2(cell);
-        let s = scratch.donor_offset[i] as usize;
-        let e = scratch.donor_offset[i + 1] as usize;
-        for &donor in &scratch.donors[s..e] {
-            sum += buf.q_ice[donor as usize].max(0.0);
-        }
-        buf.q_ice[i] = sum;
-    }
-    let mut count = 0u32;
-    let mut any = false;
-    for i in 0..buf.q_ice.len() {
-        let ice = domain.get(i).copied().unwrap_or(0) == 1 && buf.q_ice[i] > 0.0;
-        buf.glaciated[i] = u8::from(ice);
-        let mut weight = base_weight.get(i).copied().unwrap_or(1.0);
-        if ice {
-            count = count.saturating_add(1);
-            if weight < GLACIER_WEIGHT {
-                weight = GLACIER_WEIGHT;
-                any = true;
+    debug_assert_eq!(buf.boosted.len(), buf.glaciated.len());
+    let parallel = scratch.parallel_basins();
+    let RoutingScratch {
+        stack_f64,
+        stack,
+        pos,
+        chunks,
+        donor_offset,
+        donors,
+        ..
+    } = scratch;
+    let view = BasinView { stack, pos, chunks };
+    let kernel = IceKernel {
+        grid,
+        stack,
+        donor_offset,
+        donors,
+        ice_m_yr,
+    };
+    run_basin_kernel_gather(
+        buf.q_ice,
+        stack_f64,
+        view,
+        parallel,
+        |cell, _| f64::from(ice_m_yr.get(cell).copied().unwrap_or(0.0)) * grid.area_m2(cell as u32),
+        |range, values| ice_kernel::<true, _>(&kernel, range, CellIndex, values),
+        |range, slots, values| ice_kernel::<false, _>(&kernel, range, slots, values),
+    );
+    let IceBuf {
+        boosted,
+        q_ice,
+        glaciated,
+    } = buf;
+    let (count, any) = fold_cells_zip_mut(
+        boosted,
+        glaciated,
+        parallel,
+        (0u32, false),
+        |i, boosted_slot, glaciated_slot| {
+            let ice = domain.get(i).copied().unwrap_or(0) == 1 && q_ice[i] > 0.0;
+            *glaciated_slot = u8::from(ice);
+            let mut weight = base_weight.get(i).copied().unwrap_or(1.0);
+            let mut counted = 0u32;
+            let mut raised = false;
+            if ice {
+                counted = 1;
+                if weight < GLACIER_WEIGHT {
+                    weight = GLACIER_WEIGHT;
+                    raised = true;
+                }
             }
-        }
-        if let Some(slot) = buf.boosted.get_mut(i) {
-            *slot = weight;
-        }
-    }
+            *boosted_slot = weight;
+            (counted, raised)
+        },
+        |a, b| (a.0 + b.0, a.1 || b.1),
+    );
     if any {
-        accumulate_with_weight(grid, scratch, buf.boosted);
+        accumulate_with_weight(grid, scratch, boosted);
     }
     count
 }
 
-fn overdeepen(h: &mut [f32], domain: &[u8], q_ice: &[f64], dt_yr: f64) {
-    for (i, height) in h.iter_mut().enumerate() {
-        if domain.get(i).copied().unwrap_or(0) == 0 {
-            continue;
-        }
-        let q = q_ice.get(i).copied().unwrap_or(0.0);
-        if q <= 0.0 {
-            continue;
-        }
-        let rate = (OVERDEEP_SCALE * (q / OVERDEEP_Q_M3).sqrt()).min(OVERDEEP_CAP_M);
-        let lowered = f64::from(*height) - rate * dt_yr;
-        if lowered >= OVERDEEP_FLOOR_M {
-            *height = lowered as f32;
-        } else if f64::from(*height) > OVERDEEP_FLOOR_M {
-            *height = OVERDEEP_FLOOR_M as f32;
-        }
-    }
+fn overdeepen(h: &mut [f32], domain: &[u8], q_ice: &[f64], dt_yr: f64, parallel: bool) {
+    fold_cells_mut(
+        h,
+        parallel,
+        (),
+        |i, height| {
+            if domain.get(i).copied().unwrap_or(0) == 0 {
+                return;
+            }
+            let q = q_ice.get(i).copied().unwrap_or(0.0);
+            if q <= 0.0 {
+                return;
+            }
+            let rate = (OVERDEEP_SCALE * (q / OVERDEEP_Q_M3).sqrt()).min(OVERDEEP_CAP_M);
+            let lowered = f64::from(*height) - rate * dt_yr;
+            if lowered >= OVERDEEP_FLOOR_M {
+                *height = lowered as f32;
+            } else if f64::from(*height) > OVERDEEP_FLOOR_M {
+                *height = OVERDEEP_FLOOR_M as f32;
+            }
+        },
+        |(), ()| (),
+    );
 }
 
 /// Raise each strict single-cell pit to 1 cm above its lowest neighbour.
@@ -758,6 +855,21 @@ fn overdeepen(h: &mut [f32], domain: &[u8], q_ice: &[f64], dt_yr: f64) {
 /// `h`. Non-domain cells are left alone.
 pub(crate) fn fill_single_cell_pits(grid: &CubeSphere, h: &mut [f32], domain: &[u8]) {
     let mut next = vec![0.0f32; h.len()];
+    fill_single_cell_pits_into(grid, h, domain, &mut next);
+    h.copy_from_slice(&next);
+}
+
+fn fill_single_cell_pits_swap(
+    grid: &CubeSphere,
+    h: &mut Vec<f32>,
+    domain: &[u8],
+    next: &mut Vec<f32>,
+) {
+    fill_single_cell_pits_into(grid, h, domain, next);
+    std::mem::swap(h, next);
+}
+
+fn fill_single_cell_pits_into(grid: &CubeSphere, h: &[f32], domain: &[u8], next: &mut [f32]) {
     next.par_iter_mut().enumerate().for_each(|(i, slot)| {
         let here = h[i];
         *slot = here;
@@ -781,51 +893,130 @@ pub(crate) fn fill_single_cell_pits(grid: &CubeSphere, h: &mut [f32], domain: &[
             *slot = min_nb + 0.01;
         }
     });
-    h.copy_from_slice(&next);
 }
 
-fn stream_power(job: &mut ErodeJob<'_>, am: &mut [f32], lake: &mut [u8], glaciated: &[u8]) -> u32 {
+fn stream_power(
+    job: &mut ErodeJob<'_>,
+    am: &mut [f32],
+    lake: &mut [u8],
+    glaciated: &[u8],
+    work: &mut [f32],
+) -> u32 {
     let m_exp = job.options.params.m;
     let k_coeff = job.options.params.k;
     let dt = job.options.dt_yr;
     let check_bounds = job.options.check_bounds;
+    let parallel = job.scratch.parallel_basins();
     let domain = job.domain;
     let uplift = job.uplift;
     let k_rock = job.k_rock;
     {
-        let areas = &job.scratch.area;
-        am.par_iter_mut().enumerate().for_each(|(i, slot)| {
-            if domain[i] == 0 {
-                *slot = 0.0;
-                return;
-            }
-            *slot = areas[i].max(0.0).powf(m_exp) as f32;
-        });
+        let areas = job.scratch.area.as_slice();
+        fold_cells_mut(
+            am,
+            parallel,
+            (),
+            |i, slot| {
+                if domain[i] == 0 {
+                    *slot = 0.0;
+                    return;
+                }
+                *slot = areas[i].max(0.0).powf(m_exp) as f32;
+            },
+            |(), ()| (),
+        );
     }
     {
         let heights = job.h.as_slice();
-        let levels = &job.scratch.lake_level;
-        lake.par_iter_mut().enumerate().for_each(|(i, slot)| {
-            *slot = u8::from(domain[i] == 1 && heights[i] < levels[i]);
-        });
+        let levels = job.scratch.lake_level.as_slice();
+        fold_cells_mut(
+            lake,
+            parallel,
+            (),
+            |i, slot| {
+                *slot = u8::from(domain[i] == 1 && heights[i] < levels[i]);
+            },
+            |(), ()| (),
+        );
     }
+    let RoutingScratch {
+        stack,
+        pos,
+        chunks,
+        receiver,
+        receiver_dist,
+        lake_level,
+        ..
+    } = job.scratch;
+    let kernel = StreamKernel {
+        stack,
+        receiver,
+        receiver_dist,
+        lake_level,
+        domain,
+        lake,
+        glaciated,
+        uplift,
+        k_rock,
+        am,
+        k_coeff,
+        dt,
+        check_bounds,
+    };
+    run_basin_kernel_keep(
+        job.h.as_mut_slice(),
+        work,
+        BasinView { stack, pos, chunks },
+        parallel,
+        |range, values| stream_kernel(&kernel, range, CellIndex, values),
+        |range, slots, values| stream_kernel(&kernel, range, slots, values),
+    )
+}
+
+struct StreamKernel<'a> {
+    stack: &'a [u32],
+    receiver: &'a [u32],
+    receiver_dist: &'a [f32],
+    lake_level: &'a [f32],
+    domain: &'a [u8],
+    lake: &'a [u8],
+    glaciated: &'a [u8],
+    uplift: &'a [f32],
+    k_rock: &'a [f32],
+    am: &'a [f32],
+    k_coeff: f64,
+    dt: f64,
+    check_bounds: bool,
+}
+
+fn stream_kernel<S: SlotIndex>(
+    kernel: &StreamKernel<'_>,
+    range: Range<usize>,
+    slots: S,
+    values: &mut [f32],
+) -> u32 {
+    let stack = kernel.stack;
+    let domain = kernel.domain;
+    let receiver = kernel.receiver;
+    let lake = kernel.lake;
     let mut violations = 0u32;
-    for index in 0..job.scratch.stack.len() {
-        let i = job.scratch.stack[index] as usize;
+    for idx in range {
+        let i = stack[idx] as usize;
         if domain[i] == 0 {
             continue;
         }
-        let r = job.scratch.receiver[i] as usize;
-        let old = f64::from(job.h[i]);
-        let u_raw = f64::from(uplift[i]);
-        let u_dt = subsidence_delta(u_raw, old, dt);
+        let slot = slots.current(idx, i);
+        let r = receiver[i] as usize;
+        let old = f64::from(values[slot]);
+        let u_raw = f64::from(kernel.uplift[i]);
+        let u_dt = subsidence_delta(u_raw, old, kernel.dt);
         if r == i || lake[i] == 1 {
-            job.h[i] = hold_subsidence_floor(u_raw, old + u_dt) as f32;
+            values[slot] = hold_subsidence_floor(u_raw, old + u_dt) as f32;
             continue;
         }
-        let mut hr = f64::from(job.h[r]);
+        let mut hr = f64::from(values[slots.at(r)]);
         if lake[r] == 1 {
-            let level = f64::from(job.scratch.lake_level[r]);
+            let level = f64::from(kernel.lake_level[r]);
             if level.is_finite() {
                 hr = hr.max(level);
             }
@@ -834,29 +1025,34 @@ fn stream_power(job: &mut ErodeJob<'_>, am: &mut [f32], lake: &mut [u8], glaciat
         // surrounding landscape. Cells with non-negative uplift grade to sea
         // level (0 in this pre-shift frame) when their receiver lies below it.
         // A glacier draining off the domain grades to −300 m instead.
-        let fjord = glaciated.get(i).copied().unwrap_or(0) == 1 && domain[r] == 0;
+        let fjord = kernel.glaciated.get(i).copied().unwrap_or(0) == 1 && domain[r] == 0;
         if domain[r] == 0 {
             hr = if fjord { FJORD_BASE_M } else { hr.max(0.0) };
         }
         if u_raw >= 0.0 && !fjord {
             hr = hr.max(0.0);
         }
-        let dist = f64::from(job.scratch.receiver_dist[i]).max(1.0e-6);
-        let k_scale = if glaciated.get(i).copied().unwrap_or(0) == 1 {
+        let dist = f64::from(kernel.receiver_dist[i]).max(1.0e-6);
+        let k_scale = if kernel.glaciated.get(i).copied().unwrap_or(0) == 1 {
             GLACIER_K
         } else {
             1.0
         };
-        let f = k_coeff * k_scale * f64::from(k_rock[i]) * dt * f64::from(am[i]) / dist;
+        let f = kernel.k_coeff
+            * k_scale
+            * f64::from(kernel.k_rock[i])
+            * kernel.dt
+            * f64::from(kernel.am[i])
+            / dist;
         let new_h = hold_subsidence_floor(u_raw, (old + u_dt + f * hr) / (1.0 + f));
-        if check_bounds && u_dt.abs() <= 1.0e-15 && old + 1.0e-3 >= hr {
+        if kernel.check_bounds && u_dt.abs() <= 1.0e-15 && old + 1.0e-3 >= hr {
             let raised = new_h > old + 1.0e-2;
             let below = new_h < hr - 1.0e-2;
             if raised || below {
                 violations = violations.saturating_add(1);
             }
         }
-        job.h[i] = new_h as f32;
+        values[slot] = new_h as f32;
     }
     violations
 }
@@ -882,22 +1078,75 @@ fn hold_subsidence_floor(uplift_m_yr: f64, height_m: f64) -> f64 {
     }
 }
 
-fn hillslopes(h: &mut [f32], domain: &[u8], lake: &[u8], scratch: &RoutingScratch, s_c: f64) {
-    for &cell in &scratch.stack {
-        let i = cell as usize;
+fn hillslopes(
+    h: &mut [f32],
+    domain: &[u8],
+    lake: &[u8],
+    scratch: &RoutingScratch,
+    s_c: f64,
+    work: &mut [f32],
+) {
+    let parallel = scratch.parallel_basins();
+    let stack = scratch.stack.as_slice();
+    let pos = scratch.pos.as_slice();
+    let chunks = scratch.chunks.as_slice();
+    let receiver = scratch.receiver.as_slice();
+    let distance = scratch.receiver_dist.as_slice();
+    let kernel = HillslopeKernel {
+        stack,
+        receiver,
+        distance,
+        domain,
+        lake,
+        s_c,
+    };
+    run_basin_kernel_keep(
+        h,
+        work,
+        BasinView { stack, pos, chunks },
+        parallel,
+        |range, values| hillslope_kernel(&kernel, range, CellIndex, values),
+        |range, slots, values| hillslope_kernel(&kernel, range, slots, values),
+    );
+}
+
+struct HillslopeKernel<'a> {
+    stack: &'a [u32],
+    receiver: &'a [u32],
+    distance: &'a [f32],
+    domain: &'a [u8],
+    lake: &'a [u8],
+    s_c: f64,
+}
+
+fn hillslope_kernel<S: SlotIndex>(
+    kernel: &HillslopeKernel<'_>,
+    range: Range<usize>,
+    slots: S,
+    values: &mut [f32],
+) -> u32 {
+    let stack = kernel.stack;
+    let domain = kernel.domain;
+    let lake = kernel.lake;
+    let receiver = kernel.receiver;
+    let distance = kernel.distance;
+    for idx in range {
+        let i = stack[idx] as usize;
         if domain[i] == 0 || lake[i] == 1 {
             continue;
         }
-        let r = scratch.receiver[i] as usize;
+        let r = receiver[i] as usize;
         if r == i {
             continue;
         }
-        let dist = f64::from(scratch.receiver_dist[i]).max(0.0);
-        let cap = f64::from(h[r]) + s_c * dist;
-        if f64::from(h[i]) > cap {
-            h[i] = cap as f32;
+        let slot = slots.current(idx, i);
+        let dist = f64::from(distance[i]).max(0.0);
+        let cap = f64::from(values[slots.at(r)]) + kernel.s_c * dist;
+        if f64::from(values[slot]) > cap {
+            values[slot] = cap as f32;
         }
     }
+    0
 }
 
 fn smooth(grid: &CubeSphere, h: &mut Vec<f32>, aux: &mut Vec<f32>, domain: &[u8], kappa: f64) {
@@ -935,16 +1184,22 @@ fn smooth(grid: &CubeSphere, h: &mut Vec<f32>, aux: &mut Vec<f32>, domain: &[u8]
     std::mem::swap(h, aux);
 }
 
-fn clamp_elevation(h: &mut [f32], domain: &[u8], max_elevation: f64) -> u32 {
+fn clamp_elevation(h: &mut [f32], domain: &[u8], max_elevation: f64, parallel: bool) -> u32 {
     let cap = max_elevation as f32;
-    let mut clamped = 0u32;
-    for (i, value) in h.iter_mut().enumerate() {
-        if domain[i] == 1 && *value > cap {
-            *value = cap;
-            clamped = clamped.saturating_add(1);
-        }
-    }
-    clamped
+    fold_cells_mut(
+        h,
+        parallel,
+        0u32,
+        |i, value| {
+            if domain[i] == 1 && *value > cap {
+                *value = cap;
+                1
+            } else {
+                0
+            }
+        },
+        |a, b| a + b,
+    )
 }
 
 fn domain_stats(grid: &CubeSphere, h: &[f32], domain: &[u8]) -> (f32, f32) {

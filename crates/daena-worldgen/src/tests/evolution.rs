@@ -1,4 +1,4 @@
-use crate::evolution::{erode, fill_single_cell_pits, ErodeJob, ErodeOptions};
+use crate::evolution::{erode, fill_single_cell_pits, ErodeJob, ErodeOptions, WaterIn};
 use crate::grid::{CubeSphere, NONE};
 use crate::noise::noise_on_sphere;
 use crate::routing::RoutingScratch;
@@ -99,6 +99,74 @@ fn zero_uplift_does_not_raise_or_undercut() {
         raised = raised.max(new - old);
     }
     assert!(raised <= 0.05, "max rise {raised}");
+}
+
+#[test]
+fn cell_and_chunk_basin_modes_agree() {
+    let (grid, h0, domain) = landscape(16);
+    let n = h0.len();
+    let uplift = vec![2.0e-4f32; n];
+    let k_rock = vec![1.0f32; n];
+    let runoff_mm: Vec<f32> = (0..n)
+        .map(|cell| if domain[cell] == 1 { 150.0 } else { 10.0 })
+        .collect();
+    let runoff_m_yr: Vec<f32> = runoff_mm.iter().map(|value| value / 1000.0).collect();
+    let evap_m_yr = vec![0.0f32; n];
+    let ice_m_yr: Vec<f32> = (0..n)
+        .map(|cell| {
+            if domain[cell] == 1 && grid.position(cell as u32)[2] > 0.4 {
+                2.0e-4
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let water = WaterIn {
+        runoff_mm: &runoff_mm,
+        runoff_m_yr: &runoff_m_yr,
+        evap_m_yr: &evap_m_yr,
+        ice_m_yr: &ice_m_yr,
+    };
+    let options = ErodeOptions {
+        iterations: 8,
+        dt_yr: 5.0e4,
+        params: ErosionParams::default(),
+        record_steps: false,
+        check_bounds: true,
+        stage: None,
+    };
+    let run = |cell_mode: bool| {
+        let mut h = h0.clone();
+        let mut scratch = RoutingScratch::new(n);
+        if !cell_mode {
+            scratch.parallel_min_cells = 0;
+            scratch.chunk_cells = 64;
+        }
+        let mut progress = NoProgress;
+        let report = erode(
+            ErodeJob {
+                grid: &grid,
+                h: &mut h,
+                domain: &domain,
+                uplift: &uplift,
+                k_rock: &k_rock,
+                scratch: &mut scratch,
+                options: &options,
+                water: Some(water),
+            },
+            &mut progress,
+        )
+        .unwrap();
+        (h, report)
+    };
+    let (cell_h, cell_report) = run(true);
+    let (chunk_h, chunk_report) = run(false);
+    assert!(
+        cell_report.q_ice.iter().any(|value| *value > 0.0),
+        "ice path did not run"
+    );
+    assert_eq!(cell_h, chunk_h);
+    assert_eq!(cell_report.q_ice, chunk_report.q_ice);
 }
 
 #[test]

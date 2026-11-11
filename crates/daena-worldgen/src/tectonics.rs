@@ -127,6 +127,10 @@ pub struct Tectonics {
     pub d_edge: Vec<f32>,
     /// Index into [`Self::boundaries`], or [`NONE`].
     pub boundary_record: Vec<u32>,
+    /// Metres to the nearest arc boundary on the overriding plate.
+    pub d_arc: Vec<f32>,
+    /// Index into [`Self::boundaries`] for [`Self::d_arc`], or [`NONE`].
+    pub arc_record: Vec<u32>,
     /// Smoothed kind per cell: `0` none, `1` convergent, `2` divergent, `3` transform.
     pub boundary_kind: Vec<u8>,
     /// Fragments the connectivity pass moved onto a neighbouring plate.
@@ -186,6 +190,7 @@ pub fn build(settings: &WorldSettings, n: u32) -> Result<Tectonics, WorldError> 
             *k = kv;
         });
     let boundary_kind = boundary_kind_field(ncells, &boundaries);
+    let ClassFields { arc, .. } = classes;
     Ok(Tectonics {
         n,
         resolved_layout: resolved,
@@ -202,6 +207,8 @@ pub fn build(settings: &WorldSettings, n: u32) -> Result<Tectonics, WorldError> 
         d_ridge,
         d_edge,
         boundary_record,
+        d_arc: arc.dist,
+        arc_record: arc.seed,
         boundary_kind,
         fragments_reassigned,
     })
@@ -1408,21 +1415,9 @@ pub(crate) fn volcano_field(
         for dy in -2i64..=2 {
             for dz in -2i64..=2 {
                 let l = [base[0] + dx, base[1] + dy, base[2] + dz];
-                let h = hash3(seed, l[0], l[1], l[2]);
-                if ((h & 0xFFFF) as f64 / 65535.0) < 0.35 {
+                let Some(centre) = volcano_site(seed, l, c) else {
                     continue;
-                }
-                let jitter = |shift: u32| 0.15 + 0.7 * (((h >> shift) & 0xFFFF) as f64 / 65535.0);
-                let raw = [
-                    (l[0] as f64 + jitter(16)) * c,
-                    (l[1] as f64 + jitter(32)) * c,
-                    (l[2] as f64 + jitter(48)) * c,
-                ];
-                let shell = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
-                if (shell - 1.0).abs() > 0.5 * c {
-                    continue;
-                }
-                let centre = normalize(raw);
+                };
                 let distance = angle_between(p, centre) * radius_m;
                 let value = (-(distance / sigma_m).powi(2)).exp();
                 best = best.max(value);
@@ -1430,6 +1425,28 @@ pub(crate) fn volcano_field(
         }
     }
     best
+}
+
+/// One occupied jittered-lattice volcano site, or `None` when the site is empty.
+///
+/// `c` is the lattice step in unit-sphere radians. The same site is returned by
+/// [`volcano_field`] for every surface point whose candidate box contains it.
+pub(crate) fn volcano_site(seed: u64, l: [i64; 3], c: f64) -> Option<[f64; 3]> {
+    let h = hash3(seed, l[0], l[1], l[2]);
+    if ((h & 0xFFFF) as f64 / 65535.0) < 0.35 {
+        return None;
+    }
+    let jitter = |shift: u32| 0.15 + 0.7 * (((h >> shift) & 0xFFFF) as f64 / 65535.0);
+    let raw = [
+        (l[0] as f64 + jitter(16)) * c,
+        (l[1] as f64 + jitter(32)) * c,
+        (l[2] as f64 + jitter(48)) * c,
+    ];
+    let shell = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+    if (shell - 1.0).abs() > 0.5 * c {
+        return None;
+    }
+    Some(normalize(raw))
 }
 
 fn f32_key(x: f32) -> u32 {

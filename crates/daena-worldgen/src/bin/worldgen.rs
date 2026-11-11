@@ -610,6 +610,67 @@ fn push_climate(out: &mut String, world: &World) {
     push_str(out, "hydrology_hash", &world.hydrology_hash().to_string());
     out.push(',');
     push_str(out, "biome_hash", &world.biome_hash().to_string());
+    out.push(',');
+    push_hazards(out, world);
+}
+
+fn push_hazards(out: &mut String, world: &World) {
+    let stats = &world.hazards.stats;
+    out.push_str("\"hazards\":{");
+    push_f64(out, "quakes_per_yr", stats.quakes_per_yr);
+    out.push(',');
+    push_f64(
+        out,
+        "quake_near_convergent_share",
+        stats.quake_near_convergent_share,
+    );
+    out.push(',');
+    push_f64(out, "eruptions_per_yr", stats.eruptions_per_yr);
+    out.push(',');
+    push_f64(out, "arc_eruption_share", stats.arc_eruption_share);
+    out.push(',');
+    push_f64(out, "storms_per_yr", stats.storms_per_yr);
+    out.push(',');
+    push_u32(out, "subduction_arc_dormant", stats.subduction_arc_dormant);
+    out.push(',');
+    push_u32(
+        out,
+        "subduction_arc_moderate",
+        stats.subduction_arc_moderate,
+    );
+    out.push(',');
+    push_u32(
+        out,
+        "subduction_arc_vigorous",
+        stats.subduction_arc_vigorous,
+    );
+    out.push(',');
+    push_u32(out, "hotspot_dormant", stats.hotspot_dormant);
+    out.push(',');
+    push_u32(out, "hotspot_moderate", stats.hotspot_moderate);
+    out.push(',');
+    push_u32(out, "hotspot_vigorous", stats.hotspot_vigorous);
+    out.push(',');
+    push_u32(out, "rift_dormant", stats.rift_dormant);
+    out.push(',');
+    push_u32(out, "rift_moderate", stats.rift_moderate);
+    out.push(',');
+    push_u32(out, "rift_vigorous", stats.rift_vigorous);
+    out.push(',');
+    push_u32(out, "non_dormant_sources", stats.non_dormant_sources);
+    out.push(',');
+    push_f64(out, "mean_land_drought", stats.mean_land_drought);
+    out.push(',');
+    push_f64(out, "mean_land_flood", stats.mean_land_flood);
+    out.push(',');
+    push_f64(out, "mean_land_heat", stats.mean_land_heat);
+    out.push(',');
+    push_f64(out, "mean_heat", stats.mean_heat);
+    out.push(',');
+    push_f64(out, "mean_extreme_rain", stats.mean_extreme_rain);
+    out.push(',');
+    push_str(out, "hazard_hash", &stats.hazard_hash.to_string());
+    out.push('}');
 }
 
 fn push_water(out: &mut String, world: &World) {

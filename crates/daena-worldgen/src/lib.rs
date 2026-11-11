@@ -11,6 +11,7 @@ mod biome;
 mod climate;
 mod evolution;
 mod grid;
+mod hazards;
 mod hydrology;
 mod noise;
 mod par;
@@ -26,6 +27,9 @@ pub use climate::{
     ClimateField, ClimateStats, ClimateSummary, NH_SUMMER_SOLSTICE, NH_WINTER_SOLSTICE,
 };
 pub use grid::{downsample, downsample_max, resample, upsample, CubeSphere, FACE_BASIS, NONE};
+pub use hazards::{
+    HazardStats, Hazards, StormClimatology, VolcanicActivity, VolcanicOrigin, VolcanicSource,
+};
 pub use hydrology::{Hydrology, Lake, LakeKind, RiverEnd, RiverSegment};
 pub use noise::{derive_seed, fbm, hash3, ridged, splitmix64, warp, SeedDomain};
 pub use planet::PlanetSettings;
@@ -311,6 +315,8 @@ pub enum Stage {
     Hydrology,
     /// Biome classes.
     Biomes,
+    /// Hazard rates and potentials on the finished world.
+    Hazards,
 }
 
 /// Receives stage updates and can stop the build.
@@ -465,6 +471,8 @@ pub struct World {
     pub hydrology: Hydrology,
     /// One [`Biome`] discriminant per cell.
     pub biome: Vec<u8>,
+    /// Long-term hazard rates and potentials.
+    pub hazards: Hazards,
     /// Phase timings in milliseconds. `total` includes climate, water and biomes.
     pub timings: Vec<(&'static str, f64)>,
     /// Evolution climate passes, then the final pass. Spin-up years are per pass.
@@ -719,6 +727,25 @@ fn generate_inner(
     let biome = biome::classify(&fields.grid, &elevation, &sea.ocean, &climate, &hydrology)?;
     timings.push(("biomes", elapsed_ms(t_biome)));
     progress.report(Stage::Biomes, 1, 1);
+
+    if progress.cancelled() {
+        return Err(WorldError::Cancelled);
+    }
+    progress.report(Stage::Hazards, 0, 1);
+    let t_hazard = Instant::now();
+    let hazards = hazards::build(&hazards::HazardIn {
+        grid: &fields.grid,
+        ocean: &sea.ocean,
+        elevation: &elevation,
+        climate: &climate,
+        climate_field: &climate_field,
+        hydrology: &hydrology,
+        tectonics: &tectonics,
+        river_min_m3s: settings.river_min_m3s,
+        seed: settings.seed,
+    })?;
+    timings.push(("hazards", elapsed_ms(t_hazard)));
+    progress.report(Stage::Hazards, 1, 1);
     timings.push(("total", elapsed_ms(started)));
 
     let stats = summarize(&elevation, &sea, evolved.stats);
@@ -741,6 +768,7 @@ fn generate_inner(
         climate_field,
         hydrology,
         biome,
+        hazards,
         timings,
         climate_passes,
     })
@@ -811,6 +839,7 @@ mod tests {
     mod climate;
     mod evolution;
     mod grid;
+    mod hazards;
     mod hydrology;
     mod noise;
     mod pipeline;

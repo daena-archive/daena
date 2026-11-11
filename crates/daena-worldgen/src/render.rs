@@ -50,6 +50,20 @@ pub enum Layer {
     Rivers,
     /// Lakes drawn over grey relief.
     Lakes,
+    /// M ≥ 5 earthquake rate hazard.
+    Quake,
+    /// Volcanic hazard with source dots.
+    Volcanic,
+    /// Tropical-storm track density on the coarse grid.
+    StormTrack,
+    /// Drought potential.
+    Drought,
+    /// Heat-wave potential.
+    Heat,
+    /// Extreme-rain potential.
+    ExtremeRain,
+    /// Flood potential.
+    Flood,
 }
 
 impl Layer {
@@ -72,6 +86,13 @@ impl Layer {
             Self::Natural => "natural",
             Self::Rivers => "rivers",
             Self::Lakes => "lakes",
+            Self::Quake => "quake",
+            Self::Volcanic => "volcanic",
+            Self::StormTrack => "storm-track",
+            Self::Drought => "drought",
+            Self::Heat => "heat",
+            Self::ExtremeRain => "extreme-rain",
+            Self::Flood => "flood",
         }
     }
 
@@ -94,6 +115,13 @@ impl Layer {
             "natural" => Some(Self::Natural),
             "rivers" => Some(Self::Rivers),
             "lakes" => Some(Self::Lakes),
+            "quake" => Some(Self::Quake),
+            "volcanic" => Some(Self::Volcanic),
+            "storm-track" => Some(Self::StormTrack),
+            "drought" => Some(Self::Drought),
+            "heat" => Some(Self::Heat),
+            "extreme-rain" => Some(Self::ExtremeRain),
+            "flood" => Some(Self::Flood),
             _ => None,
         }
     }
@@ -113,6 +141,13 @@ impl Layer {
                 | Self::Natural
                 | Self::Rivers
                 | Self::Lakes
+                | Self::Quake
+                | Self::Volcanic
+                | Self::StormTrack
+                | Self::Drought
+                | Self::Heat
+                | Self::ExtremeRain
+                | Self::Flood
         )
     }
 }
@@ -261,6 +296,8 @@ struct Caches {
     plates: Option<Vec<[u8; 3]>>,
     drain: Option<Vec<f32>>,
     land: Option<Vec<u8>>,
+    hazard: Option<Vec<f32>>,
+    sources: Option<Vec<u8>>,
 }
 
 fn relief_shade(world: &World, layer: Layer) -> Option<Vec<f32>> {
@@ -327,6 +364,8 @@ fn build_caches(world: &World, layer: Layer) -> Caches {
             plates: Some(plate_field(world)),
             drain: None,
             land: None,
+            hazard: None,
+            sources: None,
         },
         Layer::Drainage => {
             let (drain, land) = drainage_fields(world);
@@ -334,14 +373,60 @@ fn build_caches(world: &World, layer: Layer) -> Caches {
                 plates: None,
                 drain: Some(drain),
                 land: Some(land),
+                hazard: None,
+                sources: None,
             }
         }
+        Layer::Quake => hazard_caches(unit_field(&world.hazards.quake_hazard), None),
+        Layer::Volcanic => {
+            let mut sources = vec![0u8; world.grid.cell_count()];
+            for source in &world.hazards.volcanic_sources {
+                if let Some(slot) = sources.get_mut(source.cell as usize) {
+                    *slot = 1;
+                }
+            }
+            hazard_caches(unit_field(&world.hazards.volcanic_hazard), Some(sources))
+        }
+        Layer::StormTrack => {
+            let mut track = world.hazards.storms.track_km2.clone();
+            let max = track.iter().copied().fold(0.0f32, f32::max);
+            if max > 0.0 {
+                for value in &mut track {
+                    *value /= max;
+                }
+            }
+            hazard_caches(track, None)
+        }
+        Layer::Drought => hazard_caches(unit_field(&world.hazards.drought), None),
+        Layer::Heat => hazard_caches(unit_field(&world.hazards.heat_wave), None),
+        Layer::ExtremeRain => hazard_caches(unit_field(&world.hazards.extreme_rain), None),
+        Layer::Flood => hazard_caches(unit_field(&world.hazards.flood), None),
         _ => Caches {
             plates: None,
             drain: None,
             land: None,
+            hazard: None,
+            sources: None,
         },
     }
+}
+
+fn hazard_caches(hazard: Vec<f32>, sources: Option<Vec<u8>>) -> Caches {
+    Caches {
+        plates: None,
+        drain: None,
+        land: None,
+        hazard: Some(hazard),
+        sources,
+    }
+}
+
+fn unit_field(field: &[u8]) -> Vec<f32> {
+    field
+        .iter()
+        .map(|value| f64::from(*value) / 255.0)
+        .map(|value| value as f32)
+        .collect()
 }
 
 fn pixel_color(ctx: &PixelCtx<'_>, x: u32, y: u32) -> [u8; 3] {
@@ -409,7 +494,65 @@ fn pixel_color(ctx: &PixelCtx<'_>, x: u32, y: u32) -> [u8; 3] {
         Layer::Natural => natural_pixel(world, shade, dir),
         Layer::Rivers => river_pixel(world, shade, dir),
         Layer::Lakes => lake_pixel(world, shade, dir),
+        Layer::Quake => hazard_pixel(world, shade, caches, dir, &QUAKE_STOPS),
+        Layer::Volcanic => {
+            let mut rgb = hazard_pixel(world, shade, caches, dir, &VOLCANIC_STOPS);
+            let cell = world.grid.cell_at(dir) as usize;
+            if caches
+                .sources
+                .as_ref()
+                .and_then(|sources| sources.get(cell).copied())
+                .unwrap_or(0)
+                == 1
+            {
+                rgb = [255, 240, 120];
+            }
+            rgb
+        }
+        Layer::StormTrack => seasonal_hazard_pixel(world, shade, caches, dir, &STORM_TRACK_STOPS),
+        Layer::Drought => hazard_pixel(world, shade, caches, dir, &DROUGHT_STOPS),
+        Layer::Heat => hazard_pixel(world, shade, caches, dir, &HEAT_STOPS),
+        Layer::ExtremeRain => hazard_pixel(world, shade, caches, dir, &RAIN_STOPS),
+        Layer::Flood => hazard_pixel(world, shade, caches, dir, &FLOOD_STOPS),
     }
+}
+
+fn hazard_pixel(
+    world: &World,
+    shade: &[f32],
+    caches: &Caches,
+    dir: [f64; 3],
+    stops: &[(f64, [u8; 3])],
+) -> [u8; 3] {
+    let Some(field) = &caches.hazard else {
+        return GREY;
+    };
+    let value = if field.len() == world.grid.cell_count() {
+        world.grid.sample_bilinear(field, dir)
+    } else {
+        0.0
+    };
+    climate_shade(world, shade, dir, ramp(stops, f64::from(value)))
+}
+
+/// Storm tracks live on the coarse climate grid.
+fn seasonal_hazard_pixel(
+    world: &World,
+    shade: &[f32],
+    caches: &Caches,
+    dir: [f64; 3],
+    stops: &[(f64, [u8; 3])],
+) -> [u8; 3] {
+    let Some(field) = &caches.hazard else {
+        return GREY;
+    };
+    let grid = &world.climate_field.grid;
+    let value = if field.len() == grid.cell_count() {
+        grid.sample_bilinear(field, dir)
+    } else {
+        0.0
+    };
+    climate_shade(world, shade, dir, ramp(stops, f64::from(value)))
 }
 
 fn project(projection: Projection, x: u32, y: u32, width: u32, height: u32) -> Option<[f64; 3]> {
@@ -914,6 +1057,48 @@ const PRECIP_TAN: [u8; 3] = [210, 180, 120];
 const PRECIP_GREEN: [u8; 3] = [40, 140, 60];
 const PRECIP_BLUE: [u8; 3] = [20, 60, 180];
 const SEA_ICE_DARK: [u8; 3] = [30, 50, 80];
+const QUAKE_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [16, 18, 24]),
+    (0.25, [120, 50, 40]),
+    (0.6, [210, 80, 40]),
+    (1.0, [255, 230, 140]),
+];
+const VOLCANIC_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [20, 16, 12]),
+    (0.3, [110, 40, 20]),
+    (0.7, [230, 90, 20]),
+    (1.0, [255, 240, 160]),
+];
+const STORM_TRACK_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [10, 20, 40]),
+    (0.3, [30, 70, 120]),
+    (0.7, [80, 160, 210]),
+    (1.0, [240, 250, 255]),
+];
+const DROUGHT_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [30, 50, 30]),
+    (0.4, [160, 140, 60]),
+    (0.75, [190, 100, 40]),
+    (1.0, [120, 40, 20]),
+];
+const HEAT_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [20, 30, 50]),
+    (0.35, [160, 60, 50]),
+    (0.7, [220, 60, 30]),
+    (1.0, [255, 220, 120]),
+];
+const RAIN_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [20, 30, 40]),
+    (0.4, [40, 90, 140]),
+    (0.75, [40, 140, 200]),
+    (1.0, [180, 230, 255]),
+];
+const FLOOD_STOPS: [(f64, [u8; 3]); 4] = [
+    (0.0, [20, 40, 45]),
+    (0.4, [30, 110, 130]),
+    (0.7, [40, 170, 190]),
+    (1.0, [200, 245, 250]),
+];
 const GREY_RELIEF: [(f64, [u8; 3]); 4] = [
     (-6000.0, [40, 44, 52]),
     (0.0, [120, 124, 128]),

@@ -539,26 +539,118 @@ parameter stays editable, and CLI flags override the preset in any order.
 
 ### Hazards (phase D)
 
-Hazards are long-term rate or potential fields (ADR 0004) derived from the
-engine's causes, not simulated events. Users materialize individual events
-from them, as today.
+Built as `src/hazards.rs` and attached to `World.hazards`; `generate` builds it
+last, after biomes, under `Stage::Hazards` and the `hazards` timing key. Every
+field is a long-term rate or potential derived from the engine's own causes,
+not a simulated event. Hazards read the finished world and never feed back.
 
-Parity with the shipped product comes first, because integration replaces the
-pipeline that derives these now:
+**Fields.** Final grid unless noted:
 
-- earthquakes: hazard and annual rate from boundary distance, kind and
-  relative speed;
-- volcanism: hazard, eruption rate and stable volcanic sources (origin and
-  activity class) at arcs, rifts, ridges and hotspots, using the arc
-  volcanoes and hotspot points the tectonics already places;
-- storms: genesis, track density and intensity potential from the seasonal
-  climate (warm-month sea surface above 26.5 °C between ~5° and the Hadley
-  edge, carried by the trade winds, recurving into the westerlies, decaying
-  over land);
-- drought, heat-wave and extreme-rain potentials from the seasonal climate;
-- floods: high discharge on low slopes, from basin-outlet thresholds.
+- `quake_rate_km2` (`f32`): M ≥ 5 per year per km².
+- `quake_hazard`, `volcanic_hazard` (`u8` potentials).
+- `volcanic_sources`: stable ids, position, final cell, origin, activity and
+  eruptions per year.
+- `storms` on the coarse climate grid: genesis and track density per km² and
+  potential intensity.
+- `drought`, `heat_wave`, `extreme_rain`, `flood` (`u8` potentials).
+- `stats`: planet totals, source counts, area means and `hazard_hash`
+  (FNV-1a over every field in declaration order, sources in id order).
 
-Then the hazards of the original brief that the product does not have yet:
+**Earthquakes.** Each tectonic `BoundaryRecord` splats a line-source Gaussian
+on the tectonic grid: `λ · ℓ · exp(−(d/w)²) / (π w²)` per km² inside `3 w`.
+`λ` is the kind weight (convergent 1, transform 0.45, divergent 0.12) times
+`hypot(convergence, shear) / 50 mm/yr`, clamped to `[0.2, 2.0]` of the reference
+speed; `ℓ` is the tectonic cell edge and `d` the true great-circle distance.
+`w` is 150 km for ocean–continent and ocean–ocean convergence, 400 km for
+continent–continent collision, 60 km for transform and 40 km for divergent.
+Both sides of an interface carry records (verified reciprocal for every record),
+so each side carries half the rate and the belt integral stays `λ`. The
+tectonic density is sampled bilinearly at each final cell, an intraplate floor
+of 2 % of the boundary rate mass is added, and hazard is
+`1 − exp(−density / D_sat)`. `D_sat` is set so a 50 mm/yr convergent centre
+reads 0.9. `A` is calibrated once on Earthlike seed 7, `n = 512`:
+0.013880390 per km per year. The M ≥ 5 total is then 1 500 per year; the
+convolution is resolution-independent and has no nearest-cell wedges.
+
+**Volcanoes.** A source is a volcanic centre that stands for several volcanoes:
+arc sources are the occupied jittered-lattice sites
+(`SeedDomain::ArcVolcano`, 140 km spacing) whose `d_arc` bump is at least 0.3.
+Activity uses `u = hash_u01(id)` and `s = clamp(convergence/50 mm/yr, 0.4, 1.5)`:
+vigorous below `0.06 s`, moderate below `0.36 s`, otherwise dormant. Hotspot
+trail indices 0, 1 and 2 are vigorous, moderate and dormant; older points are
+extinct and not sources. Rift sites use a separate 140 km lattice
+(`SeedDomain::RiftVolcano`); a site is a source when its nearest boundary is
+divergent within 50 km. Continental rifts are moderate with probability 0.3 and
+otherwise dormant; ocean ridges are dormant. Rates are 1.5, 0.15 and 0.009
+eruptions per year. Hazard is the maximum over sources of
+`weight · exp(−(d/30 km)²)` cut off at 90 km, with weights 1.0, 0.6 and 0.25,
+splatted by BFS on true great-circle distance in id order. Ids come from lattice
+coordinates or hotspot indices with a per-origin tag, so they do not depend on
+`n`.
+
+**Storms.** Coarse-cell ocean fraction is a block aggregation of the final ocean
+mask. For month `m`,
+`G_m = ocean_frac · smoothstep(26, 28.5, SST_m) · L(lat)`, where
+`L = smoothstep(4°, 8°, |lat|) · (1 − smoothstep(φ_h − 5°, φ_h + 5°, |lat|))`.
+`genesis_km2 = C · Σ_m G_m`, with `C` calibrated once on Earthlike seed 7 so
+the planet has about 85 storms per year. Each cell and month with `G_m > 0`
+traces one track: 250 km steps, at most 20, steered by the zonal part of the
+surface wind, `(wind · east) · east`, plus beta drift 2.5 m/s poleward and
+1 m/s westward. Intensity starts at `smoothstep(26, 32, SST)`, relaxes 30 % per
+ocean step toward local potential intensity and decays by 0.6 per land step.
+The track stops below 0.1 on land; over cool water the potential-intensity
+target reaches zero and would otherwise end every track before recurvature, so
+ocean tracks keep a tracked circulation. A track raises `track_km2` once per
+visited cell and `intensity` to its carried value.
+
+**Extremes and floods.** Drought uses
+`0.75 · (1 − smoothstep(0.1, 0.65, P/PET)) +
+0.25 · (1 − smoothstep(10, 60, p_dry)) · (1 − smoothstep(0.65, 1.5, P/PET))`,
+zero on ocean and where the warm month is below 0 °C. Humid land
+(`P/PET ≥ 1`) stays at or below 0.2; hyper-arid land with a dry season reads
+1. Heat is
+`0.7 · smoothstep(22, 38, t_warm) + 0.3 · smoothstep(4, 25, t_warm − t_cold)`,
+times 0.25 over ocean. Extreme rain first computes the coarse wettest-month to
+annual precipitation ratio, samples it with the same chart stencil `downscale`
+uses, multiplies by `p_annual`, then applies
+`smoothstep(80, 450, peak) · (0.7 + 0.3 · smoothstep(0.15, 0.35, peak/p_annual))`.
+Floods walk `Hydrology.pop_order`: a cell at or above the river discharge
+threshold is its own river, otherwise it inherits its receiver's river. HAND is
+`elevation_m[cell] − elevation_m[river]`; a cell below that drainage is a
+depression floor and is not a river floodplain, so its flood is 0.
+`flood = (1 − smoothstep(0, 12 m, HAND)) · smoothstep(1, 4, log10 Q_river) ·
+(0.6 + 0.4 · extreme_rain)`, zero on ocean and under lakes.
+
+**Calibration, Earthlike seed 7 at `n = 512`:**
+
+| Quantity | Result | Target |
+| --- | ---: | --- |
+| M ≥ 5 earthquakes per year | 1 500 | 1 000–2 500 |
+| Quake rate within 300 km of a convergent boundary | 68.2 % | ≥ 60 % |
+| Eruptions per year | 34.9 | 30–100 |
+| Arc share of eruptions | 73.3 % | ≥ 50 % |
+| Non-dormant volcanic centres | 95 | 60–300 |
+| Tropical storms per year | 84.1 | 60–110 |
+| Land-mean drought potential | 0.584 | 0.40–0.65 |
+| Track-weighted mean latitude poleward of genesis | 8.3° | ≥ 4° |
+| Track passages poleward of `φ_h − 5°` | 17.8 % | ≥ 10 % |
+
+All 8 presets at seed 7, `n = 256`:
+
+| Preset | Quakes/yr | Near conv. | Eruptions/yr | Arc share | Non-dormant | Storms/yr |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| earthlike | 1 500.0 | 68.3 % | 34.9 | 73.3 % | 95 | 85.0 |
+| frozen | 1 499.9 | 67.9 % | 34.0 | 70.5 % | 98 | 0.0 |
+| hothouse | 1 500.1 | 69.2 % | 33.5 | 74.3 % | 94 | 220.0 |
+| desert | 1 499.2 | 62.3 % | 20.1 | 30.4 % | 83 | 68.7 |
+| archipelago | 2 732.3 | 73.4 % | 80.3 | 83.3 % | 191 | 222.0 |
+| water-world | 2 140.2 | 76.0 % | 65.9 | 86.3 % | 146 | 232.8 |
+| pangea | 1 190.9 | 72.4 % | 19.0 | 53.7 % | 66 | 86.3 |
+| shattered | 3 612.9 | 72.0 % | 70.6 | 73.9 % | 200 | 90.1 |
+
+**Still to build (phase D2).**
+
+The hazards of the original brief that the product does not have yet:
 
 - tsunami exposure: ocean-path distance from subduction trenches to low
   coasts;
@@ -572,6 +664,31 @@ deterministic like the rest of the engine, and costs a few percent of the
 generation time at most. Tests check the physical ordering each field must
 keep (nearer a fast convergent boundary is more seismic; a warmer sea spawns
 more storms), as the current hazard tests do.
+
+**Known gaps.**
+
+- No vertical wind shear: storm genesis uses only SST, ocean fraction and
+  latitude.
+- The storm intensity cutoff applies on land. Over cool ocean the prescribed
+  potential-intensity target is zero, so applying the cutoff there would stop
+  every track near genesis and leave no recurvature.
+- Volcanic activity is a static class from the hash; it does not depend on the
+  site's other causes beyond arc convergence.
+- Drought and extreme rain inherit the climate's hard-edged dry-belt and ITCZ
+  edges. The rectangular blocks in `extreme-rain.png` are the same edges as in
+  the annual precipitation layer; they are not a hazard bug. Storm tracks
+  inherit the same edges in the surface wind: on Earthlike seed 7 they pile
+  into one bright recurving streak near 50–85°E, where the zonal wind changes
+  sign across that edge.
+- Earthlike is drier than Earth: a third of its land has `P/PET` below 0.2,
+  against about a fifth on Earth, so its land-mean drought (0.58) sits above
+  an Earth estimate.
+- Floods use HAND above the inherited river cell. Lake overflow events are
+  still phase E.
+- The hazard fields carry no derivation version yet. Phase E adds one with
+  the new physical source version.
+- Events are not materialized here. Tsunami, tornado, landslide and avalanche
+  fields from the original brief remain future work.
 
 ### Integration (phase E, after review)
 

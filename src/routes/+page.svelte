@@ -5,11 +5,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appVersion, appVersionSyncFallback } from "$lib/appVersion";
 const logoUrl = "/branding/logo.png";
 import { revokeAllResolvedAssetUrls } from "$lib/assets/resolve";
+import { LocationStore, isRevisionConflict } from "$lib/location/location-store.svelte";
 import { installShellEditorHost, setShellEntityOpener, shellEditorHost } from "$lib/editor/shell-host";
-import { mimeTypeFor } from "$lib/assets/mime";
 import {
   project,
-  type Asset,
   type Entity,
   type EntityPage,
   type Relationship,
@@ -46,11 +45,8 @@ import {
   counterpartId,
   counterpartIds,
   coveredRelationshipIds,
-  defaultRelationshipMetadata,
-  endpointsForCreate,
   groupedRelationshipFields,
   manifestOwningRelationshipType,
-  relationshipsForField,
 } from "$lib/modules/contributed-fields";
 import { toHostRelationship } from "$lib/modules/host-relationship";
 import {
@@ -275,13 +271,11 @@ import {
   type UpdateChannelPreference,
 } from "$lib/appUpdate.ts";
 import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
-import { classifyMutationError } from "$lib/houses/mutations.ts";
 import {
   treeHistoryKey,
   sameTreeSession,
   HOUSE_TYPE,
   PERSON_TYPE,
-  isKinshipRelationshipType,
   type TreeSession,
   type HouseMemberSummary,
 } from "$lib/houses/model.ts";
@@ -301,9 +295,7 @@ import {
   type AsyncEntitySearchFn,
   type AsyncEntitySearchQuery,
 } from "$lib/entity-lifecycle/asyncEntityQuery.ts";
-import { createMutationController } from "$lib/entity-lifecycle/mutationState.ts";
 import { ENTITY_ACTIONS } from "$lib/entity-lifecycle/vocabulary.ts";
-import type { MutationSnapshot } from "$lib/entity-lifecycle/mutationState.ts";
 import {
   Boxes,
   Home,
@@ -357,7 +349,6 @@ import AiProposalPreview from "$lib/ai/AiProposalPreview.svelte";
 import { validateAiProposal } from "$lib/ai/proposal";
 import { reduceTextGenerationEvent } from "$lib/ai/stream";
 import { htmlToMarkdown } from "$lib/markdown";
-import { normalizeDocument } from "$lib/markdown/normalize";
 import {
   applyThemePreference,
   normalizeProjectThemePack,
@@ -386,22 +377,13 @@ import {
   updatedDateLabel,
   type CalendarDate,
 } from "$lib/date";
-import {
-  hasMeaningfulDateValue,
-  isEmptyFieldValue,
-  isSentinelDateValue,
-  isStructuredFieldValue,
-  restoreStructuredFieldValue,
-  shouldPersistFieldValue,
-} from "$lib/fields/persistence";
+import { isEmptyFieldValue } from "$lib/fields/persistence";
 import {
   aiJsonValueSchema,
   aiScalarValue,
   coerceAiFieldValue,
   fieldDisplayValue,
   fieldInputValue,
-  fieldRevisionKey,
-  fieldValueForSave,
   suggestionConfidenceLabel,
   suggestionConfidenceTone,
 } from "$lib/fields/values";
@@ -554,34 +536,68 @@ let calendarDefinitions = $state<Record<string, CalendarDefinition>>({});
 /** Bounded calendar entity list from paged queries — avoids scanning the full entity cache. */
 let calendarEntities = $state<Entity[]>([]);
 let entities = $state<Entity[]>([]);
-let selected = $state<Entity | null>(null);
-let selectedLoading = $state(false);
-let selectedLoadError = $state("");
-let documentBody = $state("");
-let documentMode = $state<"read" | "edit">("edit");
-let fields = $state<Record<string, unknown>>({});
-let relationships = $state<Relationship[]>([]);
-let eraContexts = $state<EraContext[]>([]);
 let createEraContexts = $state<EraContext[]>([]);
-let metadataDialog = $state<{ relationship: Relationship; definition: FieldDefinition | null } | null>(null);
-let assets = $state<Asset[]>([]);
-let assetBusyId = $state<string | null>(null);
-let assetDialog = $state<Asset | null>(null);
 let entityEditDialog = $state<{ entity: Entity; name: string; entityType: string | null; busy: boolean } | null>(null);
-let profileEditorOpen = $state(false);
-let fieldsDialogOpen = $state(false);
-let fieldsDialogTab = $state<EntityFieldsTabId>("relationships");
-let entityMutationSnapshot = $state<MutationSnapshot>({ phase: "idle", message: "", detail: "" });
-const entityMutation = createMutationController({
-  get: () => entityMutationSnapshot,
-  set: (next) => {
-    entityMutationSnapshot = next;
+/**
+ * The one live location: selection, document, field drafts, revisions, dirty tracking, autosave and the save
+ * queue. Everything the store needs from the shell comes through this context; the callbacks are arrows so they
+ * can name page functions and constants declared further down.
+ */
+const loc: LocationStore = new LocationStore({
+  project,
+  get entities() {
+    return entities;
   },
+  get projectDiagnostics() {
+    return projectDiagnostics;
+  },
+  get calendarDefinitions() {
+    return calendarDefinitions;
+  },
+  get section() {
+    return section;
+  },
+  get sandboxView() {
+    return sandboxView;
+  },
+  confirmDialog: (options) => confirmDialog(options),
+  setError: (message) => {
+    error = message;
+  },
+  resetSelectionShellState: () => {
+    createEraContexts = [];
+    projectDiagnostics = [];
+    showCreateForm = false;
+  },
+  canLeaveLanguageSection: () => canLeaveLanguageSection(),
+  leavePluginView: () => leavePluginView(),
+  flushWritingWebview: () => flushWritingWebview(),
+  currentShellLocation: () => currentShellLocation(),
+  recordShellDeparture: (location) => recordShellDeparture(location),
+  applyCollectionTabForEntityType: (entityType) => applyCollectionTabForEntityType(entityType),
+  closeAiFieldFill: () => closeAiFieldFill(),
+  closeAiRewrite: () => closeAiRewrite(),
+  contextFor: () => contextFor(),
+  contextOwningRelationshipType: (relationshipType) => contextOwningRelationshipType(relationshipType),
+  activeManifest: () => activeManifest(),
+  activeModuleId: () => activeModuleId(),
+  definitions: () => definitions(),
+  chronologyDateDefinitions: () => chronologyDateDefinitions(),
+  namespaceForField: (definition) => namespaceForField(definition),
+  sectionEnabled: () => sectionEnabled(),
+  mapsEnabled: () => mapsEnabled(),
+  upsertEntityInCache: (entity) => upsertEntityInCache(entity),
+  refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
+  bumpKinshipRefresh: () => bumpKinshipRefresh(),
+  loadEraContexts: (eraIds) => loadEraContexts(eraIds),
+  refreshWritingAppearanceLabels: () => refreshWritingAppearanceLabels(),
+  notifyWritingSaved: (entityId) => notifyWritingSaved(entityId),
+  notifyProfileTimelineChanged: (eventId) => notifyProfileTimelineChanged(eventId),
+  loadProjectStatus: (includeGit) => loadProjectStatus(includeGit),
 });
 type LifecycleToast = { message: string; actionLabel?: string; onAction?: () => void };
 let lifecycleToast = $state<LifecycleToast | null>(null);
 let lifecycleToastTimer = 0;
-let mapLocations = $state<MapLocation[]>([]);
 let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
 let quickOpenOpen = $state(false);
@@ -674,26 +690,6 @@ let createDateCalendarByField = $state<Record<string, string>>({});
 let createDocumentBody = $state("");
 let showDiscardPrompt = $state(false);
 let pendingCreateDiscard = $state<(() => void) | null>(null);
-let isSaving = $state(false);
-let savedAt = $state("");
-let saveError = $state("");
-let editorFullscreen = $state(false);
-let hasUnsavedChanges = $state(false);
-let autoSaveTimer: number | null = null;
-const dateFieldDirtyTimers: Record<string, number> = {};
-let saveInFlight: Promise<boolean> | null = null;
-let saveQueued = false;
-let autoSaveFailureCount = 0;
-let documentRevision = 0;
-// Inspector definition keys with unsaved edits; persistDocumentSnapshot saves only these
-// (plus the document). Keys match definition.key, unique per selected entity's field set.
-const dirtyFieldKeys = new Set<string>();
-let loadedDocumentRevision = "";
-let loadedFieldRevisions: Record<string, string> = {};
-let loadedStructuredFieldKeys = new Set<string>();
-let selectedLoadToken = 0;
-let documentConflict = $state<{ paths: string[]; diagnostics: string[] } | null>(null);
-let conflictDiskBody = $state("");
 let mapSaveStates = $state<Record<string, { status: string; detail: unknown }>>({});
 let mapReloadCounter = $state(0);
 let mapsEditorKey = $state("welcome");
@@ -871,11 +867,6 @@ let aiSourceBody = $state("");
 let aiSourceRevision = $state("");
 let aiLastSequence = $state(-1);
 let aiUnlisten: (() => void) | null = null;
-let editorRef = $state<{
-  insertAiTextAtRequest: (value: string) => string | null;
-  replaceAiTextWithMarkdown: (value: string) => string | null;
-  flushPendingChanges: () => void;
-} | null>(null);
 let aiFieldFillBusy = $state(false);
 let aiFieldFillOpen = $state(false);
 let aiFieldFillRequestId = $state<string | null>(null);
@@ -941,8 +932,6 @@ let createMoreDetailsOpen = $state(false);
 let createBusy = $state(false);
 let createDialogElement = $state<HTMLElement | null>(null);
 let createDialogReturnFocus: HTMLElement | null = null;
-let dateEditorOpen = $state<Record<string, boolean>>({});
-let dateCalendarByField = $state<Record<string, string>>({});
 
 const toastDurationMs = 3500;
 function showToast(message: string) {
@@ -973,19 +962,19 @@ $effect(() => {
     quickOpenOpen ||
     showCreateForm ||
     aiRewriteOpen ||
-    editorFullscreen ||
+    loc.editorFullscreen ||
     upgradePreview !== null ||
     confirmAction !== null ||
     deleteTarget !== null ||
     installConsent !== null ||
     installReview !== null ||
     deleteBackupPath !== "" ||
-    metadataDialog !== null ||
-    assetDialog !== null ||
+    loc.metadataDialog !== null ||
+    loc.assetDialog !== null ||
     showExternalImport ||
     entityEditDialog !== null ||
-    profileEditorOpen ||
-    fieldsDialogOpen;
+    loc.profileEditorOpen ||
+    loc.fieldsDialogOpen;
   document.body.classList.toggle("modal-open", modalOpen);
   if (!modalOpen) return;
   const onKey = (event: KeyboardEvent) => {
@@ -996,9 +985,9 @@ $effect(() => {
     } else if (showCreateForm) {
       event.preventDefault();
       closeCreateForm();
-    } else if (profileEditorOpen) {
+    } else if (loc.profileEditorOpen) {
       event.preventDefault();
-      profileEditorOpen = false;
+      loc.profileEditorOpen = false;
     } else if (entityEditDialog) {
       event.preventDefault();
       if (!entityEditDialog.busy) closeEntityEditDialog();
@@ -1023,15 +1012,15 @@ $effect(() => {
     } else if (aiRewriteOpen) {
       event.preventDefault();
       closeAiRewrite();
-    } else if (metadataDialog) {
+    } else if (loc.metadataDialog) {
       event.preventDefault();
-      metadataDialog = null;
-    } else if (assetDialog) {
+      loc.metadataDialog = null;
+    } else if (loc.assetDialog) {
       event.preventDefault();
-      assetDialog = null;
-    } else if (fieldsDialogOpen) {
+      loc.assetDialog = null;
+    } else if (loc.fieldsDialogOpen) {
       event.preventDefault();
-      fieldsDialogOpen = false;
+      loc.fieldsDialogOpen = false;
     }
   };
   window.addEventListener("keydown", onKey, true);
@@ -1221,7 +1210,7 @@ function availableEditTypes(): string[] {
     for (const schema of mod.schemas) for (const t of schema.entityTypes) types.add(t.id);
   }
   // Keep current selection visible even if its type is disabled/custom or from maps
-  if (selected?.entity_type) types.add(selected.entity_type);
+  if (loc.selected?.entity_type) types.add(loc.selected.entity_type);
   if (entityEditDialog?.entity.entity_type) types.add(entityEditDialog.entity.entity_type);
   // Ensure map type is selectable if maps module exists in any state
   const hasMapDecl = modules.some((m) =>
@@ -1236,7 +1225,7 @@ function groupedEditTypes(): Array<{ heading: string; types: string[] }> {
     if (!mod.enabled) continue;
     for (const schema of mod.schemas) for (const t of schema.entityTypes) enabled.add(t.id);
   }
-  if (selected?.entity_type) enabled.add(selected.entity_type);
+  if (loc.selected?.entity_type) enabled.add(loc.selected.entity_type);
   if (entityEditDialog?.entity.entity_type) enabled.add(entityEditDialog.entity.entity_type);
   if (modules.some((m) => m.schemas.some((s) => schemaEntityTypeIds(s).includes("daena.maps:world-map"))))
     enabled.add("daena.maps:world-map");
@@ -1278,14 +1267,15 @@ function editTypeWarning(): string | null {
     return "Languages own lexemes, phonemes and grammar records. Those records require the language type and will become read-only if the type changes.";
   }
   // Generic field/relationship hiding
-  const hasPopulated = Object.entries(fields).some(([, v]) => !isEmptyFieldValue(v)) || relationships.length > 0;
+  const hasPopulated =
+    Object.entries(loc.fields).some(([, v]) => !isEmptyFieldValue(v)) || loc.relationships.length > 0;
   if (hasPopulated)
     return "Fields and relationships that don't apply to the new type will be hidden but preserved. You can revert the type to restore them.";
   return "The entry will move to the collection for the new type.";
 }
 const definitions = () => {
   const entityType =
-    selected?.entity_type ??
+    loc.selected?.entity_type ??
     (section === "timeline" || section === "writing" ? activeCollectionTab()?.entityTypes[0] : undefined);
   const active = activeManifest();
   if (!active) return [];
@@ -1300,7 +1290,7 @@ const definitions = () => {
 function namespaceForField(definition: FieldDefinition): string {
   const manifest = activeManifest();
   return primarySchemaNamespace(manifest?.schemas, {
-    entityType: selected?.entity_type,
+    entityType: loc.selected?.entity_type,
     fieldKey: definition.key,
     fallback: activeModuleId(),
   });
@@ -1555,7 +1545,7 @@ async function resolveDirtyMapSession(): Promise<boolean> {
 async function leavePluginView(options: { closeWebviews?: boolean } = {}): Promise<boolean> {
   if (!(await resolveDirtyMapSession())) return false;
   const fullSurfaceOpen = hostView !== null || sandboxView !== null;
-  editorFullscreen = false;
+  loc.editorFullscreen = false;
   hostView = null;
   sandboxView = null;
   if (fullSurfaceOpen || options.closeWebviews) await closeNativePluginWebviews();
@@ -1639,7 +1629,7 @@ const languagePaneShown = $derived(
  * the shell editor never renders for such an entry, even in states where the webview is not shown (see
  * `writingWebviewShown`), so a second editor can never take typing next to the webview's drafts.
  */
-const writingEntrySelected = $derived(section === "writing" && writingWebviewHandles(selected?.entity_type));
+const writingEntrySelected = $derived(section === "writing" && writingWebviewHandles(loc.selected?.entity_type));
 /**
  * The Writing webview is the content column's editor for manuscripts and reference pages. It stays mounted while the
  * selection moves between them.
@@ -1680,7 +1670,7 @@ const modalOverlayOpen = $derived(
     showCreateForm ||
     showDiscardPrompt ||
     projectTransitionBusy ||
-    editorFullscreen ||
+    loc.editorFullscreen ||
     aiRewriteOpen ||
     upgradePreview !== null ||
     confirmAction !== null ||
@@ -1688,12 +1678,12 @@ const modalOverlayOpen = $derived(
     deleteBackupPath !== "" ||
     installConsent !== null ||
     installReview !== null ||
-    metadataDialog !== null ||
-    assetDialog !== null ||
+    loc.metadataDialog !== null ||
+    loc.assetDialog !== null ||
     showExternalImport ||
     entityEditDialog !== null ||
-    profileEditorOpen ||
-    fieldsDialogOpen ||
+    loc.profileEditorOpen ||
+    loc.fieldsDialogOpen ||
     dialogState.open,
 );
 
@@ -1918,7 +1908,7 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
       return;
     case "entity-changed":
       if (event.deleted) {
-        if (selected?.id === event.entityId) clearSelection();
+        if (loc.selected?.id === event.entityId) loc.clearSelection();
         void refreshAfterEntityMutation({ entityId: event.entityId, removed: true });
       } else {
         void refreshAfterEntityMutation({ entityId: event.entityId });
@@ -2060,7 +2050,7 @@ function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef)
 function languageMountState(instanceId: string): { pane: LanguagePane } {
   const created = languageCreatedState.get(instanceId);
   const pooled = Boolean(findWebviewEntry(webviewPool, languageRef(instanceId)));
-  return { pane: created && pooled && created.entityId === selected?.id ? created.pane : languagePane };
+  return { pane: created && pooled && created.entityId === loc.selected?.id ? created.pane : languagePane };
 }
 
 /** Called by the pooled Language `SandboxView` right before the host mount. See `beginPooledMount`. */
@@ -2073,7 +2063,7 @@ function beginPooledLanguageMount(
   const plan = beginPooledMount(self, mountKey);
   languageMountPriorReady = plan.priorReady;
   languageMountRetained = plan.retain;
-  if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: selected?.id, pane: state.pane });
+  if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: loc.selected?.id, pane: state.pane });
   return { retain: plan.retain, reuse: plan.reuse };
 }
 
@@ -2092,7 +2082,7 @@ function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef
   languageWebview.ready = true;
   languagePaneRequest = null;
   languageLeave.releaseAll();
-  const entityId = selected?.id;
+  const entityId = loc.selected?.id;
   if (entityId) void postLanguageMessage(languageResumeMessage(entityId, languagePane), self.instanceId);
 }
 
@@ -2118,16 +2108,16 @@ async function postWritingMessage(message: unknown, instanceId = shownWebviewIns
 
 /** Whether the webview may edit: not while an entry loads or fails to load, diagnostics block saving, AI works or a conflict waits. */
 const writingEditable = $derived(
-  !selectedLoading &&
-    !selectedLoadError &&
+  !loc.selectedLoading &&
+    !loc.selectedLoadError &&
     projectDiagnostics.length === 0 &&
     !aiBusy &&
     !aiRewriteOpen &&
-    !documentConflict,
+    !loc.documentConflict,
 );
 
 function writingPlaceholder() {
-  return selected?.entity_type === "daena.writing:reference-page"
+  return loc.selected?.entity_type === "daena.writing:reference-page"
     ? "Write this reference page…"
     : "Write your manuscript…";
 }
@@ -2140,10 +2130,10 @@ function writingPlaceholder() {
 async function applyWritingDraft(draft: WritingBridgeDraft): Promise<boolean> {
   // A transfer is claimed first so a rejected draft does not leave its text waiting.
   const text = "text" in draft ? draft.text : await project.takePluginTextTransfer(WRITING_PLUGIN_ID, draft.transfer);
-  if (!writingMessageCurrent(draft, selected?.id, writingLoad)) return false;
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return false;
-  if (text === documentBody) return false;
-  updateDocumentBody(text);
+  if (!writingMessageCurrent(draft, loc.selected?.id, writingLoad)) return false;
+  if (loc.selectedLoading || loc.selectedLoadError || projectDiagnostics.length > 0) return false;
+  if (text === loc.documentBody) return false;
+  loc.updateDocumentBody(text);
   return true;
 }
 
@@ -2180,7 +2170,8 @@ async function postWritingLoad(entityId: string, key: string) {
   // replaced, and if there was any it wins, so the webview keeps its editor and the shell saves that text.
   if (writingLoad?.entityId === entityId && (await flushWritingWebview())) {
     // The editor stays, but a rename may have changed the header, which a load would otherwise have refreshed.
-    if (selected?.id === entityId) void postWritingMessage(writingTitleMessage(entityId, selected.name), instanceId);
+    if (loc.selected?.id === entityId)
+      void postWritingMessage(writingTitleMessage(entityId, loc.selected.name), instanceId);
     return;
   }
   if (writingLoadKey !== key) return;
@@ -2188,10 +2179,10 @@ async function postWritingLoad(entityId: string, key: string) {
   writingLoad = load;
   writingEditablePosted = writingEditable;
   const sent = await postWritingMessage(
-    writingLoadMessage(entityId, load.token, loadedDocumentRevision, {
+    writingLoadMessage(entityId, load.token, loc.loadedDocumentRevision, {
       editable: writingEditable,
       placeholder: writingPlaceholder(),
-      mode: documentMode,
+      mode: loc.documentMode,
     }),
     instanceId,
   );
@@ -2204,9 +2195,9 @@ $effect(() => {
   // The webview stays mounted across entities, so the shell tells it which one to show: once it is ready, and
   // again whenever the selection or a reload from disk replaces what the shell holds.
   if (!writingWebviewShown || !writingWebview.ready) return;
-  const entityId = selected?.id;
-  if (!entityId || selectedLoading) return;
-  const key = `${entityId}:${selectedLoadToken}`;
+  const entityId = loc.selected?.id;
+  if (!entityId || loc.selectedLoading) return;
+  const key = `${entityId}:${loc.selectedLoadToken}`;
   if (key === writingLoadKey) return;
   writingLoadKey = key;
   // Only the selection and the load counter decide when to post; what the message reads is not tracked.
@@ -2231,7 +2222,7 @@ $effect(() => {
   // Editability follows the shell's state (loading, conflict, AI). The load message carries the value at its
   // posting time; this posts the changes after it.
   const editable = writingEditable;
-  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  if (!writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   if (editable === writingEditablePosted) return;
   writingEditablePosted = editable;
   void postWritingMessage({ type: "writing.editable", editable });
@@ -2239,37 +2230,37 @@ $effect(() => {
 
 $effect(() => {
   // A revision conflict found by the shell's own save path is shown in the webview's banner.
-  const conflict = documentConflict;
-  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  const conflict = loc.documentConflict;
+  if (!conflict || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   void postWritingMessage(writingConflictMessage(writingLoad.entityId, conflict));
 });
 
 $effect(() => {
   // The status area that showed save errors is hidden while the webview is shown, so the webview reports them.
-  const message = saveError;
-  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== selected?.id) return;
+  const message = loc.saveError;
+  if (!message || !writingWebview.ready || writingLoad === null || writingLoad.entityId !== loc.selected?.id) return;
   void postWritingMessage({ type: "writing.save-error", entityId: writingLoad.entityId, message });
 });
 
 /** Tells the webview its entry was saved; the revision is informational and does not change its token. */
 function notifyWritingSaved(entityId: string) {
   if (!writingWebview.ready || writingLoad?.entityId !== entityId) return;
-  void postWritingMessage({ type: "writing.saved", entityId, revision: loadedDocumentRevision });
+  void postWritingMessage({ type: "writing.saved", entityId, revision: loc.loadedDocumentRevision });
 }
 
 /** Runs the shell's own conflict action the user picked in the webview banner. */
 function handleWritingConflictAction(event: Extract<WritingStateEvent, { kind: "conflict-action" }>) {
-  if (!writingMessageCurrent(event, selected?.id, writingLoad) || !documentConflict) return;
+  if (!writingMessageCurrent(event, loc.selected?.id, writingLoad) || !loc.documentConflict) return;
   switch (event.action) {
     case "reload":
-      void reloadConflict();
+      void loc.reloadConflict();
       return;
     case "overwrite":
       // The shell's own button is disabled while the canonical source needs attention.
-      if (documentConflict.diagnostics.length === 0) void overwriteConflict();
+      if (loc.documentConflict.diagnostics.length === 0) void loc.overwriteConflict();
       return;
     case "recovery":
-      void saveConflictRecoveryCopy();
+      void loc.saveConflictRecoveryCopy();
       return;
   }
 }
@@ -2293,7 +2284,7 @@ function endWritingFullscreen() {
 
 // The full screen belongs to the entry on screen: choosing another entry, or leaving the Writing pane, ends it.
 $effect(() => {
-  void selected?.id;
+  void loc.selected?.id;
   void writingWebviewShown;
   untrack(() => exitWritingFullscreen());
 });
@@ -2351,12 +2342,18 @@ function runShellShortcut(shortcut: WritingBridgeShortcut | TabShortcut) {
 
 /** The webview's Archive button: the same confirmation as the entry's own Archive button, then the shell's archive. */
 async function confirmWritingArchive(entityId: string) {
-  const target = selected;
-  if (!target || target.id !== entityId || selectedLoading || projectDiagnostics.length > 0 || entityMutation.busy)
+  const target = loc.selected;
+  if (
+    !target ||
+    target.id !== entityId ||
+    loc.selectedLoading ||
+    projectDiagnostics.length > 0 ||
+    loc.entityMutation.busy
+  )
     return;
   if (!(await confirmDialog(archiveConfirmOptions(target.name)))) return;
   // The confirmation is modal, but archiving acts on whatever is selected, so the entry is checked again.
-  if (selected?.id !== entityId) return;
+  if (loc.selected?.id !== entityId) return;
   await archiveSelected();
 }
 
@@ -2402,7 +2399,7 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       return;
     case "fullscreen":
       // Only the entry on screen can change the full screen; a message for any other entry is stale.
-      if (writingWebview.mounted && event.entityId === selected?.id) {
+      if (writingWebview.mounted && event.entityId === loc.selected?.id) {
         writingFullscreen = event.on;
         writingFullscreenInstance = event.on ? shownWebviewInstance : null;
       }
@@ -2411,7 +2408,8 @@ function handleWritingStateEvent(event: WritingStateEvent) {
       if (writingWebview.mounted) runShellShortcut(event.shortcut);
       return;
     case "request-rename":
-      if (writingWebview.mounted && selected && event.entityId === selected.id) void openEntityEditDialog(selected);
+      if (writingWebview.mounted && loc.selected && event.entityId === loc.selected.id)
+        void openEntityEditDialog(loc.selected);
       return;
     case "request-archive":
       if (writingWebview.mounted) void confirmWritingArchive(event.entityId);
@@ -2563,13 +2561,13 @@ function resetWorkbenchPane(pane: "collection" | "inspector") {
 async function toggleWorkbenchPane(pane: WorkbenchPane) {
   // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
   if (pane === "content" && workbenchPaneVisibility.content) {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     if (!(await canLeaveLanguageSection())) return;
   }
   const visible = !workbenchPaneVisibility[pane];
   workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
   persistWorkbenchLayout();
-  if (pane === "content" && !visible) editorFullscreen = false;
+  if (pane === "content" && !visible) loc.editorFullscreen = false;
 }
 
 function workspaceGridStyle() {
@@ -2681,7 +2679,7 @@ function currentShellLocation(): ShellLocation {
       kind: "plugin",
       key: `${hostView.plugin.id}:${hostView.view.id}`,
       section,
-      entityId: selected?.id ?? null,
+      entityId: loc.selected?.id ?? null,
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
     };
   }
@@ -2690,7 +2688,7 @@ function currentShellLocation(): ShellLocation {
       kind: "plugin",
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
       section,
-      entityId: selected?.id ?? null,
+      entityId: loc.selected?.id ?? null,
       surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
       moduleState: null,
     };
@@ -2699,7 +2697,7 @@ function currentShellLocation(): ShellLocation {
     kind: "workspace",
     section,
     view: currentWorkspaceLocationView(),
-    entityId: section === "houses" && housesView === "tree" ? treeRootId : (selected?.id ?? null),
+    entityId: section === "houses" && housesView === "tree" ? treeRootId : (loc.selected?.id ?? null),
     writingView,
     timelineView,
     collection: currentWorkspaceCollectionLocation(),
@@ -2731,12 +2729,12 @@ async function openTreePerson(entityId: string) {
     }
   }
   if (!entity || entity.deleted) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (!(await leavePluginView())) return;
   section = "lore";
   projectHomeOpen = false;
   loreWikiOpen = false;
-  await selectEntity(entity);
+  await loc.selectEntity(entity);
 }
 
 async function openHostView(
@@ -2859,7 +2857,7 @@ function updateRailCollapsed(collapsed: boolean) {
 }
 
 async function openPluginView(item: PluginNavigationItem, departure = currentShellLocation()) {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (section === "language" && !(await canLeaveLanguageSection())) return;
   if (item.renderer === "maps") {
     if (!(await dismissSettings())) return;
@@ -2907,7 +2905,7 @@ const mapSurfaceOpen = $derived(section === "maps" && sandboxView?.renderer === 
 async function createMap(provider: "image" | "vector" | "physical" = "physical") {
   if (projectDiagnostics.length > 0) return;
   try {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     const departure = currentShellLocation();
     mapProviderMenuOpen = null;
     const mapView = mapsNavigationItem();
@@ -2915,11 +2913,11 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
     if (!(await dismissSettings())) return;
     if (!(await leavePluginView())) return;
     recordShellDeparture(departure);
-    selected = null;
-    fields = {};
-    relationships = [];
-    assets = [];
-    mapLocations = [];
+    loc.selected = null;
+    loc.fields = {};
+    loc.relationships = [];
+    loc.assets = [];
+    loc.mapLocations = [];
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
     projectHomeOpen = false;
@@ -2936,7 +2934,7 @@ async function createMap(provider: "image" | "vector" | "physical" = "physical")
 }
 
 function currentMapId() {
-  return selected?.entity_type === "daena.maps:world-map" ? selected.id : null;
+  return loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null;
 }
 
 $effect(() => {
@@ -3021,7 +3019,8 @@ $effect(() => {
   if (languageListRefreshed) return;
   languageListRefreshed = true;
   bumpCollectionRefresh();
-  if (!selected && collectionResult().entities.length > 0) void selectEntity(collectionResult().entities[0], false);
+  if (!loc.selected && collectionResult().entities.length > 0)
+    void loc.selectEntity(collectionResult().entities[0], false);
 });
 
 function savedMaps() {
@@ -3291,16 +3290,16 @@ async function manuscriptContainmentLabels(seed: string[]): Promise<Record<strin
 }
 
 async function refreshWritingAppearanceLabels() {
-  if (!selected) {
+  if (!loc.selected) {
     writingAppearanceLabels = {};
     return;
   }
   const sources = [
     ...new Set(
-      relationships
+      loc.relationships
         .filter(
           (relationship) =>
-            relationship.relationship_type === WRITING_FEATURES && relationship.target_id === selected!.id,
+            relationship.relationship_type === WRITING_FEATURES && relationship.target_id === loc.selected!.id,
         )
         .map((relationship) => relationship.source_id),
     ),
@@ -3445,7 +3444,7 @@ $effect(() => {
 });
 
 $effect(() => {
-  const id = selected?.id;
+  const id = loc.selected?.id;
   if (!id || manuscriptOutline.length === 0) return;
   const path = outlinePathIds(manuscriptOutline, id);
   if (!path || path.length < 2) return;
@@ -3570,7 +3569,7 @@ function toggleManuscriptOutlineNode(id: string) {
 }
 
 async function selectSearchResult(entity: Entity) {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const owner = workspaceSectionOrder.find((target) =>
     manifestForWorkspaceSection(target)?.schemas.some((schema) =>
       schemaEntityTypeIds(schema).includes(entity.entity_type ?? ""),
@@ -3586,11 +3585,11 @@ async function selectSearchResult(entity: Entity) {
   projectHomeOpen = false;
   globalQuery = "";
   collectionQuery.textSearch = "";
-  await selectEntity(entity, false);
+  await loc.selectEntity(entity, false);
 }
 
 async function switchSection(next: WorkspaceSection) {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (section === next && !projectHomeOpen && (next !== "maps" || sandboxView?.renderer === "maps") && !showSettings)
     return;
   if (section === "language" && next !== "language" && !(await canLeaveLanguageSection())) return;
@@ -3603,14 +3602,14 @@ async function switchSection(next: WorkspaceSection) {
   queueCollectionScroll(next, collectionScrollBySection[next] ?? 0);
   projectHomeOpen = false;
   if (sectionChanged) {
-    clearSelection();
+    loc.clearSelection();
     collectionQuery.textSearch = "";
   }
 }
 
 async function openProjectHome() {
   if (!ready || (projectHomeOpen && !showSettings && !hostView && !sandboxView)) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
@@ -3622,46 +3621,46 @@ async function openProjectHome() {
 
 async function reconcileWorkspaceSection() {
   if (enabledWorkspaceSections().includes(section)) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (!(await leavePluginView())) return;
   section = enabledWorkspaceSections()[0] ?? "lore";
-  clearSelection();
+  loc.clearSelection();
   collectionQuery.textSearch = "";
-  editorFullscreen = false;
+  loc.editorFullscreen = false;
 }
 
 async function switchWritingView(next: WritingView) {
   const tabs = collectionTabsFor("writing");
   const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (writingView === resolved && !projectHomeOpen) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
   writingView = resolved;
-  clearSelection();
+  loc.clearSelection();
   collectionQuery.textSearch = "";
 }
 
 async function switchTimelineView(next: TimelineView) {
   const tabs = collectionTabsFor("timeline");
   const resolved = tabs.some((tab) => tab.id === next) ? next : (tabs[0]?.id ?? next);
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (timelineView === resolved && !projectHomeOpen && !projectionSandboxOpen()) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
   projectHomeOpen = false;
   timelineView = resolved;
-  clearSelection();
+  loc.clearSelection();
   collectionQuery.textSearch = "";
 }
 
 async function switchHousesView(next: WorkspaceLocationView) {
   const allowed: WorkspaceLocationView[] = ["houses", "tree"];
   const resolved = allowed.includes(next) ? next : "houses";
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (section === "houses" && housesView === resolved && !projectHomeOpen) {
     if (resolved === "tree" && treeRootId) {
       recordShellDeparture(currentShellLocation());
@@ -3679,7 +3678,7 @@ async function switchHousesView(next: WorkspaceLocationView) {
 }
 
 async function switchLanguagePane(next: LanguagePane) {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (languagePane === next && !projectHomeOpen && section === "language") return;
   const departure = currentShellLocation();
   // The Language pane stays mounted across pane switches, so only a full-surface view needs closing here.
@@ -3750,14 +3749,15 @@ function sectionLabel() {
 function currentTabPresentation(): { title: string; tooltip: string; icon: TabIcon } {
   const tab = activeCollectionTab();
   const tabLabel = tab ? (tab.id === "reference" ? "Reference pages" : tab.label) : null;
-  const owner = selected ? sectionForEntityType(selected.entity_type) : null;
-  const entityBelongs = Boolean(selected) && (!owner || owner === section);
+  const owner = loc.selected ? sectionForEntityType(loc.selected.entity_type) : null;
+  const entityBelongs = Boolean(loc.selected) && (!owner || owner === section);
   const plugin =
     hostView ??
     (sandboxView?.view && sandboxView.renderer !== "maps" && !projectionSandboxOpen()
       ? { plugin: sandboxView.plugin, view: sandboxView.view }
       : null);
-  const entityName = entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (selected?.name ?? null) : null;
+  const entityName =
+    entityBelongs && !projectHomeOpen && !showSettings && !plugin ? (loc.selected?.name ?? null) : null;
   const specs = shellBreadcrumbs({
     home: projectHomeOpen && !showSettings,
     settingsLabel: showSettings ? sectionLabel() : null,
@@ -3784,8 +3784,8 @@ function currentTabPresentation(): { title: string; tooltip: string; icon: TabIc
           ? { kind: "settings" }
           : plugin
             ? { kind: "plugin", key: `${plugin.plugin.id}:${plugin.view.id}` }
-            : entityName && selected
-              ? { kind: "entity", section, entityType: selected.entity_type ?? "" }
+            : entityName && loc.selected
+              ? { kind: "entity", section, entityType: loc.selected.entity_type ?? "" }
               : { kind: "section", section };
   return { title, tooltip, icon };
 }
@@ -3886,7 +3886,7 @@ function entityTypeLabel(entityType: string | null) {
 
 /** Opens the projection for the current section: Chronology in Timeline, otherwise the Lore World graph. */
 async function openProjection() {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const key: ProjectionSandboxKey = section === "timeline" ? "timeline" : "lore";
   const surface = PROJECTION_SANDBOXES[key];
   if (!projectHomeOpen && !showSettings && projectionSandboxOpen(key)) return;
@@ -3912,7 +3912,7 @@ async function openProjection() {
 }
 
 async function openLoreLibrary() {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (!projectHomeOpen && !showSettings && !loreWikiOpen && !hostView && !sandboxView) return;
   const departure = currentShellLocation();
   if (!(await dismissSettings())) return;
@@ -3924,7 +3924,7 @@ async function openLoreLibrary() {
 }
 
 async function openLoreWiki(entityId?: string) {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const showingWiki = !projectHomeOpen && !showSettings && loreWikiOpen && !hostView && !sandboxView;
   if (showingWiki && entityId === undefined) return;
   const departure = currentShellLocation();
@@ -3933,7 +3933,9 @@ async function openLoreWiki(entityId?: string) {
   projectHomeOpen = false;
   if (entityId === undefined) {
     loreWikiEntityId =
-      selected?.entity_type && allEntityTypesForSection("lore").has(selected.entity_type) ? selected.id : null;
+      loc.selected?.entity_type && allEntityTypesForSection("lore").has(loc.selected.entity_type)
+        ? loc.selected.id
+        : null;
   } else {
     const entity = await restoreShellEntity(entityId);
     loreWikiEntityId = entity ? entityId : null;
@@ -3951,7 +3953,7 @@ function allEntityTypesForSection(target: WorkspaceSection) {
 }
 
 async function closeLoreWiki() {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const departure = currentShellLocation();
   recordShellDeparture(departure);
   loreWikiOpen = false;
@@ -3959,14 +3961,14 @@ async function closeLoreWiki() {
 }
 
 async function closeProjectionView() {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const departure = currentShellLocation();
   recordShellDeparture(departure);
   if (projectionSandboxOpen()) sandboxView = null;
 }
 
 async function closePluginView() {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
@@ -4004,7 +4006,7 @@ async function handleTimelineGuidePrimary(step: GuideStep) {
 
 async function restoreShellEntity(entityId: string | null) {
   if (!entityId) {
-    if (selected) clearSelection();
+    if (loc.selected) loc.clearSelection();
     return null;
   }
   let entity = entities.find((candidate) => candidate.id === entityId) ?? null;
@@ -4018,10 +4020,10 @@ async function restoreShellEntity(entityId: string | null) {
     }
   }
   if (!entity || entity.deleted) {
-    if (selected) clearSelection();
+    if (loc.selected) loc.clearSelection();
     return null;
   }
-  await selectEntity(entity, false);
+  await loc.selectEntity(entity, false);
   return entity;
 }
 
@@ -4101,7 +4103,7 @@ async function navigateShellHistory(direction: "back" | "forward") {
     transition = direction === "back" ? shellHistoryBack(history, current) : shellHistoryForward(history, current);
   }
   if (!transition) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   shellNavigationBusy = true;
   try {
@@ -4156,7 +4158,7 @@ async function switchToTab(tabId: string): Promise<boolean> {
   if (!found) return false;
   if (found.group.id === shellTabs.activeGroupId && found.tab.id === activeTab(shellTabs).id) return true;
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return false;
+  if (!(await loc.flushAutoSave())) return false;
   const current = currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
@@ -4190,7 +4192,7 @@ async function openInNewTab(
 ): Promise<void> {
   if (!ready || shellNavigationBusy) return;
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const current = currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection())) return;
   const id = crypto.randomUUID();
@@ -4249,7 +4251,7 @@ async function applyTabsChange(change: (state: ShellTabsState) => ShellTabsState
     return true;
   }
   dismissTransientMenus();
-  if (!(await flushAutoSave())) return false;
+  if (!(await loc.flushAutoSave())) return false;
   const current = currentShellLocation();
   if (current.kind === "workspace" && current.section === "language" && !(await canLeaveLanguageSection()))
     return false;
@@ -4355,124 +4357,13 @@ $effect(() => {
   }
 });
 
-function dateForField(key: string) {
-  return parseCalendarDate(fields[key]);
-}
 function selectedCalendarId(key: string): string {
-  return calendarIdForStoredDate(dateForField(key), dateCalendarByField[key]);
+  return calendarIdForStoredDate(loc.dateForField(key), loc.dateCalendarByField[key]);
 }
 function definitionForDateField(key: string): CalendarDefinition | null {
   return calendarDefinitionForId(selectedCalendarId(key));
 }
-function dateFieldRevisionKey(key: string): string | null {
-  const definition = definitions().find((candidate) => candidate.key === key);
-  if (!definition) return null;
-  return fieldRevisionKey(namespaceForField(definition), key);
-}
-function dateFieldHadPersistedValue(key: string): boolean {
-  const revisionKey = dateFieldRevisionKey(key);
-  return revisionKey ? Object.prototype.hasOwnProperty.call(loadedFieldRevisions, revisionKey) : false;
-}
-function updateInspectorDateField(key: string, next: unknown) {
-  fields = { ...fields, [key]: next };
-  scheduleDateFieldDirty(key);
-}
-function setDateCalendar(key: string, calendarId: string) {
-  dateCalendarByField = { ...dateCalendarByField, [key]: calendarId };
-  const previous = dateForField(key);
-  if (!previous) {
-    dateEditorOpen = { ...dateEditorOpen, [key]: true };
-    return;
-  }
-  updateInspectorDateField(key, serializeCalendarDate({ ...previous, calendar: calendarId }));
-}
-function openDateEditor(key: string) {
-  dateEditorOpen = { ...dateEditorOpen, [key]: true };
-  dateCalendarByField = { ...dateCalendarByField, [key]: dateCalendarByField[key] ?? GREGORIAN_CALENDAR_ID };
-}
-function clearDateField(key: string) {
-  cancelDateFieldDirty(key);
-  fields = { ...fields, [key]: "" };
-  dateEditorOpen = { ...dateEditorOpen, [key]: false };
-  const next = { ...dateCalendarByField };
-  delete next[key];
-  dateCalendarByField = next;
-  if (dateFieldHadPersistedValue(key)) markEntryDirty({ fieldKey: key });
-}
 
-function cancelDateFieldDirty(key?: string) {
-  if (key) {
-    const timer = dateFieldDirtyTimers[key];
-    if (timer) {
-      window.clearTimeout(timer);
-      delete dateFieldDirtyTimers[key];
-    }
-    return;
-  }
-  for (const timerKey of Object.keys(dateFieldDirtyTimers)) {
-    window.clearTimeout(dateFieldDirtyTimers[timerKey]);
-    delete dateFieldDirtyTimers[timerKey];
-  }
-}
-function dateFieldDirtyApplies(key: string): boolean {
-  const value = fields[key];
-  return hasMeaningfulDateValue(value) || (dateFieldHadPersistedValue(key) && isEmptyFieldValue(value));
-}
-function scheduleDateFieldDirty(key: string, delay = 500) {
-  cancelDateFieldDirty(key);
-  dateFieldDirtyTimers[key] = window.setTimeout(() => {
-    delete dateFieldDirtyTimers[key];
-    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
-  }, delay);
-}
-/** Apply pending debounced date edits immediately so navigation and manual saves cannot drop them. */
-function flushDateFieldDirty() {
-  const keys = Object.keys(dateFieldDirtyTimers);
-  if (keys.length === 0) return;
-  cancelDateFieldDirty();
-  for (const key of keys) {
-    if (dateFieldDirtyApplies(key)) markEntryDirty({ fieldKey: key });
-  }
-}
-
-function cancelAutoSave() {
-  if (autoSaveTimer !== null) {
-    window.clearTimeout(autoSaveTimer);
-    autoSaveTimer = null;
-  }
-}
-function scheduleAutoSave(delay = 900) {
-  cancelAutoSave();
-  if (!selected || !sectionEnabled() || documentConflict || projectDiagnostics.length > 0) return;
-  autoSaveTimer = window.setTimeout(() => {
-    autoSaveTimer = null;
-    void saveDocument();
-  }, delay);
-}
-function clearDirtyTracking() {
-  dirtyFieldKeys.clear();
-}
-function markEntryDirty(opts?: { fieldKey?: string; document?: boolean }) {
-  documentRevision += 1;
-  hasUnsavedChanges = true;
-  savedAt = "";
-  autoSaveFailureCount = 0;
-  if (opts?.fieldKey) dirtyFieldKeys.add(opts.fieldKey);
-  scheduleAutoSave();
-}
-function updateDocumentBody(value: string) {
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
-  documentBody = value;
-  markEntryDirty({ document: true });
-}
-function setEditorFullscreen(value: boolean) {
-  editorFullscreen = value;
-}
-async function setDocumentMode(mode: "read" | "edit") {
-  if (mode === documentMode) return;
-  if (documentMode === "edit" && !(await flushAutoSave())) return;
-  documentMode = mode;
-}
 function updateAiSetting(key: keyof typeof aiProvider, value: string | string[]) {
   const root = projectInfo?.root;
   if (!root) return;
@@ -4729,7 +4620,7 @@ function emptyInspectorDefinitions() {
     if (isMapsProviderField(definition)) return false;
     return definition.type === "relationship"
       ? selectedRelationshipIds(definition).length === 0
-      : isEmptyFieldValue(fields[definition.key]);
+      : isEmptyFieldValue(loc.fields[definition.key]);
   });
 }
 function clearAiFieldListener() {
@@ -4749,7 +4640,7 @@ function closeAiFieldFill() {
   aiFieldSuggestions = {};
 }
 function handleAiFieldFillEvent(payload: AiStreamEvent) {
-  if (aiFieldFillEntityId !== null && selected?.id !== aiFieldFillEntityId) return;
+  if (aiFieldFillEntityId !== null && loc.selected?.id !== aiFieldFillEntityId) return;
   if (payload.sequence <= aiFieldFillLastSequence) return;
   aiFieldFillLastSequence = payload.sequence;
   if (payload.phase === "delta" && payload.delta) aiFieldFillStream += payload.delta;
@@ -4812,7 +4703,7 @@ function handleAiFieldFillEvent(payload: AiStreamEvent) {
   }
 }
 async function fillAiFields() {
-  if (!selected || aiFieldFillBusy) return;
+  if (!loc.selected || aiFieldFillBusy) return;
   if (!projectInfo?.aiEnabled) return;
   const empty = emptyInspectorDefinitions();
   if (empty.length === 0) return;
@@ -4828,12 +4719,12 @@ async function fillAiFields() {
   aiFieldSuggestions = {};
   aiFieldFillLastSequence = -1;
   aiFieldFillStartCancelled = false;
-  aiFieldFillEntityId = selected.id;
+  aiFieldFillEntityId = loc.selected.id;
   const fieldKeys = empty.map((definition) => definition.key);
   const context = JSON.stringify({
-    entity: { name: selected.name, type: selected.entity_type },
-    document: documentBody,
-    populatedFields: Object.fromEntries(Object.entries(fields).filter(([, value]) => !isEmptyFieldValue(value))),
+    entity: { name: loc.selected.name, type: loc.selected.entity_type },
+    document: loc.documentBody,
+    populatedFields: Object.fromEntries(Object.entries(loc.fields).filter(([, value]) => !isEmptyFieldValue(value))),
     emptyFields: empty.map((definition) => ({
       key: definition.key,
       label: definition.label,
@@ -4883,7 +4774,7 @@ async function fillAiFields() {
     additionalProperties: false,
   };
   const retrievalQuery =
-    `${selected.name} ${selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
+    `${loc.selected.name} ${loc.selected.entity_type ?? ""} ${empty.map((definition) => definition.label).join(" ")}`.slice(
       0,
       4000,
     );
@@ -4899,7 +4790,7 @@ async function fillAiFields() {
       2,
     );
     startedRequestId = requestId;
-    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) {
+    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
     }
@@ -4914,27 +4805,27 @@ async function fillAiFields() {
     clearAiFieldListener();
     aiFieldFillBusy = false;
     aiFieldFillRequestId = null;
-    if (aiFieldFillStartCancelled || selected?.id !== aiFieldFillEntityId) return;
+    if (aiFieldFillStartCancelled || loc.selected?.id !== aiFieldFillEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiFieldSuggestion(key: string) {
-  if (selected?.id !== aiFieldFillEntityId) return;
+  if (loc.selected?.id !== aiFieldFillEntityId) return;
   const suggestion = aiFieldSuggestions[key];
   const definition = definitions().find((candidate) => candidate.key === key);
   if (
     !suggestion ||
     (definition?.type === "relationship"
       ? selectedRelationshipIds(definition).length > 0
-      : !isEmptyFieldValue(fields[key]))
+      : !isEmptyFieldValue(loc.fields[key]))
   )
     return;
-  if (definition?.type === "relationship") await updateRelationshipField(definition, suggestion.value as string[]);
-  else fields = { ...fields, [key]: suggestion.value };
+  if (definition?.type === "relationship") await loc.updateRelationshipField(definition, suggestion.value as string[]);
+  else loc.fields = { ...loc.fields, [key]: suggestion.value };
   const remaining = { ...aiFieldSuggestions };
   delete remaining[key];
   aiFieldSuggestions = remaining;
-  markEntryDirty({ fieldKey: key });
+  loc.markEntryDirty({ fieldKey: key });
 }
 async function acceptAllAiFieldSuggestions() {
   for (const key of Object.keys(aiFieldSuggestions)) await acceptAiFieldSuggestion(key);
@@ -4983,7 +4874,7 @@ async function cancelAiRewrite() {
   }
 }
 function handleAiEvent(payload: AiStreamEvent) {
-  if (aiSourceEntityId !== null && selected?.id !== aiSourceEntityId) return;
+  if (aiSourceEntityId !== null && loc.selected?.id !== aiSourceEntityId) return;
   if (payload.sequence <= aiLastSequence) return;
   aiLastSequence = payload.sequence;
   const nextStreamState = reduceTextGenerationEvent(
@@ -5028,15 +4919,15 @@ function handleAiEvent(payload: AiStreamEvent) {
   }
 }
 async function startAiRewrite() {
-  if (!selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
+  if (!loc.selected || (aiMode === "rewrite" && !aiSourceSelection.trim()) || !aiInstruction.trim() || aiBusy) return;
   const sourceSelection = aiSourceSelection;
   const sourcePlain = aiSourceSelectionPlain;
   const generationContext = aiGenerationContext;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (aiMode === "rewrite" && !sourceSelection.trim()) return;
-  aiSourceEntityId = selected.id;
-  aiSourceBody = documentBody;
-  aiSourceRevision = loadedDocumentRevision;
+  aiSourceEntityId = loc.selected.id;
+  aiSourceBody = loc.documentBody;
+  aiSourceRevision = loc.loadedDocumentRevision;
   aiStreamText = "";
   aiPreviewOutput = "";
   aiProgressMessage = "Preparing model…";
@@ -5047,8 +4938,8 @@ async function startAiRewrite() {
   let startedRequestId: string | null = null;
   try {
     const sourceText =
-      aiMode === "generate" ? generationContext.trim() || documentBody.trim() || "[CURSOR]" : sourceSelection;
-    const retrievalQuery = [selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
+      aiMode === "generate" ? generationContext.trim() || loc.documentBody.trim() || "[CURSOR]" : sourceSelection;
+    const retrievalQuery = [loc.selected?.name, aiInstruction, sourcePlain].filter(Boolean).join(" ").slice(0, 4000);
     const requestId = await project.aiGenerateText(
       projectInfo!.root,
       aiInstruction,
@@ -5058,7 +4949,7 @@ async function startAiRewrite() {
       2,
     );
     startedRequestId = requestId;
-    if (aiStartCancelled || selected?.id !== aiSourceEntityId) {
+    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) {
       void project.aiCancelText(requestId).catch(() => {});
       return;
     }
@@ -5074,16 +4965,16 @@ async function startAiRewrite() {
     aiBusy = false;
     aiCancelPending = false;
     aiRequestId = null;
-    if (aiStartCancelled || selected?.id !== aiSourceEntityId) return;
+    if (aiStartCancelled || loc.selected?.id !== aiSourceEntityId) return;
     error = friendlyError(cause);
   }
 }
 async function acceptAiRewrite() {
-  if (!selected || !aiPreviewOutput || aiBusy) return;
+  if (!loc.selected || !aiPreviewOutput || aiBusy) return;
   if (
-    selected.id !== aiSourceEntityId ||
-    documentBody !== aiSourceBody ||
-    loadedDocumentRevision !== aiSourceRevision
+    loc.selected.id !== aiSourceEntityId ||
+    loc.documentBody !== aiSourceBody ||
+    loc.loadedDocumentRevision !== aiSourceRevision
   ) {
     error = "The entity or document changed while the rewrite was being prepared. Discard it and try again.";
     return;
@@ -5094,28 +4985,28 @@ async function acceptAiRewrite() {
     return;
   }
   if (aiMode === "generate") {
-    const nextMarkdown = editorRef?.insertAiTextAtRequest(aiPreviewOutput);
+    const nextMarkdown = loc.editorRef?.insertAiTextAtRequest(aiPreviewOutput);
     if (nextMarkdown == null) {
       error = "The editor position is no longer available. Discard it and try again.";
       return;
     }
-    documentBody = nextMarkdown;
-    markEntryDirty({ document: true });
-    if (await saveDocument()) closeAiRewrite();
+    loc.documentBody = nextMarkdown;
+    loc.markEntryDirty({ document: true });
+    if (await loc.saveDocument()) closeAiRewrite();
     return;
   }
-  const nextMarkdown = editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
+  const nextMarkdown = loc.editorRef?.replaceAiTextWithMarkdown(aiPreviewOutput);
   if (nextMarkdown === null || nextMarkdown === undefined) {
     error = "The selected text is no longer at the original position. Discard it and try again.";
     return;
   }
-  const bodyBefore = documentBody;
-  documentBody = nextMarkdown;
-  markEntryDirty({ document: true });
-  if (await saveDocument()) {
+  const bodyBefore = loc.documentBody;
+  loc.documentBody = nextMarkdown;
+  loc.markEntryDirty({ document: true });
+  if (await loc.saveDocument()) {
     closeAiRewrite();
   } else {
-    documentBody = bodyBefore;
+    loc.documentBody = bodyBefore;
   }
 }
 async function persistRecentProjects(next: RecentProject[]) {
@@ -5303,14 +5194,14 @@ function bumpKinshipRefresh() {
 }
 
 async function refreshSelectedKinship() {
-  if (!selected || projectDiagnostics.length > 0) return;
-  const entityId = selected.id;
+  if (!loc.selected || projectDiagnostics.length > 0) return;
+  const entityId = loc.selected.id;
   const context = contextFor();
   if (!context.module.capabilities.includes("relationship.read")) return;
   try {
     const listed = await context.relationships.list(entityId as UUID);
-    if (selected?.id !== entityId) return;
-    relationships = listed.map((relationship) => toHostRelationship(relationship));
+    if (loc.selected?.id !== entityId) return;
+    loc.relationships = listed.map((relationship) => toHostRelationship(relationship));
   } catch {
     // Keep the prior inspector relationships if the refresh fails.
   }
@@ -5329,7 +5220,7 @@ function upsertEntityInCache(entity: Entity) {
   } else {
     entities = [...entities, entity];
   }
-  if (selected?.id === entity.id) selected = entity;
+  if (loc.selected?.id === entity.id) loc.selected = entity;
 }
 
 function removeEntityFromCache(id: string) {
@@ -5362,8 +5253,8 @@ async function refreshAfterEntityMutation(options?: { entityId?: string; removed
   if (affectedEntity?.entity_type === "daena.timeline:calendar") await ensureCalendarCache(true);
   if (affectedEntity?.entity_type === "daena.timeline:era") {
     eraContextCache.invalidate(affectedEntity.id);
-    if (selected && eraContexts.some((context) => context.id === affectedEntity.id)) {
-      eraContexts = await loadEraContexts(eraContexts.map((context) => context.id));
+    if (loc.selected && loc.eraContexts.some((context) => context.id === affectedEntity.id)) {
+      loc.eraContexts = await loadEraContexts(loc.eraContexts.map((context) => context.id));
     }
   }
   await refreshArchivedCount();
@@ -5492,10 +5383,10 @@ function openStatusDestination(section: ProjectSection) {
 function statusCenterItems(): StatusCenterItem[] {
   if (!ready || !projectInfo) return [];
   const items: StatusCenterItem[] = [];
-  const saving = saveInFlight !== null;
-  if (selected) {
+  const saving = loc.saveInFlight !== null;
+  if (loc.selected) {
     items.push(
-      documentConflict
+      loc.documentConflict
         ? {
             id: "save",
             label: "Document conflict",
@@ -5504,31 +5395,31 @@ function statusCenterItems(): StatusCenterItem[] {
             actionLabel: "Return to draft",
             onAction: () => (statusCenterOpen = false),
           }
-        : saveError
+        : loc.saveError
           ? {
               id: "save",
               label: "Save paused",
-              detail: saveError,
+              detail: loc.saveError,
               tone: "danger",
               actionLabel: "Retry",
               onAction: () => {
                 statusCenterOpen = false;
-                void saveDocument();
+                void loc.saveDocument();
               },
             }
           : saving
-            ? { id: "save", label: "Saving entry", detail: selected.name, tone: "busy" }
-            : hasUnsavedChanges
+            ? { id: "save", label: "Saving entry", detail: loc.selected.name, tone: "busy" }
+            : loc.hasUnsavedChanges
               ? {
                   id: "save",
                   label: "Unsaved changes",
-                  detail: `${selected.name} is queued for local save.`,
+                  detail: `${loc.selected.name} is queued for local save.`,
                   tone: "warning",
                 }
               : {
                   id: "save",
                   label: "Entry saved",
-                  detail: savedAt ? `Saved locally at ${savedAt}.` : "The open entry has no pending edits.",
+                  detail: loc.savedAt ? `Saved locally at ${loc.savedAt}.` : "The open entry has no pending edits.",
                   tone: "success",
                 },
     );
@@ -5704,7 +5595,7 @@ async function pickAndOpenProject(intent: "create" | "open") {
     // Asked before the transition overlay opens, because the overlay hides the Language webview.
     if (!(await canLeaveLanguageSection())) return;
     await runProjectTransition(intent === "create" ? "Creating project…" : "Opening project…", async () => {
-      if (!(await flushAutoSave())) return;
+      if (!(await loc.flushAutoSave())) return;
       if (!(await leavePluginView({ closeWebviews: true }))) return;
       persistShellTabs();
       resetProjectSessionState();
@@ -5729,7 +5620,7 @@ async function openRecentProject(path: string) {
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Opening project…", async () => {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
@@ -5743,138 +5634,12 @@ async function closeProject() {
   showProjectMenu = false;
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Closing project…", async () => {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     persistShellTabs();
     resetProjectSessionState();
     await project.close();
   });
-}
-
-async function flushAutoSave() {
-  // The Writing webview holds the editor while it is shown, so its unsent text comes first.
-  await flushWritingWebview();
-  editorRef?.flushPendingChanges();
-  flushDateFieldDirty();
-  cancelAutoSave();
-  if (!hasUnsavedChanges) return true;
-  return saveDocument();
-}
-
-async function loadSelectedState(entity: Entity) {
-  const token = ++selectedLoadToken;
-  const entityId = entity.id;
-  const isCurrent = () => token === selectedLoadToken && selected?.id === entityId;
-  selectedLoading = true;
-  selectedLoadError = "";
-  try {
-    closeAiFieldFill();
-    closeAiRewrite();
-    documentBody = "";
-    fields = {};
-    relationships = [];
-    eraContexts = [];
-    metadataDialog = null;
-    assets = [];
-    mapLocations = [];
-    loadedDocumentRevision = "";
-    loadedFieldRevisions = {};
-    loadedStructuredFieldKeys = new Set();
-    clearDirtyTracking();
-    const context = contextFor();
-    const documents = await project.listDocuments(entityId);
-    if (!isCurrent()) return;
-    const document = documents[0];
-    documentBody = normalizeDocument(document?.body ?? "", document?.format);
-    loadedDocumentRevision = document?.revision ?? "";
-    const storedFields = await project.listFields(entityId);
-    if (!isCurrent()) return;
-    const activeNamespaces = new Set(
-      activeManifest()
-        ?.schemas.filter((schema) => !entity.entity_type || schemaEntityTypeIds(schema).includes(entity.entity_type))
-        .map((schema) => schema.namespace) ?? [],
-    );
-    const relevantFields = storedFields.filter(
-      (field) => activeNamespaces.size === 0 || activeNamespaces.has(field.namespace),
-    );
-    const values = Object.fromEntries(relevantFields.map((field) => [field.key, field.value]));
-    loadedFieldRevisions = Object.fromEntries(
-      relevantFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-    );
-    loadedStructuredFieldKeys = new Set(
-      relevantFields
-        .filter((field) => isStructuredFieldValue(field.value))
-        .map((field) => fieldRevisionKey(field.namespace, field.key)),
-    );
-    dateEditorOpen = {};
-    cancelDateFieldDirty();
-    const nextDateCalendars: Record<string, string> = {};
-    fields = Object.fromEntries(
-      Object.entries(values).map(([key, value]) => {
-        const definition = definitions().find((candidate) => candidate.key === key);
-        if (definition?.type === "date") {
-          const date = parseCalendarDate(value);
-          if (date && !isGregorianCalendarId(date.calendar)) nextDateCalendars[key] = date.calendar;
-          const serialized = date ? serializeCalendarDate(date) : "";
-          if (isSentinelDateValue(serialized) || isSentinelDateValue(date)) return [key, ""];
-          return [key, serialized === "" ? String(value ?? "") : serialized];
-        }
-        if (definition && (definition.type === "number" || definition.type === "boolean" || definition.multiple))
-          return [key, value];
-        return [key, fieldDisplayValue(value)];
-      }),
-    );
-    dateCalendarByField = nextDateCalendars;
-    relationships = context.module.capabilities.includes("relationship.read")
-      ? (await context.relationships.list(entityId as UUID)).map((relationship) => ({
-          id: relationship.id,
-          source_id: relationship.sourceId,
-          target_id: relationship.targetId,
-          relationship_type: relationship.type,
-          metadata: JSON.stringify(relationship.metadata),
-          revision: relationship.revision,
-        }))
-      : [];
-    if (!isCurrent()) return;
-    eraContexts = await loadEraContexts(
-      relationships
-        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
-        .map((relationship) => relationship.target_id),
-    );
-    if (!isCurrent()) return;
-    hintDateCalendarsFromEras(eraContexts, false);
-    assets = context.module.capabilities.includes("asset.read:self")
-      ? (await context.assets.list(entityId as UUID)).map((asset) => ({
-          id: asset.id,
-          entity_id: asset.entityId,
-          namespace: asset.namespace,
-          filename: asset.filename,
-          content_hash: asset.contentHash,
-          size: asset.size,
-          mime_type: asset.mimeType,
-          path: asset.path,
-          created_at: asset.createdAt,
-          role: asset.role,
-          reference_scope: asset.referenceScope,
-          revision: asset.revision,
-        }))
-      : [];
-    if (!isCurrent()) return;
-    const nextMapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
-    if (!isCurrent()) return;
-    mapLocations = nextMapLocations;
-    savedAt = "";
-    void refreshWritingAppearanceLabels();
-  } catch (cause) {
-    if (isCurrent()) selectedLoadError = friendlyError(cause);
-    throw cause;
-  } finally {
-    if (isCurrent()) selectedLoading = false;
-  }
-}
-
-async function refreshSelectedMapLocations(entityId = selected?.id) {
-  mapLocations = entityId && mapsEnabled() ? await project.listMapLocations(entityId) : [];
 }
 
 async function openMapLocation(location: MapLocation) {
@@ -5896,11 +5661,11 @@ async function ensureMapEditorOpen(mapEntityId: string) {
   const departure = currentShellLocation();
   const map = entities.find((entity) => entity.id === mapEntityId) ?? (await project.getEntity(mapEntityId));
   if (!map) throw new Error("map-unavailable: choose a saved map first");
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before opening the map editor.");
   const mapsView = mapsNavigationItem();
-  selected = map;
+  loc.selected = map;
   mapsEditorKey = map.id;
-  await loadSelectedState(map);
+  await loc.loadSelectedState(map);
   if (mapsView) await openPluginView(mapsView, departure);
 }
 
@@ -5943,8 +5708,8 @@ async function applyMapPick(anchor: unknown) {
         entity.entity_type === "daena.timeline:calendar"
           ? "timeline"
           : "lore";
-      await selectEntity(entity, false);
-      mapLocations = await project.listMapLocations(entity.id);
+      await loc.selectEntity(entity, false);
+      loc.mapLocations = await project.listMapLocations(entity.id);
     } else {
       await project.upsertMapLocation(pending.entityId, { ...pending.location, anchor });
       const entity =
@@ -5960,8 +5725,8 @@ async function applyMapPick(anchor: unknown) {
           entity.entity_type === "daena.timeline:calendar"
             ? "timeline"
             : "lore";
-        await selectEntity(entity, false);
-        mapLocations = await project.listMapLocations(entity.id);
+        await loc.selectEntity(entity, false);
+        loc.mapLocations = await project.listMapLocations(entity.id);
       }
     }
   } catch (cause) {
@@ -5992,7 +5757,7 @@ async function openMapEntityFromLink(entityId: string) {
     if (!(await leavePluginView())) return;
     recordShellDeparture(departure);
     section = target;
-    await selectEntity(entity, false);
+    await loc.selectEntity(entity, false);
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -6000,25 +5765,25 @@ async function openMapEntityFromLink(entityId: string) {
 
 async function unlinkMapLocation(location: MapLocation) {
   if (
-    !selected ||
+    !loc.selected ||
     !(await confirmDialog({
       title: "Unlink this location?",
-      message: `${location.label || "This location"} will be unlinked from ${selected.name}. The entity and map feature will remain.`,
+      message: `${location.label || "This location"} will be unlinked from ${loc.selected.name}. The entity and map feature will remain.`,
       confirmLabel: "Unlink",
       danger: true,
     }))
   )
     return;
   try {
-    await project.unlinkMapLocation(selected.id, location.id);
-    mapLocations = await project.listMapLocations(selected.id);
+    await project.unlinkMapLocation(loc.selected.id, location.id);
+    loc.mapLocations = await project.listMapLocations(loc.selected.id);
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 async function editMapLocation(location: MapLocation) {
-  if (!selected) return;
+  if (!loc.selected) return;
   const role = await promptDialog({
     title: "Edit location role",
     message: "Describe what this location represents for this entity.",
@@ -6030,48 +5795,25 @@ async function editMapLocation(location: MapLocation) {
   const nextRole = role.trim();
   if (!nextRole) return;
   try {
-    await project.upsertMapLocation(selected.id, { ...location, role });
-    mapLocations = await project.listMapLocations(selected.id);
+    await project.upsertMapLocation(loc.selected.id, { ...location, role });
+    loc.mapLocations = await project.listMapLocations(loc.selected.id);
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 async function rebindMapLocation(location: MapLocation) {
-  if (!selected) return;
+  if (!loc.selected) return;
   try {
-    await beginMapPick({ kind: "rebind", entityId: selected.id, location, mapEntityId: location.mapEntityId });
+    await beginMapPick({ kind: "rebind", entityId: loc.selected.id, location, mapEntityId: location.mapEntityId });
   } catch (cause) {
     error = friendlyError(cause);
   }
 }
 
 function openEntityWithIntent(entity: Entity, intent: OpenIntent) {
-  if (intent === "new-tab") void openInNewTab(() => selectEntity(entity));
-  else void selectEntity(entity);
-}
-
-async function selectEntity(entity: Entity, recordHistory = true) {
-  if (selected?.id === entity.id) return;
-  if (!(await flushAutoSave())) return;
-  if (section === "language" && !(await canLeaveLanguageSection())) return;
-  const departure = currentShellLocation();
-  if (section === "maps" && sandboxView?.renderer === "maps" && !(await leavePluginView())) return;
-  if (recordHistory) recordShellDeparture(departure);
-  editorFullscreen = false;
-  selected = entity;
-  applyCollectionTabForEntityType(entity.entity_type);
-  hasUnsavedChanges = false;
-  documentConflict = null;
-  documentRevision = 0;
-  clearDirtyTracking();
-  saveError = "";
-  error = "";
-  try {
-    await loadSelectedState(entity);
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
+  if (intent === "new-tab") void openInNewTab(() => loc.selectEntity(entity));
+  else void loc.selectEntity(entity);
 }
 
 /**
@@ -6096,18 +5838,18 @@ async function openEntityById(entityId: string) {
     await selectSearchResult(target);
     return;
   }
-  await selectEntity(target);
+  await loc.selectEntity(target);
 }
 
 async function openSelectedMapEditor() {
-  if (!selected || selected.entity_type !== "daena.maps:world-map") return;
+  if (!loc.selected || loc.selected.entity_type !== "daena.maps:world-map") return;
   const mapsView = mapsNavigationItem();
   if (!mapsView) {
     error = "The Maps integration is not available.";
     return;
   }
   try {
-    mapsEditorKey = selected.id;
+    mapsEditorKey = loc.selected.id;
     mapFocusLinkId = null;
     mapFocusFeatureId = null;
     await openPluginView(mapsView);
@@ -6116,68 +5858,11 @@ async function openSelectedMapEditor() {
   }
 }
 
-async function reloadSelectedFromDisk() {
-  if (!selected) return;
-  const current = entities.find((entity) => entity.id === selected?.id) ?? selected;
-  selected = current;
-  await loadSelectedState(current);
-  hasUnsavedChanges = false;
-  documentRevision = 0;
-  clearDirtyTracking();
-  documentConflict = null;
-  conflictDiskBody = "";
-  savedAt = "";
-  saveError = "";
-}
-
 function handlePortableFilesChanged(paths: string[]) {
   if (paths.length === 0) return;
   projectDiagnostics = [
     `Portable files changed externally (${paths.length}); review and import the checkpoint explicitly if needed.`,
   ];
-}
-
-async function reloadConflict() {
-  try {
-    await reloadSelectedFromDisk();
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-
-async function overwriteConflict() {
-  if (!selected) return;
-  try {
-    const [documents, storedFields] = await Promise.all([
-      project.listDocuments(selected.id),
-      project.listFields(selected.id),
-    ]);
-    loadedDocumentRevision = documents[0]?.revision ?? "";
-    loadedFieldRevisions = Object.fromEntries(
-      storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-    );
-    loadedStructuredFieldKeys = new Set(
-      storedFields
-        .filter((field) => isStructuredFieldValue(field.value))
-        .map((field) => fieldRevisionKey(field.namespace, field.key)),
-    );
-    documentConflict = null;
-    conflictDiskBody = "";
-    if (!(await saveDocument()) && !documentConflict && !saveError)
-      documentConflict = { paths: [], diagnostics: ["The draft could not be written as a new revision."] };
-  } catch (cause) {
-    documentConflict = { paths: [], diagnostics: [friendlyError(cause)] };
-  }
-}
-
-async function saveConflictRecoveryCopy() {
-  if (!selected) return;
-  try {
-    const path = await project.saveRecoveryCopy(selected.id, documentBody);
-    error = `Draft saved as ${path}`;
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
 }
 
 async function createWithOption(
@@ -6191,7 +5876,7 @@ async function createWithOption(
   createBusy = true;
   try {
     // The new entry changes the section and the selection, so unsent text in the open entry is saved first.
-    if (!(await flushAutoSave())) return false;
+    if (!(await loc.flushAutoSave())) return false;
     const fieldsForCreate: Record<string, unknown> = {};
     const relationshipsForCreate: Record<string, UUID[]> = {};
     for (const { field, required } of createFieldsFor(option)) {
@@ -6270,7 +5955,7 @@ async function createWithOption(
         houseId: isHouse ? created.id : null,
       };
       treeRestoreNonce += 1;
-      clearSelection();
+      loc.clearSelection();
     } else {
       section =
         workspaceSectionOrder.find((target) =>
@@ -6279,7 +5964,7 @@ async function createWithOption(
           ),
         ) ?? section;
       applyCollectionTabForEntityType(option.template.entityType);
-      await selectEntity(
+      await loc.selectEntity(
         {
           id: created.id,
           name: created.name,
@@ -6365,13 +6050,13 @@ function openFocusedCreate(optionKey?: string, initialName = "") {
 }
 
 function openNewManuscriptInSelected() {
-  if (!selected || !isManuscriptType(selected.entity_type)) return;
+  if (!loc.selected || !isManuscriptType(loc.selected.entity_type)) return;
   const key = createOptionKeyForEntityType("daena.writing:manuscript") ?? createOptionKeyForEntityType("manuscript");
   if (!key) {
     error = "Enable Writing Studio with a Manuscript template to create manuscripts.";
     return;
   }
-  pendingManuscriptParentId = selected.id;
+  pendingManuscriptParentId = loc.selected.id;
   openFocusedCreate(key);
 }
 
@@ -6644,202 +6329,28 @@ async function selectQuickOpenItem(item: QuickOpenItem, intent: OpenIntent = "cu
   else await run();
 }
 
-function updateField(definition: FieldDefinition, event: Event) {
-  if (selectedLoading || selectedLoadError || projectDiagnostics.length > 0) return;
-  const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
-  let value: unknown;
-  if (definition.type === "boolean") {
-    value = (target as HTMLInputElement).checked;
-  } else if (definition.type === "number") {
-    const raw = target.value;
-    value = raw === "" ? "" : Number(raw);
-  } else if (target instanceof HTMLSelectElement && target.multiple) {
-    value = Array.from(target.selectedOptions, (option) => option.value);
-  } else {
-    value = target.value;
-  }
-  fields = { ...fields, [definition.key]: value };
-  markEntryDirty({ fieldKey: definition.key });
-}
-function isRevisionConflict(cause: unknown) {
-  return friendlyError(cause).toLowerCase().includes("revision conflict");
-}
-
-async function persistDocumentSnapshot(): Promise<boolean> {
-  if (
-    !selected ||
-    selectedLoading ||
-    selectedLoadError ||
-    !sectionEnabled() ||
-    documentConflict ||
-    projectDiagnostics.length > 0
-  )
-    return false;
-  const entityId = selected.id;
-  const body = documentBody;
-  const revision = documentRevision;
-  const fieldsSnapshot = { ...fields };
-  const definitionsForSave = definitions().filter((definition) => {
-    if (definition.type === "relationship") return false;
-    if (!dirtyFieldKeys.has(definition.key)) return false;
-    const namespace = namespaceForField(definition);
-    const key = fieldRevisionKey(namespace, definition.key);
-    return shouldPersistFieldValue(
-      fieldsSnapshot[definition.key],
-      Object.prototype.hasOwnProperty.call(loadedFieldRevisions, key),
-    );
-  });
-  try {
-    await project.saveEntry(
-      {
-        document: { entity_id: entityId, body, format: "markdown" },
-        fields: definitionsForSave.map((definition) => {
-          const namespace = namespaceForField(definition);
-          const value = fieldValueForSave(definition, fieldsSnapshot[definition.key] ?? "");
-          const persistedValue =
-            definition.type === "date"
-              ? value
-                ? (parseCalendarDate(value) ?? value)
-                : value
-              : restoreStructuredFieldValue(
-                  value,
-                  loadedStructuredFieldKeys.has(fieldRevisionKey(namespace, definition.key)),
-                  definition.label,
-                );
-          return {
-            entity_id: entityId,
-            namespace,
-            key: definition.key,
-            value: persistedValue,
-            revision: loadedFieldRevisions[fieldRevisionKey(namespace, definition.key)] ?? "",
-          };
-        }),
-      },
-      { expectedRevision: loadedDocumentRevision || undefined },
-    );
-    const [documents, storedFields] = await Promise.all([
-      project.listDocuments(entityId),
-      project.listFields(entityId),
-    ]);
-    if (selected?.id === entityId) {
-      loadedDocumentRevision = documents[0]?.revision ?? "";
-      loadedFieldRevisions = Object.fromEntries(
-        storedFields.map((field) => [fieldRevisionKey(field.namespace, field.key), field.revision]),
-      );
-      loadedStructuredFieldKeys = new Set(
-        storedFields
-          .filter((field) => isStructuredFieldValue(field.value))
-          .map((field) => fieldRevisionKey(field.namespace, field.key)),
-      );
-    }
-    if (selected?.id === entityId && documentRevision === revision) {
-      hasUnsavedChanges = false;
-      clearDirtyTracking();
-      autoSaveFailureCount = 0;
-      saveError = "";
-      savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      notifyWritingSaved(entityId);
-      void loadProjectStatus(false);
-      try {
-        const loaded = await project.getEntity(entityId);
-        if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
-      } catch {
-        // Relationship OCC still refetches the source revision at create time.
-      }
-      if (selected.entity_type === "daena.timeline:era") {
-        eraContextCache.invalidate(entityId);
-      }
-      if (definitionsForSave.some((definition) => definition.key === "startsAt")) {
-        notifyProfileTimelineChanged(entityId);
-      }
-      const loadToken = selectedLoadToken;
-      const linkedEraIds = relationships
-        .filter((relationship) => relationship.relationship_type === "during" && relationship.source_id === entityId)
-        .map((relationship) => relationship.target_id);
-      if (linkedEraIds.length > 0) {
-        const nextEraContexts = await loadEraContexts(linkedEraIds);
-        if (loadToken === selectedLoadToken && selected?.id === entityId) eraContexts = nextEraContexts;
-      }
-    }
-    return true;
-  } catch (cause) {
-    if (isRevisionConflict(cause) && selected?.id === entityId) {
-      try {
-        const documents = await project.listDocuments(entityId);
-        conflictDiskBody = normalizeDocument(documents[0]?.body ?? "", documents[0]?.format);
-      } catch {
-        conflictDiskBody = "";
-      }
-      documentConflict = { paths: [], diagnostics: [] };
-      savedAt = "";
-      saveError = "";
-    } else {
-      saveError = friendlyError(cause);
-      autoSaveFailureCount += 1;
-      const retryDelay = Math.min(30_000, 2_000 * 2 ** Math.min(autoSaveFailureCount - 1, 4));
-      scheduleAutoSave(retryDelay);
-    }
-    return false;
-  }
-}
-
-async function saveDocument(): Promise<boolean> {
-  cancelAutoSave();
-  if (saveInFlight) {
-    saveQueued = true;
-    const currentResult = await saveInFlight;
-    if (!currentResult || !hasUnsavedChanges) return currentResult;
-    return saveDocument();
-  }
-  if (!hasUnsavedChanges) return true;
-  isSaving = true;
-  saveQueued = false;
-  const operation = persistDocumentSnapshot();
-  saveInFlight = operation;
-  const result = await operation;
-  if (saveInFlight === operation) saveInFlight = null;
-  isSaving = false;
-  const shouldSaveQueuedChanges = result && saveQueued && hasUnsavedChanges;
-  saveQueued = false;
-  return shouldSaveQueuedChanges ? saveDocument() : result;
-}
-async function openEntityEditDialog(target: Entity | null = selected) {
+async function openEntityEditDialog(target: Entity | null = loc.selected) {
   if (projectDiagnostics.length > 0) return;
   if (!target) return;
-  if (selected?.id === target.id) {
-    if (!(await flushAutoSave())) return;
+  if (loc.selected?.id === target.id) {
+    if (!(await loc.flushAutoSave())) return;
   } else {
-    await selectEntity(target);
-    if (!(await flushAutoSave())) return;
+    await loc.selectEntity(target);
+    if (!(await loc.flushAutoSave())) return;
   }
   try {
     const loaded = await project.getEntity(target.id);
     if (loaded && !loaded.deleted) upsertEntityInCache(loaded);
   } catch {}
-  const current = entities.find((entity) => entity.id === target.id) ?? selected ?? target;
+  const current = entities.find((entity) => entity.id === target.id) ?? loc.selected ?? target;
   entityEditDialog = { entity: current, name: current.name, entityType: current.entity_type, busy: false };
-  entityMutation.reset();
+  loc.entityMutation.reset();
   setTimeout(() => document.getElementById("entity-edit-name")?.focus(), 0);
 }
 function closeEntityEditDialog() {
   entityEditDialog = null;
-  entityMutation.reset();
-  clearSavedMutationTimer();
-}
-
-let savedMutationTimer: ReturnType<typeof setTimeout> | null = null;
-function clearSavedMutationTimer() {
-  if (savedMutationTimer) {
-    clearTimeout(savedMutationTimer);
-    savedMutationTimer = null;
-  }
-}
-function scheduleClearSavedMutation() {
-  clearSavedMutationTimer();
-  savedMutationTimer = setTimeout(() => {
-    savedMutationTimer = null;
-    if (entityMutation.phase === "saved") entityMutation.reset();
-  }, 1800);
+  loc.entityMutation.reset();
+  loc.clearSavedMutationTimer();
 }
 
 async function saveEntityEditDialog() {
@@ -6874,7 +6385,7 @@ async function saveEntityEditDialog() {
   }
   const target = entities.find((e) => e.id === current.id) ?? entityEditDialog.entity;
   entityEditDialog.busy = true;
-  const result = await entityMutation.run(async () => {
+  const result = await loc.entityMutation.run(async () => {
     return project.updateEntity(
       target.id,
       nameChanged ? trimmed : null,
@@ -6888,19 +6399,19 @@ async function saveEntityEditDialog() {
     return;
   }
   const updated = result.value;
-  selected = updated;
+  loc.selected = updated;
   await refreshAfterEntityMutation({ entityId: updated.id });
   if (typeChanged) {
     const newSection = sectionForEntityType(updated.entity_type);
     if (newSection && newSection !== section) section = newSection;
     applyCollectionTabForEntityType(updated.entity_type);
-    await loadSelectedState(updated);
+    await loc.loadSelectedState(updated);
   } else {
-    await loadSelectedState(updated).catch(() => {});
+    await loc.loadSelectedState(updated).catch(() => {});
   }
   // Keep Saved chrome in the editor footer briefly; cancel path still resets via closeEntityEditDialog.
   entityEditDialog = null;
-  scheduleClearSavedMutation();
+  loc.scheduleClearSavedMutation();
 }
 async function renameSelected() {
   return openEntityEditDialog();
@@ -6908,9 +6419,9 @@ async function renameSelected() {
 
 async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; returnFocus?: HTMLElement | null }) {
   if (projectDiagnostics.length > 0) return;
-  if (selected?.id === target.id && !(await flushAutoSave())) return;
+  if (loc.selected?.id === target.id && !(await loc.flushAutoSave())) return;
   const owning = contextOwningEntityType(target.entity_type ?? "");
-  const result = await entityMutation.run(async () => {
+  const result = await loc.entityMutation.run(async () => {
     const loaded = await project.getEntity(target.id);
     const current = loaded && !loaded.deleted ? loaded : (entities.find((entity) => entity.id === target.id) ?? target);
     if (!current.revision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
@@ -6923,10 +6434,10 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
     return;
   }
   // Toast is the success signal for archive; do not leave a lingering Saved chrome.
-  entityMutation.reset();
+  loc.entityMutation.reset();
   if (isTimelineEventEntity(target.entity_type)) notifyProfileTimelineChanged(target.id);
-  const wasSelected = selected?.id === target.id;
-  if (wasSelected) clearSelection();
+  const wasSelected = loc.selected?.id === target.id;
+  if (wasSelected) loc.clearSelection();
   closeTabsForEntity(target.id);
   await refreshAfterEntityMutation({ entityId: target.id, removed: true });
   showLifecycleToast({
@@ -6948,8 +6459,8 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
 }
 
 async function archiveSelected() {
-  if (!selected) return;
-  return archiveEntity(selected, {
+  if (!loc.selected) return;
+  return archiveEntity(loc.selected, {
     returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
   });
 }
@@ -6964,14 +6475,14 @@ async function reloadEntityEditFromServer() {
       return;
     }
     entities = entities.map((entity) => (entity.id === loaded.id ? loaded : entity));
-    if (selected?.id === loaded.id) selected = loaded;
+    if (loc.selected?.id === loaded.id) loc.selected = loaded;
     entityEditDialog = {
       entity: loaded,
       name: loaded.name,
       entityType: loaded.entity_type,
       busy: false,
     };
-    entityMutation.reset();
+    loc.entityMutation.reset();
   } catch (cause) {
     error = friendlyError(cause);
   }
@@ -6979,7 +6490,7 @@ async function reloadEntityEditFromServer() {
 
 async function openHouseTree(entity: Entity) {
   if (entity.entity_type !== HOUSE_TYPE) return;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   const departure = currentShellLocation();
   if (!(await leavePluginView())) return;
   recordShellDeparture(departure);
@@ -6995,15 +6506,11 @@ async function openHouseTree(entity: Entity) {
     houseId: entity.id,
   };
   treeRestoreNonce += 1;
-  clearSelection();
+  loc.clearSelection();
 }
 function selectedRelationshipIds(definition: FieldDefinition) {
-  if (!selected || !definition.relationshipType) return [];
-  return counterpartIds(selected.id, relationships, definition);
-}
-function relationshipsForDefinition(definition: FieldDefinition) {
-  if (!selected) return [];
-  return relationshipsForField(selected.id, relationships, definition);
+  if (!loc.selected || !definition.relationshipType) return [];
+  return counterpartIds(loc.selected.id, loc.relationships, definition);
 }
 function relationshipDefinitions() {
   return definitions().filter((candidate) => candidate.type === "relationship");
@@ -7040,7 +6547,7 @@ function hasChronologySection() {
   return Boolean(eraRelationshipDefinition()) || chronologyDateDefinitions().length > 0;
 }
 function hasCalendarEditorSection() {
-  return selected?.entity_type === "daena.timeline:calendar" && Boolean(projectInfo);
+  return loc.selected?.entity_type === "daena.timeline:calendar" && Boolean(projectInfo);
 }
 function hasDetailsSection() {
   return propertyDefinitions().length > 0 || hasChronologySection() || hasCalendarEditorSection();
@@ -7053,55 +6560,38 @@ function relationshipLinkCount() {
 }
 function entityFieldsTabs(): EntityFieldsTab[] {
   const tabs: EntityFieldsTab[] = [{ id: "relationships", label: "Relationships", count: relationshipLinkCount() }];
-  if (selected && (canEditLoreProfile(selected.entity_type) || isTimelineEventEntity(selected.entity_type))) {
+  if (
+    loc.selected &&
+    (canEditLoreProfile(loc.selected.entity_type) || isTimelineEventEntity(loc.selected.entity_type))
+  ) {
     tabs.push({ id: "profile", label: "Profile" });
   }
-  tabs.push({ id: "assets", label: "Assets", count: assets.length });
-  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: mapLocations.length });
+  tabs.push({ id: "assets", label: "Assets", count: loc.assets.length });
+  if (mapsEnabled()) tabs.push({ id: "maps", label: "Maps", count: loc.mapLocations.length });
   tabs.push({ id: "backlinks", label: "Backlinks", count: backlinkRelationships().length });
   return tabs;
 }
 function openFieldsDialog(tab?: EntityFieldsTabId) {
   const tabs = entityFieldsTabs();
   const next = tab && tabs.some((candidate) => candidate.id === tab) ? tab : (tabs[0]?.id ?? "relationships");
-  fieldsDialogTab = next;
-  fieldsDialogOpen = true;
+  loc.fieldsDialogTab = next;
+  loc.fieldsDialogOpen = true;
 }
 $effect(() => {
-  if (!selected) {
-    if (fieldsDialogOpen) fieldsDialogOpen = false;
+  if (!loc.selected) {
+    if (loc.fieldsDialogOpen) loc.fieldsDialogOpen = false;
     return;
   }
-  if (!fieldsDialogOpen) return;
+  if (!loc.fieldsDialogOpen) return;
   const tabs = entityFieldsTabs();
-  if (!tabs.some((tab) => tab.id === fieldsDialogTab) && tabs[0]) fieldsDialogTab = tabs[0].id;
+  if (!tabs.some((tab) => tab.id === loc.fieldsDialogTab) && tabs[0]) loc.fieldsDialogTab = tabs[0].id;
 });
-const inspectorChronologyWarnings = $derived(
-  chronologyWarnings(
-    chronologyDateDefinitions().map((definition) => ({ label: definition.label, value: fields[definition.key] })),
-    eraContexts,
-    calendarDefinitions,
-  ),
-);
 async function loadEraContexts(eraIds: string[]): Promise<EraContext[]> {
   return eraContextCache.getMany(eraIds, {
     listFields: (entityId) => project.listFields(entityId),
     listRelationships: (entityId) => project.listRelationships(entityId),
     entityName: (entityId) => entities.find((entity) => entity.id === entityId)?.name ?? entityId,
   });
-}
-function hintDateCalendarsFromEras(contexts: EraContext[], persistDates = false) {
-  const calendarId = firstEraCalendarId(contexts);
-  if (!calendarId) return;
-  for (const definition of chronologyDateDefinitions()) {
-    const current = dateForField(definition.key);
-    if (current && !isGregorianCalendarId(current.calendar)) continue;
-    dateCalendarByField = { ...dateCalendarByField, [definition.key]: calendarId };
-    if (persistDates && current) {
-      fields = { ...fields, [definition.key]: serializeCalendarDate({ ...current, calendar: calendarId }) };
-      markEntryDirty({ fieldKey: definition.key });
-    }
-  }
 }
 function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
   const calendarId = firstEraCalendarId(contexts);
@@ -7114,10 +6604,10 @@ function hintCreateDateCalendarsFromEras(contexts: EraContext[]) {
   }
 }
 function backlinkRelationships() {
-  if (!selected) return [];
-  const covered = coveredRelationshipIds(selected.id, relationships, otherRelationshipDefinitions());
-  return relationships.filter(
-    (relationship) => relationship.target_id === selected!.id && !covered.has(relationship.id),
+  if (!loc.selected) return [];
+  const covered = coveredRelationshipIds(loc.selected.id, loc.relationships, otherRelationshipDefinitions());
+  return loc.relationships.filter(
+    (relationship) => relationship.target_id === loc.selected!.id && !covered.has(relationship.id),
   );
 }
 function relationshipSourceName(relationship: Relationship) {
@@ -7143,10 +6633,10 @@ function definitionForRelationship(relationship: Relationship): FieldDefinition 
   return null;
 }
 function relationshipOtherId(definition: FieldDefinition, relationship: Relationship) {
-  return counterpartId(selected?.id ?? "", relationship, definition) ?? relationship.target_id;
+  return counterpartId(loc.selected?.id ?? "", relationship, definition) ?? relationship.target_id;
 }
 function relationshipTargetName(relationship: Relationship, definition?: FieldDefinition) {
-  const id = definition && selected ? relationshipOtherId(definition, relationship) : relationship.target_id;
+  const id = definition && loc.selected ? relationshipOtherId(definition, relationship) : relationship.target_id;
   return entities.find((entity) => entity.id === id)?.name ?? id;
 }
 function relationshipMetadataSummary(relationship: Relationship, definition: FieldDefinition | null) {
@@ -7179,13 +6669,13 @@ function relationshipMetadataSummary(relationship: Relationship, definition: Fie
     .join(" · ");
 }
 function openRelationshipMetadata(relationship: Relationship) {
-  metadataDialog = { relationship, definition: definitionForRelationship(relationship) };
+  loc.metadataDialog = { relationship, definition: definitionForRelationship(relationship) };
 }
 async function saveRelationshipMetadata(relationship: Relationship, metadata: Record<string, unknown>) {
   const updated = await project.updateRelationship(relationship.id, metadata, {
     expectedRevision: relationship.revision,
   });
-  relationships = relationships.map((current) => (current.id === updated.id ? updated : current));
+  loc.relationships = loc.relationships.map((current) => (current.id === updated.id ? updated : current));
 }
 async function confirmRemoveRelationship(definition: FieldDefinition, relationship: Relationship) {
   const target = relationshipTargetName(relationship, definition);
@@ -7193,14 +6683,14 @@ async function confirmRemoveRelationship(definition: FieldDefinition, relationsh
   if (
     !(await confirmDialog({
       title: `Remove ${label}?`,
-      message: `${target} will be unlinked from ${selected?.name ?? "this entry"}. The relationship can be recreated.`,
+      message: `${target} will be unlinked from ${loc.selected?.name ?? "this entry"}. The relationship can be recreated.`,
       confirmLabel: "Remove",
       danger: true,
     }))
   )
     return;
   const otherId = relationshipOtherId(definition, relationship);
-  await updateRelationshipField(
+  await loc.updateRelationshipField(
     definition,
     selectedRelationshipIds(definition).filter((id) => id !== otherId),
   );
@@ -7245,179 +6735,8 @@ async function createRelationshipTarget(definition: FieldDefinition, name: strin
     return null;
   }
 }
-async function updateRelationshipField(definition: FieldDefinition, targetIds: string[]) {
-  if (projectDiagnostics.length > 0) return;
-  if (!selected || !definition.relationshipType) return;
-  const desired = new Set(targetIds);
-  const current = relationshipsForDefinition(definition);
-  const currentIds = new Set(
-    current
-      .map((relationship) => counterpartId(selected!.id, relationship, definition))
-      .filter((id): id is string => Boolean(id)),
-  );
-  const toRemove = current.filter((relationship) => {
-    const otherId = counterpartId(selected!.id, relationship, definition);
-    return !otherId || !desired.has(otherId);
-  });
-  const toAdd = [...desired].filter((targetId) => !currentIds.has(targetId));
-  if (toRemove.length === 0 && toAdd.length === 0) return;
-  try {
-    const context = contextOwningRelationshipType(definition.relationshipType);
-    const removedIds = new Set<string>();
-    for (const relationship of toRemove) {
-      try {
-        await context.relationships.delete(relationship.id as UUID, relationship.relationship_type, {
-          expectedRevision: relationship.revision,
-        });
-        removedIds.add(relationship.id);
-      } catch (cause) {
-        if (classifyMutationError(cause).code === "relationship.missing") {
-          removedIds.add(relationship.id);
-          continue;
-        }
-        throw cause;
-      }
-    }
-    const created = [];
-    for (const otherId of toAdd) {
-      const endpoints = endpointsForCreate(selected!.id, otherId, definition);
-      const source = await project.getEntity(endpoints.sourceId);
-      const sourceRevision = source?.revision ?? "";
-      if (!sourceRevision) throw new Error("The entity revision is unavailable. Reload the project and try again.");
-      if (source) upsertEntityInCache(source);
-      const createdRelationship = await context.relationships.create(
-        {
-          sourceId: endpoints.sourceId as UUID,
-          targetId: endpoints.targetId as UUID,
-          type: definition.relationshipType!,
-          metadata: defaultRelationshipMetadata(definition),
-        },
-        { expectedRevision: sourceRevision, requestId: crypto.randomUUID() },
-      );
-      created.push(toHostRelationship(createdRelationship));
-    }
-    relationships = [...relationships.filter((relationship) => !removedIds.has(relationship.id)), ...created];
-    await refreshAfterEntityMutation({ entityId: selected.id });
-    if (definition.relationshipType && isKinshipRelationshipType(definition.relationshipType)) {
-      bumpKinshipRefresh();
-    }
-    if (isEraRelationshipField(definition)) {
-      eraContextCache.invalidateMany(targetIds);
-      eraContexts = await loadEraContexts(targetIds);
-      hintDateCalendarsFromEras(eraContexts, true);
-    }
-    void refreshWritingAppearanceLabels();
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
 function canWriteAssets() {
   return section === "lore" && (activeManifest()?.capabilities.includes("asset.write:self") ?? false);
-}
-async function refreshSelectedAssets() {
-  if (!selected) {
-    assets = [];
-    return;
-  }
-  const namespaces = new Set(activeManifest()?.schemas.map((schema) => schema.namespace) ?? []);
-  assets = (await project.listAssets(selected.id)).filter((asset) => namespaces.has(asset.namespace));
-}
-async function attachAsset() {
-  if (projectDiagnostics.length > 0) return;
-  if (!selected) return;
-  try {
-    const selection = await project.pickFile();
-    const source = typeof selection === "string" ? selection : null;
-    if (!source) return;
-    const filename = source.split(/[\\/]/).pop() ?? "asset";
-    const asset = await project.registerAssetFile({
-      entity_id: selected.id,
-      namespace: primarySchemaNamespace(activeManifest()?.schemas, {
-        entityType: selected.entity_type,
-        fallback: activeModuleId(),
-      }),
-      source_path: source,
-      filename,
-      mime_type: mimeTypeFor(filename),
-    });
-    assets = [...assets, asset];
-  } catch (cause) {
-    error = friendlyError(cause);
-  }
-}
-function openAssetDialog(asset: Asset) {
-  if (projectDiagnostics.length > 0) return;
-  assetDialog = asset;
-}
-async function handleAssetSave(update: {
-  filename?: string;
-  role?: "attachment" | "profile";
-  referenceScope?: "entity" | "project";
-}) {
-  const current = assetDialog;
-  if (!current) return;
-  assetBusyId = current.id;
-  try {
-    await project.updateAssetMetadata(current.id, update, current.revision);
-    await refreshSelectedAssets();
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
-}
-async function handleAssetDelete() {
-  const current = assetDialog;
-  if (!current) return;
-  if (
-    !(await confirmDialog({
-      title: `Delete ${current.filename}?`,
-      message: "This file will be permanently removed from the project and the checkpoint. This cannot be undone.",
-      confirmLabel: "Delete",
-      danger: true,
-    }))
-  )
-    return;
-  assetBusyId = current.id;
-  try {
-    await project.deleteAsset(current.id, current.revision);
-    await refreshSelectedAssets();
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
-}
-async function handleAssetReplace() {
-  const current = assetDialog;
-  if (!current) return;
-  const selection = await project.pickFile();
-  const source = typeof selection === "string" ? selection : null;
-  if (!source) return;
-  const replacementName = source.split(/[\\/]/).pop() ?? "replacement";
-  if (
-    !(await confirmDialog({
-      title: `Replace ${current.filename}?`,
-      message: `Use ${replacementName} as the new content? The attachment name and metadata will stay unchanged.`,
-      confirmLabel: "Replace",
-    }))
-  )
-    return;
-  assetBusyId = current.id;
-  try {
-    await project.replaceAssetFile(current.id, source, mimeTypeFor(replacementName), current.revision);
-    await refreshSelectedAssets();
-    // refresh dialog with new revision
-    const refreshed = assets.find((a) => a.id === current.id) ?? null;
-    if (refreshed) assetDialog = refreshed;
-  } catch (cause) {
-    error = friendlyError(cause);
-    throw cause;
-  } finally {
-    assetBusyId = null;
-  }
 }
 async function toggleModule(id: ModuleId) {
   const installed = modules.find((module) => module.id === id);
@@ -7430,7 +6749,7 @@ async function toggleModule(id: ModuleId) {
       async (granted) => {
         await project.enableModule(id, granted);
         modules = await project.listModuleManifests();
-        await refreshSelectedMapLocations();
+        await loc.refreshSelectedMapLocations();
         await reconcileWorkspaceSection();
         await refreshAdmin();
       },
@@ -7442,7 +6761,7 @@ async function toggleModule(id: ModuleId) {
     if (id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(id);
     modules = await project.listModuleManifests();
-    await refreshSelectedMapLocations();
+    await loc.refreshSelectedMapLocations();
     await reconcileWorkspaceSection();
     await refreshAdmin();
     if (!selectedCreateOption()) selectedCreateKey = "";
@@ -7489,7 +6808,7 @@ function setAdminPluginEnabled(id: string, enabled: boolean) {
   );
 }
 async function openSettings(nextSection: SettingsSection = "general") {
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   if (showSettings && settingsSurface === "application" && settingsSection === nextSection) return;
   if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
@@ -7504,7 +6823,7 @@ async function openSettings(nextSection: SettingsSection = "general") {
   showProjectMenu = false;
 }
 async function openProjectCenter(nextSection: ProjectSection = "overview") {
-  if (!ready || !(await flushAutoSave())) return;
+  if (!ready || !(await loc.flushAutoSave())) return;
   if (showSettings && settingsSurface === "project" && projectSection === nextSection) return;
   if (!showSettings && section === "language" && !(await canLeaveLanguageSection())) return;
   const departure = currentShellLocation();
@@ -7986,7 +7305,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
         try {
           await project.enableModule(plugin.id, granted);
           modules = await project.listModuleManifests();
-          await refreshSelectedMapLocations();
+          await loc.refreshSelectedMapLocations();
           await reconcileWorkspaceSection();
           await refreshAdmin();
         } finally {
@@ -8002,7 +7321,7 @@ async function togglePluginEnabled(plugin: PluginAdminEntry) {
     if (plugin.id === "daena.maps" && !(await resolveDirtyMapSession())) return;
     await project.disableModule(plugin.id);
     modules = await project.listModuleManifests();
-    await refreshSelectedMapLocations();
+    await loc.refreshSelectedMapLocations();
     await reconcileWorkspaceSection();
     setAdminPluginEnabled(plugin.id, false);
     await refreshAdmin();
@@ -8034,41 +7353,16 @@ async function reviewPluginCapabilities(plugin: PluginAdminEntry) {
     plugin.grantedCapabilities,
   );
 }
-function clearSelection() {
-  cancelAutoSave();
-  cancelDateFieldDirty();
-  editorFullscreen = false;
-  hasUnsavedChanges = false;
-  selected = null;
-  selectedLoading = false;
-  selectedLoadError = "";
-  documentBody = "";
-  fields = {};
-  relationships = [];
-  eraContexts = [];
-  createEraContexts = [];
-  metadataDialog = null;
-  assets = [];
-  savedAt = "";
-  saveError = "";
-  loadedDocumentRevision = "";
-  loadedFieldRevisions = {};
-  loadedStructuredFieldKeys = new Set();
-  documentConflict = null;
-  conflictDiskBody = "";
-  projectDiagnostics = [];
-  showCreateForm = false;
-}
 function resetProjectSessionState() {
   try {
     revokeAllResolvedAssetUrls();
   } catch {}
   calendarCache.invalidate();
   eraContextCache.clear();
-  selectedLoadToken += 1;
+  loc.selectedLoadToken += 1;
   closeAiFieldFill();
   closeAiRewrite();
-  clearSelection();
+  loc.clearSelection();
   shellTabs = freshShellTabs();
   // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
   webviewPool = emptyWebviewPool;
@@ -8128,14 +7422,14 @@ function resetProjectSessionState() {
 }
 async function openExternalImport() {
   showProjectMenu = false;
-  if (!(await flushAutoSave())) return;
+  if (!(await loc.flushAutoSave())) return;
   showExternalImport = true;
 }
 async function seedExample() {
   try {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     await project.seedExample();
-    clearSelection();
+    loc.clearSelection();
     await loadEntities();
     await ensureCalendarCache(true);
     modules = await project.listModuleManifests();
@@ -8162,7 +7456,7 @@ async function rebuildSearchIndex() {
 async function importPortableCheckpoint() {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Importing checkpoint…", async () => {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.importCheckpoint();
     persistShellTabs();
@@ -8172,7 +7466,7 @@ async function importPortableCheckpoint() {
   });
 }
 async function createPortableBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before creating a backup.");
   return project.backup();
 }
 async function exportMarkdownProject() {
@@ -8184,7 +7478,7 @@ async function exportMarkdownProject() {
     if (!destination) return;
     let output = "";
     await runProjectTransition("Exporting Markdown…", async () => {
-      if (!(await flushAutoSave())) return;
+      if (!(await loc.flushAutoSave())) return;
       output = await project.exportMarkdown(destination);
     });
     if (output) error = `Markdown export written to ${output}`;
@@ -8193,13 +7487,13 @@ async function exportMarkdownProject() {
   }
 }
 async function createRecoveryBackup() {
-  if (!(await flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
+  if (!(await loc.flushAutoSave())) throw new Error("Save the current draft before creating a recovery backup.");
   return project.recoveryBackup();
 }
 async function restoreRecoveryBackup(path: string) {
   if (!(await canLeaveLanguageSection())) return;
   await runProjectTransition("Restoring recovery backup…", async () => {
-    if (!(await flushAutoSave())) return;
+    if (!(await loc.flushAutoSave())) return;
     if (!(await leavePluginView({ closeWebviews: true }))) return;
     await project.restoreRecoveryBackup(path);
     persistShellTabs();
@@ -8242,8 +7536,8 @@ onMount(() => {
   themeMedia.addEventListener("change", handleSystemThemeChange);
   const handleBeforeUnload = (event: BeforeUnloadEvent) => {
     persistShellTabs();
-    editorRef?.flushPendingChanges();
-    if (!hasUnsavedChanges) return;
+    loc.editorRef?.flushPendingChanges();
+    if (!loc.hasUnsavedChanges) return;
     event.preventDefault();
     event.returnValue = "";
   };
@@ -8322,7 +7616,7 @@ onMount(() => {
           await project.appCloseConfirm();
           return;
         }
-        if (!(await flushAutoSave())) {
+        if (!(await loc.flushAutoSave())) {
           error = "The window stayed open because the current draft could not be saved.";
           await keepWindowOpen();
           return;
@@ -8376,13 +7670,13 @@ onMount(() => {
       }
       const item = mapsNavigationItem();
       if (!map || !item) throw new Error("map-unavailable: enable the Maps module to open this location");
-      if (!(await flushAutoSave())) return;
+      if (!(await loc.flushAutoSave())) return;
       if (!(await canLeaveLanguageSection())) return;
       const departure = currentShellLocation();
       if (!(await leavePluginView())) return;
-      selected = map;
+      loc.selected = map;
       mapsEditorKey = map.id;
-      await loadSelectedState(map);
+      await loc.loadSelectedState(map);
       await openPluginView(item, departure);
       const linkId = event.payload.linkId ?? null;
       // openPluginView clears focus; also re-assert when already on the same map so
@@ -8405,11 +7699,11 @@ onMount(() => {
     const { mapEntityId, status, detail } = event.payload;
     if (status === "fullscreen") {
       const enabled = typeof detail === "object" && detail !== null && "enabled" in detail && detail.enabled === true;
-      editorFullscreen = enabled;
+      loc.editorFullscreen = enabled;
       return;
     }
     if (status === "back") {
-      editorFullscreen = false;
+      loc.editorFullscreen = false;
       void closePluginView();
       return;
     }
@@ -8418,8 +7712,8 @@ onMount(() => {
       void refreshAfterEntityMutation({ entityId: mapEntityId }).then(() => {
         const map = entities.find((entity) => entity.id === mapEntityId && !entity.deleted);
         if (map) {
-          selected = map;
-          void loadSelectedState(map).catch(() => {});
+          loc.selected = map;
+          void loc.loadSelectedState(map).catch(() => {});
         }
       });
     }
@@ -8430,11 +7724,11 @@ onMount(() => {
         unresolved > 0
           ? `${unresolved} link${unresolved === 1 ? "" : "s"} on this map are unresolved — the features they pointed to were removed or renumbered.`
           : "";
-      if (selected && mapLocations.length > 0)
+      if (loc.selected && loc.mapLocations.length > 0)
         void project
-          .listMapLocations(selected.id)
+          .listMapLocations(loc.selected.id)
           .then((locations) => {
-            mapLocations = locations;
+            loc.mapLocations = locations;
           })
           .catch(() => {});
     }
@@ -8452,11 +7746,11 @@ onMount(() => {
     }
     if (status === "linked") {
       void refreshAfterEntityMutation(mapEntityId ? { entityId: mapEntityId } : undefined);
-      if (selected)
+      if (loc.selected)
         void project
-          .listMapLocations(selected.id)
+          .listMapLocations(loc.selected.id)
           .then((locations) => {
-            mapLocations = locations;
+            loc.mapLocations = locations;
           })
           .catch(() => {});
     }
@@ -8518,7 +7812,8 @@ onMount(() => {
     window.removeEventListener("keydown", handleTabKey);
     window.removeEventListener("keydown", handleWritingFullscreenKey);
     window.removeEventListener("resize", handleWorkbenchResize);
-    cancelAutoSave();
+    loc.cancelAutoSave();
+    loc.destroy();
     if (aiModelsMessageTimer !== null) window.clearTimeout(aiModelsMessageTimer);
     unlisten?.();
     unlistenCheckpointExport?.();
@@ -9414,7 +8709,7 @@ onMount(() => {
             aiInstruction={instructionFor(aiPromptTemplates, "git-message")}
             onError={(message) => (error = message)}
             onStatusChange={(status) => (gitStatus = status)}
-            beforeWrite={flushAutoSave} />
+            beforeWrite={loc.flushAutoSave} />
         {/snippet}
       </ProjectCenter>
     {:else if !ready}
@@ -9493,7 +8788,7 @@ onMount(() => {
           onClose={() => void closeLoreWiki()}
           onSelectEntity={(id) => {
             const ent = entities.find((e) => e.id === id);
-            if (ent) void selectEntity(ent);
+            if (ent) void loc.selectEntity(ent);
           }}
           onOpenEntityInNewTab={(id) => void openInNewTab(() => openLoreWiki(id))}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined} />
@@ -9529,7 +8824,7 @@ onMount(() => {
               housesView = "houses";
               treeRootId = null;
               treeSession = null;
-              await selectEntity(entity);
+              await loc.selectEntity(entity);
             })();
           }}
           onArchiveHouse={(houseId) => {
@@ -9708,7 +9003,7 @@ onMount(() => {
                 ><span style="display:inline-flex;vertical-align:middle" aria-hidden="true"
                   ><Plus size={14} strokeWidth={1.8} /></span>
                 {ENTITY_ACTIONS.new}</button>
-              {#if selected && isManuscriptType(selected.entity_type)}
+              {#if loc.selected && isManuscriptType(loc.selected.entity_type)}
                 <button
                   class="quiet-button"
                   type="button"
@@ -9946,7 +9241,7 @@ onMount(() => {
               {@const rowIcon = iconForEntityType(entity.entity_type)}
               {@const expanded = manuscriptExpanded.has(node.id)}
               <div
-                class:selected={selected?.id === entity.id}
+                class:selected={loc.selected?.id === entity.id}
                 class="collection-item"
                 style={`--outline-depth: ${depth}`}>
                 {#if node.children.length > 0}<button
@@ -9980,7 +9275,7 @@ onMount(() => {
                 </button>
                 <EntityRowActions
                   entityName={entity.name}
-                  onOpen={() => void selectEntity(entity)}
+                  onOpen={() => void loc.selectEntity(entity)}
                   onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
                   onArchive={() => void archiveEntity(entity)}
@@ -10016,7 +9311,7 @@ onMount(() => {
                     box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
                 >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}
-                    <div class:selected={selected?.id === entity.id} class="collection-item">
+                    <div class:selected={loc.selected?.id === entity.id} class="collection-item">
                       <button
                         type="button"
                         class="collection-item-main"
@@ -10038,7 +9333,7 @@ onMount(() => {
                       <EntityRowActions
                         entityName={entity.name}
                         openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
-                        onOpen={() => void selectEntity(entity)}
+                        onOpen={() => void loc.selectEntity(entity)}
                         onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                         onEditIdentity={() => void openEntityEditDialog(entity)}
                         onArchive={() => void archiveEntity(entity)}
@@ -10048,7 +9343,7 @@ onMount(() => {
               </div>{/each}{:else}{#each collectionResult().entities as entity}{@const rowIcon = iconForEntityType(
                 entity.entity_type,
               )}
-              <div class:selected={selected?.id === entity.id} class="collection-item">
+              <div class:selected={loc.selected?.id === entity.id} class="collection-item">
                 <button
                   type="button"
                   class="collection-item-main"
@@ -10070,7 +9365,7 @@ onMount(() => {
                 <EntityRowActions
                   entityName={entity.name}
                   openTree={section === "houses" && entity.entity_type === HOUSE_TYPE}
-                  onOpen={() => void selectEntity(entity)}
+                  onOpen={() => void loc.selectEntity(entity)}
                   onOpenInNewTab={() => openEntityWithIntent(entity, "new-tab")}
                   onEditIdentity={() => void openEntityEditDialog(entity)}
                   onArchive={() => void archiveEntity(entity)}
@@ -10139,7 +9434,7 @@ onMount(() => {
             onReset={() => resetWorkbenchPane("collection")} />{/if}
 
         {#if languagePaneShown}
-          {#key selected?.id ?? "language"}
+          {#key loc.selected?.id ?? "language"}
             {#key shownWebviewInstance}
               <div class="language-mount" {@attach trackLanguageMount}>
                 <SandboxView
@@ -10148,7 +9443,7 @@ onMount(() => {
                   holdMount={shellNavigationBusy}
                   viewId="language-workspace"
                   title="Language"
-                  entityId={selected?.id}
+                  entityId={loc.selected?.id}
                   moduleState={languageMountState(shownWebviewInstance)}
                   pooled
                   prepareMount={beginPooledLanguageMount}
@@ -10190,7 +9485,7 @@ onMount(() => {
           <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
-              {@const mapId = selected?.entity_type === "daena.maps:world-map" ? selected.id : null}
+              {@const mapId = loc.selected?.entity_type === "daena.maps:world-map" ? loc.selected.id : null}
               {@const mapState = mapId ? (mapSaveStates[mapId] ?? null) : null}
               {@const mapDetail = mapConflictDetail(mapState?.detail)}
               <div class="map-editor-shell">
@@ -10227,10 +9522,10 @@ onMount(() => {
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
-                          selected = map;
+                          loc.selected = map;
                           mapsEditorKey = map.id;
                           mapsEditorMode = "vector";
-                          await loadSelectedState(map);
+                          await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
                           void leavePluginView();
@@ -10248,7 +9543,7 @@ onMount(() => {
                         onopen={(entityId) => void openMapEntityFromLink(entityId)}
                         onstate={(status, detail) => {
                           if (status === "fullscreen") {
-                            editorFullscreen =
+                            loc.editorFullscreen =
                               typeof detail === "object" &&
                               detail !== null &&
                               "enabled" in detail &&
@@ -10265,10 +9560,10 @@ onMount(() => {
                         oncreated={async (map) => {
                           entities = [...entities.filter((entity) => entity.id !== map.id), map];
                           savedMapsCache = null;
-                          selected = map;
+                          loc.selected = map;
                           mapsEditorKey = map.id;
                           mapsEditorMode = "vector";
-                          await loadSelectedState(map);
+                          await loc.loadSelectedState(map);
                         }}
                         oncancel={() => {
                           void leavePluginView();
@@ -10281,27 +9576,29 @@ onMount(() => {
               <div class="editor-header">
                 <div class="editor-title">
                   <span class="panel-kicker"
-                    >{selected ? entityTypeLabel(selected.entity_type).toUpperCase() : emptyEditorKicker()}</span>
+                    >{loc.selected
+                      ? entityTypeLabel(loc.selected.entity_type).toUpperCase()
+                      : emptyEditorKicker()}</span>
                   <div class="editor-title-row">
                     <h2
                       ondblclick={() => {
-                        if (selected) void openEntityEditDialog();
+                        if (loc.selected) void openEntityEditDialog();
                       }}
-                      title={selected ? "Double-click to edit" : undefined}
-                      style={selected ? "cursor:text" : undefined}>
-                      {selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
+                      title={loc.selected ? "Double-click to edit" : undefined}
+                      style={loc.selected ? "cursor:text" : undefined}>
+                      {loc.selected?.name ?? (section === "maps" ? "Choose a map" : "Choose an entry")}
                     </h2>
-                    {#if selected}
+                    {#if loc.selected}
                       <div class="editor-title-actions">
                         <button
                           class="quiet-button editor-title-icon"
                           type="button"
-                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${selected.name}`}
+                          aria-label={`${ENTITY_ACTIONS.editIdentity} for ${loc.selected.name}`}
                           title={ENTITY_ACTIONS.editIdentity}
                           onclick={() => void openEntityEditDialog()}
                           ><Pencil size={15} strokeWidth={1.8} aria-hidden="true" /></button>
-                        {#if section === "houses" && selected.entity_type === HOUSE_TYPE}
-                          {@const houseEntity = selected}
+                        {#if section === "houses" && loc.selected.entity_type === HOUSE_TYPE}
+                          {@const houseEntity = loc.selected}
                           <button
                             class="quiet-button editor-title-icon"
                             type="button"
@@ -10322,66 +9619,66 @@ onMount(() => {
                     >{/if}
                 {/snippet}
                 <div class="editor-header-controls">
-                  {#if selected}<div class="document-mode-toggle" aria-label="Document mode">
+                  {#if loc.selected}<div class="document-mode-toggle" aria-label="Document mode">
                       <button
                         type="button"
-                        class:active={documentMode === "read"}
-                        aria-pressed={documentMode === "read"}
-                        disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("read")}>Article</button
+                        class:active={loc.documentMode === "read"}
+                        aria-pressed={loc.documentMode === "read"}
+                        disabled={loc.selectedLoading || Boolean(loc.selectedLoadError)}
+                        onclick={() => void loc.setDocumentMode("read")}>Article</button
                       ><button
                         type="button"
-                        class:active={documentMode === "edit"}
-                        aria-pressed={documentMode === "edit"}
-                        disabled={selectedLoading || Boolean(selectedLoadError)}
-                        onclick={() => void setDocumentMode("edit")}>Edit</button>
+                        class:active={loc.documentMode === "edit"}
+                        aria-pressed={loc.documentMode === "edit"}
+                        disabled={loc.selectedLoading || Boolean(loc.selectedLoadError)}
+                        onclick={() => void loc.setDocumentMode("edit")}>Edit</button>
                     </div>{/if}
                   <StatusSummary
-                    visible={Boolean(selected)}
-                    loading={selectedLoading}
-                    loadError={selectedLoadError}
-                    saving={isSaving}
-                    {saveError}
-                    dirty={hasUnsavedChanges}
-                    {savedAt}
+                    visible={Boolean(loc.selected)}
+                    loading={loc.selectedLoading}
+                    loadError={loc.selectedLoadError}
+                    saving={loc.isSaving}
+                    saveError={loc.saveError}
+                    dirty={loc.hasUnsavedChanges}
+                    savedAt={loc.savedAt}
                     actions={editorStatusActions}
-                    onRetryLoad={() => void reloadSelectedFromDisk()}
-                    onRetrySave={() => void flushAutoSave()} />
+                    onRetryLoad={() => void loc.reloadSelectedFromDisk()}
+                    onRetrySave={() => void loc.flushAutoSave()} />
                 </div>
               </div>
-              {#if selected}
-                {#if selectedLoading}
+              {#if loc.selected}
+                {#if loc.selectedLoading}
                   <WorkbenchState
                     kind="loading"
                     title="Loading entry"
                     message="Reading the document, details, relationships, and assets." />
-                {:else if selectedLoadError}
+                {:else if loc.selectedLoadError}
                   {#snippet retrySelectedLoad()}<button
                       class="quiet-button"
                       type="button"
-                      onclick={() => void reloadSelectedFromDisk()}>Retry</button
+                      onclick={() => void loc.reloadSelectedFromDisk()}>Retry</button
                     >{/snippet}
                   <WorkbenchState
                     kind="error"
                     title="Entry unavailable"
-                    message={selectedLoadError}
+                    message={loc.selectedLoadError}
                     actions={retrySelectedLoad} />
                 {:else}
-                  {@const activeConflict = documentConflict}
+                  {@const activeConflict = loc.documentConflict}
                   {#if activeConflict}
                     {#snippet conflictResolutionActions()}<div class="conflict-workbench-actions">
                         {#if !activeConflict.diagnostics.length}<details class="conflict-compare">
                             <summary>Compare with the currently saved document</summary>
-                            <pre>{conflictDiskBody}</pre>
+                            <pre>{loc.conflictDiskBody}</pre>
                           </details>{/if}
                         <div class="conflict-actions">
-                          <button class="quiet-button" type="button" onclick={reloadConflict}>Reload disk</button
+                          <button class="quiet-button" type="button" onclick={loc.reloadConflict}>Reload disk</button
                           ><button
                             class="quiet-button"
                             type="button"
-                            onclick={overwriteConflict}
+                            onclick={loc.overwriteConflict}
                             disabled={activeConflict.diagnostics.length > 0}>Overwrite as new revision</button
-                          ><button class="quiet-button" type="button" onclick={saveConflictRecoveryCopy}
+                          ><button class="quiet-button" type="button" onclick={loc.saveConflictRecoveryCopy}
                             >Save recovery copy</button>
                         </div>
                       </div>{/snippet}
@@ -10470,39 +9767,39 @@ onMount(() => {
                       </div>
                     </div>
                   {/if}
-                  {#if documentMode === "read"}
+                  {#if loc.documentMode === "read"}
                     <MarkdownArticle
-                      markdown={documentBody}
+                      markdown={loc.documentBody}
                       {entities}
                       onOpenEntity={(id, intent) => {
                         const target = entities.find((entity) => entity.id === id && !entity.deleted);
                         if (target) void openEntityWithIntent(target, intent ?? "current");
                       }} />
                   {:else}
-                    {#key selected?.id}
+                    {#key loc.selected?.id}
                       <RichTextEditor
-                        bind:this={editorRef}
-                        value={documentBody}
+                        bind:this={loc.editorRef}
+                        value={loc.documentBody}
                         {entities}
                         searchEntities={searchEntitiesPaged()}
-                        entityId={selected?.id ?? null}
+                        entityId={loc.selected?.id ?? null}
                         defaultNamespace={primarySchemaNamespace(activeManifest()?.schemas, {
-                          entityType: selected?.entity_type,
+                          entityType: loc.selected?.entity_type,
                           fallback: activeModuleId(),
                         })}
-                        editable={!selectedLoading &&
-                          !selectedLoadError &&
+                        editable={!loc.selectedLoading &&
+                          !loc.selectedLoadError &&
                           projectDiagnostics.length === 0 &&
                           !aiBusy &&
                           !aiRewriteOpen}
-                        fullscreen={editorFullscreen}
+                        fullscreen={loc.editorFullscreen}
                         aiEnabled={projectInfo?.aiEnabled ?? false}
                         aiTemplates={aiPromptTemplates.filter((template) => template.kind === "editor")}
-                        onChange={updateDocumentBody}
+                        onChange={loc.updateDocumentBody}
                         onSelectionChange={setAiSelection}
                         onAiRequest={openAiAction}
-                        onSaveRequest={() => void flushAutoSave()}
-                        onFullscreenChange={setEditorFullscreen}
+                        onSaveRequest={() => void loc.flushAutoSave()}
+                        onFullscreenChange={loc.setEditorFullscreen}
                         placeholder={section === "writing"
                           ? `Write this ${createLabel()}…`
                           : section === "maps"
@@ -10512,20 +9809,20 @@ onMount(() => {
                   {/if}
                   <div class="editor-footer">
                     <div>
-                      {#if entityMutation.phase !== "idle"}
+                      {#if loc.entityMutation.phase !== "idle"}
                         <MutationStatus
-                          snapshot={entityMutation.snapshot}
+                          snapshot={loc.entityMutation.snapshot}
                           onRetry={() => void archiveSelected()}
                           onReload={() => void reloadEntityEditFromServer()}
-                          onReviewDraft={() => entityMutation.reset()} />
+                          onReviewDraft={() => loc.entityMutation.reset()} />
                       {/if}
                     </div>
                     <div>
-                      {#if selected}
+                      {#if loc.selected}
                         <EntityArchiveAction
-                          entityName={selected.name}
-                          busy={entityMutation.busy}
-                          disabled={selectedLoading || projectDiagnostics.length > 0}
+                          entityName={loc.selected.name}
+                          busy={loc.entityMutation.busy}
+                          disabled={loc.selectedLoading || projectDiagnostics.length > 0}
                           onArchive={() => void archiveSelected()} />
                       {/if}
                     </div>
@@ -10550,7 +9847,7 @@ onMount(() => {
             {/if}
           {/snippet}
           <ContentPane
-            fullscreen={editorFullscreen}
+            fullscreen={loc.editorFullscreen}
             mapEditorActive={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
             bind:element={contentPaneElement}
             children={contentPaneBody} />
@@ -10565,8 +9862,8 @@ onMount(() => {
             onResize={(delta) => resizeWorkbenchPane("inspector", delta)}
             onReset={() => resetWorkbenchPane("inspector")} />{/if}
 
-        {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && selected}
-          {@const inspectedEntity = selected}
+        {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && loc.selected}
+          {@const inspectedEntity = loc.selected}
           {#snippet inspectorBody()}
             <InspectorOverview
               typeLabel={entityTypeLabel(inspectedEntity.entity_type)}
@@ -10640,27 +9937,27 @@ onMount(() => {
                           resolveSelected={resolveSelectedEntities}
                           selectedIds={selectedRelationshipIds(eraField)}
                           placeholder="Search eras…"
-                          onChange={(ids) => void updateRelationshipField(eraField, ids)} />
+                          onChange={(ids) => void loc.updateRelationshipField(eraField, ids)} />
                       </div>
                     {/if}
-                    {#each inspectorChronologyWarnings as warning}
+                    {#each loc.inspectorChronologyWarnings as warning}
                       <p class="chronology-warning" role="status">{warning}</p>
                     {/each}
                     {#each chronologyDateDefinitions() as definition}
                       <InspectorDateField
                         label={definition.label}
                         fieldKey={definition.key}
-                        value={fields[definition.key]}
-                        editorOpen={Boolean(dateEditorOpen[definition.key])}
-                        editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                        value={loc.fields[definition.key]}
+                        editorOpen={Boolean(loc.dateEditorOpen[definition.key])}
+                        editorKey={`${loc.selected?.id ?? ""}:${definition.key}`}
                         calendar={definitionForDateField(definition.key)}
                         calendars={worldCalendars() as any}
                         selectedCalendarId={selectedCalendarId(definition.key)}
                         required={Boolean(definition.required)}
-                        onChange={(next) => updateInspectorDateField(definition.key, next)}
-                        onClear={() => clearDateField(definition.key)}
-                        onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                        onOpen={() => openDateEditor(definition.key)} />
+                        onChange={(next) => loc.updateInspectorDateField(definition.key, next)}
+                        onClear={() => loc.clearDateField(definition.key)}
+                        onSelectCalendar={(id) => loc.setDateCalendar(definition.key, id)}
+                        onOpen={() => loc.openDateEditor(definition.key)} />
                     {/each}
                   </section>
                 {/if}
@@ -10670,48 +9967,48 @@ onMount(() => {
                     {#each propertyDefinitions() as definition}{#if definition.type === "date"}<InspectorDateField
                           label={definition.label}
                           fieldKey={definition.key}
-                          value={fields[definition.key]}
-                          editorOpen={Boolean(dateEditorOpen[definition.key])}
-                          editorKey={`${selected?.id ?? ""}:${definition.key}`}
+                          value={loc.fields[definition.key]}
+                          editorOpen={Boolean(loc.dateEditorOpen[definition.key])}
+                          editorKey={`${loc.selected?.id ?? ""}:${definition.key}`}
                           calendar={definitionForDateField(definition.key)}
                           calendars={worldCalendars() as any}
                           selectedCalendarId={selectedCalendarId(definition.key)}
                           required={Boolean(definition.required)}
-                          onChange={(next) => updateInspectorDateField(definition.key, next)}
-                          onClear={() => clearDateField(definition.key)}
-                          onSelectCalendar={(id) => setDateCalendar(definition.key, id)}
-                          onOpen={() => openDateEditor(definition.key)} />{:else}<div class="property-field">
+                          onChange={(next) => loc.updateInspectorDateField(definition.key, next)}
+                          onClear={() => loc.clearDateField(definition.key)}
+                          onSelectCalendar={(id) => loc.setDateCalendar(definition.key, id)}
+                          onOpen={() => loc.openDateEditor(definition.key)} />{:else}<div class="property-field">
                           <span
                             >{definition.label}{#if definition.required}<b>*</b>{/if}</span
                           >{#if definition.type === "boolean"}<input
                               type="checkbox"
                               aria-label={definition.label}
-                              checked={fieldInputValue(definition, fields[definition.key]) === true}
+                              checked={fieldInputValue(definition, loc.fields[definition.key]) === true}
                               onchange={(event) =>
-                                updateField(definition, event)} />{:else if definition.type === "number"}<input
+                                loc.updateField(definition, event)} />{:else if definition.type === "number"}<input
                               type="number"
                               aria-label={definition.label}
-                              value={fieldInputValue(definition, fields[definition.key])}
+                              value={fieldInputValue(definition, loc.fields[definition.key])}
                               placeholder="Add {definition.label.toLowerCase()}"
                               onchange={(event) =>
-                                updateField(
+                                loc.updateField(
                                   definition,
                                   event,
                                 )} />{:else if definition.type === "enum" && definition.options?.length}<select
                               aria-label={definition.label}
                               multiple={definition.multiple ?? false}
                               value={definition.multiple
-                                ? Array.isArray(fields[definition.key])
-                                  ? fields[definition.key]
+                                ? Array.isArray(loc.fields[definition.key])
+                                  ? loc.fields[definition.key]
                                   : []
-                                : String(fields[definition.key] ?? "")}
-                              onchange={(event) => updateField(definition, event)}
+                                : String(loc.fields[definition.key] ?? "")}
+                              onchange={(event) => loc.updateField(definition, event)}
                               >{#each definition.options ?? [] as option}<option value={option}>{option}</option
                                 >{/each}</select
                             >{:else if (definition as any).type === "oneof"}<select
                               aria-label={definition.label}
-                              value={String(fields[definition.key] ?? "")}
-                              onchange={(event) => updateField(definition, event)}
+                              value={String(loc.fields[definition.key] ?? "")}
+                              onchange={(event) => loc.updateField(definition, event)}
                               ><option value="">Choose {definition.label.toLowerCase()}</option
                               >{#each definition.options ?? [] as option}<option value={option}>{option}</option>{/each}
                               {#each (definition as any).oneOf ?? [] as variant}
@@ -10720,9 +10017,9 @@ onMount(() => {
                               {/each}</select
                             >{:else}<input
                               type="text"
-                              value={fieldInputValue(definition, fields[definition.key])}
+                              value={fieldInputValue(definition, loc.fields[definition.key])}
                               placeholder="Add {definition.label.toLowerCase()}"
-                              oninput={(event) => updateField(definition, event)} />{/if}
+                              oninput={(event) => loc.updateField(definition, event)} />{/if}
                         </div>{/if}{/each}
                   </section>
                 {/if}
@@ -10732,18 +10029,18 @@ onMount(() => {
                       context={contextFor("timeline")}
                       entityId={inspectedEntity.id as UUID}
                       onsaved={(definition) => {
-                        if (selected) {
-                          calendarCache.setDefinition(selected.id, definition);
+                        if (loc.selected) {
+                          calendarCache.setDefinition(loc.selected.id, definition);
                           syncCalendarCacheState();
                         }
                       }}
                       onOpenEra={(eraId) => {
                         const entity = entities.find((candidate) => candidate.id === eraId);
-                        if (entity) void selectEntity(entity);
+                        if (entity) void loc.selectEntity(entity);
                       }}
                       onEraCreated={(created) => {
                         void refreshAfterEntityMutation({ entityId: created.id }).then(() =>
-                          selectEntity({
+                          loc.selectEntity({
                             id: created.id,
                             name: created.name,
                             entity_type: created.type,
@@ -10775,14 +10072,14 @@ onMount(() => {
                       resolveSelected={resolveSelectedEntities}
                       selectedIds={selectedRelationshipIds(definition)}
                       hideChips
-                      onChange={(ids) => void updateRelationshipField(definition, ids)}
+                      onChange={(ids) => void loc.updateRelationshipField(definition, ids)}
                       onCreate={definition.relationshipType === "family_member_of"
                         ? (name) => createRelationshipTarget(definition, name)
                         : undefined} />
-                    {#if relationshipsForDefinition(definition).length > 0}<div
+                    {#if loc.relationshipsForDefinition(definition).length > 0}<div
                         class="relationship-detail-list"
                         aria-label={`${definition.label} details`}>
-                        {#each relationshipsForDefinition(definition) as relationship (relationship.id)}
+                        {#each loc.relationshipsForDefinition(definition) as relationship (relationship.id)}
                           {@const relDefinition = definitionForRelationship(relationship) ?? definition}
                           {@const summary = relationshipMetadataSummary(relationship, relDefinition)}
                           <div class="relationship-detail-row">
@@ -10831,22 +10128,22 @@ onMount(() => {
           {/snippet}
           {#snippet fieldsProfile()}
             <div class="fields-tab">
-              {#if selected && canEditLoreProfile(selected.entity_type) && projectInfo?.root}
+              {#if loc.selected && canEditLoreProfile(loc.selected.entity_type) && projectInfo?.root}
                 <ProfileEditor
                   projectId={projectInfo.root}
-                  entityId={selected.id}
-                  entityName={selected.name}
-                  entityType={selected.entity_type}
+                  entityId={loc.selected.id}
+                  entityName={loc.selected.name}
+                  entityType={loc.selected.entity_type}
                   entityTypeOptions={loreProfileEntityTypeOptions()}
-                  bind:open={profileEditorOpen} />
+                  bind:open={loc.profileEditorOpen} />
               {/if}
-              {#if selected && isTimelineEventEntity(selected.entity_type) && projectInfo?.root}
+              {#if loc.selected && isTimelineEventEntity(loc.selected.entity_type) && projectInfo?.root}
                 <section class="inspector-section inspector-section-plain">
                   <h3>Profile Changes</h3>
                   <ProfileEventChanges
                     projectId={projectInfo.root}
-                    eventId={selected.id}
-                    eventDate={fields.startsAt}
+                    eventId={loc.selected.id}
+                    eventDate={loc.fields.startsAt}
                     ownerTypes={loreProfileOwnerTypes()}
                     search={searchEntitiesPaged()} />
                 </section>
@@ -10858,17 +10155,17 @@ onMount(() => {
               <section class="inspector-section inspector-section-plain">
                 <div class="section-title">
                   <h3>Attached files</h3>
-                  <span>{assets.length}</span>
+                  <span>{loc.assets.length}</span>
                 </div>
-                <button class="drop-zone" type="button" onclick={attachAsset}
+                <button class="drop-zone" type="button" onclick={loc.attachAsset}
                   ><span><Plus size={16} strokeWidth={1.8} aria-hidden="true" /></span><strong>Attach a file</strong
                   ><small>Copied into this project</small></button
-                >{#each assets as asset (asset.id)}<button
+                >{#each loc.assets as asset (asset.id)}<button
                     type="button"
                     class:asset-main={asset.role === "profile"}
                     class="asset-row asset-row-button"
-                    onclick={() => openAssetDialog(asset)}
-                    disabled={assetBusyId === asset.id}
+                    onclick={() => loc.openAssetDialog(asset)}
+                    disabled={loc.assetBusyId === asset.id}
                     aria-label={`Edit ${asset.filename}`}>
                     <span class="asset-icon" aria-hidden="true">{asset.role === "profile" ? "◆" : "□"}</span>
                     <div class="asset-details">
@@ -10910,10 +10207,10 @@ onMount(() => {
                 aria-label="Maps contribution">
                 <div class="section-title">
                   <h3>Maps</h3>
-                  <span>{mapLocations.length}</span>
+                  <span>{loc.mapLocations.length}</span>
                 </div>
-                {#if mapLocations.length === 0}<small>No map links yet.</small
-                  >{:else}{#each mapLocations as location (location.id)}<div class="map-location-row">
+                {#if loc.mapLocations.length === 0}<small>No map links yet.</small
+                  >{:else}{#each loc.mapLocations as location (location.id)}<div class="map-location-row">
                       <div>
                         <strong>{location.label || location.role}</strong><small
                           >{location.role} · {location.mapEntityId.slice(
@@ -10945,23 +10242,23 @@ onMount(() => {
             </div>
           {/snippet}
           <InspectorPane
-            loading={selectedLoading}
-            error={selectedLoadError}
+            loading={loc.selectedLoading}
+            error={loc.selectedLoadError}
             bind:element={inspectorPaneElement}
             children={inspectorBody}
-            onRetry={() => void reloadSelectedFromDisk()} />
-          {#if fieldsDialogOpen}
+            onRetry={() => void loc.reloadSelectedFromDisk()} />
+          {#if loc.fieldsDialogOpen}
             <EntityFieldsDialog
               title={inspectedEntity.name}
               subtitle={entityTypeLabel(inspectedEntity.entity_type)}
               tabs={entityFieldsTabs()}
-              bind:activeTab={fieldsDialogTab}
+              bind:activeTab={loc.fieldsDialogTab}
               relationships={fieldsRelationships}
               profile={fieldsProfile}
               assets={fieldsAssets}
               maps={fieldsMaps}
               backlinks={fieldsBacklinks}
-              onClose={() => (fieldsDialogOpen = false)} />
+              onClose={() => (loc.fieldsDialogOpen = false)} />
           {/if}
         {:else if workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
           <InspectorPane bind:element={inspectorPaneElement} empty />
@@ -11001,31 +10298,31 @@ onMount(() => {
       onclick={openContextualCreate}><Plus size={18} strokeWidth={1.8} aria-hidden="true" /></button
     >{/if}
 </main>
-{#if metadataDialog}
-  {@const dialog = metadataDialog}
+{#if loc.metadataDialog}
+  {@const dialog = loc.metadataDialog}
   <RelationshipMetadataDialog
     relationship={dialog.relationship}
     definition={dialog.definition}
     {entities}
     {calendarDefinitions}
     onSave={(metadata) => saveRelationshipMetadata(dialog.relationship, metadata)}
-    onClose={() => (metadataDialog = null)} />
+    onClose={() => (loc.metadataDialog = null)} />
 {/if}
-{#if assetDialog}
+{#if loc.assetDialog}
   <AssetDialog
-    asset={assetDialog}
+    asset={loc.assetDialog}
     editable={canWriteAssets()}
-    onSave={handleAssetSave}
-    onDelete={handleAssetDelete}
-    onReplace={handleAssetReplace}
-    onClose={() => (assetDialog = null)} />
+    onSave={loc.handleAssetSave}
+    onDelete={loc.handleAssetDelete}
+    onReplace={loc.handleAssetReplace}
+    onClose={() => (loc.assetDialog = null)} />
 {/if}
 {#if showExternalImport}
   <ExternalImportDialog
     {modules}
     {entities}
     onCommitted={async () => {
-      clearSelection();
+      loc.clearSelection();
       await loadEntities();
       await ensureCalendarCache(true);
     }}
@@ -11045,17 +10342,17 @@ onMount(() => {
       return type ? "Other" : "Uncategorized";
     }}
     warning={editTypeWarning()}
-    busy={entityEditDialog.busy || entityMutation.busy}
+    busy={entityEditDialog.busy || loc.entityMutation.busy}
     allowUncategorized={entityEditDialog.entity.entity_type == null}
     onSave={() => void saveEntityEditDialog()}
     onClose={closeEntityEditDialog}>
     {#snippet mutation()}
-      {#if entityMutation.phase === "conflict" || entityMutation.phase === "failed" || entityMutation.phase === "saving"}
+      {#if loc.entityMutation.phase === "conflict" || loc.entityMutation.phase === "failed" || loc.entityMutation.phase === "saving"}
         <MutationStatus
-          snapshot={entityMutation.snapshot}
+          snapshot={loc.entityMutation.snapshot}
           onRetry={() => void saveEntityEditDialog()}
           onReload={() => void reloadEntityEditFromServer()}
-          onReviewDraft={() => entityMutation.reset()} />
+          onReviewDraft={() => loc.entityMutation.reset()} />
       {/if}
     {/snippet}
   </EntityIdentityDialog>
@@ -11064,12 +10361,12 @@ onMount(() => {
   <HostGuide
     guideId={LORE_GUIDE_ID}
     active={section === "lore" && !showSettings && !projectHomeOpen}
-    resumeToken={selected?.id ?? ""}
+    resumeToken={loc.selected?.id ?? ""}
     hintNonce={loreGuideHint}
     stepsFor={(mode) =>
       loreGuideSteps({
         hasCollection: !collectionIsEmpty(),
-        hasSelection: Boolean(selected),
+        hasSelection: Boolean(loc.selected),
         view: currentWorkspaceLocationView(),
         mode,
       })}
@@ -11077,7 +10374,7 @@ onMount(() => {
   <HostGuide
     guideId={TIMELINE_GUIDE_ID}
     active={section === "timeline" && !showSettings && !projectHomeOpen}
-    resumeToken={selected?.id ?? ""}
+    resumeToken={loc.selected?.id ?? ""}
     hintNonce={timelineGuideHint}
     stepsFor={(mode) =>
       timelineGuideSteps({

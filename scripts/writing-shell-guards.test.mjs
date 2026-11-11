@@ -4,6 +4,17 @@ import fs from "node:fs";
 // Source checks for the shell side of the isolated Writing webview (docs/plans/writing-isolation.md, slice 3b).
 // The guarded paths are not exported from the route, so these read src/routes/+page.svelte and check its order.
 const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
+// The per-location functions (selection, save, autosave) live in the location store; the page reaches them as `loc.<name>`.
+const store = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+
+/** The source of a store method (or arrow-function property): its declaration to the brace that closes it. */
+function storeMethodBody(name) {
+  const match = new RegExp(`\\n  (?:async )?${name}\\(|\\n  ${name} = (?:async )?\\(`).exec(store);
+  assert.ok(match, `${name} is declared in the location store`);
+  const end = store.slice(match.index + 1).search(/\n {2}\};?\n/);
+  assert.ok(end > 0, `${name} closes`);
+  return store.slice(match.index, match.index + 1 + end);
+}
 
 /** The source of a top-level function, from its declaration to the brace that closes it at column 0. */
 function functionBody(name) {
@@ -44,7 +55,7 @@ const flushesBeforeNavigating = [
   ["openSettings", /showSettings = true/],
   ["openProjectCenter", /showSettings = true/],
   ["selectSearchResult", /leavePluginView\(\)|section = nextSection/],
-  ["selectEntity", /selected = entity;/],
+  ["selectEntity", /this\.selected = entity;/, "store"],
   // activateBreadcrumb is gone: the breadcrumb no longer navigates (tabs slice 3).
   ["reconcileWorkspaceSection", /leavePluginView\(\)/],
   ["openHouseTree", /leavePluginView\(\)/],
@@ -55,7 +66,7 @@ const flushesBeforeNavigating = [
   ["closePluginView", /leavePluginView\(\)/],
   ["openProjection", /leavePluginView\(\)/],
   ["createMap", /leavePluginView\(\)/],
-  ["ensureMapEditorOpen", /selected = map;/],
+  ["ensureMapEditorOpen", /loc\.selected = map;/],
   ["archiveEntity", /clearSelection\(\)|entities\.delete\(/],
   ["openExternalImport", /showExternalImport = true/],
   ["seedExample", /clearSelection\(\)/],
@@ -66,8 +77,8 @@ const flushesBeforeNavigating = [
   ["importPortableCheckpoint", /leavePluginView\(\{ closeWebviews: true \}\)/],
   ["restoreRecoveryBackup", /leavePluginView\(\{ closeWebviews: true \}\)/],
 ];
-for (const [name, navigates] of flushesBeforeNavigating) {
-  const body = functionBody(name);
+for (const [name, navigates, owner] of flushesBeforeNavigating) {
+  const body = owner === "store" ? storeMethodBody(name) : functionBody(name);
   const step = body.search(navigates);
   assert.ok(step >= 0, `${name} still navigates where its check expects (${navigates})`);
   if (body.includes("flushAutoSave()")) {
@@ -87,7 +98,7 @@ for (const [name, navigates] of flushesBeforeNavigating) {
 const navigatesThroughGuardedPath = [
   ["openEntityById", /selectSearchResult\(target\)[\s\S]*selectEntity\(target\)/],
   ["selectQuickOpenItem", /selectSearchResult\(matchedEntity\)[\s\S]*openProjectHome\(\)/],
-  ["archiveSelected", /archiveEntity\(selected/],
+  ["archiveSelected", /archiveEntity\(loc\.selected/],
   ["openSelectedMapEditor", /openPluginView\(mapsView\)/],
   ["confirmWritingArchive", /archiveSelected\(\)/],
 ];
@@ -116,7 +127,7 @@ for (const [name, through] of navigatesThroughGuardedPath) {
 // content column is the one that needs a flush of its own: it used to ask only the Language webview.
 assert.match(
   functionBody("toggleWorkbenchPane"),
-  /pane === "content" && workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await flushAutoSave\(\)\)\) return;/,
+  /pane === "content" && workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await loc\.flushAutoSave\(\)\)\) return;/,
 );
 
 // Writing's full screen is the webview's own. It must not be part of the overlay that hides every embedded webview.
@@ -136,7 +147,7 @@ function workspaceStyle() {
 
 // The full screen ends with the selection, with navigation out of the pane, and with Escape in the shell.
 {
-  const reset = between("$effect(() => {\n  void selected?.id;", "/**\n * Runs a shell shortcut.");
+  const reset = between("$effect(() => {\n  void loc.selected?.id;", "/**\n * Runs a shell shortcut.");
   assert.match(reset, /void writingWebviewShown;/, "leaving the Writing pane ends the full screen");
   assert.match(reset, /untrack\(\(\) => exitWritingFullscreen\(\)\)/);
   assert.match(functionBody("exitWritingFullscreen"), /endWritingFullscreen\(\)/, "the shell ends the full screen");
@@ -154,7 +165,7 @@ function workspaceStyle() {
   const stateEvent = functionBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "fullscreen":[\s\S]*event\.entityId === selected\?\.id\) \{\s*writingFullscreen = event\.on;\s*writingFullscreenInstance = event\.on \? shownWebviewInstance : null;/,
+    /case "fullscreen":[\s\S]*event\.entityId === loc\.selected\?\.id\) \{\s*writingFullscreen = event\.on;\s*writingFullscreenInstance = event\.on \? shownWebviewInstance : null;/,
   );
 }
 
@@ -163,7 +174,7 @@ function workspaceStyle() {
   const stateEvent = functionBody("handleWritingStateEvent");
   assert.match(
     stateEvent,
-    /case "request-rename":\s*if \(writingWebview\.mounted && selected && event\.entityId === selected\.id\) void openEntityEditDialog\(selected\);/,
+    /case "request-rename":\s*if \(writingWebview\.mounted && loc\.selected && event\.entityId === loc\.selected\.id\)\s*void openEntityEditDialog\(loc\.selected\);/,
   );
   assert.match(
     stateEvent,
@@ -174,7 +185,7 @@ function workspaceStyle() {
   assert.match(archive, /confirmDialog\(archiveConfirmOptions\(target\.name\)\)/, "archive keeps its confirmation");
   assert.match(
     archive,
-    /selected\?\.id !== entityId\) return;\s*await archiveSelected\(\)/,
+    /loc\.selected\?\.id !== entityId\) return;\s*await archiveSelected\(\)/,
     "checked again after the dialog",
   );
 }
@@ -223,7 +234,7 @@ function workspaceStyle() {
 {
   assert.match(
     page,
-    /const writingEntrySelected = \$derived\(section === "writing" && writingWebviewHandles\(selected\?\.entity_type\)\);/,
+    /const writingEntrySelected = \$derived\(section === "writing" && writingWebviewHandles\(loc\.selected\?\.entity_type\)\);/,
     "one derived says a webview-handled Writing entry is selected",
   );
   const shown = between("const writingWebviewShown = $derived(", "\n);");
@@ -301,11 +312,14 @@ function workspaceStyle() {
   assert.ok(selectAt < errorAt, "the note failure is reported after selectEntity clears error");
   assert.match(create, /was created, but its opening note was not saved: \$\{friendlyError\(cause\)\}/);
   assert.match(
-    functionBody("flushAutoSave"),
+    storeMethodBody("flushAutoSave"),
     /flushWritingWebview\(\)/,
     "the shell is the writer, after the webview's flush",
   );
-  assert.match(page, /await project\.saveEntry\(\s*\{\s*document: \{ entity_id: entityId, body, format: "markdown" \}/);
+  assert.match(
+    store,
+    /await project\.saveEntry\(\s*\{\s*document: \{ entity_id: entityId, body, format: "markdown" \}/,
+  );
   const command = fs.readFileSync("src-tauri/src/project_commands.rs", "utf8");
   assert.match(
     command,
@@ -324,7 +338,7 @@ function workspaceStyle() {
 // A rename refreshes the header in place when the editor keeps its text.
 {
   const load = between("async function postWritingLoad", "$effect(() => {");
-  assert.match(load, /writingTitleMessage\(entityId, selected\.name\)/, "the header follows the rename");
+  assert.match(load, /writingTitleMessage\(entityId, loc\.selected\.name\)/, "the header follows the rename");
 }
 
 console.log("writing shell guard checks passed");

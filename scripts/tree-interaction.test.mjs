@@ -37,6 +37,8 @@ const canvas = await read("src/lib/houses/TreeCanvas.svelte");
 const personPanel = await read("src/lib/houses/FamilyPersonPanel.svelte");
 const relationshipPanel = await read("src/lib/houses/FamilyRelationshipPanel.svelte");
 const shell = await read("src/routes/+page.svelte");
+// updateRelationshipField (which bumps the kinship tree on kinship links) moved into the location store.
+const locationStore = await read("src/lib/location/location-store.svelte.ts");
 
 assert.match(surface, /TREE_SCOPES\.membersPlusImmediateFamily/);
 assert.match(surface, /aria-label="House tree scope"/);
@@ -110,7 +112,7 @@ assert.match(shell, /onEditPersonIdentity=/);
 assert.match(shell, /onArchivePerson=/);
 assert.match(shell, /kinshipRefreshEpoch/);
 assert.match(shell, /bumpKinshipRefresh/);
-assert.match(shell, /isKinshipRelationshipType/);
+assert.match(locationStore, /isKinshipRelationshipType/);
 assert.match(shell, /ENTITY_ACTIONS/);
 
 assert.match(surface, /kinshipRefreshEpoch/);

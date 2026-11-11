@@ -508,31 +508,38 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
 // Route wiring: the shell stays the only writer and every leave path goes through the one flush.
 {
   const page = fs.readFileSync("src/routes/+page.svelte", "utf8");
-  const between = (from, to) => {
-    const start = page.indexOf(from);
+  // The save path (flushAutoSave, persistDocumentSnapshot) moved into the location store.
+  const store = fs.readFileSync("src/lib/location/location-store.svelte.ts", "utf8");
+  const betweenIn = (source, from, to) => {
+    const start = source.indexOf(from);
     assert.ok(start >= 0, `${from} exists`);
-    const end = page.indexOf(to, start + from.length);
+    const end = source.indexOf(to, start + from.length);
     assert.ok(end > start, `${to} follows ${from}`);
-    return page.slice(start, end);
+    return source.slice(start, end);
   };
-  const flush = between("async function flushAutoSave()", "async function loadSelectedState");
+  const between = (from, to) => betweenIn(page, from, to);
+  const flush = betweenIn(store, "flushAutoSave = async () => {", "// ---- Saving");
   assert.match(
     flush,
-    /await flushWritingWebview\(\);\s*editorRef\?\.flushPendingChanges\(\)/,
+    /await this\.ctx\.flushWritingWebview\(\);\s*this\.editorRef\?\.flushPendingChanges\(\)/,
     "the webview is asked first",
   );
   const apply = between("async function applyWritingDraft", "function enqueueWritingDraft");
   assert.match(apply, /updateDocumentBody\(text\)/, "a draft is applied like typing in the shell editor");
   assert.match(apply, /project\.takePluginTextTransfer\(WRITING_PLUGIN_ID, draft\.transfer\)/);
-  assert.match(apply, /writingMessageCurrent\(draft, selected\?\.id, writingLoad\)/, "entity and token are checked");
+  assert.match(
+    apply,
+    /writingMessageCurrent\(draft, loc\.selected\?\.id, writingLoad\)/,
+    "entity and token are checked",
+  );
   const writingRegion = between("/** Whether the webview may edit", "function pluginViewLabel");
   assert.doesNotMatch(writingRegion, /project\.save\w*\(|persistDocumentSnapshot\(/, "no second save path");
   const conflict = between("function handleWritingConflictAction", "/**\n * Writing state from the webview");
-  assert.match(conflict, /writingMessageCurrent\(event, selected\?\.id, writingLoad\)/);
+  assert.match(conflict, /writingMessageCurrent\(event, loc\.selected\?\.id, writingLoad\)/);
   assert.match(conflict, /reloadConflict\(\)/);
   assert.match(conflict, /overwriteConflict\(\)/);
   assert.match(conflict, /saveConflictRecoveryCopy\(\)/);
-  const save = between("async function persistDocumentSnapshot()", "async function saveDocument()");
+  const save = betweenIn(store, "async persistDocumentSnapshot()", "async saveDocument()");
   assert.match(save, /notifyWritingSaved\(entityId\)/, "a successful save is reported to the webview");
   const load = between("async function postWritingLoad", "$effect(() => {");
   assert.match(
@@ -558,7 +565,7 @@ assert.deepEqual(writingConflictMessage("e1", { diagnostics: ["Portable files ch
   assert.match(page, /\{#if aiRewriteOpen\}/, "the shell's own dialog is still there for the old editor");
   // Closing the window flushes through the same path.
   const closeRequested = between(".onCloseRequested(async (event) => {", ".then((cleanup) => {");
-  assert.match(closeRequested, /await flushAutoSave\(\)/);
+  assert.match(closeRequested, /await loc\.flushAutoSave\(\)/);
 }
 
 console.log("writing bridge checks passed");

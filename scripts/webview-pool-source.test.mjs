@@ -191,7 +191,11 @@ assert.match(trackLanguage, /generation !== languageMountGeneration\) return;/);
 assert.equal(trackLanguage.split("languageHostedInstance = null;").length, 3, "set on attach, cleared on cleanup");
 // The pane is not part of a pooled instance's identity, or every pane change would recreate the webview.
 const mountState = between(page, "function languageMountState(", "\n}\n");
-assert.match(mountState, /created\.entityId === selected\?\.id/, "a pinned state is used only for the same language");
+assert.match(
+  mountState,
+  /created\.entityId === loc\.selected\?\.id/,
+  "a pinned state is used only for the same language",
+);
 assert.match(
   mountState,
   /findWebviewEntry\(webviewPool, languageRef\(instanceId\)\)/,

@@ -330,6 +330,7 @@ import {
   LANGUAGE_PLUGIN_ID,
   LanguageLeaveTracker,
   isLanguagePane,
+  languageResumeMessage,
   openableLinkHref,
   parseLanguageStateEvent,
   type LanguageStateEvent,
@@ -513,6 +514,19 @@ let writingFullscreenInstance: string | null = null;
 let webviewPool = $state<WebviewPool>(emptyWebviewPool);
 /** The Writing instance whose host mount finished. The visibility effect shows no other Writing instance. */
 let writingHostedInstance = $state<string | null>(null);
+/** The same for Language: the instance whose host mount finished. */
+let languageHostedInstance = $state<string | null>(null);
+/** Whether the mounting Language instance was ready before its mount began. See `beginPooledMount`. */
+let languageMountPriorReady = false;
+/** What the Language mount in progress keeps, so only those the host actually closed leave the pool. */
+let languageMountRetained: WebviewInstanceRef[] = [];
+/**
+ * The pane each Language instance was created with, and for which language. The mount key contains it (it is the
+ * mount's `state` param), so the pane the user moved to since would make every later mount look like a different
+ * document and recreate the webview. A pooled instance keeps the state it was created with; `language.resume`
+ * carries the current pane. Used only while the pool still knows the instance (see `languageMountState`).
+ */
+const languageCreatedState = new Map<string, { entityId: string | undefined; pane: LanguagePane }>();
 /** Whether the mounting instance was ready before its mount began. See `beginPooledWritingMount`. */
 let writingMountPriorReady = false;
 /** What the mount in progress keeps, so only those the host actually closed leave the pool. */
@@ -1764,12 +1778,15 @@ $effect(() => {
   void writingWebview.ready;
   void shownWebviewInstance;
   void writingHostedInstance;
+  void languageHostedInstance;
   const visible = !modalOverlayOpen && !popoverOverlapsWebview;
   for (const pluginId of embeddedPluginWebviewIds) {
     // A pooled Writing instance that a tab switch just made current may still be suspended. Its own mount sets
     // its bounds and shows it; showing it earlier would draw its old rectangle over the tab being restored.
     // Hiding is always allowed.
     if (visible && pluginId === WRITING_PLUGIN_ID && writingHostedInstance !== shownWebviewInstance) continue;
+    // The same for a pooled Language instance, whose old rectangle would show over the tab being restored.
+    if (visible && pluginId === LANGUAGE_PLUGIN_ID && languageHostedInstance !== shownWebviewInstance) continue;
     void setPluginWebviewVisibleQuietly(pluginId, visible);
   }
 });
@@ -1792,8 +1809,10 @@ $effect(() => {
     if (next === webviewPool) return;
     const dropped = evicted(webviewPool, webviewRefs(next));
     webviewPool = next;
-    for (const instance of dropped)
+    for (const instance of dropped) {
+      if (instance.pluginId === LANGUAGE_PLUGIN_ID) languageCreatedState.delete(instance.instanceId);
       void project.unmountPluginWebview(instance.pluginId, instance.instanceId).catch(() => undefined);
+    }
   });
 });
 
@@ -1809,12 +1828,14 @@ function trackLanguageMount() {
   const generation = ++languageMountGeneration;
   languageWebview.mounted = true;
   languageWebview.ready = false;
+  languageHostedInstance = null;
   languagePaneRequest = null;
   languageLeave.releaseAll();
   return () => {
     if (generation !== languageMountGeneration) return;
     languageWebview.mounted = false;
     languageWebview.ready = false;
+    languageHostedInstance = null;
     languagePaneRequest = null;
     languageLeave.releaseAll();
   };
@@ -1865,6 +1886,7 @@ function handleLanguageStateEvent(event: LanguageStateEvent) {
     case "ready": {
       if (!languageWebview.mounted) return;
       languageWebview.ready = true;
+      webviewPool = markReady(webviewPool, languageRef(shownWebviewInstance), true);
       languagePaneRequest = null;
       languageLeave.releaseAll();
       // The webview mounted with the pane it was given; if the shell moved on meanwhile, the shell wins.
@@ -1946,33 +1968,65 @@ function trackWritingMount() {
 }
 
 const writingRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: WRITING_PLUGIN_ID, instanceId });
+const languageRef = (instanceId: string): WebviewInstanceRef => ({ pluginId: LANGUAGE_PLUGIN_ID, instanceId });
 
 /**
- * Called by the pooled Writing `SandboxView` right before the host mount. Records the instance as used and not
- * ready (the mount decides below whether a ready document is adopted), and returns the instances to keep: this one
- * plus the most recently used others, `WEBVIEW_POOL_LIMIT` in all. The host closes every other embedded webview.
+ * The part of a pooled mount that is the same for Writing and Language, run right before the host mount. It records
+ * the instance as used and not ready (the mount decides in `settlePooledMount` whether a ready document is
+ * adopted), and returns the instances to keep: this one plus the most recently used others, `WEBVIEW_POOL_LIMIT` in
+ * all. The host closes every other embedded webview.
  *
  * The entry exists before the host can create the webview, so its `ready` report is never lost. Readiness the
- * entry had before is kept aside: `writingMounted` restores it only if the host reused the webview.
+ * entry had before is returned as `priorReady`: `settlePooledMount` restores it only if the host reused the webview.
  *
  * Reuse is asked for only when the pool already knew this instance with the same mount key. A closed tab's entry is
  * pruned at once, but its unmount may still be in flight when the reopened tab (same id) mounts; adopting that
- * label would show a document whose `ready` report the shell never recorded, and Writing would wait forever.
+ * label would show a document whose `ready` report the shell never recorded, and the view would wait forever.
  */
+function beginPooledMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean; priorReady: boolean } {
+  const before = findWebviewEntry(webviewPool, self);
+  const known = Boolean(before && before.mountKey === mountKey);
+  const priorReady = known && Boolean(before?.ready);
+  webviewPool = markReady(touchWebviewPool(webviewPool, self, mountKey, Date.now()), self, false);
+  return { retain: retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT), reuse: known, priorReady };
+}
+
+/**
+ * The part of the host's answer that is the same for both plugins. The host closed every embedded webview outside
+ * the retain list; forget those. `shown` is false when the instance is no longer the one on screen or the pool
+ * dropped it meanwhile. `ready` is true when the host reused a webview whose document the pool knew had loaded: it
+ * will not report ready again. A webview that is still loading reports it later, through the state event.
+ */
+function settlePooledMount(
+  outcome: "reused" | "created",
+  self: WebviewInstanceRef,
+  retained: WebviewInstanceRef[],
+  priorReady: boolean,
+): { shown: boolean; ready: boolean } {
+  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, retained));
+  if (self.instanceId !== shownWebviewInstance || !findWebviewEntry(webviewPool, self)) {
+    return { shown: false, ready: false };
+  }
+  if (outcome === "reused" && priorReady) webviewPool = markReady(webviewPool, self, true);
+  return { shown: true, ready: outcome === "reused" && Boolean(findWebviewEntry(webviewPool, self)?.ready) };
+}
+
+/** Called by the pooled Writing `SandboxView` right before the host mount. See `beginPooledMount`. */
 function beginPooledWritingMount(
   self: WebviewInstanceRef,
   mountKey: string,
 ): { retain: WebviewInstanceRef[]; reuse: boolean } {
-  const before = findWebviewEntry(webviewPool, self);
-  const known = Boolean(before && before.mountKey === mountKey);
-  writingMountPriorReady = known && Boolean(before?.ready);
-  webviewPool = markReady(touchWebviewPool(webviewPool, self, mountKey, Date.now()), self, false);
-  writingMountRetained = retainSet(webviewPool, self, WEBVIEW_POOL_LIMIT);
-  return { retain: writingMountRetained, reuse: known };
+  const plan = beginPooledMount(self, mountKey);
+  writingMountPriorReady = plan.priorReady;
+  writingMountRetained = plan.retain;
+  return { retain: plan.retain, reuse: plan.reuse };
 }
 
 /**
- * Called by every unpooled embedded `SandboxView` (Language, the graph, Chronology, other sandbox views) right before
+ * Called by every unpooled embedded `SandboxView` (the graph, Chronology, other sandbox views) right before
  * its host mount. The mounting webview counts toward the pool limit, so the most recently used pooled instances
  * that fit beside it survive and the rest close. Without this, visiting Lore would close every hidden Writing.
  */
@@ -1984,30 +2038,73 @@ function prepareUnpooledMount(self: WebviewInstanceRef): { retain: WebviewInstan
 
 /** The host finished mounting the pooled Writing instance (`self` is the one on screen). */
 function writingMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
-  // The host closed every embedded webview outside the retain list; forget those.
-  webviewPool = removeWebviews(webviewPool, evicted(webviewPool, writingMountRetained));
-  if (self.instanceId !== shownWebviewInstance || !findWebviewEntry(webviewPool, self)) return;
-  if (outcome === "reused" && writingMountPriorReady) webviewPool = markReady(webviewPool, self, true);
+  const settled = settlePooledMount(outcome, self, writingMountRetained, writingMountPriorReady);
+  if (!settled.shown) return;
   writingMountPriorReady = false;
   writingHostedInstance = self.instanceId;
   // A reused webview already loaded its document and will not report ready again. A webview that is still
   // loading reports it later, through the state event. `writing.load` is posted by the load effect, as for a
   // new webview: the tracker above left `writingLoad` and `writingLoadKey` empty.
-  if (outcome === "reused" && findWebviewEntry(webviewPool, self)?.ready) {
+  if (settled.ready) {
     writingWebview.ready = true;
     writingReadyCount += 1;
   }
 }
 
 /**
+ * The `state` param of a Language mount. It is part of the mount key, so it must not follow the pane the user moved
+ * to inside a kept instance: that would make the next mount of the same tab look like a different document and
+ * recreate the webview. A pooled instance is mounted with the state it was created with (for the same language);
+ * the current pane reaches it through `language.resume`. Anything the pool does not know starts on the current pane.
+ */
+function languageMountState(instanceId: string): { pane: LanguagePane } {
+  const created = languageCreatedState.get(instanceId);
+  const pooled = Boolean(findWebviewEntry(webviewPool, languageRef(instanceId)));
+  return { pane: created && pooled && created.entityId === selected?.id ? created.pane : languagePane };
+}
+
+/** Called by the pooled Language `SandboxView` right before the host mount. See `beginPooledMount`. */
+function beginPooledLanguageMount(
+  self: WebviewInstanceRef,
+  mountKey: string,
+): { retain: WebviewInstanceRef[]; reuse: boolean } {
+  // Read before the pool learns the instance: this is the state the mount key was built from.
+  const state = languageMountState(self.instanceId);
+  const plan = beginPooledMount(self, mountKey);
+  languageMountPriorReady = plan.priorReady;
+  languageMountRetained = plan.retain;
+  if (!plan.reuse) languageCreatedState.set(self.instanceId, { entityId: selected?.id, pane: state.pane });
+  return { retain: plan.retain, reuse: plan.reuse };
+}
+
+/**
+ * The host finished mounting the pooled Language instance (`self` is the one on screen). A reused instance loaded
+ * long ago and reports ready only once, so it is marked ready here and told to read its data again with
+ * `language.resume`: the language and the pane's records may have changed in another tab. A created instance, or one
+ * still loading, reports ready itself, and the ready handler corrects its pane.
+ */
+function languageMounted(outcome: "reused" | "created", self: WebviewInstanceRef) {
+  const settled = settlePooledMount(outcome, self, languageMountRetained, languageMountPriorReady);
+  if (!settled.shown) return;
+  languageMountPriorReady = false;
+  languageHostedInstance = self.instanceId;
+  if (!settled.ready) return;
+  languageWebview.ready = true;
+  languagePaneRequest = null;
+  languageLeave.releaseAll();
+  const entityId = selected?.id;
+  if (entityId) void postLanguageMessage(languageResumeMessage(entityId, languagePane), self.instanceId);
+}
+
+/**
  * A `ready` report from an instance the shell is not showing. The shell ignores such events, but the pool must know
  * that instance's document loaded, or a later reuse would wait for a report that already came.
  */
-function noteHiddenWritingReady(payload: unknown) {
+function noteHiddenWebviewReady(pluginId: string, payload: unknown) {
   const instanceId = (payload as { instanceId?: unknown } | null)?.instanceId;
   if (typeof instanceId !== "string") return;
-  if (parseWritingStateEvent(payload)?.kind === "ready")
-    webviewPool = markReady(webviewPool, writingRef(instanceId), true);
+  const event = pluginId === LANGUAGE_PLUGIN_ID ? parseLanguageStateEvent(payload) : parseWritingStateEvent(payload);
+  if (event?.kind === "ready") webviewPool = markReady(webviewPool, { pluginId, instanceId }, true);
 }
 
 async function postWritingMessage(message: unknown, instanceId = shownWebviewInstance): Promise<boolean> {
@@ -7976,6 +8073,8 @@ function resetProjectSessionState() {
   // Callers close every plugin webview (`leavePluginView({ closeWebviews: true })`) before this runs.
   webviewPool = emptyWebviewPool;
   writingMountRetained = [];
+  languageMountRetained = [];
+  languageCreatedState.clear();
   shellNavigationBusy = false;
   collectionScrollBySection = {};
   pendingCollectionScroll = null;
@@ -8377,7 +8476,10 @@ onMount(() => {
     .catch(() => {});
   let unlistenLanguageState: (() => void) | undefined;
   void listen<unknown>("language-state", (event) => {
-    if (foreignWebviewInstance(event.payload)) return;
+    if (foreignWebviewInstance(event.payload)) {
+      noteHiddenWebviewReady(LANGUAGE_PLUGIN_ID, event.payload);
+      return;
+    }
     const message = parseLanguageStateEvent(event.payload);
     if (message) handleLanguageStateEvent(message);
   })
@@ -8396,7 +8498,7 @@ onMount(() => {
   let unlistenWritingState: (() => void) | undefined;
   void listen<unknown>("writing-state", (event) => {
     if (foreignWebviewInstance(event.payload)) {
-      noteHiddenWritingReady(event.payload);
+      noteHiddenWebviewReady(WRITING_PLUGIN_ID, event.payload);
       return;
     }
     const message = parseWritingStateEvent(event.payload);
@@ -10047,8 +10149,10 @@ onMount(() => {
                   viewId="language-workspace"
                   title="Language"
                   entityId={selected?.id}
-                  moduleState={{ pane: languagePane }}
-                  prepareMount={prepareUnpooledMount} />
+                  moduleState={languageMountState(shownWebviewInstance)}
+                  pooled
+                  prepareMount={beginPooledLanguageMount}
+                  onmounted={languageMounted} />
               </div>
             {/key}
           {/key}

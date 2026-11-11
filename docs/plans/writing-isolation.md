@@ -46,7 +46,14 @@ Shell to webview, as host messages (capped at 64 KiB): `writing.load` (entity
 id, token, revision, editable, placeholder, mode), `writing.flush` (request
 id), `writing.saved` (revision), `writing.conflict` (message, canOverwrite),
 `writing.save-error`, `writing.editable`, `writing.ai-state` (`enabled`, `providerName`, `templates`),
-`writing.fullscreen` (`on`), `writing.title` (entity id, title). The webview reads
+`writing.fullscreen` (`on`), `writing.title` (entity id, title). A kept webview
+(keep-alive tabs) applies `writing.load` with a keep rule: a load for the entity and
+revision the editor shows keeps the editor and its undo history (it adopts the new
+token, `editable` and `placeholder`); any other load replaces it, except that text
+the shell has not received is never discarded (the editor stays and the failure is
+reported as a save error). `writing.saved` updates the revision the editor shows
+when nothing is unsent. No message was added for hiding: the leave flush has
+already run and the host cancels the hidden instance's AI requests. The webview reads
 document text itself with `document.list`. The host does not cap broker
 responses, but the SDK client does (256 KiB by default), so Writing raises its
 client's limit to 96 MiB (`WRITING_RPC_MAX_RESPONSE_BYTES`); only the

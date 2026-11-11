@@ -63,7 +63,15 @@ export function parseLanguageMountParams(search: string): LanguageMountParams {
 
 /** Messages the shell posts into the webview (`plugin_webview_post`). */
 export type LanguageHostMessage =
-  { type: "language.pane"; pane: LanguagePane } | { type: "language.can-leave"; requestId: string };
+  | { type: "language.pane"; pane: LanguagePane }
+  | { type: "language.can-leave"; requestId: string }
+  /**
+   * The shell shows a kept webview again. The webview reads the language and the pane's data again, because
+   * another tab may have edited them while it was hidden. `entityId` is the language the tab shows.
+   */
+  | { type: "language.resume"; entityId: string; pane: LanguagePane };
+
+const MAX_RESUME_ID_LENGTH = 128;
 
 export function parseLanguageHostMessage(value: unknown): LanguageHostMessage | null {
   if (!isRecord(value)) return null;
@@ -72,6 +80,15 @@ export function parseLanguageHostMessage(value: unknown): LanguageHostMessage | 
   }
   if (value.type === "language.can-leave" && typeof value.requestId === "string" && value.requestId.length > 0) {
     return { type: "language.can-leave", requestId: value.requestId };
+  }
+  if (
+    value.type === "language.resume" &&
+    typeof value.entityId === "string" &&
+    value.entityId.length > 0 &&
+    value.entityId.length <= MAX_RESUME_ID_LENGTH &&
+    isLanguagePane(value.pane)
+  ) {
+    return { type: "language.resume", entityId: value.entityId, pane: value.pane };
   }
   return null;
 }
@@ -192,6 +209,8 @@ export interface LanguageWorkspaceBridge {
   onPaneRequest(handler: (pane: LanguagePane) => void): () => void;
   /** Subscribes to `language.can-leave` requests. Returns an unsubscribe function. */
   onLeaveRequest(handler: (requestId: string) => void): () => void;
+  /** Subscribes to `language.resume`, sent when a kept webview is shown again. Returns an unsubscribe function. */
+  onResume(handler: (entityId: string, pane: LanguagePane) => void): () => void;
   /** Publishes leave progress to the shell. */
   reportLeave(message: LeaveStatePayload): void;
 }

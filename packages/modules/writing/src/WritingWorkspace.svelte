@@ -15,6 +15,7 @@ import {
   type WritingAiMode,
 } from "./ai-flow.ts";
 import { createDraftSync } from "./draft-sync.ts";
+import { decideWritingLoad, revisionAfterSaved, WRITING_HELD_TEXT_MESSAGE } from "./load-rule.ts";
 import {
   entityIdsInMarkdown,
   loadWritingDocument,
@@ -45,8 +46,11 @@ let {
 }: { rpc: WritingDocumentRpc; bridge: WritingWorkspaceBridge; initialEntityId?: string | null } = $props();
 
 type MentionedEntity = { id: string; name: string; deleted: boolean };
-/** One load of one entry. A reload gets a new view (and so a fresh editor), as does every other entry. */
-type View = WritingDocument & { token: string; placeholder: string };
+/**
+ * One load of one entry. A load that names another entity or revision gets a new view (and so a fresh editor).
+ * A load that names this entity and the revision in `shownRevision` keeps the view (see `startLoad`).
+ */
+type View = WritingDocument & { token: string; placeholder: string; shownRevision: string };
 
 let loading = $state(false);
 let loadError = $state("");
@@ -65,6 +69,12 @@ let modeChosen = false;
 let fullscreen = $state(false);
 let conflict = $state<{ message: string; canOverwrite: boolean } | null>(null);
 let saveError = $state("");
+/**
+ * True after a load named another entity or revision while the editor held text the shell never received. The
+ * editor stays, still under its old token, and every later load keeps it too until one names the entity and
+ * revision it shows. Counted as unsent text, so nothing replaces the editor while it is set.
+ */
+let heldText = false;
 /** Text waiting to be published, then published and waiting for the shell's `writing.saved`. */
 let pending = $state(false);
 let awaitingSave = $state(false);
@@ -114,12 +124,33 @@ const sync = createDraftSync({
 const editable = $derived(shellEditable && !loading && !conflict && view !== null && aiDialog === null);
 const statusLabel = $derived(pending ? "Unsaved changes" : awaitingSave ? "Saving…" : savedNote ? "Saved" : "");
 
+/** True while the editor holds text the shell has not received, or held back after an earlier load. */
+function textWouldBeLost(): boolean {
+  editorRef?.flushPendingChanges();
+  return sync.hasUnsent() || heldText;
+}
+
 function startLoad(message: Extract<WritingHostMessage, { type: "writing.load" }>) {
+  // Changes the editor has not reported yet count as unsent text, so they are collected before deciding.
+  const decision = decideWritingLoad({
+    current: view ? { entityId: view.entityId, shownRevision: view.shownRevision } : null,
+    unsent: textWouldBeLost(),
+    incoming: { entityId: message.entityId, revision: message.revision },
+  });
+  if (decision.action === "keep" && view) {
+    keepEditor(view, message, decision.republish);
+    return;
+  }
+  if (decision.action === "hold" && view) {
+    holdEditor();
+    return;
+  }
   const seq = ++loadSeq;
   // A new load replaces the entry or its text, so a proposal made for the old one no longer fits.
   closeAiDialog();
-  // Whatever the shell had not received is the shell's to discard or have flushed first.
+  // Nothing is unsent here (see decideWritingLoad), so there is nothing to discard.
   sync.reset();
+  heldText = false;
   awaitingSave = false;
   savedNote = false;
   conflict = null;
@@ -132,6 +163,66 @@ function startLoad(message: Extract<WritingHostMessage, { type: "writing.load" }
   void show(seq, message);
 }
 
+/**
+ * The load names the entity and revision the editor shows: the text is the same, so the editor, its undo history
+ * and its selection stay. The new load token is adopted (drafts carry it) and the shell's editable flag and
+ * placeholder are applied. The reading mode is the user's choice inside this webview and is not reset. An open AI
+ * dialog stays: a run the hide cancelled shows its cancellation, and an accepted proposal still fits this text.
+ */
+function keepEditor(source: View, message: Extract<WritingHostMessage, { type: "writing.load" }>, republish: boolean) {
+  // Invalidates a load still in flight for another entry, so it cannot replace the editor that was just kept.
+  const seq = ++loadSeq;
+  loading = false;
+  loadError = "";
+  requested = true;
+  source.token = message.token;
+  source.placeholder = message.placeholder;
+  if (aiDialog) aiDialog.token = message.token;
+  if (aiSnapshot) aiSnapshot.token = message.token;
+  awaitingSave = false;
+  savedNote = false;
+  conflict = null;
+  saveError = "";
+  shellEditable = message.editable;
+  if (!modeChosen) {
+    mode = message.mode;
+    modeChosen = true;
+  }
+  if (republish) {
+    // Whatever was unsent (or held back by an earlier load) belongs to this entity and revision again, so it is
+    // sent under the new token. `source.markdown` is the editor's latest text.
+    heldText = false;
+    sync.change(source.entityId, source.token, source.markdown);
+    void sync.publishNow();
+  }
+  void resolveMentions(seq, source.markdown);
+  void refreshTitle(seq, source);
+}
+
+/**
+ * The load names another entity or revision while text is unsent. The editor and its text stay and the failure is
+ * reported; the text is not published, because the shell would drop a draft under a token that is no longer the
+ * editor's, and a draft under the new one would overwrite a revision this editor never saw.
+ */
+function holdEditor() {
+  ++loadSeq;
+  loading = false;
+  loadError = "";
+  heldText = true;
+  saveError = WRITING_HELD_TEXT_MESSAGE;
+}
+
+/** A rename made while this editor was hidden is not announced to it, so a kept editor reads the name again. */
+async function refreshTitle(seq: number, source: View) {
+  try {
+    const entity = await rpc.call<{ name?: string; deleted?: boolean } | null>("entity.get", { id: source.entityId });
+    if (seq !== loadSeq || source !== view || !entity || entity.deleted === true) return;
+    if (typeof entity.name === "string" && entity.name !== "") source.title = entity.name;
+  } catch {
+    // The header keeps the name it had.
+  }
+}
+
 async function show(seq: number, message: Extract<WritingHostMessage, { type: "writing.load" }>) {
   requested = true;
   loading = true;
@@ -139,12 +230,17 @@ async function show(seq: number, message: Extract<WritingHostMessage, { type: "w
   try {
     const document = await loadWritingDocument(rpc, message.entityId, normalizeDocument);
     if (seq !== loadSeq) return;
-    view = document ? { ...document, token: message.token, placeholder: message.placeholder } : null;
+    // Text typed while the entry loaded must not go with the editor it was typed into.
+    if (view && textWouldBeLost()) return holdEditor();
+    view = document
+      ? { ...document, token: message.token, placeholder: message.placeholder, shownRevision: message.revision }
+      : null;
     if (!document) loadError = "This entry is no longer available.";
     mentioned = [];
     if (document) void resolveMentions(seq, document.markdown);
   } catch (cause) {
     if (seq !== loadSeq) return;
+    if (view && textWouldBeLost()) return holdEditor();
     view = null;
     mentioned = [];
     loadError = cause instanceof Error ? cause.message : String(cause);
@@ -303,10 +399,18 @@ function handleHostMessage(message: WritingHostMessage) {
       if (message.editable) conflict = null;
       return;
     case "writing.saved":
-      if (message.entityId !== view?.entityId) return;
+      if (!view || message.entityId !== view.entityId) return;
       conflict = null;
-      saveError = "";
-      if (!sync.hasUnsent()) {
+      // A held editor keeps its error: its text is not what the shell saved.
+      if (!heldText) saveError = "";
+      // The saved revision is the one the next load will name, so the editor is kept on return (see load-rule.ts).
+      const revision = revisionAfterSaved(
+        { entityId: view.entityId, shownRevision: view.shownRevision },
+        message,
+        sync.hasUnsent() || heldText,
+      );
+      if (revision !== null) view.shownRevision = revision;
+      if (!sync.hasUnsent() && !heldText) {
         awaitingSave = false;
         savedNote = true;
       }

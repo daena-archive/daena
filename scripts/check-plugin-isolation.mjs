@@ -292,6 +292,12 @@ assert.match(
   /<SandboxView\s+pluginId="daena\.language"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="language-workspace"/,
   "the Languages content pane must mount the isolated daena.language webview",
 );
+// Language is pooled like Writing: it hides on leave, and its mount reports back so a reused instance is resumed.
+assert.match(
+  route,
+  /<SandboxView\s+pluginId="daena\.language"\s+instanceId=\{shownWebviewInstance\}\s+holdMount=\{shellNavigationBusy\}\s+viewId="language-workspace"\s+title="Language"\s+entityId=\{selected\?\.id\}\s+moduleState=\{languageMountState\(shownWebviewInstance\)\}\s+pooled\s+prepareMount=\{beginPooledLanguageMount\}\s+onmounted=\{languageMounted\}\s*\/>/,
+  "the Language content pane must be a pooled SandboxView with its own mount hooks",
+);
 assert.doesNotMatch(route, /<ModuleMount\b/, "the shell must not mount Language through the trusted ModuleMount");
 assert.doesNotMatch(route, /projectionModule\("language"\)/, "Language must not be a trusted projection");
 assert.match(route, /listen<unknown>\(\s*"language-state"/, "the shell must listen for the Language webview state");

@@ -91,6 +91,14 @@ export function parseLanguageStateEvent(payload: unknown): LanguageStateEvent | 
   }
 }
 
+/**
+ * The `language.resume` the shell posts when it shows a kept Language webview again: the language the tab shows and
+ * the pane the shell has for it. The webview reads both again, because another tab may have edited them.
+ */
+export function languageResumeMessage(entityId: string, pane: LanguageBridgePane) {
+  return { type: "language.resume", entityId, pane } as const;
+}
+
 export type LanguageLeaveTimers = PluginLeaveTimers;
 
 /** Tracks can-leave requests sent to the Language webview; see `PluginLeaveTracker`. */

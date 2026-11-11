@@ -10,7 +10,6 @@ import { installShellEditorHost, setShellEntityOpener, shellEditorHost } from "$
 import {
   project,
   type Entity,
-  type EntityPage,
   type Relationship,
   type MapLocation,
   type ProjectModuleManifest,
@@ -48,23 +47,17 @@ import {
   groupedRelationshipFields,
   manifestOwningRelationshipType,
 } from "$lib/modules/contributed-fields";
-import { toHostRelationship } from "$lib/modules/host-relationship";
 import {
-  appearanceLabel,
   buildManuscriptOutline,
   collectOutlineIds,
   collectPartOfEdges,
-  containmentNames,
   defaultExpandedOutlineIds,
   isManuscriptType,
   MANUSCRIPT_OUTLINE_CAP,
   outlinePathIds,
   outlineRoleLabel,
   paginateOutlineRoots,
-  parentByChild,
-  partOfEdgesFromRelationships,
   WRITING_FEATURES,
-  WRITING_PART_OF,
   type OutlineNode,
 } from "$lib/writing/outline";
 import {
@@ -75,9 +68,7 @@ import {
   shellHistoryForward,
   type ShellLocation,
   type ShellNavigationHistory,
-  type WorkspaceCollectionLocation,
   type WorkspaceLocationView,
-  type WorkspacePaneDimensions,
 } from "$lib/navigation/history";
 import { openIntent, type OpenIntent } from "$lib/navigation/open-intent";
 import { isTabShortcut, tabShortcutForKey, type TabShortcut } from "$lib/navigation/tab-shortcuts";
@@ -113,16 +104,12 @@ import {
   collectionEntityTypes,
   collectionTabForEntityType,
   presentCollectionPage,
-  DEFAULT_COLLECTION_QUERY,
   type LanguagePane,
   type TimelineView,
   type WorkspaceSection,
   type ProjectSection,
   type SettingsSection,
-  type CollectionQuery,
   type CollectionResult,
-  type SortDirection,
-  type SortField,
   type WritingView,
   workspaceCollectionTabs,
   workspaceSectionDescription,
@@ -139,16 +126,10 @@ import {
   type NavigationRenderer,
 } from "$lib/modules/workspace-presentation";
 import {
-  collectionPaneDefault,
   collectionPaneMax,
   collectionPaneMin,
-  inspectorPaneDefault,
   inspectorPaneMax,
   inspectorPaneMin,
-  loadCollectionQuery,
-  loadWorkbenchLayout,
-  saveWorkbenchLayout,
-  type WorkbenchPane,
 } from "$lib/shell/workbench-persistence";
 import {
   chronologyWarnings,
@@ -271,14 +252,7 @@ import {
   type UpdateChannelPreference,
 } from "$lib/appUpdate.ts";
 import { formatHouseMemberSummary, houseMemberSummaries } from "$lib/houses/fetch.ts";
-import {
-  treeHistoryKey,
-  sameTreeSession,
-  HOUSE_TYPE,
-  PERSON_TYPE,
-  type TreeSession,
-  type HouseMemberSummary,
-} from "$lib/houses/model.ts";
+import { treeHistoryKey, sameTreeSession, HOUSE_TYPE, PERSON_TYPE, type TreeSession } from "$lib/houses/model.ts";
 import TreeSurface from "$lib/houses/TreeSurface.svelte";
 import EntityAvatar from "$lib/EntityAvatar.svelte";
 import EntityArchiveAction from "$lib/entity-lifecycle/EntityArchiveAction.svelte";
@@ -557,6 +531,15 @@ const loc: LocationStore = new LocationStore({
   get section() {
     return section;
   },
+  get writingView() {
+    return writingView;
+  },
+  get ready() {
+    return ready;
+  },
+  get projectInfo() {
+    return projectInfo;
+  },
   get sandboxView() {
     return sandboxView;
   },
@@ -577,7 +560,7 @@ const loc: LocationStore = new LocationStore({
   applyCollectionTabForEntityType: (entityType) => applyCollectionTabForEntityType(entityType),
   closeAiFieldFill: () => closeAiFieldFill(),
   closeAiRewrite: () => closeAiRewrite(),
-  contextFor: () => contextFor(),
+  contextFor: (target) => contextFor(target),
   contextOwningRelationshipType: (relationshipType) => contextOwningRelationshipType(relationshipType),
   activeManifest: () => activeManifest(),
   activeModuleId: () => activeModuleId(),
@@ -586,11 +569,12 @@ const loc: LocationStore = new LocationStore({
   namespaceForField: (definition) => namespaceForField(definition),
   sectionEnabled: () => sectionEnabled(),
   mapsEnabled: () => mapsEnabled(),
+  sectionEntityTypes: () => sectionEntityTypes(),
+  activeTabEntityTypes: () => activeTabEntityTypes(),
+  specializedSurfaceKey: () => specializedSurfaceKey(),
   upsertEntityInCache: (entity) => upsertEntityInCache(entity),
   refreshAfterEntityMutation: (options) => refreshAfterEntityMutation(options),
-  bumpKinshipRefresh: () => bumpKinshipRefresh(),
   loadEraContexts: (eraIds) => loadEraContexts(eraIds),
-  refreshWritingAppearanceLabels: () => refreshWritingAppearanceLabels(),
   notifyWritingSaved: (entityId) => notifyWritingSaved(entityId),
   notifyProfileTimelineChanged: (eventId) => notifyProfileTimelineChanged(eventId),
   loadProjectStatus: (includeGit) => loadProjectStatus(includeGit),
@@ -602,87 +586,9 @@ let modules = $state<InstalledModule[]>([]);
 let globalQuery = $state("");
 let quickOpenOpen = $state(false);
 let quickOpenSearchLoading = $state(false);
-let filterOpen = $state(false);
-let expandedGroups = $state<Set<string>>(new Set());
 let railCollapsed = $state(localStorage.getItem("daena:rail-collapsed") === "true");
 
-let collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
-const emptyEntityPage = (): EntityPage => ({
-  items: [],
-  total: 0,
-  offset: 0,
-  limit: DEFAULT_COLLECTION_QUERY.pageSize,
-  has_more: false,
-  type_counts: [],
-});
-let collectionPage = $state<EntityPage>(emptyEntityPage());
-let collectionLoading = $state(false);
-let collectionError = $state("");
-let collectionRequest = 0;
-/** Bumped to re-query the visible collection page without reloading every entity. */
-let collectionRefreshEpoch = $state(0);
-/** Bumped when kinship relationships or tree-relevant entities change outside TreeSurface. */
-let kinshipRefreshEpoch = $state(0);
-let houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
-let houseSummaryRequest = 0;
-let houseSummariesPending = $state(false);
-let manuscriptOutline = $state<OutlineNode[]>([]);
-let manuscriptOutlineEntities = $state<Entity[]>([]);
-let manuscriptOutlineRequest = 0;
-let manuscriptOutlineLoading = $state(false);
-let manuscriptOutlineTruncated = $state(false);
-let manuscriptOutlineLibraryKey = "";
-let manuscriptExpanded = $state(new Set<string>());
-let manuscriptPathLabels = $state<Record<string, string>>({});
-let pendingManuscriptParentId = $state<string | null>(null);
-let writingAppearanceLabels = $state<Record<string, string>>({});
-
-let collectionScopeKey = "";
-let collectionQueryRestoring = false;
-let collectionListElement = $state<HTMLDivElement | null>(null);
-let collectionPaneElement = $state<HTMLElement | null>(null);
-let contentPaneElement = $state<HTMLElement | null>(null);
-let inspectorPaneElement = $state<HTMLElement | null>(null);
-let collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
-let pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
-let restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
 let workbenchViewportWidth = $state(window.innerWidth);
-const initialWorkbenchLayout = loadWorkbenchLayout("lore");
-let workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>(initialWorkbenchLayout.visibility);
-let workbenchPaneWidths = $state({
-  collection: initialWorkbenchLayout.collectionWidth,
-  inspector: initialWorkbenchLayout.inspectorWidth,
-});
-let specializedSurfaceElement = $state<HTMLElement | null>(null);
-let specializedSurfaceScrollByKey = $state<Record<string, number>>({});
-let pendingSpecializedSurfaceScroll = $state<{ key: string; scrollTop: number } | null>(null);
-
-$effect(() => {
-  const q = collectionQuery;
-  try {
-    const serializable = { ...q, excludedTypes: [...q.excludedTypes] };
-    localStorage.setItem(`daena:collection-query:${q.section}`, JSON.stringify(serializable));
-  } catch {}
-});
-
-$effect(() => {
-  collectionQueryRestoring = true;
-  collectionQuery = loadCollectionQuery(section);
-  expandedGroups = new Set();
-  void tick().then(() => {
-    collectionQueryRestoring = false;
-  });
-});
-
-$effect(() => {
-  const layout = loadWorkbenchLayout(section);
-  workbenchPaneVisibility = layout.visibility;
-  workbenchPaneWidths = {
-    collection: layout.collectionWidth,
-    inspector: layout.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = null;
-});
 let name = $state("");
 let selectedCreateKey = $state("");
 let createFieldValues = $state<Record<string, unknown>>({});
@@ -1615,7 +1521,7 @@ function projectionSandboxOpen(key?: ProjectionSandboxKey): boolean {
 const languagePaneShown = $derived(
   ready &&
     section === "language" &&
-    workbenchPaneVisibility.content &&
+    loc.workbenchPaneVisibility.content &&
     !projectHomeOpen &&
     !showSettings &&
     !hostView &&
@@ -1637,7 +1543,7 @@ const writingEntrySelected = $derived(section === "writing" && writingWebviewHan
 const writingWebviewShown = $derived(
   writingEntrySelected &&
     ready &&
-    workbenchPaneVisibility.content &&
+    loc.workbenchPaneVisibility.content &&
     !projectHomeOpen &&
     !showSettings &&
     !hostView &&
@@ -2473,111 +2379,18 @@ function restoreModuleState(section: WorkspaceSection, state: Record<string, unk
   }
 }
 
-function currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
-  const pendingScrollTop = pendingCollectionScroll?.section === section ? pendingCollectionScroll.scrollTop : null;
-  return {
-    query: {
-      textSearch: collectionQuery.textSearch,
-      sortField: collectionQuery.sortField,
-      sortDir: collectionQuery.sortDir,
-      pageSize: collectionQuery.pageSize,
-      page: collectionQuery.page,
-      excludedTypes: [...collectionQuery.excludedTypes].sort(),
-      viewMode: collectionQuery.viewMode,
-    },
-    expandedGroups: [...expandedGroups].sort(),
-    scrollTop: pendingScrollTop ?? collectionListElement?.scrollTop ?? collectionScrollBySection[section] ?? 0,
-  };
-}
-
-function measuredPaneWidth(element: HTMLElement | null, fallback: number) {
-  const width = element?.getBoundingClientRect().width ?? 0;
-  return width > 0 ? Math.round(width) : fallback;
-}
-
-function currentWorkspacePaneDimensions(): WorkspacePaneDimensions {
-  const fallback = restoredWorkspacePaneDimensions;
-  return {
-    collectionWidth: measuredPaneWidth(collectionPaneElement, fallback?.collectionWidth ?? 0),
-    contentWidth: measuredPaneWidth(contentPaneElement, fallback?.contentWidth ?? 0),
-    inspectorWidth: measuredPaneWidth(inspectorPaneElement, fallback?.inspectorWidth ?? 0),
-    viewportWidth: typeof window === "undefined" ? (fallback?.viewportWidth ?? 0) : window.innerWidth,
-  };
-}
-
-async function restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
-  const viewportWidth = typeof window === "undefined" ? panes.viewportWidth : window.innerWidth;
-  restoredWorkspacePaneDimensions =
-    panes.viewportWidth > 0 && Math.abs(panes.viewportWidth - viewportWidth) <= 2 ? { ...panes } : null;
-  await tick();
-}
-
-function persistWorkbenchLayout() {
-  saveWorkbenchLayout(section, {
-    visibility: workbenchPaneVisibility,
-    collectionWidth: workbenchPaneWidths.collection,
-    inspectorWidth: workbenchPaneWidths.inspector,
-  });
-}
-
-function activePaneDimensions(): WorkspacePaneDimensions {
-  return {
-    collectionWidth: restoredWorkspacePaneDimensions?.collectionWidth || workbenchPaneWidths.collection,
-    contentWidth: restoredWorkspacePaneDimensions?.contentWidth || 640,
-    inspectorWidth: restoredWorkspacePaneDimensions?.inspectorWidth || workbenchPaneWidths.inspector,
-    viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
-  };
-}
-
 function workbenchSupportsInspector() {
   return section !== "language" && (section !== "maps" || sandboxView?.renderer !== "maps");
-}
-
-function resizeWorkbenchPane(pane: "collection" | "inspector", delta: number) {
-  const panes = activePaneDimensions();
-  if (pane === "collection")
-    panes.collectionWidth = Math.max(collectionPaneMin, Math.min(collectionPaneMax, panes.collectionWidth + delta));
-  else panes.inspectorWidth = Math.max(inspectorPaneMin, Math.min(inspectorPaneMax, panes.inspectorWidth + delta));
-  workbenchPaneWidths = {
-    collection: panes.collectionWidth,
-    inspector: panes.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = panes;
-  persistWorkbenchLayout();
-}
-
-function resetWorkbenchPane(pane: "collection" | "inspector") {
-  const panes = activePaneDimensions();
-  if (pane === "collection") panes.collectionWidth = collectionPaneDefault;
-  else panes.inspectorWidth = inspectorPaneDefault;
-  workbenchPaneWidths = {
-    collection: panes.collectionWidth,
-    inspector: panes.inspectorWidth,
-  };
-  restoredWorkspacePaneDimensions = panes;
-  persistWorkbenchLayout();
-}
-
-async function toggleWorkbenchPane(pane: WorkbenchPane) {
-  // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
-  if (pane === "content" && workbenchPaneVisibility.content) {
-    if (!(await loc.flushAutoSave())) return;
-    if (!(await canLeaveLanguageSection())) return;
-  }
-  const visible = !workbenchPaneVisibility[pane];
-  workbenchPaneVisibility = { ...workbenchPaneVisibility, [pane]: visible };
-  persistWorkbenchLayout();
-  if (pane === "content" && !visible) loc.editorFullscreen = false;
 }
 
 function workspaceGridStyle() {
   if (mapSurfaceOpen) return undefined;
   // Full screen hides the other panes, so the content column is the only track.
   if (writingFullscreenShown) return "grid-template-columns: minmax(0, 1fr)";
-  const panes = activePaneDimensions();
-  const collectionVisible = workbenchPaneVisibility.collection;
-  const contentVisible = workbenchPaneVisibility.content;
-  const inspectorVisible = workbenchPaneVisibility.inspector && workbenchSupportsInspector();
+  const panes = loc.activePaneDimensions();
+  const collectionVisible = loc.workbenchPaneVisibility.collection;
+  const contentVisible = loc.workbenchPaneVisibility.content;
+  const inspectorVisible = loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector();
   const columns: string[] = [];
   if (workbenchViewportWidth <= 1180) {
     if (collectionVisible && contentVisible) return "grid-template-columns: 220px minmax(320px, 1fr)";
@@ -2592,29 +2405,6 @@ function workspaceGridStyle() {
   return `grid-template-columns: ${columns.length ? columns.join(" ") : "minmax(0, 1fr)"}`;
 }
 
-function rememberCollectionScroll() {
-  if (!collectionListElement) return;
-  collectionScrollBySection[section] = collectionListElement.scrollTop;
-}
-
-function queueCollectionScroll(target: WorkspaceSection, scrollTop: number) {
-  collectionScrollBySection[target] = scrollTop;
-  pendingCollectionScroll = { section: target, scrollTop };
-}
-
-async function applyWorkspaceCollectionLocation(location: WorkspaceCollectionLocation) {
-  collectionQueryRestoring = true;
-  collectionQuery = {
-    section,
-    ...location.query,
-    excludedTypes: [...location.query.excludedTypes],
-  };
-  expandedGroups = new Set(location.expandedGroups);
-  queueCollectionScroll(section, location.scrollTop);
-  await tick();
-  collectionQueryRestoring = false;
-}
-
 function specializedSurfaceKey(): string | null {
   if (hostView) return `plugin:${hostView.plugin.id}:${hostView.view.id}`;
   const projection = projectionSandboxKey();
@@ -2627,49 +2417,6 @@ function specializedSurfaceKey(): string | null {
   return null;
 }
 
-function specializedSurfaceKeyForLocation(location: ShellLocation): string | null {
-  if (location.kind === "plugin") return `plugin:${location.key}`;
-  if (location.kind !== "workspace") return null;
-  if (
-    location.view === "wiki" ||
-    location.view === "graph" ||
-    location.view === "timeline" ||
-    location.view === "tree"
-  ) {
-    return `workspace:${location.section}:${location.view}`;
-  }
-  return null;
-}
-
-function currentSpecializedSurfaceScrollTop() {
-  const key = specializedSurfaceKey();
-  if (!key) return 0;
-  return pendingSpecializedSurfaceScroll?.key === key
-    ? pendingSpecializedSurfaceScroll.scrollTop
-    : (specializedSurfaceElement?.scrollTop ?? specializedSurfaceScrollByKey[key] ?? 0);
-}
-
-function rememberSpecializedSurfaceScroll(scrollTop: number) {
-  const key = specializedSurfaceKey();
-  if (!key) return;
-  specializedSurfaceScrollByKey[key] = scrollTop;
-  if (pendingSpecializedSurfaceScroll?.key === key) pendingSpecializedSurfaceScroll = null;
-}
-
-async function restoreSpecializedSurfaceScroll(location: ShellLocation) {
-  if (location.kind === "home" || location.kind === "settings" || location.kind === "project") return;
-  const key = specializedSurfaceKeyForLocation(location);
-  if (!key) return;
-  pendingSpecializedSurfaceScroll = { key, scrollTop: location.surfaceScrollTop };
-  specializedSurfaceScrollByKey[key] = location.surfaceScrollTop;
-  await tick();
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-  if (specializedSurfaceKey() !== key || !specializedSurfaceElement) return;
-  specializedSurfaceElement.scrollTop = location.surfaceScrollTop;
-  specializedSurfaceScrollByKey[key] = specializedSurfaceElement.scrollTop;
-  pendingSpecializedSurfaceScroll = null;
-}
-
 function currentShellLocation(): ShellLocation {
   if (showSettings && settingsSurface === "project") return { kind: "project", section: projectSection };
   if (showSettings) return { kind: "settings", section: settingsSection };
@@ -2680,7 +2427,7 @@ function currentShellLocation(): ShellLocation {
       key: `${hostView.plugin.id}:${hostView.view.id}`,
       section,
       entityId: loc.selected?.id ?? null,
-      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
+      surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
     };
   }
   if (sandboxView?.view && !projectionSandboxOpen()) {
@@ -2689,7 +2436,7 @@ function currentShellLocation(): ShellLocation {
       key: `${sandboxView.plugin.id}:${sandboxView.view.id}`,
       section,
       entityId: loc.selected?.id ?? null,
-      surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
+      surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
       moduleState: null,
     };
   }
@@ -2700,9 +2447,9 @@ function currentShellLocation(): ShellLocation {
     entityId: section === "houses" && housesView === "tree" ? treeRootId : (loc.selected?.id ?? null),
     writingView,
     timelineView,
-    collection: currentWorkspaceCollectionLocation(),
-    panes: currentWorkspacePaneDimensions(),
-    surfaceScrollTop: currentSpecializedSurfaceScrollTop(),
+    collection: loc.currentWorkspaceCollectionLocation(),
+    panes: loc.currentWorkspacePaneDimensions(),
+    surfaceScrollTop: loc.currentSpecializedSurfaceScrollTop(),
     moduleState: currentModuleState(),
   };
 }
@@ -3018,7 +2765,7 @@ $effect(() => {
   }
   if (languageListRefreshed) return;
   languageListRefreshed = true;
-  bumpCollectionRefresh();
+  loc.bumpCollectionRefresh();
   if (!loc.selected && collectionResult().entities.length > 0)
     void loc.selectEntity(collectionResult().entities[0], false);
 });
@@ -3090,365 +2837,154 @@ $effect(() => {
 });
 
 $effect(() => {
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const scopeKey = JSON.stringify([
-    section,
-    entityTypes,
-    collectionQuery.textSearch.trim(),
-    collectionQuery.sortField,
-    collectionQuery.sortDir,
-    collectionQuery.pageSize,
-    collectionQuery.excludedTypes,
-  ]);
-  if (collectionScopeKey && collectionScopeKey !== scopeKey && !collectionQueryRestoring) {
-    collectionPage = emptyEntityPage();
-    if (collectionQuery.page !== 0) collectionQuery.page = 0;
-  }
-  collectionScopeKey = scopeKey;
-});
-
-$effect(() => {
-  void collectionRefreshEpoch;
-  const active = ready && Boolean(projectInfo);
-  const page = collectionQuery.page;
-  const limit = collectionQuery.pageSize;
-  const entityTypes = collectionEntityTypes({
-    entityTypes: new Set(sectionEntityTypes()),
-    tabEntityTypes: activeTabEntityTypes(),
-  });
-  const query = collectionQuery.textSearch.trim();
-  const excludedEntityTypes = [...collectionQuery.excludedTypes];
-  const sortField = collectionQuery.sortField;
-  const sortDirection = collectionQuery.sortDir;
-  const request = ++collectionRequest;
-  collectionError = "";
-  const structureOutline =
-    section === "writing" &&
-    writingView === "manuscripts" &&
-    collectionQuery.viewMode === "grouped" &&
-    !collectionQuery.textSearch.trim();
-  if (!active) {
-    collectionPage = emptyEntityPage();
-    collectionLoading = false;
-    return;
-  }
-  if (structureOutline) {
-    collectionLoading = false;
-    return;
-  }
-  collectionLoading = true;
-  const timer = window.setTimeout(
-    () => {
-      void project
-        .queryEntities({
-          query: query || undefined,
-          entityTypes,
-          excludedEntityTypes,
-          sortField,
-          sortDirection,
-          offset: page * limit,
-          limit,
-        })
-        .then((result) => {
-          if (request !== collectionRequest) return;
-          if (page > 0 && result.items.length === 0 && result.total > 0) {
-            collectionQuery.page = Math.max(0, Math.ceil(result.total / limit) - 1);
-            return;
-          }
-          collectionPage = result;
-          for (const entity of result.items) upsertEntityInCache(entity);
-        })
-        .catch((cause) => {
-          if (request !== collectionRequest) return;
-          collectionPage = emptyEntityPage();
-          collectionError = friendlyError(cause);
-        })
-        .finally(() => {
-          if (request === collectionRequest) collectionLoading = false;
-        });
-    },
-    query ? 180 : 0,
-  );
-  return () => window.clearTimeout(timer);
-});
-
-$effect(() => {
   const housesSection = ready && section === "houses" && housesView === "houses";
-  const ids = collectionPage.items
+  const ids = loc.collectionPage.items
     .filter((entity) => {
       const type = entity.entity_type ?? "";
       return type === HOUSE_TYPE || type.endsWith(":house");
     })
     .map((entity) => entity.id);
-  void collectionRefreshEpoch;
+  void loc.collectionRefreshEpoch;
   if (!housesSection || ids.length === 0) {
-    if (!housesSection) houseCollectionSummaries = new Map();
-    houseSummariesPending = false;
+    if (!housesSection) loc.houseCollectionSummaries = new Map();
+    loc.houseSummariesPending = false;
     return;
   }
-  const request = ++houseSummaryRequest;
-  houseSummariesPending = true;
+  const request = ++loc.houseSummaryRequest;
+  loc.houseSummariesPending = true;
   const context = buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
     availableServices: enabledServices(),
   });
   void houseMemberSummaries(context, ids)
     .then((summaries) => {
-      if (request !== houseSummaryRequest) return;
-      houseCollectionSummaries = summaries;
+      if (request !== loc.houseSummaryRequest) return;
+      loc.houseCollectionSummaries = summaries;
     })
     .catch(() => {
-      if (request !== houseSummaryRequest) return;
-      houseCollectionSummaries = new Map();
+      if (request !== loc.houseSummaryRequest) return;
+      loc.houseCollectionSummaries = new Map();
     })
     .finally(() => {
-      if (request === houseSummaryRequest) houseSummariesPending = false;
+      if (request === loc.houseSummaryRequest) loc.houseSummariesPending = false;
     });
 });
 
-async function queryWritingPartOf(entityIds: string[]) {
-  if (entityIds.length === 0 || !projectInfo?.root) return [];
-  const context = contextFor("writing");
-  const items: Array<{
-    id: string;
-    sourceId: string;
-    targetId: string;
-    type: string;
-    metadata?: unknown;
-  }> = [];
-  let offset = 0;
-  while (true) {
-    const page = await context.relationships.query({
-      entityIds: entityIds as UUID[],
-      relationshipTypes: [WRITING_PART_OF],
-      direction: "any",
-      offset,
-      limit: 200,
-    });
-    items.push(...page.items);
-    if (!page.hasMore || page.items.length === 0) break;
-    offset += page.items.length;
-  }
-  return partOfEdgesFromRelationships(
-    items.map((relationship) => ({
-      id: relationship.id,
-      source_id: relationship.sourceId,
-      target_id: relationship.targetId,
-      relationship_type: relationship.type,
-      metadata: relationship.metadata,
-    })),
-  );
-}
-
-async function listManuscriptOutlineSummaries(
-  entityTypes: string[],
-  excludedEntityTypes: string[],
-  sortField: SortField,
-  sortDirection: SortDirection,
-): Promise<{ items: Entity[]; truncated: boolean }> {
-  const items: Entity[] = [];
-  let offset = 0;
-  while (items.length < MANUSCRIPT_OUTLINE_CAP) {
-    const limit = Math.min(200, MANUSCRIPT_OUTLINE_CAP - items.length);
-    const page = await project.queryEntities({
-      entityTypes,
-      excludedEntityTypes,
-      sortField,
-      sortDirection,
-      offset,
-      limit,
-    });
-    items.push(...page.items);
-    if (!page.has_more || page.items.length === 0) return { items, truncated: false };
-    offset += page.items.length;
-  }
-  return { items, truncated: true };
-}
-
-async function manuscriptContainmentLabels(seed: string[]): Promise<Record<string, string>> {
-  const edges = await collectPartOfEdges(seed, queryWritingPartOf);
-  const ids = new Set(seed);
-  for (const edge of edges) {
-    ids.add(edge.sourceId);
-    ids.add(edge.targetId);
-  }
-  const names = new Map<string, string>();
-  for (const entity of [...manuscriptOutlineEntities, ...entities, ...collectionPage.items]) {
-    if (ids.has(entity.id)) names.set(entity.id, entity.name);
-  }
-  const missing = [...ids].filter((id) => !names.has(id));
-  for (let index = 0; index < missing.length; index += 500) {
-    const loaded = await contextFor("writing").entities.getMany(missing.slice(index, index + 500) as UUID[]);
-    for (const entity of loaded) names.set(entity.id, entity.name);
-  }
-  const parents = parentByChild(edges);
-  const labels: Record<string, string> = {};
-  for (const id of seed) labels[id] = appearanceLabel(containmentNames(id, parents, names));
-  return labels;
-}
-
-async function refreshWritingAppearanceLabels() {
-  if (!loc.selected) {
-    writingAppearanceLabels = {};
-    return;
-  }
-  const sources = [
-    ...new Set(
-      loc.relationships
-        .filter(
-          (relationship) =>
-            relationship.relationship_type === WRITING_FEATURES && relationship.target_id === loc.selected!.id,
-        )
-        .map((relationship) => relationship.source_id),
-    ),
-  ];
-  if (sources.length === 0) {
-    writingAppearanceLabels = {};
-    return;
-  }
-  try {
-    const edges = await collectPartOfEdges(sources, queryWritingPartOf);
-    const ids = new Set(sources);
-    for (const edge of edges) {
-      ids.add(edge.sourceId);
-      ids.add(edge.targetId);
-    }
-    const names = new Map<string, string>();
-    for (const entity of entities) {
-      if (ids.has(entity.id)) names.set(entity.id, entity.name);
-    }
-    const missing = [...ids].filter((id) => !names.has(id));
-    if (missing.length > 0) {
-      const loaded = await contextFor("writing").entities.getMany(missing as UUID[]);
-      for (const entity of loaded) names.set(entity.id, entity.name);
-    }
-    const parents = parentByChild(edges);
-    const labels: Record<string, string> = {};
-    for (const id of sources) labels[id] = appearanceLabel(containmentNames(id, parents, names));
-    writingAppearanceLabels = labels;
-  } catch {
-    writingAppearanceLabels = {};
-  }
-}
-
 function relationshipRowTitle(relationship: Relationship, definition: FieldDefinition) {
   const otherId = relationshipOtherId(definition, relationship);
-  if (relationship.relationship_type === WRITING_FEATURES && writingAppearanceLabels[otherId]) {
-    return writingAppearanceLabels[otherId];
+  if (relationship.relationship_type === WRITING_FEATURES && loc.writingAppearanceLabels[otherId]) {
+    return loc.writingAppearanceLabels[otherId];
   }
   return relationshipTargetName(relationship, definition);
 }
 
 $effect(() => {
   const onManuscripts = ready && Boolean(projectInfo) && section === "writing" && writingView === "manuscripts";
-  const search = collectionQuery.textSearch.trim();
-  const grouped = collectionQuery.viewMode === "grouped";
+  const search = loc.collectionQuery.textSearch.trim();
+  const grouped = loc.collectionQuery.viewMode === "grouped";
   const entityTypes = collectionEntityTypes({
     entityTypes: new Set(sectionEntityTypes()),
     tabEntityTypes: activeTabEntityTypes(),
   });
-  const excludedEntityTypes = [...collectionQuery.excludedTypes];
-  const sortField = collectionQuery.sortField;
-  const sortDirection = collectionQuery.sortDir;
-  const pageItems = collectionPage.items;
-  void collectionRefreshEpoch;
+  const excludedEntityTypes = [...loc.collectionQuery.excludedTypes];
+  const sortField = loc.collectionQuery.sortField;
+  const sortDirection = loc.collectionQuery.sortDir;
+  const pageItems = loc.collectionPage.items;
+  void loc.collectionRefreshEpoch;
   if (!onManuscripts) {
     if (section !== "writing" || writingView !== "manuscripts") {
-      manuscriptOutline = [];
-      manuscriptOutlineEntities = [];
-      manuscriptOutlineTruncated = false;
-      manuscriptOutlineLibraryKey = "";
-      manuscriptPathLabels = {};
-      manuscriptOutlineLoading = false;
+      loc.manuscriptOutline = [];
+      loc.manuscriptOutlineEntities = [];
+      loc.manuscriptOutlineTruncated = false;
+      loc.manuscriptOutlineLibraryKey = "";
+      loc.manuscriptPathLabels = {};
+      loc.manuscriptOutlineLoading = false;
     }
     return;
   }
-  const request = ++manuscriptOutlineRequest;
+  const request = ++loc.manuscriptOutlineRequest;
   if (search) {
-    manuscriptOutline = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
+    loc.manuscriptOutline = [];
+    loc.manuscriptOutlineTruncated = false;
+    loc.manuscriptOutlineLoading = false;
     const seed = pageItems.map((entity) => entity.id);
     if (seed.length === 0) {
-      manuscriptPathLabels = {};
+      loc.manuscriptPathLabels = {};
       return;
     }
     void (async () => {
       try {
-        const labels = await manuscriptContainmentLabels(seed);
-        if (request !== manuscriptOutlineRequest) return;
-        manuscriptPathLabels = labels;
+        const labels = await loc.manuscriptContainmentLabels(seed);
+        if (request !== loc.manuscriptOutlineRequest) return;
+        loc.manuscriptPathLabels = labels;
       } catch {
-        if (request !== manuscriptOutlineRequest) return;
-        manuscriptPathLabels = {};
+        if (request !== loc.manuscriptOutlineRequest) return;
+        loc.manuscriptPathLabels = {};
       }
     })();
     return;
   }
-  manuscriptPathLabels = {};
+  loc.manuscriptPathLabels = {};
   if (!grouped) {
-    manuscriptOutline = [];
-    manuscriptOutlineEntities = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
+    loc.manuscriptOutline = [];
+    loc.manuscriptOutlineEntities = [];
+    loc.manuscriptOutlineTruncated = false;
+    loc.manuscriptOutlineLoading = false;
     return;
   }
   if (entityTypes.length === 0) {
-    manuscriptOutline = [];
-    manuscriptOutlineEntities = [];
-    manuscriptOutlineTruncated = false;
-    manuscriptOutlineLoading = false;
+    loc.manuscriptOutline = [];
+    loc.manuscriptOutlineEntities = [];
+    loc.manuscriptOutlineTruncated = false;
+    loc.manuscriptOutlineLoading = false;
     return;
   }
-  manuscriptOutlineLoading = true;
+  loc.manuscriptOutlineLoading = true;
   void (async () => {
     try {
-      const { items, truncated } = await listManuscriptOutlineSummaries(
+      const { items, truncated } = await loc.listManuscriptOutlineSummaries(
         entityTypes,
         excludedEntityTypes,
         sortField,
         sortDirection,
       );
-      if (request !== manuscriptOutlineRequest) return;
+      if (request !== loc.manuscriptOutlineRequest) return;
       const edges = await collectPartOfEdges(
         items.map((entity) => entity.id),
-        queryWritingPartOf,
+        loc.queryWritingPartOf,
       );
-      if (request !== manuscriptOutlineRequest) return;
+      if (request !== loc.manuscriptOutlineRequest) return;
       const roots = buildManuscriptOutline(items, [], edges);
       const libraryKey = roots.map((node) => node.id).join("\0");
-      if (libraryKey !== manuscriptOutlineLibraryKey) {
-        manuscriptOutlineLibraryKey = libraryKey;
-        manuscriptExpanded = defaultExpandedOutlineIds(roots);
+      if (libraryKey !== loc.manuscriptOutlineLibraryKey) {
+        loc.manuscriptOutlineLibraryKey = libraryKey;
+        loc.manuscriptExpanded = defaultExpandedOutlineIds(roots);
       } else {
         const allowed = collectOutlineIds(roots);
-        manuscriptExpanded = new Set([...manuscriptExpanded].filter((id) => allowed.has(id)));
+        loc.manuscriptExpanded = new Set([...loc.manuscriptExpanded].filter((id) => allowed.has(id)));
       }
-      const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, collectionQuery.pageSize)) - 1);
-      if (collectionQuery.page > lastPage) collectionQuery.page = lastPage;
-      manuscriptOutlineEntities = items;
-      manuscriptOutlineTruncated = truncated;
-      manuscriptOutline = roots;
+      const lastPage = Math.max(0, Math.ceil(roots.length / Math.max(1, loc.collectionQuery.pageSize)) - 1);
+      if (loc.collectionQuery.page > lastPage) loc.collectionQuery.page = lastPage;
+      loc.manuscriptOutlineEntities = items;
+      loc.manuscriptOutlineTruncated = truncated;
+      loc.manuscriptOutline = roots;
       for (const entity of items) upsertEntityInCache(entity);
     } catch {
-      if (request !== manuscriptOutlineRequest) return;
-      manuscriptOutline = [];
-      manuscriptOutlineEntities = [];
-      manuscriptOutlineTruncated = false;
+      if (request !== loc.manuscriptOutlineRequest) return;
+      loc.manuscriptOutline = [];
+      loc.manuscriptOutlineEntities = [];
+      loc.manuscriptOutlineTruncated = false;
     } finally {
-      if (request === manuscriptOutlineRequest) manuscriptOutlineLoading = false;
+      if (request === loc.manuscriptOutlineRequest) loc.manuscriptOutlineLoading = false;
     }
   })();
 });
 
 $effect(() => {
   const id = loc.selected?.id;
-  if (!id || manuscriptOutline.length === 0) return;
-  const path = outlinePathIds(manuscriptOutline, id);
+  if (!id || loc.manuscriptOutline.length === 0) return;
+  const path = outlinePathIds(loc.manuscriptOutline, id);
   if (!path || path.length < 2) return;
-  const next = new Set(manuscriptExpanded);
+  const next = new Set(loc.manuscriptExpanded);
   let changed = false;
   for (const ancestor of path.slice(0, -1)) {
     if (!next.has(ancestor)) {
@@ -3456,18 +2992,18 @@ $effect(() => {
       changed = true;
     }
   }
-  if (changed) manuscriptExpanded = next;
+  if (changed) loc.manuscriptExpanded = next;
 });
 
 $effect(() => {
-  const pending = pendingCollectionScroll;
-  void collectionPage.items;
-  void manuscriptOutline;
+  const pending = loc.pendingCollectionScroll;
+  void loc.collectionPage.items;
+  void loc.manuscriptOutline;
   if (
     !pending ||
-    collectionLoading ||
-    manuscriptOutlineLoading ||
-    collectionQuery.section !== pending.section ||
+    loc.collectionLoading ||
+    loc.manuscriptOutlineLoading ||
+    loc.collectionQuery.section !== pending.section ||
     section !== pending.section ||
     projectHomeOpen ||
     showSettings ||
@@ -3476,39 +3012,32 @@ $effect(() => {
     loreWikiOpen
   )
     return;
-  pendingCollectionScroll = null;
+  loc.pendingCollectionScroll = null;
   void tick().then(() => {
-    if (!collectionListElement || section !== pending.section) return;
-    collectionListElement.scrollTop = pending.scrollTop;
-    collectionScrollBySection[pending.section] = collectionListElement.scrollTop;
+    if (!loc.collectionListElement || section !== pending.section) return;
+    loc.collectionListElement.scrollTop = pending.scrollTop;
+    loc.collectionScrollBySection[pending.section] = loc.collectionListElement.scrollTop;
   });
 });
 
 function toggleTypeFilter(type: string) {
-  const idx = collectionQuery.excludedTypes.indexOf(type);
+  const idx = loc.collectionQuery.excludedTypes.indexOf(type);
   if (idx >= 0) {
-    collectionQuery.excludedTypes = collectionQuery.excludedTypes.filter((t) => t !== type);
+    loc.collectionQuery.excludedTypes = loc.collectionQuery.excludedTypes.filter((t) => t !== type);
   } else {
-    collectionQuery.excludedTypes = [...collectionQuery.excludedTypes, type];
+    loc.collectionQuery.excludedTypes = [...loc.collectionQuery.excludedTypes, type];
   }
 }
 
-function toggleGroup(type: string) {
-  const next = new Set(expandedGroups);
-  if (next.has(type)) next.delete(type);
-  else next.add(type);
-  expandedGroups = next;
-}
-
 function collectionResult(): CollectionResult {
-  return presentCollectionPage(collectionPage, collectionQuery.viewMode, entityTypeLabel);
+  return presentCollectionPage(loc.collectionPage, loc.collectionQuery.viewMode, entityTypeLabel);
 }
 
 function entityFromOutlineNode(node: OutlineNode): Entity {
   return (
-    manuscriptOutlineEntities.find((entity) => entity.id === node.id) ??
+    loc.manuscriptOutlineEntities.find((entity) => entity.id === node.id) ??
     entities.find((entity) => entity.id === node.id) ??
-    collectionPage.items.find((entity) => entity.id === node.id) ?? {
+    loc.collectionPage.items.find((entity) => entity.id === node.id) ?? {
       id: node.id,
       name: node.name,
       entity_type: node.entityType,
@@ -3524,24 +3053,24 @@ function manuscriptStructureMode() {
   return (
     section === "writing" &&
     writingView === "manuscripts" &&
-    collectionQuery.viewMode === "grouped" &&
-    !collectionQuery.textSearch.trim()
+    loc.collectionQuery.viewMode === "grouped" &&
+    !loc.collectionQuery.textSearch.trim()
   );
 }
 
 function manuscriptOutlinePage() {
-  return paginateOutlineRoots(manuscriptOutline, collectionQuery.page, collectionQuery.pageSize);
+  return paginateOutlineRoots(loc.manuscriptOutline, loc.collectionQuery.page, loc.collectionQuery.pageSize);
 }
 
 function collectionIsEmpty() {
   if (manuscriptStructureMode()) {
-    return !manuscriptOutlineLoading && manuscriptOutline.length === 0;
+    return !loc.manuscriptOutlineLoading && loc.manuscriptOutline.length === 0;
   }
   return collectionResult().total === 0;
 }
 
 function collectionHeadingCount() {
-  if (manuscriptStructureMode()) return collectOutlineIds(manuscriptOutline).size;
+  if (manuscriptStructureMode()) return collectOutlineIds(loc.manuscriptOutline).size;
   return collectionResult().total;
 }
 
@@ -3550,22 +3079,15 @@ function collectionRowSubtitle(entity: Entity) {
     section === "houses" &&
     ((entity.entity_type ?? "") === HOUSE_TYPE || (entity.entity_type ?? "").endsWith(":house"))
   ) {
-    return formatHouseMemberSummary(houseCollectionSummaries.get(entity.id), {
-      pending: houseSummariesPending && !houseCollectionSummaries.has(entity.id),
+    return formatHouseMemberSummary(loc.houseCollectionSummaries.get(entity.id), {
+      pending: loc.houseSummariesPending && !loc.houseCollectionSummaries.has(entity.id),
     });
   }
-  if (section === "writing" && writingView === "manuscripts" && manuscriptPathLabels[entity.id]) {
-    const path = manuscriptPathLabels[entity.id];
+  if (section === "writing" && writingView === "manuscripts" && loc.manuscriptPathLabels[entity.id]) {
+    const path = loc.manuscriptPathLabels[entity.id];
     if (path && path !== entity.name) return path;
   }
   return entityTypeLabel(entity.entity_type);
-}
-
-function toggleManuscriptOutlineNode(id: string) {
-  const next = new Set(manuscriptExpanded);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  manuscriptExpanded = next;
 }
 
 async function selectSearchResult(entity: Entity) {
@@ -3584,7 +3106,7 @@ async function selectSearchResult(entity: Entity) {
   applyCollectionTabForEntityType(entity.entity_type);
   projectHomeOpen = false;
   globalQuery = "";
-  collectionQuery.textSearch = "";
+  loc.collectionQuery.textSearch = "";
   await loc.selectEntity(entity, false);
 }
 
@@ -3599,11 +3121,11 @@ async function switchSection(next: WorkspaceSection) {
   recordShellDeparture(departure);
   const sectionChanged = section !== next;
   section = next;
-  queueCollectionScroll(next, collectionScrollBySection[next] ?? 0);
+  loc.queueCollectionScroll(next, loc.collectionScrollBySection[next] ?? 0);
   projectHomeOpen = false;
   if (sectionChanged) {
     loc.clearSelection();
-    collectionQuery.textSearch = "";
+    loc.collectionQuery.textSearch = "";
   }
 }
 
@@ -3625,7 +3147,7 @@ async function reconcileWorkspaceSection() {
   if (!(await leavePluginView())) return;
   section = enabledWorkspaceSections()[0] ?? "lore";
   loc.clearSelection();
-  collectionQuery.textSearch = "";
+  loc.collectionQuery.textSearch = "";
   loc.editorFullscreen = false;
 }
 
@@ -3640,7 +3162,7 @@ async function switchWritingView(next: WritingView) {
   projectHomeOpen = false;
   writingView = resolved;
   loc.clearSelection();
-  collectionQuery.textSearch = "";
+  loc.collectionQuery.textSearch = "";
 }
 
 async function switchTimelineView(next: TimelineView) {
@@ -3654,7 +3176,7 @@ async function switchTimelineView(next: TimelineView) {
   projectHomeOpen = false;
   timelineView = resolved;
   loc.clearSelection();
-  collectionQuery.textSearch = "";
+  loc.collectionQuery.textSearch = "";
 }
 
 async function switchHousesView(next: WorkspaceLocationView) {
@@ -3692,8 +3214,8 @@ async function switchLanguagePane(next: LanguagePane) {
 
 function dismissTransientMenus(): boolean {
   let dismissed = false;
-  if (filterOpen) {
-    filterOpen = false;
+  if (loc.filterOpen) {
+    loc.filterOpen = false;
     dismissed = true;
   }
   if (showProjectMenu) {
@@ -3994,7 +3516,7 @@ async function handleLoreGuidePrimary(step: GuideStep) {
   if (step.action === "graph") await openProjection();
   if (step.action === "inspector") {
     await openLoreLibrary();
-    if (!workbenchPaneVisibility.inspector) void toggleWorkbenchPane("inspector");
+    if (!loc.workbenchPaneVisibility.inspector) void loc.toggleWorkbenchPane("inspector");
   }
 }
 
@@ -4042,7 +3564,7 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
       await switchSection(target.section);
       await restoreShellEntity(target.entityId);
       await openPluginView(pluginItem!);
-      await restoreSpecializedSurfaceScroll(target);
+      await loc.restoreSpecializedSurfaceScroll(target);
     } else {
       await switchSection(target.section);
       if (target.section === "lore") {
@@ -4062,14 +3584,14 @@ async function restoreShellLocation(target: ShellLocation): Promise<boolean> {
         restoreModuleState(target.section, target.moduleState);
       }
       await tick();
-      await applyWorkspaceCollectionLocation(target.collection);
+      await loc.applyWorkspaceCollectionLocation(target.collection);
       const restoredEntity =
         target.section === "houses" && target.view === "tree" ? null : await restoreShellEntity(target.entityId);
       if (target.view === "wiki" || target.view === "graph" || target.view === "timeline") {
         await openWorkspaceView(target.view);
       }
-      await restoreWorkspacePaneDimensions(target.panes);
-      await restoreSpecializedSurfaceScroll(target);
+      await loc.restoreWorkspacePaneDimensions(target.panes);
+      await loc.restoreSpecializedSurfaceScroll(target);
       const expected =
         (target.section === "houses" && target.view === "tree") || restoredEntity || !target.entityId
           ? target
@@ -5183,30 +4705,6 @@ async function ensureCalendarCache(force = false) {
   syncCalendarCacheState();
 }
 
-function bumpCollectionRefresh() {
-  if (collectionListElement) queueCollectionScroll(section, collectionListElement.scrollTop);
-  collectionRefreshEpoch += 1;
-}
-
-function bumpKinshipRefresh() {
-  kinshipRefreshEpoch += 1;
-  void refreshSelectedKinship();
-}
-
-async function refreshSelectedKinship() {
-  if (!loc.selected || projectDiagnostics.length > 0) return;
-  const entityId = loc.selected.id;
-  const context = contextFor();
-  if (!context.module.capabilities.includes("relationship.read")) return;
-  try {
-    const listed = await context.relationships.list(entityId as UUID);
-    if (loc.selected?.id !== entityId) return;
-    loc.relationships = listed.map((relationship) => toHostRelationship(relationship));
-  } catch {
-    // Keep the prior inspector relationships if the refresh fails.
-  }
-}
-
 function entityAffectsKinshipTree(entity: Entity | null | undefined) {
   if (!entity?.entity_type) return false;
   const type = entity.entity_type;
@@ -5248,8 +4746,8 @@ async function refreshAfterEntityMutation(options?: { entityId?: string; removed
       // Keep the prior cache entry; collection re-query still runs.
     }
   }
-  bumpCollectionRefresh();
-  if (entityAffectsKinshipTree(affectedEntity)) bumpKinshipRefresh();
+  loc.bumpCollectionRefresh();
+  if (entityAffectsKinshipTree(affectedEntity)) loc.bumpKinshipRefresh();
   if (affectedEntity?.entity_type === "daena.timeline:calendar") await ensureCalendarCache(true);
   if (affectedEntity?.entity_type === "daena.timeline:era") {
     eraContextCache.invalidate(affectedEntity.id);
@@ -5320,7 +4818,7 @@ async function refreshArchivedCount() {
 }
 
 async function handleArchiveChanged() {
-  bumpCollectionRefresh();
+  loc.bumpCollectionRefresh();
   await refreshArchivedCount();
 }
 
@@ -6001,7 +5499,7 @@ function closeCreateForm() {
     showCreateForm = false;
     createDialogView = "templates";
     name = "";
-    pendingManuscriptParentId = null;
+    loc.pendingManuscriptParentId = null;
     resetCreateFields(null);
     const returnFocus = createDialogReturnFocus;
     createDialogReturnFocus = null;
@@ -6022,13 +5520,13 @@ function activateCreateOption(option: CreateOption, initialName = "") {
     resetCreateFields(option);
   } else if (initialName) name = initialName;
   if (
-    pendingManuscriptParentId &&
+    loc.pendingManuscriptParentId &&
     (option.template.entityType === "daena.writing:manuscript" ||
       option.template.entityType === "manuscript" ||
       option.template.entityType.endsWith(":manuscript"))
   ) {
-    setCreateRelationshipValues("parent", [pendingManuscriptParentId]);
-    pendingManuscriptParentId = null;
+    setCreateRelationshipValues("parent", [loc.pendingManuscriptParentId]);
+    loc.pendingManuscriptParentId = null;
   }
   createDialogView = "form";
   showCreateForm = true;
@@ -6056,7 +5554,7 @@ function openNewManuscriptInSelected() {
     error = "Enable Writing Studio with a Manuscript template to create manuscripts.";
     return;
   }
-  pendingManuscriptParentId = loc.selected.id;
+  loc.pendingManuscriptParentId = loc.selected.id;
   openFocusedCreate(key);
 }
 
@@ -6452,8 +5950,8 @@ async function archiveEntity(target: Entity, options?: { skipConfirm?: boolean; 
   const nextFocus =
     options?.returnFocus && document.contains(options.returnFocus)
       ? options.returnFocus
-      : (collectionListElement?.querySelector<HTMLElement>(".collection-item-main, .row-actions-trigger") ??
-        collectionPaneElement?.querySelector<HTMLElement>("button, [href], input") ??
+      : (loc.collectionListElement?.querySelector<HTMLElement>(".collection-item-main, .row-actions-trigger") ??
+        loc.collectionPaneElement?.querySelector<HTMLElement>("button, [href], input") ??
         null);
   nextFocus?.focus();
 }
@@ -6970,7 +6468,7 @@ async function reassignSchemaEntities(fromTypeId: string, toTypeId: string) {
     offset += page.items.length;
   }
   await refreshSchemaEntityCounts();
-  bumpCollectionRefresh();
+  loc.bumpCollectionRefresh();
   if (moved > 0) {
     moduleSchemaMessage = `Reassigned ${moved} ${moved === 1 ? "entity" : "entities"} to the chosen type.`;
   }
@@ -7370,9 +6868,9 @@ function resetProjectSessionState() {
   languageMountRetained = [];
   languageCreatedState.clear();
   shellNavigationBusy = false;
-  collectionScrollBySection = {};
-  pendingCollectionScroll = null;
-  collectionQueryRestoring = false;
+  loc.collectionScrollBySection = {};
+  loc.pendingCollectionScroll = null;
+  loc.collectionQueryRestoring = false;
   projectHomeOpen = true;
   showExternalImport = false;
   projectInfo = null;
@@ -7397,7 +6895,7 @@ function resetProjectSessionState() {
   globalQuery = "";
   quickOpenOpen = false;
   quickOpenSearchLoading = false;
-  collectionQuery.textSearch = "";
+  loc.collectionQuery.textSearch = "";
   showSettings = false;
   settingsSurface = "application";
   settingsSection = "general";
@@ -7577,8 +7075,11 @@ onMount(() => {
   };
   const handleWorkbenchResize = () => {
     workbenchViewportWidth = window.innerWidth;
-    if (restoredWorkspacePaneDimensions)
-      restoredWorkspacePaneDimensions = { ...restoredWorkspacePaneDimensions, viewportWidth: window.innerWidth };
+    if (loc.restoredWorkspacePaneDimensions)
+      loc.restoredWorkspacePaneDimensions = {
+        ...loc.restoredWorkspacePaneDimensions,
+        viewportWidth: window.innerWidth,
+      };
   };
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleHistoryKey);
@@ -8761,9 +8262,9 @@ onMount(() => {
     {:else if hostView}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? "host"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <div class="host-view-shell">
           <button class="quiet-button host-view-back" onclick={() => void closePluginView()}>Back to workspace</button
           ><HostView plugin={hostView.plugin} view={hostView.view} />
@@ -8772,9 +8273,9 @@ onMount(() => {
     {:else if loreWikiOpen}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? "wiki"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <WikiView
           isMac={isMac()}
           manifest={manifestForWorkspaceSection("lore")!}
@@ -8799,9 +8300,9 @@ onMount(() => {
       {/snippet}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? "workspace:houses:tree"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <TreeSurface
           context={buildModuleContext(housesManifestJson as unknown as ModuleManifest, projectInfo?.root ?? "", {
             availableServices: enabledServices(),
@@ -8810,7 +8311,7 @@ onMount(() => {
           initialRootId={treeRootId}
           initialSession={treeSession}
           restoreNonce={treeRestoreNonce}
-          {kinshipRefreshEpoch}
+          kinshipRefreshEpoch={loc.kinshipRefreshEpoch}
           avatar={treeAvatar}
           nav={workspaceViewNavShown ? workspaceViewSwitcher : undefined}
           onNewPerson={openNewPerson}
@@ -8860,8 +8361,8 @@ onMount(() => {
             treeSession = session;
           }}
           onOpenEntity={(entityId) => void openTreePerson(entityId)}
-          onMembershipChanged={() => bumpCollectionRefresh()}
-          onKinshipChanged={() => void refreshSelectedKinship()}
+          onMembershipChanged={() => loc.bumpCollectionRefresh()}
+          onKinshipChanged={() => void loc.refreshSelectedKinship()}
           onEditPersonIdentity={(personId) => {
             void (async () => {
               const entity = entities.find((item) => item.id === personId) ?? (await project.getEntity(personId));
@@ -8893,9 +8394,9 @@ onMount(() => {
       {@const projection = PROJECTION_SANDBOXES[projectionSandboxKey()!]}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? projection.surfaceKey}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         <section class="projection-sandbox-shell" aria-label={projection.title}>
           <WorkspaceTopbar
             title={projection.title}
@@ -8918,9 +8419,9 @@ onMount(() => {
     {:else if sandboxView && sandboxView.renderer !== "maps"}
       <SpecializedSurface
         restoreKey={specializedSurfaceKey() ?? "sandbox"}
-        restoreScrollTop={currentSpecializedSurfaceScrollTop()}
-        bind:element={specializedSurfaceElement}
-        onScroll={rememberSpecializedSurfaceScroll}>
+        restoreScrollTop={loc.currentSpecializedSurfaceScrollTop()}
+        bind:element={loc.specializedSurfaceElement}
+        onScroll={loc.rememberSpecializedSurfaceScroll}>
         {#key `${sandboxView.plugin.id}:${sandboxView.view?.id ?? "default"}`}
           {#key shownWebviewInstance}
             <SandboxView
@@ -9032,25 +8533,25 @@ onMount(() => {
           <div class="workbench-pane-toggles" role="group" aria-label="Workbench panes">
             <button
               type="button"
-              aria-pressed={workbenchPaneVisibility.collection}
+              aria-pressed={loc.workbenchPaneVisibility.collection}
               aria-label="Show collection pane"
               title="Show collection pane"
-              onclick={() => void toggleWorkbenchPane("collection")}
+              onclick={() => void loc.toggleWorkbenchPane("collection")}
               ><PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             <button
               type="button"
-              aria-pressed={workbenchPaneVisibility.content}
+              aria-pressed={loc.workbenchPaneVisibility.content}
               aria-label="Show content pane"
               title="Show content pane"
-              onclick={() => void toggleWorkbenchPane("content")}
+              onclick={() => void loc.toggleWorkbenchPane("content")}
               ><Square size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {#if workbenchSupportsInspector()}
               <button
                 type="button"
-                aria-pressed={workbenchPaneVisibility.inspector}
+                aria-pressed={loc.workbenchPaneVisibility.inspector}
                 aria-label="Show inspector pane"
                 title="Show inspector pane"
-                onclick={() => void toggleWorkbenchPane("inspector")}
+                onclick={() => void loc.toggleWorkbenchPane("inspector")}
                 ><PanelRight size={15} strokeWidth={1.8} aria-hidden="true" /></button>
             {/if}
           </div>
@@ -9085,13 +8586,13 @@ onMount(() => {
           <div class="collection-search">
             <span><Search size={16} strokeWidth={1.8} aria-hidden="true" /></span><input
               aria-label={`Search ${collectionLabel()}`}
-              bind:value={collectionQuery.textSearch}
+              bind:value={loc.collectionQuery.textSearch}
               placeholder={`Search ${collectionLabel()}`} /><button
               class="filter-toggle"
-              class:active={filterOpen}
+              class:active={loc.filterOpen}
               aria-label="Filters"
-              onclick={() => (filterOpen = !filterOpen)}>⫶</button>
-            {#if filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
+              onclick={() => (loc.filterOpen = !loc.filterOpen)}>⫶</button>
+            {#if loc.filterOpen}<div class="filter-popover" role="dialog" aria-label="Collection filters">
                 <fieldset class="filter-section">
                   <legend>Sort by</legend>
                   <div class="filter-row">
@@ -9100,27 +8601,28 @@ onMount(() => {
                         type="radio"
                         name="sortField"
                         value="name"
-                        checked={collectionQuery.sortField === "name"}
-                        onchange={() => (collectionQuery.sortField = "name")} /> Name</label
+                        checked={loc.collectionQuery.sortField === "name"}
+                        onchange={() => (loc.collectionQuery.sortField = "name")} /> Name</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="created_at"
-                        checked={collectionQuery.sortField === "created_at"}
-                        onchange={() => (collectionQuery.sortField = "created_at")} /> Created</label
+                        checked={loc.collectionQuery.sortField === "created_at"}
+                        onchange={() => (loc.collectionQuery.sortField = "created_at")} /> Created</label
                     ><label
                       ><input
                         type="radio"
                         name="sortField"
                         value="updated_at"
-                        checked={collectionQuery.sortField === "updated_at"}
-                        onchange={() => (collectionQuery.sortField = "updated_at")} /> Updated</label
+                        checked={loc.collectionQuery.sortField === "updated_at"}
+                        onchange={() => (loc.collectionQuery.sortField = "updated_at")} /> Updated</label
                     ><button
                       class="sort-dir-toggle"
-                      aria-label={collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
-                      onclick={() => (collectionQuery.sortDir = collectionQuery.sortDir === "asc" ? "desc" : "asc")}
-                      >{collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
+                      aria-label={loc.collectionQuery.sortDir === "asc" ? "Ascending" : "Descending"}
+                      onclick={() =>
+                        (loc.collectionQuery.sortDir = loc.collectionQuery.sortDir === "asc" ? "desc" : "asc")}
+                      >{loc.collectionQuery.sortDir === "asc" ? "↑" : "↓"}</button>
                   </div>
                 </fieldset>
                 <fieldset class="filter-section">
@@ -9131,10 +8633,10 @@ onMount(() => {
                           type="radio"
                           name="pageSize"
                           value={size}
-                          checked={collectionQuery.pageSize === size}
+                          checked={loc.collectionQuery.pageSize === size}
                           onchange={() => {
-                            collectionQuery.pageSize = size;
-                            collectionQuery.page = 0;
+                            loc.collectionQuery.pageSize = size;
+                            loc.collectionQuery.page = 0;
                           }} />
                         {size}</label
                       >{/each}
@@ -9146,7 +8648,7 @@ onMount(() => {
                     {#each sectionEntityTypes() as type}<label
                         ><input
                           type="checkbox"
-                          checked={!collectionQuery.excludedTypes.includes(type)}
+                          checked={!loc.collectionQuery.excludedTypes.includes(type)}
                           onchange={() => toggleTypeFilter(type)} />
                         {entityTypeLabel(type)}</label
                       >{/each}
@@ -9156,22 +8658,22 @@ onMount(() => {
           </div>
         {/snippet}
         {#snippet collectionItems()}
-          {#if collectionError}<p class="collection-error" role="alert">{collectionError}</p>{/if}
-          {#if collectionLoading && collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
+          {#if loc.collectionError}<p class="collection-error" role="alert">{loc.collectionError}</p>{/if}
+          {#if loc.collectionLoading && loc.collectionPage.items.length === 0 && !manuscriptStructureMode()}<div
               class="collection-loading"
               role="status">
               Loading {collectionLabel()}…
-            </div>{:else if manuscriptStructureMode() && manuscriptOutlineLoading && manuscriptOutline.length === 0}<div
+            </div>{:else if manuscriptStructureMode() && loc.manuscriptOutlineLoading && loc.manuscriptOutline.length === 0}<div
               class="collection-loading"
               role="status">
               Loading {collectionLabel()}…
             </div>{:else if collectionIsEmpty()}
             {#if section === "maps"}
               <EntityEmptyState
-                title={collectionQuery.textSearch
+                title={loc.collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
                   : `No ${collectionLabel()} yet.`}
-                message={collectionQuery.textSearch
+                message={loc.collectionQuery.textSearch
                   ? "Try another search or create something new."
                   : "Create a map through an installed map integration."}
                 maps>
@@ -9224,22 +8726,22 @@ onMount(() => {
               </EntityEmptyState>
             {:else}
               <EntityEmptyState
-                title={collectionQuery.textSearch
+                title={loc.collectionQuery.textSearch
                   ? `No ${collectionLabel()} match that search.`
                   : `No ${collectionLabel()} yet.`}
-                message={collectionQuery.textSearch
+                message={loc.collectionQuery.textSearch
                   ? "Try another search or create something new."
                   : `Create your first ${createLabel()} to begin building this collection.`}
                 createLabel={createLabel()}
                 onCreate={openContextualCreate} />
             {/if}{:else if manuscriptStructureMode()}
-            {#if manuscriptOutlineTruncated}<p class="collection-loading" role="status">
+            {#if loc.manuscriptOutlineTruncated}<p class="collection-loading" role="status">
                 Outline includes the first {MANUSCRIPT_OUTLINE_CAP} manuscripts.
               </p>{/if}
             {#snippet manuscriptCollectionRow(node: OutlineNode, depth: number, hasParent: boolean)}
               {@const entity = entityFromOutlineNode(node)}
               {@const rowIcon = iconForEntityType(entity.entity_type)}
-              {@const expanded = manuscriptExpanded.has(node.id)}
+              {@const expanded = loc.manuscriptExpanded.has(node.id)}
               <div
                 class:selected={loc.selected?.id === entity.id}
                 class="collection-item"
@@ -9249,7 +8751,7 @@ onMount(() => {
                     class="outline-toggle"
                     aria-expanded={expanded}
                     aria-label={expanded ? `Collapse ${entity.name}` : `Expand ${entity.name}`}
-                    onclick={() => toggleManuscriptOutlineNode(node.id)}
+                    onclick={() => loc.toggleManuscriptOutlineNode(node.id)}
                     >{#if expanded}<ChevronDown size={16} strokeWidth={1.8} aria-hidden="true" />{:else}<ChevronRight
                         size={16}
                         strokeWidth={1.8}
@@ -9285,18 +8787,18 @@ onMount(() => {
             {#snippet manuscriptOutlineTree(nodes: OutlineNode[], depth: number, hasParent: boolean)}
               {#each nodes as node (node.id)}
                 {@render manuscriptCollectionRow(node, depth, hasParent)}
-                {#if node.children.length > 0 && manuscriptExpanded.has(node.id)}
+                {#if node.children.length > 0 && loc.manuscriptExpanded.has(node.id)}
                   {@render manuscriptOutlineTree(node.children, depth + 1, true)}
                 {/if}
               {/each}
             {/snippet}
             {@render manuscriptOutlineTree(manuscriptOutlinePage().items, 0, false)}
-          {:else if collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
+          {:else if loc.collectionQuery.viewMode === "grouped"}{#each collectionResult().groups ?? [] as group}{@const groupIcon =
                 iconForEntityType(group.type === "__uncategorized" ? null : group.type)}
               <div class="collection-group">
-                <button type="button" class="collection-group-header" onclick={() => toggleGroup(group.type)}
+                <button type="button" class="collection-group-header" onclick={() => loc.toggleGroup(group.type)}
                   ><span class="group-chevron"
-                    >{#if expandedGroups.has(group.type)}<ChevronDown
+                    >{#if loc.expandedGroups.has(group.type)}<ChevronDown
                         size={16}
                         strokeWidth={1.8}
                         aria-hidden="true" />{:else}<ChevronRight
@@ -9309,7 +8811,7 @@ onMount(() => {
                     pluginId={groupIcon.pluginId}
                     size={16}
                     box={22} /><strong>{group.label}</strong><small>{group.count}</small></button
-                >{#if expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
+                >{#if loc.expandedGroups.has(group.type)}{#each group.entities as entity}{@const rowIcon =
                       iconForEntityType(entity.entity_type)}
                     <div class:selected={loc.selected?.id === entity.id} class="collection-item">
                       <button
@@ -9379,8 +8881,8 @@ onMount(() => {
               aria-label="Collection pages">
               <button
                 type="button"
-                disabled={collectionQuery.page === 0 || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                disabled={loc.collectionQuery.page === 0 || loc.manuscriptOutlineLoading}
+                onclick={() => (loc.collectionQuery.page = Math.max(0, loc.collectionQuery.page - 1))}>Previous</button
               ><span
                 >{manuscriptOutlinePage().offset + 1}–{Math.min(
                   manuscriptOutlinePage().offset + manuscriptOutlinePage().items.length,
@@ -9388,31 +8890,31 @@ onMount(() => {
                 )} of {manuscriptOutlinePage().total}</span
               ><button
                 type="button"
-                disabled={!manuscriptOutlinePage().hasMore || manuscriptOutlineLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                disabled={!manuscriptOutlinePage().hasMore || loc.manuscriptOutlineLoading}
+                onclick={() => (loc.collectionQuery.page += 1)}>Next</button>
             </nav>{:else if collectionResult().total > 0}<nav
               class="collection-pagination"
               aria-label="Collection pages">
               <button
                 type="button"
-                disabled={collectionQuery.page === 0 || collectionLoading}
-                onclick={() => (collectionQuery.page = Math.max(0, collectionQuery.page - 1))}>Previous</button
+                disabled={loc.collectionQuery.page === 0 || loc.collectionLoading}
+                onclick={() => (loc.collectionQuery.page = Math.max(0, loc.collectionQuery.page - 1))}>Previous</button
               ><span
-                >{collectionPage.offset + 1}–{Math.min(
-                  collectionPage.offset + collectionPage.items.length,
-                  collectionPage.total,
-                )} of {collectionPage.total}</span
+                >{loc.collectionPage.offset + 1}–{Math.min(
+                  loc.collectionPage.offset + loc.collectionPage.items.length,
+                  loc.collectionPage.total,
+                )} of {loc.collectionPage.total}</span
               ><button
                 type="button"
-                disabled={!collectionPage.has_more || collectionLoading}
-                onclick={() => (collectionQuery.page += 1)}>Next</button>
+                disabled={!loc.collectionPage.has_more || loc.collectionLoading}
+                onclick={() => (loc.collectionQuery.page += 1)}>Next</button>
             </nav>{/if}
         {/snippet}
-        {#if workbenchPaneVisibility.collection}<CollectionPane
+        {#if loc.workbenchPaneVisibility.collection}<CollectionPane
             kicker={collectionKicker()}
             count={collectionHeadingCount()}
             label={collectionLabel()}
-            viewMode={collectionQuery.viewMode}
+            viewMode={loc.collectionQuery.viewMode}
             groupedAriaLabel={section === "writing" && writingView === "manuscripts"
               ? "Grouped by structure"
               : "Grouped by type"}
@@ -9421,17 +8923,17 @@ onMount(() => {
             children={collectionItems}
             footer={collectionFooter}
             hidden={mapSurfaceOpen}
-            bind:element={collectionPaneElement}
-            bind:listElement={collectionListElement}
-            onViewModeChange={(mode) => (collectionQuery.viewMode = mode)}
-            onScroll={rememberCollectionScroll} />{/if}
-        {#if !mapSurfaceOpen && workbenchPaneVisibility.collection && workbenchPaneVisibility.content}<PaneResizeHandle
+            bind:element={loc.collectionPaneElement}
+            bind:listElement={loc.collectionListElement}
+            onViewModeChange={(mode) => (loc.collectionQuery.viewMode = mode)}
+            onScroll={loc.rememberCollectionScroll} />{/if}
+        {#if !mapSurfaceOpen && loc.workbenchPaneVisibility.collection && loc.workbenchPaneVisibility.content}<PaneResizeHandle
             label="Resize collection pane"
-            value={activePaneDimensions().collectionWidth}
+            value={loc.activePaneDimensions().collectionWidth}
             min={collectionPaneMin}
             max={collectionPaneMax}
-            onResize={(delta) => resizeWorkbenchPane("collection", delta)}
-            onReset={() => resetWorkbenchPane("collection")} />{/if}
+            onResize={(delta) => loc.resizeWorkbenchPane("collection", delta)}
+            onReset={() => loc.resetWorkbenchPane("collection")} />{/if}
 
         {#if languagePaneShown}
           {#key loc.selected?.id ?? "language"}
@@ -9481,7 +8983,7 @@ onMount(() => {
               </div>
             {/key}
           </div>
-        {:else if workbenchPaneVisibility.content && !writingEntrySelected}
+        {:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}
           <!-- A manuscript or reference page never gets the shell editor: it is the webview's, or nothing (see `writingEntrySelected`). -->
           {#snippet contentPaneBody()}
             {#if section === "maps" && sandboxView?.renderer === "maps" && sandboxView.view}
@@ -9849,20 +9351,20 @@ onMount(() => {
           <ContentPane
             fullscreen={loc.editorFullscreen}
             mapEditorActive={section === "maps" && sandboxView?.renderer === "maps" && Boolean(sandboxView.view)}
-            bind:element={contentPaneElement}
+            bind:element={loc.contentPaneElement}
             children={contentPaneBody} />
         {/if}
 
-        {#if !mapSurfaceOpen && workbenchPaneVisibility.content && workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
+        {#if !mapSurfaceOpen && loc.workbenchPaneVisibility.content && loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}<PaneResizeHandle
             label="Resize inspector pane"
-            value={activePaneDimensions().inspectorWidth}
+            value={loc.activePaneDimensions().inspectorWidth}
             min={inspectorPaneMin}
             max={inspectorPaneMax}
             direction={-1}
-            onResize={(delta) => resizeWorkbenchPane("inspector", delta)}
-            onReset={() => resetWorkbenchPane("inspector")} />{/if}
+            onResize={(delta) => loc.resizeWorkbenchPane("inspector", delta)}
+            onReset={() => loc.resetWorkbenchPane("inspector")} />{/if}
 
-        {#if workbenchPaneVisibility.inspector && workbenchSupportsInspector() && loc.selected}
+        {#if loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector() && loc.selected}
           {@const inspectedEntity = loc.selected}
           {#snippet inspectorBody()}
             <InspectorOverview
@@ -10244,7 +9746,7 @@ onMount(() => {
           <InspectorPane
             loading={loc.selectedLoading}
             error={loc.selectedLoadError}
-            bind:element={inspectorPaneElement}
+            bind:element={loc.inspectorPaneElement}
             children={inspectorBody}
             onRetry={() => void loc.reloadSelectedFromDisk()} />
           {#if loc.fieldsDialogOpen}
@@ -10260,8 +9762,8 @@ onMount(() => {
               backlinks={fieldsBacklinks}
               onClose={() => (loc.fieldsDialogOpen = false)} />
           {/if}
-        {:else if workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
-          <InspectorPane bind:element={inspectorPaneElement} empty />
+        {:else if loc.workbenchPaneVisibility.inspector && workbenchSupportsInspector()}
+          <InspectorPane bind:element={loc.inspectorPaneElement} empty />
         {/if}
       </section>
     {/if}

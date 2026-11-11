@@ -235,7 +235,7 @@ assert.doesNotMatch(openProjection, /projectionView|projectionModule/);
 const workspaceView = sourceSlice("function currentWorkspaceLocationView", "function currentModuleState");
 assert.match(workspaceView, /projectionSandboxOpen\("lore"\)\) return "graph"/);
 assert.match(workspaceView, /projectionSandboxOpen\("timeline"\)\) return "timeline"/);
-const surfaceKey = sourceSlice("function specializedSurfaceKey()", "function specializedSurfaceKeyForLocation");
+const surfaceKey = sourceSlice("function specializedSurfaceKey()", "function currentShellLocation");
 assert.match(
   surfaceKey,
   /const projection = projectionSandboxKey\(\);\s*if \(projection\) return PROJECTION_SANDBOXES\[projection\]\.surfaceKey/,

@@ -1,19 +1,54 @@
 /**
  * Everything the shell keeps per location: which entry is open, its document, field drafts, revisions, dirty
- * tracking, the autosave timer and the save queue, and the conflict state.
+ * tracking, the autosave timer and the save queue, and the conflict state; and the collection beside it: its query,
+ * fetched page, open groups, manuscript outline, scroll positions and pane layout, with the effects that reload and
+ * fetch them (they run in the store's own `$effect.root` and key off `ctx.section`).
  *
  * `+page.svelte` builds exactly one store today (side-by-side will build one per visible group). The store never
  * imports the page. Shell-global state (the project, the entity cache, modules, dialogs, toasts) and page functions
  * that have not moved yet reach it through the `LocationContext` the page passes in.
  */
-import type { Asset, Entity, MapLocation, Relationship, project } from "$lib/project/client";
+import { tick } from "svelte";
+import type { Asset, Entity, EntityPage, MapLocation, ProjectInfo, Relationship, project } from "$lib/project/client";
 import type { FieldDefinition, ModuleContext, ModuleManifest, UUID } from "../../../packages/module-api/src/index";
 import type { CalendarDefinition } from "../../../packages/modules/timeline/src/calendar";
 import type { confirmDialog } from "$lib/dialogs.svelte";
 import type { EntityFieldsTabId } from "$lib/shell/entityFields";
 import type { EraContext } from "$lib/modules/chronology";
-import type { ShellLocation } from "$lib/navigation/history";
-import type { WorkspaceSection } from "$lib/modules/workspace";
+import type { ShellLocation, WorkspaceCollectionLocation, WorkspacePaneDimensions } from "$lib/navigation/history";
+import {
+  collectionEntityTypes,
+  DEFAULT_COLLECTION_QUERY,
+  type CollectionQuery,
+  type SortDirection,
+  type SortField,
+  type WorkspaceSection,
+  type WritingView,
+} from "$lib/modules/workspace";
+import {
+  collectionPaneDefault,
+  collectionPaneMax,
+  collectionPaneMin,
+  inspectorPaneDefault,
+  inspectorPaneMax,
+  inspectorPaneMin,
+  loadCollectionQuery,
+  loadWorkbenchLayout,
+  saveWorkbenchLayout,
+  type WorkbenchPane,
+} from "$lib/shell/workbench-persistence";
+import {
+  appearanceLabel,
+  collectPartOfEdges,
+  containmentNames,
+  MANUSCRIPT_OUTLINE_CAP,
+  parentByChild,
+  partOfEdgesFromRelationships,
+  WRITING_FEATURES,
+  WRITING_PART_OF,
+  type OutlineNode,
+} from "$lib/writing/outline";
+import type { HouseMemberSummary } from "$lib/houses/model.ts";
 import { GREGORIAN_CALENDAR_ID, isGregorianCalendarId, parseCalendarDate, serializeCalendarDate } from "$lib/date";
 import {
   hasMeaningfulDateValue,
@@ -60,6 +95,11 @@ export interface LocationContext {
   readonly calendarDefinitions: Record<string, CalendarDefinition>;
   /** The workspace section this location is in. */
   readonly section: WorkspaceSection;
+  /** The Writing tab this location shows. Only the collection fetch reads it, to tell the manuscript outline apart. */
+  readonly writingView: WritingView;
+  /** True once a project has finished opening. */
+  readonly ready: boolean;
+  readonly projectInfo: ProjectInfo | null;
   /** The plugin surface open in this location, if any. Only the renderer matters here. */
   readonly sandboxView: { readonly renderer: "maps" | "webview" } | null;
 
@@ -82,7 +122,7 @@ export interface LocationContext {
   closeAiRewrite(): void;
 
   // Module and schema lookups for the location's section.
-  contextFor(): ModuleContext;
+  contextFor(section?: WorkspaceSection): ModuleContext;
   contextOwningRelationshipType(relationshipType: string): ModuleContext;
   activeManifest(): ModuleManifest | null;
   activeModuleId(): string;
@@ -91,13 +131,16 @@ export interface LocationContext {
   namespaceForField(definition: FieldDefinition): string;
   sectionEnabled(): boolean;
   mapsEnabled(): boolean;
+  /** Entity types the section lists, and the active tab's own types where the section has tabs. */
+  sectionEntityTypes(): string[];
+  activeTabEntityTypes(): string[] | undefined;
+  /** Scroll-restore key of the full surface open in this location, if any. */
+  specializedSurfaceKey(): string | null;
 
   // Shell refreshes.
   upsertEntityInCache(entity: Entity): void;
   refreshAfterEntityMutation(options?: { entityId?: string; removed?: boolean }): Promise<void>;
-  bumpKinshipRefresh(): void;
   loadEraContexts(eraIds: string[]): Promise<EraContext[]>;
-  refreshWritingAppearanceLabels(): Promise<void>;
   notifyWritingSaved(entityId: string): void;
   notifyProfileTimelineChanged(eventId: string): void;
   loadProjectStatus(includeGit: boolean): Promise<void>;
@@ -105,6 +148,35 @@ export interface LocationContext {
 
 export function isRevisionConflict(cause: unknown) {
   return friendlyError(cause).toLowerCase().includes("revision conflict");
+}
+
+export const emptyEntityPage = (): EntityPage => ({
+  items: [],
+  total: 0,
+  offset: 0,
+  limit: DEFAULT_COLLECTION_QUERY.pageSize,
+  has_more: false,
+  type_counts: [],
+});
+
+function measuredPaneWidth(element: HTMLElement | null, fallback: number) {
+  const width = element?.getBoundingClientRect().width ?? 0;
+  return width > 0 ? Math.round(width) : fallback;
+}
+
+/** The scroll-restore key a stored location points at, or null when its view has no full surface. */
+export function specializedSurfaceKeyForLocation(location: ShellLocation): string | null {
+  if (location.kind === "plugin") return `plugin:${location.key}`;
+  if (location.kind !== "workspace") return null;
+  if (
+    location.view === "wiki" ||
+    location.view === "graph" ||
+    location.view === "timeline" ||
+    location.view === "tree"
+  ) {
+    return `workspace:${location.section}:${location.view}`;
+  }
+  return null;
 }
 
 export class LocationStore {
@@ -178,6 +250,59 @@ export class LocationStore {
   });
   savedMutationTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Collection: the query, the page it fetched, and the groups the list shows.
+  collectionQuery = $state<CollectionQuery>(loadCollectionQuery("lore"));
+  collectionPage = $state<EntityPage>(emptyEntityPage());
+  collectionLoading = $state(false);
+  collectionError = $state("");
+  /** Stale-response token for the collection fetch. Plain on purpose. */
+  collectionRequest = 0;
+  /** Bumped to re-query the visible collection page without reloading every entity. */
+  collectionRefreshEpoch = $state(0);
+  filterOpen = $state(false);
+  expandedGroups = $state<Set<string>>(new Set());
+  /** Plain: set while a stored query is being applied, so the scope effect does not reset the page. */
+  collectionQueryRestoring = false;
+  /** Plain: the last scope the scope effect saw. */
+  collectionScopeKey = "";
+
+  // Houses collection.
+  /** Bumped when kinship relationships or tree-relevant entities change outside TreeSurface. */
+  kinshipRefreshEpoch = $state(0);
+  houseCollectionSummaries = $state(new Map<string, HouseMemberSummary>());
+  houseSummaryRequest = 0;
+  houseSummariesPending = $state(false);
+
+  // Manuscript outline (Writing collection).
+  manuscriptOutline = $state<OutlineNode[]>([]);
+  manuscriptOutlineEntities = $state<Entity[]>([]);
+  manuscriptOutlineRequest = 0;
+  manuscriptOutlineLoading = $state(false);
+  manuscriptOutlineTruncated = $state(false);
+  manuscriptOutlineLibraryKey = "";
+  manuscriptExpanded = $state(new Set<string>());
+  manuscriptPathLabels = $state<Record<string, string>>({});
+  pendingManuscriptParentId = $state<string | null>(null);
+  writingAppearanceLabels = $state<Record<string, string>>({});
+
+  // Panes and scroll.
+  collectionListElement = $state<HTMLDivElement | null>(null);
+  collectionPaneElement = $state<HTMLElement | null>(null);
+  contentPaneElement = $state<HTMLElement | null>(null);
+  inspectorPaneElement = $state<HTMLElement | null>(null);
+  collectionScrollBySection = $state<Partial<Record<WorkspaceSection, number>>>({});
+  pendingCollectionScroll = $state<{ section: WorkspaceSection; scrollTop: number } | null>(null);
+  restoredWorkspacePaneDimensions = $state<WorkspacePaneDimensions | null>(null);
+  private readonly initialWorkbenchLayout = loadWorkbenchLayout("lore");
+  workbenchPaneVisibility = $state<Record<WorkbenchPane, boolean>>(this.initialWorkbenchLayout.visibility);
+  workbenchPaneWidths = $state({
+    collection: this.initialWorkbenchLayout.collectionWidth,
+    inspector: this.initialWorkbenchLayout.inspectorWidth,
+  });
+  specializedSurfaceElement = $state<HTMLElement | null>(null);
+  specializedSurfaceScrollByKey = $state<Record<string, number>>({});
+  pendingSpecializedSurfaceScroll = $state<{ key: string; scrollTop: number } | null>(null);
+
   readonly inspectorChronologyWarnings = $derived.by(() =>
     chronologyWarnings(
       this.ctx.chronologyDateDefinitions().map((definition) => ({
@@ -192,8 +317,126 @@ export class LocationStore {
   constructor(ctx: LocationContext) {
     this.ctx = ctx;
     // Effects belong in here, not in the page's init scope: step 5.4 creates and destroys stores at runtime.
-    // None have moved yet; later sub-steps add the collection, layout and Writing effects.
-    this.stopEffects = $effect.root(() => {});
+    // They key off the location's section, read through `ctx.section` until the section itself moves in 5.1c.
+    this.stopEffects = $effect.root(() => {
+      // Persists the collection query under its section's key.
+      $effect(() => {
+        const q = this.collectionQuery;
+        try {
+          const serializable = { ...q, excludedTypes: [...q.excludedTypes] };
+          localStorage.setItem(`daena:collection-query:${q.section}`, JSON.stringify(serializable));
+        } catch {}
+      });
+
+      // Reloads the stored query for the section whenever it changes.
+      $effect(() => {
+        this.collectionQueryRestoring = true;
+        this.collectionQuery = loadCollectionQuery(this.ctx.section);
+        this.expandedGroups = new Set();
+        void tick().then(() => {
+          this.collectionQueryRestoring = false;
+        });
+      });
+
+      // Reloads the section's pane layout whenever the section changes.
+      $effect(() => {
+        const layout = loadWorkbenchLayout(this.ctx.section);
+        this.workbenchPaneVisibility = layout.visibility;
+        this.workbenchPaneWidths = {
+          collection: layout.collectionWidth,
+          inspector: layout.inspectorWidth,
+        };
+        this.restoredWorkspacePaneDimensions = null;
+      });
+
+      // Resets the page when the collection's scope (section, types, search, sort, size) changes.
+      $effect(() => {
+        const entityTypes = collectionEntityTypes({
+          entityTypes: new Set(this.ctx.sectionEntityTypes()),
+          tabEntityTypes: this.ctx.activeTabEntityTypes(),
+        });
+        const scopeKey = JSON.stringify([
+          this.ctx.section,
+          entityTypes,
+          this.collectionQuery.textSearch.trim(),
+          this.collectionQuery.sortField,
+          this.collectionQuery.sortDir,
+          this.collectionQuery.pageSize,
+          this.collectionQuery.excludedTypes,
+        ]);
+        if (this.collectionScopeKey && this.collectionScopeKey !== scopeKey && !this.collectionQueryRestoring) {
+          this.collectionPage = emptyEntityPage();
+          if (this.collectionQuery.page !== 0) this.collectionQuery.page = 0;
+        }
+        this.collectionScopeKey = scopeKey;
+      });
+
+      // Fetches the visible collection page.
+      $effect(() => {
+        void this.collectionRefreshEpoch;
+        const active = this.ctx.ready && Boolean(this.ctx.projectInfo);
+        const page = this.collectionQuery.page;
+        const limit = this.collectionQuery.pageSize;
+        const entityTypes = collectionEntityTypes({
+          entityTypes: new Set(this.ctx.sectionEntityTypes()),
+          tabEntityTypes: this.ctx.activeTabEntityTypes(),
+        });
+        const query = this.collectionQuery.textSearch.trim();
+        const excludedEntityTypes = [...this.collectionQuery.excludedTypes];
+        const sortField = this.collectionQuery.sortField;
+        const sortDirection = this.collectionQuery.sortDir;
+        const request = ++this.collectionRequest;
+        this.collectionError = "";
+        const structureOutline =
+          this.ctx.section === "writing" &&
+          this.ctx.writingView === "manuscripts" &&
+          this.collectionQuery.viewMode === "grouped" &&
+          !this.collectionQuery.textSearch.trim();
+        if (!active) {
+          this.collectionPage = emptyEntityPage();
+          this.collectionLoading = false;
+          return;
+        }
+        if (structureOutline) {
+          this.collectionLoading = false;
+          return;
+        }
+        this.collectionLoading = true;
+        const timer = window.setTimeout(
+          () => {
+            void this.ctx.project
+              .queryEntities({
+                query: query || undefined,
+                entityTypes,
+                excludedEntityTypes,
+                sortField,
+                sortDirection,
+                offset: page * limit,
+                limit,
+              })
+              .then((result) => {
+                if (request !== this.collectionRequest) return;
+                if (page > 0 && result.items.length === 0 && result.total > 0) {
+                  this.collectionQuery.page = Math.max(0, Math.ceil(result.total / limit) - 1);
+                  return;
+                }
+                this.collectionPage = result;
+                for (const entity of result.items) this.ctx.upsertEntityInCache(entity);
+              })
+              .catch((cause) => {
+                if (request !== this.collectionRequest) return;
+                this.collectionPage = emptyEntityPage();
+                this.collectionError = friendlyError(cause);
+              })
+              .finally(() => {
+                if (request === this.collectionRequest) this.collectionLoading = false;
+              });
+          },
+          query ? 180 : 0,
+        );
+        return () => window.clearTimeout(timer);
+      });
+    });
   }
 
   /** Stops the store's effects. The page calls it on teardown. */
@@ -639,7 +882,7 @@ export class LocationStore {
       if (!isCurrent()) return;
       this.mapLocations = nextMapLocations;
       this.savedAt = "";
-      void this.ctx.refreshWritingAppearanceLabels();
+      void this.refreshWritingAppearanceLabels();
     } catch (cause) {
       if (isCurrent()) this.selectedLoadError = friendlyError(cause);
       throw cause;
@@ -801,14 +1044,14 @@ export class LocationStore {
       ];
       await this.ctx.refreshAfterEntityMutation({ entityId: this.selected!.id });
       if (definition.relationshipType && isKinshipRelationshipType(definition.relationshipType)) {
-        this.ctx.bumpKinshipRefresh();
+        this.bumpKinshipRefresh();
       }
       if (isEraRelationshipField(definition)) {
         eraContextCache.invalidateMany(targetIds);
         this.eraContexts = await this.ctx.loadEraContexts(targetIds);
         this.hintDateCalendarsFromEras(this.eraContexts, true);
       }
-      void this.ctx.refreshWritingAppearanceLabels();
+      void this.refreshWritingAppearanceLabels();
     } catch (cause) {
       this.ctx.setError(friendlyError(cause));
     }
@@ -930,6 +1173,316 @@ export class LocationStore {
       this.assetBusyId = null;
     }
   };
+
+  // ---- Collection, scroll and panes --------------------------------------------------------------------------
+
+  bumpCollectionRefresh() {
+    if (this.collectionListElement) this.queueCollectionScroll(this.ctx.section, this.collectionListElement.scrollTop);
+    this.collectionRefreshEpoch += 1;
+  }
+
+  bumpKinshipRefresh() {
+    this.kinshipRefreshEpoch += 1;
+    void this.refreshSelectedKinship();
+  }
+
+  async refreshSelectedKinship() {
+    if (!this.selected || this.ctx.projectDiagnostics.length > 0) return;
+    const entityId = this.selected.id;
+    const context = this.ctx.contextFor();
+    if (!context.module.capabilities.includes("relationship.read")) return;
+    try {
+      const listed = await context.relationships.list(entityId as UUID);
+      if (this.selected?.id !== entityId) return;
+      this.relationships = listed.map((relationship) => toHostRelationship(relationship));
+    } catch {
+      // Keep the prior inspector relationships if the refresh fails.
+    }
+  }
+
+  toggleGroup(type: string) {
+    const next = new Set(this.expandedGroups);
+    if (next.has(type)) next.delete(type);
+    else next.add(type);
+    this.expandedGroups = next;
+  }
+
+  currentWorkspaceCollectionLocation(): WorkspaceCollectionLocation {
+    const section = this.ctx.section;
+    const pendingScrollTop =
+      this.pendingCollectionScroll?.section === section ? this.pendingCollectionScroll.scrollTop : null;
+    return {
+      query: {
+        textSearch: this.collectionQuery.textSearch,
+        sortField: this.collectionQuery.sortField,
+        sortDir: this.collectionQuery.sortDir,
+        pageSize: this.collectionQuery.pageSize,
+        page: this.collectionQuery.page,
+        excludedTypes: [...this.collectionQuery.excludedTypes].sort(),
+        viewMode: this.collectionQuery.viewMode,
+      },
+      expandedGroups: [...this.expandedGroups].sort(),
+      scrollTop:
+        pendingScrollTop ?? this.collectionListElement?.scrollTop ?? this.collectionScrollBySection[section] ?? 0,
+    };
+  }
+
+  async applyWorkspaceCollectionLocation(location: WorkspaceCollectionLocation) {
+    this.collectionQueryRestoring = true;
+    this.collectionQuery = {
+      section: this.ctx.section,
+      ...location.query,
+      excludedTypes: [...location.query.excludedTypes],
+    };
+    this.expandedGroups = new Set(location.expandedGroups);
+    this.queueCollectionScroll(this.ctx.section, location.scrollTop);
+    await tick();
+    this.collectionQueryRestoring = false;
+  }
+
+  rememberCollectionScroll = () => {
+    if (!this.collectionListElement) return;
+    this.collectionScrollBySection[this.ctx.section] = this.collectionListElement.scrollTop;
+  };
+
+  queueCollectionScroll(target: WorkspaceSection, scrollTop: number) {
+    this.collectionScrollBySection[target] = scrollTop;
+    this.pendingCollectionScroll = { section: target, scrollTop };
+  }
+
+  currentWorkspacePaneDimensions(): WorkspacePaneDimensions {
+    const fallback = this.restoredWorkspacePaneDimensions;
+    return {
+      collectionWidth: measuredPaneWidth(this.collectionPaneElement, fallback?.collectionWidth ?? 0),
+      contentWidth: measuredPaneWidth(this.contentPaneElement, fallback?.contentWidth ?? 0),
+      inspectorWidth: measuredPaneWidth(this.inspectorPaneElement, fallback?.inspectorWidth ?? 0),
+      viewportWidth: typeof window === "undefined" ? (fallback?.viewportWidth ?? 0) : window.innerWidth,
+    };
+  }
+
+  async restoreWorkspacePaneDimensions(panes: WorkspacePaneDimensions) {
+    const viewportWidth = typeof window === "undefined" ? panes.viewportWidth : window.innerWidth;
+    this.restoredWorkspacePaneDimensions =
+      panes.viewportWidth > 0 && Math.abs(panes.viewportWidth - viewportWidth) <= 2 ? { ...panes } : null;
+    await tick();
+  }
+
+  persistWorkbenchLayout() {
+    saveWorkbenchLayout(this.ctx.section, {
+      visibility: this.workbenchPaneVisibility,
+      collectionWidth: this.workbenchPaneWidths.collection,
+      inspectorWidth: this.workbenchPaneWidths.inspector,
+    });
+  }
+
+  activePaneDimensions(): WorkspacePaneDimensions {
+    return {
+      collectionWidth: this.restoredWorkspacePaneDimensions?.collectionWidth || this.workbenchPaneWidths.collection,
+      contentWidth: this.restoredWorkspacePaneDimensions?.contentWidth || 640,
+      inspectorWidth: this.restoredWorkspacePaneDimensions?.inspectorWidth || this.workbenchPaneWidths.inspector,
+      viewportWidth: typeof window === "undefined" ? 0 : window.innerWidth,
+    };
+  }
+
+  resizeWorkbenchPane(pane: "collection" | "inspector", delta: number) {
+    const panes = this.activePaneDimensions();
+    if (pane === "collection")
+      panes.collectionWidth = Math.max(collectionPaneMin, Math.min(collectionPaneMax, panes.collectionWidth + delta));
+    else panes.inspectorWidth = Math.max(inspectorPaneMin, Math.min(inspectorPaneMax, panes.inspectorWidth + delta));
+    this.workbenchPaneWidths = {
+      collection: panes.collectionWidth,
+      inspector: panes.inspectorWidth,
+    };
+    this.restoredWorkspacePaneDimensions = panes;
+    this.persistWorkbenchLayout();
+  }
+
+  resetWorkbenchPane(pane: "collection" | "inspector") {
+    const panes = this.activePaneDimensions();
+    if (pane === "collection") panes.collectionWidth = collectionPaneDefault;
+    else panes.inspectorWidth = inspectorPaneDefault;
+    this.workbenchPaneWidths = {
+      collection: panes.collectionWidth,
+      inspector: panes.inspectorWidth,
+    };
+    this.restoredWorkspacePaneDimensions = panes;
+    this.persistWorkbenchLayout();
+  }
+
+  async toggleWorkbenchPane(pane: WorkbenchPane) {
+    // Hiding the content column tears down the Language and Writing webviews, so save and ask them first.
+    if (pane === "content" && this.workbenchPaneVisibility.content) {
+      if (!(await this.flushAutoSave())) return;
+      if (!(await this.ctx.canLeaveLanguageSection())) return;
+    }
+    const visible = !this.workbenchPaneVisibility[pane];
+    this.workbenchPaneVisibility = { ...this.workbenchPaneVisibility, [pane]: visible };
+    this.persistWorkbenchLayout();
+    if (pane === "content" && !visible) this.editorFullscreen = false;
+  }
+
+  currentSpecializedSurfaceScrollTop() {
+    const key = this.ctx.specializedSurfaceKey();
+    if (!key) return 0;
+    return this.pendingSpecializedSurfaceScroll?.key === key
+      ? this.pendingSpecializedSurfaceScroll.scrollTop
+      : (this.specializedSurfaceElement?.scrollTop ?? this.specializedSurfaceScrollByKey[key] ?? 0);
+  }
+
+  rememberSpecializedSurfaceScroll = (scrollTop: number) => {
+    const key = this.ctx.specializedSurfaceKey();
+    if (!key) return;
+    this.specializedSurfaceScrollByKey[key] = scrollTop;
+    if (this.pendingSpecializedSurfaceScroll?.key === key) this.pendingSpecializedSurfaceScroll = null;
+  };
+
+  async restoreSpecializedSurfaceScroll(location: ShellLocation) {
+    if (location.kind === "home" || location.kind === "settings" || location.kind === "project") return;
+    const key = specializedSurfaceKeyForLocation(location);
+    if (!key) return;
+    this.pendingSpecializedSurfaceScroll = { key, scrollTop: location.surfaceScrollTop };
+    this.specializedSurfaceScrollByKey[key] = location.surfaceScrollTop;
+    await tick();
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    if (this.ctx.specializedSurfaceKey() !== key || !this.specializedSurfaceElement) return;
+    this.specializedSurfaceElement.scrollTop = location.surfaceScrollTop;
+    this.specializedSurfaceScrollByKey[key] = this.specializedSurfaceElement.scrollTop;
+    this.pendingSpecializedSurfaceScroll = null;
+  }
+
+  // ---- Manuscript outline and Writing appearance labels ------------------------------------------------------
+
+  queryWritingPartOf = async (entityIds: string[]) => {
+    if (entityIds.length === 0 || !this.ctx.projectInfo?.root) return [];
+    const context = this.ctx.contextFor("writing");
+    const items: Array<{
+      id: string;
+      sourceId: string;
+      targetId: string;
+      type: string;
+      metadata?: unknown;
+    }> = [];
+    let offset = 0;
+    while (true) {
+      const page = await context.relationships.query({
+        entityIds: entityIds as UUID[],
+        relationshipTypes: [WRITING_PART_OF],
+        direction: "any",
+        offset,
+        limit: 200,
+      });
+      items.push(...page.items);
+      if (!page.hasMore || page.items.length === 0) break;
+      offset += page.items.length;
+    }
+    return partOfEdgesFromRelationships(
+      items.map((relationship) => ({
+        id: relationship.id,
+        source_id: relationship.sourceId,
+        target_id: relationship.targetId,
+        relationship_type: relationship.type,
+        metadata: relationship.metadata,
+      })),
+    );
+  };
+
+  async listManuscriptOutlineSummaries(
+    entityTypes: string[],
+    excludedEntityTypes: string[],
+    sortField: SortField,
+    sortDirection: SortDirection,
+  ): Promise<{ items: Entity[]; truncated: boolean }> {
+    const items: Entity[] = [];
+    let offset = 0;
+    while (items.length < MANUSCRIPT_OUTLINE_CAP) {
+      const limit = Math.min(200, MANUSCRIPT_OUTLINE_CAP - items.length);
+      const page = await this.ctx.project.queryEntities({
+        entityTypes,
+        excludedEntityTypes,
+        sortField,
+        sortDirection,
+        offset,
+        limit,
+      });
+      items.push(...page.items);
+      if (!page.has_more || page.items.length === 0) return { items, truncated: false };
+      offset += page.items.length;
+    }
+    return { items, truncated: true };
+  }
+
+  async manuscriptContainmentLabels(seed: string[]): Promise<Record<string, string>> {
+    const edges = await collectPartOfEdges(seed, this.queryWritingPartOf);
+    const ids = new Set(seed);
+    for (const edge of edges) {
+      ids.add(edge.sourceId);
+      ids.add(edge.targetId);
+    }
+    const names = new Map<string, string>();
+    for (const entity of [...this.manuscriptOutlineEntities, ...this.ctx.entities, ...this.collectionPage.items]) {
+      if (ids.has(entity.id)) names.set(entity.id, entity.name);
+    }
+    const missing = [...ids].filter((id) => !names.has(id));
+    for (let index = 0; index < missing.length; index += 500) {
+      const loaded = await this.ctx.contextFor("writing").entities.getMany(missing.slice(index, index + 500) as UUID[]);
+      for (const entity of loaded) names.set(entity.id, entity.name);
+    }
+    const parents = parentByChild(edges);
+    const labels: Record<string, string> = {};
+    for (const id of seed) labels[id] = appearanceLabel(containmentNames(id, parents, names));
+    return labels;
+  }
+
+  async refreshWritingAppearanceLabels() {
+    if (!this.selected) {
+      this.writingAppearanceLabels = {};
+      return;
+    }
+    const sources = [
+      ...new Set(
+        this.relationships
+          .filter(
+            (relationship) =>
+              relationship.relationship_type === WRITING_FEATURES && relationship.target_id === this.selected!.id,
+          )
+          .map((relationship) => relationship.source_id),
+      ),
+    ];
+    if (sources.length === 0) {
+      this.writingAppearanceLabels = {};
+      return;
+    }
+    try {
+      const edges = await collectPartOfEdges(sources, this.queryWritingPartOf);
+      const ids = new Set(sources);
+      for (const edge of edges) {
+        ids.add(edge.sourceId);
+        ids.add(edge.targetId);
+      }
+      const names = new Map<string, string>();
+      for (const entity of this.ctx.entities) {
+        if (ids.has(entity.id)) names.set(entity.id, entity.name);
+      }
+      const missing = [...ids].filter((id) => !names.has(id));
+      if (missing.length > 0) {
+        const loaded = await this.ctx.contextFor("writing").entities.getMany(missing as UUID[]);
+        for (const entity of loaded) names.set(entity.id, entity.name);
+      }
+      const parents = parentByChild(edges);
+      const labels: Record<string, string> = {};
+      for (const id of sources) labels[id] = appearanceLabel(containmentNames(id, parents, names));
+      this.writingAppearanceLabels = labels;
+    } catch {
+      this.writingAppearanceLabels = {};
+    }
+  }
+
+  toggleManuscriptOutlineNode(id: string) {
+    const next = new Set(this.manuscriptExpanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this.manuscriptExpanded = next;
+  }
 
   // ---- Entity mutation chrome --------------------------------------------------------------------------------
 

@@ -31,6 +31,11 @@ module.registerHooks({
       const found = probe(base);
       if (found) return { url: pathToFileURL(found).href, shortCircuit: true };
     }
+    // `svelte` itself resolves to the server build under plain Node, whose `tick` and `flushSync` do nothing. The
+    // store's compiled code uses the client runtime, so load the client entry (the `browser` condition) to share it.
+    if (specifier === "svelte") {
+      return nextResolve(specifier, { ...context, conditions: [...context.conditions, "browser"] });
+    }
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
@@ -47,7 +52,15 @@ module.registerHooks({
 // A window whose timers the test fires by hand, so autosave and date-field timers are deterministic.
 const timers = new Map();
 let nextTimer = 1;
+// The store reads and writes the collection query and the pane layout through `localStorage`.
+const storage = new Map();
+globalThis.localStorage = {
+  getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+  setItem: (key, value) => void storage.set(key, String(value)),
+  removeItem: (key) => void storage.delete(key),
+};
 globalThis.window = {
+  innerWidth: 1400,
   setTimeout(fn, ms) {
     const id = nextTimer++;
     timers.set(id, { fn, ms });
@@ -63,7 +76,21 @@ const fireTimers = () => {
   for (const [, timer] of due) timer.fn();
 };
 
-const { LocationStore, isRevisionConflict } = await import("../src/lib/location/location-store.svelte.ts");
+const { LocationStore, isRevisionConflict, emptyEntityPage, specializedSurfaceKeyForLocation } =
+  await import("../src/lib/location/location-store.svelte.ts");
+const { ReactiveContextState } = await import("./location-store-reactive.svelte.ts");
+const { flushSync, tick: svelteTick } = await import("svelte");
+const {
+  collectionPaneDefault,
+  collectionPaneMax,
+  collectionPaneMin,
+  inspectorPaneDefault,
+  inspectorPaneMax,
+  inspectorPaneMin,
+  workbenchLayoutStorageKey,
+} = await import("../src/lib/shell/workbench-persistence.ts");
+/** A snapshot free of Svelte proxies, for deep comparisons. */
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function deferred() {
   let resolve;
@@ -87,16 +114,44 @@ const DEFINITIONS = [
  * `calls` collects the context callbacks the store made, in order.
  */
 function createFixture(overrides = {}) {
+  storage.clear();
   const calls = [];
   const record =
     (name) =>
     (...args) => {
       calls.push([name, ...args]);
     };
+  // The state the store's effects react to is reactive, so a test can change the section like the page does.
+  const reactive = new ReactiveContextState();
   const state = {
     entities: [entity("a"), entity("b")],
     projectDiagnostics: [],
-    section: "lore",
+    get section() {
+      return reactive.section;
+    },
+    set section(value) {
+      reactive.section = value;
+    },
+    get writingView() {
+      return reactive.writingView;
+    },
+    set writingView(value) {
+      reactive.writingView = value;
+    },
+    get ready() {
+      return reactive.ready;
+    },
+    set ready(value) {
+      reactive.ready = value;
+    },
+    get projectInfo() {
+      return reactive.projectInfo;
+    },
+    set projectInfo(value) {
+      reactive.projectInfo = value;
+    },
+    surfaceKey: null,
+    entityTypes: ["daena.lore:character"],
     sandboxView: null,
     storedDocuments: { a: "body a", b: "body b" },
     storedRevision: { a: "r1", b: "r1" },
@@ -128,9 +183,21 @@ function createFixture(overrides = {}) {
     get section() {
       return state.section;
     },
+    get writingView() {
+      return state.writingView;
+    },
+    get ready() {
+      return state.ready;
+    },
+    get projectInfo() {
+      return state.projectInfo;
+    },
     get sandboxView() {
       return state.sandboxView;
     },
+    sectionEntityTypes: () => state.entityTypes,
+    activeTabEntityTypes: () => undefined,
+    specializedSurfaceKey: () => state.surfaceKey,
     confirmDialog: async () => true,
     setError: record("setError"),
     resetSelectionShellState: record("resetSelectionShellState"),
@@ -162,15 +229,15 @@ function createFixture(overrides = {}) {
     mapsEnabled: () => false,
     upsertEntityInCache: record("upsertEntityInCache"),
     refreshAfterEntityMutation: async () => {},
-    bumpKinshipRefresh: record("bumpKinshipRefresh"),
     loadEraContexts: async () => [],
-    refreshWritingAppearanceLabels: async () => {},
     notifyWritingSaved: record("notifyWritingSaved"),
     notifyProfileTimelineChanged: record("notifyProfileTimelineChanged"),
     loadProjectStatus: async () => {},
     ...overrides.ctx,
   };
   const store = new LocationStore(ctx);
+  // The page is mounted before anything else runs, so the first run of the store's effects is already behind it.
+  flushSync();
   return { store, ctx, state, calls, project, concurrency };
 }
 
@@ -718,6 +785,531 @@ async function openEntry(fixture, id = "a") {
   await handleAssetDelete();
   await handleAssetReplace();
   fixture.store.destroy();
+}
+
+// ---- Collection location: capture and apply ---------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  store.collectionQuery = {
+    section: "lore",
+    textSearch: "ann",
+    sortField: "created_at",
+    sortDir: "desc",
+    pageSize: 25,
+    page: 2,
+    excludedTypes: ["z", "a"],
+    viewMode: "flat",
+  };
+  store.expandedGroups = new Set(["g2", "g1"]);
+  store.collectionScrollBySection.lore = 120;
+  const captured = store.currentWorkspaceCollectionLocation();
+  assert.deepEqual(plain(captured), {
+    query: {
+      textSearch: "ann",
+      sortField: "created_at",
+      sortDir: "desc",
+      pageSize: 25,
+      page: 2,
+      excludedTypes: ["a", "z"],
+      viewMode: "flat",
+    },
+    expandedGroups: ["g1", "g2"],
+    scrollTop: 120,
+  });
+  assert.deepEqual(store.collectionQuery.excludedTypes, ["z", "a"], "capturing sorts a copy, not the live list");
+
+  // Scroll precedence: a queued restore for this section, then the live list, then the remembered number.
+  store.collectionListElement = { scrollTop: 45 };
+  assert.equal(store.currentWorkspaceCollectionLocation().scrollTop, 45);
+  store.queueCollectionScroll("lore", 300);
+  assert.equal(store.currentWorkspaceCollectionLocation().scrollTop, 300);
+  store.pendingCollectionScroll = { section: "timeline", scrollTop: 999 };
+  assert.equal(store.currentWorkspaceCollectionLocation().scrollTop, 45, "another section's queued restore is ignored");
+
+  // Applying it to a fresh store restores the query, the open groups and queues the scroll.
+  const other = createFixture();
+  const applying = other.store.applyWorkspaceCollectionLocation(captured);
+  assert.equal(other.store.collectionQueryRestoring, true, "the restoring flag is up while the query is applied");
+  await applying;
+  assert.equal(other.store.collectionQueryRestoring, false);
+  assert.deepEqual(plain(other.store.collectionQuery), { section: "lore", ...captured.query });
+  assert.deepEqual([...other.store.expandedGroups], ["g1", "g2"]);
+  assert.deepEqual(plain(other.store.pendingCollectionScroll), { section: "lore", scrollTop: 120 });
+  assert.equal(other.store.collectionScrollBySection.lore, 120);
+  assert.deepEqual(
+    plain(other.store.currentWorkspaceCollectionLocation()),
+    plain(captured),
+    "capture then apply round-trips",
+  );
+  assert.notEqual(
+    other.store.collectionQuery.excludedTypes,
+    captured.query.excludedTypes,
+    "the applied list is a copy",
+  );
+  store.destroy();
+  other.store.destroy();
+}
+
+// ---- Collection scroll: remember and queue ------------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  const { rememberCollectionScroll } = store; // The page hands this to CollectionPane as a bare callback.
+  rememberCollectionScroll();
+  assert.deepEqual(plain(store.collectionScrollBySection), {}, "no list element, nothing to remember");
+  store.collectionListElement = { scrollTop: 77 };
+  rememberCollectionScroll();
+  assert.equal(store.collectionScrollBySection.lore, 77);
+  store.queueCollectionScroll("timeline", 12);
+  assert.equal(store.collectionScrollBySection.timeline, 12, "queueing also remembers the number for that section");
+  assert.deepEqual(plain(store.pendingCollectionScroll), { section: "timeline", scrollTop: 12 });
+  assert.equal(store.collectionScrollBySection.lore, 77, "other sections are untouched");
+
+  // A refresh keeps the user's place: it queues the live scroll position of this section.
+  store.collectionListElement = { scrollTop: 33 };
+  const epoch = store.collectionRefreshEpoch;
+  store.bumpCollectionRefresh();
+  assert.equal(store.collectionRefreshEpoch, epoch + 1);
+  assert.deepEqual(plain(store.pendingCollectionScroll), { section: "lore", scrollTop: 33 });
+  store.collectionListElement = null;
+  store.bumpCollectionRefresh();
+  assert.equal(
+    store.collectionRefreshEpoch,
+    epoch + 2,
+    "without a list there is nothing to queue, the epoch still bumps",
+  );
+  store.destroy();
+}
+
+// ---- Specialized surface scroll -----------------------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store, state } = fixture;
+  const { rememberSpecializedSurfaceScroll } = store; // Bare callback on SpecializedSurface.
+  assert.equal(store.currentSpecializedSurfaceScrollTop(), 0, "no surface open, no scroll");
+  rememberSpecializedSurfaceScroll(5);
+  assert.deepEqual(plain(store.specializedSurfaceScrollByKey), {});
+
+  state.surfaceKey = "plugin:p:v";
+  rememberSpecializedSurfaceScroll(40);
+  assert.equal(store.specializedSurfaceScrollByKey["plugin:p:v"], 40);
+  assert.equal(store.currentSpecializedSurfaceScrollTop(), 40);
+  store.specializedSurfaceElement = { scrollTop: 12 };
+  assert.equal(store.currentSpecializedSurfaceScrollTop(), 12, "the live element beats the remembered number");
+  store.pendingSpecializedSurfaceScroll = { key: "plugin:p:v", scrollTop: 90 };
+  assert.equal(store.currentSpecializedSurfaceScrollTop(), 90, "a queued restore beats the live element");
+  rememberSpecializedSurfaceScroll(41);
+  assert.equal(store.pendingSpecializedSurfaceScroll, null, "the user scrolling cancels the queued restore");
+  store.pendingSpecializedSurfaceScroll = { key: "other", scrollTop: 1 };
+  rememberSpecializedSurfaceScroll(42);
+  assert.notEqual(store.pendingSpecializedSurfaceScroll, null, "a queued restore for another surface is kept");
+  store.pendingSpecializedSurfaceScroll = null;
+
+  // Restoring a location queues the number, then scrolls the element once the surface is on screen.
+  window.requestAnimationFrame = (callback) => callback();
+  // A plain object stands in for the DOM node; $state wraps it in a proxy, so read it back through the store.
+  store.specializedSurfaceElement = { scrollTop: 0 };
+  state.surfaceKey = "workspace:houses:tree";
+  await store.restoreSpecializedSurfaceScroll({
+    kind: "workspace",
+    section: "houses",
+    view: "tree",
+    surfaceScrollTop: 60,
+  });
+  assert.equal(store.specializedSurfaceElement.scrollTop, 60);
+  assert.equal(store.specializedSurfaceScrollByKey["workspace:houses:tree"], 60);
+  assert.equal(store.pendingSpecializedSurfaceScroll, null);
+
+  // The surface changed before the frame: the element is left alone and the restore stays queued.
+  store.specializedSurfaceElement.scrollTop = 0;
+  state.surfaceKey = "workspace:lore:wiki";
+  await store.restoreSpecializedSurfaceScroll({
+    kind: "workspace",
+    section: "houses",
+    view: "tree",
+    surfaceScrollTop: 70,
+  });
+  assert.equal(store.specializedSurfaceElement.scrollTop, 0);
+  assert.deepEqual(plain(store.pendingSpecializedSurfaceScroll), { key: "workspace:houses:tree", scrollTop: 70 });
+  store.pendingSpecializedSurfaceScroll = null;
+
+  // Locations without a full surface restore nothing.
+  for (const location of [
+    { kind: "home" },
+    { kind: "settings", section: "general" },
+    { kind: "project", section: "overview" },
+    { kind: "workspace", section: "lore", view: "default", surfaceScrollTop: 5 },
+  ]) {
+    await store.restoreSpecializedSurfaceScroll(location);
+    assert.equal(store.pendingSpecializedSurfaceScroll, null);
+  }
+  assert.equal(specializedSurfaceKeyForLocation({ kind: "plugin", key: "p:v", surfaceScrollTop: 0 }), "plugin:p:v");
+  assert.equal(
+    specializedSurfaceKeyForLocation({ kind: "workspace", section: "lore", view: "wiki", surfaceScrollTop: 0 }),
+    "workspace:lore:wiki",
+  );
+  delete window.requestAnimationFrame;
+  store.destroy();
+}
+
+// ---- Panes: resize, reset, toggle, dimensions ---------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store, ctx, calls } = fixture;
+  const stored = () => JSON.parse(storage.get(workbenchLayoutStorageKey("lore")));
+  assert.deepEqual(plain(store.workbenchPaneVisibility), { collection: true, content: true, inspector: true });
+  assert.deepEqual(plain(store.workbenchPaneWidths), {
+    collection: collectionPaneDefault,
+    inspector: inspectorPaneDefault,
+  });
+
+  store.resizeWorkbenchPane("collection", 30);
+  assert.equal(store.workbenchPaneWidths.collection, collectionPaneDefault + 30);
+  assert.equal(store.workbenchPaneWidths.inspector, inspectorPaneDefault);
+  assert.equal(store.restoredWorkspacePaneDimensions.collectionWidth, collectionPaneDefault + 30);
+  assert.equal(store.restoredWorkspacePaneDimensions.contentWidth, 640, "the content width falls back to 640");
+  assert.equal(store.restoredWorkspacePaneDimensions.viewportWidth, 1400);
+  assert.deepEqual(stored(), {
+    visibility: { collection: true, content: true, inspector: true },
+    collectionWidth: collectionPaneDefault + 30,
+    inspectorWidth: inspectorPaneDefault,
+  });
+  store.resizeWorkbenchPane("collection", 10_000);
+  assert.equal(store.workbenchPaneWidths.collection, collectionPaneMax, "widths clamp to the maximum");
+  store.resizeWorkbenchPane("inspector", -10_000);
+  assert.equal(store.workbenchPaneWidths.inspector, inspectorPaneMin, "and to the minimum");
+  store.resizeWorkbenchPane("collection", -10_000);
+  assert.equal(store.workbenchPaneWidths.collection, collectionPaneMin);
+  assert.equal(stored().inspectorWidth, inspectorPaneMin);
+
+  store.resetWorkbenchPane("collection");
+  assert.equal(store.workbenchPaneWidths.collection, collectionPaneDefault);
+  assert.equal(store.workbenchPaneWidths.inspector, inspectorPaneMin, "resetting one pane keeps the other");
+  store.resetWorkbenchPane("inspector");
+  assert.equal(store.workbenchPaneWidths.inspector, inspectorPaneDefault);
+  assert.deepEqual(plain(store.activePaneDimensions()), {
+    collectionWidth: collectionPaneDefault,
+    contentWidth: 640,
+    inspectorWidth: inspectorPaneDefault,
+    viewportWidth: 1400,
+  });
+  assert.equal(stored().collectionWidth, collectionPaneDefault);
+  assert.equal(stored().inspectorWidth, inspectorPaneDefault);
+
+  // Toggling a side pane just flips and stores it.
+  await store.toggleWorkbenchPane("collection");
+  assert.equal(store.workbenchPaneVisibility.collection, false);
+  assert.equal(stored().visibility.collection, false);
+  assert.equal(calls.filter(([name]) => name === "flushWritingWebview").length, 0, "side panes need no leave guards");
+  await store.toggleWorkbenchPane("collection");
+  assert.equal(store.workbenchPaneVisibility.collection, true);
+
+  // Hiding the content column saves first and asks the Language pane, which can refuse.
+  store.editorFullscreen = true;
+  ctx.canLeaveLanguageSection = async () => false;
+  await store.toggleWorkbenchPane("content");
+  assert.equal(store.workbenchPaneVisibility.content, true, "a refusing Language pane keeps the column");
+  assert.equal(store.editorFullscreen, true);
+  assert.equal(calls.filter(([name]) => name === "flushWritingWebview").length, 1);
+  ctx.canLeaveLanguageSection = async () => true;
+  await store.toggleWorkbenchPane("content");
+  assert.equal(store.workbenchPaneVisibility.content, false);
+  assert.equal(store.editorFullscreen, false, "hiding the content column leaves editor full screen");
+  assert.equal(stored().visibility.content, false);
+  // A failed save keeps the column too.
+  await openEntry(fixture);
+  await store.toggleWorkbenchPane("content");
+  assert.equal(store.workbenchPaneVisibility.content, true, "showing it again needs no guard");
+  store.updateDocumentBody("unsaved");
+  fixture.project.saveEntry = async () => {
+    throw new Error("disk full");
+  };
+  await store.toggleWorkbenchPane("content");
+  assert.equal(store.workbenchPaneVisibility.content, true, "unsaved text that cannot be saved keeps the column");
+  store.cancelAutoSave();
+
+  // Dimensions for a stored location: kept only if the window is the same width.
+  await store.restoreWorkspacePaneDimensions({
+    collectionWidth: 260,
+    contentWidth: 700,
+    inspectorWidth: 300,
+    viewportWidth: 1400,
+  });
+  assert.equal(store.restoredWorkspacePaneDimensions.contentWidth, 700);
+  await store.restoreWorkspacePaneDimensions({
+    collectionWidth: 260,
+    contentWidth: 700,
+    inspectorWidth: 300,
+    viewportWidth: 1402,
+  });
+  assert.notEqual(
+    store.restoredWorkspacePaneDimensions,
+    null,
+    "two pixels of difference still count as the same window",
+  );
+  await store.restoreWorkspacePaneDimensions({
+    collectionWidth: 260,
+    contentWidth: 700,
+    inspectorWidth: 300,
+    viewportWidth: 1000,
+  });
+  assert.equal(store.restoredWorkspacePaneDimensions, null, "another window width drops them");
+  await store.restoreWorkspacePaneDimensions({
+    collectionWidth: 260,
+    contentWidth: 700,
+    inspectorWidth: 300,
+    viewportWidth: 0,
+  });
+  assert.equal(store.restoredWorkspacePaneDimensions, null);
+
+  store.restoredWorkspacePaneDimensions = {
+    collectionWidth: 111,
+    contentWidth: 222,
+    inspectorWidth: 333,
+    viewportWidth: 1400,
+  };
+  store.collectionPaneElement = { getBoundingClientRect: () => ({ width: 301.4 }) };
+  store.contentPaneElement = { getBoundingClientRect: () => ({ width: 0 }) };
+  assert.deepEqual(plain(store.currentWorkspacePaneDimensions()), {
+    collectionWidth: 301,
+    contentWidth: 222,
+    inspectorWidth: 333,
+    viewportWidth: 1400,
+  });
+  store.destroy();
+}
+
+// ---- Effects: the section-keyed reloads -----------------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store, state } = fixture;
+  assert.equal(store.collectionQuery.section, "lore");
+  assert.equal(
+    JSON.parse(storage.get("daena:collection-query:lore")).section,
+    "lore",
+    "the first run persists the query",
+  );
+
+  storage.set(
+    "daena:collection-query:timeline",
+    JSON.stringify({ textSearch: "stored", pageSize: 100, excludedTypes: ["x"], sortField: "updated_at" }),
+  );
+  storage.set(
+    workbenchLayoutStorageKey("timeline"),
+    JSON.stringify({
+      visibility: { collection: false, content: true, inspector: true },
+      collectionWidth: 300,
+      inspectorWidth: 350,
+    }),
+  );
+  store.expandedGroups = new Set(["open"]);
+  store.restoredWorkspacePaneDimensions = {
+    collectionWidth: 1,
+    contentWidth: 2,
+    inspectorWidth: 3,
+    viewportWidth: 1400,
+  };
+  store.collectionQuery.page = 4;
+  state.section = "timeline";
+  flushSync();
+  assert.equal(store.collectionQuery.section, "timeline");
+  assert.equal(store.collectionQuery.textSearch, "stored", "the section's stored query is loaded");
+  assert.equal(store.collectionQuery.pageSize, 100);
+  assert.equal(store.collectionQuery.page, 0);
+  assert.deepEqual(store.collectionQuery.excludedTypes, ["x"]);
+  assert.equal(store.expandedGroups.size, 0, "open groups are cleared");
+  assert.equal(store.collectionQueryRestoring, true, "the restoring flag stays up until the next tick");
+  assert.equal(store.workbenchPaneVisibility.collection, false, "the section's pane layout is loaded");
+  assert.deepEqual(plain(store.workbenchPaneWidths), { collection: 300, inspector: 350 });
+  assert.equal(store.restoredWorkspacePaneDimensions, null, "restored pane dimensions are dropped");
+  assert.equal(JSON.parse(storage.get("daena:collection-query:timeline")).textSearch, "stored");
+  assert.equal(
+    JSON.parse(storage.get("daena:collection-query:lore")).section,
+    "lore",
+    "the old section's key is left alone",
+  );
+  await svelteTick();
+  assert.equal(store.collectionQueryRestoring, false);
+
+  // Edits to the query are persisted under the current section's key.
+  store.collectionQuery.textSearch = "typed";
+  flushSync();
+  assert.equal(JSON.parse(storage.get("daena:collection-query:timeline")).textSearch, "typed");
+  assert.equal(JSON.parse(storage.get("daena:collection-query:lore")).textSearch, "");
+
+  // Effects stop with the store: a later section change is not seen.
+  store.destroy();
+  state.section = "lore";
+  flushSync();
+  assert.equal(store.collectionQuery.section, "timeline");
+}
+
+// ---- Effects: the scope reset and the collection fetch --------------------------------------------------------
+{
+  timers.clear();
+  const requests = [];
+  const fixture = createFixture({
+    project: {
+      queryEntities: (query) => {
+        const request = { query, ...deferred() };
+        requests.push(request);
+        return request.promise;
+      },
+    },
+  });
+  const { store, state, calls } = fixture;
+  const page = (items, extra = {}) => ({
+    items,
+    total: items.length,
+    offset: 0,
+    limit: 50,
+    has_more: false,
+    type_counts: [],
+    ...extra,
+  });
+  assert.deepEqual(plain(store.collectionPage), plain(emptyEntityPage()));
+
+  // Not ready: no query, an empty page.
+  assert.equal(store.collectionLoading, false);
+  assert.equal(timers.size, 0);
+
+  state.ready = true;
+  state.projectInfo = { root: "/project" };
+  flushSync();
+  assert.equal(store.collectionLoading, true, "an open project starts loading");
+  assert.equal([...timers.values()].at(-1).ms, 0, "an empty search fetches without delay");
+  fireTimers();
+  assert.deepEqual(plain(requests[0].query), {
+    entityTypes: ["daena.lore:character"],
+    excludedEntityTypes: [],
+    sortField: "name",
+    sortDirection: "asc",
+    offset: 0,
+    limit: 50,
+  });
+  requests[0].resolve(page([entity("a"), entity("b")]));
+  await tick();
+  assert.deepEqual(
+    store.collectionPage.items.map((item) => item.id),
+    ["a", "b"],
+  );
+  assert.equal(store.collectionLoading, false);
+  assert.equal(
+    calls.filter(([name]) => name === "upsertEntityInCache").length,
+    2,
+    "fetched entries enter the entity cache",
+  );
+
+  // A search is debounced, and a newer request makes an older answer irrelevant.
+  store.collectionQuery.textSearch = "  ann ";
+  flushSync();
+  assert.equal(store.collectionPage.items.length, 0, "a new scope empties the page");
+  assert.equal([...timers.values()].at(-1).ms, 180, "a search waits 180ms");
+  assert.equal(requests.length, 1, "nothing is asked before the debounce ends");
+  store.collectionQuery.textSearch = "annie";
+  flushSync();
+  assert.equal(timers.size, 1, "retyping cancels the pending timer");
+  fireTimers();
+  assert.equal(requests[1].query.query, "annie");
+  store.collectionQuery.sortDir = "desc";
+  flushSync();
+  fireTimers();
+  assert.equal(requests[2].query.sortDirection, "desc");
+  requests[2].resolve(page([entity("c")]));
+  await tick();
+  requests[1].resolve(page([entity("stale")]));
+  await tick();
+  assert.deepEqual(
+    store.collectionPage.items.map((item) => item.id),
+    ["c"],
+    "an answer to an older request is dropped",
+  );
+  assert.equal(store.collectionLoading, false);
+
+  // A scope change resets the page index; a plain page change does not.
+  store.collectionQuery.page = 2;
+  flushSync();
+  assert.equal(store.collectionQuery.page, 2);
+  fireTimers();
+  assert.equal(requests[3].query.offset, 100, "the page index becomes an offset");
+  store.collectionQuery.pageSize = 25;
+  flushSync();
+  assert.equal(store.collectionQuery.page, 0, "changing the page size goes back to the first page");
+  // While a stored query is being applied the scope may change without a reset.
+  store.collectionQueryRestoring = true;
+  store.collectionQuery.page = 3;
+  store.collectionQuery.excludedTypes = ["x"];
+  flushSync();
+  assert.equal(store.collectionQuery.page, 3, "the restoring flag keeps the page");
+  store.collectionQueryRestoring = false;
+  fireTimers();
+
+  // Asking for a page past the end moves to the last page instead of showing nothing.
+  const before = requests.length;
+  const last = requests.at(-1);
+  last.resolve(page([], { total: 120 }));
+  await tick();
+  assert.equal(store.collectionQuery.page, 4, "120 entries at 25 per page end on page index 4");
+  assert.equal(requests.length, before, "the correction does not itself resolve a page");
+
+  // Failures show an error and an empty page.
+  flushSync();
+  fireTimers();
+  requests.at(-1).reject(new Error("boom"));
+  await tick();
+  assert.notEqual(store.collectionError, "");
+  assert.equal(store.collectionPage.items.length, 0);
+  assert.equal(store.collectionLoading, false);
+
+  // The Writing manuscript outline loads itself, so the page fetch stays quiet there.
+  state.section = "writing";
+  flushSync();
+  const asked = requests.length;
+  fireTimers();
+  assert.equal(requests.length, asked, "grouped manuscripts without a search ask nothing");
+  assert.equal(store.collectionLoading, false);
+  state.writingView = "scenes";
+  flushSync();
+  fireTimers();
+  assert.equal(requests.length, asked + 1, "other Writing tabs fetch their page");
+
+  // Closing the project empties the page and stops loading.
+  state.ready = false;
+  flushSync();
+  assert.equal(store.collectionLoading, false);
+  assert.equal(store.collectionPage.items.length, 0);
+  store.destroy();
+}
+
+// ---- Groups, outline, kinship and appearance labels -----------------------------------------------------------------
+{
+  const fixture = createFixture();
+  const { store } = fixture;
+  store.toggleGroup("person");
+  assert.deepEqual([...store.expandedGroups], ["person"]);
+  const before = store.expandedGroups;
+  store.toggleGroup("place");
+  assert.notEqual(store.expandedGroups, before, "toggling replaces the set so the template updates");
+  store.toggleGroup("person");
+  assert.deepEqual([...store.expandedGroups], ["place"]);
+  store.toggleManuscriptOutlineNode("m1");
+  store.toggleManuscriptOutlineNode("m2");
+  store.toggleManuscriptOutlineNode("m1");
+  assert.deepEqual([...store.manuscriptExpanded], ["m2"]);
+
+  assert.equal(store.kinshipRefreshEpoch, 0);
+  store.bumpKinshipRefresh();
+  assert.equal(store.kinshipRefreshEpoch, 1);
+
+  store.writingAppearanceLabels = { x: "y" };
+  await store.refreshWritingAppearanceLabels();
+  assert.deepEqual(plain(store.writingAppearanceLabels), {}, "no selection, no labels");
+  await openEntry(fixture);
+  store.writingAppearanceLabels = { x: "y" };
+  await store.refreshWritingAppearanceLabels();
+  assert.deepEqual(plain(store.writingAppearanceLabels), {}, "no Writing links, no labels");
+  store.destroy();
 }
 
 // ---- Teardown ---------------------------------------------------------------------------------------------------

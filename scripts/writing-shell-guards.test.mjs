@@ -37,7 +37,7 @@ function between(from, to) {
 // Every path that hides or unmounts the Writing webview, or changes its entry, saves through flushAutoSave first.
 // Each entry names the first statement that navigates, which must come after the flush.
 const flushesBeforeNavigating = [
-  ["toggleWorkbenchPane", /workbenchPaneVisibility = \{/],
+  ["toggleWorkbenchPane", /this\.workbenchPaneVisibility = \{/, "store"],
   ["navigateShellHistory", /shellNavigationBusy = true/],
   ["switchToTab", /activateTab\(/],
   ["openInNewTab", /openTab\(/],
@@ -126,8 +126,8 @@ for (const [name, through] of navigatesThroughGuardedPath) {
 // Hiding the content column, and every other place the webview leaves the screen, is covered above. Toggling the
 // content column is the one that needs a flush of its own: it used to ask only the Language webview.
 assert.match(
-  functionBody("toggleWorkbenchPane"),
-  /pane === "content" && workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await loc\.flushAutoSave\(\)\)\) return;/,
+  storeMethodBody("toggleWorkbenchPane"),
+  /pane === "content" && this\.workbenchPaneVisibility\.content\)\s*\{\s*if \(!\(await this\.flushAutoSave\(\)\)\) return;/,
 );
 
 // Writing's full screen is the webview's own. It must not be part of the overlay that hides every embedded webview.
@@ -217,7 +217,7 @@ function workspaceStyle() {
   assert.match(page, /\{#if error && !writingWebviewShown\}/, "the toast is left to the webview");
   const slot = between(
     "{:else if writingWebviewShown}",
-    "{:else if workbenchPaneVisibility.content && !writingEntrySelected}",
+    "{:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}",
   );
   assert.match(slot, /class="writing-content"/);
   assert.match(
@@ -262,14 +262,14 @@ function workspaceStyle() {
   const branches = [...chain.matchAll(/^ {8}\{(?:#|:else )if ([^}]+)\}/gm)].map((match) => match[1]);
   assert.deepEqual(
     branches,
-    ["writingWebviewShown", "workbenchPaneVisibility.content && !writingEntrySelected"],
+    ["writingWebviewShown", "loc.workbenchPaneVisibility.content && !writingEntrySelected"],
     "the shell editor branch excludes webview-handled Writing entries",
   );
   // The shell editor (RichTextEditor and the content pane body) renders only inside that last branch.
   assert.equal(page.match(/<RichTextEditor\b/g)?.length, 1, "one shell RichTextEditor");
   assert.ok(
     page.indexOf("<RichTextEditor") >
-      page.indexOf("{:else if workbenchPaneVisibility.content && !writingEntrySelected}"),
+      page.indexOf("{:else if loc.workbenchPaneVisibility.content && !writingEntrySelected}"),
     "the shell RichTextEditor sits behind the guard",
   );
   assert.equal(page.match(/\{#snippet contentPaneBody\(\)\}/g)?.length, 1);
